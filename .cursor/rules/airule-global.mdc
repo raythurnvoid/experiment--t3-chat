@@ -11,3 +11,9 @@ This repository uses `pnpm` do not use `npm`.
 # Running commands in the terminal
 
 Do not run `pnpm run dev` let the user run it manually.
+
+# +personal/ folder
+
+The [+personal/](mdc:+personal) folder is used to keep indexed personal user notes, you are not allowed to write in this folder. However the content can be used a documentation reference.
+
+You can however write inside [+personal/+ai/](mdc:+personal/+ai).

@@ -19,7 +19,7 @@ import {
 import { cn } from "../../lib/utils";
 
 import { Button } from "../ui/button";
-import { MarkdownText } from "./markdown-text";
+import { ArtifactAwareText } from "./artifact-aware-text";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
 export const Thread: FC = () => {
@@ -206,7 +206,7 @@ const AssistantMessage: FC = () => {
 	return (
 		<MessagePrimitive.Root className="relative grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_auto_1fr] grid-rows-[auto_1fr] py-4">
 			<div className="text-foreground col-span-2 col-start-2 row-start-1 my-1.5 max-w-[calc(var(--thread-max-width)*0.8)] break-words leading-7">
-				<MessagePrimitive.Content components={{ Text: MarkdownText }} />
+				<ArtifactAwareText />
 			</div>
 
 			<AssistantActionBar />

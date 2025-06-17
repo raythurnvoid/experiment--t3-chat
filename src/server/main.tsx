@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { stream } from "hono/streaming";
 import { z } from "zod";
+import { createArtifactArgsSchema } from "../types/artifact-schemas";
 
 // Load environment variables
 dotenv.config({ path: ".env.local" });
@@ -109,6 +110,17 @@ app.post("/api/chat", async (c) => {
 						location,
 						temperature: "200°", // Random temp between 5°C and 35°C
 					}),
+				}),
+				createArtifact: tool({
+					description:
+						"Create a code or text artifact that should be displayed in a separate pane. " +
+						"Use this when the user asks for: " +
+						"- Writing code (any programming language) " +
+						"- Creating documents, articles, or stories " +
+						"- Generating markdown content " +
+						"- Any substantial text output that would benefit from being editable",
+					parameters: createArtifactArgsSchema,
+					// No execute function - this is handled client-side
 				}),
 			},
 			experimental_transform: smoothStream({

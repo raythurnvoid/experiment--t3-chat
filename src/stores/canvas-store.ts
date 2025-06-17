@@ -4,6 +4,7 @@ import type {
 	CanvasState,
 	ArtifactCodeContent,
 	ArtifactTextContent,
+	ProgrammingLanguage,
 } from "../types/canvas";
 
 interface CanvasStore extends CanvasState {
@@ -18,7 +19,7 @@ interface CanvasStore extends CanvasState {
 	createQuickStart: (type: "text" | "code", language?: string) => void;
 }
 
-export const useCanvasStore = create<CanvasStore>((set: any, get: any) => ({
+export const useCanvasStore = create<CanvasStore>((set, get) => ({
 	artifact: null,
 	isStreaming: false,
 	chatStarted: false,
@@ -79,7 +80,7 @@ export const useCanvasStore = create<CanvasStore>((set: any, get: any) => ({
 				type: "code",
 				title: `Quick start ${type}`,
 				code: codeTemplate,
-				language: language as any,
+				language: language as ProgrammingLanguage,
 			};
 		} else {
 			artifactContent = {

@@ -1,0 +1,15 @@
+---
+description:
+globs: src/*
+alwaysApply: false
+---
+
+This app is a a AI chatbot that allows the user to chat with AI, call tools and produce documents in a canvas in a right panel.
+
+# Architecture
+
+The server is a single file located at [main.tsx](mdc:src/server/main.tsx) the whole AI logic is there.
+
+The client is in the [src/](mdc:src) folder (exluding the [src/server/](mdc:src/server) folder).
+
+The client uses Tailwind 4, React 19, assistant-ui and blocknote for the canvas feature.

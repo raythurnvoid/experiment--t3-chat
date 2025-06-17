@@ -4,6 +4,7 @@ import { TextRenderer } from "./text-renderer";
 import { useState } from "react";
 import { Button } from "../ui/button";
 import { ChevronLeft, ChevronRight, Edit3, Save, X } from "lucide-react";
+import { cn } from "../../lib/utils";
 
 export function ArtifactRenderer() {
 	const {
@@ -19,13 +20,30 @@ export function ArtifactRenderer() {
 
 	if (!artifact || !currentContent) {
 		return (
-			<div className="flex items-center justify-center h-full bg-gray-50">
-				<div className="text-center">
-					<div className="text-6xl mb-4">🎨</div>
-					<h2 className="text-xl font-semibold text-gray-700 mb-2">
+			<div
+				className={cn(
+					"ArtifactRenderer-empty",
+					"flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900"
+				)}
+			>
+				<div className={cn("ArtifactRenderer-empty-content", "text-center")}>
+					<div className={cn("ArtifactRenderer-empty-icon", "text-6xl mb-4")}>
+						🎨
+					</div>
+					<h2
+						className={cn(
+							"ArtifactRenderer-empty-title",
+							"text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2"
+						)}
+					>
 						Canvas is ready
 					</h2>
-					<p className="text-gray-500">
+					<p
+						className={cn(
+							"ArtifactRenderer-empty-description",
+							"text-gray-500 dark:text-gray-400"
+						)}
+					>
 						Start a conversation to create content on the canvas
 					</p>
 				</div>
@@ -42,15 +60,45 @@ export function ArtifactRenderer() {
 		isStreaming;
 
 	return (
-		<div className="relative w-full h-full bg-white">
+		<div
+			className={cn(
+				"ArtifactRenderer",
+				"relative w-full h-full bg-white dark:bg-gray-900 flex flex-col"
+			)}
+		>
 			{/* Header */}
-			<div className="border-b border-gray-200 px-4 py-3 bg-white">
-				<div className="flex items-center justify-between">
-					<div className="flex items-center space-x-3">
-						<h3 className="text-lg font-semibold text-gray-900">
+			<div
+				className={cn(
+					"ArtifactRenderer-header",
+					"border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800"
+				)}
+			>
+				<div
+					className={cn(
+						"ArtifactRenderer-header-content",
+						"flex items-center justify-between"
+					)}
+				>
+					<div
+						className={cn(
+							"ArtifactRenderer-header-info",
+							"flex items-center space-x-3"
+						)}
+					>
+						<h3
+							className={cn(
+								"ArtifactRenderer-header-title",
+								"text-lg font-semibold text-gray-900 dark:text-gray-100"
+							)}
+						>
 							{currentContent.title}
 						</h3>
-						<div className="flex items-center space-x-1 text-sm text-gray-500">
+						<div
+							className={cn(
+								"ArtifactRenderer-header-meta",
+								"flex items-center space-x-1 text-sm text-gray-500 dark:text-gray-400"
+							)}
+						>
 							<span>{currentContent.type === "code" ? "Code" : "Text"}</span>
 							{currentContent.type === "code" && (
 								<>
@@ -61,26 +109,41 @@ export function ArtifactRenderer() {
 						</div>
 					</div>
 
-					<div className="flex items-center space-x-2">
+					<div
+						className={cn(
+							"ArtifactRenderer-header-controls",
+							"flex items-center space-x-2"
+						)}
+					>
 						{/* Version navigation */}
 						{artifact.contents.length > 1 && (
-							<div className="flex items-center space-x-1">
+							<div
+								className={cn(
+									"ArtifactRenderer-nav",
+									"flex items-center space-x-1"
+								)}
+							>
 								<Button
 									variant="outline"
 									size="sm"
 									disabled={isBackwardsDisabled}
-									className="h-8 w-8 p-0"
+									className={cn("ArtifactRenderer-nav-prev", "h-8 w-8 p-0")}
 								>
 									<ChevronLeft className="h-4 w-4" />
 								</Button>
-								<span className="text-sm text-gray-500">
+								<span
+									className={cn(
+										"ArtifactRenderer-nav-indicator",
+										"text-sm text-gray-500 dark:text-gray-400"
+									)}
+								>
 									{currentContent.index} / {artifact.contents.length}
 								</span>
 								<Button
 									variant="outline"
 									size="sm"
 									disabled={isForwardDisabled}
-									className="h-8 w-8 p-0"
+									className={cn("ArtifactRenderer-nav-next", "h-8 w-8 p-0")}
 								>
 									<ChevronRight className="h-4 w-4" />
 								</Button>
@@ -89,12 +152,17 @@ export function ArtifactRenderer() {
 
 						{/* Edit controls */}
 						{isEditing ? (
-							<div className="flex items-center space-x-2">
+							<div
+								className={cn(
+									"ArtifactRenderer-edit-controls",
+									"flex items-center space-x-2"
+								)}
+							>
 								<Button
 									variant="outline"
 									size="sm"
 									onClick={() => setIsEditing(false)}
-									className="h-8"
+									className={cn("ArtifactRenderer-cancel-button", "h-8")}
 								>
 									<X className="h-4 w-4 mr-1" />
 									Cancel
@@ -102,7 +170,7 @@ export function ArtifactRenderer() {
 								<Button
 									size="sm"
 									onClick={() => setIsEditing(false)}
-									className="h-8"
+									className={cn("ArtifactRenderer-save-button", "h-8")}
 								>
 									<Save className="h-4 w-4 mr-1" />
 									Save
@@ -114,7 +182,7 @@ export function ArtifactRenderer() {
 								size="sm"
 								onClick={() => setIsEditing(true)}
 								disabled={isStreaming}
-								className="h-8"
+								className={cn("ArtifactRenderer-edit-button", "h-8")}
 							>
 								<Edit3 className="h-4 w-4 mr-1" />
 								Edit
@@ -126,7 +194,7 @@ export function ArtifactRenderer() {
 
 			{/* Content area */}
 			<div
-				className="h-[calc(100%-65px)] overflow-auto"
+				className={cn("ArtifactRenderer-content", "flex-1 overflow-auto")}
 				onMouseEnter={() => setIsHovering(true)}
 				onMouseLeave={() => setIsHovering(false)}
 			>
