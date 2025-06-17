@@ -1,0 +1,13 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+
+# Package manager
+
+This repository uses `pnpm` do not use `npm`.
+
+# Running commands in the terminal
+
+Do not run `pnpm run dev` let the user run it manually.

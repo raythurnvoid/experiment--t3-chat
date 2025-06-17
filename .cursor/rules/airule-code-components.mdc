@@ -1,0 +1,124 @@
+---
+description: 
+globs: *.tsx,*.css
+alwaysApply: false
+---
+
+# Semantic Classname Convention
+
+## Overview
+
+Always add semantic classnames to all elements in React components to make them easily identifiable when inspecting live HTML. This helps with debugging, testing, and component identification.
+
+## Classname Format
+
+### Root Element
+
+- Use the component name in PascalCase: `ComponentName`
+- Example: `Thread`, `MessageComposer`, `UserActionBar`
+
+### Child Elements
+
+- Format: `ComponentName-description-of-element-and-modifiers`
+- Use kebab-case for the description part
+- Include relevant state modifiers when applicable
+- Examples:
+  - `Thread-viewport`
+  - `Thread-messages-container`
+  - `MessageComposer-input`
+  - `MessageComposer-send-button`
+  - `UserActionBar-edit-button`
+  - `BranchPicker-button-active`
+  - `AssistantMessage-content-loading`
+
+## Implementation Guidelines
+
+1. **Always add semantic classnames** in addition to existing styling classes (Tailwind, etc.)
+2. **Combine with existing classes** using the `cn()` utility:
+
+   ```tsx
+   <div className={cn("Thread", "bg-background box-border flex h-full")}>
+   ```
+
+3. **Use state-aware classnames** for dynamic elements:
+
+   ```tsx
+   <button className={cn(
+     "ComposerAction-send-button",
+     isLoading && "ComposerAction-send-button-loading",
+     "my-2.5 size-8 p-2"
+   )}>
+   ```
+
+4. **Nested components** should include their parent context:
+
+   ```tsx
+   // In Thread component
+   <div className={cn("Thread-composer", "sticky bottom-0")}>
+     <Composer />
+   </div>
+
+   // In Composer component
+   <div className={cn("Composer", "focus-within:border-ring/20")}>
+     <input className={cn("Composer-input", "placeholder:text-muted-foreground")} />
+   </div>
+   ```
+
+## Examples
+
+### Component with multiple states:
+
+```tsx
+const MessageStatus = ({
+	status,
+}: {
+	status: "pending" | "sent" | "error";
+}) => {
+	return (
+		<div
+			className={cn(
+				"MessageStatus",
+				`MessageStatus-${status}`,
+				"flex items-center gap-2"
+			)}
+		>
+			<Icon
+				className={cn("MessageStatus-icon", `MessageStatus-icon-${status}`)}
+			/>
+			<span className={cn("MessageStatus-text")}>Status: {status}</span>
+		</div>
+	);
+};
+```
+
+### List component:
+
+```tsx
+const ThreadList = ({ threads }: { threads: Thread[] }) => {
+	return (
+		<div className={cn("ThreadList", "space-y-2")}>
+			{threads.map((thread) => (
+				<div
+					key={thread.id}
+					className={cn(
+						"ThreadList-item",
+						thread.isActive && "ThreadList-item-active",
+						"p-3 rounded-lg border"
+					)}
+				>
+					<h3 className={cn("ThreadList-item-title", "font-semibold")}>
+						{thread.title}
+					</h3>
+				</div>
+			))}
+		</div>
+	);
+};
+```
+
+## Benefits
+
+- **Easy debugging**: Quickly identify components in browser DevTools
+- **Better testing**: Reliable selectors for test automation
+- **Component tracking**: Understand component hierarchy in production
+- **Design system consistency**: Clear component boundaries and relationships
