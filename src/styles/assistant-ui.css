@@ -147,3 +147,132 @@ body {
 .border-ring {
 	border-color: hsl(var(--ring));
 }
+
+/* Custom BlockNote Styles for Dark Mode */
+.custom-blocknote-theme {
+	--bn-colors-text: #111827;
+	--bn-colors-background: #ffffff;
+	--bn-colors-editor-background: #ffffff;
+}
+
+.dark .custom-blocknote-theme {
+	--bn-colors-text: #f3f4f6;
+	--bn-colors-background: #111827;
+	--bn-colors-editor-background: #111827;
+}
+
+/* BlockNote Editor Styling */
+.custom-blocknote-theme .bn-editor {
+	background-color: var(--bn-colors-editor-background);
+	color: var(--bn-colors-text);
+}
+
+.custom-blocknote-theme .bn-block {
+	color: var(--bn-colors-text);
+}
+
+/* Custom padding for BlockNote content */
+.custom-blocknote-theme .bn-editor .bn-editor-content {
+	padding: 0 54px;
+}
+
+/* Formatting toolbar styling for dark mode */
+.dark .bn-toolbar {
+	background-color: #1f2937;
+	border-color: #374151;
+}
+
+.dark .bn-toolbar button {
+	color: #e5e7eb;
+}
+
+.dark .bn-toolbar button:hover {
+	background-color: #374151;
+	color: #ffffff;
+}
+
+/* Slash menu styling for dark mode */
+.dark .bn-slash-menu {
+	background-color: #1f2937;
+	border-color: #374151;
+}
+
+.dark .bn-slash-menu-item {
+	color: #e5e7eb;
+}
+
+.dark .bn-slash-menu-item:hover {
+	background-color: #374151;
+	color: #ffffff;
+}
+
+/* Selection and cursor styling */
+.dark .bn-editor .ProseMirror-selectednode {
+	outline: 2px solid #3b82f6;
+}
+
+.dark .bn-editor .ProseMirror {
+	caret-color: #60a5fa;
+}
+
+/* Placeholder text styling */
+.dark .bn-editor .bn-block .bn-inline-content[data-content-type="none"]:before {
+	color: #6b7280;
+}
+
+/* Pulse animation for streaming */
+.pulse-text .bn-block-group {
+	animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.3;
+	}
+}
+
+/* Code block styling in dark mode */
+.dark .bn-editor .bn-block-code {
+	background-color: #1f2937;
+	border-color: #374151;
+	color: #f3f4f6;
+}
+
+/* Blockquote styling in dark mode */
+.dark .bn-editor .bn-block-quote {
+	border-left-color: #4b5563;
+	color: #d1d5db;
+}
+
+/* Table styling in dark mode */
+.dark .bn-editor .bn-table {
+	border-color: #374151;
+}
+
+.dark .bn-editor .bn-table-cell {
+	border-color: #374151;
+	background-color: #111827;
+}
+
+/* Heading styling in dark mode */
+.dark .bn-editor h1,
+.dark .bn-editor h2,
+.dark .bn-editor h3,
+.dark .bn-editor h4,
+.dark .bn-editor h5,
+.dark .bn-editor h6 {
+	color: #f3f4f6;
+}
+
+/* Link styling in dark mode */
+.dark .bn-editor a {
+	color: #60a5fa;
+}
+
+.dark .bn-editor a:hover {
+	color: #93c5fd;
+}

@@ -123,6 +123,7 @@ app.post("/api/chat", async (c) => {
 					// No execute function - this is handled client-side
 				}),
 			},
+			toolCallStreaming: true,
 			experimental_transform: smoothStream({
 				delayInMs: 100,
 			}),

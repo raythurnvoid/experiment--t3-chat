@@ -20,10 +20,15 @@ import type {
  * If the assistant emits a TOOL-CALL named `createArtifact`
  * this hook converts the tool arguments into a canvas artifact
  * and switches the UI from chat to canvas.
+ *
+ * TODO: The detection of create vs update artifact should happen via tool calling
+ * on the server side, not by automatic detection in this client hook.
+ * The server should determine whether to call createArtifact or updateArtifact tools.
  */
 export function useArtifactToolDetection() {
 	const message = useMessage();
-	const { setArtifact, setChatStarted } = useCanvasStore();
+	const { setArtifact, setChatStarted, artifact, updateArtifactContent } =
+		useCanvasStore();
 
 	useEffect(() => {
 		if (message.role !== "assistant") return;
@@ -62,6 +67,24 @@ export function useArtifactToolDetection() {
 					language: (args.language || "javascript") as ProgrammingLanguage,
 				};
 
+				// Check if this is an update to existing artifact or new one
+				if (artifact && artifact.contents.length > 0) {
+					const currentContent = artifact.contents.find(
+						(c) => c.index === artifact.currentIndex
+					);
+					if (
+						currentContent &&
+						currentContent.type === "code" &&
+						currentContent.title === codeContent.title
+					) {
+						// Update existing content during streaming
+						if (currentContent.code !== codeContent.code) {
+							updateArtifactContent(codeContent.code);
+						}
+						return;
+					}
+				}
+
 				setArtifact({
 					currentIndex: 1,
 					contents: [codeContent],
@@ -79,6 +102,24 @@ export function useArtifactToolDetection() {
 					fullMarkdown: args.markdown,
 				};
 
+				// Check if this is an update to existing artifact or new one
+				if (artifact && artifact.contents.length > 0) {
+					const currentContent = artifact.contents.find(
+						(c) => c.index === artifact.currentIndex
+					);
+					if (
+						currentContent &&
+						currentContent.type === "text" &&
+						currentContent.title === textContent.title
+					) {
+						// Update existing content during streaming
+						if (currentContent.fullMarkdown !== textContent.fullMarkdown) {
+							updateArtifactContent(textContent.fullMarkdown);
+						}
+						return;
+					}
+				}
+
 				setArtifact({
 					currentIndex: 1,
 					contents: [textContent],
@@ -89,5 +130,11 @@ export function useArtifactToolDetection() {
 		} catch (error) {
 			console.error("Error creating artifact:", error);
 		}
-	}, [message.content, setArtifact, setChatStarted]);
+	}, [
+		message.content,
+		setArtifact,
+		setChatStarted,
+		artifact,
+		updateArtifactContent,
+	]);
 }
