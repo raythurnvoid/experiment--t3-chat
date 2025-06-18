@@ -64,6 +64,181 @@ Always add semantic classnames to all elements in React components to make them 
    </div>
    ```
 
+# React Hook Usage Guidelines
+
+## Avoid useEffect When Possible
+
+Minimize the use of `useEffect` to prevent infinite loops, dependency issues, and performance problems. Instead:
+
+1. **Use event handlers** for user interactions and state changes
+2. **Use useMemo** for synchronous data transformations
+3. **Use useMemo with promises** for async data transformations that depend on other state
+
+## Use Refs for Non-Reactive State
+
+Use `useRef` instead of `useState` for values that don't need to trigger re-renders or be reactive dependencies:
+
+### ❌ Avoid: useState for non-reactive values
+
+```tsx
+const [isProcessing, setIsProcessing] = useState(false);
+const [cache, setCache] = useState(new Map());
+
+// These state changes cause unnecessary re-renders
+const handleProcess = async () => {
+	setIsProcessing(true); // Triggers re-render
+	await processData();
+	setIsProcessing(false); // Triggers re-render
+};
+```
+
+### ✅ Prefer: useRef for non-reactive values
+
+```tsx
+const isProcessingRef = useRef(false);
+const cacheRef = useRef(new Map());
+
+// No re-renders triggered
+const handleProcess = async () => {
+	isProcessingRef.current = true; // No re-render
+	await processData();
+	isProcessingRef.current = false; // No re-render
+};
+```
+
+### When to Use Refs vs State
+
+**Use `useRef` when:**
+
+- Value is used for internal component logic only
+- Value doesn't affect UI rendering
+- Value is used to prevent operations (like blocking duplicate API calls)
+- Value is used for caching or memoization
+- Value is used for tracking component lifecycle states
+
+**Use `useState` when:**
+
+- Value affects what's rendered in the UI
+- Value is used in JSX conditionals or expressions
+- Value needs to trigger re-renders when changed
+- Value is used as a dependency in useEffect or useMemo
+
+### Examples
+
+```tsx
+// ✅ Good: Using refs for non-reactive state
+const MyComponent = () => {
+	const [count, setCount] = useState(0); // UI state - needs re-renders
+	const [isVisible, setIsVisible] = useState(true); // UI state - affects rendering
+
+	const isLoadingRef = useRef(false); // Internal state - no re-render needed
+	const abortControllerRef = useRef<AbortController | null>(null); // Cleanup reference
+	const cacheRef = useRef(new Map()); // Performance optimization
+
+	const handleFetch = async () => {
+		if (isLoadingRef.current) return; // Prevent duplicate calls
+
+		isLoadingRef.current = true;
+		abortControllerRef.current = new AbortController();
+
+		try {
+			const data = await fetchData(abortControllerRef.current.signal);
+			cacheRef.current.set("data", data);
+		} finally {
+			isLoadingRef.current = false;
+			abortControllerRef.current = null;
+		}
+	};
+
+	return (
+		<div>
+			{isVisible && <div>Count: {count}</div>}
+			<button onClick={() => setCount((c) => c + 1)}>Increment</button>
+			<button onClick={handleFetch}>Fetch Data</button>
+		</div>
+	);
+};
+```
+
+## Preferred Patterns
+
+### ❌ Avoid: useEffect for data transformation
+
+```tsx
+const [data, setData] = useState(null);
+const [transformedData, setTransformedData] = useState(null);
+
+useEffect(() => {
+	if (data) {
+		setTransformedData(processData(data));
+	}
+}, [data]);
+```
+
+### ✅ Prefer: useMemo for sync transformations
+
+```tsx
+const [data, setData] = useState(null);
+
+const transformedData = useMemo(() => {
+	return data ? processData(data) : null;
+}, [data]);
+```
+
+### ❌ Avoid: useEffect for async operations
+
+```tsx
+const [content, setContent] = useState("");
+const [parsedContent, setParsedContent] = useState(null);
+
+useEffect(() => {
+	if (content) {
+		parseContentAsync(content).then(setParsedContent);
+	}
+}, [content]);
+```
+
+### ✅ Prefer: useMemo with promises for async transformations
+
+```tsx
+const [content, setContent] = useState("");
+
+const parsedContentPromise = useMemo(() => {
+	return content ? parseContentAsync(content) : null;
+}, [content]);
+
+// Execute the promise when needed
+useMemo(() => {
+	if (parsedContentPromise) {
+		parsedContentPromise.then(setParsedContent).catch(console.error);
+	}
+}, [parsedContentPromise]);
+```
+
+### ✅ Prefer: Event handlers for user interactions
+
+```tsx
+// Instead of useEffect watching state changes
+const handleToggle = useCallback(async (newValue: boolean) => {
+	if (newValue) {
+		const result = await processToggle();
+		setProcessedResult(result);
+	}
+	setToggleState(newValue);
+}, []);
+
+<button onClick={() => handleToggle(!toggleState)}>Toggle</button>;
+```
+
+## Guidelines Summary
+
+- **Event handlers**: Use for user interactions, form submissions, button clicks
+- **useMemo**: Use for synchronous data transformations and computations
+- **useMemo + promises**: Use for async operations that depend on state changes
+- **useRef**: Use for non-reactive values that don't affect UI rendering
+- **useState**: Use only for values that need to trigger re-renders
+- **useEffect**: Only use when you genuinely need to sync with external systems (DOM, timers, subscriptions)
+
 ## Examples
 
 ### Component with multiple states:
@@ -122,3 +297,6 @@ const ThreadList = ({ threads }: { threads: Thread[] }) => {
 - **Better testing**: Reliable selectors for test automation
 - **Component tracking**: Understand component hierarchy in production
 - **Design system consistency**: Clear component boundaries and relationships
+- **Performance**: Avoid unnecessary re-renders and infinite loops from useEffect
+- **Maintainability**: Clearer data flow and fewer side effects
+- **Optimization**: Use refs to prevent unnecessary re-renders for internal state

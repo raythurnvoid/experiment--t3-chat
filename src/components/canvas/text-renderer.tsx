@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useCanvasStore } from "../../stores/canvas-store";
 import type { ArtifactTextContent } from "../../types/canvas";
@@ -92,63 +92,101 @@ interface TextRendererProps {
 }
 
 export function TextRenderer({ isHovering }: TextRendererProps) {
-	const editor = useCreateBlockNote();
-	const { getCurrentArtifactContent, updateArtifactContent, isStreaming } =
-		useCanvasStore();
+	const editor = useCreateBlockNote({});
+	const {
+		artifact,
+		getCurrentArtifactContent,
+		updateArtifactContent,
+		isStreaming,
+		updateRenderedArtifactRequired,
+		firstTokenReceived,
+		setUpdateRenderedArtifactRequired,
+	} = useCanvasStore();
 
 	const currentContent =
 		getCurrentArtifactContent() as ArtifactTextContent | null;
 	const [rawMarkdown, setRawMarkdown] = useState("");
 	const [isRawView, setIsRawView] = useState(false);
-	const [manuallyUpdatingArtifact, setManuallyUpdatingArtifact] =
-		useState(false);
+	// Use ref to track manual update progress without triggering re-renders
+	const manuallyUpdatingRef = useRef(false);
 
-	// Update editor content when artifact content changes during streaming
+	// Memoized content update promise - only recreates when artifact content changes
 	useEffect(() => {
-		if (!currentContent) return;
+		(async (/* iife */) => {
+			if (!artifact || !currentContent) return null;
+			// Only update when flagged by the store
+			if (!updateRenderedArtifactRequired) {
+				return null;
+			}
 
-		// Only update editor if content has changed and we're streaming or need to initialize
-		const updateEditor = async () => {
 			try {
-				setManuallyUpdatingArtifact(true);
+				manuallyUpdatingRef.current = true;
 				const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(
 					currentContent.fullMarkdown
 				);
 				editor.replaceBlocks(editor.document, markdownAsBlocks);
-				setManuallyUpdatingArtifact(false);
+				setUpdateRenderedArtifactRequired(false);
+				manuallyUpdatingRef.current = false;
 			} catch (error) {
 				console.error("Error updating editor content:", error);
-				setManuallyUpdatingArtifact(false);
+				manuallyUpdatingRef.current = false;
+				setUpdateRenderedArtifactRequired(false);
 			}
-		};
+		})();
+	}, [
+		artifact,
+		currentContent,
+		updateRenderedArtifactRequired,
+		editor,
+		setUpdateRenderedArtifactRequired,
+	]);
 
-		if (isStreaming || !editor.document.length) {
-			updateEditor();
-		}
-	}, [currentContent?.fullMarkdown, isStreaming, editor]);
-
-	// Handle raw view toggle
-	useEffect(() => {
-		if (isRawView && currentContent) {
-			editor.blocksToMarkdownLossy(editor.document).then(setRawMarkdown);
-		} else if (!isRawView && rawMarkdown && currentContent) {
-			(async () => {
+	// Handle raw view toggle with event handlers
+	const handleRawViewToggle = useCallback(
+		async (newIsRawView: boolean) => {
+			if (newIsRawView && currentContent) {
+				// Entering raw view - serialize current editor content
 				try {
-					setManuallyUpdatingArtifact(true);
+					const markdown = await editor.blocksToMarkdownLossy(editor.document);
+					setRawMarkdown(markdown);
+				} catch (error) {
+					console.error("Error serializing to markdown:", error);
+				}
+			} else if (!newIsRawView && rawMarkdown && currentContent) {
+				// Leaving raw view - parse textarea back to blocks
+				try {
+					manuallyUpdatingRef.current = true;
 					const markdownAsBlocks =
 						await editor.tryParseMarkdownToBlocks(rawMarkdown);
 					editor.replaceBlocks(editor.document, markdownAsBlocks);
-					setManuallyUpdatingArtifact(false);
+					manuallyUpdatingRef.current = false;
 				} catch (error) {
 					console.error("Error parsing raw markdown:", error);
-					setManuallyUpdatingArtifact(false);
+					manuallyUpdatingRef.current = false;
 				}
-			})();
-		}
-	}, [isRawView, editor]);
+			}
+			setIsRawView(newIsRawView);
+		},
+		[currentContent, editor, rawMarkdown]
+	);
+
+	// Wrapper for ViewRawText to handle the async callback
+	const handleViewRawTextToggle = useCallback(
+		(value: boolean | ((prev: boolean) => boolean)) => {
+			const newValue = typeof value === "function" ? value(isRawView) : value;
+			handleRawViewToggle(newValue).catch(console.error);
+		},
+		[isRawView, handleRawViewToggle]
+	);
 
 	const onChange = async () => {
-		if (isStreaming || manuallyUpdatingArtifact) return;
+		if (
+			isStreaming ||
+			manuallyUpdatingRef.current ||
+			updateRenderedArtifactRequired
+		) {
+			return;
+		}
 
 		const fullMarkdown = await editor.blocksToMarkdownLossy(editor.document);
 		updateArtifactContent(cleanText(fullMarkdown));
@@ -181,7 +219,10 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				{isHovering && (
 					<div className="absolute flex gap-2 top-2 right-4 z-10">
 						<CopyText content={currentContent.fullMarkdown} />
-						<ViewRawText isRawView={isRawView} setIsRawView={setIsRawView} />
+						<ViewRawText
+							isRawView={isRawView}
+							setIsRawView={handleViewRawTextToggle}
+						/>
 					</div>
 				)}
 
@@ -194,7 +235,12 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 						disabled={isStreaming}
 					/>
 				) : (
-					<div className={cn(isStreaming ? "pulse-text" : "", "w-full h-full")}>
+					<div
+						className={cn(
+							isStreaming && !firstTokenReceived ? "pulse-text" : "",
+							"w-full h-full"
+						)}
+					>
 						<BlockNoteView
 							theme={
 								typeof window !== "undefined" &&
@@ -202,10 +248,10 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 									? "dark"
 									: "light"
 							}
-							formattingToolbar={true}
-							slashMenu={true}
+							formattingToolbar={false}
+							slashMenu={false}
 							onChange={onChange}
-							editable={!isStreaming && !manuallyUpdatingArtifact}
+							editable={!isStreaming || !manuallyUpdatingRef.current}
 							editor={editor}
 						>
 							<SuggestionMenuController
