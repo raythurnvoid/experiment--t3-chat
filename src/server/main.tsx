@@ -229,7 +229,7 @@ app.all("*", (c) => {
 });
 
 // Start server
-const port = Number(process.env.PORT) || 3000;
+const port = Number(process.env.PORT) || 3002;
 
 serve({ fetch: app.fetch, port }, () => {
   console.log(`Server is running on port ${port}`);
