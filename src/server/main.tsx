@@ -120,7 +120,39 @@ app.post("/api/chat", async (c) => {
             "- Generating markdown content " +
             "- Any substantial text output that would benefit from being editable",
           parameters: createArtifactArgsSchema,
-          // No execute function - this is handled client-side
+          execute: async ({ type, title, language, code, markdown }) => {
+            // Generate a summary of what was created
+            let summary = `I've created a ${type} artifact`;
+
+            if (title) {
+              summary += ` titled "${title}"`;
+            }
+
+            if (type === "code" && language) {
+              summary += ` in ${language}`;
+            }
+
+            if (code) {
+              const lineCount = code.split("\n").length;
+              summary += ` with ${lineCount} lines of code`;
+            }
+
+            if (markdown) {
+              const wordCount = markdown.split(/\s+/).length;
+              summary += ` with approximately ${wordCount} words`;
+            }
+
+            summary +=
+              ". The artifact is now available in the side panel for viewing and editing.";
+
+            return {
+              success: true,
+              type,
+              title: title || `Untitled ${type}`,
+              summary,
+              created_at: new Date().toISOString(),
+            };
+          },
         }),
       },
       toolCallStreaming: true,
