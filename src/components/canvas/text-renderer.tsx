@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useCanvasStore } from "../../stores/canvas-store";
 import type { ArtifactTextContent } from "../../types/canvas";
@@ -8,8 +8,8 @@ import {
 	SuggestionMenuController,
 	useCreateBlockNote,
 } from "@blocknote/react";
-import { BlockNoteView } from "@blocknote/shadcn";
-import "@blocknote/shadcn/style.css";
+import { BlockNoteView } from "@blocknote/mantine";
+import "@blocknote/mantine/style.css";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Eye, EyeOff, Copy } from "lucide-react";
@@ -19,6 +19,7 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "../ui/tooltip";
+import { MantineProvider } from "@mantine/core";
 
 const cleanText = (text: string) => {
 	return text.replace(/\\\n/g, "\n");
@@ -92,12 +93,8 @@ interface TextRendererProps {
 
 export function TextRenderer({ isHovering }: TextRendererProps) {
 	const editor = useCreateBlockNote();
-	const {
-		getCurrentArtifactContent,
-		updateArtifactContent,
-		isEditing,
-		isStreaming,
-	} = useCanvasStore();
+	const { getCurrentArtifactContent, updateArtifactContent, isStreaming } =
+		useCanvasStore();
 
 	const currentContent =
 		getCurrentArtifactContent() as ArtifactTextContent | null;
@@ -179,49 +176,50 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	}
 
 	return (
-		<div className="w-full h-full mt-2 flex flex-col border-t-[1px] border-gray-200 dark:border-gray-700 overflow-y-auto py-5 relative">
-			{isHovering && (
-				<div className="absolute flex gap-2 top-2 right-4 z-10">
-					<CopyText content={currentContent.fullMarkdown} />
-					<ViewRawText isRawView={isRawView} setIsRawView={setIsRawView} />
-				</div>
-			)}
+		<MantineProvider>
+			<div className="w-full h-full mt-2 flex flex-col border-t-[1px] border-gray-200 dark:border-gray-700 overflow-y-auto py-5 relative">
+				{isHovering && (
+					<div className="absolute flex gap-2 top-2 right-4 z-10">
+						<CopyText content={currentContent.fullMarkdown} />
+						<ViewRawText isRawView={isRawView} setIsRawView={setIsRawView} />
+					</div>
+				)}
 
-			{isRawView ? (
-				<textarea
-					className="whitespace-pre-wrap font-mono text-sm px-[54px] border-0 shadow-none h-full outline-none ring-0 rounded-none focus-visible:ring-0 focus-visible:ring-offset-0 bg-transparent text-gray-900 dark:text-gray-100 resize-none"
-					value={rawMarkdown}
-					onChange={onChangeRawMarkdown}
-					placeholder="Start writing your markdown content..."
-					disabled={isStreaming}
-				/>
-			) : (
-				<div className={cn(isStreaming ? "pulse-text" : "", "w-full h-full")}>
-					<BlockNoteView
-						theme={
-							typeof window !== "undefined" &&
-							document.documentElement.classList.contains("dark")
-								? "dark"
-								: "light"
-						}
-						formattingToolbar={true}
-						slashMenu={true}
-						onChange={onChange}
-						editable={!isStreaming && !manuallyUpdatingArtifact}
-						editor={editor}
-						className="custom-blocknote-theme"
-					>
-						<SuggestionMenuController
-							getItems={async () =>
-								getDefaultReactSlashMenuItems(editor).filter(
-									(item) => item.group !== "Media"
-								)
+				{isRawView ? (
+					<textarea
+						className="whitespace-pre-wrap font-mono text-sm px-[54px] border-0 shadow-none h-full outline-none ring-0 rounded-none focus-visible:ring-0 focus-visible:ring-offset-0 bg-transparent text-gray-900 dark:text-gray-100 resize-none"
+						value={rawMarkdown}
+						onChange={onChangeRawMarkdown}
+						placeholder="Start writing your markdown content..."
+						disabled={isStreaming}
+					/>
+				) : (
+					<div className={cn(isStreaming ? "pulse-text" : "", "w-full h-full")}>
+						<BlockNoteView
+							theme={
+								typeof window !== "undefined" &&
+								document.documentElement.classList.contains("dark")
+									? "dark"
+									: "light"
 							}
-							triggerCharacter={"/"}
-						/>
-					</BlockNoteView>
-				</div>
-			)}
-		</div>
+							formattingToolbar={true}
+							slashMenu={true}
+							onChange={onChange}
+							editable={!isStreaming && !manuallyUpdatingArtifact}
+							editor={editor}
+						>
+							<SuggestionMenuController
+								getItems={async () =>
+									getDefaultReactSlashMenuItems(editor).filter(
+										(item) => item.group !== "Media"
+									)
+								}
+								triggerCharacter={"/"}
+							/>
+						</BlockNoteView>
+					</div>
+				)}
+			</div>
+		</MantineProvider>
 	);
 }

@@ -7,7 +7,6 @@ import {
 	isToolCallContentPart,
 	isCreateArtifactCall,
 	parseCreateArtifactArgs,
-	type CreateArtifactArgs,
 } from "../types/artifact-schemas";
 import type {
 	ArtifactCodeContent,

@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Mantine and BlockNote styles */
+@import "@blocknote/core/fonts/inter.css";
+@import "@blocknote/mantine/style.css";
+
 :root {
 	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
 	line-height: 1.5;
