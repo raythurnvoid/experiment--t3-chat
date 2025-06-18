@@ -1,45 +1,64 @@
 import { z } from "zod";
+import type { ThreadAssistantContentPart } from "@assistant-ui/react";
 
-// Shared schema for createArtifact tool arguments
-export const createArtifactArgsSchema = z.object({
-	type: z.enum(["code", "text"]).describe("Type of artifact to create"),
-	title: z.string().optional().describe("Optional title for the artifact"),
-	language: z
-		.string()
-		.optional()
-		.describe(
-			"Programming language for code artifacts (e.g., 'javascript', 'python', 'typescript')"
-		),
-	code: z
-		.string()
-		.optional()
-		.describe("The code content (required when type is 'code')"),
-	markdown: z
-		.string()
-		.optional()
-		.describe("The markdown/text content (required when type is 'text')"),
-});
-
-// Shared schema for tool call content parts (based on AI SDK spec)
-export const toolCallContentPartSchema = z.object({
-	type: z.literal("tool-call"),
-	toolCallId: z.string(),
-	toolName: z.string(),
-	args: z.unknown(),
-});
+// Enhanced schema for createArtifact tool arguments with better validation
+export const createArtifactArgsSchema = z
+	.object({
+		type: z.enum(["code", "text"]).describe("Type of artifact to create"),
+		title: z
+			.string()
+			.min(1)
+			.optional()
+			.describe("Optional title for the artifact"),
+		language: z
+			.string()
+			.min(1)
+			.optional()
+			.describe(
+				"Programming language for code artifacts (e.g., 'javascript', 'python', 'typescript')"
+			),
+		code: z
+			.string()
+			.min(1)
+			.optional()
+			.describe("The code content (required when type is 'code')"),
+		markdown: z
+			.string()
+			.min(1)
+			.optional()
+			.describe("The markdown/text content (required when type is 'text')"),
+	})
+	// Add refined validation to ensure required fields are present based on type
+	.refine(
+		(data) => {
+			if (data.type === "code") {
+				return data.code !== undefined && data.code.trim().length > 0;
+			}
+			if (data.type === "text") {
+				return data.markdown !== undefined && data.markdown.trim().length > 0;
+			}
+			return true;
+		},
+		{
+			message:
+				"Code artifacts require 'code' field, text artifacts require 'markdown' field",
+			path: ["type"],
+		}
+	);
 
 // Infer TypeScript types from schemas
 export type CreateArtifactArgs = z.infer<typeof createArtifactArgsSchema>;
-export type ToolCallContentPart = z.infer<typeof toolCallContentPartSchema>;
 
-// Type guard functions with runtime validation
+// Type guard functions that work with assistant-ui types
 export function isToolCallContentPart(
-	part: unknown
-): part is ToolCallContentPart {
-	return toolCallContentPartSchema.safeParse(part).success;
+	part: ThreadAssistantContentPart
+): part is Extract<ThreadAssistantContentPart, { type: "tool-call" }> {
+	return part.type === "tool-call";
 }
 
-export function isCreateArtifactCall(part: ToolCallContentPart): boolean {
+export function isCreateArtifactCall(
+	part: Extract<ThreadAssistantContentPart, { type: "tool-call" }>
+): boolean {
 	return part.toolName === "createArtifact";
 }
 
@@ -48,4 +67,18 @@ export function parseCreateArtifactArgs(
 ): CreateArtifactArgs | null {
 	const result = createArtifactArgsSchema.safeParse(args);
 	return result.success ? result.data : null;
+}
+
+// Additional utility to get tool call from assistant-ui type
+export function getToolCallContentParts(
+	content: readonly ThreadAssistantContentPart[]
+): Extract<ThreadAssistantContentPart, { type: "tool-call" }>[] {
+	return content.filter(isToolCallContentPart);
+}
+
+// Utility to find createArtifact calls specifically
+export function getCreateArtifactCalls(
+	content: readonly ThreadAssistantContentPart[]
+): Extract<ThreadAssistantContentPart, { type: "tool-call" }>[] {
+	return getToolCallContentParts(content).filter(isCreateArtifactCall);
 }

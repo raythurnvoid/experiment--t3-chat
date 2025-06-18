@@ -33,9 +33,6 @@ export interface Artifact {
 
 export interface CanvasState {
 	artifact: Artifact | null;
-	isStreaming: boolean;
-	chatStarted: boolean;
 	isEditing: boolean;
 	updateRenderedArtifactRequired: boolean;
-	firstTokenReceived: boolean;
 }

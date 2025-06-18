@@ -24,13 +24,8 @@ import { TooltipIconButton } from "./tooltip-icon-button";
 
 export const Thread: FC = () => {
 	return (
-		<ThreadPrimitive.Root
-			className="bg-background box-border flex flex-1 flex-col overflow-hidden"
-			style={{
-				["--thread-max-width" as string]: "42rem",
-			}}
-		>
-			<ThreadPrimitive.Viewport className="flex flex-1 h-full flex-col items-center overflow-y-scroll scroll-smooth bg-inherit px-4 pt-8">
+		<ThreadPrimitive.Root className="bg-white dark:bg-black text-black dark:text-white">
+			<ThreadPrimitive.Viewport className="flex flex-col items-center px-4 pt-8">
 				<ThreadWelcome />
 
 				<ThreadPrimitive.Messages

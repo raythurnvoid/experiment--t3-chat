@@ -1,4 +1,5 @@
 import { useCanvasStore } from "../../stores/canvas-store";
+import { useThread } from "@assistant-ui/react";
 import { CodeRenderer } from "./code-renderer";
 import { TextRenderer } from "./text-renderer";
 import { useState } from "react";
@@ -7,13 +8,11 @@ import { ChevronLeft, ChevronRight, Edit3, Save, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 export function ArtifactRenderer() {
-	const {
-		artifact,
-		getCurrentArtifactContent,
-		isEditing,
-		setIsEditing,
-		isStreaming,
-	} = useCanvasStore();
+	const { artifact, getCurrentArtifactContent, isEditing, setIsEditing } =
+		useCanvasStore();
+
+	const thread = useThread();
+	const isStreaming = thread.isRunning;
 
 	const [isHovering, setIsHovering] = useState(false);
 	const currentContent = getCurrentArtifactContent();

@@ -4,6 +4,41 @@ globs: *.tsx,*.css
 alwaysApply: false
 ---
 
+# File Organization
+
+## No Barrel Exports - Index Files Are Banned
+
+**IMPORTANT**: Barrel exports via index files (`index.ts`, `index.tsx`, `index.js`, etc.) are banned in this repository.
+
+### ❌ Do Not Create:
+
+- `src/components/ui/index.ts`
+- `src/hooks/index.ts`
+- `src/utils/index.ts`
+- Any `index.*` files in component directories
+
+### ✅ Instead:
+
+- Import directly from specific files: `import { Button } from "./components/ui/button"`
+- Export components from their own files: `export { Button } from "./button"`
+- Use explicit file paths in imports
+
+### Why Barrel Exports Are Banned:
+
+- Makes imports less explicit and harder to trace
+- Creates unnecessary abstraction layers
+- Can lead to circular dependency issues
+- Makes refactoring and moving files more difficult
+- Obscures the actual file structure
+- Prevents effective tree-shaking in bundlers
+- Creates "barrel export" anti-pattern
+
+### Fixing Existing Barrel Exports:
+
+1. Remove the barrel export (index file)
+2. Update all imports to point directly to the component files
+3. Example: Change `from "../components/canvas"` to `from "../components/canvas/canvas"`
+
 # Semantic Classname Convention
 
 ## Overview

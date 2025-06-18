@@ -9,13 +9,9 @@ import type {
 
 interface CanvasStore extends CanvasState {
 	updateRenderedArtifactRequired: boolean;
-	firstTokenReceived: boolean;
 	setArtifact: (artifact: Artifact | null) => void;
-	setIsStreaming: (isStreaming: boolean) => void;
-	setChatStarted: (chatStarted: boolean) => void;
 	setIsEditing: (isEditing: boolean) => void;
 	setUpdateRenderedArtifactRequired: (required: boolean) => void;
-	setFirstTokenReceived: (received: boolean) => void;
 	updateArtifactContent: (content: string) => void;
 	getCurrentArtifactContent: () =>
 		| (ArtifactCodeContent | ArtifactTextContent)
@@ -25,31 +21,19 @@ interface CanvasStore extends CanvasState {
 
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
 	artifact: null,
-	isStreaming: false,
-	chatStarted: false,
 	isEditing: false,
 	updateRenderedArtifactRequired: false,
-	firstTokenReceived: false,
 
 	setArtifact: (artifact) => {
 		set({
 			artifact,
 			updateRenderedArtifactRequired: true,
-			firstTokenReceived: true,
 		});
 	},
-	setIsStreaming: (isStreaming) => {
-		set({
-			isStreaming,
-			// Reset first token when streaming starts
-			...(isStreaming && { firstTokenReceived: false }),
-		});
-	},
-	setChatStarted: (chatStarted) => set({ chatStarted }),
+
 	setIsEditing: (isEditing) => set({ isEditing }),
 	setUpdateRenderedArtifactRequired: (required) =>
 		set({ updateRenderedArtifactRequired: required }),
-	setFirstTokenReceived: (received) => set({ firstTokenReceived: received }),
 
 	getCurrentArtifactContent: () => {
 		const { artifact } = get();
@@ -89,7 +73,6 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 				contents: updatedContents,
 			},
 			updateRenderedArtifactRequired: true,
-			firstTokenReceived: true,
 		});
 	},
 
@@ -122,7 +105,6 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
 		set({
 			artifact: newArtifact,
-			chatStarted: true,
 			isEditing: true,
 		});
 	},

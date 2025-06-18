@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useCanvasStore } from "../../stores/canvas-store";
+import { useThread } from "@assistant-ui/react";
 import type { ArtifactTextContent } from "../../types/canvas";
 import "@blocknote/core/fonts/inter.css";
 import {
@@ -97,11 +98,17 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 		artifact,
 		getCurrentArtifactContent,
 		updateArtifactContent,
-		isStreaming,
 		updateRenderedArtifactRequired,
-		firstTokenReceived,
 		setUpdateRenderedArtifactRequired,
 	} = useCanvasStore();
+
+	const thread = useThread();
+	const isStreaming = thread.isRunning;
+
+	// Use Assistant UI's message status to determine if we've received content
+	const lastMessage = thread.messages[thread.messages.length - 1];
+	const hasReceivedFirstToken =
+		lastMessage?.role === "assistant" && lastMessage.content.length > 0;
 
 	const currentContent =
 		getCurrentArtifactContent() as ArtifactTextContent | null;
@@ -237,7 +244,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				) : (
 					<div
 						className={cn(
-							isStreaming && !firstTokenReceived ? "pulse-text" : "",
+							isStreaming && !hasReceivedFirstToken ? "pulse-text" : "",
 							"w-full h-full"
 						)}
 					>

@@ -7,7 +7,7 @@ import type {
 } from "../types/canvas";
 
 export function useCanvasIntegration() {
-	const { setArtifact, setChatStarted, artifact } = useCanvasStore();
+	const { setArtifact, artifact } = useCanvasStore();
 
 	const detectAndCreateArtifact = useCallback(
 		(content: string) => {
@@ -31,7 +31,6 @@ export function useCanvasIntegration() {
 						currentIndex: 1,
 						contents: [codeContent],
 					});
-					setChatStarted(true);
 					return true;
 				}
 			}
@@ -64,13 +63,12 @@ export function useCanvasIntegration() {
 					currentIndex: 1,
 					contents: [textContent],
 				});
-				setChatStarted(true);
 				return true;
 			}
 
 			return false;
 		},
-		[setArtifact, setChatStarted]
+		[setArtifact]
 	);
 
 	const updateArtifactWithResponse = useCallback(

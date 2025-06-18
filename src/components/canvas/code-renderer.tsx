@@ -1,4 +1,5 @@
 import { useCanvasStore } from "../../stores/canvas-store";
+import { useThread } from "@assistant-ui/react";
 import type { ArtifactCodeContent } from "../../types/canvas";
 import CodeMirror from "@uiw/react-codemirror";
 import { javascript } from "@codemirror/lang-javascript";
@@ -35,8 +36,10 @@ export function CodeRenderer({ isHovering }: CodeRendererProps) {
 		updateArtifactContent,
 		isEditing,
 		setIsEditing,
-		isStreaming,
 	} = useCanvasStore();
+
+	const thread = useThread();
+	const isStreaming = thread.isRunning;
 
 	const [isDarkMode, setIsDarkMode] = useState(false);
 
