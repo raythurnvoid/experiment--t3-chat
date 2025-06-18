@@ -30,18 +30,11 @@ interface CodeRendererProps {
 }
 
 export function CodeRenderer({ isHovering }: CodeRendererProps) {
-	const {
-		getCurrentArtifactContent,
-		updateArtifactContent,
-		isEditing,
-		setIsEditing,
-		isStreaming,
-	} = useCanvasStore();
+	const { getCurrentArtifactContent, updateArtifactContent, isEditing, setIsEditing, isStreaming } = useCanvasStore();
 
 	const [isDarkMode, setIsDarkMode] = useState(false);
 
-	const currentContent =
-		getCurrentArtifactContent() as ArtifactCodeContent | null;
+	const currentContent = getCurrentArtifactContent() as ArtifactCodeContent | null;
 
 	// Detect dark mode
 	useEffect(() => {
@@ -49,9 +42,7 @@ export function CodeRenderer({ isHovering }: CodeRendererProps) {
 		const htmlElement = document.documentElement;
 
 		const checkDarkMode = () => {
-			setIsDarkMode(
-				htmlElement.classList.contains("dark") || mediaQuery.matches
-			);
+			setIsDarkMode(htmlElement.classList.contains("dark") || mediaQuery.matches);
 		};
 
 		checkDarkMode();
@@ -96,10 +87,7 @@ export function CodeRenderer({ isHovering }: CodeRendererProps) {
 	if (!currentContent) {
 		return (
 			<div
-				className={cn(
-					"CodeRenderer-empty",
-					"flex items-center justify-center h-64 text-gray-500 dark:text-gray-400"
-				)}
+				className={cn("CodeRenderer-empty", "flex items-center justify-center h-64 text-gray-500 dark:text-gray-400")}
 			>
 				No code content available
 			</div>
@@ -107,10 +95,7 @@ export function CodeRenderer({ isHovering }: CodeRendererProps) {
 	}
 
 	return (
-		<div
-			className={cn("CodeRenderer", "h-full w-full relative")}
-			onClick={handleClick}
-		>
+		<div className={cn("CodeRenderer", "h-full w-full relative")} onClick={handleClick}>
 			<CodeMirror
 				value={currentContent.code}
 				onChange={handleChange}

@@ -17,9 +17,7 @@ interface CanvasStore extends CanvasState {
 	setUpdateRenderedArtifactRequired: (required: boolean) => void;
 	setFirstTokenReceived: (received: boolean) => void;
 	updateArtifactContent: (content: string) => void;
-	getCurrentArtifactContent: () =>
-		| (ArtifactCodeContent | ArtifactTextContent)
-		| null;
+	getCurrentArtifactContent: () => (ArtifactCodeContent | ArtifactTextContent) | null;
 	createQuickStart: (type: "text" | "code", language?: string) => void;
 }
 
@@ -47,41 +45,32 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 	},
 	setChatStarted: (chatStarted) => set({ chatStarted }),
 	setIsEditing: (isEditing) => set({ isEditing }),
-	setUpdateRenderedArtifactRequired: (required) =>
-		set({ updateRenderedArtifactRequired: required }),
+	setUpdateRenderedArtifactRequired: (required) => set({ updateRenderedArtifactRequired: required }),
 	setFirstTokenReceived: (received) => set({ firstTokenReceived: received }),
 
 	getCurrentArtifactContent: () => {
 		const { artifact } = get();
 		if (!artifact || artifact.contents.length === 0) return null;
-		return (
-			artifact.contents.find(
-				(content) => content.index === artifact.currentIndex
-			) || null
-		);
+		return artifact.contents.find((content) => content.index === artifact.currentIndex) || null;
 	},
 
 	updateArtifactContent: (content: string) => {
 		const { artifact } = get();
 		if (!artifact) return;
 
-		const currentContent = artifact.contents.find(
-			(c) => c.index === artifact.currentIndex
-		);
+		const currentContent = artifact.contents.find((c) => c.index === artifact.currentIndex);
 		if (!currentContent) return;
 
-		const updatedContents = artifact.contents.map(
-			(c: ArtifactCodeContent | ArtifactTextContent) => {
-				if (c.index === artifact.currentIndex) {
-					if (c.type === "code") {
-						return { ...c, code: content };
-					} else {
-						return { ...c, fullMarkdown: content };
-					}
+		const updatedContents = artifact.contents.map((c: ArtifactCodeContent | ArtifactTextContent) => {
+			if (c.index === artifact.currentIndex) {
+				if (c.type === "code") {
+					return { ...c, code: content };
+				} else {
+					return { ...c, fullMarkdown: content };
 				}
-				return c;
 			}
-		);
+			return c;
+		});
 
 		set({
 			artifact: {
@@ -110,8 +99,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 				index: 1,
 				type: "text",
 				title: `Quick start ${type}`,
-				fullMarkdown:
-					"# Welcome to your canvas\n\nStart writing your content here...",
+				fullMarkdown: "# Welcome to your canvas\n\nStart writing your content here...",
 			};
 		}
 
@@ -193,7 +181,5 @@ h1 {
 }`,
 	};
 
-	return (
-		templates[language] || `// ${language} code\nconsole.log("Hello, Canvas!");`
-	);
+	return templates[language] || `// ${language} code\nconsole.log("Hello, Canvas!");`;
 }

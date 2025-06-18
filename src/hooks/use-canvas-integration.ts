@@ -1,10 +1,6 @@
 import { useCallback } from "react";
 import { useCanvasStore } from "../stores/canvas-store";
-import type {
-	ArtifactCodeContent,
-	ArtifactTextContent,
-	ProgrammingLanguage,
-} from "../types/canvas";
+import type { ArtifactCodeContent, ArtifactTextContent, ProgrammingLanguage } from "../types/canvas";
 
 export function useCanvasIntegration() {
 	const { setArtifact, setChatStarted, artifact } = useCanvasStore();
@@ -40,23 +36,14 @@ export function useCanvasIntegration() {
 			const hasHeaders = /^#+\s.+$/m.test(content);
 			const hasMultipleLines = content.split("\n").length > 2;
 			const hasSubstantialContent = content.length > 50; // Lower threshold
-			const hasStoryKeywords =
-				/\b(story|document|article|essay|chapter|tale|narrative)\b/i.test(
-					content
-				);
+			const hasStoryKeywords = /\b(story|document|article|essay|chapter|tale|narrative)\b/i.test(content);
 
 			// Create artifact if it has headers OR is substantial content OR contains story keywords
-			if (
-				(hasHeaders && hasMultipleLines) ||
-				(hasSubstantialContent && hasStoryKeywords) ||
-				content.length > 200
-			) {
+			if ((hasHeaders && hasMultipleLines) || (hasSubstantialContent && hasStoryKeywords) || content.length > 200) {
 				const textContent: ArtifactTextContent = {
 					index: 1,
 					type: "text",
-					title: hasHeaders
-						? content.match(/^#+\s(.+)$/m)?.[1]?.slice(0, 50) || "Document"
-						: "Story Document",
+					title: hasHeaders ? content.match(/^#+\s(.+)$/m)?.[1]?.slice(0, 50) || "Document" : "Story Document",
 					fullMarkdown: content,
 				};
 
@@ -80,9 +67,7 @@ export function useCanvasIntegration() {
 				detectAndCreateArtifact(response);
 			} else {
 				// Update existing artifact if it's a code or text continuation
-				const currentContent = artifact.contents.find(
-					(c) => c.index === artifact.currentIndex
-				);
+				const currentContent = artifact.contents.find((c) => c.index === artifact.currentIndex);
 				if (currentContent) {
 					const codeMatch = response.match(/```(\w+)?\n([\s\S]*?)```/);
 
@@ -96,9 +81,7 @@ export function useCanvasIntegration() {
 
 							setArtifact({
 								...artifact,
-								contents: artifact.contents.map((c) =>
-									c.index === artifact.currentIndex ? updatedContent : c
-								),
+								contents: artifact.contents.map((c) => (c.index === artifact.currentIndex ? updatedContent : c)),
 							});
 						}
 					}

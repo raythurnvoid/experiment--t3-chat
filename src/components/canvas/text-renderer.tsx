@@ -3,22 +3,13 @@ import type { Dispatch, SetStateAction } from "react";
 import { useCanvasStore } from "../../stores/canvas-store";
 import type { ArtifactTextContent } from "../../types/canvas";
 import "@blocknote/core/fonts/inter.css";
-import {
-	getDefaultReactSlashMenuItems,
-	SuggestionMenuController,
-	useCreateBlockNote,
-} from "@blocknote/react";
+import { getDefaultReactSlashMenuItems, SuggestionMenuController, useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Eye, EyeOff, Copy } from "lucide-react";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "../ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { MantineProvider } from "@mantine/core";
 
 const cleanText = (text: string) => {
@@ -36,12 +27,7 @@ function ViewRawText({
 		<TooltipProvider delayDuration={400}>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={() => setIsRawView((p) => !p)}
-						className="h-8 w-8 p-0"
-					>
+					<Button variant="outline" size="sm" onClick={() => setIsRawView((p) => !p)} className="h-8 w-8 p-0">
 						{isRawView ? (
 							<EyeOff className="w-4 h-4 text-gray-600 dark:text-gray-400" />
 						) : (
@@ -70,12 +56,7 @@ function CopyText({ content }: { content: string }) {
 		<TooltipProvider delayDuration={400}>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={handleCopy}
-						className="h-8 w-8 p-0"
-					>
+					<Button variant="outline" size="sm" onClick={handleCopy} className="h-8 w-8 p-0">
 						<Copy className="w-4 h-4 text-gray-600 dark:text-gray-400" />
 					</Button>
 				</TooltipTrigger>
@@ -103,8 +84,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 		setUpdateRenderedArtifactRequired,
 	} = useCanvasStore();
 
-	const currentContent =
-		getCurrentArtifactContent() as ArtifactTextContent | null;
+	const currentContent = getCurrentArtifactContent() as ArtifactTextContent | null;
 	const [rawMarkdown, setRawMarkdown] = useState("");
 	const [isRawView, setIsRawView] = useState(false);
 	// Use ref to track manual update progress without triggering re-renders
@@ -121,9 +101,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 			try {
 				manuallyUpdatingRef.current = true;
-				const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(
-					currentContent.fullMarkdown
-				);
+				const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(currentContent.fullMarkdown);
 				editor.replaceBlocks(editor.document, markdownAsBlocks);
 				setUpdateRenderedArtifactRequired(false);
 				manuallyUpdatingRef.current = false;
@@ -133,13 +111,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				setUpdateRenderedArtifactRequired(false);
 			}
 		})();
-	}, [
-		artifact,
-		currentContent,
-		updateRenderedArtifactRequired,
-		editor,
-		setUpdateRenderedArtifactRequired,
-	]);
+	}, [artifact, currentContent, updateRenderedArtifactRequired, editor, setUpdateRenderedArtifactRequired]);
 
 	// Handle raw view toggle with event handlers
 	const handleRawViewToggle = useCallback(
@@ -156,8 +128,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				// Leaving raw view - parse textarea back to blocks
 				try {
 					manuallyUpdatingRef.current = true;
-					const markdownAsBlocks =
-						await editor.tryParseMarkdownToBlocks(rawMarkdown);
+					const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(rawMarkdown);
 					editor.replaceBlocks(editor.document, markdownAsBlocks);
 					manuallyUpdatingRef.current = false;
 				} catch (error) {
@@ -180,11 +151,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	);
 
 	const onChange = async () => {
-		if (
-			isStreaming ||
-			manuallyUpdatingRef.current ||
-			updateRenderedArtifactRequired
-		) {
+		if (isStreaming || manuallyUpdatingRef.current || updateRenderedArtifactRequired) {
 			return;
 		}
 
@@ -203,10 +170,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	if (!currentContent) {
 		return (
 			<div
-				className={cn(
-					"TextRenderer-empty",
-					"flex items-center justify-center h-64 text-gray-500 dark:text-gray-400"
-				)}
+				className={cn("TextRenderer-empty", "flex items-center justify-center h-64 text-gray-500 dark:text-gray-400")}
 			>
 				No text content available
 			</div>
@@ -219,10 +183,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				{isHovering && (
 					<div className="absolute flex gap-2 top-2 right-4 z-10">
 						<CopyText content={currentContent.fullMarkdown} />
-						<ViewRawText
-							isRawView={isRawView}
-							setIsRawView={handleViewRawTextToggle}
-						/>
+						<ViewRawText isRawView={isRawView} setIsRawView={handleViewRawTextToggle} />
 					</div>
 				)}
 
@@ -235,18 +196,10 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 						disabled={isStreaming}
 					/>
 				) : (
-					<div
-						className={cn(
-							isStreaming && !firstTokenReceived ? "pulse-text" : "",
-							"w-full h-full"
-						)}
-					>
+					<div className={cn(isStreaming && !firstTokenReceived ? "pulse-text" : "", "w-full h-full")}>
 						<BlockNoteView
 							theme={
-								typeof window !== "undefined" &&
-								document.documentElement.classList.contains("dark")
-									? "dark"
-									: "light"
+								typeof window !== "undefined" && document.documentElement.classList.contains("dark") ? "dark" : "light"
 							}
 							formattingToolbar={false}
 							slashMenu={false}
@@ -255,11 +208,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 							editor={editor}
 						>
 							<SuggestionMenuController
-								getItems={async () =>
-									getDefaultReactSlashMenuItems(editor).filter(
-										(item) => item.group !== "Media"
-									)
-								}
+								getItems={async () => getDefaultReactSlashMenuItems(editor).filter((item) => item.group !== "Media")}
 								triggerCharacter={"/"}
 							/>
 						</BlockNoteView>

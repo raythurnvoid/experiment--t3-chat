@@ -7,13 +7,7 @@ import { ChevronLeft, ChevronRight, Edit3, Save, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 export function ArtifactRenderer() {
-	const {
-		artifact,
-		getCurrentArtifactContent,
-		isEditing,
-		setIsEditing,
-		isStreaming,
-	} = useCanvasStore();
+	const { artifact, getCurrentArtifactContent, isEditing, setIsEditing, isStreaming } = useCanvasStore();
 
 	const [isHovering, setIsHovering] = useState(false);
 	const currentContent = getCurrentArtifactContent();
@@ -21,15 +15,10 @@ export function ArtifactRenderer() {
 	if (!artifact || !currentContent) {
 		return (
 			<div
-				className={cn(
-					"ArtifactRenderer-empty",
-					"flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900"
-				)}
+				className={cn("ArtifactRenderer-empty", "flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900")}
 			>
 				<div className={cn("ArtifactRenderer-empty-content", "text-center")}>
-					<div className={cn("ArtifactRenderer-empty-icon", "text-6xl mb-4")}>
-						🎨
-					</div>
+					<div className={cn("ArtifactRenderer-empty-icon", "text-6xl mb-4")}>🎨</div>
 					<h2
 						className={cn(
 							"ArtifactRenderer-empty-title",
@@ -38,12 +27,7 @@ export function ArtifactRenderer() {
 					>
 						Canvas is ready
 					</h2>
-					<p
-						className={cn(
-							"ArtifactRenderer-empty-description",
-							"text-gray-500 dark:text-gray-400"
-						)}
-					>
+					<p className={cn("ArtifactRenderer-empty-description", "text-gray-500 dark:text-gray-400")}>
 						Start a conversation to create content on the canvas
 					</p>
 				</div>
@@ -51,21 +35,13 @@ export function ArtifactRenderer() {
 		);
 	}
 
-	const isBackwardsDisabled =
-		artifact.contents.length === 1 || currentContent.index === 1 || isStreaming;
+	const isBackwardsDisabled = artifact.contents.length === 1 || currentContent.index === 1 || isStreaming;
 
 	const isForwardDisabled =
-		artifact.contents.length === 1 ||
-		currentContent.index === artifact.contents.length ||
-		isStreaming;
+		artifact.contents.length === 1 || currentContent.index === artifact.contents.length || isStreaming;
 
 	return (
-		<div
-			className={cn(
-				"ArtifactRenderer",
-				"relative w-full h-full bg-white dark:bg-gray-900 flex flex-col"
-			)}
-		>
+		<div className={cn("ArtifactRenderer", "relative w-full h-full bg-white dark:bg-gray-900 flex flex-col")}>
 			{/* Header */}
 			<div
 				className={cn(
@@ -73,23 +49,10 @@ export function ArtifactRenderer() {
 					"border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800"
 				)}
 			>
-				<div
-					className={cn(
-						"ArtifactRenderer-header-content",
-						"flex items-center justify-between"
-					)}
-				>
-					<div
-						className={cn(
-							"ArtifactRenderer-header-info",
-							"flex items-center space-x-3"
-						)}
-					>
+				<div className={cn("ArtifactRenderer-header-content", "flex items-center justify-between")}>
+					<div className={cn("ArtifactRenderer-header-info", "flex items-center space-x-3")}>
 						<h3
-							className={cn(
-								"ArtifactRenderer-header-title",
-								"text-lg font-semibold text-gray-900 dark:text-gray-100"
-							)}
+							className={cn("ArtifactRenderer-header-title", "text-lg font-semibold text-gray-900 dark:text-gray-100")}
 						>
 							{currentContent.title}
 						</h3>
@@ -109,20 +72,10 @@ export function ArtifactRenderer() {
 						</div>
 					</div>
 
-					<div
-						className={cn(
-							"ArtifactRenderer-header-controls",
-							"flex items-center space-x-2"
-						)}
-					>
+					<div className={cn("ArtifactRenderer-header-controls", "flex items-center space-x-2")}>
 						{/* Version navigation */}
 						{artifact.contents.length > 1 && (
-							<div
-								className={cn(
-									"ArtifactRenderer-nav",
-									"flex items-center space-x-1"
-								)}
-							>
+							<div className={cn("ArtifactRenderer-nav", "flex items-center space-x-1")}>
 								<Button
 									variant="outline"
 									size="sm"
@@ -131,12 +84,7 @@ export function ArtifactRenderer() {
 								>
 									<ChevronLeft className="h-4 w-4" />
 								</Button>
-								<span
-									className={cn(
-										"ArtifactRenderer-nav-indicator",
-										"text-sm text-gray-500 dark:text-gray-400"
-									)}
-								>
+								<span className={cn("ArtifactRenderer-nav-indicator", "text-sm text-gray-500 dark:text-gray-400")}>
 									{currentContent.index} / {artifact.contents.length}
 								</span>
 								<Button
@@ -152,12 +100,7 @@ export function ArtifactRenderer() {
 
 						{/* Edit controls */}
 						{isEditing ? (
-							<div
-								className={cn(
-									"ArtifactRenderer-edit-controls",
-									"flex items-center space-x-2"
-								)}
-							>
+							<div className={cn("ArtifactRenderer-edit-controls", "flex items-center space-x-2")}>
 								<Button
 									variant="outline"
 									size="sm"

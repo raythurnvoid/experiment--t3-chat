@@ -3,16 +3,8 @@
 import { useEffect } from "react";
 import { useMessage } from "@assistant-ui/react";
 import { useCanvasStore } from "../stores/canvas-store";
-import {
-	isToolCallContentPart,
-	isCreateArtifactCall,
-	parseCreateArtifactArgs,
-} from "../types/artifact-schemas";
-import type {
-	ArtifactCodeContent,
-	ArtifactTextContent,
-	ProgrammingLanguage,
-} from "../types/canvas";
+import { isToolCallContentPart, isCreateArtifactCall, parseCreateArtifactArgs } from "../types/artifact-schemas";
+import type { ArtifactCodeContent, ArtifactTextContent, ProgrammingLanguage } from "../types/canvas";
 
 /**
  * Watches the current streaming assistant message.
@@ -84,14 +76,8 @@ export function useArtifactToolDetection() {
 
 					// Check if this is an update to existing artifact or new one
 					if (artifact && artifact.contents.length > 0) {
-						const currentContent = artifact.contents.find(
-							(c) => c.index === artifact.currentIndex
-						);
-						if (
-							currentContent &&
-							currentContent.type === "code" &&
-							currentContent.title === codeContent.title
-						) {
+						const currentContent = artifact.contents.find((c) => c.index === artifact.currentIndex);
+						if (currentContent && currentContent.type === "code" && currentContent.title === codeContent.title) {
 							// Update existing content during streaming
 							if (currentContent.code !== codeContent.code) {
 								updateArtifactContent(codeContent.code);
@@ -119,14 +105,8 @@ export function useArtifactToolDetection() {
 
 					// Check if this is an update to existing artifact or new one
 					if (artifact && artifact.contents.length > 0) {
-						const currentContent = artifact.contents.find(
-							(c) => c.index === artifact.currentIndex
-						);
-						if (
-							currentContent &&
-							currentContent.type === "text" &&
-							currentContent.title === textContent.title
-						) {
+						const currentContent = artifact.contents.find((c) => c.index === artifact.currentIndex);
+						if (currentContent && currentContent.type === "text" && currentContent.title === textContent.title) {
 							// Update existing content during streaming
 							if (currentContent.fullMarkdown !== textContent.fullMarkdown) {
 								updateArtifactContent(textContent.fullMarkdown);

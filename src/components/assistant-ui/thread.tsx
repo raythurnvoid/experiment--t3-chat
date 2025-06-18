@@ -90,9 +90,7 @@ const ThreadWelcomeSuggestions: FC = () => {
 				method="replace"
 				autoSend
 			>
-				<span className="line-clamp-2 text-ellipsis text-sm font-semibold">
-					What is the weather in Tokyo?
-				</span>
+				<span className="line-clamp-2 text-ellipsis text-sm font-semibold">What is the weather in Tokyo?</span>
 			</ThreadPrimitive.Suggestion>
 			<ThreadPrimitive.Suggestion
 				className="hover:bg-muted/80 flex max-w-sm grow basis-0 flex-col items-center justify-center rounded-lg border p-3 transition-colors ease-in"
@@ -128,11 +126,7 @@ const ComposerAction: FC = () => {
 		<>
 			<ThreadPrimitive.If running={false}>
 				<ComposerPrimitive.Send asChild>
-					<TooltipIconButton
-						tooltip="Send"
-						variant="default"
-						className="my-2.5 size-8 p-2 transition-opacity ease-in"
-					>
+					<TooltipIconButton tooltip="Send" variant="default" className="my-2.5 size-8 p-2 transition-opacity ease-in">
 						<SendHorizontalIcon />
 					</TooltipIconButton>
 				</ComposerPrimitive.Send>
@@ -243,17 +237,11 @@ const AssistantActionBar: FC = () => {
 	);
 };
 
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
-	className,
-	...rest
-}) => {
+const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({ className, ...rest }) => {
 	return (
 		<BranchPickerPrimitive.Root
 			hideWhenSingleBranch
-			className={cn(
-				"text-muted-foreground inline-flex items-center text-xs",
-				className
-			)}
+			className={cn("text-muted-foreground inline-flex items-center text-xs", className)}
 			{...rest}
 		>
 			<BranchPickerPrimitive.Previous asChild>
@@ -275,13 +263,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
 
 const CircleStopIcon = () => {
 	return (
-		<svg
-			xmlns="http://www.w3.org/2000/svg"
-			viewBox="0 0 16 16"
-			fill="currentColor"
-			width="16"
-			height="16"
-		>
+		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
 			<rect width="10" height="10" x="3" y="3" rx="2" />
 		</svg>
 	);

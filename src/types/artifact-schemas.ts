@@ -7,17 +7,9 @@ export const createArtifactArgsSchema = z.object({
 	language: z
 		.string()
 		.optional()
-		.describe(
-			"Programming language for code artifacts (e.g., 'javascript', 'python', 'typescript')"
-		),
-	code: z
-		.string()
-		.optional()
-		.describe("The code content (required when type is 'code')"),
-	markdown: z
-		.string()
-		.optional()
-		.describe("The markdown/text content (required when type is 'text')"),
+		.describe("Programming language for code artifacts (e.g., 'javascript', 'python', 'typescript')"),
+	code: z.string().optional().describe("The code content (required when type is 'code')"),
+	markdown: z.string().optional().describe("The markdown/text content (required when type is 'text')"),
 });
 
 // Shared schema for tool call content parts (based on AI SDK spec)
@@ -33,9 +25,7 @@ export type CreateArtifactArgs = z.infer<typeof createArtifactArgsSchema>;
 export type ToolCallContentPart = z.infer<typeof toolCallContentPartSchema>;
 
 // Type guard functions with runtime validation
-export function isToolCallContentPart(
-	part: unknown
-): part is ToolCallContentPart {
+export function isToolCallContentPart(part: unknown): part is ToolCallContentPart {
 	return toolCallContentPartSchema.safeParse(part).success;
 }
 
@@ -43,9 +33,7 @@ export function isCreateArtifactCall(part: ToolCallContentPart): boolean {
 	return part.toolName === "createArtifact";
 }
 
-export function parseCreateArtifactArgs(
-	args: unknown
-): CreateArtifactArgs | null {
+export function parseCreateArtifactArgs(args: unknown): CreateArtifactArgs | null {
 	const result = createArtifactArgsSchema.safeParse(args);
 	return result.success ? result.data : null;
 }
