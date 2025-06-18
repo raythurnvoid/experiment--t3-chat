@@ -8,7 +8,7 @@ import { Button } from "../components/ui/button";
 import { PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useCanvasStore } from "../stores/canvas-store";
-import { useArtifactToolDetection } from "../hooks/use-artifact-tool-detection";
+import { CreateArtifactToolUI } from "@/components/CreateArtifactHook.tsx";
 
 export const Route = createFileRoute({
 	component: Chat,
@@ -17,9 +17,6 @@ export const Route = createFileRoute({
 function ChatContent() {
 	const { artifact } = useCanvasStore();
 	const [chatCollapsed, setChatCollapsed] = useState(false);
-
-	// Listen for explicit tool calls from the server at the page level
-	useArtifactToolDetection();
 
 	// Derive chatStarted from whether there are any messages
 	const chatStarted = useThread((thread) => thread.messages.length > 0);
@@ -127,6 +124,7 @@ function Chat() {
 	return (
 		<AssistantRuntimeProvider runtime={runtime}>
 			<ChatContent />
+			<CreateArtifactToolUI />
 		</AssistantRuntimeProvider>
 	);
 }

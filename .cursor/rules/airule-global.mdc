@@ -21,3 +21,7 @@ You can however write inside [+personal/+ai/](mdc:+personal/+ai).
 # Code guidelines
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
+
+The code of the app is located at [src/](mdc:src).
+
+The [src/server/](mdc:src/server) folder contains the Hono server code.

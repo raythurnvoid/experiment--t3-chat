@@ -5,7 +5,7 @@ import {
 	MessagePrimitive,
 	ThreadPrimitive,
 } from "@assistant-ui/react";
-import type { FC } from "react";
+import { memo, type FC } from "react";
 import {
 	ArrowDownIcon,
 	CheckIcon,
@@ -19,10 +19,10 @@ import {
 import { cn } from "../../lib/utils";
 
 import { Button } from "../ui/button";
-import { ArtifactAwareText } from "./artifact-aware-text";
 import { TooltipIconButton } from "./tooltip-icon-button";
+import { MarkdownText } from "./markdown-text.tsx";
 
-export const Thread: FC = () => {
+export const Thread: FC = memo(() => {
 	return (
 		<ThreadPrimitive.Root className="bg-white dark:bg-black text-black dark:text-white">
 			<ThreadPrimitive.Viewport className="flex flex-col items-center px-4 pt-8">
@@ -47,9 +47,9 @@ export const Thread: FC = () => {
 			</ThreadPrimitive.Viewport>
 		</ThreadPrimitive.Root>
 	);
-};
+});
 
-const ThreadScrollToBottom: FC = () => {
+const ThreadScrollToBottom: FC = memo(() => {
 	return (
 		<ThreadPrimitive.ScrollToBottom asChild>
 			<TooltipIconButton
@@ -61,9 +61,9 @@ const ThreadScrollToBottom: FC = () => {
 			</TooltipIconButton>
 		</ThreadPrimitive.ScrollToBottom>
 	);
-};
+});
 
-const ThreadWelcome: FC = () => {
+const ThreadWelcome: FC = memo(() => {
 	return (
 		<ThreadPrimitive.Empty>
 			<div className="flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col">
@@ -74,9 +74,9 @@ const ThreadWelcome: FC = () => {
 			</div>
 		</ThreadPrimitive.Empty>
 	);
-};
+});
 
-const ThreadWelcomeSuggestions: FC = () => {
+const ThreadWelcomeSuggestions: FC = memo(() => {
 	return (
 		<div className="mt-3 flex w-full items-stretch justify-center gap-4">
 			<ThreadPrimitive.Suggestion
@@ -101,9 +101,9 @@ const ThreadWelcomeSuggestions: FC = () => {
 			</ThreadPrimitive.Suggestion>
 		</div>
 	);
-};
+});
 
-const Composer: FC = () => {
+const Composer: FC = memo(() => {
 	return (
 		<ComposerPrimitive.Root className="focus-within:border-ring/20 flex w-full flex-wrap items-end rounded-lg border bg-inherit px-2.5 shadow-sm transition-colors ease-in">
 			<ComposerPrimitive.Input
@@ -116,9 +116,9 @@ const Composer: FC = () => {
 			<ComposerAction />
 		</ComposerPrimitive.Root>
 	);
-};
+});
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC = memo(() => {
 	return (
 		<>
 			<ThreadPrimitive.If running={false}>
@@ -145,9 +145,9 @@ const ComposerAction: FC = () => {
 			</ThreadPrimitive.If>
 		</>
 	);
-};
+});
 
-const UserMessage: FC = () => {
+const UserMessage: FC = memo(() => {
 	return (
 		<MessagePrimitive.Root className="grid w-full max-w-[var(--thread-max-width)] auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] gap-y-2 py-4 [&:where(>*)]:col-start-2">
 			<UserActionBar />
@@ -159,9 +159,9 @@ const UserMessage: FC = () => {
 			<BranchPicker className="col-span-full col-start-1 row-start-3 -mr-1 justify-end" />
 		</MessagePrimitive.Root>
 	);
-};
+});
 
-const UserActionBar: FC = () => {
+const UserActionBar: FC = memo(() => {
 	return (
 		<ActionBarPrimitive.Root
 			hideWhenRunning
@@ -175,9 +175,9 @@ const UserActionBar: FC = () => {
 			</ActionBarPrimitive.Edit>
 		</ActionBarPrimitive.Root>
 	);
-};
+});
 
-const EditComposer: FC = () => {
+const EditComposer: FC = memo(() => {
 	return (
 		<ComposerPrimitive.Root className="bg-muted my-4 flex w-full max-w-[var(--thread-max-width)] flex-col gap-2 rounded-xl">
 			<ComposerPrimitive.Input
@@ -195,13 +195,13 @@ const EditComposer: FC = () => {
 			</div>
 		</ComposerPrimitive.Root>
 	);
-};
+});
 
-const AssistantMessage: FC = () => {
+const AssistantMessage: FC = memo(() => {
 	return (
 		<MessagePrimitive.Root className="relative grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_auto_1fr] grid-rows-[auto_1fr] py-4">
 			<div className="text-foreground col-span-2 col-start-2 row-start-1 my-1.5 max-w-[calc(var(--thread-max-width)*0.8)] break-words leading-7">
-				<ArtifactAwareText />
+				<MessagePrimitive.Content components={{ Text: MarkdownText }} />
 			</div>
 
 			<AssistantActionBar />
@@ -209,9 +209,9 @@ const AssistantMessage: FC = () => {
 			<BranchPicker className="col-start-2 row-start-2 -ml-2 mr-2" />
 		</MessagePrimitive.Root>
 	);
-};
+});
 
-const AssistantActionBar: FC = () => {
+const AssistantActionBar: FC = memo(() => {
 	return (
 		<ActionBarPrimitive.Root
 			hideWhenRunning
@@ -236,39 +236,38 @@ const AssistantActionBar: FC = () => {
 			</ActionBarPrimitive.Reload>
 		</ActionBarPrimitive.Root>
 	);
-};
+});
 
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
-	className,
-	...rest
-}) => {
-	return (
-		<BranchPickerPrimitive.Root
-			hideWhenSingleBranch
-			className={cn(
-				"text-muted-foreground inline-flex items-center text-xs",
-				className
-			)}
-			{...rest}
-		>
-			<BranchPickerPrimitive.Previous asChild>
-				<TooltipIconButton tooltip="Previous">
-					<ChevronLeftIcon />
-				</TooltipIconButton>
-			</BranchPickerPrimitive.Previous>
-			<span className="font-medium">
-				<BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-			</span>
-			<BranchPickerPrimitive.Next asChild>
-				<TooltipIconButton tooltip="Next">
-					<ChevronRightIcon />
-				</TooltipIconButton>
-			</BranchPickerPrimitive.Next>
-		</BranchPickerPrimitive.Root>
-	);
-};
+const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = memo(
+	({ className, ...rest }) => {
+		return (
+			<BranchPickerPrimitive.Root
+				hideWhenSingleBranch
+				className={cn(
+					"text-muted-foreground inline-flex items-center text-xs",
+					className
+				)}
+				{...rest}
+			>
+				<BranchPickerPrimitive.Previous asChild>
+					<TooltipIconButton tooltip="Previous">
+						<ChevronLeftIcon />
+					</TooltipIconButton>
+				</BranchPickerPrimitive.Previous>
+				<span className="font-medium">
+					<BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+				</span>
+				<BranchPickerPrimitive.Next asChild>
+					<TooltipIconButton tooltip="Next">
+						<ChevronRightIcon />
+					</TooltipIconButton>
+				</BranchPickerPrimitive.Next>
+			</BranchPickerPrimitive.Root>
+		);
+	}
+);
 
-const CircleStopIcon = () => {
+const CircleStopIcon = memo(() => {
 	return (
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
@@ -280,4 +279,4 @@ const CircleStopIcon = () => {
 			<rect width="10" height="10" x="3" y="3" rx="2" />
 		</svg>
 	);
-};
+});

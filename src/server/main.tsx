@@ -120,7 +120,9 @@ app.post("/api/chat", async (c) => {
 						"- Generating markdown content " +
 						"- Any substantial text output that would benefit from being editable",
 					parameters: createArtifactArgsSchema,
-					// No execute function - this is handled client-side
+					execute: async () => {
+						return true;
+					},
 				}),
 			},
 			toolCallStreaming: true,
