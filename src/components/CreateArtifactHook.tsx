@@ -1,23 +1,16 @@
-import {
-	makeAssistantToolUI,
-	type ToolCallContentPartProps,
-} from "@assistant-ui/react";
-import { useCanvasStore } from "../stores/canvas-store";
-import type {
-	ArtifactCodeContent,
-	ArtifactTextContent,
-	ProgrammingLanguage,
-} from "../types/canvas";
-import { parseCreateArtifactArgs } from "../types/artifact-schemas";
 import { memo, useEffect } from "react";
+import { makeAssistantToolUI } from "@assistant-ui/react";
+import type { ToolCallContentPartProps } from "@assistant-ui/react";
+import { useCanvasStore } from "../stores/canvas-store";
+import type { ArtifactTextContent } from "../types/canvas";
+import { parseCreateArtifactArgs } from "../types/artifact-schemas";
 
+// Define props interface for better typing
 type CreateArtifactToolProps = ToolCallContentPartProps<
 	{
-		type: "code" | "text";
+		type: "text";
 		title?: string;
-		code?: string;
-		language?: string;
-		markdown?: string;
+		markdown: string;
 	},
 	void
 >;
@@ -33,22 +26,10 @@ function CreateArtifactToolRender({ args, status }: CreateArtifactToolProps) {
 			return;
 		}
 
-		const { type, title, code, language, markdown } = parsedArgs;
+		const { type, title, markdown } = parsedArgs;
 
 		try {
-			if (type === "code" && code && language) {
-				const codeContent: ArtifactCodeContent = {
-					index: 0,
-					type: "code",
-					title: title || "Code Snippet",
-					code,
-					language: language as ProgrammingLanguage,
-				};
-				setArtifact({
-					currentIndex: 0,
-					contents: [codeContent],
-				});
-			} else if (type === "text" && markdown) {
+			if (type === "text" && markdown) {
 				const textContent: ArtifactTextContent = {
 					index: 0,
 					type: "text",
@@ -79,11 +60,9 @@ function CreateArtifactToolRender({ args, status }: CreateArtifactToolProps) {
 export const CreateArtifactToolUI = memo(
 	makeAssistantToolUI<
 		{
-			type: "code" | "text";
+			type: "text";
 			title?: string;
-			code?: string;
-			language?: string;
-			markdown?: string;
+			markdown: string;
 		},
 		void
 	>({

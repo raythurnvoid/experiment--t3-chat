@@ -4,44 +4,24 @@ import type { ThreadAssistantContentPart } from "@assistant-ui/react";
 // Enhanced schema for createArtifact tool arguments with better validation
 export const createArtifactArgsSchema = z
 	.object({
-		type: z.enum(["code", "text"]).describe("Type of artifact to create"),
+		type: z.enum(["text"]).describe("Type of artifact to create"),
 		title: z
 			.string()
 			.min(1)
 			.optional()
 			.describe("Optional title for the artifact"),
-		language: z
-			.string()
-			.min(1)
-			.optional()
-			.describe(
-				"Programming language for code artifacts (e.g., 'javascript', 'python', 'typescript')"
-			),
-		code: z
-			.string()
-			.min(1)
-			.optional()
-			.describe("The code content (required when type is 'code')"),
-		markdown: z
-			.string()
-			.min(1)
-			.optional()
-			.describe("The markdown/text content (required when type is 'text')"),
+		markdown: z.string().min(1).describe("The markdown/text content"),
 	})
-	// Add refined validation to ensure required fields are present based on type
+	// Add refined validation to ensure required fields are present
 	.refine(
 		(data) => {
-			if (data.type === "code") {
-				return data.code !== undefined && data.code.trim().length > 0;
-			}
 			if (data.type === "text") {
 				return data.markdown !== undefined && data.markdown.trim().length > 0;
 			}
 			return true;
 		},
 		{
-			message:
-				"Code artifacts require 'code' field, text artifacts require 'markdown' field",
+			message: "Text artifacts require 'markdown' field",
 			path: ["type"],
 		}
 	);

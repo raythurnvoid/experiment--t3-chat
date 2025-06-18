@@ -1,24 +1,7 @@
-export type ProgrammingLanguage =
-	| "javascript"
-	| "typescript"
-	| "python"
-	| "html"
-	| "css"
-	| "java"
-	| "cpp"
-	| "rust"
-	| "go";
-
 export interface ArtifactContent {
 	index: number;
 	title: string;
-	type: "text" | "code";
-}
-
-export interface ArtifactCodeContent extends ArtifactContent {
-	type: "code";
-	code: string;
-	language: ProgrammingLanguage;
+	type: "text";
 }
 
 export interface ArtifactTextContent extends ArtifactContent {
@@ -28,7 +11,7 @@ export interface ArtifactTextContent extends ArtifactContent {
 
 export interface Artifact {
 	currentIndex: number;
-	contents: (ArtifactCodeContent | ArtifactTextContent)[];
+	contents: ArtifactTextContent[];
 }
 
 export interface CanvasState {

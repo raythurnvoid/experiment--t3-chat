@@ -113,12 +113,12 @@ app.post("/api/chat", async (c) => {
 				}),
 				createArtifact: tool({
 					description:
-						"Create a code or text artifact that should be displayed in a separate pane. " +
+						"Create a text artifact that should be displayed in a separate pane. " +
 						"Use this when the user asks for: " +
-						"- Writing code (any programming language) " +
 						"- Creating documents, articles, or stories " +
 						"- Generating markdown content " +
-						"- Any substantial text output that would benefit from being editable",
+						"- Any substantial text output that would benefit from being editable " +
+						"- Writing essays, reports, or long-form content",
 					parameters: createArtifactArgsSchema,
 					execute: async () => {
 						return true;

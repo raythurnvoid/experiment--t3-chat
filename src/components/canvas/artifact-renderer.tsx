@@ -1,6 +1,5 @@
 import { useCanvasStore } from "../../stores/canvas-store";
 import { useThread } from "@assistant-ui/react";
-import { CodeRenderer } from "./code-renderer";
 import { TextRenderer } from "./text-renderer";
 import { useState } from "react";
 import { Button } from "../ui/button";
@@ -27,7 +26,7 @@ export function ArtifactRenderer() {
 			>
 				<div className={cn("ArtifactRenderer-empty-content", "text-center")}>
 					<div className={cn("ArtifactRenderer-empty-icon", "text-6xl mb-4")}>
-						🎨
+						📝
 					</div>
 					<h2
 						className={cn(
@@ -98,13 +97,7 @@ export function ArtifactRenderer() {
 								"flex items-center space-x-1 text-sm text-gray-500 dark:text-gray-400"
 							)}
 						>
-							<span>{currentContent.type === "code" ? "Code" : "Text"}</span>
-							{currentContent.type === "code" && (
-								<>
-									<span>•</span>
-									<span className="capitalize">{currentContent.language}</span>
-								</>
-							)}
+							<span>Text</span>
 						</div>
 					</div>
 
@@ -197,11 +190,7 @@ export function ArtifactRenderer() {
 				onMouseEnter={() => setIsHovering(true)}
 				onMouseLeave={() => setIsHovering(false)}
 			>
-				{currentContent.type === "code" ? (
-					<CodeRenderer isHovering={isHovering} />
-				) : (
-					<TextRenderer isHovering={isHovering} />
-				)}
+				<TextRenderer isHovering={isHovering} />
 			</div>
 		</div>
 	);
