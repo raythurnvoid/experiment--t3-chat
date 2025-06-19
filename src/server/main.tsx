@@ -7,6 +7,7 @@ import { cors } from "hono/cors";
 import { stream } from "hono/streaming";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../types/artifact-schemas";
+import { randomUUID } from "crypto";
 
 // Load environment variables
 dotenv.config({ path: ".env.local" });
@@ -120,8 +121,28 @@ app.post("/api/chat", async (c) => {
 						"- Any substantial text output that would benefit from being editable " +
 						"- Writing essays, reports, or long-form content",
 					parameters: createArtifactArgsSchema,
-					execute: async () => {
-						return true;
+					execute: async (args) => {
+						try {
+							// Generate a unique UUID for this artifact
+							const artifactId = randomUUID();
+
+							console.log(`🆔 Generated artifact UUID: ${artifactId}`);
+							console.log(`📝 Artifact title: ${args.title || "Untitled"}`);
+							console.log(
+								`📄 Content length: ${args.markdown.length} characters`
+							);
+
+							return {
+								success: true,
+								artifactId,
+							};
+						} catch (error) {
+							console.error("❌ Error creating artifact:", error);
+							return {
+								success: false,
+								error: "Failed to create artifact",
+							};
+						}
 					},
 				}),
 			},

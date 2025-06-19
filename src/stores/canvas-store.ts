@@ -7,22 +7,38 @@ import type {
 
 interface CanvasStore extends CanvasState {
 	updateRenderedArtifactRequired: boolean;
-	setArtifact: (artifact: Artifact | null) => void;
+	setArtifact: (artifact: Artifact) => void;
+	setCurrentArtifactId: (id: string | null) => void;
 	setIsEditing: (isEditing: boolean) => void;
 	setUpdateRenderedArtifactRequired: (required: boolean) => void;
-	updateArtifactContent: (content: string) => void;
+	updateArtifactContent: (artifactId: string, content: string) => void;
+	getCurrentArtifact: () => Artifact | null;
 	getCurrentArtifactContent: () => ArtifactTextContent | null;
+	getArtifactById: (id: string) => Artifact | null;
 	createQuickStart: () => void;
 }
 
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
-	artifact: null,
+	artifacts: new Map<string, Artifact>(),
+	currentArtifactId: null,
 	isEditing: false,
 	updateRenderedArtifactRequired: false,
 
 	setArtifact: (artifact) => {
+		set((state) => {
+			const newArtifacts = new Map(state.artifacts);
+			newArtifacts.set(artifact.id, artifact);
+			return {
+				artifacts: newArtifacts,
+				currentArtifactId: artifact.id,
+				updateRenderedArtifactRequired: true,
+			};
+		});
+	},
+
+	setCurrentArtifactId: (id) => {
 		set({
-			artifact,
+			currentArtifactId: id,
 			updateRenderedArtifactRequired: true,
 		});
 	},
@@ -31,8 +47,15 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 	setUpdateRenderedArtifactRequired: (required) =>
 		set({ updateRenderedArtifactRequired: required }),
 
+	getCurrentArtifact: () => {
+		const { artifacts, currentArtifactId } = get();
+		if (!currentArtifactId) return null;
+		return artifacts.get(currentArtifactId) || null;
+	},
+
 	getCurrentArtifactContent: () => {
-		const { artifact } = get();
+		const { getCurrentArtifact } = get();
+		const artifact = getCurrentArtifact();
 		if (!artifact || artifact.contents.length === 0) return null;
 		return (
 			artifact.contents.find(
@@ -41,32 +64,47 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 		);
 	},
 
-	updateArtifactContent: (content: string) => {
-		const { artifact } = get();
-		if (!artifact) return;
+	getArtifactById: (id) => {
+		const { artifacts } = get();
+		return artifacts.get(id) || null;
+	},
 
-		const currentContent = artifact.contents.find(
-			(c) => c.index === artifact.currentIndex
-		);
-		if (!currentContent) return;
+	updateArtifactContent: (artifactId: string, content: string) => {
+		set((state) => {
+			const artifact = state.artifacts.get(artifactId);
+			if (!artifact) return state;
 
-		const updatedContents = artifact.contents.map((c: ArtifactTextContent) => {
-			if (c.index === artifact.currentIndex) {
-				return { ...c, fullMarkdown: content };
-			}
-			return c;
-		});
+			const currentContent = artifact.contents.find(
+				(c) => c.index === artifact.currentIndex
+			);
+			if (!currentContent) return state;
 
-		set({
-			artifact: {
+			const updatedContents = artifact.contents.map(
+				(c: ArtifactTextContent) => {
+					if (c.index === artifact.currentIndex) {
+						return { ...c, fullMarkdown: content };
+					}
+					return c;
+				}
+			);
+
+			const updatedArtifact = {
 				...artifact,
 				contents: updatedContents,
-			},
-			updateRenderedArtifactRequired: true,
+			};
+
+			const newArtifacts = new Map(state.artifacts);
+			newArtifacts.set(artifactId, updatedArtifact);
+
+			return {
+				artifacts: newArtifacts,
+				updateRenderedArtifactRequired: true,
+			};
 		});
 	},
 
 	createQuickStart: () => {
+		const artifactId = `quickstart-${Date.now()}`;
 		const newContent: ArtifactTextContent = {
 			index: 1,
 			type: "text",
@@ -74,12 +112,22 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 			fullMarkdown: "# New Document\n\nStart writing your content here...",
 		};
 
-		set({
-			artifact: {
-				currentIndex: 1,
-				contents: [newContent],
-			},
-			updateRenderedArtifactRequired: true,
+		const newArtifact: Artifact = {
+			id: artifactId,
+			title: "Quick Start Document",
+			currentIndex: 1,
+			contents: [newContent],
+			createdAt: new Date().toISOString(),
+		};
+
+		set((state) => {
+			const newArtifacts = new Map(state.artifacts);
+			newArtifacts.set(artifactId, newArtifact);
+			return {
+				artifacts: newArtifacts,
+				currentArtifactId: artifactId,
+				updateRenderedArtifactRequired: true,
+			};
 		});
 	},
 }));

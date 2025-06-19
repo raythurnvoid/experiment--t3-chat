@@ -10,12 +10,16 @@ export interface ArtifactTextContent extends ArtifactContent {
 }
 
 export interface Artifact {
+	id: string; // Server-generated UUID
 	currentIndex: number;
 	contents: ArtifactTextContent[];
+	createdAt: string; // ISO date string
+	title: string; // Display title for the artifact
 }
 
 export interface CanvasState {
-	artifact: Artifact | null;
+	artifacts: Map<string, Artifact>; // Map of UUID to Artifact
+	currentArtifactId: string | null; // Currently viewed artifact
 	isEditing: boolean;
 	updateRenderedArtifactRequired: boolean;
 }

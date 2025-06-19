@@ -7,16 +7,22 @@ import { ChevronLeft, ChevronRight, Edit3, Save, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 export function ArtifactRenderer() {
-	const { artifact, getCurrentArtifactContent, isEditing, setIsEditing } =
-		useCanvasStore();
+	const {
+		getCurrentArtifact,
+		getCurrentArtifactContent,
+		isEditing,
+		setIsEditing,
+		currentArtifactId,
+	} = useCanvasStore();
 
 	const thread = useThread();
 	const isStreaming = thread.isRunning;
 
 	const [isHovering, setIsHovering] = useState(false);
+	const artifact = getCurrentArtifact();
 	const currentContent = getCurrentArtifactContent();
 
-	if (!artifact || !currentContent) {
+	if (!artifact || !currentContent || !currentArtifactId) {
 		return (
 			<div
 				className={cn(
@@ -89,7 +95,7 @@ export function ArtifactRenderer() {
 								"text-lg font-semibold text-gray-900 dark:text-gray-100"
 							)}
 						>
-							{currentContent.title}
+							{artifact.title}
 						</h3>
 						<div
 							className={cn(
@@ -98,6 +104,8 @@ export function ArtifactRenderer() {
 							)}
 						>
 							<span>Text</span>
+							<span>•</span>
+							<span>ID: {artifact.id.substring(0, 8)}...</span>
 						</div>
 					</div>
 

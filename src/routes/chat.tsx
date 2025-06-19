@@ -15,16 +15,19 @@ export const Route = createFileRoute({
 });
 
 function ChatContent() {
-	const { artifact } = useCanvasStore();
+	const { getCurrentArtifact } = useCanvasStore();
 	const [chatCollapsed, setChatCollapsed] = useState(false);
 
 	// Derive chatStarted from whether there are any messages
 	const chatStarted = useThread((thread) => thread.messages.length > 0);
 
+	// Get current artifact to determine layout
+	const currentArtifact = getCurrentArtifact();
+
 	return (
 		<div className={cn("Chat", "h-full")}>
 			{/* Show simple layout when no chat started and no artifact */}
-			{!chatStarted && !artifact ? (
+			{!chatStarted && !currentArtifact ? (
 				<div className={cn("Chat-initial-layout", "h-full flex")}>
 					{/* Chat Panel */}
 					<div

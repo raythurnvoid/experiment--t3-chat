@@ -26,8 +26,16 @@ export const createArtifactArgsSchema = z
 		}
 	);
 
+// Schema for the tool result that includes the generated UUID
+export const createArtifactResultSchema = z.object({
+	success: z.boolean(),
+	artifactId: z.string().uuid().optional(),
+	error: z.string().optional(),
+});
+
 // Infer TypeScript types from schemas
 export type CreateArtifactArgs = z.infer<typeof createArtifactArgsSchema>;
+export type CreateArtifactResult = z.infer<typeof createArtifactResultSchema>;
 
 // Type guard functions that work with assistant-ui types
 export function isToolCallContentPart(

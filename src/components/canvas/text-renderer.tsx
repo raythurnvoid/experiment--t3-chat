@@ -95,11 +95,12 @@ interface TextRendererProps {
 export function TextRenderer({ isHovering }: TextRendererProps) {
 	const editor = useCreateBlockNote({});
 	const {
-		artifact,
+		getCurrentArtifact,
 		getCurrentArtifactContent,
 		updateArtifactContent,
 		updateRenderedArtifactRequired,
 		setUpdateRenderedArtifactRequired,
+		currentArtifactId,
 	} = useCanvasStore();
 
 	const thread = useThread();
@@ -110,6 +111,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	const hasReceivedFirstToken =
 		lastMessage?.role === "assistant" && lastMessage.content.length > 0;
 
+	const artifact = getCurrentArtifact();
 	const currentContent =
 		getCurrentArtifactContent() as ArtifactTextContent | null;
 	const [rawMarkdown, setRawMarkdown] = useState("");
@@ -190,20 +192,21 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 		if (
 			isStreaming ||
 			manuallyUpdatingRef.current ||
-			updateRenderedArtifactRequired
+			updateRenderedArtifactRequired ||
+			!currentArtifactId
 		) {
 			return;
 		}
 
 		const fullMarkdown = await editor.blocksToMarkdownLossy(editor.document);
-		updateArtifactContent(cleanText(fullMarkdown));
+		updateArtifactContent(currentArtifactId, cleanText(fullMarkdown));
 	};
 
 	const onChangeRawMarkdown = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		const newRawMarkdown = e.target.value;
 		setRawMarkdown(newRawMarkdown);
-		if (!isStreaming) {
-			updateArtifactContent(newRawMarkdown);
+		if (!isStreaming && currentArtifactId) {
+			updateArtifactContent(currentArtifactId, newRawMarkdown);
 		}
 	};
 
