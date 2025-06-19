@@ -8,7 +8,7 @@ import { Button } from "../components/ui/button";
 import { PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useCanvasStore } from "../stores/canvas-store";
-import { CreateArtifactToolUI } from "@/components/CreateArtifactHook.tsx";
+import { CreateArtifactToolUI } from "@/components/CreateArtifactToolUi.tsx";
 
 export const Route = createFileRoute({
 	component: Chat,

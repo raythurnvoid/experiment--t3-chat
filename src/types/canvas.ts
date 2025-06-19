@@ -13,7 +13,6 @@ export interface Artifact {
 	id: string; // Server-generated UUID
 	currentIndex: number;
 	contents: ArtifactTextContent[];
-	createdAt: string; // ISO date string
 	title: string; // Display title for the artifact
 }
 

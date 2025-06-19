@@ -117,7 +117,6 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 			title: "Quick Start Document",
 			currentIndex: 1,
 			contents: [newContent],
-			createdAt: new Date().toISOString(),
 		};
 
 		set((state) => {
