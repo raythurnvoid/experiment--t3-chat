@@ -89,7 +89,6 @@ interface MessageStep {
 	isContinued?: boolean;
 }
 
-// Zod schemas for runtime validation (flexible to avoid conflicts with AI SDK)
 const chatRequestSchema = z.object({
 	messages: z.array(z.any()), // CoreMessage[] - flexible runtime, but TS typed above
 	// In Zod v4, additional properties are handled through TypeScript interface above
@@ -100,15 +99,10 @@ interface ThreadData {
 	messages: AssistantMessage[];
 }
 
-// Clear any existing corrupted data and start fresh
 const threads = new Map<string, ThreadData>();
 
-// Load environment variables
 dotenv.config({ path: ".env.local" });
 
-console.log("OpenAI API Key exists:", !!process.env.OPENAI_API_KEY);
-
-// Type guard for errors
 function isError(error: unknown): error is Error & {
 	statusCode?: number;
 	responseBody?: string;
@@ -118,7 +112,6 @@ function isError(error: unknown): error is Error & {
 	return error instanceof Error;
 }
 
-// Create Hono app
 const app = new Hono();
 
 // Configure CORS middleware
@@ -134,19 +127,14 @@ app.use(
 	})
 );
 
-// Basic route
 app.get("/", (c) => {
 	return c.json({ message: "Hello from Hono server!" });
 });
 
-// Health check route
 app.get("/api/health", (c) => {
 	return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// ============= AUTHENTICATION ENDPOINTS FOR ANONYMOUS ACCESS =============
-
-// POST /api/v1/auth/tokens/anonymous - Get anonymous access token
 app.post("/api/v1/auth/tokens/anonymous", async (c) => {
 	const now = new Date();
 	const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
@@ -177,20 +165,14 @@ app.post("/api/v1/auth/tokens/anonymous", async (c) => {
 	});
 });
 
-// POST /api/v1/auth/tokens/refresh - Refresh access token
 app.post("/api/v1/auth/tokens/refresh", async (c) => {
 	try {
 		console.log("🔄 Refresh token request received");
-
-		// Log request headers
-		const contentType = c.req.header("content-type");
-		console.log("📋 Content-Type:", contentType);
 
 		// Parse request body with better error handling
 		let body;
 		try {
 			body = await c.req.json();
-			console.log("📄 Request body:", JSON.stringify(body, null, 2));
 		} catch (parseError) {
 			console.error("❌ Failed to parse request body:", parseError);
 			return c.json({ error: "Invalid JSON in request body" }, 400);
@@ -203,11 +185,6 @@ app.post("/api/v1/auth/tokens/refresh", async (c) => {
 		if (typeof refreshToken === "object" && refreshToken?.token) {
 			refreshToken = refreshToken.token;
 		}
-
-		console.log(
-			"🎫 Extracted refresh token:",
-			refreshToken ? `${refreshToken.substring(0, 20)}...` : "null"
-		);
 
 		if (!refreshToken || typeof refreshToken !== "string") {
 			console.warn("⚠️ No valid refresh token provided");
@@ -280,7 +257,6 @@ app.post("/api/v1/auth/tokens/refresh", async (c) => {
 			});
 		}
 
-		console.log("🔄 Refreshing valid token");
 		const now = new Date();
 		const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000);
 		const refreshTokenExpiry = new Date(
@@ -352,12 +328,7 @@ app.post("/api/v1/auth/tokens/refresh", async (c) => {
 	}
 });
 
-// ============= ASSISTANT CLOUD COMPATIBLE API ENDPOINTS =============
-
-// GET /api/v1/threads - List all threads (Real Cloud format)
 app.get("/api/v1/threads", (c) => {
-	console.log(`📋 Listing threads - total: ${threads.size}`);
-
 	const threadList = Array.from(threads.values()).map((thread) => ({
 		id: thread.meta.id,
 		workspace_id: thread.meta.workspaceId,
@@ -372,7 +343,6 @@ app.get("/api/v1/threads", (c) => {
 		metadata: null,
 	}));
 
-	console.log(`📤 Returning ${threadList.length} threads`);
 	threadList.forEach((thread, idx) => {
 		console.log(`  ${idx}: ${thread.id} - "${thread.title}"`);
 	});
@@ -380,7 +350,6 @@ app.get("/api/v1/threads", (c) => {
 	return c.json({ threads: threadList });
 });
 
-// POST /api/v1/threads - Create new thread (Real Cloud format)
 app.post("/api/v1/threads", async (c) => {
 	const body = await c.req.json();
 	const threadId = `thread_${randomUUID().replace(/-/g, "").substring(0, 24)}`;
@@ -413,7 +382,6 @@ app.post("/api/v1/threads", async (c) => {
 	return c.json({ thread_id: threadId });
 });
 
-// PUT /api/v1/threads/:threadId - Update thread (Real Cloud format)
 app.put("/api/v1/threads/:threadId", async (c) => {
 	const threadId = c.req.param("threadId");
 	const body = await c.req.json();
@@ -438,7 +406,6 @@ app.put("/api/v1/threads/:threadId", async (c) => {
 	return c.text("", 200);
 });
 
-// DELETE /api/v1/threads/:threadId - Delete thread (Real Cloud format)
 app.delete("/api/v1/threads/:threadId", (c) => {
 	const threadId = c.req.param("threadId");
 
@@ -451,7 +418,6 @@ app.delete("/api/v1/threads/:threadId", (c) => {
 	return c.text("", 200);
 });
 
-// GET /api/v1/threads/:threadId/messages - Get thread messages (Real Cloud format)
 app.get("/api/v1/threads/:threadId/messages", (c) => {
 	const threadId = c.req.param("threadId");
 	console.log(`📨 Fetching messages for thread: ${threadId}`);
@@ -497,7 +463,6 @@ app.get("/api/v1/threads/:threadId/messages", (c) => {
 	});
 });
 
-// POST /api/v1/threads/:threadId/messages - Add message to thread (Real Cloud format)
 app.post("/api/v1/threads/:threadId/messages", async (c) => {
 	const threadId = c.req.param("threadId");
 	const body = await c.req.json();
@@ -516,10 +481,6 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 
 	// Ensure content is properly formatted as array of MessageContentPart
 	let contentArray: MessageContentPart[];
-	console.log(
-		"🔍 Processing message content:",
-		JSON.stringify(body.content, null, 2)
-	);
 
 	if (
 		body.content &&
@@ -592,7 +553,6 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 	return c.json({ message_id: messageId });
 });
 
-// POST /api/v1/runs/stream - Title generation (Real Cloud format)
 app.post("/api/v1/runs/stream", async (c) => {
 	try {
 		const body = await c.req.json();
@@ -644,7 +604,6 @@ app.post("/api/v1/runs/stream", async (c) => {
 	}
 });
 
-// Chat API route
 app.post("/api/chat", async (c) => {
 	try {
 		console.log("=== NEW CHAT REQUEST ===");
@@ -672,37 +631,6 @@ app.post("/api/chat", async (c) => {
 			"Messages count:",
 			Array.isArray(messages) ? messages.length : 0
 		);
-
-		// Find or create thread for this conversation
-		let targetThread: ThreadData | null = null;
-
-		const threadId = body.state?.threadId as string | undefined;
-		if (threadId && threads.has(threadId)) {
-			targetThread = threads.get(threadId)!;
-			console.log(`📂 Using existing thread: ${threadId}`);
-		} else {
-			// Create new thread
-			const newThreadId = `thread_${randomUUID().replace(/-/g, "").substring(0, 24)}`;
-			const now = new Date();
-			targetThread = {
-				meta: {
-					id: newThreadId,
-					title: "New Chat",
-					archived: false,
-					createdAt: now,
-					updatedAt: now,
-					lastMessageAt: now,
-					workspaceId: "workspace_local_dev",
-					createdBy: "anonymous",
-					updatedBy: "anonymous",
-				},
-				messages: [],
-			};
-			threads.set(newThreadId, targetThread);
-			console.log(`🆕 Created new thread: ${newThreadId}`);
-		}
-
-		console.log("Creating multi-step data stream response...");
 
 		const dataStream = createDataStream({
 			execute: async (dataStream) => {
@@ -761,37 +689,6 @@ app.post("/api/chat", async (c) => {
 
 				const response1 = await result1.response;
 				console.log("Step 1 completed, checking tool calls...");
-
-				// Store user message in thread
-				const userMessage = messages[messages.length - 1];
-				if (userMessage && userMessage.role === "user") {
-					const userMessageId = generateShortId();
-					const now = new Date();
-					const userAssistantMessage: AssistantMessage = {
-						id: userMessageId,
-						parent_id: null,
-						thread_id: targetThread.meta.id,
-						created_by: "anonymous",
-						created_at: now.toISOString(),
-						updated_by: "anonymous",
-						updated_at: now.toISOString(),
-						format: "aui/v0",
-						content: {
-							role: "user",
-							content: coreMessageToAssistantContent(userMessage),
-							metadata: {
-								custom: {},
-							} as UserMessageMetadata,
-						},
-						height: 0,
-					};
-					targetThread.messages.push(userAssistantMessage);
-					targetThread.meta.lastMessageAt = new Date();
-					threads.set(targetThread.meta.id, targetThread);
-					console.log(
-						`💾 Stored user message in thread: ${targetThread.meta.id}`
-					);
-				}
 
 				const hasRequestCreateArtifact = response1.messages.some(
 					(msg) =>
@@ -879,132 +776,7 @@ app.post("/api/chat", async (c) => {
 					result3.mergeIntoDataStream(dataStream, {
 						experimental_sendStart: false,
 					});
-
-					// Wait for final response
-					const response3 = await result3.response;
-
-					// Store assistant response with proper format after all steps complete
-					const assistantMessageId = generateShortId();
-					const finalAssistantText = extractTextFromResponse([
-						...response1.messages,
-						...response2.messages,
-						...response3.messages,
-					]);
-
-					const now = new Date();
-					const assistantMessage: AssistantMessage = {
-						id: assistantMessageId,
-						parent_id:
-							targetThread.messages.length > 0
-								? targetThread.messages[targetThread.messages.length - 1].id
-								: null,
-						thread_id: targetThread.meta.id,
-						created_by: "anonymous",
-						created_at: now.toISOString(),
-						updated_by: "anonymous",
-						updated_at: now.toISOString(),
-						format: "aui/v0",
-						content: {
-							role: "assistant",
-							content: [
-								{
-									type: "text",
-									text: finalAssistantText || "Artifact created successfully",
-									status: {
-										type: "complete",
-										reason: "stop",
-									},
-								},
-							],
-							metadata: {
-								unstable_state: null,
-								unstable_annotations: [],
-								unstable_data: [],
-								steps: [
-									{
-										state: "finished",
-										messageId: `msg-${randomUUID()}`,
-										finishReason: "stop",
-										usage: { promptTokens: 165, completionTokens: 10 },
-										isContinued: false,
-									},
-								],
-								custom: {},
-							} as AssistantMessageMetadata,
-							status: {
-								type: "complete",
-								reason: "stop",
-							},
-						},
-						height: 1,
-					};
-
-					targetThread.messages.push(assistantMessage);
-					targetThread.meta.lastMessageAt = new Date();
-					threads.set(targetThread.meta.id, targetThread);
-					console.log(
-						`💾 Stored assistant response in thread: ${targetThread.meta.id}`
-					);
 				} else {
-					console.log("=== No artifact requested, sending finish event ===");
-
-					// Wait for response1 to complete
-					const finalText = extractTextFromResponse(response1.messages);
-
-					// Store assistant response for non-artifact messages with proper format
-					const assistantMessageId = generateShortId();
-					const now = new Date();
-					const assistantMessage: AssistantMessage = {
-						id: assistantMessageId,
-						parent_id:
-							targetThread.messages.length > 0
-								? targetThread.messages[targetThread.messages.length - 1].id
-								: null,
-						thread_id: targetThread.meta.id,
-						created_by: "anonymous",
-						created_at: now.toISOString(),
-						updated_by: "anonymous",
-						updated_at: now.toISOString(),
-						format: "aui/v0",
-						content: {
-							role: "assistant",
-							content: [
-								{
-									type: "text",
-									text: finalText || "Hello! How can I assist you today?",
-									status: {
-										type: "complete",
-										reason: "stop",
-									},
-								},
-							],
-							metadata: {
-								unstable_state: null,
-								unstable_annotations: [],
-								unstable_data: [],
-								steps: [
-									{
-										state: "finished",
-										messageId: `msg-${randomUUID()}`,
-										finishReason: "stop",
-										usage: { promptTokens: 165, completionTokens: 10 },
-										isContinued: false,
-									},
-								],
-								custom: {},
-							} as AssistantMessageMetadata,
-							status: {
-								type: "complete",
-								reason: "stop",
-							},
-						},
-						height: 1,
-					};
-
-					targetThread.messages.push(assistantMessage);
-					targetThread.meta.lastMessageAt = new Date();
-					threads.set(targetThread.meta.id, targetThread);
-
 					dataStream.write(
 						formatDataStreamPart("finish_message", {
 							finishReason: "stop",
@@ -1090,11 +862,6 @@ app.post("/api/chat", async (c) => {
 	}
 });
 
-// Catch-all for API routes
-app.all("/api/*", (c) => {
-	return c.json({ error: "API endpoint not found" }, 404);
-});
-
 // 404 for all other routes
 app.all("*", (c) => {
 	return c.json({ error: "Not found" }, 404);
@@ -1114,78 +881,6 @@ function generateShortId(): string {
 	// Remove dashes from the UUID and take the first 24 characters for consistency with the cloud length
 	const randomPart = randomUUID().replace(/-/g, "").substring(0, 24);
 	return `msg_${randomPart}`;
-}
-
-// Helper function to convert AI SDK CoreMessage to assistant content format
-function coreMessageToAssistantContent(
-	coreMessage: CoreMessage
-): MessageContentPart[] {
-	const contentParts: MessageContentPart[] = [];
-
-	console.log("🔍 Converting CoreMessage to AssistantContent:");
-	console.log("  - Role:", coreMessage.role);
-	console.log("  - Content type:", typeof coreMessage.content);
-	console.log("  - Content value:", JSON.stringify(coreMessage.content));
-
-	if (typeof coreMessage.content === "string") {
-		console.log("  - Processing string content:", coreMessage.content);
-		contentParts.push({
-			type: "text",
-			text: coreMessage.content,
-		});
-	} else if (Array.isArray(coreMessage.content)) {
-		console.log(
-			"  - Processing array content with",
-			coreMessage.content.length,
-			"parts"
-		);
-		for (const part of coreMessage.content) {
-			console.log("    - Part type:", part.type);
-			if (part.type === "text" && "text" in part) {
-				console.log("    - Text content:", part.text);
-				contentParts.push({
-					type: "text",
-					text: part.text || "",
-				});
-			} else {
-				console.log("    - Non-text part, skipping");
-			}
-			// Add other content types as needed
-		}
-	} else {
-		console.log("  - Unknown content format, defaulting to empty string");
-		contentParts.push({
-			type: "text",
-			text: "",
-		});
-	}
-
-	console.log(
-		"  - Final content parts:",
-		JSON.stringify(contentParts, null, 2)
-	);
-	return contentParts;
-}
-
-// Helper function to extract text from AI SDK response messages
-function extractTextFromResponse(messages: CoreMessage[]): string {
-	let extractedText = "";
-
-	for (const message of messages) {
-		if (message.role === "assistant" && message.content) {
-			if (typeof message.content === "string") {
-				extractedText += message.content + " ";
-			} else if (Array.isArray(message.content)) {
-				for (const part of message.content) {
-					if (part.type === "text" && part.text) {
-						extractedText += part.text + " ";
-					}
-				}
-			}
-		}
-	}
-
-	return extractedText.trim();
 }
 
 // Helper function to ensure message format matches cloud format exactly

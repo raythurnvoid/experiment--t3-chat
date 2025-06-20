@@ -1,13 +1,9 @@
-import {
-	AssistantRuntimeProvider,
-	useThread,
-	useAssistantRuntime,
-} from "@assistant-ui/react";
+import { AssistantRuntimeProvider, useThread } from "@assistant-ui/react";
 import { Canvas } from "../components/canvas/canvas";
 import { Thread } from "../components/assistant-ui/thread";
 import { ThreadList } from "../components/thread-list";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "../lib/utils";
