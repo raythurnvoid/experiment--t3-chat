@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { useCanvasStore } from "../../stores/canvas-store";
 import { useThread } from "@assistant-ui/react";
@@ -9,6 +9,7 @@ import {
 	SuggestionMenuController,
 	useCreateBlockNote,
 } from "@blocknote/react";
+import PQueue from "p-queue";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
 import { cn } from "../../lib/utils";
@@ -124,6 +125,12 @@ interface TextRendererProps {
 
 export function TextRenderer({ isHovering }: TextRendererProps) {
 	const editor = useCreateBlockNote({});
+
+	// Queue for managing markdown parsing operations
+	// - Max 1 concurrent operation
+	// - New tasks replace pending ones
+	const markdownQueue = useMemo(() => new PQueue({ concurrency: 1 }), []);
+
 	const {
 		getCurrentArtifact,
 		getCurrentArtifactContent,
@@ -161,10 +168,19 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 			try {
 				manuallyUpdatingRef.current = true;
-				const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(
-					currentContent.fullMarkdown
-				);
-				editor.replaceBlocks(editor.document, markdownAsBlocks);
+
+				// Use queue to manage markdown parsing operations
+				// Clear pending items if any, then add new task
+				if (markdownQueue.size > 0) {
+					markdownQueue.clear();
+				}
+				await markdownQueue.add(async () => {
+					const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(
+						currentContent.fullMarkdown
+					);
+					editor.replaceBlocks(editor.document, markdownAsBlocks);
+				});
+
 				setUpdateRenderedArtifactRequired(false);
 				manuallyUpdatingRef.current = false;
 			} catch (error) {
@@ -179,6 +195,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 		updateRenderedArtifactRequired,
 		editor,
 		setUpdateRenderedArtifactRequired,
+		markdownQueue,
 	]);
 
 	// Handle raw view toggle with event handlers
@@ -196,9 +213,18 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				// Leaving raw view - parse textarea back to blocks
 				try {
 					manuallyUpdatingRef.current = true;
-					const markdownAsBlocks =
-						await editor.tryParseMarkdownToBlocks(rawMarkdown);
-					editor.replaceBlocks(editor.document, markdownAsBlocks);
+
+					// Use queue to manage markdown parsing operations
+					// Clear pending items if any, then add new task
+					if (markdownQueue.size > 0) {
+						markdownQueue.clear();
+					}
+					await markdownQueue.add(async () => {
+						const markdownAsBlocks =
+							await editor.tryParseMarkdownToBlocks(rawMarkdown);
+						editor.replaceBlocks(editor.document, markdownAsBlocks);
+					});
+
 					manuallyUpdatingRef.current = false;
 				} catch (error) {
 					console.error("Error parsing raw markdown:", error);
@@ -207,7 +233,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 			}
 			setIsRawView(newIsRawView);
 		},
-		[currentContent, editor, rawMarkdown]
+		[currentContent, editor, rawMarkdown, markdownQueue]
 	);
 
 	// Wrapper for ViewRawText to handle the async callback
@@ -219,7 +245,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 		[isRawView, handleRawViewToggle]
 	);
 
-	const onChange = async () => {
+	const onChange = useCallback(async () => {
 		if (
 			isStreaming ||
 			manuallyUpdatingRef.current ||
@@ -229,9 +255,23 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 			return;
 		}
 
-		const fullMarkdown = await editor.blocksToMarkdownLossy(editor.document);
-		updateArtifactContent(currentArtifactId, cleanText(fullMarkdown));
-	};
+		// Use queue to manage markdown serialization operations
+		// Clear pending items if any, then add new task
+		if (markdownQueue.size > 0) {
+			markdownQueue.clear();
+		}
+		await markdownQueue.add(async () => {
+			const fullMarkdown = await editor.blocksToMarkdownLossy(editor.document);
+			updateArtifactContent(currentArtifactId, cleanText(fullMarkdown));
+		});
+	}, [
+		isStreaming,
+		updateRenderedArtifactRequired,
+		currentArtifactId,
+		markdownQueue,
+		editor,
+		updateArtifactContent,
+	]);
 
 	const onChangeRawMarkdown = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		const newRawMarkdown = e.target.value;
