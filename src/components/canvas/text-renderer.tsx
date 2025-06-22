@@ -26,6 +26,36 @@ const cleanText = (text: string) => {
 	return text.replace(/\\\n/g, "\n");
 };
 
+// Hook to detect system color scheme preference
+const useSystemColorScheme = () => {
+	const [isDark, setIsDark] = useState(() => {
+		if (typeof window === "undefined") return false;
+		return window.matchMedia("(prefers-color-scheme: dark)").matches;
+	});
+
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+
+		const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+		const handleChange = (e: MediaQueryListEvent) => {
+			setIsDark(e.matches);
+		};
+
+		// Add listener for system color scheme changes
+		mediaQuery.addEventListener("change", handleChange);
+
+		// Set initial value
+		setIsDark(mediaQuery.matches);
+
+		return () => {
+			mediaQuery.removeEventListener("change", handleChange);
+		};
+	}, []);
+
+	return isDark;
+};
+
 function ViewRawText({
 	isRawView,
 	setIsRawView,
@@ -105,6 +135,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 	const thread = useThread();
 	const isStreaming = thread.isRunning;
+	const isDarkMode = useSystemColorScheme();
 
 	// Use Assistant UI's message status to determine if we've received content
 	const lastMessage = thread.messages[thread.messages.length - 1];
@@ -224,7 +255,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	}
 
 	return (
-		<MantineProvider>
+		<MantineProvider forceColorScheme={isDarkMode ? "dark" : "light"}>
 			<div className="w-full h-full mt-2 flex flex-col border-t-[1px] border-gray-200 dark:border-gray-700 overflow-y-auto py-5 relative">
 				{isHovering && (
 					<div className="absolute flex gap-2 top-2 right-4 z-10">
@@ -248,16 +279,11 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 					<div
 						className={cn(
 							isStreaming && !hasReceivedFirstToken ? "pulse-text" : "",
-							"w-full h-full"
+							"w-full h-full custom-blocknote-theme"
 						)}
 					>
 						<BlockNoteView
-							theme={
-								typeof window !== "undefined" &&
-								document.documentElement.classList.contains("dark")
-									? "dark"
-									: "light"
-							}
+							theme={isDarkMode ? "dark" : "light"}
 							formattingToolbar={false}
 							slashMenu={false}
 							onChange={onChange}

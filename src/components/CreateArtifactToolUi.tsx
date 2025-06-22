@@ -56,8 +56,6 @@ function CreateArtifactToolRender({
 				};
 
 				setArtifact(newArtifact);
-
-				console.log("result", newArtifact);
 			}
 		} catch (error) {
 			console.error("❌ Error updating canvas store:", error);

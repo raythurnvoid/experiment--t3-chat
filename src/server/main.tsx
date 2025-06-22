@@ -36,7 +36,7 @@ interface ChatRequest {
 }
 
 // Real assistant-ui cloud message format (matches the actual cloud API)
-interface AssistantMessage {
+interface ChatMessage {
 	id: string;
 	parent_id: string | null;
 	thread_id: string;
@@ -45,17 +45,37 @@ interface AssistantMessage {
 	updated_by: string;
 	updated_at: string;
 	format: string;
-	content: {
-		role: "user" | "assistant" | "system";
-		content: MessageContentPart[];
-		metadata: AssistantMessageMetadata | UserMessageMetadata;
-		status?: {
-			type: "complete" | "incomplete" | "running";
-			reason: string;
-		};
-	};
+	content: ChatMessageContent;
 	height: number;
+	createdAt?: string;
+	role?: "user" | "assistant";
+	attachments?: unknown[];
+	metadata?: AssistantMessageMetadata | UserMessageMetadata;
+	status?: {
+		type: "complete" | "incomplete" | "running";
+		reason: string;
+	};
 }
+
+type ChatMessageContent =
+	| {
+			role: "user";
+			content: MessageContentPart[];
+			metadata: UserMessageMetadata;
+			status?: {
+				type: "complete" | "incomplete" | "running";
+				reason: string;
+			};
+	  }
+	| {
+			role: "assistant";
+			content: MessageContentPart[];
+			metadata: AssistantMessageMetadata;
+			status?: {
+				type: "complete" | "incomplete" | "running";
+				reason: string;
+			};
+	  };
 
 interface MessageContentPart {
 	type: "text";
@@ -89,6 +109,13 @@ interface MessageStep {
 	isContinued?: boolean;
 }
 
+// Thread title generation request types
+interface ThreadTitleRequest {
+	thread_id: string;
+	assistant_id: string;
+	messages: ChatMessageContent[];
+}
+
 const chatRequestSchema = z.object({
 	messages: z.array(z.any()), // CoreMessage[] - flexible runtime, but TS typed above
 	// In Zod v4, additional properties are handled through TypeScript interface above
@@ -96,7 +123,7 @@ const chatRequestSchema = z.object({
 
 interface ThreadData {
 	meta: ThreadMeta;
-	messages: AssistantMessage[];
+	messages: ChatMessage[];
 }
 
 const threads = new Map<string, ThreadData>();
@@ -166,166 +193,33 @@ app.post("/api/v1/auth/tokens/anonymous", async (c) => {
 });
 
 app.post("/api/v1/auth/tokens/refresh", async (c) => {
-	try {
-		console.log("🔄 Refresh token request received");
+	const now = new Date();
+	const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
+	const refreshTokenExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-		// Parse request body with better error handling
-		let body;
-		try {
-			body = await c.req.json();
-		} catch (parseError) {
-			console.error("❌ Failed to parse request body:", parseError);
-			return c.json({ error: "Invalid JSON in request body" }, 400);
-		}
+	const accessTokenData = {
+		sub: "anonymous",
+		iat: Math.floor(now.getTime() / 1000),
+		exp: Math.floor(accessTokenExpiry.getTime() / 1000),
+	};
 
-		// Handle different possible request formats
-		let refreshToken = body.refresh_token || body.refreshToken || body.token;
+	const refreshTokenData = {
+		sub: "anonymous",
+		iat: Math.floor(now.getTime() / 1000),
+		exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
+		type: "refresh",
+	};
 
-		// If it's an object with a token property, extract it
-		if (typeof refreshToken === "object" && refreshToken?.token) {
-			refreshToken = refreshToken.token;
-		}
+	const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
+	const newRefreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
 
-		if (!refreshToken || typeof refreshToken !== "string") {
-			console.warn("⚠️ No valid refresh token provided");
-			// Return a new anonymous token instead of error for better UX
-			const now = new Date();
-			const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000);
-			const refreshTokenExpiry = new Date(
-				now.getTime() + 7 * 24 * 60 * 60 * 1000
-			);
-
-			const accessTokenData = {
-				sub: "anonymous",
-				iat: Math.floor(now.getTime() / 1000),
-				exp: Math.floor(accessTokenExpiry.getTime() / 1000),
-			};
-
-			const refreshTokenData = {
-				sub: "anonymous",
-				iat: Math.floor(now.getTime() / 1000),
-				exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
-				type: "refresh",
-			};
-
-			const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
-			const newRefreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
-
-			console.log("✅ Issued new anonymous tokens");
-			return c.json({
-				access_token: accessToken,
-				refresh_token: {
-					token: newRefreshToken,
-					expires_at: refreshTokenExpiry.toISOString(),
-				},
-			});
-		}
-
-		// Basic validation: check if it starts with our prefix
-		if (!refreshToken.startsWith("refresh.")) {
-			console.warn("⚠️ Invalid refresh token format, issuing new tokens");
-			// Issue new tokens instead of returning error
-			const now = new Date();
-			const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000);
-			const refreshTokenExpiry = new Date(
-				now.getTime() + 7 * 24 * 60 * 60 * 1000
-			);
-
-			const accessTokenData = {
-				sub: "anonymous",
-				iat: Math.floor(now.getTime() / 1000),
-				exp: Math.floor(accessTokenExpiry.getTime() / 1000),
-			};
-
-			const refreshTokenData = {
-				sub: "anonymous",
-				iat: Math.floor(now.getTime() / 1000),
-				exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
-				type: "refresh",
-			};
-
-			const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
-			const newRefreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
-
-			console.log("✅ Issued new anonymous tokens (invalid format recovery)");
-			return c.json({
-				access_token: accessToken,
-				refresh_token: {
-					token: newRefreshToken,
-					expires_at: refreshTokenExpiry.toISOString(),
-				},
-			});
-		}
-
-		const now = new Date();
-		const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000);
-		const refreshTokenExpiry = new Date(
-			now.getTime() + 7 * 24 * 60 * 60 * 1000
-		);
-
-		const accessTokenData = {
-			sub: "anonymous",
-			iat: Math.floor(now.getTime() / 1000),
-			exp: Math.floor(accessTokenExpiry.getTime() / 1000),
-		};
-
-		const refreshTokenData = {
-			sub: "anonymous",
-			iat: Math.floor(now.getTime() / 1000),
-			exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
-			type: "refresh",
-		};
-
-		const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
-		const newRefreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
-
-		console.log("✅ Successfully refreshed tokens");
-		return c.json({
-			access_token: accessToken,
-			refresh_token: {
-				token: newRefreshToken,
-				expires_at: refreshTokenExpiry.toISOString(),
-			},
-		});
-	} catch (error) {
-		console.error("❌ Error refreshing token:", error);
-		console.error(
-			"❌ Error stack:",
-			error instanceof Error ? error.stack : "No stack trace"
-		);
-
-		// Return new tokens instead of error to prevent auth failures
-		const now = new Date();
-		const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000);
-		const refreshTokenExpiry = new Date(
-			now.getTime() + 7 * 24 * 60 * 60 * 1000
-		);
-
-		const accessTokenData = {
-			sub: "anonymous",
-			iat: Math.floor(now.getTime() / 1000),
-			exp: Math.floor(accessTokenExpiry.getTime() / 1000),
-		};
-
-		const refreshTokenData = {
-			sub: "anonymous",
-			iat: Math.floor(now.getTime() / 1000),
-			exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
-			type: "refresh",
-		};
-
-		const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
-		const newRefreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
-
-		console.log("✅ Issued fallback tokens after error");
-		return c.json({
-			access_token: accessToken,
-			refresh_token: {
-				token: newRefreshToken,
-				expires_at: refreshTokenExpiry.toISOString(),
-			},
-		});
-	}
+	return c.json({
+		access_token: accessToken,
+		refresh_token: {
+			token: newRefreshToken,
+			expires_at: refreshTokenExpiry.toISOString(),
+		},
+	});
 });
 
 app.get("/api/v1/threads", (c) => {
@@ -403,7 +297,7 @@ app.put("/api/v1/threads/:threadId", async (c) => {
 
 	threads.set(threadId, thread);
 
-	return c.text("", 200);
+	return c.json({}, 200);
 });
 
 app.delete("/api/v1/threads/:threadId", (c) => {
@@ -415,7 +309,7 @@ app.delete("/api/v1/threads/:threadId", (c) => {
 
 	threads.delete(threadId);
 
-	return c.text("", 200);
+	return c.json({}, 200);
 });
 
 app.get("/api/v1/threads/:threadId/messages", (c) => {
@@ -428,47 +322,14 @@ app.get("/api/v1/threads/:threadId/messages", (c) => {
 		return c.json({ error: "Thread not found" }, 404);
 	}
 
-	console.log(`📊 Thread has ${thread.messages.length} messages`);
-
-	// Normalize all messages to ensure correct format
-	const normalizedMessages = thread.messages.map(normalizeMessageFormat);
-
-	// Update the thread with normalized messages if any were changed
-	if (normalizedMessages.some((msg, index) => msg !== thread.messages[index])) {
-		console.log(`🔧 Updated thread with normalized message formats`);
-		thread.messages = normalizedMessages;
-		threads.set(threadId, thread);
-	}
-
-	// Sort messages by created_at in reverse chronological order (newest first)
-	// This matches the cloud format and is what assistant-ui expects
-	const sortedMessages = [...normalizedMessages].sort((a, b) => {
-		const timeA = new Date(a.created_at).getTime();
-		const timeB = new Date(b.created_at).getTime();
-		return timeB - timeA; // Newest first (reverse chronological)
-	});
-
-	console.log(
-		`📤 Returning ${sortedMessages.length} messages in reverse chronological order`
-	);
-	sortedMessages.forEach((msg, index) => {
-		console.log(
-			`  ${index}: ${msg.id} (${msg.content.role}) - ${msg.created_at}`
-		);
-	});
-
-	// Return in real cloud format (messages in reverse chronological order)
 	return c.json({
-		messages: sortedMessages,
+		messages: thread.messages,
 	});
 });
 
 app.post("/api/v1/threads/:threadId/messages", async (c) => {
 	const threadId = c.req.param("threadId");
 	const body = await c.req.json();
-
-	console.log(`📝 Adding message to thread: ${threadId}`);
-	console.log(`📝 Request body:`, JSON.stringify(body, null, 2));
 
 	const thread = threads.get(threadId);
 	if (!thread) {
@@ -479,40 +340,8 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 	const messageId = generateShortId();
 	const now = new Date();
 
-	// Ensure content is properly formatted as array of MessageContentPart
-	let contentArray: MessageContentPart[];
-
-	if (
-		body.content &&
-		typeof body.content === "object" &&
-		body.content.content &&
-		Array.isArray(body.content.content)
-	) {
-		// Handle nested structure: { content: { role: "user", content: [...] } }
-		console.log("  - Using nested content array");
-		contentArray = body.content.content;
-	} else if (Array.isArray(body.content)) {
-		// If content is already an array, use it directly
-		console.log("  - Using direct content array");
-		contentArray = body.content;
-	} else if (typeof body.content === "string") {
-		// If content is a string, wrap it in the proper format
-		console.log("  - Converting string content to array");
-		contentArray = [{ type: "text", text: body.content }];
-	} else if (body.text) {
-		// Fallback to text field
-		console.log("  - Using fallback text field");
-		contentArray = [{ type: "text", text: body.text }];
-	} else {
-		// Default empty content
-		console.log("  - Using default empty content");
-		contentArray = [{ type: "text", text: "" }];
-	}
-
-	console.log("🔍 Final content array:", JSON.stringify(contentArray, null, 2));
-
 	// Create message in exact cloud format
-	const assistantMessage: AssistantMessage = {
+	const assistantMessage: ChatMessage = {
 		id: messageId,
 		parent_id: body.parent_id || null,
 		thread_id: threadId,
@@ -521,95 +350,88 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 		updated_by: "anonymous",
 		updated_at: now.toISOString(),
 		format: "aui/v0",
-		content: {
-			role: (body.content && body.content.role) || body.role || "user",
-			content: contentArray,
-			metadata:
-				((body.content && body.content.role) || body.role) === "assistant"
-					? ({
-							unstable_state: null,
-							unstable_annotations: [],
-							unstable_data: [],
-							steps: [],
-							custom: {},
-						} as AssistantMessageMetadata)
-					: ({
-							custom: {},
-						} as UserMessageMetadata),
-		},
+		content: body.content,
 		height:
 			((body.content && body.content.role) || body.role) === "user" ? 0 : 1,
 	};
 
-	thread.messages.push(assistantMessage);
+	thread.messages.unshift(assistantMessage);
 	thread.meta.lastMessageAt = now;
 	thread.meta.updatedAt = now;
 	threads.set(threadId, thread);
-
-	console.log(`✅ Message added successfully: ${messageId}`);
-	console.log(`📊 Thread now has ${thread.messages.length} messages`);
-	console.log(`💾 Stored message:`, JSON.stringify(assistantMessage, null, 2));
 
 	return c.json({ message_id: messageId });
 });
 
 app.post("/api/v1/runs/stream", async (c) => {
 	try {
-		const body = await c.req.json();
-		console.log("🏷️ Generating title for thread:", body.thread_id);
+		const body = (await c.req.json()) as ThreadTitleRequest;
 
-		// Extract the conversation context
-		const messages = body.messages || [];
-		let conversationText = "";
+		if (body.assistant_id === "system/thread_title") {
+			const messages = body.messages || [];
+			const threadId = body.thread_id;
 
-		// Get the first few messages to understand the conversation
-		for (const msg of messages.slice(0, 3)) {
-			if (msg.content && Array.isArray(msg.content)) {
-				for (const part of msg.content) {
-					if (part.type === "text" && part.text) {
-						conversationText += part.text + " ";
-					}
-				}
+			// Check if thread exists
+			const thread = threads.get(threadId);
+			if (!thread) {
+				console.log(`❌ Thread not found for title generation: ${threadId}`);
+				return c.json({ error: "Thread not found" }, 404);
 			}
+
+			// Extract conversation text from messages for title generation
+			const conversationText = messages
+				.map((msg) =>
+					[`${msg.role}:`, msg.content.map((part) => part.text).join(" ")]
+						.filter(Boolean)
+						.join(" ")
+				)
+				.filter(Boolean)
+				.join("\n");
+
+			// Generate title using AI with streaming
+			const result = streamText({
+				model: openai("gpt-4o-mini"),
+				system: `Generate a concise, descriptive title (max 6 words) for this conversation. 
+					The title should capture the main topic or purpose. 
+					Respond with ONLY the title, no quotes or extra text.`,
+				messages: [
+					{
+						role: "user",
+						content: `Generate a title for this conversation:\n\n${conversationText}`,
+					},
+				],
+				temperature: 0.3,
+				maxTokens: 50,
+			});
+
+			// Set headers for streaming response
+			c.header("Content-Type", "text/plain; charset=utf-8");
+			c.header("Content-Encoding", "none");
+			c.header("Transfer-Encoding", "chunked");
+			c.header("Connection", "keep-alive");
+			c.header("Cache-Control", "no-cache");
+
+			(async (/* iife */) => {
+				const title = await result.text;
+				thread.meta.title = title;
+				thread.meta.updatedAt = new Date();
+				thread.meta.updatedBy = "anonymous";
+				threads.set(threadId, thread);
+			})();
+
+			return stream(c, (stream) => stream.pipe(result.textStream));
+		} else {
+			return c.json({ error: "Invalid assistant ID" }, 400);
 		}
-
-		// Simple title generation based on content
-		let generatedTitle = "New Chat";
-		if (conversationText.trim()) {
-			const words = conversationText.trim().split(/\s+/).slice(0, 4);
-			generatedTitle = words.join(" ");
-			if (generatedTitle.length > 50) {
-				generatedTitle = generatedTitle.substring(0, 47) + "...";
-			}
-		}
-
-		console.log(`📝 Generated title: "${generatedTitle}"`);
-
-		// Update the thread title
-		const thread = threads.get(body.thread_id);
-		if (thread) {
-			thread.meta.title = generatedTitle;
-			thread.meta.updatedAt = new Date();
-			threads.set(body.thread_id, thread);
-		}
-
-		// Return the title as plain text (like the real API)
-		c.header("Content-Type", "text/plain; charset=utf-8");
-		c.header("X-Vercel-AI-Data-Stream", "v1");
-		return c.text(generatedTitle);
 	} catch (error) {
 		console.error("Error generating title:", error);
-		c.header("Content-Type", "text/plain; charset=utf-8");
-		return c.text("New Chat");
+		return c.json({ error: "Error generating title" }, 500);
 	}
 });
 
 app.post("/api/chat", async (c) => {
 	try {
-		console.log("=== NEW CHAT REQUEST ===");
-
 		const body = await c.req.json();
-		console.log("Request received with body keys:", Object.keys(body));
 
 		// Validate request body
 		const parseResult = chatRequestSchema.safeParse(body);
@@ -627,23 +449,15 @@ app.post("/api/chat", async (c) => {
 
 		const request = parseResult.data as ChatRequest;
 		const { messages } = request;
-		console.log(
-			"Messages count:",
-			Array.isArray(messages) ? messages.length : 0
-		);
 
 		const dataStream = createDataStream({
 			execute: async (dataStream) => {
-				console.log(
-					"=== STEP 1: Initial response with requestCreateArtifact tool ==="
-				);
-
 				const result1 = streamText({
 					model: openai("gpt-4o-mini"),
 					system:
-						`Either respond directly to the user or use the tools at your disposal and then answer.\n` +
-						"If you decide to create an artifact, inform the user that you will do it and then request the creation of the artifact",
-					messages: messages as CoreMessage[],
+						`Either respond directly to the user or use the tools at your disposal.\n` +
+						"If you decide to create an artifact, do not answer and just call the tool or answer with `On it...`.\n",
+					messages,
 					temperature: 0.7,
 					maxTokens: 2000,
 					toolChoice: "auto",
@@ -663,12 +477,12 @@ app.post("/api/chat", async (c) => {
 						}),
 						requestCreateArtifact: tool({
 							description:
-								"Request to create a text artifact that should be displayed in a separate pane. " +
-								"Use this when the user asks for: " +
-								"- Creating documents, articles, or stories " +
-								"- Generating markdown content " +
-								"- Any substantial text output that would benefit from being editable " +
-								"- Writing essays, reports, or long-form content",
+								"Request to create a text artifact that should be displayed in a separate panel.\n" +
+								"Use this when the user asks for:\n" +
+								"- Creating documents, articles, or stories\n" +
+								"- Generating markdown content\n" +
+								"- Any substantial text output that would benefit from being editable\n" +
+								"- Writing essays, reports, or long-form content\n",
 							parameters: z.object({}),
 							execute: async () => {
 								console.log("🎯 requestCreateArtifact tool called");
@@ -685,12 +499,9 @@ app.post("/api/chat", async (c) => {
 					experimental_sendFinish: false,
 				});
 
-				console.log("=== Waiting for step 1 to complete ===");
-
 				const response1 = await result1.response;
-				console.log("Step 1 completed, checking tool calls...");
 
-				const hasRequestCreateArtifact = response1.messages.some(
+				const shouldFinish = !response1.messages.some(
 					(msg) =>
 						msg.role === "assistant" &&
 						Array.isArray(msg.content) &&
@@ -701,11 +512,17 @@ app.post("/api/chat", async (c) => {
 						)
 				);
 
-				if (hasRequestCreateArtifact) {
-					console.log("=== STEP 2: Creating artifact content ===");
-
+				if (shouldFinish) {
+					const finishReason = await result1.finishReason;
+					const usage = await result1.usage;
+					dataStream.write(
+						formatDataStreamPart("finish_message", {
+							finishReason,
+							usage,
+						})
+					);
+				} else {
 					const artifactId = randomUUID();
-					console.log(`🆔 Generated artifact UUID: ${artifactId}`);
 
 					dataStream.writeData({
 						type: "artifact-id",
@@ -716,7 +533,7 @@ app.post("/api/chat", async (c) => {
 						model: openai("gpt-4o-mini"),
 						system: `Generate comprehensive, well-structured content that directly addresses what the user requested. 
 							Format the content as markdown when appropriate.`,
-						messages: [...messages, ...response1.messages] as CoreMessage[],
+						messages: [...messages, ...response1.messages],
 						toolChoice: "required",
 						temperature: 0.7,
 						maxTokens: 2000,
@@ -750,10 +567,7 @@ app.post("/api/chat", async (c) => {
 						experimental_sendFinish: false,
 					});
 
-					console.log("=== Waiting for step 2 to complete ===");
-
 					const response2 = await result2.response;
-					console.log("Step 2 completed, proceeding to confirmation step...");
 
 					const result3 = streamText({
 						model: openai("gpt-4o-mini"),
@@ -763,7 +577,7 @@ app.post("/api/chat", async (c) => {
 							...messages,
 							...response1.messages,
 							...response2.messages,
-						] as CoreMessage[],
+						],
 						temperature: 0.7,
 						maxTokens: 200,
 						maxSteps: 1,
@@ -776,20 +590,10 @@ app.post("/api/chat", async (c) => {
 					result3.mergeIntoDataStream(dataStream, {
 						experimental_sendStart: false,
 					});
-				} else {
-					dataStream.write(
-						formatDataStreamPart("finish_message", {
-							finishReason: "stop",
-							usage: {
-								promptTokens: 0,
-								completionTokens: 0,
-							},
-						})
-					);
 				}
 			},
 			onError: (error) => {
-				console.error("=== DATA STREAM ERROR ===", error);
+				console.error("/api/chat Data stream error:", error);
 				return error instanceof Error ? error.message : String(error);
 			},
 		});
@@ -881,53 +685,4 @@ function generateShortId(): string {
 	// Remove dashes from the UUID and take the first 24 characters for consistency with the cloud length
 	const randomPart = randomUUID().replace(/-/g, "").substring(0, 24);
 	return `msg_${randomPart}`;
-}
-
-// Helper function to ensure message format matches cloud format exactly
-function normalizeMessageFormat(message: AssistantMessage): AssistantMessage {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const messageAny = message as any;
-
-	// If the message already has the correct format, return it
-	if (
-		messageAny.content &&
-		typeof messageAny.content.role === "string" &&
-		Array.isArray(messageAny.content.content) &&
-		messageAny.content.metadata
-	) {
-		return message;
-	}
-
-	// If the content has double nesting (old format), fix it
-	if (
-		messageAny.content &&
-		messageAny.content.content &&
-		messageAny.content.content.role &&
-		messageAny.content.content.content &&
-		messageAny.content.content.metadata
-	) {
-		console.log(
-			`🔧 Fixing double-nested message format for message ${messageAny.id}`
-		);
-
-		// Extract the inner content structure
-		const innerContent = messageAny.content.content;
-
-		return {
-			...messageAny,
-			content: {
-				role: innerContent.role,
-				content: Array.isArray(innerContent.content)
-					? innerContent.content
-					: [{ type: "text", text: innerContent.content || "" }],
-				metadata: innerContent.metadata,
-				status: innerContent.status,
-			},
-		} as AssistantMessage;
-	}
-
-	console.log(
-		`⚠️ Unknown message format for message ${messageAny.id}, keeping as-is`
-	);
-	return message;
 }

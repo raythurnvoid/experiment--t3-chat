@@ -8,6 +8,7 @@ import { ArchiveIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { TooltipIconButton } from "@/components/tooltip-icon-button";
+import { cn } from "@/lib/utils";
 
 export const ThreadList: FC = memo(() => {
 	const runtime = useAssistantRuntime();
@@ -27,7 +28,12 @@ export const ThreadList: FC = memo(() => {
 				<div className="p-4 text-sm text-muted-foreground">Loading...</div>
 			}
 		>
-			<ThreadListPrimitive.Root className="flex flex-col items-stretch gap-1.5">
+			<ThreadListPrimitive.Root
+				className={cn(
+					"ThreadList",
+					"flex flex-col items-stretch gap-1.5 w-[250px]"
+				)}
+			>
 				<ThreadListNew />
 				<ThreadListItems />
 			</ThreadListPrimitive.Root>
@@ -56,7 +62,7 @@ const ThreadListItems: FC = memo(() => {
 const ThreadListItem: FC = memo(() => {
 	return (
 		<ThreadListItemPrimitive.Root className="data-[active]:bg-muted hover:bg-muted focus-visible:bg-muted focus-visible:ring-ring flex items-center gap-2 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2">
-			<ThreadListItemPrimitive.Trigger className="flex-grow px-3 py-2 text-start">
+			<ThreadListItemPrimitive.Trigger className="flex-grow px-3 py-2 text-start overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
 				<ThreadListItemTitle />
 			</ThreadListItemPrimitive.Trigger>
 			<ThreadListItemArchive />
@@ -65,11 +71,7 @@ const ThreadListItem: FC = memo(() => {
 });
 
 const ThreadListItemTitle: FC = memo(() => {
-	return (
-		<p className="text-sm">
-			<ThreadListItemPrimitive.Title fallback="New Chat" />
-		</p>
-	);
+	return <ThreadListItemPrimitive.Title fallback="New Chat" />;
 });
 
 const ThreadListItemArchive: FC = memo(() => {
