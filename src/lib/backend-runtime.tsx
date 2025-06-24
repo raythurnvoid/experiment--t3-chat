@@ -14,7 +14,7 @@ const assistantCloud = new AssistantCloud({
 // Using the real assistant-ui cloud with API key to inspect formats
 // const assistantCloud = new AssistantCloud({
 // 	baseUrl: "https://proj-0y1uymi64egi.assistant-api.com",
-// 	apiKey: "sk_aui_proj_0y1uymi64egi_0PxX6g9Pc0ITMd3IyvyAiDMJ1asiH42r",
+// 	apiKey: "-",
 // 	anonymous: true,
 // });
 
