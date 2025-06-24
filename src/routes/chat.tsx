@@ -7,7 +7,7 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "../lib/utils";
-import { CreateArtifactToolUI } from "@/components/CreateArtifactToolUi.tsx";
+import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui";
 import { useBackendRuntime } from "@/lib/backend-runtime";
 
 export const Route = createFileRoute({
