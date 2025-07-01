@@ -229,7 +229,7 @@ const UserMessage: FC = memo(() => {
 					"bg-muted text-foreground col-start-2 row-start-2 max-w-[calc(var(--thread-max-width)*0.8)] break-words rounded-3xl px-5 py-2.5"
 				)}
 			>
-				<MessagePrimitive.Content />
+				<MessagePrimitive.Parts />
 			</div>
 
 			<BranchPicker
@@ -310,7 +310,7 @@ const AssistantMessage: FC = memo(() => {
 					"text-foreground col-span-2 col-start-2 row-start-1 my-1.5 max-w-[calc(var(--thread-max-width)*0.8)] break-words leading-7"
 				)}
 			>
-				<MessagePrimitive.Content components={{ Text: MarkdownText }} />
+				<MessagePrimitive.Parts components={{ Text: MarkdownText }} />
 			</div>
 
 			<AssistantActionBar />

@@ -13,7 +13,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../types/artifact-schemas";
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
 import { stream } from "hono/streaming";
 
 // In-memory thread storage
