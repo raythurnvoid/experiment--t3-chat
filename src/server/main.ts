@@ -1,3 +1,6 @@
+// Must be first import
+import "./server_env.ts";
+
 import { openai } from "@ai-sdk/openai";
 import { serve } from "@hono/node-server";
 import {
@@ -8,8 +11,7 @@ import {
 	createDataStream,
 	type CoreMessage,
 } from "ai";
-import dotenv from "dotenv";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../types/artifact-schemas";
@@ -21,6 +23,18 @@ import {
 	type ai_chat_Thread,
 } from "../lib/ai_chat.ts";
 import type { ReadonlyJSONObject } from "@assistant-ui/assistant-stream/utils";
+import {
+	auth_ANONYMOUS_USER_ID,
+	auth_ANONYMOUS_WORKSPACE_ID,
+} from "../lib/auth.ts";
+import { createClerkClient } from "@clerk/backend";
+import { createMiddleware } from "hono/factory";
+import {
+	server_auth_get_user_id,
+	server_auth_get_user_is_authenticated,
+	server_auth_set_anonymous_user_in_context,
+} from "./server_auth.ts";
+import { AssistantCloud } from "@assistant-ui/react";
 
 // TypeScript interfaces for compile-time type safety
 interface ChatRequest {
@@ -47,7 +61,78 @@ interface ThreadData {
 
 const threads = new Map<string, ThreadData>();
 
-dotenv.config({ path: ".env.local" });
+// Initialize Clerk client
+const clerk_client = createClerkClient({
+	secretKey: process.env.CLERK_SECRET_KEY,
+	publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
+});
+
+function setAuthenticatedUserInRequestContext(
+	c: Context,
+	values: {
+		userId: string;
+		sessionId: string;
+		isAuthenticated: boolean;
+	}
+) {
+	if (values.isAuthenticated) {
+		c.set("userId", values.userId);
+		c.set("sessionId", values.sessionId);
+		c.set("isAuthenticated", values.isAuthenticated);
+	}
+}
+
+// Auth middleware that supports both Clerk users and anonymous users
+const authMiddleware = createMiddleware(async (c, next) => {
+	try {
+		// Try to get token from Authorization header or body
+		const auth_header = c.req.header("Authorization");
+		const token = auth_header?.slice(auth_header.indexOf("Bearer ") + 7); // Remove "Bearer " prefix
+
+		if (token && token !== "anonymous" && !token.startsWith("anon.")) {
+			// Try to verify Clerk token
+			try {
+				const request = c.req.raw;
+				const auth_result = await clerk_client.authenticateRequest(request, {
+					jwtKey: process.env.CLERK_JWT_KEY,
+					authorizedParties: ["http://localhost:5173", "http://localhost:3000"],
+				});
+
+				if (auth_result.isAuthenticated) {
+					// Set authenticated user context
+					const auth = auth_result.toAuth();
+					setAuthenticatedUserInRequestContext(c, {
+						userId: auth.userId,
+						sessionId: auth.sessionId,
+						isAuthenticated: true,
+					});
+				} else {
+					// Invalid token, fall back to anonymous
+					console.warn(
+						"Clerk `authenticateRequest` returned not authenticated:",
+						auth_result
+					);
+					server_auth_set_anonymous_user_in_context(c);
+				}
+			} catch (error) {
+				// Fall back to anonymous user
+				console.warn("Clerk `authenticateRequest` failed:", error);
+				server_auth_set_anonymous_user_in_context(c);
+			}
+		} else {
+			// No token or anonymous token - use anonymous user
+			server_auth_set_anonymous_user_in_context(c);
+		}
+
+		await next();
+	} catch (error) {
+		console.error("Auth middleware error:", error);
+		// Fall back to anonymous
+		c.set("userId", auth_ANONYMOUS_USER_ID);
+		c.set("isAuthenticated", false);
+		await next();
+	}
+});
 
 function isError(error: unknown): error is Error & {
 	statusCode?: number;
@@ -73,6 +158,9 @@ app.use(
 	})
 );
 
+// Apply auth middleware to all routes
+app.use("*", authMiddleware);
+
 app.get("/", (c) => {
 	return c.json({ message: "Hello from Hono server!" });
 });
@@ -87,13 +175,13 @@ app.post("/api/v1/auth/tokens/anonymous", async (c) => {
 	const refreshTokenExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
 	const accessTokenData = {
-		sub: "anonymous",
+		sub: auth_ANONYMOUS_USER_ID,
 		iat: Math.floor(now.getTime() / 1000),
 		exp: Math.floor(accessTokenExpiry.getTime() / 1000),
 	};
 
 	const refreshTokenData = {
-		sub: "anonymous",
+		sub: auth_ANONYMOUS_USER_ID,
 		iat: Math.floor(now.getTime() / 1000),
 		exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
 		type: "refresh",
@@ -117,13 +205,13 @@ app.post("/api/v1/auth/tokens/refresh", async (c) => {
 	const refreshTokenExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
 	const accessTokenData = {
-		sub: "anonymous",
+		sub: auth_ANONYMOUS_USER_ID,
 		iat: Math.floor(now.getTime() / 1000),
 		exp: Math.floor(accessTokenExpiry.getTime() / 1000),
 	};
 
 	const refreshTokenData = {
-		sub: "anonymous",
+		sub: auth_ANONYMOUS_USER_ID,
 		iat: Math.floor(now.getTime() / 1000),
 		exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
 		type: "refresh",
@@ -173,8 +261,8 @@ app.post("/api/v1/threads", async (c) => {
 			last_message_at: now,
 			workspace_id: ai_chat_HARDCODED_WORKSPACE_ID,
 			metadata: {
-				updated_by: "anonymous",
-				created_by: "anonymous",
+				updated_by: auth_ANONYMOUS_USER_ID,
+				created_by: auth_ANONYMOUS_USER_ID,
 			},
 			external_id: null,
 			project_id: "project_123",
@@ -207,7 +295,7 @@ app.put("/api/v1/threads/:threadId", async (c) => {
 	}
 
 	thread.meta.updated_at = new Date().toISOString();
-	thread.meta.metadata.updated_by = "anonymous";
+	thread.meta.metadata.updated_by = auth_ANONYMOUS_USER_ID;
 
 	threads.set(threadId, thread);
 
@@ -259,9 +347,9 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 		id: messageId,
 		parent_id: body.parent_id || null,
 		thread_id: threadId,
-		created_by: "anonymous",
+		created_by: auth_ANONYMOUS_USER_ID,
 		created_at: now.toISOString(),
-		updated_by: "anonymous",
+		updated_by: auth_ANONYMOUS_USER_ID,
 		updated_at: now.toISOString(),
 		format: "aui/v0",
 		content: body.content,
@@ -334,7 +422,7 @@ app.post("/api/v1/runs/stream", async (c) => {
 				const title = await result.text;
 				thread.meta.title = title;
 				thread.meta.updated_at = new Date().toISOString();
-				thread.meta.metadata.updated_by = "anonymous";
+				thread.meta.metadata.updated_by = auth_ANONYMOUS_USER_ID;
 				threads.set(threadId, thread);
 			})();
 
@@ -582,6 +670,39 @@ app.post("/api/chat", async (c) => {
 				500
 			);
 		}
+	}
+});
+
+app.post("/api/assistant-ui-token", async (c) => {
+	if (server_auth_get_user_is_authenticated(c)) {
+		const body = await c.req.json();
+
+		const user_id = server_auth_get_user_id(c);
+		const workspace_id = `${body.orgId}${user_id}`;
+
+		const assistant_ui_cloud = new AssistantCloud({
+			apiKey: process.env["VITE_ASSISTANT_UI_API_KEY"]!,
+			userId: user_id,
+			workspaceId: workspace_id,
+		});
+
+		const result = await assistant_ui_cloud.auth.tokens.create();
+
+		return c.json({
+			token: result.token,
+		});
+	} /* Anonymous user */ else {
+		const assistant_ui_cloud = new AssistantCloud({
+			apiKey: process.env["VITE_ASSISTANT_UI_API_KEY"]!,
+			userId: auth_ANONYMOUS_USER_ID,
+			workspaceId: auth_ANONYMOUS_WORKSPACE_ID,
+		});
+
+		const result = await assistant_ui_cloud.auth.tokens.create();
+
+		return c.json({
+			token: result.token,
+		});
 	}
 });
 

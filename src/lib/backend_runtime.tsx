@@ -1,21 +1,29 @@
 import { useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { AssistantCloud } from "@assistant-ui/react";
+import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "./auth.ts";
 
 // ===== LOCAL BACKEND CONFIGURATION =====
 const API_BASE = "http://localhost:3001/api";
 
-// Create AssistantCloud instance with our backend
+// AssistantCloud instance with our backend
 // const assistantCloud = new AssistantCloud({
 // 	baseUrl: API_BASE,
 // 	anonymous: true, // for local development without auth
 // });
 
-// ===== REAL CLOUD FOR FORMAT INSPECTION (COMMENTED) =====
 // Using the real assistant-ui cloud with API key to inspect formats
 const assistantCloud = new AssistantCloud({
 	baseUrl: "https://proj-0y1uymi64egi.assistant-api.com",
-	apiKey: import.meta.env.VITE_ASSISTANT_UI_API_KEY,
-	anonymous: true,
+	authToken: async () => {
+		const response = await fetch("/api/assistant-ui-token", { method: "POST" });
+
+		if (response.ok) {
+			return await response.json().then((data) => data.token);
+		} else {
+			const error = await response.json();
+			throw new Error("Failed to fetch assistant-ui token", error);
+		}
+	},
 });
 
 // Public hook – use this to get multi-thread support with AI SDK

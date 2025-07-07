@@ -2,6 +2,7 @@ import {
 	ai_chat_HARDCODED_PROJECT_ID,
 	ai_chat_HARDCODED_WORKSPACE_ID,
 } from "../src/lib/ai_chat.ts";
+import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { query, mutation } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
@@ -60,7 +61,7 @@ export const thread_create = mutation({
 		created_by: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
-		const { created_by = "anonymous" } = args;
+		const { created_by = auth_ANONYMOUS_USER_ID } = args;
 
 		const now = Date.now();
 
@@ -93,23 +94,25 @@ export const thread_update = mutation({
 		is_archived: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
-		const { thread_id, title, updated_by = "anonymous" } = args;
-		const now = Date.now();
-
-		const updateData: {
-			updated_by: string;
-			updated_at: number;
-			title?: string;
-		} = {
-			updated_by,
-			updated_at: now,
-		};
-
-		if (title !== undefined) {
-			updateData.title = title;
-		}
-
-		await ctx.db.patch(thread_id, updateData);
+		await ctx.db.patch(
+			args.thread_id,
+			Object.assign(
+				{
+					updated_by: args.updated_by ?? auth_ANONYMOUS_USER_ID,
+					updated_at: Date.now(),
+				},
+				args.title
+					? {
+							title: args.title,
+						}
+					: {},
+				args.is_archived
+					? {
+							archived: args.is_archived,
+						}
+					: {}
+			)
+		);
 	},
 });
 
@@ -126,7 +129,7 @@ export const thread_archive = mutation({
 
 		await ctx.db.patch(args.thread_id, {
 			archived: true,
-			updated_by: args.updated_by ?? "anonymous",
+			updated_by: args.updated_by ?? auth_ANONYMOUS_USER_ID,
 			updated_at: now,
 		});
 	},
@@ -164,14 +167,14 @@ export const thread_messages_add = mutation({
 	handler: async (ctx, args) => {
 		const now = Date.now();
 
-		const anonymous = "anonymous";
+		const created_by = args.created_by ?? auth_ANONYMOUS_USER_ID;
 
 		// Insert the message
 		const message_id = await ctx.db.insert("messages", {
 			parent_id: args.parent_id,
 			thread_id: args.thread_id,
-			created_by: args.created_by ?? anonymous,
-			updated_by: args.created_by ?? anonymous,
+			created_by: created_by,
+			updated_by: created_by,
 			created_at: now,
 			updated_at: now,
 			format: args.format,
@@ -184,7 +187,7 @@ export const thread_messages_add = mutation({
 			await ctx.db.patch(args.thread_id, {
 				last_message_at: now,
 				updated_at: now,
-				updated_by: args.created_by ?? anonymous,
+				updated_by: created_by,
 			});
 		} catch (error) {
 			console.error("Failed to update thread when adding message", error);

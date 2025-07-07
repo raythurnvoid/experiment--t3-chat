@@ -1,8 +1,26 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
+import {
+	SignedIn,
+	SignedOut,
+	SignInButton,
+	useAuth,
+	UserButton,
+} from "@clerk/clerk-react";
+import { useEffect } from "react";
+import { auth_set_token_retriever } from "../lib/auth.ts";
 
-export const Route = createRootRoute({
-	component: () => (
+function Layout() {
+	const clerk_auth = useAuth();
+
+	useEffect(() => {
+		auth_set_token_retriever({
+			isAuthenticated: clerk_auth.isSignedIn ?? false,
+			getToken: () => clerk_auth.getToken(),
+		});
+	}, [clerk_auth, clerk_auth.isSignedIn]);
+
+	return (
 		<>
 			<div className="h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 flex flex-col overflow-hidden">
 				<nav className="bg-white/80 backdrop-blur-sm shadow-sm border-b border-gray-200 dark:bg-gray-900/80 dark:border-gray-700 sticky top-0 z-50">
@@ -28,6 +46,12 @@ export const Route = createRootRoute({
 									>
 										Chat
 									</Link>
+									<SignedOut>
+										<SignInButton />
+									</SignedOut>
+									<SignedIn>
+										<UserButton />
+									</SignedIn>
 								</div>
 							</div>
 						</div>
@@ -39,5 +63,9 @@ export const Route = createRootRoute({
 			</div>
 			<TanStackRouterDevtools />
 		</>
-	),
+	);
+}
+
+export const Route = createRootRoute({
+	component: Layout,
 });

@@ -6,7 +6,8 @@ import type {
 } from "../../convex/_generated/dataModel.js";
 import type convex_schema from "../../convex/schema.ts";
 
-const deploymentURL = import.meta.env.VITE_CONVEX_URL;
+// Cannot be import.meta.env.VITE_CONVEX_URL because indirectly imported by the hono server via assistant-ui dep
+const deploymentURL = process.env.VITE_CONVEX_URL as string;
 
 export const app_convex = new ConvexReactClient(deploymentURL);
 
