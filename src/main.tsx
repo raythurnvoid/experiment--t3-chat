@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
+import { ConvexProvider } from "convex/react";
+import { app_convex } from "./lib/app_convex_client";
 import "./app.css";
 
 // Import the generated route tree
@@ -18,6 +20,8 @@ declare module "@tanstack/react-router" {
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<RouterProvider router={router} />
+		<ConvexProvider client={app_convex}>
+			<RouterProvider router={router} />
+		</ConvexProvider>
 	</StrictMode>
 );

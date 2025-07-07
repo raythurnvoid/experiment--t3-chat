@@ -8,7 +8,7 @@ import { Button } from "../components/ui/button";
 import { PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "../lib/utils";
 import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui";
-import { useBackendRuntime } from "@/lib/backend-runtime";
+import { useBackendRuntime } from "@/lib/backend_runtime";
 
 export const Route = createFileRoute({
 	component: Chat,

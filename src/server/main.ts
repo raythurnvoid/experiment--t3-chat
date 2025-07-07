@@ -15,19 +15,12 @@ import { z } from "zod";
 import { createArtifactArgsSchema } from "../types/artifact-schemas";
 import { randomUUID } from "node:crypto";
 import { stream } from "hono/streaming";
-
-// In-memory thread storage
-interface ThreadMeta {
-	id: string;
-	title: string;
-	archived: boolean;
-	createdAt: Date;
-	updatedAt: Date;
-	lastMessageAt: Date;
-	workspaceId: string;
-	createdBy: string;
-	updatedBy: string;
-}
+import {
+	ai_chat_HARDCODED_WORKSPACE_ID,
+	type ai_chat_Message,
+	type ai_chat_Thread,
+} from "../lib/ai_chat.ts";
+import type { ReadonlyJSONObject } from "@assistant-ui/assistant-stream/utils";
 
 // TypeScript interfaces for compile-time type safety
 interface ChatRequest {
@@ -35,85 +28,11 @@ interface ChatRequest {
 	[key: string]: unknown; // Allow additional properties
 }
 
-// Real assistant-ui cloud message format (matches the actual cloud API)
-interface ChatMessage {
-	id: string;
-	parent_id: string | null;
-	thread_id: string;
-	created_by: string;
-	created_at: string;
-	updated_by: string;
-	updated_at: string;
-	format: string;
-	content: ChatMessageContent;
-	height: number;
-	createdAt?: string;
-	role?: "user" | "assistant";
-	attachments?: unknown[];
-	metadata?: AssistantMessageMetadata | UserMessageMetadata;
-	status?: {
-		type: "complete" | "incomplete" | "running";
-		reason: string;
-	};
-}
-
-type ChatMessageContent =
-	| {
-			role: "user";
-			content: MessageContentPart[];
-			metadata: UserMessageMetadata;
-			status?: {
-				type: "complete" | "incomplete" | "running";
-				reason: string;
-			};
-	  }
-	| {
-			role: "assistant";
-			content: MessageContentPart[];
-			metadata: AssistantMessageMetadata;
-			status?: {
-				type: "complete" | "incomplete" | "running";
-				reason: string;
-			};
-	  };
-
-interface MessageContentPart {
-	type: "text";
-	text: string;
-	status?: {
-		type: "complete" | "incomplete" | "running";
-		reason: string;
-	};
-}
-
-interface AssistantMessageMetadata {
-	unstable_state: unknown;
-	unstable_annotations: unknown[];
-	unstable_data: unknown[];
-	steps: MessageStep[];
-	custom: Record<string, unknown>;
-}
-
-interface UserMessageMetadata {
-	custom: Record<string, unknown>;
-}
-
-interface MessageStep {
-	state: "finished" | "running" | "incomplete";
-	messageId?: string;
-	finishReason?: string;
-	usage?: {
-		promptTokens: number;
-		completionTokens: number;
-	};
-	isContinued?: boolean;
-}
-
 // Thread title generation request types
 interface ThreadTitleRequest {
 	thread_id: string;
 	assistant_id: string;
-	messages: ChatMessageContent[];
+	messages: ReadonlyJSONObject[];
 }
 
 const chatRequestSchema = z.object({
@@ -122,8 +41,8 @@ const chatRequestSchema = z.object({
 });
 
 interface ThreadData {
-	meta: ThreadMeta;
-	messages: ChatMessage[];
+	meta: ai_chat_Thread;
+	messages: ai_chat_Message[];
 }
 
 const threads = new Map<string, ThreadData>();
@@ -224,16 +143,7 @@ app.post("/api/v1/auth/tokens/refresh", async (c) => {
 
 app.get("/api/v1/threads", (c) => {
 	const threadList = Array.from(threads.values()).map((thread) => ({
-		id: thread.meta.id,
-		workspace_id: thread.meta.workspaceId,
-		created_by: thread.meta.createdBy,
-		created_at: thread.meta.createdAt.toISOString(),
-		updated_by: thread.meta.updatedBy,
-		updated_at: thread.meta.updatedAt.toISOString(),
-		title: thread.meta.title,
-		last_message_at: thread.meta.lastMessageAt.toISOString(),
-		is_archived: thread.meta.archived,
-		external_id: null,
+		...thread.meta,
 		metadata: null,
 	}));
 
@@ -257,13 +167,17 @@ app.post("/api/v1/threads", async (c) => {
 		meta: {
 			id: threadId,
 			title: body.title || "New Chat",
-			archived: false,
-			createdAt: now,
-			updatedAt: now,
-			lastMessageAt: now,
-			workspaceId: "workspace_local_dev",
-			createdBy: "anonymous",
-			updatedBy: "anonymous",
+			is_archived: false,
+			created_at: now.toISOString(),
+			updated_at: now.toISOString(),
+			last_message_at: now,
+			workspace_id: ai_chat_HARDCODED_WORKSPACE_ID,
+			metadata: {
+				updated_by: "anonymous",
+				created_by: "anonymous",
+			},
+			external_id: null,
+			project_id: "project_123",
 		},
 		messages: [],
 	};
@@ -289,11 +203,11 @@ app.put("/api/v1/threads/:threadId", async (c) => {
 		thread.meta.title = body.title;
 	}
 	if (body.is_archived !== undefined) {
-		thread.meta.archived = body.is_archived;
+		thread.meta.is_archived = body.is_archived;
 	}
 
-	thread.meta.updatedAt = new Date();
-	thread.meta.updatedBy = "anonymous";
+	thread.meta.updated_at = new Date().toISOString();
+	thread.meta.metadata.updated_by = "anonymous";
 
 	threads.set(threadId, thread);
 
@@ -341,7 +255,7 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 	const now = new Date();
 
 	// Create message in exact cloud format
-	const assistantMessage: ChatMessage = {
+	const assistantMessage: ai_chat_Message = {
 		id: messageId,
 		parent_id: body.parent_id || null,
 		thread_id: threadId,
@@ -356,8 +270,8 @@ app.post("/api/v1/threads/:threadId/messages", async (c) => {
 	};
 
 	thread.messages.unshift(assistantMessage);
-	thread.meta.lastMessageAt = now;
-	thread.meta.updatedAt = now;
+	thread.meta.last_message_at = now;
+	thread.meta.updated_at = now.toISOString();
 	threads.set(threadId, thread);
 
 	return c.json({ message_id: messageId });
@@ -381,7 +295,12 @@ app.post("/api/v1/runs/stream", async (c) => {
 			// Extract conversation text from messages for title generation
 			const conversationText = messages
 				.map((msg) =>
-					[`${msg.role}:`, msg.content.map((part) => part.text).join(" ")]
+					[
+						`${msg.role}:`,
+						Array.isArray(msg.content)
+							? msg.content.map((part) => part.text).join(" ")
+							: msg.content,
+					]
 						.filter(Boolean)
 						.join(" ")
 				)
@@ -414,8 +333,8 @@ app.post("/api/v1/runs/stream", async (c) => {
 			(async (/* iife */) => {
 				const title = await result.text;
 				thread.meta.title = title;
-				thread.meta.updatedAt = new Date();
-				thread.meta.updatedBy = "anonymous";
+				thread.meta.updated_at = new Date().toISOString();
+				thread.meta.metadata.updated_by = "anonymous";
 				threads.set(threadId, thread);
 			})();
 

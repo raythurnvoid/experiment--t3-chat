@@ -33,6 +33,8 @@
 		}
 	},
 	"include": [
-		"src"
+		"src",
+		"assistant-ui/packages/**/app-aui-connector.ts",
+		"assistant-ui/packages/cloud/app_aui_bridge.ts"
 	]
 }
