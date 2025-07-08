@@ -36,9 +36,10 @@ export function auth_get_token(): Promise<string | null> {
 		auth_token_retriever = make_auth_token();
 	}
 
-	return auth_token_retriever.promise.then((retriever) => {
+	return auth_token_retriever.promise.then(async (retriever) => {
 		if (retriever.isAuthenticated) {
-			return retriever.getToken();
+			const token = await retriever.getToken();
+			return token;
 		}
 
 		return null;

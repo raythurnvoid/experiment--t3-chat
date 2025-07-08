@@ -64,7 +64,7 @@ const threads = new Map<string, ThreadData>();
 // Initialize Clerk client
 const clerk_client = createClerkClient({
 	secretKey: process.env.CLERK_SECRET_KEY,
-	publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
+	publishableKey: process.env.VITE_CLERK_PUBLISHABLE_KEY,
 });
 
 function setAuthenticatedUserInRequestContext(
@@ -92,8 +92,7 @@ const authMiddleware = createMiddleware(async (c, next) => {
 		if (token && token !== "anonymous" && !token.startsWith("anon.")) {
 			// Try to verify Clerk token
 			try {
-				const request = c.req.raw;
-				const auth_result = await clerk_client.authenticateRequest(request, {
+				const auth_result = await clerk_client.authenticateRequest(c.req.raw, {
 					jwtKey: process.env.CLERK_JWT_KEY,
 					authorizedParties: ["http://localhost:5173", "http://localhost:3000"],
 				});
@@ -101,6 +100,7 @@ const authMiddleware = createMiddleware(async (c, next) => {
 				if (auth_result.isAuthenticated) {
 					// Set authenticated user context
 					const auth = auth_result.toAuth();
+
 					setAuthenticatedUserInRequestContext(c, {
 						userId: auth.userId,
 						sessionId: auth.sessionId,
@@ -681,7 +681,7 @@ app.post("/api/assistant-ui-token", async (c) => {
 		const workspace_id = `${body.orgId}${user_id}`;
 
 		const assistant_ui_cloud = new AssistantCloud({
-			apiKey: process.env["VITE_ASSISTANT_UI_API_KEY"]!,
+			apiKey: process.env.VITE_ASSISTANT_UI_API_KEY!,
 			userId: user_id,
 			workspaceId: workspace_id,
 		});

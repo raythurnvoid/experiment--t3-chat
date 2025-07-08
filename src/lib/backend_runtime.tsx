@@ -1,6 +1,6 @@
 import { useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { AssistantCloud } from "@assistant-ui/react";
-import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "./auth.ts";
+import { auth_get_token } from "./auth.ts";
 
 // ===== LOCAL BACKEND CONFIGURATION =====
 const API_BASE = "http://localhost:3001/api";
@@ -14,8 +14,15 @@ const API_BASE = "http://localhost:3001/api";
 // Using the real assistant-ui cloud with API key to inspect formats
 const assistantCloud = new AssistantCloud({
 	baseUrl: "https://proj-0y1uymi64egi.assistant-api.com",
+	useAssistantUICloud: true,
 	authToken: async () => {
-		const response = await fetch("/api/assistant-ui-token", { method: "POST" });
+		console.log(await auth_get_token());
+		const response = await fetch(`${API_BASE}/assistant-ui-token`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${await auth_get_token()}`,
+			},
+		});
 
 		if (response.ok) {
 			return await response.json().then((data) => data.token);
