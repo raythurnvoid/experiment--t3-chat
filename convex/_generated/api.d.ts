@@ -14,6 +14,7 @@ import type {
   FunctionReference,
 } from "convex/server";
 import type * as ai_chat from "../ai_chat.js";
+import type * as auth from "../auth.js";
 
 /**
  * A utility for referencing Convex functions in your app's API.
@@ -25,6 +26,7 @@ import type * as ai_chat from "../ai_chat.js";
  */
 declare const fullApi: ApiFromModules<{
   ai_chat: typeof ai_chat;
+  auth: typeof auth;
 }>;
 export declare const api: FilterApi<
   typeof fullApi,

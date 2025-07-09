@@ -1,6 +1,8 @@
 import { useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { AssistantCloud } from "@assistant-ui/react";
-import { auth_get_token } from "./auth.ts";
+import { ai_chat_HARDCODED_PROJECT_ID } from "./ai_chat.ts";
+import { api } from "../../convex/_generated/api";
+import { app_convex } from "./app_convex_client.ts";
 
 // ===== LOCAL BACKEND CONFIGURATION =====
 const API_BASE = "http://localhost:3001/api";
@@ -12,23 +14,24 @@ const API_BASE = "http://localhost:3001/api";
 // });
 
 // Using the real assistant-ui cloud with API key to inspect formats
-const assistantCloud = new AssistantCloud({
+const assistant_cloud = new AssistantCloud({
 	baseUrl: "https://proj-0y1uymi64egi.assistant-api.com",
 	useAssistantUICloud: true,
 	authToken: async () => {
-		console.log(await auth_get_token());
-		const response = await fetch(`${API_BASE}/assistant-ui-token`, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${await auth_get_token()}`,
-			},
-		});
-
-		if (response.ok) {
-			return await response.json().then((data) => data.token);
-		} else {
-			const error = await response.json();
-			throw new Error("Failed to fetch assistant-ui token", error);
+		try {
+			// Call the Convex action programmatically using the client
+			debugger;
+			const result = await app_convex.action(
+				api.auth.generate_assistant_ui_token,
+				{
+					aui_api_key: import.meta.env.VITE_ASSISTANT_UI_API_KEY,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+				}
+			);
+			return result.token;
+		} catch (error) {
+			console.error("Failed to fetch assistant-ui token:", error);
+			throw new Error("Failed to fetch assistant-ui token");
 		}
 	},
 });
@@ -39,7 +42,7 @@ export const useBackendRuntime = () => {
 	// The cloud adapter automatically handles message persistence through AssistantCloudThreadHistoryAdapter
 	const runtime = useChatRuntime({
 		api: `${API_BASE}/chat`, // Using local backend chat endpoint
-		cloud: assistantCloud,
+		cloud: assistant_cloud,
 	});
 
 	return runtime;

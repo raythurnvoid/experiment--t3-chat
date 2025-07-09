@@ -17,11 +17,7 @@ import { z } from "zod";
 import { createArtifactArgsSchema } from "../types/artifact-schemas";
 import { randomUUID } from "node:crypto";
 import { stream } from "hono/streaming";
-import {
-	ai_chat_HARDCODED_WORKSPACE_ID,
-	type ai_chat_Message,
-	type ai_chat_Thread,
-} from "../lib/ai_chat.ts";
+import { type ai_chat_Message, type ai_chat_Thread } from "../lib/ai_chat.ts";
 import type { ReadonlyJSONObject } from "@assistant-ui/assistant-stream/utils";
 import {
 	auth_ANONYMOUS_USER_ID,
@@ -167,202 +163,6 @@ app.get("/", (c) => {
 
 app.get("/api/health", (c) => {
 	return c.json({ status: "ok", timestamp: new Date().toISOString() });
-});
-
-app.post("/api/v1/auth/tokens/anonymous", async (c) => {
-	const now = new Date();
-	const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
-	const refreshTokenExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-	const accessTokenData = {
-		sub: auth_ANONYMOUS_USER_ID,
-		iat: Math.floor(now.getTime() / 1000),
-		exp: Math.floor(accessTokenExpiry.getTime() / 1000),
-	};
-
-	const refreshTokenData = {
-		sub: auth_ANONYMOUS_USER_ID,
-		iat: Math.floor(now.getTime() / 1000),
-		exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
-		type: "refresh",
-	};
-
-	const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
-	const refreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
-
-	return c.json({
-		access_token: accessToken,
-		refresh_token: {
-			token: refreshToken,
-			expires_at: refreshTokenExpiry.toISOString(),
-		},
-	});
-});
-
-app.post("/api/v1/auth/tokens/refresh", async (c) => {
-	const now = new Date();
-	const accessTokenExpiry = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
-	const refreshTokenExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-	const accessTokenData = {
-		sub: auth_ANONYMOUS_USER_ID,
-		iat: Math.floor(now.getTime() / 1000),
-		exp: Math.floor(accessTokenExpiry.getTime() / 1000),
-	};
-
-	const refreshTokenData = {
-		sub: auth_ANONYMOUS_USER_ID,
-		iat: Math.floor(now.getTime() / 1000),
-		exp: Math.floor(refreshTokenExpiry.getTime() / 1000),
-		type: "refresh",
-	};
-
-	const accessToken = `anon.${btoa(JSON.stringify(accessTokenData))}`;
-	const newRefreshToken = `refresh.${btoa(JSON.stringify(refreshTokenData))}`;
-
-	return c.json({
-		access_token: accessToken,
-		refresh_token: {
-			token: newRefreshToken,
-			expires_at: refreshTokenExpiry.toISOString(),
-		},
-	});
-});
-
-app.get("/api/v1/threads", (c) => {
-	const threadList = Array.from(threads.values()).map((thread) => ({
-		...thread.meta,
-		metadata: null,
-	}));
-
-	threadList.forEach((thread, idx) => {
-		console.log(`  ${idx}: ${thread.id} - "${thread.title}"`);
-	});
-
-	return c.json({ threads: threadList });
-});
-
-app.post("/api/v1/threads", async (c) => {
-	const body = await c.req.json();
-	const threadId = `thread_${randomUUID().replace(/-/g, "").substring(0, 24)}`;
-
-	console.log(
-		`🆕 Creating new thread: ${threadId} with title: "${body.title || "New Chat"}"`
-	);
-
-	const now = new Date();
-	const newThread: ThreadData = {
-		meta: {
-			id: threadId,
-			title: body.title || "New Chat",
-			is_archived: false,
-			created_at: now.toISOString(),
-			updated_at: now.toISOString(),
-			last_message_at: now,
-			workspace_id: ai_chat_HARDCODED_WORKSPACE_ID,
-			metadata: {
-				updated_by: auth_ANONYMOUS_USER_ID,
-				created_by: auth_ANONYMOUS_USER_ID,
-			},
-			external_id: null,
-			project_id: "project_123",
-		},
-		messages: [],
-	};
-
-	threads.set(threadId, newThread);
-
-	console.log(`✅ Thread created successfully: ${threadId}`);
-	console.log(`📊 Total threads now: ${threads.size}`);
-
-	return c.json({ thread_id: threadId });
-});
-
-app.put("/api/v1/threads/:threadId", async (c) => {
-	const threadId = c.req.param("threadId");
-	const body = await c.req.json();
-
-	const thread = threads.get(threadId);
-	if (!thread) {
-		return c.json({ error: "Thread not found" }, 404);
-	}
-
-	if (body.title !== undefined) {
-		thread.meta.title = body.title;
-	}
-	if (body.is_archived !== undefined) {
-		thread.meta.is_archived = body.is_archived;
-	}
-
-	thread.meta.updated_at = new Date().toISOString();
-	thread.meta.metadata.updated_by = auth_ANONYMOUS_USER_ID;
-
-	threads.set(threadId, thread);
-
-	return c.json({}, 200);
-});
-
-app.delete("/api/v1/threads/:threadId", (c) => {
-	const threadId = c.req.param("threadId");
-
-	if (!threads.has(threadId)) {
-		return c.json({ error: "Thread not found" }, 404);
-	}
-
-	threads.delete(threadId);
-
-	return c.json({}, 200);
-});
-
-app.get("/api/v1/threads/:threadId/messages", (c) => {
-	const threadId = c.req.param("threadId");
-	console.log(`📨 Fetching messages for thread: ${threadId}`);
-
-	const thread = threads.get(threadId);
-	if (!thread) {
-		console.log(`❌ Thread not found: ${threadId}`);
-		return c.json({ error: "Thread not found" }, 404);
-	}
-
-	return c.json({
-		messages: thread.messages,
-	});
-});
-
-app.post("/api/v1/threads/:threadId/messages", async (c) => {
-	const threadId = c.req.param("threadId");
-	const body = await c.req.json();
-
-	const thread = threads.get(threadId);
-	if (!thread) {
-		console.log(`❌ Thread not found: ${threadId}`);
-		return c.json({ error: "Thread not found" }, 404);
-	}
-
-	const messageId = generateShortId();
-	const now = new Date();
-
-	// Create message in exact cloud format
-	const assistantMessage: ai_chat_Message = {
-		id: messageId,
-		parent_id: body.parent_id || null,
-		thread_id: threadId,
-		created_by: auth_ANONYMOUS_USER_ID,
-		created_at: now.toISOString(),
-		updated_by: auth_ANONYMOUS_USER_ID,
-		updated_at: now.toISOString(),
-		format: "aui/v0",
-		content: body.content,
-		height:
-			((body.content && body.content.role) || body.role) === "user" ? 0 : 1,
-	};
-
-	thread.messages.unshift(assistantMessage);
-	thread.meta.last_message_at = now;
-	thread.meta.updated_at = now.toISOString();
-	threads.set(threadId, thread);
-
-	return c.json({ message_id: messageId });
 });
 
 app.post("/api/v1/runs/stream", async (c) => {
@@ -678,7 +478,7 @@ app.post("/api/assistant-ui-token", async (c) => {
 		const body = await c.req.json();
 
 		const user_id = server_auth_get_user_id(c);
-		const workspace_id = `${body.orgId}${user_id}`;
+		const workspace_id = `${body.project_id}--${user_id}`;
 
 		const assistant_ui_cloud = new AssistantCloud({
 			apiKey: process.env.VITE_ASSISTANT_UI_API_KEY!,
@@ -717,12 +517,3 @@ const port = Number(process.env.PORT) || 3001;
 serve({ fetch: app.fetch, port }, () => {
 	console.log(`🚀 Hono server is running on port ${port}`);
 });
-
-// Generate a message ID that follows the Assistant Cloud pattern, e.g. "msg_00p6RvTKptdp5klszEY0jQEi"
-// The cloud uses a "msg_" prefix followed by a 22-24 character alpha-numeric string.
-// Using crypto.randomUUID ensures good entropy while keeping the format deterministic.
-function generateShortId(): string {
-	// Remove dashes from the UUID and take the first 24 characters for consistency with the cloud length
-	const randomPart = randomUUID().replace(/-/g, "").substring(0, 24);
-	return `msg_${randomPart}`;
-}

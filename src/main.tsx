@@ -1,9 +1,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
-import { ConvexProvider } from "convex/react";
 import { app_convex } from "./lib/app_convex_client";
-import { ClerkProvider } from "@clerk/clerk-react";
+import { ClerkProvider, useAuth } from "@clerk/clerk-react";
+import { ConvexProviderWithClerk } from "convex/react-clerk";
 import "./app.css";
 
 // Import the generated route tree
@@ -29,9 +29,9 @@ declare module "@tanstack/react-router" {
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
-			<ConvexProvider client={app_convex}>
+			<ConvexProviderWithClerk client={app_convex} useAuth={useAuth}>
 				<RouterProvider router={router} />
-			</ConvexProvider>{" "}
+			</ConvexProviderWithClerk>
 		</ClerkProvider>
 	</StrictMode>
 );

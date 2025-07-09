@@ -20,6 +20,42 @@ You can however write inside [+personal/+ai/](mdc:+personal/+ai).
 
 # Code guidelines
 
+Use snake_case for all variables and functions.
+
+You can namespace code using snake_case syntax such as:
+
+```ts
+// namespaced constant
+export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
+
+// namespaced class
+export class ai_chat_MyClass {
+	constructor(public readonly project_id: string) {}
+}
+
+// namespaced interface
+export interface ai_chat_MyInterface {
+	project_id: string;
+}
+
+// namespaced type
+export type ai_chat_MyType = {
+	project_id: string;
+};
+
+// namespaced function
+export function ai_chat_my_function(project_id: string) {
+	return project_id;
+}
+
+// namespaced enum
+export enum ai_chat_MyEnum {
+	PROJECT_ID = "app_project_local_dev",
+}
+```
+
+Namespacing will allow to better organize the results from the IDE autocompletion.
+
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
 The code of the app is located at [src/](mdc:src).

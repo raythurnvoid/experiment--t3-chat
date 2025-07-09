@@ -8,17 +8,17 @@ import {
 	UserButton,
 } from "@clerk/clerk-react";
 import { useEffect } from "react";
-import { auth_set_token_retriever } from "../lib/auth.ts";
+import { auth_set_token_manager } from "../lib/auth.ts";
 
 function Layout() {
 	const clerk_auth = useAuth();
 
 	useEffect(() => {
-		auth_set_token_retriever({
-			isAuthenticated: clerk_auth.isSignedIn ?? false,
+		auth_set_token_manager({
+			isAuthenticated: () => clerk_auth.isSignedIn ?? false,
 			getToken: () => clerk_auth.getToken(),
 		});
-	}, [clerk_auth, clerk_auth.isSignedIn]);
+	}, [clerk_auth]);
 
 	return (
 		<>

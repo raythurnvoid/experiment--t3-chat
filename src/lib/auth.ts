@@ -3,23 +3,22 @@ export const auth_ANONYMOUS_ORG_ID = auth_ANONYMOUS_USER_ID;
 export const auth_ANONYMOUS_WORKSPACE_ID = auth_ANONYMOUS_USER_ID;
 export const auth_ANONYMOUSE_PROJECT_ID = auth_ANONYMOUS_USER_ID;
 
-interface AuthTokenRetriever {
-	isAuthenticated: boolean;
+interface AuthTokenManager {
+	isAuthenticated: () => boolean;
 	getToken: () => Promise<string | null>;
 }
 
 /**
- * Callers of `auth_get_token` will wait until the `auth_token_retriever.promise` is resolved.
+ * Callers of `auth_get_token` will wait until the `auth_token_manager.promise` is resolved.
  *
  * Once resolved the token refreshed will replace the promise to
  * ensure new calls to `auth_get_token` will return the new token.
  */
-let auth_token_retriever:
-	| (PromiseWithResolvers<AuthTokenRetriever> & { resolved: boolean })
-	| undefined = undefined;
+let auth_token_manager = init_auth_token_manager();
 
-function make_auth_token() {
-	const obj = Object.assign(Promise.withResolvers<AuthTokenRetriever>(), {
+function init_auth_token_manager() {
+	const obj = Object.assign(Promise.withResolvers<AuthTokenManager>(), {
+		// Track if the token manager is set
 		resolved: false,
 	});
 
@@ -31,25 +30,20 @@ function make_auth_token() {
 	return obj;
 }
 
-export function auth_get_token(): Promise<string | null> {
-	if (auth_token_retriever === undefined) {
-		auth_token_retriever = make_auth_token();
-	}
-
-	return auth_token_retriever.promise.then(async (retriever) => {
-		if (retriever.isAuthenticated) {
-			const token = await retriever.getToken();
-			return token;
-		}
-
-		return null;
-	});
+export function auth_get_token_manager_token() {
+	return auth_token_manager.promise.then((manager) => manager.getToken());
 }
 
-export function auth_set_token_retriever(retriever: AuthTokenRetriever) {
-	if (auth_token_retriever === undefined || auth_token_retriever.resolved) {
-		auth_token_retriever = make_auth_token();
+export function auth_get_token_manager_is_authenticated() {
+	return auth_token_manager.promise.then((manager) => manager.isAuthenticated);
+}
+
+export function auth_set_token_manager(retriever: AuthTokenManager) {
+	// Replace the token manager if is already set
+	if (auth_token_manager.resolved) {
+		auth_token_manager = init_auth_token_manager();
 	}
 
-	auth_token_retriever.resolve(retriever);
+	// Set the token manager
+	auth_token_manager.resolve(retriever);
 }

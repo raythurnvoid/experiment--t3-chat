@@ -1,6 +1,6 @@
 import {
 	ai_chat_HARDCODED_PROJECT_ID,
-	ai_chat_HARDCODED_WORKSPACE_ID,
+	ai_chat_HARDCODED_ORG_ID,
 } from "../src/lib/ai_chat.ts";
 import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth.ts";
 import { math_clamp } from "../src/lib/utils.ts";
@@ -27,7 +27,7 @@ export const threads_list = query({
 		let threadsQuery = ctx.db
 			.query("threads")
 			.withIndex("by_workspace", (q) =>
-				q.eq("workspace_id", ai_chat_HARDCODED_WORKSPACE_ID)
+				q.eq("workspace_id", ai_chat_HARDCODED_ORG_ID)
 			);
 
 		if (args.includeArchived !== true) {
@@ -69,7 +69,7 @@ export const thread_create = mutation({
 			title: args.title ?? "New Chat",
 			last_message_at: args.last_message_at,
 			archived: false,
-			workspace_id: ai_chat_HARDCODED_WORKSPACE_ID,
+			workspace_id: ai_chat_HARDCODED_ORG_ID,
 			created_by: created_by,
 			updated_by: created_by,
 			updated_at: now,
