@@ -56,8 +56,13 @@ export enum ai_chat_MyEnum {
 
 Namespacing will allow to better organize the results from the IDE autocompletion.
 
+Use camelCase only when interacting with 3rd party functions or when the module already uses
+camelCase as a naming convention.
+
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
 The code of the app is located at [src/](mdc:src).
 
 The [src/server/](mdc:src/server) folder contains the Hono server code.
+
+The [convex/](mdc:convex) folder contains the Convex code.

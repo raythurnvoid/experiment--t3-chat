@@ -5,8 +5,12 @@ import { api } from "../../convex/_generated/api";
 import { ai_chat_HARDCODED_PROJECT_ID } from "./ai_chat.ts";
 import { app_convex } from "./app_convex_client.ts";
 
-// ===== LOCAL BACKEND CONFIGURATION =====
-const API_BASE = "http://localhost:3001/api";
+// ===== CONVEX BACKEND CONFIGURATION =====
+// Get Convex deployment URL from environment or use default
+const CONVEX_URL =
+	import.meta.env.VITE_CONVEX_URL ||
+	"https://your-convex-deployment.convex.site";
+const API_BASE = CONVEX_URL;
 
 async function get_assistant_ui_token() {
 	try {
@@ -25,26 +29,19 @@ async function get_assistant_ui_token() {
 	}
 }
 
-// AssistantCloud instance with our backend
+// AssistantCloud instance with Convex backend
 const assistant_cloud = new AssistantCloud({
 	baseUrl: API_BASE,
 	useAssistantUICloud: false,
 	authToken: get_assistant_ui_token,
 });
 
-// Using the real assistant-ui cloud with API key to inspect formats
-// const assistant_cloud = new AssistantCloud({
-// 	baseUrl: "https://proj-0y1uymi64egi.assistant-api.com",
-// 	useAssistantUICloud: true,
-// 	authToken: get_assistant_ui_token,
-// });
-
 // Public hook – use this to get multi-thread support with AI SDK
 export const useBackendRuntime = () => {
-	// Use useChatRuntime with the official AssistantCloud adapter
-	// The cloud adapter automatically handles message persistence through AssistantCloudThreadHistoryAdapter
+	// Use useChatRuntime with the Convex HTTP endpoints
+	// The chat endpoint is now handled by Convex HTTP actions
 	const runtime = useChatRuntime({
-		api: `${API_BASE}/chat`, // Using local backend chat endpoint
+		api: `${API_BASE}/api/chat`, // Using Convex HTTP action endpoint
 		cloud: assistant_cloud,
 		headers: async () => {
 			const token = await auth_get_token_manager_token();

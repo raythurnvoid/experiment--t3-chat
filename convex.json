@@ -1,0 +1,5 @@
+{
+	"node": {
+		"externalPackages": ["ai", "@ai-sdk/openai", "zod"]
+	}
+}
