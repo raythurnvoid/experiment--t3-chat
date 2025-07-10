@@ -2,7 +2,7 @@ import {
 	ai_chat_HARDCODED_PROJECT_ID,
 	ai_chat_HARDCODED_ORG_ID,
 } from "../src/lib/ai_chat.ts";
-import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth.ts";
+import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth-constants.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { query, mutation } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";

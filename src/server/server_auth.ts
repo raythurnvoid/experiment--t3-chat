@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { auth_ANONYMOUS_USER_ID } from "../lib/auth.ts";
+import { auth_ANONYMOUS_USER_ID } from "../lib/auth-constants.ts";
 
 export function server_auth_set_user_in_context(
 	c: Context,

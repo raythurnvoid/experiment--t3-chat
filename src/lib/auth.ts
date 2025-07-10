@@ -1,7 +1,4 @@
-export const auth_ANONYMOUS_USER_ID = "anonymous";
-export const auth_ANONYMOUS_ORG_ID = auth_ANONYMOUS_USER_ID;
-export const auth_ANONYMOUS_WORKSPACE_ID = auth_ANONYMOUS_USER_ID;
-export const auth_ANONYMOUSE_PROJECT_ID = auth_ANONYMOUS_USER_ID;
+import { useAuth as useClerkAuth } from "@clerk/clerk-react";
 
 interface AuthTokenManager {
 	isAuthenticated: () => boolean;
@@ -46,4 +43,15 @@ export function auth_set_token_manager(retriever: AuthTokenManager) {
 
 	// Set the token manager
 	auth_token_manager.resolve(retriever);
+}
+
+export function useAuth() {
+	const clerk_auth = useClerkAuth();
+
+	return {
+		userId: clerk_auth.userId,
+		isAuthenticated: clerk_auth.isSignedIn,
+		isLoaded: clerk_auth.isLoaded,
+		getToken: clerk_auth.getToken,
+	};
 }

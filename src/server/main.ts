@@ -22,7 +22,7 @@ import type { ReadonlyJSONObject } from "@assistant-ui/assistant-stream/utils";
 import {
 	auth_ANONYMOUS_USER_ID,
 	auth_ANONYMOUS_WORKSPACE_ID,
-} from "../lib/auth.ts";
+} from "../lib/auth-constants.ts";
 import { createClerkClient } from "@clerk/backend";
 import { createMiddleware } from "hono/factory";
 import {
