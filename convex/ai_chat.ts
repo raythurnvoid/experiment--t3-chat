@@ -1,7 +1,4 @@
-import {
-	ai_chat_HARDCODED_PROJECT_ID,
-	ai_chat_HARDCODED_ORG_ID,
-} from "../src/lib/ai_chat.ts";
+import { ai_chat_HARDCODED_PROJECT_ID, ai_chat_HARDCODED_ORG_ID } from "../src/lib/ai_chat.ts";
 import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth-constants.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction } from "./_generated/server";
@@ -10,16 +7,10 @@ import { v } from "convex/values";
 import app_convex_schema from "./schema.ts";
 // AI SDK imports
 import { openai } from "@ai-sdk/openai";
-import {
-	streamText,
-	tool,
-	smoothStream,
-	createDataStream,
-	formatDataStreamPart,
-	type CoreMessage,
-} from "ai";
+import { streamText, tool, smoothStream, createDataStream, formatDataStreamPart, type CoreMessage } from "ai";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
+import type { api_schemas_Main } from "../src/lib/api-schemas.ts";
 
 /**
  * Query to list all threads for a workspace with pagination
@@ -30,27 +21,17 @@ export const threads_list = query({
 		includeArchived: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
-		args.paginationOpts.numItems = math_clamp(
-			args.paginationOpts.numItems,
-			1,
-			50
-		);
+		args.paginationOpts.numItems = math_clamp(args.paginationOpts.numItems, 1, 50);
 
 		let threadsQuery = ctx.db
 			.query("threads")
-			.withIndex("by_workspace", (q) =>
-				q.eq("workspace_id", ai_chat_HARDCODED_ORG_ID)
-			);
+			.withIndex("by_workspace", (q) => q.eq("workspace_id", ai_chat_HARDCODED_ORG_ID));
 
 		if (args.includeArchived !== true) {
-			threadsQuery = threadsQuery.filter((q) =>
-				q.eq(q.field("archived"), false)
-			);
+			threadsQuery = threadsQuery.filter((q) => q.eq(q.field("archived"), false));
 		}
 
-		const result = await threadsQuery
-			.order("desc")
-			.paginate(args.paginationOpts);
+		const result = await threadsQuery.order("desc").paginate(args.paginationOpts);
 
 		return {
 			...result,
@@ -122,8 +103,8 @@ export const thread_update = mutation({
 					? {
 							archived: args.is_archived,
 						}
-					: {}
-			)
+					: {},
+			),
 		);
 	},
 });
@@ -214,15 +195,15 @@ export const thread_messages_add = mutation({
  */
 export const chat = httpAction(async (ctx, request) => {
 	try {
-		const body = await request.json();
+		const body = (await request.json()) as api_schemas_Main["/api/chat"]["get"]["body"];
 
 		// Validate messages from request
 		const messages = body.messages as CoreMessage[];
 		if (!Array.isArray(messages)) {
-			return new Response(
-				JSON.stringify({ error: "Invalid messages format" }),
-				{ status: 400, headers: { "Content-Type": "application/json" } }
-			);
+			return new Response(JSON.stringify({ error: "Invalid messages format" }), {
+				status: 400,
+				headers: { "Content-Type": "application/json" },
+			});
 		}
 
 		const dataStream = createDataStream({
@@ -241,9 +222,7 @@ export const chat = httpAction(async (ctx, request) => {
 						weather: tool({
 							description: "Get the weather in a location (in Celsius)",
 							parameters: z.object({
-								location: z
-									.string()
-									.describe("The location to get the weather for"),
+								location: z.string().describe("The location to get the weather for"),
 							}),
 							execute: async ({ location }) => ({
 								location,
@@ -281,10 +260,8 @@ export const chat = httpAction(async (ctx, request) => {
 						msg.role === "assistant" &&
 						Array.isArray(msg.content) &&
 						msg.content.some(
-							(content) =>
-								content.type === "tool-call" &&
-								content.toolName === "request_create_artifact"
-						)
+							(content) => content.type === "tool-call" && content.toolName === "request_create_artifact",
+						),
 				);
 
 				if (should_finish) {
@@ -294,7 +271,7 @@ export const chat = httpAction(async (ctx, request) => {
 						formatDataStreamPart("finish_message", {
 							finishReason: finish_reason,
 							usage,
-						})
+						}),
 					);
 				} else {
 					// Generate a simple UUID (avoiding external dependencies)
@@ -349,11 +326,7 @@ export const chat = httpAction(async (ctx, request) => {
 						model: openai("gpt-4o-mini"),
 						system: `Send a brief confirmation message to the user that the artifact has been created successfully. 
 							Keep the message concise and friendly.`,
-						messages: [
-							...messages,
-							...response1.messages,
-							...response2.messages,
-						],
+						messages: [...messages, ...response1.messages, ...response2.messages],
 						temperature: 0.7,
 						maxTokens: 200,
 						maxSteps: 1,
@@ -377,11 +350,9 @@ export const chat = httpAction(async (ctx, request) => {
 		return new Response(dataStream, {
 			headers: {
 				"X-Vercel-AI-Data-Stream": "v1",
-				// "Content-Type": "text/plain; charset=utf-8",
-				// "Content-Encoding": "none",
-				// "Transfer-Encoding": "chunked",
-				// Connection: "keep-alive",
-				// "Cache-Control": "no-cache",
+				"Content-Type": "text/plain; charset=utf-8",
+				"Transfer-Encoding": "chunked",
+				"Cache-Control": "no-cache",
 			},
 		});
 	} catch (error: unknown) {
@@ -396,7 +367,7 @@ export const chat = httpAction(async (ctx, request) => {
 				{
 					status: 500,
 					headers: { "Content-Type": "application/json" },
-				}
+				},
 			);
 		}
 
@@ -408,7 +379,7 @@ export const chat = httpAction(async (ctx, request) => {
 			{
 				status: 500,
 				headers: { "Content-Type": "application/json" },
-			}
+			},
 		);
 	}
 });
@@ -433,14 +404,9 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 		// Extract conversation text from messages for title generation
 		const conversation_text = messages
 			.map((msg: any) =>
-				[
-					`${msg.role}:`,
-					Array.isArray(msg.content)
-						? msg.content.map((part: any) => part.text).join(" ")
-						: msg.content,
-				]
+				[`${msg.role}:`, Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content]
 					.filter(Boolean)
-					.join(" ")
+					.join(" "),
 			)
 			.filter(Boolean)
 			.join("\n");
@@ -484,7 +450,7 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			{
 				status: 500,
 				headers: { "Content-Type": "application/json" },
-			}
+			},
 		);
 	}
 });

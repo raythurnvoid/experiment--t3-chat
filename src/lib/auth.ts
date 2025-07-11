@@ -27,11 +27,11 @@ function init_auth_token_manager() {
 	return obj;
 }
 
-export function auth_get_token_manager_token() {
+export function auth_get_token() {
 	return auth_token_manager.promise.then((manager) => manager.getToken());
 }
 
-export function auth_get_token_manager_is_authenticated() {
+export function auth_get_is_authenticated() {
 	return auth_token_manager.promise.then((manager) => manager.isAuthenticated);
 }
 

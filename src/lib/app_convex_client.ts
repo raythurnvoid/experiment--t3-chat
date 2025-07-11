@@ -1,15 +1,10 @@
 import { ConvexReactClient } from "convex/react";
 import type { ai_chat_Message, ai_chat_Thread } from "./ai_chat.ts";
-import type {
-	Doc as app_convex_Doc,
-	Id as app_convex_Id,
-} from "../../convex/_generated/dataModel.js";
+import type { Doc as app_convex_Doc, Id as app_convex_Id } from "../../convex/_generated/dataModel.js";
 import type convex_schema from "../../convex/schema.ts";
 
 // Cannot be import.meta.env.VITE_CONVEX_URL because indirectly imported by the hono server via assistant-ui dep
-const deploymentURL = import.meta.env
-	? import.meta.env.VITE_CONVEX_URL
-	: (process.env.VITE_CONVEX_URL as string);
+const deploymentURL = import.meta.env ? import.meta.env.VITE_CONVEX_URL : (process.env.VITE_CONVEX_URL as string);
 
 export const app_convex = new ConvexReactClient(deploymentURL);
 
@@ -41,9 +36,7 @@ while it is necessary to ensure our types are compatible with Assistant UI.
  * @param convex_thread
  * @returns The adapted thread meta: {@link ai_chat_Thread}
  */
-export function app_convex_adapt_convex_to_app_thread(
-	convex_thread: ConvexThread
-): ai_chat_Thread {
+export function app_convex_adapt_convex_to_app_thread(convex_thread: ConvexThread): ai_chat_Thread {
 	return {
 		id: convex_thread._id,
 		title: convex_thread.title,
@@ -67,9 +60,7 @@ export function app_convex_adapt_convex_to_app_thread(
  * @param convex_message
  * @returns The adapted message: {@link ai_chat_Message}
  */
-export function app_convex_adapt_convex_to_app_message(
-	convex_message: ConvexMessage
-): ai_chat_Message {
+export function app_convex_adapt_convex_to_app_message(convex_message: ConvexMessage): ai_chat_Message {
 	return {
 		id: convex_message._id,
 		parent_id: convex_message.parent_id,
@@ -80,7 +71,7 @@ export function app_convex_adapt_convex_to_app_message(
 		updated_at: new Date(convex_message.updated_at).toISOString(),
 		format: convex_message.format,
 		height: convex_message.height,
-		content: convex_message.content,
+		content: convex_message.content as any,
 	};
 }
 
