@@ -45,7 +45,7 @@ export class BadResult<
 	Message extends string = string,
 	Args extends {
 		cause?: Error | BadResult;
-		meta?: UnknownRecord;
+		meta?: {};
 	} = object,
 > {
 	readonly name = "BadResult";
@@ -63,6 +63,7 @@ export class BadResult<
 			meta: undefined,
 		},
 	) {
+		this.message = message;
 		Object.assign(this, args);
 
 		// Define stack as enumerable getter, by default `get` accessors are not enumerable
@@ -120,6 +121,7 @@ export class BadResult<
 		value: T | BadResult_Any | Error,
 	): asserts value is Exclude<T, BadResult_Any | Error> {
 		if (BadResult.isBadResultOrError(value)) {
+			// eslint-disable-next-line @typescript-eslint/only-throw-error
 			throw value;
 		}
 	}
@@ -402,6 +404,7 @@ export class Result<
 
 	static throwIfBad<T extends { ok: any; bad: any }>(result: T): asserts result is Exclude<T, Result<{ bad: any }>> {
 		if (result.bad) {
+			// eslint-disable-next-line @typescript-eslint/only-throw-error
 			throw result.bad;
 		}
 	}

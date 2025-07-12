@@ -73,8 +73,8 @@ const app_convex_schema = defineSchema({
 							type: v.literal("file"),
 							data: v.string(),
 							mimeType: v.string(),
-						})
-					)
+						}),
+					),
 				),
 				metadata: v.object({
 					unstable_state: v.any(),
@@ -98,17 +98,17 @@ const app_convex_schema = defineSchema({
 									v.literal("tool-calls"),
 									v.literal("error"),
 									v.literal("other"),
-									v.literal("unknown")
+									v.literal("unknown"),
 								),
 								usage: v.optional(
 									v.object({
 										promptTokens: v.number(),
 										completionTokens: v.number(),
-									})
+									}),
 								),
 								isContinued: v.boolean(),
-							})
-						)
+							}),
+						),
 					),
 					custom: v.record(v.string(), v.any()),
 				}),
@@ -118,10 +118,11 @@ const app_convex_schema = defineSchema({
 							v.literal("running"),
 							v.literal("requires-action"),
 							v.literal("complete"),
-							v.literal("incomplete")
+							v.literal("incomplete"),
 						),
 						reason: v.optional(v.string()),
-					})
+						error: v.optional(v.any()),
+					}),
 				),
 			}),
 			// User message content
@@ -144,8 +145,8 @@ const app_convex_schema = defineSchema({
 							type: v.literal("file"),
 							data: v.string(),
 							mimeType: v.string(),
-						})
-					)
+						}),
+					),
 				),
 				metadata: v.object({
 					custom: v.record(v.string(), v.any()),
@@ -156,10 +157,11 @@ const app_convex_schema = defineSchema({
 							v.literal("running"),
 							v.literal("requires-action"),
 							v.literal("complete"),
-							v.literal("incomplete")
+							v.literal("incomplete"),
 						),
 						reason: v.optional(v.string()),
-					})
+						error: v.optional(v.any()),
+					}),
 				),
 			}),
 			// System message content
@@ -171,8 +173,8 @@ const app_convex_schema = defineSchema({
 						v.object({
 							type: v.literal("text"),
 							text: v.string(),
-						})
-					)
+						}),
+					),
 				),
 				metadata: v.object({
 					custom: v.record(v.string(), v.any()),
@@ -183,12 +185,13 @@ const app_convex_schema = defineSchema({
 							v.literal("running"),
 							v.literal("requires-action"),
 							v.literal("complete"),
-							v.literal("incomplete")
+							v.literal("incomplete"),
 						),
 						reason: v.optional(v.string()),
-					})
+						error: v.optional(v.any()),
+					}),
 				),
-			})
+			}),
 		),
 	})
 		.index("by_thread", ["thread_id"])

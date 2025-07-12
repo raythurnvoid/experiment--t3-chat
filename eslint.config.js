@@ -19,7 +19,7 @@ export default tseslint.config(
 				},
 			},
 		],
-		files: ["**/*.{ts,tsx}"],
+		files: ["src/**/*.{ts,tsx}"],
 		languageOptions: {
 			ecmaVersion: 2025,
 			globals: globals.browser,
@@ -46,6 +46,7 @@ export default tseslint.config(
 			"@typescript-eslint/no-unnecessary-type-assertion": "off",
 			"@typescript-eslint/no-unnecessary-type-constraint": "off",
 			"@typescript-eslint/no-unsafe-argument": "off",
+			"@typescript-eslint/no-unsafe-assignment": "off",
 			"@typescript-eslint/no-unsafe-call": "off",
 			"@typescript-eslint/no-unsafe-declaration-merging": "off",
 			"@typescript-eslint/no-unsafe-enum-comparison": "off",
@@ -55,7 +56,14 @@ export default tseslint.config(
 			"@typescript-eslint/no-unused-expressions": "off",
 			"@typescript-eslint/no-unused-vars": "off",
 			"@typescript-eslint/prefer-as-const": "off",
-			"@typescript-eslint/no-unsafe-member-access": "off",
+			"@typescript-eslint/only-throw-error": [
+				"error",
+				{
+					allowThrowingAny: false,
+					allowThrowingUnknown: false,
+					allow: ["BadResult", "BadResultAbort", "BadResult_Any"],
+				},
+			],
 		},
 	},
 );

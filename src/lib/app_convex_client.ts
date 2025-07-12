@@ -4,9 +4,15 @@ import type { Doc as app_convex_Doc, Id as app_convex_Id } from "../../convex/_g
 import type convex_schema from "../../convex/schema.ts";
 
 // Cannot be import.meta.env.VITE_CONVEX_URL because indirectly imported by the hono server via assistant-ui dep
-const deploymentURL = import.meta.env ? import.meta.env.VITE_CONVEX_URL : (process.env.VITE_CONVEX_URL as string);
+export const app_convex_deployment_url = import.meta.env
+	? (import.meta.env.VITE_CONVEX_URL as string)
+	: (process.env.VITE_CONVEX_URL as string);
 
-export const app_convex = new ConvexReactClient(deploymentURL);
+if (!app_convex_deployment_url) {
+	throw new Error("`VITE_CONVEX_URL` env var is not set");
+}
+
+export const app_convex = new ConvexReactClient(app_convex_deployment_url);
 
 export { api as app_convex_api } from "../../convex/_generated/api.js";
 

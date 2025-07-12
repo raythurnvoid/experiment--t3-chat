@@ -27,7 +27,7 @@ async function get_assistant_ui_token() {
 // AssistantCloud instance with Convex backend
 const assistant_cloud = new AssistantCloud({
 	baseUrl: API_BASE,
-	useAssistantUICloud: false,
+	useAssistantUiCloud: false,
 	authToken: get_assistant_ui_token,
 });
 
@@ -35,19 +35,26 @@ const assistant_cloud = new AssistantCloud({
 export const useBackendRuntime = () => {
 	// Use useChatRuntime with the Convex HTTP endpoints
 	// The chat endpoint is now handled by Convex HTTP actions
+	// const runtime = useChatRuntime({
+	// 	useAssistantUiFetch: true,
+	// 	api: `${API_BASE}/api/chat`, // Using Convex HTTP action endpoint
+	// 	cloud: assistant_cloud,
+	// 	credentials: "omit",
+	// 	headers: async () => {
+	// 		const token = await auth_get_token();
+
+	// 		const headers = new Headers();
+	// 		if (token) {
+	// 			headers.set("Authorization", `Bearer ${token}`);
+	// 		}
+
+	// 		return headers;
+	// 	},
+	// });
+
 	const runtime = useChatRuntime({
-		api: `${API_BASE}/api/chat`, // Using Convex HTTP action endpoint
+		useAssistantUiFetch: false,
 		cloud: assistant_cloud,
-		headers: async () => {
-			const token = await auth_get_token();
-
-			const headers = new Headers();
-			if (token) {
-				headers.set("Authorization", `Bearer ${token}`);
-			}
-
-			return headers;
-		},
 	});
 
 	return runtime;

@@ -88,7 +88,12 @@ export interface api_schemas_Main {
 			pathParams: never;
 			searchParams: never;
 			body: {
-				messages: Array<any>;
+				messages: any[];
+				tools: any;
+				system?: string | undefined;
+				runConfig?: any;
+				unstable_assistantMessageId?: string;
+				state?: any;
 			};
 			headers: {
 				Authorization: string;
@@ -103,10 +108,15 @@ export interface api_schemas_Main {
 	};
 
 	"/api/v1/runs/stream": {
-		get: {
+		post: {
 			pathParams: never;
 			searchParams: never;
-			body: Array<any>;
+			body: {
+				thread_id: string;
+				assistant_id: string;
+				messages: readonly unknown[];
+				response_format?: string;
+			};
 			headers: {
 				Authorization: string;
 			};

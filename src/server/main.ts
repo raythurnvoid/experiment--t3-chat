@@ -3,14 +3,7 @@ import "./server_env.ts";
 
 import { openai } from "@ai-sdk/openai";
 import { serve } from "@hono/node-server";
-import {
-	formatDataStreamPart,
-	streamText,
-	tool,
-	smoothStream,
-	createDataStream,
-	type CoreMessage,
-} from "ai";
+import { formatDataStreamPart, streamText, tool, smoothStream, createDataStream, type CoreMessage } from "ai";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
@@ -19,10 +12,7 @@ import { randomUUID } from "node:crypto";
 import { stream } from "hono/streaming";
 import { type ai_chat_Message, type ai_chat_Thread } from "../lib/ai_chat.ts";
 import type { ReadonlyJSONObject } from "@assistant-ui/assistant-stream/utils";
-import {
-	auth_ANONYMOUS_USER_ID,
-	auth_ANONYMOUS_WORKSPACE_ID,
-} from "../lib/auth-constants.ts";
+import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "../lib/auth-constants.ts";
 import { createClerkClient } from "@clerk/backend";
 import { createMiddleware } from "hono/factory";
 import {
@@ -59,8 +49,8 @@ const threads = new Map<string, ThreadData>();
 
 // Initialize Clerk client
 const clerk_client = createClerkClient({
-	secretKey: process.env.CLERK_SECRET_KEY,
-	publishableKey: process.env.VITE_CLERK_PUBLISHABLE_KEY,
+	secretKey: process.env.CLERK_SECRET_KEY!,
+	publishableKey: process.env.VITE_CLERK_PUBLISHABLE_KEY!,
 });
 
 function setAuthenticatedUserInRequestContext(
@@ -69,7 +59,7 @@ function setAuthenticatedUserInRequestContext(
 		userId: string;
 		sessionId: string;
 		isAuthenticated: boolean;
-	}
+	},
 ) {
 	if (values.isAuthenticated) {
 		c.set("userId", values.userId);
@@ -89,7 +79,7 @@ const authMiddleware = createMiddleware(async (c, next) => {
 			// Try to verify Clerk token
 			try {
 				const auth_result = await clerk_client.authenticateRequest(c.req.raw, {
-					jwtKey: process.env.CLERK_JWT_KEY,
+					jwtKey: process.env.CLERK_JWT_KEY!,
 					authorizedParties: ["http://localhost:5173", "http://localhost:3000"],
 				});
 
@@ -104,10 +94,7 @@ const authMiddleware = createMiddleware(async (c, next) => {
 					});
 				} else {
 					// Invalid token, fall back to anonymous
-					console.warn(
-						"Clerk `authenticateRequest` returned not authenticated:",
-						auth_result
-					);
+					console.warn("Clerk `authenticateRequest` returned not authenticated:", auth_result);
 					server_auth_set_anonymous_user_in_context(c);
 				}
 			} catch (error) {
@@ -151,7 +138,7 @@ app.use(
 		},
 		allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 		allowHeaders: ["Content-Type", "Authorization"],
-	})
+	}),
 );
 
 // Apply auth middleware to all routes
@@ -184,13 +171,11 @@ app.post("/api/v1/runs/stream", async (c) => {
 			const conversationText = messages
 				.map((msg) =>
 					[
-						`${msg.role}:`,
-						Array.isArray(msg.content)
-							? msg.content.map((part) => part.text).join(" ")
-							: msg.content,
+						`${msg.role?.toString()}:`,
+						Array.isArray(msg.content) ? msg.content.map((part) => part.text).join(" ") : msg.content,
 					]
 						.filter(Boolean)
-						.join(" ")
+						.join(" "),
 				)
 				.filter(Boolean)
 				.join("\n");
@@ -218,6 +203,7 @@ app.post("/api/v1/runs/stream", async (c) => {
 			c.header("Connection", "keep-alive");
 			c.header("Cache-Control", "no-cache");
 
+			// eslint-disable-next-line @typescript-eslint/no-floating-promises
 			(async (/* iife */) => {
 				const title = await result.text;
 				thread.meta.title = title;
@@ -250,7 +236,7 @@ app.post("/api/chat", async (c) => {
 					error: "Invalid request body",
 					details: parseResult.error.errors,
 				},
-				400
+				400,
 			);
 		}
 
@@ -273,10 +259,9 @@ app.post("/api/chat", async (c) => {
 						weather: tool({
 							description: "Get the weather in a location (in Celsius)",
 							parameters: z.object({
-								location: z
-									.string()
-									.describe("The location to get the weather for"),
+								location: z.string().describe("The location to get the weather for"),
 							}),
+							// eslint-disable-next-line @typescript-eslint/require-await
 							execute: async ({ location }) => ({
 								location,
 								temperature: "200°",
@@ -291,6 +276,7 @@ app.post("/api/chat", async (c) => {
 								"- Any substantial text output that would benefit from being editable\n" +
 								"- Writing essays, reports, or long-form content\n",
 							parameters: z.object({}),
+							// eslint-disable-next-line @typescript-eslint/require-await
 							execute: async () => {
 								console.log("🎯 requestCreateArtifact tool called");
 								return { requested: true };
@@ -312,11 +298,7 @@ app.post("/api/chat", async (c) => {
 					(msg) =>
 						msg.role === "assistant" &&
 						Array.isArray(msg.content) &&
-						msg.content.some(
-							(content) =>
-								content.type === "tool-call" &&
-								content.toolName === "requestCreateArtifact"
-						)
+						msg.content.some((content) => content.type === "tool-call" && content.toolName === "requestCreateArtifact"),
 				);
 
 				if (shouldFinish) {
@@ -326,7 +308,7 @@ app.post("/api/chat", async (c) => {
 						formatDataStreamPart("finish_message", {
 							finishReason,
 							usage,
-						})
+						}),
 					);
 				} else {
 					const artifactId = randomUUID();
@@ -356,6 +338,7 @@ app.post("/api/chat", async (c) => {
 									"- Any substantial text output that would benefit from being editable " +
 									"- Writing essays, reports, or long-form content",
 								parameters: createArtifactArgsSchema,
+								// eslint-disable-next-line @typescript-eslint/require-await
 								execute: async (args) => {
 									console.log(`✅ Artifact created: ${args.title}`);
 									return {
@@ -380,11 +363,7 @@ app.post("/api/chat", async (c) => {
 						model: openai("gpt-4o-mini"),
 						system: `Send a brief confirmation message to the user that the artifact has been created successfully. 
 							Keep the message concise and friendly.`,
-						messages: [
-							...messages,
-							...response1.messages,
-							...response2.messages,
-						],
+						messages: [...messages, ...response1.messages, ...response2.messages],
 						temperature: 0.7,
 						maxTokens: 200,
 						maxSteps: 1,
@@ -423,11 +402,10 @@ app.post("/api/chat", async (c) => {
 				return c.json(
 					{
 						error: "OpenAI API quota exceeded",
-						message:
-							"You have exceeded your OpenAI API quota. Please check your plan and billing details.",
+						message: "You have exceeded your OpenAI API quota. Please check your plan and billing details.",
 						details: error.message,
 					},
-					429
+					429,
 				);
 			} else if (error.statusCode === 401) {
 				return c.json(
@@ -436,7 +414,7 @@ app.post("/api/chat", async (c) => {
 						message: "Invalid or missing OpenAI API key.",
 						details: error.message,
 					},
-					401
+					401,
 				);
 			} else if (error.statusCode) {
 				return c.json(
@@ -445,7 +423,7 @@ app.post("/api/chat", async (c) => {
 						message: error.message,
 						statusCode: error.statusCode,
 					},
-					500
+					500,
 				);
 			} else {
 				return c.json(
@@ -454,7 +432,7 @@ app.post("/api/chat", async (c) => {
 						message: error.message,
 						type: error.constructor?.name,
 					},
-					500
+					500,
 				);
 			}
 		} else {
@@ -467,7 +445,7 @@ app.post("/api/chat", async (c) => {
 					message: "An unknown error occurred",
 					type: typeof error,
 				},
-				500
+				500,
 			);
 		}
 	}

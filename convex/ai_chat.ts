@@ -2,12 +2,13 @@ import { ai_chat_HARDCODED_PROJECT_ID, ai_chat_HARDCODED_ORG_ID } from "../src/l
 import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth-constants.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction } from "./_generated/server";
+import { api } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import app_convex_schema from "./schema.ts";
 // AI SDK imports
 import { openai } from "@ai-sdk/openai";
-import { streamText, tool, smoothStream, createDataStream, formatDataStreamPart, type CoreMessage } from "ai";
+import { streamText, tool, smoothStream, formatDataStreamPart, type CoreMessage, createDataStreamResponse } from "ai";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
 import type { api_schemas_Main } from "../src/lib/api-schemas.ts";
@@ -202,11 +203,16 @@ export const chat = httpAction(async (ctx, request) => {
 		if (!Array.isArray(messages)) {
 			return new Response(JSON.stringify({ error: "Invalid messages format" }), {
 				status: 400,
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "*",
+					"Access-Control-Allow-Headers": "*",
+				},
 			});
 		}
 
-		const dataStream = createDataStream({
+		const response = createDataStreamResponse({
 			execute: async (dataStream) => {
 				const result1 = streamText({
 					model: openai("gpt-4o-mini"),
@@ -345,16 +351,14 @@ export const chat = httpAction(async (ctx, request) => {
 				console.error("AI chat stream error:", error);
 				return error instanceof Error ? error.message : String(error);
 			},
-		});
-
-		return new Response(dataStream, {
 			headers: {
-				"X-Vercel-AI-Data-Stream": "v1",
-				"Content-Type": "text/plain; charset=utf-8",
-				"Transfer-Encoding": "chunked",
-				"Cache-Control": "no-cache",
+				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Methods": "*",
+				"Access-Control-Allow-Headers": "*",
 			},
 		});
+
+		return response;
 	} catch (error: unknown) {
 		console.error("AI chat stream error:", error);
 
@@ -366,7 +370,12 @@ export const chat = httpAction(async (ctx, request) => {
 				}),
 				{
 					status: 500,
-					headers: { "Content-Type": "application/json" },
+					headers: {
+						"Content-Type": "application/json",
+						"Access-Control-Allow-Origin": "*",
+						"Access-Control-Allow-Methods": "*",
+						"Access-Control-Allow-Headers": "*",
+					},
 				},
 			);
 		}
@@ -378,7 +387,12 @@ export const chat = httpAction(async (ctx, request) => {
 			}),
 			{
 				status: 500,
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "*",
+					"Access-Control-Allow-Headers": "*",
+				},
 			},
 		);
 	}
@@ -394,7 +408,12 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 		if (body.assistant_id !== "system/thread_title") {
 			return new Response(JSON.stringify({ error: "Invalid assistant ID" }), {
 				status: 400,
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "*",
+					"Access-Control-Allow-Headers": "*",
+				},
 			});
 		}
 
@@ -414,8 +433,8 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 		// Generate title using AI with streaming
 		const result = streamText({
 			model: openai("gpt-4o-mini"),
-			system: `Generate a concise, descriptive title (max 6 words) for this conversation. 
-				The title should capture the main topic or purpose. 
+			system: `Generate a concise, descriptive title (max 6 words) for this conversation.
+				The title should capture the main topic or purpose.
 				Respond with ONLY the title, no quotes or extra text.`,
 			messages: [
 				{
@@ -427,16 +446,33 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			maxTokens: 50,
 		});
 
+		// Transform the AI stream to properly encode text chunks
+		let title = "";
+		const encoder = new TextEncoder();
+		const transform_stream = new TransformStream({
+			transform(chunk, controller) {
+				title += chunk;
+				controller.enqueue(encoder.encode(chunk));
+			},
+			flush: async () => {
+				await ctx.runMutation(api.ai_chat.thread_update, {
+					thread_id,
+					title,
+				});
+			},
+		});
+
+		// Pipe the AI textStream through the transformer
+		const stream = result.textStream.pipeThrough(transform_stream);
+
 		// Get the generated title and potentially update thread in database
 		// Note: For now, just stream the title back
 
-		return new Response(result.textStream, {
+		return new Response(stream, {
 			headers: {
-				"Content-Type": "text/plain; charset=utf-8",
-				"Content-Encoding": "none",
-				"Transfer-Encoding": "chunked",
-				Connection: "keep-alive",
-				"Cache-Control": "no-cache",
+				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Methods": "*",
+				"Access-Control-Allow-Headers": "*",
 			},
 		});
 	} catch (error: unknown) {
@@ -449,7 +485,12 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			}),
 			{
 				status: 500,
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "*",
+					"Access-Control-Allow-Headers": "*",
+				},
 			},
 		);
 	}

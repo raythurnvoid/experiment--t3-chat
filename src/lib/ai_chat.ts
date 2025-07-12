@@ -43,6 +43,7 @@ export interface ai_chat_Message {
 	updated_by: string;
 	/** ISO 8601 UTC string */
 	updated_at: string;
+	// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 	format: "aui/v0" | string;
 	content: ai_chat_MessageContent;
 	height: number;
@@ -113,11 +114,7 @@ export type ai_chat_MessageAssistantContent = {
 
 export type ai_chat_MessageUserContent = {
 	role: "user";
-	content: Array<
-		| ai_chat_MessageContentPartText
-		| ai_chat_MessageContentPartImage
-		| ai_chat_MessageContentPartFile
-	>;
+	content: Array<ai_chat_MessageContentPartText | ai_chat_MessageContentPartImage | ai_chat_MessageContentPartFile>;
 	metadata: ai_chat_MessageUserMetadata;
 	status?: {
 		type: "running" | "requires-action" | "complete" | "incomplete";

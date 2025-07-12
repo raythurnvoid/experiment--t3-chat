@@ -312,8 +312,8 @@ importers:
   assistant-ui/packages/cloud:
     dependencies:
       assistant-stream:
-        specifier: ^0.2.17
-        version: 0.2.17
+        specifier: ^0.2.18
+        version: 0.2.18
     devDependencies:
       '@assistant-ui/x-buildutils':
         specifier: workspace:*
@@ -441,8 +441,8 @@ importers:
         specifier: workspace:*
         version: link:../cloud
       assistant-stream:
-        specifier: ^0.2.17
-        version: 0.2.17
+        specifier: ^0.2.18
+        version: 0.2.18
       json-schema:
         specifier: ^0.4.0
         version: 0.4.0
@@ -495,31 +495,40 @@ importers:
 
   assistant-ui/packages/react-ai-sdk:
     dependencies:
+      '@ai-sdk/provider':
+        specifier: ^1.1.3
+        version: 1.1.3
       '@ai-sdk/react':
         specifier: '*'
         version: 1.2.12(react@19.1.0)(zod@3.25.67)
       '@ai-sdk/ui-utils':
         specifier: '*'
         version: 1.2.11(zod@3.25.67)
-      '@assistant-ui/react':
-        specifier: ^0.10.24
-        version: 0.10.24(@types/react-dom@19.1.6(@types/react@19.1.8))(@types/react@19.1.8)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0))
-      '@assistant-ui/react-edge':
-        specifier: workspace:*
-        version: link:../react-edge
       '@radix-ui/react-use-callback-ref':
         specifier: ^1.1.1
         version: 1.1.1(@types/react@19.1.8)(react@19.1.0)
       '@types/json-schema':
         specifier: ^7.0.15
         version: 7.0.15
+      assistant-stream:
+        specifier: ^0.2.17
+        version: 0.2.18
+      json-schema:
+        specifier: ^0.4.0
+        version: 0.4.0
       zod:
         specifier: ^3.25.67
         version: 3.25.67
+      zod-to-json-schema:
+        specifier: ^3.24.6
+        version: 3.24.6(zod@3.25.67)
       zustand:
         specifier: ^5.0.6
         version: 5.0.6(@types/react@19.1.8)(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0))
     devDependencies:
+      '@assistant-ui/react':
+        specifier: workspace:*
+        version: link:../react
       '@assistant-ui/x-buildutils':
         specifier: workspace:*
         version: link:../x-buildutils
@@ -631,8 +640,8 @@ importers:
   assistant-ui/packages/react-langgraph:
     dependencies:
       assistant-stream:
-        specifier: ^0.2.17
-        version: 0.2.17
+        specifier: ^0.2.18
+        version: 0.2.18
       uuid:
         specifier: ^11.1.0
         version: 11.1.0
@@ -885,19 +894,6 @@ packages:
 
   '@asamuzakjp/css-color@3.2.0':
     resolution: {integrity: sha512-K1A6z8tS3XsmCMM86xoWdn7Fkdn9m6RSVtocUrJYIwZnFVkng/PvkEoWtOWmP+Scc6saYWHWZYbndEEXxl24jw==}
-
-  '@assistant-ui/react@0.10.24':
-    resolution: {integrity: sha512-9UOjVK7ISeDCLeJYnVGXUORcUxRFGB3NRJLBzaTbbHy2adkvlMqLXwwOBU2AMOJDW8Jb9s9aG8GUduXvvGvzZA==}
-    peerDependencies:
-      '@types/react': '*'
-      '@types/react-dom': '*'
-      react: ^18 || ^19 || ^19.0.0-rc
-      react-dom: ^18 || ^19 || ^19.0.0-rc
-    peerDependenciesMeta:
-      '@types/react':
-        optional: true
-      '@types/react-dom':
-        optional: true
 
   '@babel/code-frame@7.27.1':
     resolution: {integrity: sha512-cjQ7ZlQ0Mv3b47hABuTevyTuYN4i+loJKGeV9flcCgIK37cCXRh+L1bd3iBHlynerhQ7BhCkn2BPbQUL+rGqFg==}
@@ -3015,11 +3011,11 @@ packages:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
 
-  assistant-cloud@0.0.2:
-    resolution: {integrity: sha512-9QH7WLTgKpTzOm4+8oqSJTcKZA3AKDwX1JQdfbHDYoVGkeiXUVMonTTvvlHuIKpa/PVdknA04EWO/S8GQO0LiQ==}
-
   assistant-stream@0.2.17:
     resolution: {integrity: sha512-uUZTK6qSMNMu35WqqmEaNCz68xE7X86fqj8nW1EHalarfe/LnzOAMxB66Kk2rijGkjtvunyPGNfBf386+9P4tQ==}
+
+  assistant-stream@0.2.18:
+    resolution: {integrity: sha512-aNZDOQorUksbGPVKzG9rBKN8O0J4UoGX9y6ChPejuvFLWb8JHse24AnYtr/Lss/+vQHggVQaeUe68wlv5J+WWw==}
 
   ast-types-flow@0.0.8:
     resolution: {integrity: sha512-OH/2E5Fg20h2aPrbe+QL8JZQFko0YZaF+j4mnQ7BGhfavO7OpSLa8a0y9sBwomHdSbkhTS8TQNayBfnW5DwbvQ==}
@@ -6512,33 +6508,6 @@ snapshots:
       '@csstools/css-tokenizer': 3.0.4
       lru-cache: 10.4.3
 
-  '@assistant-ui/react@0.10.24(@types/react-dom@19.1.6(@types/react@19.1.8))(@types/react@19.1.8)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0))':
-    dependencies:
-      '@radix-ui/primitive': 1.1.2
-      '@radix-ui/react-compose-refs': 1.1.2(@types/react@19.1.8)(react@19.1.0)
-      '@radix-ui/react-context': 1.1.2(@types/react@19.1.8)(react@19.1.0)
-      '@radix-ui/react-popover': 1.1.14(@types/react-dom@19.1.6(@types/react@19.1.8))(@types/react@19.1.8)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
-      '@radix-ui/react-primitive': 2.1.3(@types/react-dom@19.1.6(@types/react@19.1.8))(@types/react@19.1.8)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
-      '@radix-ui/react-slot': 1.2.3(@types/react@19.1.8)(react@19.1.0)
-      '@radix-ui/react-use-callback-ref': 1.1.1(@types/react@19.1.8)(react@19.1.0)
-      '@radix-ui/react-use-escape-keydown': 1.1.1(@types/react@19.1.8)(react@19.1.0)
-      '@standard-schema/spec': 1.0.0
-      assistant-cloud: 0.0.2
-      assistant-stream: 0.2.17
-      json-schema: 0.4.0
-      nanoid: 5.1.5
-      react: 19.1.0
-      react-dom: 19.1.0(react@19.1.0)
-      react-textarea-autosize: 8.5.9(@types/react@19.1.8)(react@19.1.0)
-      zod: 3.25.67
-      zustand: 5.0.6(@types/react@19.1.8)(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0))
-    optionalDependencies:
-      '@types/react': 19.1.8
-      '@types/react-dom': 19.1.6(@types/react@19.1.8)
-    transitivePeerDependencies:
-      - immer
-      - use-sync-external-store
-
   '@babel/code-frame@7.27.1':
     dependencies:
       '@babel/helper-validator-identifier': 7.27.1
@@ -8688,11 +8657,13 @@ snapshots:
 
   assertion-error@2.0.1: {}
 
-  assistant-cloud@0.0.2:
-    dependencies:
-      assistant-stream: 0.2.17
-
   assistant-stream@0.2.17:
+    dependencies:
+      '@types/json-schema': 7.0.15
+      nanoid: 5.1.5
+      secure-json-parse: 4.0.0
+
+  assistant-stream@0.2.18:
     dependencies:
       '@types/json-schema': 7.0.15
       nanoid: 5.1.5
