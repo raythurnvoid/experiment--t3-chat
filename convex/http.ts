@@ -1,7 +1,8 @@
 import { httpRouter } from "convex/server";
 import { chat, thread_generate_title } from "./ai_chat";
-import type { api_schemas_MainPaths } from "../src/lib/api-schemas.ts";
+import type { api_schemas_MainPaths } from "../src/lib/api_schemas.ts";
 import { httpAction } from "./_generated/server";
+import { server_convex_headers_preflight_cors } from "./lib/server_convex_utils.ts";
 
 const http = httpRouter();
 
@@ -16,11 +17,7 @@ http.route({
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "*",
-				"Access-Control-Allow-Headers": "*",
-			},
+			headers: server_convex_headers_preflight_cors,
 		});
 	}),
 });

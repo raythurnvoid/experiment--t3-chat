@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { stream } from "hono/streaming";
 import { type ai_chat_Message, type ai_chat_Thread } from "../lib/ai_chat.ts";
 import type { ReadonlyJSONObject } from "@assistant-ui/assistant-stream/utils";
-import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "../lib/auth-constants.ts";
+import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "../shared/shared_auth_constants.ts";
 import { createClerkClient } from "@clerk/backend";
 import { createMiddleware } from "hono/factory";
 import {

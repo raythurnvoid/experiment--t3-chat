@@ -1,17 +1,21 @@
 import { ai_chat_HARDCODED_PROJECT_ID, ai_chat_HARDCODED_ORG_ID } from "../src/lib/ai_chat.ts";
-import { auth_ANONYMOUS_USER_ID } from "../src/lib/auth-constants.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction } from "./_generated/server";
 import { api } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import app_convex_schema from "./schema.ts";
-// AI SDK imports
 import { openai } from "@ai-sdk/openai";
 import { streamText, tool, smoothStream, formatDataStreamPart, type CoreMessage, createDataStreamResponse } from "ai";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
-import type { api_schemas_Main } from "../src/lib/api-schemas.ts";
+import type { api_schemas_Main } from "../src/lib/api_schemas.ts";
+import {
+	server_convex_headers_cors,
+	server_convex_headers_error_response,
+	server_convex_get_user_id_fallback_to_anonymous,
+	server_convex_response_error,
+} from "./lib/server_convex_utils.ts";
 
 /**
  * Query to list all threads for a workspace with pagination
@@ -52,10 +56,9 @@ export const thread_create = mutation({
 		last_message_at: v.number(), // timestamp in milliseconds
 		metadata: v.optional(v.any()),
 		external_id: v.optional(v.union(v.string())),
-		created_by: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
-		const { created_by = auth_ANONYMOUS_USER_ID } = args;
+		const created_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
 
 		const now = Date.now();
 
@@ -84,15 +87,16 @@ export const thread_update = mutation({
 	args: {
 		thread_id: v.id("threads"),
 		title: v.optional(v.string()),
-		updated_by: v.optional(v.string()),
 		is_archived: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
+		const updated_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+
 		await ctx.db.patch(
 			args.thread_id,
 			Object.assign(
 				{
-					updated_by: args.updated_by ?? auth_ANONYMOUS_USER_ID,
+					updated_by: updated_by,
 					updated_at: Date.now(),
 				},
 				args.title
@@ -116,14 +120,15 @@ export const thread_update = mutation({
 export const thread_archive = mutation({
 	args: {
 		thread_id: v.id("threads"),
-		updated_by: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
+		const updated_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+
 		const now = Date.now();
 
 		await ctx.db.patch(args.thread_id, {
 			archived: true,
-			updated_by: args.updated_by ?? auth_ANONYMOUS_USER_ID,
+			updated_by: updated_by,
 			updated_at: now,
 		});
 	},
@@ -154,14 +159,13 @@ export const thread_messages_add = mutation({
 	args: {
 		thread_id: v.id("threads"),
 		parent_id: v.union(v.id("messages"), v.null()),
-		created_by: v.optional(v.string()),
 		format: v.string(),
 		content: app_convex_schema.tables.messages.validator.fields.content,
 	},
 	handler: async (ctx, args) => {
-		const now = Date.now();
+		const created_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
 
-		const created_by = args.created_by ?? auth_ANONYMOUS_USER_ID;
+		const now = Date.now();
 
 		// Insert the message
 		const message_id = await ctx.db.insert("messages", {
@@ -201,14 +205,9 @@ export const chat = httpAction(async (ctx, request) => {
 		// Validate messages from request
 		const messages = body.messages as CoreMessage[];
 		if (!Array.isArray(messages)) {
-			return new Response(JSON.stringify({ error: "Invalid messages format" }), {
+			return server_convex_response_error({
+				message: "Invalid messages format",
 				status: 400,
-				headers: {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "*",
-					"Access-Control-Allow-Headers": "*",
-				},
 			});
 		}
 
@@ -351,11 +350,7 @@ export const chat = httpAction(async (ctx, request) => {
 				console.error("AI chat stream error:", error);
 				return error instanceof Error ? error.message : String(error);
 			},
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "*",
-				"Access-Control-Allow-Headers": "*",
-			},
+			headers: server_convex_headers_cors(),
 		});
 
 		return response;
@@ -363,38 +358,16 @@ export const chat = httpAction(async (ctx, request) => {
 		console.error("AI chat stream error:", error);
 
 		if (error instanceof Error) {
-			return new Response(
-				JSON.stringify({
-					error: "Internal server error",
-					message: error.message,
-				}),
-				{
-					status: 500,
-					headers: {
-						"Content-Type": "application/json",
-						"Access-Control-Allow-Origin": "*",
-						"Access-Control-Allow-Methods": "*",
-						"Access-Control-Allow-Headers": "*",
-					},
-				},
-			);
+			return server_convex_response_error({
+				message: error.message,
+				status: 500,
+			});
 		}
 
-		return new Response(
-			JSON.stringify({
-				error: "Internal server error",
-				message: "An unknown error occurred",
-			}),
-			{
-				status: 500,
-				headers: {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "*",
-					"Access-Control-Allow-Headers": "*",
-				},
-			},
-		);
+		return server_convex_response_error({
+			message: "Internal server error",
+			status: 500,
+		});
 	}
 });
 
@@ -406,14 +379,9 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 		const body = await request.json();
 
 		if (body.assistant_id !== "system/thread_title") {
-			return new Response(JSON.stringify({ error: "Invalid assistant ID" }), {
+			return server_convex_response_error({
+				message: "Invalid stream ID",
 				status: 400,
-				headers: {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "*",
-					"Access-Control-Allow-Headers": "*",
-				},
 			});
 		}
 
@@ -444,15 +412,19 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			],
 			temperature: 0.3,
 			maxTokens: 50,
+			experimental_transform: smoothStream({
+				delayInMs: 100,
+			}),
 		});
 
 		// Transform the AI stream to properly encode text chunks
 		let title = "";
-		const encoder = new TextEncoder();
+
+		// Trigger mutation when the stream is finished
 		const transform_stream = new TransformStream({
 			transform(chunk, controller) {
 				title += chunk;
-				controller.enqueue(encoder.encode(chunk));
+				controller.enqueue(chunk);
 			},
 			flush: async () => {
 				await ctx.runMutation(api.ai_chat.thread_update, {
@@ -462,36 +434,18 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			},
 		});
 
-		// Pipe the AI textStream through the transformer
-		const stream = result.textStream.pipeThrough(transform_stream);
-
-		// Get the generated title and potentially update thread in database
-		// Note: For now, just stream the title back
+		// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createDataStreamResponse`
+		const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
 
 		return new Response(stream, {
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "*",
-				"Access-Control-Allow-Headers": "*",
-			},
+			headers: server_convex_headers_cors(),
 		});
 	} catch (error: unknown) {
 		console.error("Title generation error:", error);
 
-		return new Response(
-			JSON.stringify({
-				error: "Error generating title",
-				message: error instanceof Error ? error.message : "Unknown error",
-			}),
-			{
-				status: 500,
-				headers: {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "*",
-					"Access-Control-Allow-Headers": "*",
-				},
-			},
-		);
+		return server_convex_response_error({
+			message: error instanceof Error ? error.message : "Unknown error",
+			status: 500,
+		});
 	}
 });

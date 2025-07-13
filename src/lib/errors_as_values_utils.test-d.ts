@@ -7,7 +7,7 @@ import {
 	type BadResult_Any,
 	type BadResult_Extract,
 	type BadResult_Exclude,
-} from "./errors-as-values-utils";
+} from "./errors_as_values_utils";
 
 // BadResult class tests
 test("BadResult class has correct type structure", () => {
