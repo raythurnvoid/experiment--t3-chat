@@ -39,6 +39,44 @@ alwaysApply: false
 2. Update all imports to point directly to the component files
 3. Example: Change `from "../components/canvas"` to `from "../components/canvas/canvas"`
 
+# Component Interface Naming
+
+## Props Interface Convention
+
+When defining Props interfaces for React components, use the following naming format:
+
+**Format**: `ComponentName_Props`
+
+### ✅ Correct Usage:
+
+```tsx
+// For a component named ThemeProvider
+export interface ThemeProvider_Props {
+	children: ReactNode;
+	className?: string;
+}
+
+// For a component named MessageComposer
+export interface MessageComposer_Props {
+	onSubmit: (message: string) => void;
+	placeholder?: string;
+	disabled?: boolean;
+}
+
+// For a component named UserActionBar
+export interface UserActionBar_Props {
+	user: User;
+	actions: Action[];
+	variant?: "default" | "compact";
+}
+```
+
+### Benefits:
+
+- **Consistent naming**: All Props interfaces follow the same pattern
+- **Easy identification**: Immediately clear which component the props belong to
+- **IDE autocompletion**: Better grouping in IDE suggestions with underscore syntax
+
 # Semantic Classname Convention
 
 ## Overview
@@ -279,22 +317,10 @@ const handleToggle = useCallback(async (newValue: boolean) => {
 ### Component with multiple states:
 
 ```tsx
-const MessageStatus = ({
-	status,
-}: {
-	status: "pending" | "sent" | "error";
-}) => {
+const MessageStatus = ({ status }: { status: "pending" | "sent" | "error" }) => {
 	return (
-		<div
-			className={cn(
-				"MessageStatus",
-				`MessageStatus-${status}`,
-				"flex items-center gap-2"
-			)}
-		>
-			<Icon
-				className={cn("MessageStatus-icon", `MessageStatus-icon-${status}`)}
-			/>
+		<div className={cn("MessageStatus", `MessageStatus-${status}`, "flex items-center gap-2")}>
+			<Icon className={cn("MessageStatus-icon", `MessageStatus-icon-${status}`)} />
 			<span className={cn("MessageStatus-text")}>Status: {status}</span>
 		</div>
 	);
@@ -310,15 +336,9 @@ const ThreadList = ({ threads }: { threads: Thread[] }) => {
 			{threads.map((thread) => (
 				<div
 					key={thread.id}
-					className={cn(
-						"ThreadList-item",
-						thread.isActive && "ThreadList-item-active",
-						"p-3 rounded-lg border"
-					)}
+					className={cn("ThreadList-item", thread.isActive && "ThreadList-item-active", "p-3 rounded-lg border")}
 				>
-					<h3 className={cn("ThreadList-item-title", "font-semibold")}>
-						{thread.title}
-					</h3>
+					<h3 className={cn("ThreadList-item-title", "font-semibold")}>{thread.title}</h3>
 				</div>
 			))}
 		</div>
