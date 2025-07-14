@@ -12,7 +12,6 @@ import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
 import type { api_schemas_Main } from "../src/lib/api_schemas.ts";
 import {
 	server_convex_headers_cors,
-	server_convex_headers_error_response,
 	server_convex_get_user_id_fallback_to_anonymous,
 	server_convex_response_error,
 } from "./lib/server_convex_utils.ts";
@@ -22,21 +21,21 @@ import {
  */
 export const threads_list = query({
 	args: {
-		paginationOpts: paginationOptsValidator,
-		includeArchived: v.optional(v.boolean()),
+		pagination_opts: paginationOptsValidator,
+		include_archived: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
-		args.paginationOpts.numItems = math_clamp(args.paginationOpts.numItems, 1, 50);
+		args.pagination_opts.numItems = math_clamp(args.pagination_opts.numItems, 1, 50);
 
 		let threadsQuery = ctx.db
 			.query("threads")
 			.withIndex("by_workspace", (q) => q.eq("workspace_id", ai_chat_HARDCODED_ORG_ID));
 
-		if (args.includeArchived !== true) {
+		if (args.include_archived !== true) {
 			threadsQuery = threadsQuery.filter((q) => q.eq(q.field("archived"), false));
 		}
 
-		const result = await threadsQuery.order("desc").paginate(args.paginationOpts);
+		const result = await threadsQuery.order("desc").paginate(args.pagination_opts);
 
 		return {
 			...result,
