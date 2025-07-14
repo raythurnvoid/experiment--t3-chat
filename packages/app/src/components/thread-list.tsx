@@ -1,9 +1,5 @@
 import { memo, type FC, Suspense } from "react";
-import {
-	ThreadListItemPrimitive,
-	ThreadListPrimitive,
-	useAssistantRuntime,
-} from "@assistant-ui/react";
+import { ThreadListItemPrimitive, ThreadListPrimitive, useAssistantRuntime } from "@assistant-ui/react";
 import { ArchiveIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -15,25 +11,12 @@ export const ThreadList: FC = memo(() => {
 
 	// Add a guard to ensure runtime is ready
 	if (!runtime?.threads) {
-		return (
-			<div className="p-4 text-sm text-muted-foreground">
-				Loading threads...
-			</div>
-		);
+		return <div className="p-4 text-sm text-muted-foreground">Loading threads...</div>;
 	}
 
 	return (
-		<Suspense
-			fallback={
-				<div className="p-4 text-sm text-muted-foreground">Loading...</div>
-			}
-		>
-			<ThreadListPrimitive.Root
-				className={cn(
-					"ThreadList",
-					"flex flex-col items-stretch gap-1.5 w-[250px]"
-				)}
-			>
+		<Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Loading...</div>}>
+			<ThreadListPrimitive.Root className={cn("ThreadList", "flex flex-col items-stretch gap-1.5 w-[250px]")}>
 				<ThreadListNew />
 				<ThreadListItems />
 			</ThreadListPrimitive.Root>

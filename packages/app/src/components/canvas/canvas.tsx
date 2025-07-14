@@ -7,9 +7,5 @@ export const Canvas = memo(() => {
 	const { getCurrentArtifact } = useCanvasStore();
 	const currentArtifact = getCurrentArtifact();
 
-	return (
-		<div className="Canvas h-full">
-			{currentArtifact ? <ArtifactRenderer /> : <QuickStart />}
-		</div>
-	);
+	return <div className="Canvas h-full">{currentArtifact ? <ArtifactRenderer /> : <QuickStart />}</div>;
 });

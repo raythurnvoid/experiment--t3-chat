@@ -3,26 +3,15 @@ import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
 import type { ToolCallContentPartProps } from "@assistant-ui/react";
 import { useCanvasStore } from "../stores/canvas-store";
 import type { ArtifactTextContent, Artifact } from "../types/canvas";
-import {
-	parseCreateArtifactArgs,
-	type CreateArtifactArgs,
-} from "../types/artifact-schemas";
+import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas";
 import { Button } from "./ui/button";
 import { FileText, Eye, AlertCircle, Loader2 } from "lucide-react";
 
 // Define props interface for better typing
-type CreateArtifactToolProps = ToolCallContentPartProps<
-	CreateArtifactArgs,
-	void
->;
+type CreateArtifactToolProps = ToolCallContentPartProps<CreateArtifactArgs, void>;
 
-function CreateArtifactToolRender({
-	args,
-	result,
-	status,
-}: CreateArtifactToolProps) {
-	const { setArtifact, setCurrentArtifactId, getArtifactById } =
-		useCanvasStore();
+function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolProps) {
+	const { setArtifact, setCurrentArtifactId, getArtifactById } = useCanvasStore();
 
 	// Safely parse arguments and result using Zod
 	const argsParseResult = parseCreateArtifactArgs(args);
@@ -80,9 +69,7 @@ function CreateArtifactToolRender({
 				<Loader2 className="h-4 w-4 text-blue-600 dark:text-blue-400 animate-spin" />
 				<div className="flex flex-col">
 					<span className="text-sm text-blue-800 dark:text-blue-200">
-						{status.type === "running"
-							? "Generating artifact content..."
-							: "Creating artifact..."}
+						{status.type === "running" ? "Generating artifact content..." : "Creating artifact..."}
 					</span>
 					{argsParseResult.success && (
 						<span className="text-xs text-blue-600 dark:text-blue-400">
@@ -116,9 +103,7 @@ function CreateArtifactToolRender({
 						<span className="text-sm font-medium text-green-800 dark:text-green-200">
 							Created: {argsParseResult.data.title || "Document"}
 						</span>
-						<span className="text-xs text-green-600 dark:text-green-400">
-							ID: {artifactId}
-						</span>
+						<span className="text-xs text-green-600 dark:text-green-400">ID: {artifactId}</span>
 					</div>
 				</div>
 				<Button
@@ -138,9 +123,7 @@ function CreateArtifactToolRender({
 	return (
 		<div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg">
 			<FileText className="h-4 w-4 text-gray-600 dark:text-gray-400" />
-			<span className="text-sm text-gray-700 dark:text-gray-300">
-				Processing artifact...
-			</span>
+			<span className="text-sm text-gray-700 dark:text-gray-300">Processing artifact...</span>
 		</div>
 	);
 }
@@ -151,5 +134,5 @@ export const CreateArtifactToolUI = memo(
 		render: (args) => {
 			return CreateArtifactToolRender(args);
 		},
-	})
+	}),
 );

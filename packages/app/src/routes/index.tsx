@@ -32,21 +32,14 @@ function Index() {
 					count is {count}
 				</button>
 				<p className="mt-4 text-gray-600 dark:text-gray-300">
-					Edit{" "}
-					<code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-						src/routes/index.tsx
-					</code>{" "}
-					and save to test HMR
+					Edit <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">src/routes/index.tsx</code> and save to
+					test HMR
 				</p>
 			</div>
 
-			<p className="read-the-docs text-gray-500 mb-8">
-				Click on the Vite and React logos to learn more
-			</p>
+			<p className="read-the-docs text-gray-500 mb-8">Click on the Vite and React logos to learn more</p>
 
-			<h2 className="text-3xl font-bold underline text-blue-600">
-				Hello world!
-			</h2>
+			<h2 className="text-3xl font-bold underline text-blue-600">Hello world!</h2>
 		</div>
 	);
 }

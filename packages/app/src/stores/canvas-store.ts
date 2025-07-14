@@ -1,9 +1,5 @@
 import { create } from "zustand";
-import type {
-	Artifact,
-	CanvasState,
-	ArtifactTextContent,
-} from "../types/canvas";
+import type { Artifact, CanvasState, ArtifactTextContent } from "../types/canvas";
 
 interface CanvasStore extends CanvasState {
 	updateRenderedArtifactRequired: boolean;
@@ -44,8 +40,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 	},
 
 	setIsEditing: (isEditing) => set({ isEditing }),
-	setUpdateRenderedArtifactRequired: (required) =>
-		set({ updateRenderedArtifactRequired: required }),
+	setUpdateRenderedArtifactRequired: (required) => set({ updateRenderedArtifactRequired: required }),
 
 	getCurrentArtifact: () => {
 		const { artifacts, currentArtifactId } = get();
@@ -57,11 +52,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 		const { getCurrentArtifact } = get();
 		const artifact = getCurrentArtifact();
 		if (!artifact || artifact.contents.length === 0) return null;
-		return (
-			artifact.contents.find(
-				(content) => content.index === artifact.currentIndex
-			) || null
-		);
+		return artifact.contents.find((content) => content.index === artifact.currentIndex) || null;
 	},
 
 	getArtifactById: (id) => {
@@ -74,19 +65,15 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 			const artifact = state.artifacts.get(artifactId);
 			if (!artifact) return state;
 
-			const currentContent = artifact.contents.find(
-				(c) => c.index === artifact.currentIndex
-			);
+			const currentContent = artifact.contents.find((c) => c.index === artifact.currentIndex);
 			if (!currentContent) return state;
 
-			const updatedContents = artifact.contents.map(
-				(c: ArtifactTextContent) => {
-					if (c.index === artifact.currentIndex) {
-						return { ...c, fullMarkdown: content };
-					}
-					return c;
+			const updatedContents = artifact.contents.map((c: ArtifactTextContent) => {
+				if (c.index === artifact.currentIndex) {
+					return { ...c, fullMarkdown: content };
 				}
-			);
+				return c;
+			});
 
 			const updatedArtifact = {
 				...artifact,

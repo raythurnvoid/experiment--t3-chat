@@ -1,13 +1,9 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
-import {
-	SignedIn,
-	SignedOut,
-	SignInButton,
-	UserButton,
-} from "@clerk/clerk-react";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
 import { useEffect } from "react";
 import { auth_set_token_manager, useAuth } from "../lib/auth.ts";
+import { ThemeToggle } from "../components/theme-toggle";
 
 function Layout() {
 	const auth = useAuth();
@@ -49,6 +45,11 @@ function Layout() {
 									>
 										Chat
 									</Link>
+								</div>
+							</div>
+							<div className="flex items-center space-x-3">
+								<ThemeToggle />
+								<div className="flex space-x-1">
 									<SignedOut>
 										<SignInButton />
 									</SignedOut>

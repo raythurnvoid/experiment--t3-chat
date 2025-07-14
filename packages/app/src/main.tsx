@@ -4,6 +4,7 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { app_convex } from "./lib/app_convex_client";
 import { ClerkProvider, useAuth } from "@clerk/clerk-react";
 import { ConvexProviderWithClerk } from "convex/react-clerk";
+import { ThemeProvider } from "./components/theme-provider";
 import "./app.css";
 
 // Import the generated route tree
@@ -28,10 +29,12 @@ declare module "@tanstack/react-router" {
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
-			<ConvexProviderWithClerk client={app_convex} useAuth={useAuth}>
-				<RouterProvider router={router} />
-			</ConvexProviderWithClerk>
-		</ClerkProvider>
-	</StrictMode>
+		<ThemeProvider>
+			<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+				<ConvexProviderWithClerk client={app_convex} useAuth={useAuth}>
+					<RouterProvider router={router} />
+				</ConvexProviderWithClerk>
+			</ClerkProvider>
+		</ThemeProvider>
+	</StrictMode>,
 );

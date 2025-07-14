@@ -4,58 +4,22 @@ import { useCanvasStore } from "../../stores/canvas-store";
 import { useThread } from "@assistant-ui/react";
 import type { ArtifactTextContent } from "../../types/canvas";
 import "@blocknote/core/fonts/inter.css";
-import {
-	getDefaultReactSlashMenuItems,
-	SuggestionMenuController,
-	useCreateBlockNote,
-} from "@blocknote/react";
+import { getDefaultReactSlashMenuItems, SuggestionMenuController, useCreateBlockNote } from "@blocknote/react";
 import PQueue from "p-queue";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Eye, EyeOff, Copy } from "lucide-react";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "../ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { MantineProvider } from "@mantine/core";
+import { useThemeContext } from "../theme-provider";
 
 const cleanText = (text: string) => {
 	return text.replace(/\\\n/g, "\n");
 };
 
-// Hook to detect system color scheme preference
-const useSystemColorScheme = () => {
-	const [isDark, setIsDark] = useState(() => {
-		if (typeof window === "undefined") return false;
-		return window.matchMedia("(prefers-color-scheme: dark)").matches;
-	});
-
-	useEffect(() => {
-		if (typeof window === "undefined") return;
-
-		const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-
-		const handleChange = (e: MediaQueryListEvent) => {
-			setIsDark(e.matches);
-		};
-
-		// Add listener for system color scheme changes
-		mediaQuery.addEventListener("change", handleChange);
-
-		// Set initial value
-		setIsDark(mediaQuery.matches);
-
-		return () => {
-			mediaQuery.removeEventListener("change", handleChange);
-		};
-	}, []);
-
-	return isDark;
-};
+// Use global theme context instead of local detection
 
 function ViewRawText({
 	isRawView,
@@ -68,12 +32,7 @@ function ViewRawText({
 		<TooltipProvider delayDuration={400}>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={() => setIsRawView((p) => !p)}
-						className="h-8 w-8 p-0"
-					>
+					<Button variant="outline" size="sm" onClick={() => setIsRawView((p) => !p)} className="h-8 w-8 p-0">
 						{isRawView ? (
 							<EyeOff className="w-4 h-4 text-gray-600 dark:text-gray-400" />
 						) : (
@@ -102,12 +61,7 @@ function CopyText({ content }: { content: string }) {
 		<TooltipProvider delayDuration={400}>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={handleCopy}
-						className="h-8 w-8 p-0"
-					>
+					<Button variant="outline" size="sm" onClick={handleCopy} className="h-8 w-8 p-0">
 						<Copy className="w-4 h-4 text-gray-600 dark:text-gray-400" />
 					</Button>
 				</TooltipTrigger>
@@ -142,16 +96,15 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 	const thread = useThread();
 	const isStreaming = thread.isRunning;
-	const isDarkMode = useSystemColorScheme();
+	const { resolved_theme } = useThemeContext();
+	const isDarkMode = resolved_theme === "dark";
 
 	// Use Assistant UI's message status to determine if we've received content
 	const lastMessage = thread.messages[thread.messages.length - 1];
-	const hasReceivedFirstToken =
-		lastMessage?.role === "assistant" && lastMessage.content.length > 0;
+	const hasReceivedFirstToken = lastMessage?.role === "assistant" && lastMessage.content.length > 0;
 
 	const artifact = getCurrentArtifact();
-	const currentContent =
-		getCurrentArtifactContent() as ArtifactTextContent | null;
+	const currentContent = getCurrentArtifactContent() as ArtifactTextContent | null;
 	const [rawMarkdown, setRawMarkdown] = useState("");
 	const [isRawView, setIsRawView] = useState(false);
 	// Use ref to track manual update progress without triggering re-renders
@@ -159,6 +112,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 	// Memoized content update promise - only recreates when artifact content changes
 	useEffect(() => {
+		// eslint-disable-next-line @typescript-eslint/no-floating-promises
 		(async (/* iife */) => {
 			if (!artifact || !currentContent) return null;
 			// Only update when flagged by the store
@@ -175,9 +129,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 					markdownQueue.clear();
 				}
 				await markdownQueue.add(async () => {
-					const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(
-						currentContent.fullMarkdown
-					);
+					const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(currentContent.fullMarkdown);
 					editor.replaceBlocks(editor.document, markdownAsBlocks);
 				});
 
@@ -220,8 +172,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 						markdownQueue.clear();
 					}
 					await markdownQueue.add(async () => {
-						const markdownAsBlocks =
-							await editor.tryParseMarkdownToBlocks(rawMarkdown);
+						const markdownAsBlocks = await editor.tryParseMarkdownToBlocks(rawMarkdown);
 						editor.replaceBlocks(editor.document, markdownAsBlocks);
 					});
 
@@ -233,7 +184,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 			}
 			setIsRawView(newIsRawView);
 		},
-		[currentContent, editor, rawMarkdown, markdownQueue]
+		[currentContent, editor, rawMarkdown, markdownQueue],
 	);
 
 	// Wrapper for ViewRawText to handle the async callback
@@ -242,16 +193,11 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 			const newValue = typeof value === "function" ? value(isRawView) : value;
 			handleRawViewToggle(newValue).catch(console.error);
 		},
-		[isRawView, handleRawViewToggle]
+		[isRawView, handleRawViewToggle],
 	);
 
 	const onChange = useCallback(async () => {
-		if (
-			isStreaming ||
-			manuallyUpdatingRef.current ||
-			updateRenderedArtifactRequired ||
-			!currentArtifactId
-		) {
+		if (isStreaming || manuallyUpdatingRef.current || updateRenderedArtifactRequired || !currentArtifactId) {
 			return;
 		}
 
@@ -264,14 +210,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 			const fullMarkdown = await editor.blocksToMarkdownLossy(editor.document);
 			updateArtifactContent(currentArtifactId, cleanText(fullMarkdown));
 		});
-	}, [
-		isStreaming,
-		updateRenderedArtifactRequired,
-		currentArtifactId,
-		markdownQueue,
-		editor,
-		updateArtifactContent,
-	]);
+	}, [isStreaming, updateRenderedArtifactRequired, currentArtifactId, markdownQueue, editor, updateArtifactContent]);
 
 	const onChangeRawMarkdown = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		const newRawMarkdown = e.target.value;
@@ -284,10 +223,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	if (!currentContent) {
 		return (
 			<div
-				className={cn(
-					"TextRenderer-empty",
-					"flex items-center justify-center h-64 text-gray-500 dark:text-gray-400"
-				)}
+				className={cn("TextRenderer-empty", "flex items-center justify-center h-64 text-gray-500 dark:text-gray-400")}
 			>
 				No text content available
 			</div>
@@ -300,10 +236,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 				{isHovering && (
 					<div className="absolute flex gap-2 top-2 right-4 z-10">
 						<CopyText content={currentContent.fullMarkdown} />
-						<ViewRawText
-							isRawView={isRawView}
-							setIsRawView={handleViewRawTextToggle}
-						/>
+						<ViewRawText isRawView={isRawView} setIsRawView={handleViewRawTextToggle} />
 					</div>
 				)}
 
@@ -319,7 +252,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 					<div
 						className={cn(
 							isStreaming && !hasReceivedFirstToken ? "pulse-text" : "",
-							"w-full h-full custom-blocknote-theme"
+							"w-full h-full custom-blocknote-theme",
 						)}
 					>
 						<BlockNoteView
@@ -331,11 +264,8 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 							editor={editor}
 						>
 							<SuggestionMenuController
-								getItems={async () =>
-									getDefaultReactSlashMenuItems(editor).filter(
-										(item) => item.group !== "Media"
-									)
-								}
+								// eslint-disable-next-line @typescript-eslint/require-await
+								getItems={async () => getDefaultReactSlashMenuItems(editor).filter((item) => item.group !== "Media")}
 								triggerCharacter={"/"}
 							/>
 						</BlockNoteView>

@@ -39,7 +39,7 @@ export default defineConfig({
 		exclude: [
 			// Exclude assistant-ui packages from pre-bundling so they're treated as source files
 			"@assistant-ui/react",
-			"@assistant-ui/react-ai-sdk", 
+			"@assistant-ui/react-ai-sdk",
 			"@assistant-ui/react-markdown",
 			"assistant-cloud",
 			"@assistant-ui/react-edge",
