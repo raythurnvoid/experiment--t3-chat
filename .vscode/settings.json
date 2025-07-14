@@ -1,0 +1,60 @@
+{
+	"editor.detectIndentation": false,
+	"editor.formatOnSave": true,
+	"editor.insertSpaces": false,
+	"editor.tabSize": 2,
+	"editor.unicodeHighlight.allowedCharacters": {
+		// characters common in figma designs
+		"’": true
+	},
+	"editor.defaultFormatter": "esbenp.prettier-vscode",
+	"editor.pasteAs.enabled": true,
+	"files.eol": "\n",
+	"files.watcherExclude": {
+		"**/.git/objects/**": true,
+		"**/.git/subtree-cache/**": true,
+		"**/.hg/store/**": true,
+		// Cursor relies on the vscode watcher to auto index files
+		"+personal/sources/**": true
+	},
+	"terminal.integrated.cwd": "packages/app",
+	"typescript.tsdk": "node_modules/typescript/lib",
+	"typescript.enablePromptUseWorkspaceTsdk": true,
+	"typescript.preferences.importModuleSpecifier": "relative",
+	"typescript.preferences.importModuleSpecifierEnding": "js",
+	"javascript.preferences.importModuleSpecifier": "relative",
+	"javascript.preferences.importModuleSpecifierEnding": "js",
+	"prettier.prettierPath": "node_modules/prettier/index.cjs",
+	"markdown.copyFiles.destination": {
+		"**/*": "docs-assets/${documentRelativeDirName}${fileName}"
+	},
+	"tailwindCSS.experimental.configFile": "packages/app/src/app.css",
+	"[json]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[css]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[scss]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[html]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[javascript]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[typescript]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[javascriptreact]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"[typescriptreact]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
+	},
+	"workbench.colorCustomizations": {
+		"activityBar.background": "#2d3748",
+		"activityBar.foreground": "#ffffff",
+	}
+}

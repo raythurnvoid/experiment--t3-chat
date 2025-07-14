@@ -20,7 +20,17 @@ You can however write inside [+personal/+ai/](mdc:+personal/+ai).
 
 # Code guidelines
 
-Use snake_case for all variables and functions.
+You must not use `any` to bypass typescript errors unless the user is asking for it.
+
+The code of the app is located at [src/](mdc:src).
+
+The [src/server/](mdc:src/server) folder contains the Hono server code.
+
+The [convex/](mdc:convex) folder contains the Convex code.
+
+## Casing
+
+Use snake_case for all multi-word variables and functions.
 
 You can namespace code using snake_case syntax such as:
 
@@ -56,13 +66,43 @@ export enum ai_chat_MyEnum {
 
 Namespacing will allow to better organize the results from the IDE autocompletion.
 
-Use camelCase only when interacting with 3rd party functions or when the module already uses
-camelCase as a naming convention.
+### Naming hooks
 
-You must not use `any` to bypass typescript errors unless the user is asking for it.
+Use camelCase for global hooks.
 
-The code of the app is located at [src/](mdc:src).
+```ts
+// use-theme.ts
+function useTheme() {
+	return {
+		mode: "light",
+		resolved_theme: "light",
+		set_mode: () => {},
+	};
+}
 
-The [src/server/](mdc:src/server) folder contains the Hono server code.
+// component.tsx
+const { mode, resolved_theme, set_mode } = useTheme();
+```
 
-The [convex/](mdc:convex) folder contains the Convex code.
+You can namespace hooks using snake_case syntax such as:
+
+```ts
+// use-theme.ts
+function useAiChat_grouped_threads() {
+	// ...
+}
+```
+
+### Interacting with 3rd party functions or native JavaScript functions
+
+If a function is imported as camelCase, keep it as is, do not rename it.
+
+```ts
+import { randomUUID } from "node:crypto";
+
+const uuid = randomUUID();
+```
+
+```ts
+window.matchMedia("(prefers-color-scheme: dark)").matches;
+```
