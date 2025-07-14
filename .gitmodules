@@ -1,4 +1,4 @@
 [submodule "assistant-ui"]
-	path = assistant-ui
+	path = packages/app/assistant-ui
 	url = ../assistant-ui.git
 	branch = main

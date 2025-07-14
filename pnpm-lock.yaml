@@ -6,7 +6,9 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  packages/app:
     dependencies:
       '@ai-sdk/openai':
         specifier: ^1.3.22
@@ -208,7 +210,7 @@ importers:
         specifier: ^6.3.5
         version: 6.3.5(@types/node@24.0.8)(jiti@2.4.2)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/assistant-stream:
+  packages/app/assistant-ui/packages/assistant-stream:
     dependencies:
       '@types/json-schema':
         specifier: ^7.0.15
@@ -248,7 +250,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.0.8)(jiti@2.4.2)(jsdom@26.1.0)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/cli:
+  packages/app/assistant-ui/packages/cli:
     dependencies:
       chalk:
         specifier: ^5.4.1
@@ -309,7 +311,7 @@ importers:
         specifier: ^4.20.3
         version: 4.20.3
 
-  assistant-ui/packages/cloud:
+  packages/app/assistant-ui/packages/cloud:
     dependencies:
       assistant-stream:
         specifier: ^0.2.18
@@ -334,7 +336,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.0.8)(jiti@2.4.2)(jsdom@26.1.0)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/create-assistant-ui:
+  packages/app/assistant-ui/packages/create-assistant-ui:
     dependencies:
       chalk:
         specifier: ^5.4.1
@@ -368,7 +370,7 @@ importers:
         specifier: ^4.20.3
         version: 4.20.3
 
-  assistant-ui/packages/mcp-docs-server:
+  packages/app/assistant-ui/packages/mcp-docs-server:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.13.2
@@ -402,7 +404,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.0.8)(jiti@2.4.2)(jsdom@26.1.0)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/react:
+  packages/app/assistant-ui/packages/react:
     dependencies:
       '@radix-ui/primitive':
         specifier: ^1.1.2
@@ -493,7 +495,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.0.8)(jiti@2.4.2)(jsdom@26.1.0)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/react-ai-sdk:
+  packages/app/assistant-ui/packages/react-ai-sdk:
     dependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -551,59 +553,7 @@ importers:
         specifier: ^4.20.3
         version: 4.20.3
 
-  assistant-ui/packages/react-edge:
-    dependencies:
-      '@ai-sdk/provider':
-        specifier: ^1.1.3
-        version: 1.1.3
-      assistant-stream:
-        specifier: ^0.2.17
-        version: 0.2.17
-      json-schema:
-        specifier: ^0.4.0
-        version: 0.4.0
-      react:
-        specifier: ^18 || ^19 || ^19.0.0-rc
-        version: 19.1.0
-      react-dom:
-        specifier: ^18 || ^19 || ^19.0.0-rc
-        version: 19.1.0(react@19.1.0)
-      zod:
-        specifier: ^3.25.67
-        version: 3.25.67
-      zod-to-json-schema:
-        specifier: ^3.24.6
-        version: 3.24.6(zod@3.25.67)
-    devDependencies:
-      '@assistant-ui/react':
-        specifier: workspace:*
-        version: link:../react
-      '@assistant-ui/x-buildutils':
-        specifier: workspace:*
-        version: link:../x-buildutils
-      '@types/json-schema':
-        specifier: ^7.0.15
-        version: 7.0.15
-      '@types/node':
-        specifier: ^24.0.4
-        version: 24.0.8
-      '@types/react':
-        specifier: ^19.1.8
-        version: 19.1.8
-      '@types/react-dom':
-        specifier: ^19.1.6
-        version: 19.1.6(@types/react@19.1.8)
-      eslint:
-        specifier: ^9
-        version: 9.30.0(jiti@2.4.2)
-      eslint-config-next:
-        specifier: 15.3.4
-        version: 15.3.4(eslint@9.30.0(jiti@2.4.2))(typescript@5.8.3)
-      tsx:
-        specifier: ^4.20.3
-        version: 4.20.3
-
-  assistant-ui/packages/react-hook-form:
+  packages/app/assistant-ui/packages/react-hook-form:
     dependencies:
       zod:
         specifier: ^3.25.67
@@ -637,7 +587,7 @@ importers:
         specifier: ^4.20.3
         version: 4.20.3
 
-  assistant-ui/packages/react-langgraph:
+  packages/app/assistant-ui/packages/react-langgraph:
     dependencies:
       assistant-stream:
         specifier: ^0.2.18
@@ -689,7 +639,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.0.8)(jiti@2.4.2)(jsdom@26.1.0)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/react-markdown:
+  packages/app/assistant-ui/packages/react-markdown:
     dependencies:
       '@radix-ui/react-primitive':
         specifier: ^2.1.3
@@ -738,7 +688,7 @@ importers:
         specifier: ^3.2.3
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.0.8)(jiti@2.4.2)(jsdom@26.1.0)(lightningcss@1.30.1)(tsx@4.20.3)
 
-  assistant-ui/packages/react-syntax-highlighter:
+  packages/app/assistant-ui/packages/react-syntax-highlighter:
     devDependencies:
       '@assistant-ui/react':
         specifier: workspace:*
@@ -774,7 +724,7 @@ importers:
         specifier: ^4.20.3
         version: 4.20.3
 
-  assistant-ui/packages/styles:
+  packages/app/assistant-ui/packages/styles:
     devDependencies:
       '@assistant-ui/x-buildutils':
         specifier: workspace:*
@@ -807,7 +757,7 @@ importers:
         specifier: ^1.3.4
         version: 1.3.4
 
-  assistant-ui/packages/x-buildutils:
+  packages/app/assistant-ui/packages/x-buildutils:
     dependencies:
       '@eslint/eslintrc':
         specifier: ^3.3.1
@@ -3010,9 +2960,6 @@ packages:
   assertion-error@2.0.1:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
-
-  assistant-stream@0.2.17:
-    resolution: {integrity: sha512-uUZTK6qSMNMu35WqqmEaNCz68xE7X86fqj8nW1EHalarfe/LnzOAMxB66Kk2rijGkjtvunyPGNfBf386+9P4tQ==}
 
   assistant-stream@0.2.18:
     resolution: {integrity: sha512-aNZDOQorUksbGPVKzG9rBKN8O0J4UoGX9y6ChPejuvFLWb8JHse24AnYtr/Lss/+vQHggVQaeUe68wlv5J+WWw==}
@@ -8656,12 +8603,6 @@ snapshots:
       is-array-buffer: 3.0.5
 
   assertion-error@2.0.1: {}
-
-  assistant-stream@0.2.17:
-    dependencies:
-      '@types/json-schema': 7.0.15
-      nanoid: 5.1.5
-      secure-json-parse: 4.0.0
 
   assistant-stream@0.2.18:
     dependencies:

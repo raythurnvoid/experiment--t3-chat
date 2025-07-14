@@ -17,7 +17,7 @@ http.route({
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {
-			headers: server_convex_headers_preflight_cors,
+			headers: server_convex_headers_preflight_cors(),
 		});
 	}),
 });
@@ -33,11 +33,7 @@ http.route({
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "*",
-				"Access-Control-Allow-Headers": "*",
-			},
+			headers: server_convex_headers_preflight_cors(),
 		});
 	}),
 });
