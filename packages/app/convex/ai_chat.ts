@@ -27,15 +27,15 @@ export const threads_list = query({
 	handler: async (ctx, args) => {
 		args.pagination_opts.numItems = math_clamp(args.pagination_opts.numItems, 1, 50);
 
-		let threadsQuery = ctx.db
+		let threads_query = ctx.db
 			.query("threads")
 			.withIndex("by_workspace", (q) => q.eq("workspace_id", ai_chat_HARDCODED_ORG_ID));
 
 		if (args.include_archived !== true) {
-			threadsQuery = threadsQuery.filter((q) => q.eq(q.field("archived"), false));
+			threads_query = threads_query.filter((q) => q.eq(q.field("archived"), false));
 		}
 
-		const result = await threadsQuery.order("desc").paginate(args.pagination_opts);
+		const result = await threads_query.order("desc").paginate(args.pagination_opts);
 
 		return {
 			...result,

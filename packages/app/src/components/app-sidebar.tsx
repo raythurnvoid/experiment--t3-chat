@@ -1,5 +1,5 @@
 import * as React from "react";
-import { MessageSquare, Plus } from "lucide-react";
+import { MessageSquare, Plus, Search, X } from "lucide-react";
 import { SearchForm } from "@/components/search-form";
 import { VersionSwitcher } from "@/components/version-switcher";
 import {
@@ -13,6 +13,7 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 	SidebarRail,
+	SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { useAssistantRuntime } from "@assistant-ui/react";
@@ -21,6 +22,7 @@ import { useMemo } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { app_convex_adapt_convex_to_app_thread } from "@/lib/app_convex_client";
+import { cn } from "@/lib/utils";
 
 // This is sample data.
 const data = {
@@ -39,7 +41,36 @@ const handle_thread_switch = async (runtime: any, thread: ai_chat_Thread) => {
 	}
 };
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export interface AiChatSidebarContent_Props {
+	onClose?: (() => void) | undefined;
+}
+
+// New proper sidebar component that uses the Sidebar wrapper
+export function AiChatSidebar({
+	onClose,
+	className,
+	...props
+}: AiChatSidebarContent_Props & React.ComponentProps<typeof Sidebar>) {
+	return (
+		<div className={cn("AiChatSidebar-wrapper", "relative overflow-hidden w-full h-full", className)}>
+			<Sidebar
+				side="left"
+				variant="sidebar"
+				collapsible="none"
+				className="!border-r-0 [&>*]:!border-r-0 h-full"
+				style={{ borderRight: "none !important", width: "320px" }}
+				{...props}
+			>
+				<AiChatSidebarContent onClose={onClose} />
+			</Sidebar>
+			{/* Overlay to cover any border */}
+			<div className="absolute top-0 right-0 bottom-0 w-px bg-sidebar z-10"></div>
+		</div>
+	);
+}
+
+// Content component that renders inside the sidebar
+export function AiChatSidebarContent({ onClose }: AiChatSidebarContent_Props) {
 	const grouped_threads = useGroupedThreads();
 	const runtime = useAssistantRuntime();
 
@@ -49,14 +80,14 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
 		return (
 			<SidebarGroup key={title}>
-				<SidebarGroupLabel className="text-xs font-medium text-muted-foreground">{title}</SidebarGroupLabel>
-				<SidebarGroupContent>
+				<SidebarGroupLabel className={cn("AiChatSidebarContent-group-label")}>{title}</SidebarGroupLabel>
+				<SidebarGroupContent className={cn("AiChatSidebarContent-group-content")}>
 					<SidebarMenu>
 						{threads.map((thread) => (
 							<SidebarMenuItem key={thread.id}>
 								<SidebarMenuButton
 									onClick={() => void handle_thread_switch(runtime, thread)}
-									className="flex items-center gap-2 text-sm"
+									className={cn("AiChatSidebarContent-thread-button")}
 								>
 									<MessageSquare className="h-4 w-4" />
 									<span className="truncate">{format_thread_display_name(thread)}</span>
@@ -76,10 +107,40 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 	};
 
 	return (
-		<Sidebar {...props}>
+		<>
 			<SidebarHeader>
-				<VersionSwitcher versions={data.versions} defaultVersion={data.versions[0]} />
-				<SearchForm />
+				{/* Top row with close button and version switcher */}
+				<div className={cn("AiChatSidebarContent-top-row", "flex items-center justify-between")}>
+					{/* Close button on top-left */}
+					{onClose && (
+						<Button
+							variant="ghost"
+							size="icon"
+							onClick={onClose}
+							className={cn("AiChatSidebarContent-close-button", "h-8 w-8")}
+						>
+							<X className="h-4 w-4" />
+						</Button>
+					)}
+
+					{/* Version switcher on the right */}
+					<div className={cn("AiChatSidebarContent-version", "flex-1 ml-2")}>
+						<VersionSwitcher versions={data.versions} defaultVersion={data.versions[0]} />
+					</div>
+				</div>
+
+				{/* Search Form */}
+				<div className={cn("AiChatSidebarContent-search", "relative")}>
+					<div className="text-xs font-medium text-muted-foreground mb-2">Search</div>
+					<input
+						placeholder="Search the docs..."
+						className={cn(
+							"AiChatSidebarContent-search-input",
+							"w-full h-8 px-3 py-1 pl-8 text-sm bg-background border border-input rounded-md shadow-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+						)}
+					/>
+					<Search className="absolute top-8 left-2 h-4 w-4 text-muted-foreground pointer-events-none" />
+				</div>
 
 				{/* New Chat Button */}
 				<Button onClick={() => void handle_new_chat()} className="w-full justify-start gap-2" variant="outline">
@@ -87,16 +148,17 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 					New Chat
 				</Button>
 			</SidebarHeader>
+
 			<SidebarContent>
-				{/* Render grouped threads */}
 				{render_thread_group("Today", grouped_threads.today)}
 				{render_thread_group("Yesterday", grouped_threads.yesterday)}
 				{render_thread_group("Past Week", grouped_threads.past_week)}
 				{render_thread_group("Past Month", grouped_threads.past_month)}
 				{render_thread_group("Older", grouped_threads.older)}
 			</SidebarContent>
+
 			<SidebarRail />
-		</Sidebar>
+		</>
 	);
 }
 

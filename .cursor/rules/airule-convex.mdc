@@ -1,5 +1,5 @@
 ---
-description: Guidelines and best practices for building Convex projects, including database schema design, queries, mutations, and real-world examples. Use whenever the user asks to create or use a convex function.
+description: Guidelines and best practices for building Convex projects, including database schema design, queries, mutations, and real-world examples. Use whenever the user asks to create or use a convex function. Convex functions are located under convex/ folder.
 globs: convex/**/*.ts
 alwaysApply: false
 ---
@@ -80,8 +80,8 @@ export default defineSchema({
 			v.object({
 				kind: v.literal("success"),
 				value: v.number(),
-			})
-		)
+			}),
+		),
 	),
 });
 ```
@@ -517,13 +517,7 @@ Internal Functions:
 #### convex/index.ts
 
 ```typescript
-import {
-	query,
-	mutation,
-	internalQuery,
-	internalMutation,
-	internalAction,
-} from "./_generated/server";
+import { query, mutation, internalQuery, internalMutation, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import OpenAI from "openai";
 import { internal } from "./_generated/api";
@@ -568,7 +562,7 @@ export const list_messages = query({
 			channel_id: v.id("channels"),
 			author_id: v.optional(v.id("users")),
 			content: v.string(),
-		})
+		}),
 	),
 	handler: async (ctx, args) => {
 		const messages = await ctx.db
@@ -646,7 +640,7 @@ export const load_context = internalQuery({
 		v.object({
 			role: v.union(v.literal("user"), v.literal("assistant")),
 			content: v.string(),
-		})
+		}),
 	),
 	handler: async (ctx, args) => {
 		const channel = await ctx.db.get(args.channel_id);
