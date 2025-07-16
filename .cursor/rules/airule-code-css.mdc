@@ -1,0 +1,304 @@
+---
+description: Guidelines for creating and styling CSS files for React components using modern CSS practices
+globs: packages/app/src/**/*.css
+alwaysApply: false
+---
+
+CSS Guidelines for React Components
+
+# File Structure
+
+- Each component's CSS must be in a separate `.css` file
+- File must be imported in the corresponding `.tsx` file
+- Use modern CSS features including CSS nesting
+
+# Layering
+
+```css
+@layer common-components {
+	/* All component styles must be wrapped in this layer */
+}
+```
+
+# Selectors and Specificity
+
+- Use `:where()` for component's own classes to keep specificity low
+- This allows easy overriding and prevents specificity wars
+
+```css
+/* ✅ Good */
+:where(.Button) {
+	/* base styles */
+}
+
+/* ❌ Bad */
+.Button {
+	/* base styles */
+}
+```
+
+# Class Naming Convention
+
+## Base Component
+
+- Use PascalCase for component class names
+- Match class name with component name
+- Example: `.Button`, `.Card`, `.Modal`
+
+## Modifiers
+
+- Use single dash with explicit modifier type naming
+- Pattern: `ComponentName-modifierType-value`
+- **Variants**: `Button-variant-default`, `Button-variant-destructive`
+- **Sizes**: `Button-size-default`, `Button-size-sm`, `Button-size-lg`
+- **States**: `Button-state-loading`, `Button-state-disabled`
+
+```css
+/* ✅ Good - explicit modifier naming */
+:where(.Button-variant-destructive) {
+}
+:where(.Button-size-lg) {
+}
+
+/* ❌ Bad - double dashes or unclear naming */
+:where(.Button--destructive) {
+}
+:where(.Button--lg) {
+}
+```
+
+# Modern CSS Nesting
+
+- Use the `&` syntax for nesting selectors within a component
+- Keep all component states within the main `:where()` selector
+- For nested selectors that need low specificity, use `&:where(:hover)` syntax
+
+```css
+/* ✅ Good - using modern CSS nesting with proper :where() usage */
+:where(.Button) {
+	/* Base styles */
+
+	&:where(:hover) {
+		/* Hover styles with low specificity */
+	}
+
+	&:where(:focus-visible) {
+		/* Focus styles with low specificity */
+	}
+
+	&:where(svg) {
+		/* SVG child styles with low specificity */
+		pointer-events: none;
+		flex-shrink: 0;
+	}
+}
+
+/* ❌ Bad - separate selectors increase complexity */
+:where(.Button) {
+	/* Base styles */
+}
+
+:where(.Button:hover) {
+	/* Hover styles - separate selector */
+}
+```
+
+# Property Grouping and Organization
+
+- Use empty lines to group related properties
+- Common property groups:
+  - Box model (position, display, box-sizing)
+  - Layout (flex, grid, gap, align-items)
+  - Spacing (padding, margin)
+  - Typography (font properties)
+  - Visual (color, background, border)
+  - Transitions and animations
+
+```css
+:where(.Button) {
+	box-sizing: border-box;
+	position: relative;
+
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+
+	padding: 0.5rem 1rem;
+	border-radius: 0.375rem;
+
+	font-size: 0.875rem;
+	font-weight: 500;
+	line-height: 1.25rem;
+
+	background: hsl(var(--primary));
+	color: hsl(var(--primary-foreground));
+
+	transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+```
+
+# CSS Custom Properties
+
+- Use CSS custom properties with `hsl()` function
+- Pattern: `hsl(var(--variable-name))`
+- For opacity variants: `hsl(var(--variable-name) / 0.9)`
+
+```css
+/* ✅ Good */
+background: hsl(var(--primary));
+color: hsl(var(--primary-foreground));
+border-color: hsl(var(--destructive) / 0.2);
+
+/* ❌ Bad - missing hsl() wrapper */
+background: var(--primary);
+```
+
+# Dark Mode Support
+
+- Use `@media (prefers-color-scheme: dark)` for dark theme handling
+- Place dark mode overrides within the component scope
+
+```css
+:where(.Button-variant-outline) {
+	background: hsl(var(--background));
+	border: 1px solid hsl(var(--border));
+
+	@media (prefers-color-scheme: dark) {
+		background: hsl(var(--input) / 0.3);
+		border-color: hsl(var(--input));
+	}
+}
+```
+
+# State Handling
+
+- Use `&:where()` syntax for interactive states
+- Handle disabled, focus, hover, and active states consistently
+
+```css
+:where(.Button) {
+	/* Base styles */
+
+	&:where(:disabled) {
+		pointer-events: none;
+		opacity: 0.5;
+	}
+
+	&:where(:focus-visible) {
+		outline: none;
+		border-color: hsl(var(--ring));
+		box-shadow: 0 0 0 3px hsl(var(--ring) / 0.5);
+	}
+
+	&:where(:hover) {
+		background: hsl(var(--primary) / 0.9);
+	}
+}
+```
+
+# Child Element Styling
+
+- Wrap child selectors in `:where()` for low specificity
+- Use semantic child selectors
+
+```css
+:where(.Button) {
+	/* Base styles */
+
+	&:where(svg) {
+		pointer-events: none;
+		flex-shrink: 0;
+
+		&:not([class*="size-"]) {
+			width: 1rem;
+			height: 1rem;
+		}
+	}
+
+	&:where(:has(> svg)) {
+		padding-left: 0.75rem;
+		padding-right: 0.75rem;
+	}
+}
+```
+
+# Converting from Tailwind
+
+When converting from Tailwind utility classes to CSS:
+
+1. **Group related utilities**: Convert spacing, colors, and layout utilities into logical CSS property groups
+2. **Preserve responsive behavior**: Use CSS custom properties and media queries
+3. **Maintain design tokens**: Use CSS custom properties that match the design system
+4. **Handle arbitrary selectors**: Convert Tailwind's arbitrary selectors like `[&_svg]:size-4` to proper nested CSS
+
+```css
+/* Before: Tailwind utilities */
+/* className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90" */
+
+/* After: CSS properties */
+:where(.Button) {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+
+	padding: 0.5rem 1rem;
+
+	background: hsl(var(--primary));
+	color: hsl(var(--primary-foreground));
+
+	&:where(:hover) {
+		background: hsl(var(--primary) / 0.9);
+	}
+}
+```
+
+# Example Complete Component
+
+```css
+@layer common-components {
+	:where(.Card) {
+		box-sizing: border-box;
+		position: relative;
+
+		display: flex;
+		flex-direction: column;
+
+		padding: 1.5rem;
+		border-radius: 0.5rem;
+		border: 1px solid hsl(var(--border));
+
+		background: hsl(var(--card));
+		color: hsl(var(--card-foreground));
+
+		box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+	}
+
+	/* Variant: Elevated */
+	:where(.Card-variant-elevated) {
+		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+
+		&:where(:hover) {
+			box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+		}
+	}
+
+	/* Size: Compact */
+	:where(.Card-size-compact) {
+		padding: 1rem;
+	}
+
+	/* Size: Large */
+	:where(.Card-size-large) {
+		padding: 2rem;
+	}
+}
+```
+
+# Benefits of This Approach
+
+- **Low specificity**: Easy to override styles when needed
+- **Modern CSS**: Uses latest nesting and selector features
+- **Maintainable**: Clear naming convention and organization
+- **Performance**: Efficient CSS with minimal specificity conflicts
+- **Scalable**: Consistent patterns across all components

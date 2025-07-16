@@ -1,11 +1,13 @@
-/* Add a lower importance layer to normalize browser styles */
-@layer normalize;
-
-@import "tailwindcss";
+/* https://tailwindcss.com/docs/preflight#disabling-preflight */
+@layer normalize, theme, base, common-components, components, utilities, top-layer;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
 
 /* Mantine and BlockNote styles */
 @import "@blocknote/core/fonts/inter.css";
 @import "@blocknote/mantine/style.css";
+
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));

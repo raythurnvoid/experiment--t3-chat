@@ -75,6 +75,7 @@
 		"@types/react19": "npm:@types/react@^19.1.2",
 		"@types/uuid": "^10.0.0",
 		"@vitejs/plugin-react": "^4.4.1",
+		"babel-plugin-react-compiler": "19.0.0-beta-af1b7da-20250417",
 		"globals": "^16.0.0",
 		"tw-animate-css": "^1.3.4",
 		"typescript": "~5.8.3",

@@ -1,15 +1,15 @@
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeftIcon } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button, type Button_Props } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import "./sidebar.css";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
@@ -139,6 +139,24 @@ function SidebarProvider({
 	);
 }
 
+const Sidebar_class_names = {
+	root: "Sidebar",
+	collapsible: {
+		icon: "Sidebar-collapsible-icon",
+		offcanvas: "Sidebar-collapsible-offcanvas",
+		none: "Sidebar-collapsible-none",
+	},
+	container_collapsible: {
+		icon: "Sidebar-container-collapsible-icon",
+		offcanvas: "Sidebar-container-collapsible-offcanvas",
+		none: "Sidebar-container-collapsible-none",
+	},
+	state: {
+		expanded: "Sidebar-state-expanded",
+		collapsed: "Sidebar-state-collapsed",
+	},
+};
+
 function Sidebar({
 	side = "left",
 	variant = "sidebar",
@@ -158,10 +176,11 @@ function Sidebar({
 			<div
 				data-slot="sidebar"
 				className={cn(
-					"Sidebar",
+					Sidebar_class_names.root,
 					"Sidebar-static",
 					`Sidebar-side-${side}`,
 					`Sidebar-variant-${variant}`,
+					Sidebar_class_names.collapsible[collapsible],
 					"bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col",
 					className,
 				)}
@@ -180,7 +199,7 @@ function Sidebar({
 					data-slot="sidebar"
 					data-mobile="true"
 					className={cn(
-						"Sidebar",
+						Sidebar_class_names.root,
 						"Sidebar-mobile",
 						`Sidebar-side-${side}`,
 						openMobile && "Sidebar-mobile-open",
@@ -206,12 +225,13 @@ function Sidebar({
 	return (
 		<div
 			className={cn(
-				"Sidebar",
+				Sidebar_class_names.root,
 				"Sidebar-desktop",
 				`Sidebar-state-${state}`,
 				`Sidebar-side-${side}`,
 				`Sidebar-variant-${variant}`,
-				`Sidebar-collapsible-${collapsible}`,
+				Sidebar_class_names.state[state],
+				state === "collapsed" ? Sidebar_class_names.collapsible[collapsible] : "",
 				"group peer text-sidebar-foreground hidden md:block",
 			)}
 			data-state={state}
@@ -276,11 +296,10 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
 
 	return (
 		<Button
+			className={cn("SidebarTrigger", "flex size-8 p-2", className)}
+			variant="ghost"
 			data-sidebar="trigger"
 			data-slot="sidebar-trigger"
-			variant="ghost"
-			size="icon"
-			className={cn("SidebarTrigger", "size-7", className)}
 			onClick={(event) => {
 				onClick?.(event);
 				toggleSidebar();
@@ -350,7 +369,7 @@ function SidebarHeader({ className, ...props }: React.ComponentProps<"div">) {
 		<div
 			data-slot="sidebar-header"
 			data-sidebar="header"
-			className={cn("SidebarHeader", "flex flex-col gap-2 p-2", className)}
+			className={cn("SidebarHeader", "flex items-center gap-2 p-2", className)}
 			{...props}
 		/>
 	);
@@ -383,11 +402,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
 		<div
 			data-slot="sidebar-content"
 			data-sidebar="content"
-			className={cn(
-				"SidebarContent",
-				"flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
-				className,
-			)}
+			className={cn("SidebarContent", "flex min-h-0 flex-1 flex-col gap-2 overflow-hidden", className)}
 			{...props}
 		/>
 	);
@@ -466,7 +481,7 @@ function SidebarMenu({ className, ...props }: React.ComponentProps<"ul">) {
 		<ul
 			data-slot="sidebar-menu"
 			data-sidebar="menu"
-			className={cn("SidebarMenu", "flex w-full min-w-0 flex-col gap-1", className)}
+			className={cn("SidebarMenu", "flex flex-col gap-1", className)}
 			{...props}
 		/>
 	);
@@ -483,27 +498,33 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 	);
 }
 
-const sidebarMenuButtonVariants = cva(
-	"peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
-	{
-		variants: {
-			variant: {
-				default: "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-				outline:
-					"bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
-			},
-			size: {
-				default: "h-8 text-sm",
-				sm: "h-7 text-xs",
-				lg: "h-12 text-sm group-data-[collapsible=icon]:p-0!",
-			},
+const SidebarMenuButton_class_names = {
+	root: "SidebarMenuButton",
+	variants: {
+		variant: {
+			default: "SidebarMenuButton-variant-default",
+			outline: "SidebarMenuButton-variant-outline",
 		},
-		defaultVariants: {
-			variant: "default",
-			size: "default",
+		size: {
+			default: "SidebarMenuButton-size-default",
+			sm: "SidebarMenuButton-size-sm",
+			lg: "SidebarMenuButton-size-lg",
 		},
 	},
-);
+};
+
+// Map sidebar variants to button variants
+const sidebar_menu_button_variant_to_button_variant = {
+	default: "ghost" as const,
+	outline: "outline" as const,
+};
+
+type SidebarMenuButton_Props = Omit<Button_Props, "variant" | "size"> & {
+	variant?: "default" | "outline";
+	size?: "default" | "sm" | "lg";
+	isActive?: boolean;
+	tooltip?: string | React.ComponentProps<typeof TooltipContent>;
+};
 
 function SidebarMenuButton({
 	asChild = false,
@@ -513,26 +534,20 @@ function SidebarMenuButton({
 	tooltip,
 	className,
 	...props
-}: React.ComponentProps<"button"> & {
-	asChild?: boolean;
-	isActive?: boolean;
-	tooltip?: string | React.ComponentProps<typeof TooltipContent>;
-} & VariantProps<typeof sidebarMenuButtonVariants>) {
-	const Comp = asChild ? Slot : "button";
+}: SidebarMenuButton_Props) {
 	const { isMobile, state } = useSidebar();
 
 	const button = (
-		<Comp
-			data-slot="sidebar-menu-button"
-			data-sidebar="menu-button"
-			data-size={size}
-			data-active={isActive}
+		<Button
+			asChild={asChild}
+			variant={sidebar_menu_button_variant_to_button_variant[variant]}
+			size={size}
 			className={cn(
-				"SidebarMenuButton",
-				`SidebarMenuButton-variant-${variant}`,
-				`SidebarMenuButton-size-${size}`,
+				SidebarMenuButton_class_names.root,
+				variant && SidebarMenuButton_class_names.variants.variant[variant],
+				size && SidebarMenuButton_class_names.variants.size[size],
 				isActive && "SidebarMenuButton-active",
-				sidebarMenuButtonVariants({ variant, size }),
+				"p-2",
 				className,
 			)}
 			{...props}
@@ -555,6 +570,14 @@ function SidebarMenuButton({
 			<TooltipContent side="right" align="center" hidden={state !== "collapsed" || isMobile} {...tooltip} />
 		</Tooltip>
 	);
+}
+
+const SidebarMenuButtonLabel_class_names = {
+	root: "SidebarMenuButtonLabel",
+};
+
+function SidebarMenuButtonLabel({ className, ...props }: React.ComponentProps<"span">) {
+	return <span className={cn(SidebarMenuButtonLabel_class_names.root, className)} {...props} />;
 }
 
 function SidebarMenuAction({
@@ -700,7 +723,6 @@ function SidebarMenuSubButton({
 				"data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground",
 				size === "sm" && "text-xs",
 				size === "md" && "text-sm",
-				"group-data-[collapsible=icon]:hidden",
 				className,
 			)}
 			{...props}
@@ -723,6 +745,7 @@ export {
 	SidebarMenuAction,
 	SidebarMenuBadge,
 	SidebarMenuButton,
+	SidebarMenuButtonLabel,
 	SidebarMenuItem,
 	SidebarMenuSkeleton,
 	SidebarMenuSub,

@@ -1,0 +1,220 @@
+---
+description: Meta-guidelines for writing effective cursor rule files, covering document structure, formatting best practices, and clear AI-user communication patterns to ensure rules are scannable and maintainable.
+globs: .cursor/rules/*.mdc
+alwaysApply: false
+---
+
+Rule files located in `.cursor/rules` provide vital information to you, the AI Assistant, to help the user in the best possible way.
+
+When writing rule files, always refer to the AI assistant as "you" rather than using first-person perspective. For example, write "you must follow these guidelines" instead of "I must follow these guidelines." This ensures consistency across all rule files and makes the instructions more directly applicable to the AI assistant.
+
+Always refer to the person interacting with the AI assistant as "the user" rather than using second-person perspective. For example, write "when the user asks for help" instead of "when you ask for help." This establishes a clear distinction between instructions for the AI assistant ("you") and references to the user ("the user"), making it clear that the conversation happens between "you" (the AI Assistant) and "the user."
+
+# Document Structure Guidelines
+
+## Title Placement
+
+Place the main document title in regular paragraph text, not as an H1 heading. This allows H1 headings to be reserved for the main sections of the rule, creating a cleaner document hierarchy.
+
+```markdown
+This is the main title of the rule written as regular text.
+
+# First Main Section
+
+## Subsection
+
+### Sub-subsection
+```
+
+## Heading Hierarchy
+
+Use H1 (`#`) headings for main sections to establish clear topic boundaries. Structure content with hierarchical headings (`##`, `###`) to organize information logically, creating a clear information hierarchy that mirrors conceptual relationships.
+
+Maintain strict heading hierarchy by progressing sequentially through heading levels (`#` → `##` → `###`) without skipping levels.
+
+## Avoid Deep List Nesting
+
+Instead of creating deeply nested lists, use headings to organize content. This makes the document more scannable and easier to navigate.
+
+### ❌ Problematic Deep Nesting
+
+```markdown
+- Main category
+  - Subcategory
+    - Sub-subcategory
+      - Details
+        - More details
+```
+
+### ✅ Better Structure with Headings
+
+```markdown
+# Main Category
+
+## Subcategory
+
+### Sub-subcategory Details
+
+Content about the details goes here.
+
+### More Details
+
+Additional information organized clearly.
+```
+
+# Code Block Guidelines
+
+## Avoid Code Blocks in Lists
+
+Never nest code blocks within list items as this creates formatting problems and makes the content harder to read.
+
+### ❌ Problematic Code in Lists
+
+````markdown
+- When doing X:
+  ```typescript
+  const example = "code";
+  ```
+````
+
+- When doing Y:
+  ```typescript
+  const another = "example";
+  ```
+
+````
+
+### ✅ Better Structure
+
+```markdown
+# When Doing X
+
+```typescript
+const example = "code";
+````
+
+# When Doing Y
+
+```typescript
+const another = "example";
+```
+
+````
+
+## Code Block Placement
+
+Place code blocks at the document level or under headings, not nested within lists or other complex structures.
+
+# Writing Effective Instructions
+
+## Direct Communication with AI
+
+Rule files communicate exclusively with you, the AI assistant. Structure instructions to be direct and actionable using clear, imperative language.
+
+Frame user interactions using the pattern: "When the user requests X, you must do Y"
+
+## Clear Role Distinction
+
+Maintain clear distinction between the AI assistant ("you") and the user ("the user") throughout all instructions.
+
+### Proper Instruction Format
+
+```markdown
+When the user requests a new component, you must:
+
+# Check Existing Patterns
+
+First examine the existing codebase structure.
+
+# Apply Consistent Naming
+
+Use the established naming conventions.
+
+# Include Documentation
+
+Add comprehensive comments explaining the component's purpose.
+````
+
+# Metadata Guidelines
+
+## Required Metadata Block
+
+Begin each rule file with a proper metadata block:
+
+```yaml
+---
+description: A clear, comprehensive description explaining the rule's purpose and scope
+globs: File patterns that trigger automatic rule application
+alwaysApply: Boolean indicating if rule applies to all requests
+---
+```
+
+## Description Writing
+
+Write descriptions that help you quickly identify relevant rules when assisting users with specific tasks. Include the rule's purpose, scope, and key behaviors.
+
+## Glob Patterns
+
+Use glob patterns to match files that should trigger automatic rule application. When files matching the pattern are involved in the user's request, you should automatically consider this rule.
+
+Common glob patterns:
+
+```
+src/components/**/*.tsx
+packages/**/src/**/*.ts
+*.css
+```
+
+## Always Apply Setting
+
+Reserve `alwaysApply: true` for fundamental rules that affect all interactions. Most rules should use `alwaysApply: false` and rely on descriptions or globs for activation.
+
+# MDC Link Format
+
+## Proper Link Syntax
+
+When referencing files or directories in rule files, use the MDC link format to create navigable links:
+
+```markdown
+[descriptive-link-text](mdc:relative/path/from/root)
+```
+
+## Link Guidelines
+
+Write descriptive link text that identifies the file's purpose or content. Ensure paths are correct and relative to the project root. Always prefix paths with `mdc:` to activate the special link format.
+
+### Examples of Proper MDC Links
+
+```markdown
+[Button component](mdc:src/components/ui/button.tsx)
+[CSS guidelines](mdc:.cursor/rules/airule-code-css.mdc)
+[Components directory](mdc:src/components)
+```
+
+# Content Organization Best Practices
+
+## Scannable Structure
+
+Create content that you can scan quickly to find specific instructions. Use headings to break up large blocks of text and create clear sections.
+
+## Examples and Counter-Examples
+
+Provide concrete examples that demonstrate correct implementation. Use `✅` for good examples and `❌` for problematic patterns to make distinctions clear.
+
+## Reasoning and Context
+
+Explain the reasoning behind important behaviors to help you understand the underlying goals. This enables better decision-making when applying the rules.
+
+# Formatting Guidelines
+
+## Blank Line Management
+
+Maintain proper spacing around headings, paragraphs, and code blocks. These affect both rendering and readability.
+
+## Indentation Precision
+
+Ensure precise indentation for any remaining lists and code blocks. Even small errors can break the document structure.
+
+## Consistent Style
+
+Use consistent formatting throughout the document. This includes heading styles, code block languages, and example formatting.

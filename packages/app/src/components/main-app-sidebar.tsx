@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Home, MessageSquare, Settings, PanelLeft } from "lucide-react";
+import { Home, MessageSquare } from "lucide-react";
 import {
 	Sidebar,
 	SidebarContent,
@@ -9,8 +9,8 @@ import {
 	SidebarHeader,
 	SidebarMenu,
 	SidebarMenuButton,
+	SidebarMenuButtonLabel,
 	SidebarMenuItem,
-	SidebarRail,
 	SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
@@ -18,17 +18,16 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
+import { Logo } from "./logo.tsx";
 
 export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 	return (
 		<Sidebar collapsible="icon" {...props}>
 			<SidebarHeader>
-				<div className={cn("MainAppSidebar-header", "flex items-center justify-start p-2")}>
-					<SidebarTrigger />
-				</div>
+				<SidebarTrigger />
 
 				{/* App Name */}
-				<div className={cn("MainAppSidebar-app-name", "px-3 py-2")}>
+				<div className={cn("MainAppSidebar-app-name", "flex items-center px-3 py-2")}>
 					<Link
 						to="/"
 						className={cn(
@@ -36,7 +35,7 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 							"text-lg font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent hover:from-blue-700 hover:to-purple-700 transition-all duration-200",
 						)}
 					>
-						AI Chat App
+						<Logo />
 					</Link>
 				</div>
 			</SidebarHeader>
@@ -48,15 +47,9 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 							{/* Home Navigation */}
 							<SidebarMenuItem>
 								<SidebarMenuButton asChild>
-									<Link
-										to="/"
-										className={cn(
-											"MainAppSidebar-nav-home",
-											"flex items-center gap-2 w-full px-3 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground rounded-md",
-										)}
-									>
+									<Link to="/" className={cn("MainAppSidebar-nav-home", "flex items-center gap-2")}>
 										<Home className="h-4 w-4" />
-										<span>Home</span>
+										<SidebarMenuButtonLabel>Home</SidebarMenuButtonLabel>
 									</Link>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
@@ -64,15 +57,9 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 							{/* Chat Navigation */}
 							<SidebarMenuItem>
 								<SidebarMenuButton asChild>
-									<Link
-										to="/chat"
-										className={cn(
-											"MainAppSidebar-nav-chat",
-											"flex items-center gap-2 w-full px-3 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground rounded-md",
-										)}
-									>
+									<Link to="/chat" className={cn("MainAppSidebar-nav-chat", "flex items-center gap-2")}>
 										<MessageSquare className="h-4 w-4" />
-										<span>Chat</span>
+										<SidebarMenuButtonLabel>Chat</SidebarMenuButtonLabel>
 									</Link>
 								</SidebarMenuButton>
 							</SidebarMenuItem>
@@ -112,8 +99,6 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 					</SignedIn>
 				</div>
 			</SidebarFooter>
-
-			<SidebarRail />
 		</Sidebar>
 	);
 }

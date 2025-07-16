@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import path from "node:path";
-import { resolve } from "node:path";
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -13,7 +12,23 @@ export default defineConfig({
 			autoCodeSplitting: true,
 			verboseFileRoutes: false,
 		}),
-		react(),
+		react({
+			// https://react.dev/learn/react-compiler
+			babel: {
+				plugins: [
+					[
+						"babel-plugin-react-compiler",
+						{
+							target: "19",
+							sources: (filename: string) => {
+								// Compile only `src/` stuff
+								return filename.startsWith(path.resolve(__dirname, "src"));
+							},
+						},
+					],
+				],
+			},
+		}),
 		tailwindcss(),
 	],
 	resolve: {
@@ -28,7 +43,7 @@ export default defineConfig({
 		},
 		// Exclude +personal folder from being watched, they need to be absolute paths globs
 		watch: {
-			ignored: [resolve("+personal/**")],
+			ignored: [path.resolve("+personal/**")],
 		},
 	},
 	optimizeDeps: {

@@ -1,8 +1,10 @@
 ---
-description: 
-globs: *.tsx,*.css
+description: Guidelines for creating and styling React components, including class naming patterns, semantic classnames, and component organization
+globs: packages/**/src/components/**/*.tsx
 alwaysApply: false
 ---
+
+React Components Guidelines
 
 # File Organization
 
@@ -136,6 +138,228 @@ Always add semantic classnames to all elements in React components to make them 
      <input className={cn("Composer-input", "placeholder:text-muted-foreground")} />
    </div>
    ```
+
+# Component Class Name Organization
+
+## Class Names Object Pattern
+
+For components with multiple variants, sizes, or states, organize class names in a structured object using the following pattern:
+
+### Basic Structure
+
+```tsx
+const ComponentName_classNames = {
+	root: "ComponentName",
+	variants: {
+		variant: {
+			default: "ComponentName-variant-default",
+			primary: "ComponentName-variant-primary",
+			secondary: "ComponentName-variant-secondary",
+		},
+		size: {
+			sm: "ComponentName-size-sm",
+			default: "ComponentName-size-default",
+			lg: "ComponentName-size-lg",
+		},
+	},
+	defaultVariants: {
+		variant: "default",
+		size: "default",
+	},
+};
+```
+
+### Null Values for Opt-Out Styling
+
+For components that need the ability to opt out of variant or size styling entirely, allow `null` as a valid value:
+
+```tsx
+type Variant = keyof typeof ComponentName_classNames.variants.variant | null;
+type Size = keyof typeof ComponentName_classNames.variants.size | null;
+
+type ComponentName_Props = React.ComponentProps<"button"> & {
+	variant?: Variant; // Can be a variant key or null
+	size?: Size; // Can be a size key or null
+	asChild?: boolean;
+};
+```
+
+**When `null` is passed:**
+
+- No variant/size-specific classes are applied
+- Only the root class and any custom className are applied
+- Useful for completely custom styling or when inheriting styles from parent components
+
+**Usage in JSX:**
+
+```tsx
+function ComponentName({ className, variant, size, ...props }: ComponentName_Props) {
+	return (
+		<button
+			className={cn(
+				ComponentName_classNames.root,
+				variant && ComponentName_classNames.variants.variant[variant], // Only applies if variant is not null
+				size && ComponentName_classNames.variants.size[size], // Only applies if size is not null
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+```
+
+**Example usage:**
+
+```tsx
+// Uses default variant and size
+<Button>Click me</Button>
+
+// Uses specific variant and size
+<Button variant="primary" size="lg">Click me</Button>
+
+// Opts out of variant styling, keeps size
+<Button variant={null} size="lg">Custom styled</Button>
+
+// Opts out of both variant and size styling
+<Button variant={null} size={null}>Completely custom</Button>
+```
+
+### CSS Integration
+
+This pattern works seamlessly with our CSS guidelines from `airule-code-css.mdc`:
+
+- **CSS classes** use the same naming: `.Button-variant-default`, `.Button-size-lg`
+- **CSS file** should be imported: `import "./component-name.css"`
+- **Low specificity** maintained with `:where()` selectors in CSS
+
+### TypeScript Integration
+
+Create proper TypeScript types that reference the class names object:
+
+```tsx
+type Variant = keyof typeof ComponentName_classNames.variants.variant;
+type Size = keyof typeof ComponentName_classNames.variants.size;
+
+type ComponentName_Props = React.ComponentProps<"button"> & {
+	variant?: Variant;
+	size?: Size;
+	asChild?: boolean;
+};
+```
+
+### Usage in JSX
+
+Apply the class names using the `cn()` utility:
+
+```tsx
+function ComponentName({ className, variant, size, ...props }: ComponentName_Props) {
+	return (
+		<button
+			className={cn(
+				ComponentName_classNames.root,
+				variant && ComponentName_classNames.variants.variant[variant],
+				size && ComponentName_classNames.variants.size[size],
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+```
+
+### Exporting Class Names
+
+Export the class names object if it needs to be used externally:
+
+```tsx
+export { ComponentName, ComponentName_classNames };
+
+// Alternative naming for backward compatibility
+export { ComponentName_classNames as componentNameVariants };
+```
+
+### Complete Example
+
+```tsx
+import * as React from "react";
+import { cn } from "@/lib/utils";
+import "./button.css";
+
+const Button_class_names = {
+	root: "Button",
+	variants: {
+		variant: {
+			default: "Button-variant-default",
+			destructive: "Button-variant-destructive",
+			outline: "Button-variant-outline",
+			secondary: "Button-variant-secondary",
+			ghost: "Button-variant-ghost",
+			link: "Button-variant-link",
+		},
+		size: {
+			default: "Button-size-default",
+			sm: "Button-size-sm",
+			lg: "Button-size-lg",
+			icon: "Button-size-icon",
+		},
+	},
+	defaultVariants: {
+		variant: "default",
+		size: "default",
+	},
+};
+
+type Variant = keyof typeof Button_class_names.variants.variant;
+type Size = keyof typeof Button_class_names.variants.size;
+
+type Button_Props = React.ComponentProps<"button"> & {
+	variant?: Variant;
+	size?: Size;
+	asChild?: boolean;
+};
+
+function Button({ className, variant, size, asChild = false, ...props }: Button_Props) {
+	const Comp = asChild ? Slot : "button";
+
+	return (
+		<Comp
+			className={cn(
+				Button_class_names.root,
+				variant && Button_class_names.variants.variant[variant],
+				size && Button_class_names.variants.size[size],
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+
+export { Button, Button_class_names as buttonVariants };
+```
+
+### Benefits of This Pattern
+
+- **Type Safety**: TypeScript ensures only valid variants are used
+- **Maintainability**: All class names centralized in one object
+- **Consistency**: Matches CSS naming conventions exactly
+- **Flexibility**: Easy to add new variants or modify existing ones
+- **Debugging**: Clear mapping between props and CSS classes
+- **Reusability**: Class names object can be exported and reused
+
+### When to Use This Pattern
+
+**Use this pattern when:**
+
+- Component has multiple variants (design variations)
+- Component has multiple sizes
+- Component has complex state-based styling
+- You need to export class names for external use
+
+**Use simple semantic classes when:**
+
+- Component has no variants or sizes
+- Component is simple with minimal styling variations
+- Component is a leaf component with no complex state
 
 # React Hook Usage Guidelines
 

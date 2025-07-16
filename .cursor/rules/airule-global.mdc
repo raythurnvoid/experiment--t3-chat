@@ -1,6 +1,5 @@
 ---
-description:
-globs:
+description: Global project guidelines covering package management, terminal usage, code quality, code organization, casing conventions, and complete application architecture
 alwaysApply: true
 ---
 
@@ -12,6 +11,12 @@ This repository uses `pnpm` do not use `npm`.
 
 Do not run `pnpm run dev` let the user run it manually.
 
+# Code Quality and Linting
+
+Do not run commands to verify lints or check code quality (such as `pnpm lint`, `pnpm type-check`, or similar commands). Instead, rely only on the information that Cursor automatically provides through its built-in linting and error detection.
+
+You can run linting commands only if the user explicitly requests it.
+
 # +personal/ folder
 
 The [+personal/](mdc:+personal) folder is used to keep indexed personal user notes, you are not allowed to write in this folder. However the content can be used a documentation reference.
@@ -22,11 +27,75 @@ You can however write inside [+personal/+ai/](mdc:+personal/+ai).
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
-The code of the app is located at [src/](mdc:src).
+The code of the app is located at [packages/app/](mdc:packages/app).
 
-The [src/server/](mdc:src/server) folder contains the Hono server code.
+The [packages/app/src/](mdc:packages/app/src) folder contains the React frontend code.
 
-The [convex/](mdc:convex) folder contains the Convex code.
+The [packages/app/convex/](mdc:packages/app/convex) folder contains the Convex backend code.
+
+# Application Architecture
+
+This app is an AI chatbot that allows users to chat with AI, call tools, and produce documents in a canvas panel.
+
+## Backend Architecture
+
+The backend uses **Convex** as the primary backend platform, located in [packages/app/convex/](mdc:packages/app/convex):
+
+- **[ai_chat.ts](mdc:packages/app/convex/ai_chat.ts)** - Main AI chat functionality with streaming, tool calling, and artifact creation
+- **[schema.ts](mdc:packages/app/convex/schema.ts)** - Database schema for threads and messages
+- **[auth.ts](mdc:packages/app/convex/auth.ts)** - Authentication with Clerk integration
+- **[http.ts](mdc:packages/app/convex/http.ts)** - HTTP routing for API endpoints
+
+The Convex backend handles:
+
+- AI chat streaming with OpenAI integration
+- Thread and message management
+- Tool calling (weather, artifact creation)
+- Authentication token generation
+- CORS handling
+
+## Frontend Architecture
+
+The frontend is a React 19 application located in [packages/app/src/](mdc:packages/app/src):
+
+- **[main.tsx](mdc:packages/app/src/main.tsx)** - Application entry point with providers
+- **[routes/](mdc:packages/app/src/routes)** - TanStack Router route definitions
+  - **[\_\_root.tsx](mdc:packages/app/src/routes/__root.tsx)** - Root layout with auth setup
+  - **[index.tsx](mdc:packages/app/src/routes/index.tsx)** - Home page
+  - **[chat.tsx](mdc:packages/app/src/routes/chat.tsx)** - Main chat interface with canvas
+- **[components/](mdc:packages/app/src/components)** - React components organized by feature
+  - **[assistant-ui/](mdc:packages/app/src/components/assistant-ui)** - Chat interface components
+  - **[canvas/](mdc:packages/app/src/components/canvas)** - Canvas/artifact editing components
+  - **[ui/](mdc:packages/app/src/components/ui)** - Shared UI components
+
+## Key Technologies
+
+- **Convex** - Backend platform with real-time database
+- **Clerk** - Authentication provider
+- **Assistant UI** - Chat interface components
+- **BlockNote** - Rich text editor for canvas/artifacts
+- **TanStack Router** - File-based routing
+- **Tailwind 4** - Utility-first CSS framework
+- **React 19** - Frontend framework
+
+## Application Structure
+
+The app has two main views:
+
+1. **Home page** (`/`) - Basic landing page with navigation
+2. **Chat page** (`/chat`) - Split-panel interface with:
+   - Left sidebar: Thread list and navigation
+   - Center panel: Chat interface with AI conversation
+   - Right panel: Canvas for editing artifacts and documents
+
+## Data Flow
+
+1. User interactions in the frontend trigger TanStack Router navigation
+2. Chat messages are sent to Convex HTTP actions via Assistant UI runtime
+3. Convex processes messages, calls OpenAI API, and streams responses
+4. Tool calls can create artifacts that appear in the canvas panel
+5. Thread and message data is persisted in Convex database
+6. Authentication is handled by Clerk with Convex integration
 
 ## Casing
 

@@ -17,6 +17,9 @@
 		// Cursor relies on the vscode watcher to auto index files
 		"+personal/sources/**": true
 	},
+	"files.associations": {
+		"**/src/app.css": "tailwindcss"
+	},
 	"terminal.integrated.cwd": "packages/app",
 	"typescript.tsdk": "node_modules/typescript/lib",
 	"typescript.enablePromptUseWorkspaceTsdk": true,
