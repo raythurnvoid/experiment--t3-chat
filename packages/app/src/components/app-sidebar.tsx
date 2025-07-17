@@ -86,7 +86,7 @@ export function AiChatSidebarContent({ onClose }: AiChatSidebarContent_Props) {
 						{threads.map((thread) => (
 							<SidebarMenuItem key={thread.id}>
 								<SidebarMenuButton
-									onClick={() => void handle_thread_switch(runtime, thread)}
+									onClick={() => handle_thread_switch(runtime, thread)}
 									className={cn("AiChatSidebarContent-thread-button")}
 								>
 									<MessageSquare className="h-4 w-4" />

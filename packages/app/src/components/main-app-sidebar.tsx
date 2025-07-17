@@ -14,10 +14,39 @@ import {
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { useThemeContext } from "@/components/theme-provider";
-import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
+import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
+import { dark } from "@clerk/themes";
+
+const MainAppSidebar_class_names = {
+	root: "MainAppSidebar",
+	app_logo_container: "MainAppSidebar_app_logo_container",
+	app_link: "MainAppSidebar_app_link",
+	logo: "MainAppSidebar_logo",
+	navigation: {
+		home: "MainAppSidebar_nav_home",
+		chat: "MainAppSidebar_nav_chat",
+	},
+	profile: {
+		section: "MainAppSidebar_profile_section",
+		user_section: "MainAppSidebar_user_section",
+	},
+	theme_toggle: {
+		menu_item: "MainAppSidebar_theme_toggle_menu_item",
+	},
+	menu_button_label: "MainAppSidebar_menu_button_label",
+	user_profile: {
+		button: "MainAppSidebar_user_profile_button",
+		avatar: "MainAppSidebar_user_profile_avatar",
+		avatar_image: "MainAppSidebar_user_profile_avatar_image",
+		info: "MainAppSidebar_user_profile_info",
+		name: "MainAppSidebar_user_profile_name",
+		email: "MainAppSidebar_user_profile_email",
+		clerk_wrapper: "MainAppSidebar_user_profile_clerk_wrapper",
+	},
+};
 
 function ThemeToggleMenuItem() {
 	const { mode, resolved_theme, set_mode } = useThemeContext();
@@ -47,7 +76,10 @@ function ThemeToggleMenuItem() {
 
 	return (
 		<SidebarMenuItem>
-			<SidebarMenuButton onClick={cycle_theme} className={cn("ThemeToggleMenuItem", "flex items-center gap-2")}>
+			<SidebarMenuButton
+				onClick={cycle_theme}
+				className={cn(MainAppSidebar_class_names.theme_toggle.menu_item, "flex items-center gap-2")}
+			>
 				{get_theme_icon()}
 				<MainAppSidebarMenuButtonLabel>Theme</MainAppSidebarMenuButtonLabel>
 			</SidebarMenuButton>
@@ -61,12 +93,119 @@ function MainAppSidebarMenuButtonLabel({ className, ...props }: React.ComponentP
 			data-slot="sidebar-menu-button-label"
 			data-sidebar="menu-button-label"
 			className={cn(
-				"MainAppSidebarMenuButtonLabel",
+				MainAppSidebar_class_names.menu_button_label,
 				"starting:opacity-0 transition-opacity duration-150 ease-in-out delay-200 transition-discrete group-data-[collapsible=icon]:hidden group-data-[collapsible=icon]:delay-0 group-data-[collapsible=icon]:duration-0",
 				className,
 			)}
 			{...props}
 		/>
+	);
+}
+
+function UserProfileButton() {
+	const { user } = useUser();
+	const userButtonRef = React.useRef<HTMLDivElement>(null);
+
+	const theme = useThemeContext();
+
+	if (!user) {
+		return null;
+	}
+
+	const display_name = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username || "User";
+	const email_address = user.primaryEmailAddress?.emailAddress || "";
+
+	const handleCustomButtonClick = () => {
+		// Trigger the hidden UserButton
+		const userButton = userButtonRef.current?.querySelector("button");
+		if (userButton) {
+			userButton.click();
+		}
+	};
+
+	return (
+		<div className={cn(MainAppSidebar_class_names.user_profile.button, "relative w-full")}>
+			{/* Custom display button */}
+			<Button
+				variant="ghost"
+				onClick={handleCustomButtonClick}
+				className={cn(
+					"w-full h-auto p-3 flex items-center justify-start gap-3 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				)}
+			>
+				<div className={cn(MainAppSidebar_class_names.user_profile.avatar, "flex-shrink-0")}>
+					<img
+						src={user.imageUrl}
+						alt={display_name}
+						className={cn(MainAppSidebar_class_names.user_profile.avatar_image, "w-8 h-8 rounded-full")}
+					/>
+				</div>
+				<div className={cn(MainAppSidebar_class_names.user_profile.info, "flex flex-col items-start min-w-0 flex-1")}>
+					<span
+						className={cn(
+							MainAppSidebar_class_names.user_profile.name,
+							"text-sm font-medium text-sidebar-foreground truncate w-full text-left",
+						)}
+					>
+						{display_name}
+					</span>
+					{email_address && (
+						<span
+							className={cn(
+								MainAppSidebar_class_names.user_profile.email,
+								"text-xs text-sidebar-foreground/70 truncate w-full text-left",
+							)}
+						>
+							{email_address}
+						</span>
+					)}
+				</div>
+			</Button>
+
+			{/* Hidden UserButton for popup functionality */}
+			<div
+				ref={userButtonRef}
+				className={cn(
+					MainAppSidebar_class_names.user_profile.clerk_wrapper,
+					"absolute sr-only right-[-30px] bottom-0 h-0 w-0",
+				)}
+			>
+				<UserButton
+					appearance={{
+						baseTheme: theme.resolved_theme === "dark" ? dark : (undefined as any),
+						elements: {
+							userButtonAvatarBox: "w-8 h-8",
+							userButtonPopoverCard: "bg-sidebar-background border-sidebar-border",
+							userButtonPopoverMain: "bg-sidebar-background",
+							userButtonPopoverActionButton:
+								"text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+							userButtonPopoverActionButtonText: "text-sidebar-foreground",
+							userButtonPopoverFooter: "bg-sidebar-background border-sidebar-border",
+						},
+					}}
+					userProfileMode="modal"
+				/>
+			</div>
+		</div>
+	);
+}
+
+function ProfileSection() {
+	return (
+		<div className={cn(MainAppSidebar_class_names.profile.section, "px-2 py-2 border-t")}>
+			<SignedOut>
+				<SignInButton>
+					<Button variant="outline" className="w-full">
+						Sign In
+					</Button>
+				</SignInButton>
+			</SignedOut>
+			<SignedIn>
+				<div className={cn(MainAppSidebar_class_names.profile.user_section, "w-full")}>
+					<UserProfileButton />
+				</div>
+			</SignedIn>
+		</div>
 	);
 }
 
@@ -80,13 +219,13 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 			{/* App Name */}
 			<div
 				className={cn(
-					"MainAppSidebar-app-logo-container",
+					MainAppSidebar_class_names.app_logo_container,
 					"px-2 starting:opacity-0 transition-opacity duration-150 ease-in-out delay-200 group-data-[collapsible=icon]:opacity-0 group-data-[collapsible=icon]:delay-0 group-data-[collapsible=icon]:duration-0",
 				)}
 			>
-				<Link to="/" className={cn("MainAppSidebar-app-link", "contents")}>
+				<Link to="/" className={cn(MainAppSidebar_class_names.app_link, "contents")}>
 					<div className="px-8">
-						<Logo className={cn("MainAppSidebarLogo-logo", "flex items-center")} />
+						<Logo className={cn(MainAppSidebar_class_names.logo, "flex items-center")} />
 					</div>
 				</Link>
 			</div>
@@ -98,7 +237,7 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 							{/* Home Navigation */}
 							<SidebarMenuItem>
 								<SidebarMenuButton asChild>
-									<Link to="/" className={cn("MainAppSidebar-nav-home", "flex items-center gap-2")}>
+									<Link to="/" className={cn(MainAppSidebar_class_names.navigation.home, "flex items-center gap-2")}>
 										<Home className="h-4 w-4" />
 										<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
 									</Link>
@@ -108,7 +247,10 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 							{/* Chat Navigation */}
 							<SidebarMenuItem>
 								<SidebarMenuButton asChild>
-									<Link to="/chat" className={cn("MainAppSidebar-nav-chat", "flex items-center gap-2")}>
+									<Link
+										to="/chat"
+										className={cn(MainAppSidebar_class_names.navigation.chat, "flex items-center gap-2")}
+									>
 										<MessageSquare className="h-4 w-4" />
 										<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
 									</Link>
@@ -126,26 +268,7 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 				</SidebarMenu>
 
 				{/* Profile Section */}
-				<div className={cn("MainAppSidebar-profile-section", "px-3 py-2 border-t")}>
-					<SignedOut>
-						<SignInButton>
-							<Button variant="outline" className="w-full">
-								Sign In
-							</Button>
-						</SignInButton>
-					</SignedOut>
-					<SignedIn>
-						<div className={cn("MainAppSidebar-user-button", "flex items-center justify-center")}>
-							<UserButton
-								appearance={{
-									elements: {
-										avatarBox: "w-8 h-8",
-									},
-								}}
-							/>
-						</div>
-					</SignedIn>
-				</div>
+				<ProfileSection />
 			</SidebarFooter>
 		</Sidebar>
 	);
