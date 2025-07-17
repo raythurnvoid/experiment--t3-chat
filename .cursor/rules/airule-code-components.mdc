@@ -505,6 +505,134 @@ const ComponentName_class_names = {
 - **Type Safety**: TypeScript can validate class name usage
 - **Debugging**: Clear mapping between requests and implementation
 
+## Module-Level Class Names Organization
+
+### One Root Component Per Module Rule
+
+**CRITICAL**: In a module (file), only ONE `_class_names` object is allowed since a module should have only ONE root component. All other components in the same file are sub-components and their class names must be nested within the main component's `_class_names` object.
+
+### Why This Rule Exists
+
+- **Module Cohesion**: Ensures each module has a clear, single responsibility
+- **Architecture Clarity**: Makes it obvious which component is the main export
+- **Namespace Organization**: Prevents class name conflicts between components in the same file
+- **Maintainability**: Easier to understand component hierarchy and relationships
+
+### Implementation Pattern
+
+#### ❌ Incorrect: Multiple Class Names Objects
+
+```tsx
+// WRONG: Multiple separate class names objects in one module
+const ThreadGroup_class_names = {
+	root: "ThreadGroup",
+	item: "ThreadGroup_item",
+	title: "ThreadGroup_title",
+};
+
+const AiChatSidebar_class_names = {
+	root: "AiChatSidebar",
+	header: "AiChatSidebar_header",
+};
+```
+
+#### ✅ Correct: Nested Sub-Component Class Names
+
+```tsx
+// CORRECT: Sub-component class names nested in root component
+const AiChatSidebar_class_names = {
+	root: "AiChatSidebar",
+	header: "AiChatSidebar_header",
+	// Sub-component: ThreadGroup
+	thread_group: {
+		root: "AiChatSidebar_thread_group",
+		item: "AiChatSidebar_thread_group_item",
+		title: "AiChatSidebar_thread_group_title",
+		label: "AiChatSidebar_thread_group_label",
+		menu: "AiChatSidebar_thread_group_menu",
+	},
+	// Sub-component: SearchForm
+	search_form: {
+		root: "AiChatSidebar_search_form",
+		input: "AiChatSidebar_search_form_input",
+		icon: "AiChatSidebar_search_form_icon",
+	},
+};
+```
+
+### Sub-Component Class Name Prefixing
+
+All sub-component class names must follow the pattern:
+`{RootComponentName}_{sub_component_name}_{element_name}`
+
+**Examples:**
+
+- `AiChatSidebar_thread_group_item` (thread group item within AiChatSidebar)
+- `MessageComposer_attachment_list_item` (attachment list item within MessageComposer)
+- `UserProfile_edit_form_submit_button` (submit button in edit form within UserProfile)
+
+### Usage in Sub-Components
+
+Sub-components access their class names through the nested structure:
+
+```tsx
+// Sub-component uses nested class names from parent
+function ThreadGroup({ title, threads }: ThreadGroup_Props) {
+	return (
+		<div className={cn(AiChatSidebar_class_names.thread_group.root)}>
+			<h3 className={cn(AiChatSidebar_class_names.thread_group.label)}>{title}</h3>
+			<ul className={cn(AiChatSidebar_class_names.thread_group.menu)}>
+				{threads.map((thread) => (
+					<li key={thread.id} className={cn(AiChatSidebar_class_names.thread_group.item)}>
+						<span className={cn(AiChatSidebar_class_names.thread_group.title)}>{thread.title}</span>
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+```
+
+### When Multiple Components Are Needed
+
+If you find yourself needing multiple separate `_class_names` objects, consider:
+
+1. **Split into separate files**: Move sub-components to their own files
+2. **Re-evaluate component design**: The components might be too complex
+3. **Identify the true root**: Determine which component should be the main export
+
+### Exception: Multiple Root Components
+
+The ONLY exception is when a file exports multiple independent root components that are not hierarchically related. In this case:
+
+- Each component must have its own `_class_names` object
+- Each component should ideally be moved to its own file
+- This pattern should be avoided whenever possible
+
+```tsx
+// RARELY ACCEPTABLE: Only for truly independent components
+const Button_class_names = {
+	root: "Button",
+	// ...
+};
+
+const Input_class_names = {
+	root: "Input",
+	// ...
+};
+
+// Both Button and Input are exported as independent components
+export { Button, Input };
+```
+
+### Benefits of This Pattern
+
+- **Clear Architecture**: Obvious component hierarchy within modules
+- **Namespace Safety**: No class name conflicts between components
+- **Consistent Prefixing**: All classes follow the same naming pattern
+- **Maintainable Code**: Easy to understand and modify component structure
+- **Better Organization**: Related components stay grouped logically
+
 # React Hook Usage Guidelines
 
 ## Avoid useEffect When Possible

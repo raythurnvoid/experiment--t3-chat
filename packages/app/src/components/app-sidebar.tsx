@@ -174,7 +174,7 @@ export const useGroupedThreads = (): ai_chat_GroupedThreads => {
 	// Fetch threads directly from Convex
 	const threads_result = useQuery(api.ai_chat.threads_list, {
 		pagination_opts: {
-			numItems: 50, // Get up to 50 threads
+			numItems: 1000, // Get up to 1000 threads
 			cursor: null,
 		},
 		include_archived: false,

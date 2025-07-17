@@ -20,6 +20,7 @@
 		"@assistant-ui/react": "workspace:*",
 		"@assistant-ui/react-ai-sdk": "workspace:*",
 		"@assistant-ui/react-markdown": "workspace:*",
+		"@assistant-ui/styles": "workspace:*",
 		"@blocknote/core": "^0.31.2",
 		"@blocknote/mantine": "^0.31.2",
 		"@blocknote/react": "^0.31.2",

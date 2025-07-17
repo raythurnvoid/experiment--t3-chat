@@ -80,7 +80,26 @@ The frontend is a React 19 application located in [packages/app/src/](mdc:packag
 - **Tailwind 4** - Utility-first CSS framework
 - **React 19** - Frontend framework
 
+## Technology Stack
+
+This project uses the latest versions of core technologies:
+
+- **React 19** - Latest React version with new features and improvements
+- **Tailwind 4** - Latest Tailwind CSS with modern features and syntax
+
+### Documentation Requirements
+
+When working with React 19 and Tailwind 4, you must prioritize the most current documentation:
+
+- Always reference **React 19** documentation for React-specific features, hooks, and patterns
+- Always reference **Tailwind 4** documentation for CSS utilities, configuration, and new features
+- These are cutting-edge versions that may have significant changes from previous versions
+- If encountering unfamiliar patterns or errors, search for the latest documentation rather than relying on older version knowledge
+- Pay special attention to breaking changes and new features introduced in these versions
+
 ## Application Structure
+
+The app runs at **http://localhost:5173/** during development.
 
 The app has two main views:
 

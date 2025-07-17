@@ -10,6 +10,8 @@
 
 @import "tw-animate-css";
 
+@import "@assistant-ui/styles/index.css";
+
 @custom-variant dark (&:is(.dark *));
 
 @layer normalize {

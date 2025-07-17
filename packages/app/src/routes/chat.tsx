@@ -4,11 +4,11 @@ import { Thread } from "../components/assistant-ui/thread";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useState } from "react";
 import { Button } from "../components/ui/button";
-import { PanelLeft, PanelLeftClose } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils";
 import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui";
 import { useBackendRuntime } from "@/lib/backend_runtime";
-import { AiChatSidebar } from "@/components/app-sidebar";
+import { AiChatSidebar } from "@/components/ai-chat-sidebar";
 import { MainAppSidebar } from "@/components/main-app-sidebar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 
@@ -24,19 +24,15 @@ function ChatContent() {
 			<MainAppSidebar />
 			<SidebarInset className="flex-1 flex overflow-hidden">
 				<div className={cn("Chat-content-area", "flex h-full w-full")}>
-					{/* AI Chat Sidebar - positioned as first column */}
+					{/* AI Chat Sidebar - positioned between main sidebar and content with animation */}
 					<div
 						className={cn(
-							"Chat-ai-sidebar-container",
-							"transition-all duration-300 ease-in-out overflow-hidden",
+							"Chat-ai-sidebar-wrapper",
+							"h-full flex-shrink-0 transition-all duration-300 ease-in-out overflow-hidden",
 							aiChatSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
 						)}
 					>
-						{aiChatSidebarOpen && (
-							<div className={cn("Chat-ai-sidebar-wrapper", "w-80 h-full")}>
-								<AiChatSidebar onClose={() => setAiChatSidebarOpen(false)} />
-							</div>
-						)}
+						{aiChatSidebarOpen && <AiChatSidebar onClose={() => setAiChatSidebarOpen(false)} />}
 					</div>
 
 					{/* Main Content Area - takes remaining space */}
