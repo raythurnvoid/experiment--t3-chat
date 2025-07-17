@@ -21,19 +21,6 @@ import { Logo } from "@/components/logo";
 
 interface MainAppSidebarLogo_Props extends React.ComponentProps<"div"> {}
 
-function MainAppSidebarLogo({ className, ...props }: MainAppSidebarLogo_Props) {
-	return (
-		<div
-			data-slot="sidebar-logo"
-			data-sidebar="logo"
-			className={cn("MainAppSidebarLogo", "flex items-center p-2 group-data-[collapsible=icon]:invisible", className)}
-			{...props}
-		>
-			<Logo className="MainAppSidebarLogo-logo" />
-		</div>
-	);
-}
-
 function MainAppSidebarMenuButtonLabel({ className, ...props }: React.ComponentProps<"span">) {
 	return (
 		<span
@@ -50,20 +37,16 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 		<Sidebar collapsible="icon" {...props}>
 			<SidebarHeader>
 				<SidebarTrigger />
-
-				{/* App Name */}
-				<div className={cn("MainAppSidebar-app-name", "flex items-center px-3 py-2")}>
-					<Link
-						to="/"
-						className={cn(
-							"MainAppSidebar-app-link",
-							"text-lg font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent hover:from-blue-700 hover:to-purple-700 transition-all duration-200",
-						)}
-					>
-						<MainAppSidebarLogo />
-					</Link>
-				</div>
 			</SidebarHeader>
+
+			{/* App Name */}
+			<div className={cn("MainAppSidebar-app-logo-container", "px-2 group-data-[collapsible=icon]:invisible")}>
+				<Link to="/" className={cn("MainAppSidebar-app-link", "contents")}>
+					<div className="px-8">
+						<Logo className={cn("MainAppSidebarLogo-logo", "flex items-center")} />
+					</div>
+				</Link>
+			</div>
 
 			<SidebarContent>
 				<SidebarGroup>

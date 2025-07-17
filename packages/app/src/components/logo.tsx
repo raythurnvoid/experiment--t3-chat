@@ -6,7 +6,13 @@ export interface Logo_Props {
 
 export function Logo({ className }: Logo_Props) {
 	return (
-		<div className={cn("Logo", "h-[23px] w-[73px] flex items-center justify-center text-foreground", className)}>
+		<div
+			className={cn(
+				"Logo",
+				"h-[23px] w-[73px] flex items-center justify-center text-lg font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent hover:from-blue-700 hover:to-purple-700 transition-all duration-200 ",
+				className,
+			)}
+		>
 			<h1 className={cn("Logo-text", "text-xl font-bold tracking-tight")}>rt0_chat</h1>
 		</div>
 	);
