@@ -6,6 +6,36 @@ alwaysApply: false
 
 CSS Guidelines for React Components
 
+# CSS Approach for This Project
+
+This project uses both **Tailwind CSS** and **vanilla CSS files**.
+
+## Default Approach: Tailwind CSS
+
+**By default, you should use Tailwind utility classes** for styling components unless the user explicitly requests vanilla CSS.
+
+Examples of when to use Tailwind:
+
+- Component styling with utilities: `className="flex items-center gap-2 px-4 py-2"`
+- Transitions and animations: `transition-all duration-150 delay-200`
+- Responsive design: `md:flex-row lg:gap-4`
+- State-based styling: `hover:bg-blue-600 focus:ring-2`
+
+## When to Create Vanilla CSS Files
+
+**Only create separate `.css` files** when:
+
+1. **User explicitly requests vanilla CSS** ("use vanilla CSS", "create a CSS file", etc.)
+2. **Complex styling patterns** that require:
+   - Low-specificity `:where()` selectors
+   - Advanced CSS nesting
+   - Complex state management that's difficult with Tailwind
+   - Component-specific CSS custom properties
+
+## Guidelines Application
+
+The guidelines below apply **only when creating vanilla CSS files**, not when using Tailwind utility classes.
+
 # File Structure
 
 - Each component's CSS must be in a separate `.css` file
