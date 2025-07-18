@@ -22,13 +22,13 @@ function ChatContent() {
 	return (
 		<div className={cn("Chat", "flex h-screen w-full")}>
 			<MainAppSidebar />
-			<SidebarInset className="flex-1 flex overflow-hidden">
+			<SidebarInset className="flex flex-1 overflow-hidden">
 				<div className={cn("Chat-content-area", "flex h-full w-full")}>
 					{/* AI Chat Sidebar - positioned between main sidebar and content with animation */}
 					<div
 						className={cn(
 							"Chat-ai-sidebar-wrapper",
-							"h-full flex-shrink-0 transition-all duration-300 ease-in-out overflow-hidden",
+							"h-full flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out",
 							aiChatSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
 						)}
 					>
@@ -36,14 +36,14 @@ function ChatContent() {
 					</div>
 
 					{/* Main Content Area - takes remaining space */}
-					<div className={cn("Chat-main-content", "flex-1 flex flex-col h-full min-w-0")}>
+					<div className={cn("Chat-main-content", "flex h-full min-w-0 flex-1 flex-col")}>
 						<PanelGroup direction="horizontal" className="h-full">
 							{/* Thread Panel */}
 							<Panel defaultSize={40} minSize={30} maxSize={60}>
 								<div
 									className={cn(
 										"Chat-thread-panel",
-										"h-full bg-gray-50 dark:bg-gray-900 relative overflow-hidden flex flex-col",
+										"relative flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900",
 									)}
 								>
 									{!aiChatSidebarOpen && (
@@ -58,7 +58,7 @@ function ChatContent() {
 											</Button>
 										</div>
 									)}
-									<div className={cn("Chat-thread-content", "flex-1 flex min-h-0 overflow-hidden")}>
+									<div className={cn("Chat-thread-content", "flex min-h-0 flex-1 overflow-hidden")}>
 										<Thread />
 									</div>
 								</div>
@@ -68,7 +68,7 @@ function ChatContent() {
 
 							{/* Canvas Panel */}
 							<Panel defaultSize={60}>
-								<div className={cn("Chat-canvas-panel", "h-full relative overflow-hidden")}>
+								<div className={cn("Chat-canvas-panel", "relative h-full overflow-hidden")}>
 									<Canvas />
 								</div>
 							</Panel>

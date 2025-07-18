@@ -19,7 +19,7 @@ function Layout() {
 
 	return (
 		<>
-			<div className="h-screen w-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 overflow-hidden">
+			<div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
 				<Outlet />
 			</div>
 			<AppTanStackRouterDevTools />

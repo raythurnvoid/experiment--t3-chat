@@ -47,6 +47,25 @@ export const threads_list = query({
 });
 
 /**
+ * Query to get a single thread by ID
+ */
+export const thread_get = query({
+	args: {
+		thread_id: v.id("threads"),
+	},
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get(args.thread_id);
+
+		// Verify the thread belongs to the current workspace
+		if (thread && thread.workspace_id !== ai_chat_HARDCODED_ORG_ID) {
+			return null;
+		}
+
+		return thread;
+	},
+});
+
+/**
  * Mutation to create a new thread
  */
 export const thread_create = mutation({
@@ -71,6 +90,7 @@ export const thread_create = mutation({
 			updated_at: now,
 			external_id: args.external_id ?? null,
 			project_id: ai_chat_HARDCODED_PROJECT_ID,
+			starred: false,
 		});
 
 		return {
@@ -87,6 +107,7 @@ export const thread_update = mutation({
 		thread_id: v.id("threads"),
 		title: v.optional(v.string()),
 		is_archived: v.optional(v.boolean()),
+		starred: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
 		const updated_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
@@ -98,14 +119,19 @@ export const thread_update = mutation({
 					updated_by: updated_by,
 					updated_at: Date.now(),
 				},
-				args.title
+				args.title !== undefined
 					? {
 							title: args.title,
 						}
 					: {},
-				args.is_archived
+				args.is_archived !== undefined
 					? {
 							archived: args.is_archived,
+						}
+					: {},
+				args.starred !== undefined
+					? {
+							starred: args.starred,
 						}
 					: {},
 			),

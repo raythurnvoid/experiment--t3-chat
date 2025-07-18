@@ -35,6 +35,49 @@ The [packages/app/src/](mdc:packages/app/src) folder contains the React frontend
 
 The [packages/app/convex/](mdc:packages/app/convex) folder contains the Convex backend code.
 
+## Object.assign Usage
+
+When using `Object.assign`, always verify that arguments are not `undefined` before passing them to prevent unexpected behaviors and potential runtime errors.
+
+### ✅ Correct Pattern
+
+```ts
+Object.assign(
+	{
+		updated_by: updated_by,
+		updated_at: Date.now(),
+	},
+	args.title !== undefined
+		? {
+				title: args.title,
+			}
+		: {},
+	args.is_archived !== undefined
+		? {
+				archived: args.is_archived,
+			}
+		: {},
+);
+```
+
+### ❌ Problematic Pattern
+
+```ts
+// This can cause unexpected behavior if args properties are undefined
+Object.assign(
+	{
+		updated_by: updated_by,
+		updated_at: Date.now(),
+	},
+	{
+		title: args.title, // Could be undefined
+		archived: args.is_archived, // Could be undefined
+	},
+);
+```
+
+Always use conditional checks (`!== undefined`) or provide fallback values when merging objects with `Object.assign` to ensure predictable behavior.
+
 # Application Architecture
 
 This app is an AI chatbot that allows users to chat with AI, call tools, and produce documents in a canvas panel.

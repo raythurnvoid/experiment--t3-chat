@@ -1,13 +1,15 @@
 import * as React from "react";
-import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon } from "lucide-react";
+import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star } from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { ThreadListPrimitive, ThreadListItemPrimitive, useThreadListItem } from "@assistant-ui/react";
-import { useState, createContext, use } from "react";
+import { useState, createContext, use, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { useMutation, useQuery } from "convex/react";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app_convex_client";
 
 // Search Context
 interface SearchContextType {
@@ -95,23 +97,86 @@ function ThreadListItemAlt() {
 					</span>
 				</ThreadListItemPrimitive.Trigger>
 				<div className={cn("AiChatSidebarContent-thread-list-item-alt-actions", "mt-1 flex justify-end px-1")}>
-					<ArchiveToggle />
+					<ThreadListItemOptionToggle toggle={(args) => <StarToggle {...args} />} />
+					<ThreadListItemOptionToggle toggle={(args) => <ArchiveToggle {...args} />} />
 				</div>
 			</label>
 		</ThreadListItemPrimitive.Root>
 	);
 }
 
-function ArchiveToggle() {
-	const is_archived = useThreadListItem((t) => t.status === "archived");
+// Abstract component for thread list item option toggles
+interface ThreadListItemOptionToggle_Props {
+	toggle: (props: { class_names: { root: string; icon: string } }) => React.ReactNode;
+}
 
-	const class_names = {
-		root: cn(
-			"AiChatSidebarContent-thread-list-item-alt-archive-button",
-			"size-4 p-0 text-foreground hover:text-primary",
-		),
+function ThreadListItemOptionToggle({ toggle }: ThreadListItemOptionToggle_Props) {
+	const shared_class_names = {
+		root: cn("size-4 p-0 text-foreground hover:text-primary"),
 		icon: cn("h-4 w-4"),
 	};
+
+	return (
+		<>
+			{toggle({
+				class_names: shared_class_names,
+			})}
+		</>
+	);
+}
+
+function StarToggle({ class_names }: { class_names: { root: string; icon: string } }) {
+	const thread_id = useThreadListItem((t) => t.id);
+
+	const thread = useQuery(app_convex_api.ai_chat.thread_get, {
+		thread_id: thread_id as app_convex_Id<"threads">,
+	});
+	const thread_update_mutation = useMutation(app_convex_api.ai_chat.thread_update);
+
+	const handle_star_toggle = async () => {
+		if (!thread) return;
+
+		try {
+			await thread_update_mutation({
+				thread_id: thread._id,
+				starred: !thread.starred,
+			});
+		} catch (error) {
+			console.error("Failed to update thread starred status:", error);
+		}
+	};
+
+	if (!thread) {
+		return null;
+	} else {
+		if (thread.starred) {
+			return (
+				<TooltipIconButton
+					className={class_names.root}
+					variant="ghost"
+					tooltip="Remove from favorites"
+					onClick={handle_star_toggle}
+				>
+					<Star className={class_names.icon} fill="currentColor" />
+				</TooltipIconButton>
+			);
+		} else {
+			return (
+				<TooltipIconButton
+					className={class_names.root}
+					variant="ghost"
+					tooltip="Add to favorites"
+					onClick={handle_star_toggle}
+				>
+					<Star className={class_names.icon} />
+				</TooltipIconButton>
+			);
+		}
+	}
+}
+
+function ArchiveToggle({ class_names }: { class_names: { root: string; icon: string } }) {
+	const is_archived = useThreadListItem((t) => t.status === "archived");
 
 	if (is_archived) {
 		return (

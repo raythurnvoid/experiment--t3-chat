@@ -20,10 +20,9 @@ export interface ai_chat_Thread {
 	workspace_id: string;
 	is_archived: boolean;
 
-	// aui/v0 metadata field
+	// custom metadata fields
 	metadata: {
-		updated_by: string;
-		created_by: string;
+		starred?: boolean;
 	};
 }
 

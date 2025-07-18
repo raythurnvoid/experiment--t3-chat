@@ -47,16 +47,15 @@ export function app_convex_adapt_convex_to_app_thread(convex_thread: ConvexThrea
 		id: convex_thread._id,
 		title: convex_thread.title,
 		last_message_at: new Date(convex_thread.last_message_at),
-		metadata: {
-			updated_by: convex_thread.updated_by,
-			created_by: convex_thread.created_by,
-		},
 		external_id: convex_thread.external_id,
 		project_id: convex_thread.project_id,
 		created_at: new Date(convex_thread._creationTime).toISOString(),
 		updated_at: new Date(convex_thread.updated_at).toISOString(),
 		workspace_id: convex_thread.workspace_id,
 		is_archived: convex_thread.archived,
+		metadata: {
+			starred: convex_thread.starred,
+		},
 	};
 }
 

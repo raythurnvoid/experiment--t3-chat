@@ -14,6 +14,7 @@ const app_convex_schema = defineSchema({
 		updated_at: v.number(),
 		external_id: v.union(v.string(), v.null()),
 		project_id: v.string(),
+		starred: v.optional(v.boolean()),
 		// Note: Convex automatically provides _id and _creationTime fields
 		// so we don't need separate id and createdAt fields
 	})

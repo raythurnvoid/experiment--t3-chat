@@ -36,6 +36,88 @@ React Components Guidelines
 
 # Naming Conventions
 
+## Props Naming - Critical Distinction
+
+**CRITICAL**: Props naming depends on whether they will be spread onto DOM elements or not.
+
+### Props for DOM Elements (camelCase Required)
+
+**MANDATORY**: Props that will be spread onto DOM elements (`{...props}`) MUST use camelCase to match React/DOM conventions.
+
+```tsx
+// ✅ CORRECT: Props that can be spread onto DOM elements
+interface Button_Props extends React.ComponentProps<"button"> {
+	variant?: "default" | "destructive" | "outline";
+	size?: "default" | "sm" | "lg";
+	className?: string;
+	onClick?: () => void;
+	disabled?: boolean;
+	children?: React.ReactNode;
+}
+
+function Button({ className, variant = "default", size = "default", ...props }: Button_Props) {
+	return (
+		<button
+			className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)}
+			{...props} // ✅ Works because props use camelCase
+		/>
+	);
+}
+```
+
+### Custom Component Props (snake_case Allowed)
+
+For props that are specific to your component and will NOT be spread onto DOM elements, you can use snake_case:
+
+```tsx
+// ✅ CORRECT: Custom component props (not spread onto DOM)
+interface SearchFilter_Props {
+	search_query: string; // Custom prop - snake_case OK
+	on_search_change: (query: string) => void; // Custom prop - snake_case OK
+	show_archived: boolean; // Custom prop - snake_case OK
+	className?: string; // Will be manually assigned - camelCase
+}
+
+function SearchFilter({ search_query, on_search_change, show_archived, className }: SearchFilter_Props) {
+	return (
+		<div className={cn("SearchFilter", className)}>
+			<input
+				value={search_query}
+				onChange={(e) => on_search_change(e.target.value)} // Used manually, not spread
+			/>
+		</div>
+	);
+}
+```
+
+### Props Destructuring Pattern
+
+When destructuring props that extend DOM element props, separate the custom props from the spreadable props:
+
+```tsx
+interface CustomButton_Props extends React.ComponentProps<"button"> {
+	custom_behavior?: boolean; // Custom prop - snake_case OK
+	special_mode?: "normal" | "enhanced"; // Custom prop - snake_case OK
+}
+
+function CustomButton({
+	custom_behavior,
+	special_mode,
+	className,
+	...props // DOM props in camelCase for spreading
+}: CustomButton_Props) {
+	// Local variables use snake_case
+	const enhanced_class = special_mode === "enhanced" ? "CustomButton-enhanced" : "";
+
+	return (
+		<button
+			className={cn("CustomButton", enhanced_class, className)}
+			{...props} // ✅ Safe to spread DOM props
+		/>
+	);
+}
+```
+
 ## Snake Case for Local Symbols
 
 **MANDATORY**: Use snake_case for ALL local symbols within React components, including:
@@ -43,8 +125,8 @@ React Components Guidelines
 - State variables and their setters
 - Local functions and variables
 - Hook parameters and return values
-- Props destructuring (when possible)
 - Internal component identifiers
+- Component-specific custom props (that won't be spread)
 
 ### ✅ Correct Local Symbol Usage:
 
@@ -100,14 +182,15 @@ When defining Props interfaces for React components, use the following naming fo
 // For a component named ThemeProvider
 export interface ThemeProvider_Props {
 	children: ReactNode;
-	className?: string;
+	className?: string; // camelCase for DOM compatibility
+	custom_theme?: string; // snake_case for custom prop
 }
 
 // For a component named MessageComposer
-export interface MessageComposer_Props {
-	onSubmit: (message: string) => void;
-	placeholder?: string;
-	disabled?: boolean;
+export interface MessageComposer_Props extends React.ComponentProps<"div"> {
+	onSubmit: (message: string) => void; // camelCase - could be spread
+	placeholder?: string; // camelCase - standard DOM attribute
+	custom_validation?: boolean; // snake_case - custom prop
 }
 ```
 
@@ -122,7 +205,7 @@ export interface MessageComposer_Props {
 ```tsx
 import { createContext, use, useState, ReactNode } from "react";
 
-// Context interface with snake_case
+// Context interface with snake_case for internal state
 interface SearchContextType {
 	search_query: string;
 	set_search_query: (query: string) => void;
@@ -303,22 +386,20 @@ function Button({ className, variant = "default", size = "default", ...props }: 
 
 # Form Component Integration
 
-When using shadcn/ui form components, integrate them with snake_case patterns:
+When using shadcn/ui form components, integrate them with the appropriate naming patterns:
 
 ```tsx
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
-function ShowArchivedCheckbox({
-	checked,
-	onCheckedChange,
-	className,
-}: {
+interface ShowArchivedCheckbox_Props {
 	checked: boolean;
-	onCheckedChange: (checked: boolean) => void;
-	className?: string;
-}) {
-	const checkbox_id = React.useId();
+	onCheckedChange: (checked: boolean) => void; // camelCase - matches Checkbox API
+	className?: string; // camelCase - for DOM compatibility
+}
+
+function ShowArchivedCheckbox({ checked, onCheckedChange, className }: ShowArchivedCheckbox_Props) {
+	const checkbox_id = React.useId(); // Local variable - snake_case
 
 	return (
 		<div className={cn("mb-4 flex items-center space-x-2", className)}>
@@ -431,4 +512,4 @@ const handle_toggle = useCallback(async (new_value: boolean) => {
 - **Maintainability**: Clearer data flow and fewer side effects
 - **Optimization**: Use refs to prevent unnecessary re-renders for internal state
 - **Modern React patterns**: Leverage React 19 features like the `use` hook
-- **Consistent naming**: Snake_case for all local symbols improves code readability
+- **Consistent naming**: Proper casing for different contexts improves code readability and DOM compatibility
