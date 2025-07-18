@@ -33,17 +33,62 @@ React Components Guidelines
 - Makes refactoring and moving files more difficult
 - Obscures the actual file structure
 - Prevents effective tree-shaking in bundlers
-- Creates "barrel export" anti-pattern
 
-### Fixing Existing Barrel Exports:
+# Naming Conventions
 
-1. Remove the barrel export (index file)
-2. Update all imports to point directly to the component files
-3. Example: Change `from "../components/canvas"` to `from "../components/canvas/canvas"`
+## Snake Case for Local Symbols
 
-# Component Interface Naming
+**MANDATORY**: Use snake_case for ALL local symbols within React components, including:
 
-## Props Interface Convention
+- State variables and their setters
+- Local functions and variables
+- Hook parameters and return values
+- Props destructuring (when possible)
+- Internal component identifiers
+
+### ✅ Correct Local Symbol Usage:
+
+```tsx
+function SearchComponent() {
+	const [search_query, set_search_query] = useState("");
+	const [is_loading, set_is_loading] = useState(false);
+
+	const handle_search_change = useCallback((value: string) => {
+		set_search_query(value);
+	}, []);
+
+	const filtered_results = useMemo(() => {
+		return results.filter((item) => item.title.toLowerCase().includes(search_query.toLowerCase()));
+	}, [results, search_query]);
+
+	return (
+		<div className="SearchComponent">
+			<input value={search_query} onChange={(e) => set_search_query(e.target.value)} />
+		</div>
+	);
+}
+```
+
+### External API Consistency:
+
+When interfacing with external APIs or libraries that use camelCase, keep their naming as-is but use snake_case for your local transformations:
+
+```tsx
+function UserProfile() {
+	// External API uses camelCase - keep as-is
+	const { firstName, lastName } = useUser();
+
+	// Local transformations use snake_case
+	const [display_name, set_display_name] = useState("");
+	const [is_editing, set_is_editing] = useState(false);
+
+	const update_display_name = useCallback(() => {
+		set_display_name(`${firstName} ${lastName}`);
+	}, [firstName, lastName]);
+}
+```
+
+## Component Interface Naming
 
 When defining Props interfaces for React components, use the following naming format:
 
@@ -64,33 +109,63 @@ export interface MessageComposer_Props {
 	placeholder?: string;
 	disabled?: boolean;
 }
-
-// For a component named UserActionBar
-export interface UserActionBar_Props {
-	user: User;
-	actions: Action[];
-	variant?: "default" | "compact";
-}
 ```
 
-### Benefits:
+# React 19 Context Patterns
 
-- **Consistent naming**: All Props interfaces follow the same pattern
-- **Easy identification**: Immediately clear which component the props belong to
-- **IDE autocompletion**: Better grouping in IDE suggestions with underscore syntax
+## Modern Context with use Hook
+
+**MANDATORY**: Use React 19's `use` hook instead of `useContext` for consuming context.
+
+### Context Setup Pattern:
+
+```tsx
+import { createContext, use, useState, ReactNode } from "react";
+
+// Context interface with snake_case
+interface SearchContextType {
+	search_query: string;
+	set_search_query: (query: string) => void;
+	is_loading: boolean;
+	set_is_loading: (loading: boolean) => void;
+}
+
+const SearchContext = createContext<SearchContextType | null>(null);
+
+// Custom hook using React 19 'use' hook
+const useSearchContext = () => {
+	const context = use(SearchContext);
+	if (!context) {
+		throw new Error("useSearchContext must be used within SearchContextProvider");
+	}
+	return context;
+};
+
+// Provider component with snake_case state
+function SearchContextProvider({ children }: { children: ReactNode }) {
+	const [search_query, set_search_query] = useState("");
+	const [is_loading, set_is_loading] = useState(false);
+
+	return (
+		<SearchContext.Provider
+			value={{
+				search_query,
+				set_search_query,
+				is_loading,
+				set_is_loading,
+			}}
+		>
+			{children}
+		</SearchContext.Provider>
+	);
+}
+```
 
 # Component Class Name Requirements
 
 ## Critical Rule: ALL Classes Must Be Prefixed
 
 **MANDATORY**: ALL CSS classes within a React component MUST be prefixed with the component name. This applies to every single class, not just semantic ones.
-
-### Why This Rule Exists
-
-- **Component Isolation**: Prevents style conflicts between components
-- **Debugging Clarity**: Instantly identify which component a class belongs to in DevTools
-- **Maintainability**: Makes refactoring and component organization much easier
-- **Testing Reliability**: Provides stable selectors for testing that won't conflict
 
 ### Class Name Format Requirements
 
@@ -101,537 +176,165 @@ export interface UserActionBar_Props {
 
 #### Child Elements
 
-- Format: `ComponentName_description_of_element_and_modifiers`
-- Use snake_case for the description part
+- Format: `ComponentName-description-of-element-and-modifiers`
+- Use kebab-case for the description part
 - Include relevant state modifiers when applicable
-- Examples:
-  - `Thread_viewport`
-  - `Thread_messages_container`
-  - `MessageComposer_input`
-  - `MessageComposer_send_button`
-  - `UserActionBar_edit_button`
-  - `BranchPicker_button_active`
-  - `AssistantMessage_content_loading`
 
-## Implementation Guidelines
+### Implementation Guidelines
 
 1. **ALL classes must be prefixed** - no exceptions for utility or state classes
-2. **Combine with existing styling** using the `cn()` utility:
-
-   ```tsx
-   <div className={cn("Thread", "bg-background box-border flex h-full")}>
-   ```
-
-3. **State-aware classes must also be prefixed**:
-
-   ```tsx
-   <button className={cn(
-     "ComposerAction_send_button",
-     isLoading && "ComposerAction_send_button_loading",
-     "my-2.5 size-8 p-2"
-   )}>
-   ```
-
-4. **Nested components** maintain their own prefixing:
-
-   ```tsx
-   // In Thread component - use Thread prefix
-   <div className={cn("Thread_composer", "sticky bottom-0")}>
-     <Composer />
-   </div>
-
-   // In Composer component - use Composer prefix
-   <div className={cn("Composer", "focus-within:border-ring/20")}>
-     <input className={cn("Composer_input", "placeholder:text-muted-foreground")} />
-   </div>
-   ```
-
-## ❌ Incorrect Class Usage
+2. **Use kebab-case for multi-word descriptions** in class names
+3. **Combine with Tailwind classes** using the `cn()` utility:
 
 ```tsx
-// WRONG: Mixing prefixed and non-prefixed classes
-<div className={cn("Thread", "viewport", "bg-background")}>
-  <div className={cn("messages_container", "Thread_header")}>
-    <button className={cn("send_btn", "Thread_send_button_active")}>
+<div className={cn("Thread", "bg-background box-border flex h-full")}>
 ```
 
-## ✅ Correct Class Usage
+4. **State-aware classes must also be prefixed**:
 
 ```tsx
-// CORRECT: All classes properly prefixed
-<div className={cn("Thread", "Thread_viewport", "bg-background")}>
-  <div className={cn("Thread_messages_container", "Thread_header")}>
-    <button className={cn("Thread_send_btn", "Thread_send_button_active")}>
+<button className={cn(
+  "ComposerAction-send-button",
+  is_loading && "ComposerAction-send-button-loading",
+  "my-2.5 size-8 p-2"
+)}>
 ```
 
-# Component Class Name Organization
-
-## Class Names Object Pattern
-
-For components with multiple variants, sizes, or states, organize class names in a structured object using the following pattern.
-
-### Naming Requirements
-
-1. **Object Name**: Use `ComponentName_class_names` (with underscore and snake_case)
-2. **Object Properties**: Use snake_case for all property names
-3. **Class Values**: Must be prefixed with ComponentName as established above
-
-### Basic Structure
+5. **Nested components** maintain their own prefixing:
 
 ```tsx
-const ComponentName_class_names = {
-	root: "ComponentName",
-	variants: {
-		variant: {
-			default: "ComponentName_variant_default",
-			primary: "ComponentName_variant_primary",
-			secondary: "ComponentName_variant_secondary",
-		},
-		size: {
-			sm: "ComponentName_size_sm",
-			default: "ComponentName_size_default",
-			lg: "ComponentName_size_lg",
-		},
-	},
-	default_variants: {
-		variant: "default",
-		size: "default",
-	},
-};
+// In Thread component - use Thread prefix
+<div className={cn("Thread-composer", "sticky bottom-0")}>
+  <Composer />
+</div>
+
+// In Composer component - use Composer prefix
+<div className={cn("Composer", "focus-within:border-ring/20")}>
+  <input className={cn("Composer-input", "placeholder:text-muted-foreground")} />
+</div>
 ```
 
-### Snake Case Property Examples
+### Adding Custom Classes
+
+When adding custom classes, use the prefixed naming pattern directly:
+
+**Pattern**: `<ComponentName>-<sub-component-name>-<element-identifier>`
 
 ```tsx
-const MainAppSidebar_class_names = {
-	root: "MainAppSidebar",
-	app_logo_container: "MainAppSidebar_app_logo_container",
-	app_link: "MainAppSidebar_app_link",
-	navigation: {
-		home: "MainAppSidebar_nav_home",
-		chat: "MainAppSidebar_nav_chat",
-	},
-	profile: {
-		section: "MainAppSidebar_profile_section",
-		user_section: "MainAppSidebar_user_section",
-	},
-	user_profile: {
-		button: "MainAppSidebar_user_profile_button",
-		avatar: "MainAppSidebar_user_profile_avatar",
-		info: "MainAppSidebar_user_profile_info",
-		name: "MainAppSidebar_user_profile_name",
-		email: "MainAppSidebar_user_profile_email",
-	},
-};
-```
-
-### Null Values for Opt-Out Styling
-
-For components that need the ability to opt out of variant or size styling entirely, allow `null` as a valid value:
-
-```tsx
-type Variant = keyof typeof ComponentName_class_names.variants.variant | null;
-type Size = keyof typeof ComponentName_class_names.variants.size | null;
-
-type ComponentName_Props = React.ComponentProps<"button"> & {
-	variant?: Variant; // Can be a variant key or null
-	size?: Size; // Can be a size key or null
-	asChild?: boolean;
-};
-```
-
-**When `null` is passed:**
-
-- No variant/size-specific classes are applied
-- Only the root class and any custom className are applied
-- Useful for completely custom styling or when inheriting styles from parent components
-
-**Usage in JSX:**
-
-```tsx
-function ComponentName({ className, variant, size, ...props }: ComponentName_Props) {
-	return (
-		<button
-			className={cn(
-				ComponentName_class_names.root,
-				variant && ComponentName_class_names.variants.variant[variant], // Only applies if variant is not null
-				size && ComponentName_class_names.variants.size[size], // Only applies if size is not null
-				className,
-			)}
-			{...props}
-		/>
-	);
-}
-```
-
-**Example usage:**
-
-```tsx
-// Uses default variant and size
-<Button>Click me</Button>
-
-// Uses specific variant and size
-<Button variant="primary" size="lg">Click me</Button>
-
-// Opts out of variant styling, keeps size
-<Button variant={null} size="lg">Custom styled</Button>
-
-// Opts out of both variant and size styling
-<Button variant={null} size={null}>Completely custom</Button>
-```
-
-### CSS Integration
-
-This pattern works seamlessly with our CSS guidelines from `airule-code-css.mdc`:
-
-- **CSS classes** use the same naming: `.Button_variant_default`, `.Button_size_lg`
-- **CSS file** should be imported: `import "./component-name.css"`
-- **Low specificity** maintained with `:where()` selectors in CSS
-
-### TypeScript Integration
-
-Create proper TypeScript types that reference the class names object:
-
-```tsx
-type Variant = keyof typeof ComponentName_class_names.variants.variant;
-type Size = keyof typeof ComponentName_class_names.variants.size;
-
-type ComponentName_Props = React.ComponentProps<"button"> & {
-	variant?: Variant;
-	size?: Size;
-	asChild?: boolean;
-};
-```
-
-### Usage in JSX
-
-Apply the class names using the `cn()` utility:
-
-```tsx
-function ComponentName({ className, variant, size, ...props }: ComponentName_Props) {
-	return (
-		<button
-			className={cn(
-				ComponentName_class_names.root,
-				variant && ComponentName_class_names.variants.variant[variant],
-				size && ComponentName_class_names.variants.size[size],
-				className,
-			)}
-			{...props}
-		/>
-	);
-}
-```
-
-### Exporting Class Names
-
-Export the class names object if it needs to be used externally:
-
-```tsx
-export { ComponentName, ComponentName_class_names };
-
-// Alternative naming for backward compatibility
-export { ComponentName_class_names as componentNameVariants };
-```
-
-### Complete Example
-
-```tsx
-import * as React from "react";
-import { cn } from "@/lib/utils";
-import "./button.css";
-
-const Button_class_names = {
-	root: "Button",
-	variants: {
-		variant: {
-			default: "Button_variant_default",
-			destructive: "Button_variant_destructive",
-			outline: "Button_variant_outline",
-			secondary: "Button_variant_secondary",
-			ghost: "Button_variant_ghost",
-			link: "Button_variant_link",
-		},
-		size: {
-			default: "Button_size_default",
-			sm: "Button_size_sm",
-			lg: "Button_size_lg",
-			icon: "Button_size_icon",
-		},
-	},
-	default_variants: {
-		variant: "default",
-		size: "default",
-	},
-};
-
-type Variant = keyof typeof Button_class_names.variants.variant;
-type Size = keyof typeof Button_class_names.variants.size;
-
-type Button_Props = React.ComponentProps<"button"> & {
-	variant?: Variant;
-	size?: Size;
-	asChild?: boolean;
-};
-
-function Button({ className, variant, size, asChild = false, ...props }: Button_Props) {
-	const Comp = asChild ? Slot : "button";
-
-	return (
-		<Comp
-			className={cn(
-				Button_class_names.root,
-				variant && Button_class_names.variants.variant[variant],
-				size && Button_class_names.variants.size[size],
-				className,
-			)}
-			{...props}
-		/>
-	);
-}
-
-export { Button, Button_class_names as buttonVariants };
-```
-
-### Benefits of This Pattern
-
-- **Type Safety**: TypeScript ensures only valid variants are used
-- **Maintainability**: All class names centralized in one object
-- **Consistency**: Matches CSS naming conventions exactly
-- **Flexibility**: Easy to add new variants or modify existing ones
-- **Debugging**: Clear mapping between props and CSS classes
-- **Reusability**: Class names object can be exported and reused
-
-### When to Use This Pattern
-
-**Use this pattern when:**
-
-- Component has multiple variants (design variations)
-- Component has multiple sizes
-- Component has complex state-based styling
-- You need to export class names for external use
-
-**Use simple semantic classes when:**
-
-- Component has no variants or sizes
-- Component is simple with minimal styling variations
-- Component is a leaf component with no complex state
-
-# Adding Custom Classes to Components
-
-## Custom Class Naming Pattern
-
-When a user requests to add a custom class to a component, you must add it to the existing `class_names` object following the established naming conventions.
-
-### Class Name Format
-
-**Pattern**: `<ComponentName>_<sub-component-name>_<element-identifier>`
-
-### Property Name Format
-
-**Pattern**: Use `snake_case` for all property names in the class_names object
-
-### Examples
-
-```tsx
-const MainAppSidebar_class_names = {
-	root: "MainAppSidebar",
-	app_logo_container: "MainAppSidebar_app_logo_container",
-	// If user asks for a custom class for a wrapper element:
-	clerck_wrapper: "MainAppSidebar_clerck_wrapper",
-	user_profile: {
-		button: "MainAppSidebar_user_profile_button",
-		// If user asks for a custom class for a modal trigger:
-		modal_trigger: "MainAppSidebar_user_profile_modal_trigger",
-	},
-	navigation: {
-		home: "MainAppSidebar_nav_home",
-		// If user asks for a custom class for navigation icons:
-		nav_icon: "MainAppSidebar_nav_icon",
-	},
-};
-```
-
-### Implementation Steps
-
-1. **Identify the location**: Determine where in the class_names object the new property should be added
-2. **Follow naming pattern**: Use the ComponentName prefix and descriptive identifier
-3. **Use snake_case**: Property names must be in snake_case format
-4. **Apply in JSX**: Use the new class name in the component's JSX
-
-### Example Implementation
-
-```tsx
-// User requests: "Add a custom class to userButtonRef called clerck_wrapper"
-
-// Step 1: Add to class_names object
-const MainAppSidebar_class_names = {
-	root: "MainAppSidebar",
-	// ... other properties
-	clerck_wrapper: "MainAppSidebar_clerck_wrapper", // New custom class
-};
-
-// Step 2: Apply in JSX
+// Custom class example
 <div
-	ref={userButtonRef}
+	ref={user_button_ref}
 	className={cn(
-		MainAppSidebar_class_names.clerck_wrapper, // Use the new class
+		"MainAppSidebar-clerk-wrapper", // New custom class with proper prefix
 		"absolute sr-only right-[-30px] bottom-0 h-0 w-0"
 	)}
 >
 ```
 
-### Nested Sub-Components
-
-For nested elements, follow the hierarchical structure:
+## ❌ Incorrect vs ✅ Correct Class Usage
 
 ```tsx
-const ComponentName_class_names = {
-	root: "ComponentName",
-	sub_component: {
-		root: "ComponentName_sub_component",
-		custom_element: "ComponentName_sub_component_custom_element",
-	},
-	// Top-level custom classes
-	custom_wrapper: "ComponentName_custom_wrapper",
-};
+// ❌ WRONG: Mixing prefixed and non-prefixed classes
+<div className={cn("Thread", "viewport", "bg-background")}>
+  <div className={cn("messages_container", "Thread_header")}>
+
+// ✅ CORRECT: All classes properly prefixed with kebab-case
+<div className={cn("Thread", "Thread-viewport", "bg-background")}>
+  <div className={cn("Thread-messages-container", "Thread-header")}>
 ```
 
-### Benefits
+# Component Variant and Size Handling
 
-- **Consistency**: Maintains the established naming pattern
-- **Organization**: Keeps all class names centralized and structured
-- **Maintainability**: Easy to find and modify class names
-- **Type Safety**: TypeScript can validate class name usage
-- **Debugging**: Clear mapping between requests and implementation
+## Direct String Constants Pattern
 
-## Module-Level Class Names Organization
-
-### One Root Component Per Module Rule
-
-**CRITICAL**: In a module (file), only ONE `_class_names` object is allowed since a module should have only ONE root component. All other components in the same file are sub-components and their class names must be nested within the main component's `_class_names` object.
-
-### Why This Rule Exists
-
-- **Module Cohesion**: Ensures each module has a clear, single responsibility
-- **Architecture Clarity**: Makes it obvious which component is the main export
-- **Namespace Organization**: Prevents class name conflicts between components in the same file
-- **Maintainability**: Easier to understand component hierarchy and relationships
-
-### Implementation Pattern
-
-#### ❌ Incorrect: Multiple Class Names Objects
+For components with multiple variants, sizes, or states, define string constants for each variation:
 
 ```tsx
-// WRONG: Multiple separate class names objects in one module
-const ThreadGroup_class_names = {
-	root: "ThreadGroup",
-	item: "ThreadGroup_item",
-	title: "ThreadGroup_title",
+// Define variant constants
+const BUTTON_VARIANTS = {
+	default: "Button-variant-default",
+	destructive: "Button-variant-destructive",
+	outline: "Button-variant-outline",
+	ghost: "Button-variant-ghost",
+} as const;
+
+const BUTTON_SIZES = {
+	default: "Button-size-default",
+	sm: "Button-size-sm",
+	lg: "Button-size-lg",
+	icon: "Button-size-icon",
+} as const;
+
+type Variant = keyof typeof BUTTON_VARIANTS;
+type Size = keyof typeof BUTTON_SIZES;
+
+type Button_Props = React.ComponentProps<"button"> & {
+	variant?: Variant;
+	size?: Size;
 };
 
-const AiChatSidebar_class_names = {
-	root: "AiChatSidebar",
-	header: "AiChatSidebar_header",
-};
+function Button({ className, variant = "default", size = "default", ...props }: Button_Props) {
+	return <button className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)} {...props} />;
+}
 ```
 
-#### ✅ Correct: Nested Sub-Component Class Names
+### Null Values for Opt-Out Styling
+
+Allow `null` as a valid value to opt out of variant styling entirely:
 
 ```tsx
-// CORRECT: Sub-component class names nested in root component
-const AiChatSidebar_class_names = {
-	root: "AiChatSidebar",
-	header: "AiChatSidebar_header",
-	// Sub-component: ThreadGroup
-	thread_group: {
-		root: "AiChatSidebar_thread_group",
-		item: "AiChatSidebar_thread_group_item",
-		title: "AiChatSidebar_thread_group_title",
-		label: "AiChatSidebar_thread_group_label",
-		menu: "AiChatSidebar_thread_group_menu",
-	},
-	// Sub-component: SearchForm
-	search_form: {
-		root: "AiChatSidebar_search_form",
-		input: "AiChatSidebar_search_form_input",
-		icon: "AiChatSidebar_search_form_icon",
-	},
-};
-```
+type Variant = keyof typeof BUTTON_VARIANTS | null;
 
-### Sub-Component Class Name Prefixing
-
-All sub-component class names must follow the pattern:
-`{RootComponentName}_{sub_component_name}_{element_name}`
-
-**Examples:**
-
-- `AiChatSidebar_thread_group_item` (thread group item within AiChatSidebar)
-- `MessageComposer_attachment_list_item` (attachment list item within MessageComposer)
-- `UserProfile_edit_form_submit_button` (submit button in edit form within UserProfile)
-
-### Usage in Sub-Components
-
-Sub-components access their class names through the nested structure:
-
-```tsx
-// Sub-component uses nested class names from parent
-function ThreadGroup({ title, threads }: ThreadGroup_Props) {
+// Usage in JSX with null check
+function Button({ className, variant = "default", size = "default", ...props }: Button_Props) {
 	return (
-		<div className={cn(AiChatSidebar_class_names.thread_group.root)}>
-			<h3 className={cn(AiChatSidebar_class_names.thread_group.label)}>{title}</h3>
-			<ul className={cn(AiChatSidebar_class_names.thread_group.menu)}>
-				{threads.map((thread) => (
-					<li key={thread.id} className={cn(AiChatSidebar_class_names.thread_group.item)}>
-						<span className={cn(AiChatSidebar_class_names.thread_group.title)}>{thread.title}</span>
-					</li>
-				))}
-			</ul>
-		</div>
+		<button
+			className={cn(
+				"Button",
+				variant && BUTTON_VARIANTS[variant], // Only applies if variant is not null
+				size && BUTTON_SIZES[size],
+				className,
+			)}
+			{...props}
+		/>
 	);
 }
 ```
 
-### When Multiple Components Are Needed
+# Form Component Integration
 
-If you find yourself needing multiple separate `_class_names` objects, consider:
-
-1. **Split into separate files**: Move sub-components to their own files
-2. **Re-evaluate component design**: The components might be too complex
-3. **Identify the true root**: Determine which component should be the main export
-
-### Exception: Multiple Root Components
-
-The ONLY exception is when a file exports multiple independent root components that are not hierarchically related. In this case:
-
-- Each component must have its own `_class_names` object
-- Each component should ideally be moved to its own file
-- This pattern should be avoided whenever possible
+When using shadcn/ui form components, integrate them with snake_case patterns:
 
 ```tsx
-// RARELY ACCEPTABLE: Only for truly independent components
-const Button_class_names = {
-	root: "Button",
-	// ...
-};
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 
-const Input_class_names = {
-	root: "Input",
-	// ...
-};
+function ShowArchivedCheckbox({
+	checked,
+	onCheckedChange,
+	className,
+}: {
+	checked: boolean;
+	onCheckedChange: (checked: boolean) => void;
+	className?: string;
+}) {
+	const checkbox_id = React.useId();
 
-// Both Button and Input are exported as independent components
-export { Button, Input };
+	return (
+		<div className={cn("mb-4 flex items-center space-x-2", className)}>
+			<Checkbox
+				id={checkbox_id}
+				checked={checked}
+				onCheckedChange={(checked) => onCheckedChange(checked === true)}
+				className={cn("ShowArchivedCheckbox-checkbox")}
+			/>
+			<Label htmlFor={checkbox_id} className={cn("ShowArchivedCheckbox-label", "cursor-pointer")}>
+				Show archived
+			</Label>
+		</div>
+	);
+}
 ```
-
-### Benefits of This Pattern
-
-- **Clear Architecture**: Obvious component hierarchy within modules
-- **Namespace Safety**: No class name conflicts between components
-- **Consistent Prefixing**: All classes follow the same naming pattern
-- **Maintainable Code**: Easy to understand and modify component structure
-- **Better Organization**: Related components stay grouped logically
 
 # React Hook Usage Guidelines
 
@@ -645,33 +348,26 @@ Minimize the use of `useEffect` to prevent infinite loops, dependency issues, an
 
 ## Use Refs for Non-Reactive State
 
-Use `useRef` instead of `useState` for values that don't need to trigger re-renders or be reactive dependencies:
+Use `useRef` instead of `useState` for values that don't need to trigger re-renders:
 
 ### ❌ Avoid: useState for non-reactive values
 
 ```tsx
-const [isProcessing, setIsProcessing] = useState(false);
-const [cache, setCache] = useState(new Map());
-
+const [is_processing, set_is_processing] = useState(false);
 // These state changes cause unnecessary re-renders
-const handleProcess = async () => {
-	setIsProcessing(true); // Triggers re-render
-	await processData();
-	setIsProcessing(false); // Triggers re-render
-};
 ```
 
 ### ✅ Prefer: useRef for non-reactive values
 
 ```tsx
-const isProcessingRef = useRef(false);
-const cacheRef = useRef(new Map());
+const is_processing_ref = useRef(false);
+const cache_ref = useRef(new Map());
 
 // No re-renders triggered
-const handleProcess = async () => {
-	isProcessingRef.current = true; // No re-render
+const handle_process = async () => {
+	is_processing_ref.current = true; // No re-render
 	await processData();
-	isProcessingRef.current = false; // No re-render
+	is_processing_ref.current = false; // No re-render
 };
 ```
 
@@ -683,120 +379,37 @@ const handleProcess = async () => {
 - Value doesn't affect UI rendering
 - Value is used to prevent operations (like blocking duplicate API calls)
 - Value is used for caching or memoization
-- Value is used for tracking component lifecycle states
 
 **Use `useState` when:**
 
 - Value affects what's rendered in the UI
 - Value is used in JSX conditionals or expressions
 - Value needs to trigger re-renders when changed
-- Value is used as a dependency in useEffect or useMemo
-
-### Examples
-
-```tsx
-// ✅ Good: Using refs for non-reactive state
-const MyComponent = () => {
-	const [count, setCount] = useState(0); // UI state - needs re-renders
-	const [isVisible, setIsVisible] = useState(true); // UI state - affects rendering
-
-	const isLoadingRef = useRef(false); // Internal state - no re-render needed
-	const abortControllerRef = useRef<AbortController | null>(null); // Cleanup reference
-	const cacheRef = useRef(new Map()); // Performance optimization
-
-	const handleFetch = async () => {
-		if (isLoadingRef.current) return; // Prevent duplicate calls
-
-		isLoadingRef.current = true;
-		abortControllerRef.current = new AbortController();
-
-		try {
-			const data = await fetchData(abortControllerRef.current.signal);
-			cacheRef.current.set("data", data);
-		} finally {
-			isLoadingRef.current = false;
-			abortControllerRef.current = null;
-		}
-	};
-
-	return (
-		<div>
-			{isVisible && <div>Count: {count}</div>}
-			<button onClick={() => setCount((c) => c + 1)}>Increment</button>
-			<button onClick={handleFetch}>Fetch Data</button>
-		</div>
-	);
-};
-```
 
 ## Preferred Patterns
-
-### ❌ Avoid: useEffect for data transformation
-
-```tsx
-const [data, setData] = useState(null);
-const [transformedData, setTransformedData] = useState(null);
-
-useEffect(() => {
-	if (data) {
-		setTransformedData(processData(data));
-	}
-}, [data]);
-```
 
 ### ✅ Prefer: useMemo for sync transformations
 
 ```tsx
-const [data, setData] = useState(null);
+const [data, set_data] = useState(null);
 
-const transformedData = useMemo(() => {
+const transformed_data = useMemo(() => {
 	return data ? processData(data) : null;
 }, [data]);
-```
-
-### ❌ Avoid: useEffect for async operations
-
-```tsx
-const [content, setContent] = useState("");
-const [parsedContent, setParsedContent] = useState(null);
-
-useEffect(() => {
-	if (content) {
-		parseContentAsync(content).then(setParsedContent);
-	}
-}, [content]);
-```
-
-### ✅ Prefer: useMemo with promises for async transformations
-
-```tsx
-const [content, setContent] = useState("");
-
-const parsedContentPromise = useMemo(() => {
-	return content ? parseContentAsync(content) : null;
-}, [content]);
-
-// Execute the promise when needed
-useMemo(() => {
-	if (parsedContentPromise) {
-		parsedContentPromise.then(setParsedContent).catch(console.error);
-	}
-}, [parsedContentPromise]);
 ```
 
 ### ✅ Prefer: Event handlers for user interactions
 
 ```tsx
-// Instead of useEffect watching state changes
-const handleToggle = useCallback(async (newValue: boolean) => {
-	if (newValue) {
+const handle_toggle = useCallback(async (new_value: boolean) => {
+	if (new_value) {
 		const result = await processToggle();
-		setProcessedResult(result);
+		set_processed_result(result);
 	}
-	setToggleState(newValue);
+	set_toggle_state(new_value);
 }, []);
 
-<button onClick={() => handleToggle(!toggleState)}>Toggle</button>;
+<button onClick={() => handle_toggle(!toggle_state)}>Toggle</button>;
 ```
 
 ## Guidelines Summary
@@ -808,40 +421,6 @@ const handleToggle = useCallback(async (newValue: boolean) => {
 - **useState**: Use only for values that need to trigger re-renders
 - **useEffect**: Only use when you genuinely need to sync with external systems (DOM, timers, subscriptions)
 
-## Examples
-
-### Component with multiple states:
-
-```tsx
-const MessageStatus = ({ status }: { status: "pending" | "sent" | "error" }) => {
-	return (
-		<div className={cn("MessageStatus", `MessageStatus_${status}`, "flex items-center gap-2")}>
-			<Icon className={cn("MessageStatus_icon", `MessageStatus_icon_${status}`)} />
-			<span className={cn("MessageStatus_text")}>Status: {status}</span>
-		</div>
-	);
-};
-```
-
-### List component:
-
-```tsx
-const ThreadList = ({ threads }: { threads: Thread[] }) => {
-	return (
-		<div className={cn("ThreadList", "space-y-2")}>
-			{threads.map((thread) => (
-				<div
-					key={thread.id}
-					className={cn("ThreadList_item", thread.isActive && "ThreadList_item_active", "p-3 rounded-lg border")}
-				>
-					<h3 className={cn("ThreadList_item_title", "font-semibold")}>{thread.title}</h3>
-				</div>
-			))}
-		</div>
-	);
-};
-```
-
 ## Benefits
 
 - **Easy debugging**: Quickly identify components in browser DevTools
@@ -851,3 +430,5 @@ const ThreadList = ({ threads }: { threads: Thread[] }) => {
 - **Performance**: Avoid unnecessary re-renders and infinite loops from useEffect
 - **Maintainability**: Clearer data flow and fewer side effects
 - **Optimization**: Use refs to prevent unnecessary re-renders for internal state
+- **Modern React patterns**: Leverage React 19 features like the `use` hook
+- **Consistent naming**: Snake_case for all local symbols improves code readability

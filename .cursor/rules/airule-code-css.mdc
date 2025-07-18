@@ -1,9 +1,3 @@
----
-description: Guidelines for creating and styling CSS files for React components using modern CSS practices
-globs: packages/app/src/**/*.css
-alwaysApply: false
----
-
 CSS Guidelines for React Components
 
 # CSS Approach for This Project
@@ -96,6 +90,93 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 :where(.Button--lg) {
 }
 ```
+
+## CSS Selector Compatibility: Critical Dash Requirements
+
+### Important Rule for CSS Selectors
+
+**CRITICAL**: When creating class names that will be used in CSS selectors (including Tailwind's `has-[]`, `:not()`, `:is()`, `:where()`, etc.), you **MUST use dashes (kebab-case) instead of underscores** for the selectors to work properly.
+
+### Why Dashes Are Required
+
+- **CSS Standard**: CSS class selectors expect dashes as word separators
+- **Tailwind Compatibility**: Tailwind's `has-[]` selector only works with valid CSS class names
+- **Browser Parsing**: Browsers parse CSS class names with dashes correctly
+- **Selector Matching**: CSS selector engines rely on standard class naming conventions
+
+### Examples of Correct CSS-Compatible Class Names
+
+```css
+/* ✅ Correct: Dashes work in all CSS selectors */
+:where(.Button-variant-primary) {
+	background: hsl(var(--primary));
+}
+
+:where(.Card-size-large) {
+	padding: 2rem;
+}
+
+/* In Tailwind has-[] selectors */
+.has-\[\.Button-variant-primary\:focus-visible\]\:ring-2 {
+	/* This works correctly */
+}
+
+/* ❌ Incorrect: Underscores don't work in CSS selectors */
+:where(.Button_variant_primary) {
+	/* This may not work as expected */
+}
+
+.has-\[\.Button_variant_primary\:focus-visible\]\:ring-2 {
+	/* This will NOT work */
+}
+```
+
+### Class Naming Pattern for CSS Files
+
+When creating CSS files, ensure all class names use dashes:
+
+```css
+/* ✅ Correct CSS class naming */
+:where(.MessageComposer-input-field) {
+	/* Base styles */
+}
+
+:where(.MessageComposer-send-button) {
+	/* Button styles */
+}
+
+:where(.MessageComposer-attachment-area) {
+	/* Attachment styles */
+}
+```
+
+### Integration with React Components
+
+When your CSS classes need to work with Tailwind selectors or other CSS features, ensure the class values in your React components use dashes:
+
+```tsx
+// In React component file
+const MessageComposer_class_names = {
+	root: "MessageComposer",
+	input_field: "MessageComposer-input-field", // ✅ Dashes for CSS compatibility
+	send_button: "MessageComposer-send-button", // ✅ Dashes for CSS compatibility
+};
+
+// In CSS file
+:where(.MessageComposer-input-field) {
+	border: 1px solid hsl(var(--border));
+}
+
+// In Tailwind has-[] selectors
+<div className="has-[.MessageComposer-input-field:focus-visible]:ring-2">
+```
+
+### When to Use Dashes vs Underscores
+
+- **CSS class values**: Always use dashes (`MessageComposer-input-field`)
+- **React object properties**: Use underscores (`input_field`)
+- **Variable names**: Use underscores (`class_names`)
+- **CSS selectors**: Always use dashes (`.MessageComposer-input-field`)
 
 # Modern CSS Nesting
 
@@ -266,7 +347,7 @@ When converting from Tailwind utility classes to CSS:
 /* Before: Tailwind utilities */
 /* className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90" */
 
-/* After: CSS properties */
+/* After: CSS properties with dash-based class names */
 :where(.Button) {
 	display: inline-flex;
 	align-items: center;
@@ -280,6 +361,15 @@ When converting from Tailwind utility classes to CSS:
 	&:where(:hover) {
 		background: hsl(var(--primary) / 0.9);
 	}
+}
+
+/* Variant classes use dashes for CSS compatibility */
+:where(.Button-variant-primary) {
+	background: hsl(var(--primary));
+}
+
+:where(.Button-size-large) {
+	padding: 0.75rem 1.5rem;
 }
 ```
 
@@ -330,5 +420,7 @@ When converting from Tailwind utility classes to CSS:
 - **Low specificity**: Easy to override styles when needed
 - **Modern CSS**: Uses latest nesting and selector features
 - **Maintainable**: Clear naming convention and organization
+- **Performance**: Efficient CSS with minimal specificity conflicts
+- **Scalable**: Consistent patterns across all components
 - **Performance**: Efficient CSS with minimal specificity conflicts
 - **Scalable**: Consistent patterns across all components
