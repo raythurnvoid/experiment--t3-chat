@@ -3,13 +3,13 @@ import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star }
 import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { ThreadListPrimitive, ThreadListItemPrimitive, useThreadListItem } from "@assistant-ui/react";
-import { useState, createContext, use, useMemo } from "react";
+import { useState, createContext, use } from "react";
 import { cn } from "@/lib/utils";
 import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useMutation, useQuery } from "convex/react";
-import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app_convex_client";
+import { app_convex_api, type app_convex_Id } from "@/lib/app_convex_client";
 
 // Search Context
 interface SearchContextType {
@@ -27,23 +27,23 @@ const useSearchContext = () => {
 	return context;
 };
 
-interface SearchContextProviderProps {
+interface SearchContextProvider_Props {
 	children: React.ReactNode;
 }
 
-function SearchContextProvider({ children }: SearchContextProviderProps) {
+function SearchContextProvider({ children }: SearchContextProvider_Props) {
 	const [search_query, set_search_query] = useState("");
 
 	return <SearchContext.Provider value={{ search_query, set_search_query }}>{children}</SearchContext.Provider>;
 }
 
-interface ShowArchivedCheckboxProps {
+interface ShowArchivedCheckbox_Props {
 	checked: boolean;
-	onCheckedChange: (checked: boolean) => void;
-	className?: string;
+	onCheckedChange: (checked: boolean) => void; // camelCase - matches Checkbox API
+	className?: string; // camelCase - for DOM compatibility
 }
 
-function ShowArchivedCheckbox({ checked, onCheckedChange, className }: ShowArchivedCheckboxProps) {
+function ShowArchivedCheckbox({ checked, onCheckedChange, className }: ShowArchivedCheckbox_Props) {
 	const checkbox_id = React.useId();
 
 	return (
@@ -107,7 +107,7 @@ function ThreadListItemAlt() {
 
 // Abstract component for thread list item option toggles
 interface ThreadListItemOptionToggle_Props {
-	toggle: (props: { class_names: { root: string; icon: string } }) => React.ReactNode;
+	toggle: (props: { className: { root: string; icon: string } }) => React.ReactNode;
 }
 
 function ThreadListItemOptionToggle({ toggle }: ThreadListItemOptionToggle_Props) {
@@ -119,13 +119,17 @@ function ThreadListItemOptionToggle({ toggle }: ThreadListItemOptionToggle_Props
 	return (
 		<>
 			{toggle({
-				class_names: shared_class_names,
+				className: shared_class_names,
 			})}
 		</>
 	);
 }
 
-function StarToggle({ class_names }: { class_names: { root: string; icon: string } }) {
+interface StarToggle_Props {
+	className: { root: string; icon: string }; // camelCase - standard React prop
+}
+
+function StarToggle({ className }: StarToggle_Props) {
 	const thread_id = useThreadListItem((t) => t.id);
 
 	const thread = useQuery(app_convex_api.ai_chat.thread_get, {
@@ -152,45 +156,49 @@ function StarToggle({ class_names }: { class_names: { root: string; icon: string
 		if (thread.starred) {
 			return (
 				<TooltipIconButton
-					className={class_names.root}
+					className={className.root}
 					variant="ghost"
 					tooltip="Remove from favorites"
 					onClick={handle_star_toggle}
 				>
-					<Star className={class_names.icon} fill="currentColor" />
+					<Star className={className.icon} fill="currentColor" />
 				</TooltipIconButton>
 			);
 		} else {
 			return (
 				<TooltipIconButton
-					className={class_names.root}
+					className={className.root}
 					variant="ghost"
 					tooltip="Add to favorites"
 					onClick={handle_star_toggle}
 				>
-					<Star className={class_names.icon} />
+					<Star className={className.icon} />
 				</TooltipIconButton>
 			);
 		}
 	}
 }
 
-function ArchiveToggle({ class_names }: { class_names: { root: string; icon: string } }) {
+interface ArchiveToggle_Props {
+	className: { root: string; icon: string }; // camelCase - standard React prop
+}
+
+function ArchiveToggle({ className }: ArchiveToggle_Props) {
 	const is_archived = useThreadListItem((t) => t.status === "archived");
 
 	if (is_archived) {
 		return (
 			<ThreadListItemPrimitive.Unarchive asChild>
-				<TooltipIconButton className={class_names.root} variant="ghost" tooltip="Unarchive thread">
-					<ArchiveIcon className={class_names.icon} />
+				<TooltipIconButton className={className.root} variant="ghost" tooltip="Unarchive thread">
+					<ArchiveIcon className={className.icon} />
 				</TooltipIconButton>
 			</ThreadListItemPrimitive.Unarchive>
 		);
 	} else {
 		return (
 			<ThreadListItemPrimitive.Archive asChild>
-				<TooltipIconButton className={class_names.root} variant="ghost" tooltip="Archive thread">
-					<ArchiveRestoreIcon className={class_names.icon} />
+				<TooltipIconButton className={className.root} variant="ghost" tooltip="Archive thread">
+					<ArchiveRestoreIcon className={className.icon} />
 				</TooltipIconButton>
 			</ThreadListItemPrimitive.Archive>
 		);
@@ -199,7 +207,7 @@ function ArchiveToggle({ class_names }: { class_names: { root: string; icon: str
 
 // Props interface for the AiChatSidebarContent component
 interface AiChatSidebarContent_Props {
-	onClose?: (() => void) | undefined;
+	onClose?: (() => void) | undefined; // camelCase - could be used as event handler prop
 }
 
 // Main sidebar content component
@@ -275,16 +283,12 @@ function ThreadListNew() {
 }
 
 // Props interface for the AiChatSidebar wrapper component
-export interface AiChatSidebar_Props {
-	onClose?: (() => void) | undefined;
+export interface AiChatSidebar_Props extends React.ComponentProps<typeof Sidebar> {
+	onClose?: (() => void) | undefined; // camelCase - could be used as event handler prop
 }
 
 // Main sidebar wrapper component
-export function AiChatSidebar({
-	onClose,
-	className,
-	...props
-}: AiChatSidebar_Props & React.ComponentProps<typeof Sidebar>) {
+export function AiChatSidebar({ onClose, className, ...props }: AiChatSidebar_Props) {
 	return (
 		<SearchContextProvider>
 			<div className={cn("AiChatSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
