@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Home, MessageSquare, Moon, Sun, Monitor } from "lucide-react";
+import { Home, MessageSquare, FileText, Moon, Sun, Monitor } from "lucide-react";
 import {
 	Sidebar,
 	SidebarContent,
@@ -219,6 +219,16 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 									<Link to="/chat" className={cn("main-app-sidebar-nav-chat", "flex items-center gap-2")}>
 										<MessageSquare className="h-4 w-4" />
 										<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
+									</Link>
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+
+							{/* Docs Navigation */}
+							<SidebarMenuItem>
+								<SidebarMenuButton asChild>
+									<Link to="/docs" className={cn("main-app-sidebar-nav-docs", "flex items-center gap-2")}>
+										<FileText className="h-4 w-4" />
+										<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
 									</Link>
 								</SidebarMenuButton>
 							</SidebarMenuItem>

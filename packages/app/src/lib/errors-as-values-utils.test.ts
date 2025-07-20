@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { BadResult, BadResultAbort, AbortReason, Result, type BadResult_Any } from "./errors_as_values_utils";
+import { BadResult, BadResultAbort, AbortReason, Result, type BadResult_Any } from "./errors-as-values-utils";
 
 describe("BadResult", () => {
 	test("creates BadResult with message", () => {

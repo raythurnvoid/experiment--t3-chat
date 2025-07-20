@@ -250,17 +250,3 @@ Use the following approach when making frontend modifications:
 
 1. **Take snapshots** to understand the current page structure and navigate it properly
 2. **Capture screenshots** to verify if the UI changes match the user's requests
-3. **Extract and analyze images** using the `extract_image_from_file` tool to actually "see" the screenshots
-
-## Critical Image Analysis Requirement
-
-When taking screenshots with Playwright, you must use the `extract_image_from_file` tool to be able to "see" the image content. Without this step, the screenshot will only be saved as a file but you won't be able to analyze its visual content or verify if the changes have been implemented correctly.
-
-## Playwright Tool Usage
-
-- Use `mcp_playwright_browser_snapshot` to capture the accessibility tree and understand page structure
-- Use `mcp_playwright_browser_take_screenshot` to capture visual representations
-- Always follow up screenshots with `extract_image_from_file` to analyze the visual content
-- Use browser interaction tools to navigate and test the user interface
-
-This approach ensures that frontend changes are properly verified and meet the user's visual and functional requirements.

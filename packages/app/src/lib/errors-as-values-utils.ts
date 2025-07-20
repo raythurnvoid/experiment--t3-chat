@@ -109,7 +109,7 @@ export class BadResult<
 		return value instanceof Error;
 	}
 
-	static isBadResultOrError(value: unknown): value is BadResult_Any | Error {
+	static isBadResultOrError<T>(value: T): value is Extract<T, BadResult_Any | Error> {
 		return BadResult.is(value) || BadResult.isError(value);
 	}
 

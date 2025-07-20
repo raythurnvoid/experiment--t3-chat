@@ -2,3 +2,6 @@
 	path = packages/app/assistant-ui
 	url = ../assistant-ui.git
 	branch = main
+[submodule "liveblocks"]
+	path = packages/app/liveblocks
+	url = https://github.com/raythurnvoid/liveblocks.git

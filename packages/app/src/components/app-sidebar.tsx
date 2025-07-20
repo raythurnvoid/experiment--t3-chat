@@ -21,7 +21,7 @@ import type { ai_chat_Thread } from "@/lib/ai_chat";
 import { useMemo } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { app_convex_adapt_convex_to_app_thread } from "@/lib/app_convex_client";
+import { app_convex_adapt_convex_to_app_thread } from "@/lib/app-convex-client";
 import { cn } from "@/lib/utils";
 
 // This is sample data.
@@ -52,19 +52,19 @@ export function AiChatSidebar({
 	...props
 }: AiChatSidebarContent_Props & React.ComponentProps<typeof Sidebar>) {
 	return (
-		<div className={cn("AiChatSidebar-wrapper", "relative overflow-hidden w-full h-full", className)}>
+		<div className={cn("AiChatSidebar-wrapper", "relative h-full w-full overflow-hidden", className)}>
 			<Sidebar
 				side="left"
 				variant="sidebar"
 				collapsible="none"
-				className="!border-r-0 [&>*]:!border-r-0 h-full"
+				className="h-full !border-r-0 [&>*]:!border-r-0"
 				style={{ borderRight: "none !important", width: "320px" }}
 				{...props}
 			>
 				<AiChatSidebarContent onClose={onClose} />
 			</Sidebar>
 			{/* Overlay to cover any border */}
-			<div className="absolute top-0 right-0 bottom-0 w-px bg-sidebar z-10"></div>
+			<div className="absolute top-0 right-0 bottom-0 z-10 w-px bg-sidebar"></div>
 		</div>
 	);
 }
@@ -124,22 +124,22 @@ export function AiChatSidebarContent({ onClose }: AiChatSidebarContent_Props) {
 					)}
 
 					{/* Version switcher on the right */}
-					<div className={cn("AiChatSidebarContent-version", "flex-1 ml-2")}>
+					<div className={cn("AiChatSidebarContent-version", "ml-2 flex-1")}>
 						<VersionSwitcher versions={data.versions} defaultVersion={data.versions[0]} />
 					</div>
 				</div>
 
 				{/* Search Form */}
 				<div className={cn("AiChatSidebarContent-search", "relative")}>
-					<div className="text-xs font-medium text-muted-foreground mb-2">Search</div>
+					<div className="mb-2 text-xs font-medium text-muted-foreground">Search</div>
 					<input
 						placeholder="Search the docs..."
 						className={cn(
 							"AiChatSidebarContent-search-input",
-							"w-full h-8 px-3 py-1 pl-8 text-sm bg-background border border-input rounded-md shadow-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+							"h-8 w-full rounded-md border border-input bg-background px-3 py-1 pl-8 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",
 						)}
 					/>
-					<Search className="absolute top-8 left-2 h-4 w-4 text-muted-foreground pointer-events-none" />
+					<Search className="pointer-events-none absolute top-8 left-2 h-4 w-4 text-muted-foreground" />
 				</div>
 
 				{/* New Chat Button */}

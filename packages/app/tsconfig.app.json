@@ -31,12 +31,12 @@
 			"@/*": [
 				"./src/*"
 			]
-		}
+		},
+		"noErrorTruncation": true
 	},
 	"include": [
 		"src",
 		"convex",
-		"assistant-ui/packages/**/app-aui-connector.ts",
-		"assistant-ui/packages/cloud/app_aui_bridge.ts"
+		"assistant-ui/packages/**/app_aui_bridge.ts"
 	]
 }

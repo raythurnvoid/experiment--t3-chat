@@ -9,7 +9,7 @@ import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useMutation, useQuery } from "convex/react";
-import { app_convex_api, type app_convex_Id } from "@/lib/app_convex_client";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client";
 
 // Search Context
 interface SearchContextType {
@@ -130,7 +130,7 @@ interface StarToggle_Props {
 }
 
 function StarToggle({ className }: StarToggle_Props) {
-	const thread_id = useThreadListItem((t) => t.id);
+	const thread_id = useThreadListItem((t) => t.remoteId);
 
 	const thread = useQuery(app_convex_api.ai_chat.thread_get, {
 		thread_id: thread_id as app_convex_Id<"threads">,

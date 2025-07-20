@@ -25,16 +25,13 @@ import { MarkdownText } from "./markdown-text.tsx";
 export const Thread: FC = memo(() => {
 	return (
 		<ThreadPrimitive.Root
-			className={cn(
-				"Thread",
-				"flex flex-1 flex-col bg-white dark:bg-black text-black dark:text-white"
-			)}
+			className={cn("Thread", "flex flex-1 flex-col bg-white text-black dark:bg-black dark:text-white")}
 		>
 			<ThreadPrimitive.Viewport
 				autoScroll
 				className={cn(
 					"Thread-viewport",
-					"flex flex-1 flex-col items-center px-4 pt-8 min-h-0 max-h-full overflow-y-auto"
+					"flex max-h-full min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-8",
 				)}
 			>
 				<ThreadWelcome />
@@ -54,7 +51,7 @@ export const Thread: FC = memo(() => {
 				<div
 					className={cn(
 						"Thread-composer-container",
-						"sticky bottom-0 mt-3 flex w-full max-w-[var(--thread-max-width)] flex-col items-center justify-end rounded-t-lg bg-white dark:bg-black pb-4"
+						"sticky bottom-0 mt-3 flex w-full max-w-[var(--thread-max-width)] flex-col items-center justify-end rounded-t-lg bg-white pb-4 dark:bg-black",
 					)}
 				>
 					<ThreadScrollToBottom />
@@ -71,10 +68,7 @@ const ThreadScrollToBottom: FC = memo(() => {
 			<TooltipIconButton
 				tooltip="Scroll to bottom"
 				variant="outline"
-				className={cn(
-					"ThreadScrollToBottom",
-					"absolute -top-8 rounded-full disabled:invisible"
-				)}
+				className={cn("ThreadScrollToBottom", "absolute -top-8 rounded-full disabled:invisible")}
 			>
 				<ArrowDownIcon />
 			</TooltipIconButton>
@@ -85,21 +79,9 @@ const ThreadScrollToBottom: FC = memo(() => {
 const ThreadWelcome: FC = memo(() => {
 	return (
 		<ThreadPrimitive.Empty>
-			<div
-				className={cn(
-					"ThreadWelcome",
-					"flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col"
-				)}
-			>
-				<div
-					className={cn(
-						"ThreadWelcome-content",
-						"flex w-full flex-grow flex-col items-center justify-center"
-					)}
-				>
-					<p className={cn("ThreadWelcome-title", "mt-4 font-medium")}>
-						How can I help you today?
-					</p>
+			<div className={cn("ThreadWelcome", "flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col")}>
+				<div className={cn("ThreadWelcome-content", "flex w-full flex-grow flex-col items-center justify-center")}>
+					<p className={cn("ThreadWelcome-title", "mt-4 font-medium")}>How can I help you today?</p>
 				</div>
 				<ThreadWelcomeSuggestions />
 			</div>
@@ -109,45 +91,30 @@ const ThreadWelcome: FC = memo(() => {
 
 const ThreadWelcomeSuggestions: FC = memo(() => {
 	return (
-		<div
-			className={cn(
-				"ThreadWelcomeSuggestions",
-				"mt-3 flex w-full items-stretch justify-center gap-4"
-			)}
-		>
+		<div className={cn("ThreadWelcomeSuggestions", "mt-3 flex w-full items-stretch justify-center gap-4")}>
 			<ThreadPrimitive.Suggestion
 				className={cn(
 					"ThreadWelcomeSuggestions-item",
-					"hover:bg-muted/80 flex max-w-sm grow basis-0 flex-col items-center justify-center rounded-lg border p-3 transition-colors ease-in"
+					"flex max-w-sm grow basis-0 flex-col items-center justify-center rounded-lg border p-3 transition-colors ease-in hover:bg-muted/80",
 				)}
 				prompt="What is the weather in Tokyo?"
 				method="replace"
 				autoSend
 			>
-				<span
-					className={cn(
-						"ThreadWelcomeSuggestions-text",
-						"line-clamp-2 text-ellipsis text-sm font-semibold"
-					)}
-				>
+				<span className={cn("ThreadWelcomeSuggestions-text", "line-clamp-2 text-sm font-semibold text-ellipsis")}>
 					What is the weather in Tokyo?
 				</span>
 			</ThreadPrimitive.Suggestion>
 			<ThreadPrimitive.Suggestion
 				className={cn(
 					"ThreadWelcomeSuggestions-item",
-					"hover:bg-muted/80 flex max-w-sm grow basis-0 flex-col items-center justify-center rounded-lg border p-3 transition-colors ease-in"
+					"flex max-w-sm grow basis-0 flex-col items-center justify-center rounded-lg border p-3 transition-colors ease-in hover:bg-muted/80",
 				)}
 				prompt="Explain quantum computing in simple terms"
 				method="replace"
 				autoSend
 			>
-				<span
-					className={cn(
-						"ThreadWelcomeSuggestions-text",
-						"line-clamp-2 text-ellipsis text-sm font-semibold"
-					)}
-				>
+				<span className={cn("ThreadWelcomeSuggestions-text", "line-clamp-2 text-sm font-semibold text-ellipsis")}>
 					Explain quantum computing in simple terms
 				</span>
 			</ThreadPrimitive.Suggestion>
@@ -160,7 +127,7 @@ const Composer: FC = memo(() => {
 		<ComposerPrimitive.Root
 			className={cn(
 				"Composer",
-				"focus-within:border-ring/20 flex w-full flex-wrap items-end rounded-lg border bg-inherit px-2.5 shadow-sm transition-colors ease-in"
+				"flex w-full flex-wrap items-end rounded-lg border bg-inherit px-2.5 shadow-sm transition-colors ease-in focus-within:border-ring/20",
 			)}
 		>
 			<ComposerPrimitive.Input
@@ -170,7 +137,7 @@ const Composer: FC = memo(() => {
 				placeholder="Write a message..."
 				className={cn(
 					"Composer-input",
-					"placeholder:text-muted-foreground max-h-40 flex-grow resize-none border-none bg-transparent px-2 py-4 text-sm outline-none focus:ring-0 disabled:cursor-not-allowed"
+					"max-h-40 flex-grow resize-none border-none bg-transparent px-2 py-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-0 disabled:cursor-not-allowed",
 				)}
 			/>
 			<ComposerAction />
@@ -186,10 +153,7 @@ const ComposerAction: FC = memo(() => {
 					<TooltipIconButton
 						tooltip="Send"
 						variant="default"
-						className={cn(
-							"ComposerAction-send-button",
-							"my-2.5 size-8 p-2 transition-opacity ease-in"
-						)}
+						className={cn("ComposerAction-send-button", "my-2.5 size-8 p-2 transition-opacity ease-in")}
 					>
 						<SendHorizontalIcon />
 					</TooltipIconButton>
@@ -200,10 +164,7 @@ const ComposerAction: FC = memo(() => {
 					<TooltipIconButton
 						tooltip="Cancel"
 						variant="default"
-						className={cn(
-							"ComposerAction-cancel-button",
-							"my-2.5 size-8 p-2 transition-opacity ease-in"
-						)}
+						className={cn("ComposerAction-cancel-button", "my-2.5 size-8 p-2 transition-opacity ease-in")}
 					>
 						<CircleStopIcon />
 					</TooltipIconButton>
@@ -218,7 +179,7 @@ const UserMessage: FC = memo(() => {
 		<MessagePrimitive.Root
 			className={cn(
 				"UserMessage",
-				"grid w-full max-w-[var(--thread-max-width)] auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] gap-y-2 py-4 [&:where(>*)]:col-start-2"
+				"grid w-full max-w-[var(--thread-max-width)] auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] gap-y-2 py-4 [&:where(>*)]:col-start-2",
 			)}
 		>
 			<UserActionBar />
@@ -226,17 +187,14 @@ const UserMessage: FC = memo(() => {
 			<div
 				className={cn(
 					"UserMessage-content",
-					"bg-muted text-foreground col-start-2 row-start-2 max-w-[calc(var(--thread-max-width)*0.8)] break-words rounded-3xl px-5 py-2.5"
+					"col-start-2 row-start-2 max-w-[calc(var(--thread-max-width)*0.8)] rounded-3xl bg-muted px-5 py-2.5 break-words text-foreground",
 				)}
 			>
 				<MessagePrimitive.Parts />
 			</div>
 
 			<BranchPicker
-				className={cn(
-					"UserMessage-branch-picker",
-					"col-span-full col-start-1 row-start-3 -mr-1 justify-end"
-				)}
+				className={cn("UserMessage-branch-picker", "col-span-full col-start-1 row-start-3 -mr-1 justify-end")}
 			/>
 		</MessagePrimitive.Root>
 	);
@@ -247,10 +205,7 @@ const UserActionBar: FC = memo(() => {
 		<ActionBarPrimitive.Root
 			hideWhenRunning
 			autohide="not-last"
-			className={cn(
-				"UserActionBar",
-				"col-start-1 row-start-2 mr-3 mt-2.5 flex flex-col items-end"
-			)}
+			className={cn("UserActionBar", "col-start-1 row-start-2 mt-2.5 mr-3 flex flex-col items-end")}
 		>
 			<ActionBarPrimitive.Edit asChild>
 				<TooltipIconButton tooltip="Edit" className="UserActionBar-edit-button">
@@ -266,23 +221,18 @@ const EditComposer: FC = memo(() => {
 		<ComposerPrimitive.Root
 			className={cn(
 				"EditComposer",
-				"bg-muted my-4 flex w-full max-w-[var(--thread-max-width)] flex-col gap-2 rounded-xl"
+				"my-4 flex w-full max-w-[var(--thread-max-width)] flex-col gap-2 rounded-xl bg-muted",
 			)}
 		>
 			<ComposerPrimitive.Input
 				autoComplete={`off-${Date.now()}`}
 				className={cn(
 					"EditComposer-input",
-					"text-foreground flex h-8 w-full resize-none bg-transparent p-4 pb-0 outline-none"
+					"flex h-8 w-full resize-none bg-transparent p-4 pb-0 text-foreground outline-none",
 				)}
 			/>
 
-			<div
-				className={cn(
-					"EditComposer-actions",
-					"mx-3 mb-3 flex items-center justify-center gap-2 self-end"
-				)}
-			>
+			<div className={cn("EditComposer-actions", "mx-3 mb-3 flex items-center justify-center gap-2 self-end")}>
 				<ComposerPrimitive.Cancel asChild>
 					<Button variant="ghost" className="EditComposer-cancel-button">
 						Cancel
@@ -301,13 +251,13 @@ const AssistantMessage: FC = memo(() => {
 		<MessagePrimitive.Root
 			className={cn(
 				"AssistantMessage",
-				"relative grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_auto_1fr] grid-rows-[auto_1fr] py-4"
+				"relative grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_auto_1fr] grid-rows-[auto_1fr] py-4",
 			)}
 		>
 			<div
 				className={cn(
 					"AssistantMessage-content",
-					"text-foreground col-span-2 col-start-2 row-start-1 my-1.5 max-w-[calc(var(--thread-max-width)*0.8)] break-words leading-7"
+					"col-span-2 col-start-2 row-start-1 my-1.5 max-w-[calc(var(--thread-max-width)*0.8)] leading-7 break-words text-foreground",
 				)}
 			>
 				<MessagePrimitive.Parts components={{ Text: MarkdownText }} />
@@ -315,12 +265,7 @@ const AssistantMessage: FC = memo(() => {
 
 			<AssistantActionBar />
 
-			<BranchPicker
-				className={cn(
-					"AssistantMessage-branch-picker",
-					"col-start-2 row-start-2 -ml-2 mr-2"
-				)}
-			/>
+			<BranchPicker className={cn("AssistantMessage-branch-picker", "col-start-2 row-start-2 mr-2 -ml-2")} />
 		</MessagePrimitive.Root>
 	);
 });
@@ -333,14 +278,11 @@ const AssistantActionBar: FC = memo(() => {
 			autohideFloat="single-branch"
 			className={cn(
 				"AssistantActionBar",
-				"text-muted-foreground data-[floating]:bg-background col-start-3 row-start-2 -ml-1 flex gap-1 data-[floating]:absolute data-[floating]:rounded-md data-[floating]:border data-[floating]:p-1 data-[floating]:shadow-sm"
+				"col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground data-[floating]:absolute data-[floating]:rounded-md data-[floating]:border data-[floating]:bg-background data-[floating]:p-1 data-[floating]:shadow-sm",
 			)}
 		>
 			<ActionBarPrimitive.Copy asChild>
-				<TooltipIconButton
-					tooltip="Copy"
-					className="AssistantActionBar-copy-button"
-				>
+				<TooltipIconButton tooltip="Copy" className="AssistantActionBar-copy-button">
 					<MessagePrimitive.If copied>
 						<CheckIcon />
 					</MessagePrimitive.If>
@@ -350,10 +292,7 @@ const AssistantActionBar: FC = memo(() => {
 				</TooltipIconButton>
 			</ActionBarPrimitive.Copy>
 			<ActionBarPrimitive.Reload asChild>
-				<TooltipIconButton
-					tooltip="Refresh"
-					className="AssistantActionBar-reload-button"
-				>
+				<TooltipIconButton tooltip="Refresh" className="AssistantActionBar-reload-button">
 					<RefreshCwIcon />
 				</TooltipIconButton>
 			</ActionBarPrimitive.Reload>
@@ -361,51 +300,33 @@ const AssistantActionBar: FC = memo(() => {
 	);
 });
 
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = memo(
-	({ className, ...rest }) => {
-		return (
-			<BranchPickerPrimitive.Root
-				hideWhenSingleBranch
-				className={cn(
-					"BranchPicker",
-					"text-muted-foreground inline-flex items-center text-xs",
-					className
-				)}
-				{...rest}
-			>
-				<BranchPickerPrimitive.Previous asChild>
-					<TooltipIconButton
-						tooltip="Previous"
-						className="BranchPicker-previous-button"
-					>
-						<ChevronLeftIcon />
-					</TooltipIconButton>
-				</BranchPickerPrimitive.Previous>
-				<span className={cn("BranchPicker-counter", "font-medium")}>
-					<BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-				</span>
-				<BranchPickerPrimitive.Next asChild>
-					<TooltipIconButton
-						tooltip="Next"
-						className="BranchPicker-next-button"
-					>
-						<ChevronRightIcon />
-					</TooltipIconButton>
-				</BranchPickerPrimitive.Next>
-			</BranchPickerPrimitive.Root>
-		);
-	}
-);
+const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = memo(({ className, ...rest }) => {
+	return (
+		<BranchPickerPrimitive.Root
+			hideWhenSingleBranch
+			className={cn("BranchPicker", "inline-flex items-center text-xs text-muted-foreground", className)}
+			{...rest}
+		>
+			<BranchPickerPrimitive.Previous asChild>
+				<TooltipIconButton tooltip="Previous" className="BranchPicker-previous-button">
+					<ChevronLeftIcon />
+				</TooltipIconButton>
+			</BranchPickerPrimitive.Previous>
+			<span className={cn("BranchPicker-counter", "font-medium")}>
+				<BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+			</span>
+			<BranchPickerPrimitive.Next asChild>
+				<TooltipIconButton tooltip="Next" className="BranchPicker-next-button">
+					<ChevronRightIcon />
+				</TooltipIconButton>
+			</BranchPickerPrimitive.Next>
+		</BranchPickerPrimitive.Root>
+	);
+});
 
 const CircleStopIcon = memo(() => {
 	return (
-		<svg
-			xmlns="http://www.w3.org/2000/svg"
-			viewBox="0 0 16 16"
-			fill="currentColor"
-			width="16"
-			height="16"
-		>
+		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
 			<rect width="10" height="10" x="3" y="3" rx="2" />
 		</svg>
 	);

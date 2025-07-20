@@ -1,6 +1,6 @@
 import { httpRouter } from "convex/server";
 import { chat, thread_generate_title } from "./ai_chat";
-import type { api_schemas_MainPaths } from "../src/lib/api_schemas.ts";
+import type { api_schemas_MainPaths } from "../src/lib/api-schemas.ts";
 import { httpAction } from "./_generated/server";
 import { server_convex_headers_preflight_cors } from "./lib/server_convex_utils.ts";
 

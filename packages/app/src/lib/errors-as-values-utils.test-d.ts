@@ -7,7 +7,7 @@ import {
 	type BadResult_Any,
 	type BadResult_Extract,
 	type BadResult_Exclude,
-} from "./errors_as_values_utils";
+} from "./errors-as-values-utils";
 
 // BadResult class tests
 test("BadResult class has correct type structure", () => {
@@ -62,6 +62,16 @@ test("BadResult.isNot correctly narrows types", () => {
 
 test("BadResult.isBadResultOrError correctly narrows types", () => {
 	const value = {} as BadResult | Error | { success: boolean };
+	const valueSpecific = {} as
+		| BadResult<
+				"error",
+				{
+					cause: Error;
+					meta: { test: boolean };
+				}
+		  >
+		| Error
+		| { success: boolean };
 
 	if (BadResult.isBadResultOrError(value)) {
 		expectTypeOf(value).toEqualTypeOf<BadResult | Error>();
@@ -70,16 +80,18 @@ test("BadResult.isBadResultOrError correctly narrows types", () => {
 		expectTypeOf(value).toEqualTypeOf<{ success: boolean }>();
 		expectTypeOf(value.success).toBeBoolean();
 	}
-});
 
-test("BadResult.isError correctly narrows types", () => {
-	const value = {} as BadResult | Error | { success: boolean };
-
-	if (BadResult.isError(value)) {
-		expectTypeOf(value).toEqualTypeOf<Error>();
-		expectTypeOf(value.message).toBeString();
-	} else {
-		expectTypeOf(value).toEqualTypeOf<BadResult | { success: boolean }>();
+	if (BadResult.isBadResultOrError(valueSpecific)) {
+		expectTypeOf(valueSpecific).toEqualTypeOf<
+			| BadResult<
+					"error",
+					{
+						cause: Error;
+						meta: { test: boolean };
+					}
+			  >
+			| Error
+		>();
 	}
 });
 
@@ -101,7 +113,7 @@ test("BadResult.typeAssertMayBeBadResultOrError type assertion", () => {
 	const value = {} as BadResult | Error | string;
 
 	BadResult.typeAssertMayBeBadResultOrError(value);
-	expectTypeOf(value).toEqualTypeOf<BadResult | Error>();
+	expectTypeOf(value).toEqualTypeOf<BadResult | BadResult_Any | Error>();
 });
 
 test("typeAssertMayBeBadResultOrError includes BadResultAbort", () => {

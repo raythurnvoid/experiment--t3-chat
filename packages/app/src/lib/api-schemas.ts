@@ -88,12 +88,16 @@ export interface api_schemas_Main {
 			pathParams: never;
 			searchParams: never;
 			body: {
+				// Assistant UI fields
 				messages: any[];
 				tools: any;
 				system?: string | undefined;
 				runConfig?: any;
 				unstable_assistantMessageId?: string;
 				state?: any;
+
+				// Custom fields
+				thread_id?: string | undefined;
 			};
 			headers: {
 				Authorization: string;

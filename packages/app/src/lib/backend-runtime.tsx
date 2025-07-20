@@ -1,9 +1,8 @@
 import { useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { AssistantCloud } from "@assistant-ui/react";
-import { auth_get_token } from "./auth.ts";
 import { api } from "../../convex/_generated/api";
-import { ai_chat_HARDCODED_PROJECT_ID } from "./ai_chat.ts";
-import { app_convex } from "./app_convex_client.ts";
+import { ai_chat_HARDCODED_PROJECT_ID } from "./ai-chat.ts";
+import { app_convex } from "./app-convex-client.ts";
 
 // ===== CONVEX BACKEND CONFIGURATION =====
 // Get Convex deployment URL from environment or use default
