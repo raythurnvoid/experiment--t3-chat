@@ -1,55 +1,52 @@
-"use client";
-
+import { EditorBubble, useEditor, removeAIHighlight } from "novel";
 import { Fragment, type ReactNode, useEffect } from "react";
 import { Button } from "../../ui/button";
-import { cn } from "../../../lib/utils";
-import { Editor } from "@tiptap/react";
-import { SparklesIcon } from "lucide-react";
+import { AISelector } from "./ai-selector";
+import { Sparkles } from "lucide-react";
 
-interface GenerativeMenuSwitch_Props {
+interface GenerativeMenuSwitchProps {
 	children: ReactNode;
-	editor: Editor | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }
+const GenerativeMenuSwitch = ({ children, open, onOpenChange }: GenerativeMenuSwitchProps) => {
+	const { editor } = useEditor();
 
-export const GenerativeMenuSwitch = ({ children, editor, open, onOpenChange }: GenerativeMenuSwitch_Props) => {
 	useEffect(() => {
-		if (!open && editor) {
-			// Remove any AI highlighting when closed
-			editor.chain().unsetHighlight().run();
-		}
-	}, [open, editor]);
+		if (!open && editor) removeAIHighlight(editor);
+	}, [open]);
 
 	return (
-		<div
-			className={cn(
-				"GenerativeMenuSwitch",
-				"border-muted bg-background flex w-fit max-w-[90vw] overflow-hidden rounded-md border shadow-xl",
-			)}
+		<EditorBubble
+			tippyOptions={{
+				placement: open ? "bottom-start" : "top",
+				onHidden: () => {
+					if (!editor) {
+						return;
+					}
+
+					onOpenChange(false);
+					editor.chain().unsetHighlight().run();
+				},
+			}}
+			className="flex w-fit max-w-[90vw] overflow-hidden rounded-md border border-muted bg-background shadow-xl"
 		>
-			{open && (
-				<div className={cn("GenerativeMenuSwitch-ai-panel", "p-2")}>
-					<div className={cn("GenerativeMenuSwitch-ai-content", "text-muted-foreground text-sm")}>
-						AI functionality coming soon
-					</div>
-				</div>
-			)}
+			{open && <AISelector open={open} onOpenChange={onOpenChange} />}
 			{!open && (
 				<Fragment>
 					<Button
-						className={cn("GenerativeMenuSwitch-ai-button", "gap-1 rounded-none text-purple-500")}
+						className="gap-1 rounded-none text-purple-500"
 						variant="ghost"
 						onClick={() => onOpenChange(true)}
 						size="sm"
 					>
-						<SparklesIcon className="h-5 w-5" />
+						<Sparkles className="h-5 w-5" />
 						Ask AI
 					</Button>
 					{children}
 				</Fragment>
 			)}
-		</div>
+		</EditorBubble>
 	);
 };
 

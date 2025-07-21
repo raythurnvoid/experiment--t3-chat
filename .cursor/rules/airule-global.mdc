@@ -231,6 +231,19 @@ The app has two main views:
 5. Thread and message data is persisted in Convex database
 6. Authentication is handled by Clerk with Convex integration
 
+# Convex Environment Variables
+
+## Two URLs for Different Purposes
+
+- **VITE_CONVEX_URL** - WebSocket/real-time (queries, mutations, subscriptions)
+- **VITE_CONVEX_HTTP_URL** - HTTP actions (API endpoints, authentication)
+
+## HTTP Request Configuration
+
+Use centralized fetch utilities from **[packages/app/src/lib/fetch.ts](mdc:packages/app/src/lib/fetch.ts)** for internal HTTP requests.
+
+For third-party integrations, construct URLs manually using `VITE_CONVEX_HTTP_URL`.
+
 ## Casing
 
 Use snake_case for all multi-word variables and functions.

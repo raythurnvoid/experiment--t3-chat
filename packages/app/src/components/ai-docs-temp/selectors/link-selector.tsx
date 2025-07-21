@@ -1,18 +1,10 @@
-"use client";
-
 import { Button } from "../../ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
+import { PopoverContent } from "../../ui/popover";
 import { cn } from "@/lib/utils";
+import { Popover, PopoverTrigger } from "@radix-ui/react-popover";
 import { Check, Trash } from "lucide-react";
-import { Editor } from "@tiptap/react";
+import { useEditor } from "novel";
 import { useEffect, useRef } from "react";
-
-function getUrlFromString(str: string) {
-	if (str.includes("http")) {
-		return str;
-	}
-	return `https://${str}`;
-}
 
 export function isValidUrl(url: string) {
 	try {
@@ -22,21 +14,29 @@ export function isValidUrl(url: string) {
 		return false;
 	}
 }
-
+export function getUrlFromString(str: string) {
+	if (isValidUrl(str)) return str;
+	try {
+		if (str.includes(".") && !str.includes(" ")) {
+			return new URL(`https://${str}`).toString();
+		}
+	} catch (_e) {
+		return null;
+	}
+}
 interface LinkSelectorProps {
-	editor: Editor | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }
 
-export const LinkSelector = ({ editor, open, onOpenChange }: LinkSelectorProps) => {
+export const LinkSelector = ({ open, onOpenChange }: LinkSelectorProps) => {
 	const inputRef = useRef<HTMLInputElement>(null);
+	const { editor } = useEditor();
 
 	// Autofocus on input by default
 	useEffect(() => {
 		inputRef.current?.focus();
 	});
-
 	if (!editor) return null;
 
 	return (

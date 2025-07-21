@@ -1,24 +1,12 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
-import { Editor } from "@tiptap/react";
+import { EditorBubbleItem, useEditor } from "novel";
+import type { SelectorItem } from "./node-selector";
 
-export type SelectorItem = {
-	name: string;
-	icon: React.ComponentType<{ className?: string }>;
-	command: (editor: Editor | null) => void;
-	isActive: (editor: Editor | null) => boolean;
-};
-
-interface TextButtons_Props {
-	editor: Editor | null;
-}
-
-export const TextButtons = ({ editor }: TextButtons_Props) => {
+export const TextButtons = () => {
+	const { editor } = useEditor();
 	if (!editor) return null;
-
 	const items: SelectorItem[] = [
 		{
 			name: "bold",
@@ -39,7 +27,7 @@ export const TextButtons = ({ editor }: TextButtons_Props) => {
 			icon: UnderlineIcon,
 		},
 		{
-			name: "strikethrough",
+			name: "strike",
 			isActive: (editor) => editor?.isActive("strike") ?? false,
 			command: (editor) => editor?.chain().focus().toggleStrike().run(),
 			icon: StrikethroughIcon,
@@ -51,19 +39,23 @@ export const TextButtons = ({ editor }: TextButtons_Props) => {
 			icon: CodeIcon,
 		},
 	];
-
 	return (
-		<div className="flex items-center">
-			{items.map((item, index) => (
-				<Button
-					key={index}
-					variant="ghost"
-					size="sm"
-					onClick={() => item.command(editor)}
-					className={cn("h-8 px-2", item.isActive(editor) && "bg-accent text-accent-foreground")}
+		<div className="flex">
+			{items.map((item) => (
+				<EditorBubbleItem
+					key={item.name}
+					onSelect={(editor) => {
+						item.command(editor);
+					}}
 				>
-					<item.icon className="h-4 w-4" />
-				</Button>
+					<Button size="sm" className="rounded-none" variant="ghost">
+						<item.icon
+							className={cn("h-4 w-4", {
+								"text-blue-500": item.isActive(editor),
+							})}
+						/>
+					</Button>
+				</EditorBubbleItem>
 			))}
 		</div>
 	);

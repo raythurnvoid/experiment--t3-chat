@@ -1,24 +1,43 @@
-import React from "react";
-import { useThreads } from "@liveblocks/react";
-import { AnchoredThreads, FloatingThreads } from "@liveblocks/react-tiptap";
-import { Editor } from "@tiptap/react";
-import { useIsMobile } from "./use-is-mobile";
+import { useEditor } from "novel";
+import { useSyncExternalStore } from "react";
+import { useThreads } from "@liveblocks/react/suspense";
+import { AnchoredThreads, FloatingThreads, FloatingComposer } from "@liveblocks/react-tiptap";
 
-interface Threads_Props {
-	editor: Editor | null;
-}
+export function Threads() {
+	"use no memo";
 
-export function Threads({ editor }: Threads_Props) {
-	const { threads } = useThreads();
-	const is_mobile = useIsMobile();
+	const { editor } = useEditor();
+	const isMobile = useIsMobile();
+	const { threads } = useThreads({ query: { resolved: false } });
 
-	if (!threads || !editor) {
+	if (!editor) {
 		return null;
 	}
 
-	return is_mobile ? (
-		<FloatingThreads threads={threads} editor={editor} />
-	) : (
-		<AnchoredThreads threads={threads} editor={editor} className="Threads mr-[50px] w-[350px] xl:mr-[100px]" />
+	return (
+		<>
+			<FloatingComposer editor={editor} style={{ width: "350px" }} />
+			{isMobile ? (
+				<FloatingThreads editor={editor} threads={threads} style={{ width: "350px" }} />
+			) : (
+				<AnchoredThreads editor={editor} threads={threads} style={{ width: "350px" }} />
+			)}
+		</>
 	);
+}
+
+export function useIsMobile() {
+	return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+function subscribe(callback: () => void) {
+	const query = window.matchMedia("(max-width: 1279px)");
+
+	query.addEventListener("change", callback);
+	return () => query.removeEventListener("change", callback);
+}
+
+function getSnapshot() {
+	const query = window.matchMedia("(max-width: 1279px)");
+	return query.matches;
 }

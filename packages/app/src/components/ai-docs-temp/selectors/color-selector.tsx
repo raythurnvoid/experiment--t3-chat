@@ -1,106 +1,174 @@
-"use client";
+import { Check, ChevronDown } from "lucide-react";
+import { EditorBubbleItem, useEditor } from "novel";
 
-import { Palette } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Editor } from "@tiptap/react";
-import { cn } from "@/lib/utils";
+import { Button } from "../../ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 
-interface ColorSelector_Props {
-	editor: Editor | null;
+export interface BubbleColorMenuItem {
+	name: string;
+	color: string;
+}
+
+const TEXT_COLORS: BubbleColorMenuItem[] = [
+	{
+		name: "Default",
+		color: "var(--novel-black)",
+	},
+	{
+		name: "Purple",
+		color: "#9333EA",
+	},
+	{
+		name: "Red",
+		color: "#E00000",
+	},
+	{
+		name: "Yellow",
+		color: "#EAB308",
+	},
+	{
+		name: "Blue",
+		color: "#2563EB",
+	},
+	{
+		name: "Green",
+		color: "#008A00",
+	},
+	{
+		name: "Orange",
+		color: "#FFA500",
+	},
+	{
+		name: "Pink",
+		color: "#BA4081",
+	},
+	{
+		name: "Gray",
+		color: "#A8A29E",
+	},
+];
+
+const HIGHLIGHT_COLORS: BubbleColorMenuItem[] = [
+	{
+		name: "Default",
+		color: "var(--novel-highlight-default)",
+	},
+	{
+		name: "Purple",
+		color: "var(--novel-highlight-purple)",
+	},
+	{
+		name: "Red",
+		color: "var(--novel-highlight-red)",
+	},
+	{
+		name: "Yellow",
+		color: "var(--novel-highlight-yellow)",
+	},
+	{
+		name: "Blue",
+		color: "var(--novel-highlight-blue)",
+	},
+	{
+		name: "Green",
+		color: "var(--novel-highlight-green)",
+	},
+	{
+		name: "Orange",
+		color: "var(--novel-highlight-orange)",
+	},
+	{
+		name: "Pink",
+		color: "var(--novel-highlight-pink)",
+	},
+	{
+		name: "Gray",
+		color: "var(--novel-highlight-gray)",
+	},
+];
+
+interface ColorSelectorProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }
 
-const colors = [
-	{ name: "Default", value: "#000000" },
-	{ name: "Red", value: "#ef4444" },
-	{ name: "Orange", value: "#f97316" },
-	{ name: "Yellow", value: "#eab308" },
-	{ name: "Green", value: "#22c55e" },
-	{ name: "Blue", value: "#3b82f6" },
-	{ name: "Purple", value: "#a855f7" },
-	{ name: "Pink", value: "#ec4899" },
-];
+export const ColorSelector = ({ open, onOpenChange }: ColorSelectorProps) => {
+	const { editor } = useEditor();
 
-const highlights = [
-	{ name: "None", value: null },
-	{ name: "Yellow", value: "#fef08a" },
-	{ name: "Green", value: "#bbf7d0" },
-	{ name: "Blue", value: "#bfdbfe" },
-	{ name: "Purple", value: "#e9d5ff" },
-	{ name: "Pink", value: "#fbcfe8" },
-];
-
-export const ColorSelector = ({ editor, open, onOpenChange }: ColorSelector_Props) => {
 	if (!editor) return null;
+	const activeColorItem = TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }));
 
-	const handle_color_change = (color: string) => {
-		editor.chain().focus().setColor(color).run();
-		onOpenChange(false);
-	};
-
-	const handle_highlight_change = (color: string | null) => {
-		if (color) {
-			editor.chain().focus().setHighlight({ color }).run();
-		} else {
-			editor.chain().focus().unsetHighlight().run();
-		}
-		onOpenChange(false);
-	};
+	const activeHighlightItem = HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }));
 
 	return (
-		<Popover open={open} onOpenChange={onOpenChange}>
+		<Popover modal={true} open={open} onOpenChange={onOpenChange}>
 			<PopoverTrigger asChild>
-				<Button variant="ghost" size="sm" className="flex h-8 items-center gap-2 px-2">
-					<Palette className="h-4 w-4" />
-					<span className="text-sm">Color</span>
+				<Button size="sm" className="gap-2 rounded-none" variant="ghost">
+					<span
+						className="rounded-sm px-1"
+						style={{
+							color: activeColorItem?.color,
+							backgroundColor: activeHighlightItem?.color,
+						}}
+					>
+						A
+					</span>
+					<ChevronDown className="h-4 w-4" />
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent className="w-64 p-3" align="start">
-				<div className="space-y-4">
-					<div>
-						<h4 className="mb-2 text-sm font-medium">Text Color</h4>
-						<div className="grid grid-cols-4 gap-2">
-							{colors.map((color) => (
-								<Button
-									key={color.value}
-									variant="outline"
-									size="sm"
-									className={cn(
-										"h-8 w-full p-0",
-										editor.isActive("textStyle", { color: color.value }) && "ring-2 ring-blue-500",
-									)}
-									style={{ backgroundColor: color.value }}
-									onClick={() => handle_color_change(color.value)}
-									title={color.name}
-								/>
-							))}
-						</div>
-					</div>
-					<div>
-						<h4 className="mb-2 text-sm font-medium">Highlight</h4>
-						<div className="grid grid-cols-3 gap-2">
-							{highlights.map((highlight) => (
-								<Button
-									key={highlight.name}
-									variant="outline"
-									size="sm"
-									className={cn(
-										"h-8 w-full p-0",
-										highlight.value
-											? editor.isActive("highlight", { color: highlight.value }) && "ring-2 ring-blue-500"
-											: !editor.isActive("highlight") && "ring-2 ring-blue-500",
-									)}
-									style={{ backgroundColor: highlight.value || "#ffffff" }}
-									onClick={() => handle_highlight_change(highlight.value)}
-									title={highlight.name}
-								>
-									{!highlight.value && <span className="text-xs">None</span>}
-								</Button>
-							))}
-						</div>
-					</div>
+
+			<PopoverContent
+				sideOffset={5}
+				className="my-1 flex max-h-80 w-48 flex-col overflow-hidden overflow-y-auto rounded border p-1 shadow-xl"
+				align="start"
+			>
+				<div className="flex flex-col">
+					<div className="my-1 px-2 text-sm font-semibold text-muted-foreground">Color</div>
+					{TEXT_COLORS.map(({ name, color }) => (
+						<EditorBubbleItem
+							key={name}
+							onSelect={() => {
+								editor.commands.unsetColor();
+								name !== "Default" &&
+									editor
+										.chain()
+										.focus()
+										.setColor(color || "")
+										.run();
+								onOpenChange(false);
+							}}
+							className="flex cursor-pointer items-center justify-between px-2 py-1 text-sm hover:bg-accent"
+						>
+							<div className="flex items-center gap-2">
+								<div className="rounded-sm border px-2 py-px font-medium" style={{ color }}>
+									A
+								</div>
+								<span>{name}</span>
+							</div>
+						</EditorBubbleItem>
+					))}
+				</div>
+				<div>
+					<div className="my-1 px-2 text-sm font-semibold text-muted-foreground">Background</div>
+					{HIGHLIGHT_COLORS.map(({ name, color }) => (
+						<EditorBubbleItem
+							key={name}
+							onSelect={() => {
+								editor.commands.unsetHighlight();
+								name !== "Default" && editor.chain().focus().setHighlight({ color }).run();
+								onOpenChange(false);
+							}}
+							className="flex cursor-pointer items-center justify-between px-2 py-1 text-sm hover:bg-accent"
+						>
+							<div className="flex items-center gap-2">
+								<div className="rounded-sm border px-2 py-px font-medium" style={{ backgroundColor: color }}>
+									A
+								</div>
+								<span>{name}</span>
+							</div>
+							{editor.isActive("highlight", { color }) && <Check className="h-4 w-4" />}
+						</EditorBubbleItem>
+					))}
 				</div>
 			</PopoverContent>
 		</Popover>

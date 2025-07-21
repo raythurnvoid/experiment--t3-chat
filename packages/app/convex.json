@@ -3,7 +3,8 @@
     "externalPackages": [
       "ai",
       "@ai-sdk/openai",
-      "zod"
+      "zod",
+      "@liveblocks/node"
     ]
   }
 }

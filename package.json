@@ -6,17 +6,17 @@
 	"scripts": {},
 	"dependencies": {
 		"@liveblocks/react-tiptap": "^2.9.9",
-		"@tiptap/core": "2.9.1",
-		"@tiptap/extension-character-count": "2.9.1",
-		"@tiptap/extension-color": "2.9.1",
-		"@tiptap/extension-highlight": "2.9.1",
-		"@tiptap/extension-link": "2.9.1",
-		"@tiptap/extension-text-align": "2.9.1",
-		"@tiptap/extension-text-style": "2.9.1",
-		"@tiptap/extension-typography": "2.9.1",
-		"@tiptap/pm": "2.9.1",
-		"@tiptap/react": "2.9.1",
-		"@tiptap/starter-kit": "2.9.1",
+		"@tiptap/core": "2.22.3",
+		"@tiptap/extension-character-count": "2.22.3",
+		"@tiptap/extension-color": "2.22.3",
+		"@tiptap/extension-highlight": "2.22.3",
+		"@tiptap/extension-link": "2.22.3",
+		"@tiptap/extension-text-align": "2.22.3",
+		"@tiptap/extension-text-style": "2.22.3",
+		"@tiptap/extension-typography": "2.22.3",
+		"@tiptap/pm": "2.22.3",
+		"@tiptap/react": "2.22.3",
+		"@tiptap/starter-kit": "2.22.3",
 		"react": "^19.1.0"
 	},
 	"devDependencies": {
@@ -28,17 +28,18 @@
 	},
 	"pnpm": {
 		"overrides": {
-			"@tiptap/core": "2.9.1",
-			"@tiptap/pm": "2.9.1",
-			"@tiptap/react": "2.9.1",
-			"@tiptap/starter-kit": "2.9.1",
-			"@tiptap/extension-character-count": "2.9.1",
-			"@tiptap/extension-color": "2.9.1",
-			"@tiptap/extension-highlight": "2.9.1",
-			"@tiptap/extension-link": "2.9.1",
-			"@tiptap/extension-text-align": "2.9.1",
-			"@tiptap/extension-text-style": "2.9.1",
-			"@tiptap/extension-typography": "2.9.1"
+			"@tiptap/core": "2.22.3",
+			"@tiptap/pm": "2.22.3",
+			"@tiptap/react": "2.22.3",
+			"@tiptap/starter-kit": "2.22.3",
+			"@tiptap/extension-character-count": "2.22.3",
+			"@tiptap/extension-color": "2.22.3",
+			"@tiptap/extension-highlight": "2.22.3",
+			"@tiptap/extension-link": "2.22.3",
+			"@tiptap/extension-text-align": "2.22.3",
+			"@tiptap/extension-text-style": "2.22.3",
+			"@tiptap/extension-typography": "2.22.3",
+			"@tiptap/extension-underline": "2.22.3"
 		}
 	}
 }

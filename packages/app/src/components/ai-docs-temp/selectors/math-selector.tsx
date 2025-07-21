@@ -1,26 +1,32 @@
-"use client";
+import { Button } from "../../ui/button";
+import { cn } from "@/lib/utils";
+import { SigmaIcon } from "lucide-react";
+import { useEditor } from "novel";
 
-import { Calculator } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Editor } from "@tiptap/react";
+export const MathSelector = () => {
+	const { editor } = useEditor();
 
-interface MathSelector_Props {
-	editor: Editor | null;
-}
-
-export const MathSelector = ({ editor }: MathSelector_Props) => {
 	if (!editor) return null;
 
-	const handle_add_math = () => {
-		// This would integrate with math extension
-		// For now, we'll just insert a placeholder
-		editor.chain().focus().insertContent("$$equation$$").run();
-	};
-
 	return (
-		<Button variant="ghost" size="sm" onClick={handle_add_math} className="flex h-8 items-center gap-2 px-2">
-			<Calculator className="h-4 w-4" />
-			<span className="text-sm">Math</span>
+		<Button
+			variant="ghost"
+			size="sm"
+			className="w-12 rounded-none"
+			onClick={(evt) => {
+				if (editor.isActive("math")) {
+					editor.chain().focus().unsetLatex().run();
+				} else {
+					const { from, to } = editor.state.selection;
+					const latex = editor.state.doc.textBetween(from, to);
+
+					if (!latex) return;
+
+					editor.chain().focus().setLatex({ latex }).run();
+				}
+			}}
+		>
+			<SigmaIcon className={cn("size-4", { "text-blue-500": editor.isActive("math") })} strokeWidth={2.3} />
 		</Button>
 	);
 };

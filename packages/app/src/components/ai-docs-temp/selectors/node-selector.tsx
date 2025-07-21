@@ -1,5 +1,3 @@
-"use client";
-
 import {
 	Check,
 	CheckSquare,
@@ -13,31 +11,24 @@ import {
 	TextIcon,
 	TextQuote,
 } from "lucide-react";
-import { Editor } from "@tiptap/react";
-
-import { Button } from "@/components/ui/button";
-import { PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Popover } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { EditorBubbleItem, useEditor } from "novel";
+import { Button } from "../../ui/button";
+import { PopoverContent, PopoverTrigger } from "../../ui/popover";
+import { Popover } from "@radix-ui/react-popover";
 
 export type SelectorItem = {
 	name: string;
 	icon: LucideIcon;
-	command: (editor: Editor | null) => void;
-	isActive: (editor: Editor | null) => boolean;
+	command: (editor: ReturnType<typeof useEditor>["editor"]) => void;
+	isActive: (editor: ReturnType<typeof useEditor>["editor"]) => boolean;
 };
-
-interface NodeSelector_Props {
-	editor: Editor | null;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-}
 
 const items: SelectorItem[] = [
 	{
 		name: "Text",
 		icon: TextIcon,
 		command: (editor) => editor?.chain().focus().clearNodes().run(),
+		// I feel like there has to be a more efficient way to do this – feel free to PR if you know how!
 		isActive: (editor) =>
 			(editor?.isActive("paragraph") && !editor?.isActive("bulletList") && !editor?.isActive("orderedList")) ?? false,
 	},
@@ -59,10 +50,15 @@ const items: SelectorItem[] = [
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 3 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 3 }) ?? false,
 	},
-
+	{
+		name: "To-do List",
+		icon: CheckSquare,
+		command: (editor) => editor?.chain().focus().clearNodes().toggleTaskList().run(),
+		isActive: (editor) => editor?.isActive("taskItem") ?? false,
+	},
 	{
 		name: "Bullet List",
-		icon: CheckSquare,
+		icon: ListOrdered,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleBulletList().run(),
 		isActive: (editor) => editor?.isActive("bulletList") ?? false,
 	},
@@ -85,36 +81,44 @@ const items: SelectorItem[] = [
 		isActive: (editor) => editor?.isActive("codeBlock") ?? false,
 	},
 ];
+interface NodeSelectorProps {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}
 
-export const NodeSelector = ({ editor, open, onOpenChange }: NodeSelector_Props) => {
+export const NodeSelector = ({ open, onOpenChange }: NodeSelectorProps) => {
+	const { editor } = useEditor();
 	if (!editor) return null;
-
-	const activeItem = items.find((item) => item.isActive(editor)) || items[0];
+	const activeItem = items.filter((item) => item.isActive(editor)).pop() ?? {
+		name: "Multiple",
+	};
 
 	return (
-		<Popover open={open} onOpenChange={onOpenChange}>
-			<PopoverTrigger asChild>
-				<Button variant="ghost" size="sm" className="flex h-8 items-center gap-2 px-2">
-					<activeItem.icon className="h-4 w-4" />
-					<span className="text-sm">{activeItem.name}</span>
+		<Popover modal={true} open={open} onOpenChange={onOpenChange}>
+			<PopoverTrigger asChild className="gap-2 rounded-none border-none hover:bg-accent focus:ring-0">
+				<Button size="sm" variant="ghost" className="gap-2">
+					<span className="text-sm whitespace-nowrap">{activeItem.name}</span>
 					<ChevronDown className="h-4 w-4" />
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent className="w-48 p-1" align="start">
-				{items.map((item, index) => (
-					<Button
-						key={index}
-						variant="ghost"
-						className="h-8 w-full justify-start gap-2 px-2"
-						onClick={() => {
+			<PopoverContent sideOffset={5} align="start" className="w-48 p-1">
+				{items.map((item) => (
+					<EditorBubbleItem
+						key={item.name}
+						onSelect={(editor) => {
 							item.command(editor);
 							onOpenChange(false);
 						}}
+						className="flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-sm hover:bg-accent"
 					>
-						<item.icon className="h-4 w-4" />
-						<span className="text-sm">{item.name}</span>
-						{item.isActive(editor) && <Check className="ml-auto h-4 w-4" />}
-					</Button>
+						<div className="flex items-center space-x-2">
+							<div className="rounded-sm border p-1">
+								<item.icon className="h-3 w-3" />
+							</div>
+							<span>{item.name}</span>
+						</div>
+						{activeItem.name === item.name && <Check className="h-4 w-4" />}
+					</EditorBubbleItem>
 				))}
 			</PopoverContent>
 		</Popover>

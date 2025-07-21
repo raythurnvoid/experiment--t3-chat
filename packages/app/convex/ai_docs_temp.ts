@@ -77,28 +77,82 @@ export const ai_docs_temp_contextual_prompt = httpAction(async (ctx, request) =>
 	}
 });
 
-// Mock Liveblocks auth for development
+// Liveblocks authentication action
 export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
-	// Mock auth response for development
-	const mockAuth = {
-		token: "mock_token_for_development",
-		user: {
-			id: "dev_user",
-			info: {
-				name: "Development User",
-				avatar: "https://via.placeholder.com/32",
-			},
-		},
-	};
+	try {
+		// Get the secret key from environment variables
+		const secretKey = process.env.LIVEBLOCKS_SECRET_KEY;
 
-	return new Response(JSON.stringify(mockAuth), {
-		headers: {
-			"Content-Type": "application/json",
-			"Access-Control-Allow-Origin": "*",
-			"Access-Control-Allow-Methods": "POST, OPTIONS",
-			"Access-Control-Allow-Headers": "Content-Type, Authorization",
-		},
-	});
+		if (!secretKey) {
+			console.error("LIVEBLOCKS_SECRET_KEY is not configured");
+			return new Response(JSON.stringify({ error: "Liveblocks not configured" }), {
+				status: 500,
+				headers: {
+					"Content-Type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "POST, OPTIONS",
+					"Access-Control-Allow-Headers": "Content-Type, Authorization",
+				},
+			});
+		}
+
+		// Import Liveblocks server package
+		const { Liveblocks } = await import("@liveblocks/node");
+
+		const liveblocks = new Liveblocks({
+			secret: secretKey,
+		});
+
+		// Generate a unique user ID for this session
+		// In a real app, you'd get this from your authentication system
+		const user_id = `user_${Math.random().toString(36).substring(2, 15)}`;
+
+		// Create user info
+		const user_info = {
+			name: `User ${user_id.slice(-8)}`,
+			avatar: "https://via.placeholder.com/32",
+			color: "#" + Math.floor(Math.random() * 16777215).toString(16), // Random color
+		};
+
+		// Create a session for the current user
+		const session = liveblocks.prepareSession(user_id, {
+			userInfo: user_info,
+		});
+
+		// Allow access to all rooms for development
+		// In production, you'd want to implement proper room-level permissions
+		session.allow("*", session.FULL_ACCESS);
+
+		// Authorize the user and return the result
+		const { status, body } = await session.authorize();
+
+		return new Response(body, {
+			status,
+			headers: {
+				"Content-Type": "application/json",
+				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Methods": "POST, OPTIONS",
+				"Access-Control-Allow-Headers": "Content-Type, Authorization",
+			},
+		});
+	} catch (error) {
+		console.error("Liveblocks auth error:", error);
+		return new Response(
+			JSON.stringify({
+				error: "Authentication failed",
+				details: error instanceof Error ? error.message : "Unknown error",
+			}),
+			{
+				status: 500,
+				headers: {
+					"Content-Type": "application/json",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "POST, OPTIONS",
+					"Access-Control-Allow-Headers": "Content-Type, Authorization",
+				},
+			},
+		);
+	}
 });
 
 // Mock users endpoint for Liveblocks

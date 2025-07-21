@@ -5,17 +5,11 @@ import Loading from "./loading";
 import { HistoryVersionSummaryList, HistoryVersionSummary } from "@liveblocks/react-ui";
 import { useHistoryVersions } from "@liveblocks/react";
 import { HistoryVersionPreview } from "@liveblocks/react-tiptap";
+import { useEditor } from "novel";
 
-// Simple loading component for the dialog
-function LoadingSpinner() {
-	return (
-		<div className="flex items-center justify-center p-4">
-			<div className="border-foreground h-6 w-6 animate-spin rounded-full border-b-2"></div>
-		</div>
-	);
-}
+export default function VersionsDialog() {
+	const { editor } = useEditor();
 
-export default function VersionsDialog({ editor }: { editor: Editor | null }) {
 	const [isOpen, setOpen] = useState(false);
 
 	const onVersionRestore = useCallback(() => {
@@ -24,7 +18,7 @@ export default function VersionsDialog({ editor }: { editor: Editor | null }) {
 
 	return (
 		<Dialog.Root open={isOpen} onOpenChange={setOpen}>
-			<Dialog.Trigger className="focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground relative inline-flex h-8 w-8 items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 disabled:pointer-events-none disabled:opacity-50">
+			<Dialog.Trigger className="relative inline-flex h-8 w-8 items-center justify-center rounded-md text-sm font-medium whitespace-nowrap transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50">
 				<svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="16" height="16" viewBox="0 0 24 24">
 					<path
 						fill="currentColor"
@@ -35,7 +29,7 @@ export default function VersionsDialog({ editor }: { editor: Editor | null }) {
 
 			<Dialog.Portal>
 				<Dialog.Overlay className="fixed inset-0 cursor-pointer bg-black/50" />
-				<Dialog.Content className="border-border bg-card text-card-foreground fixed left-[50%] top-[50%] z-20 h-[85vh] w-[90vw] translate-x-[-50%] translate-y-[-50%] overflow-hidden rounded-xl border text-sm shadow outline-none">
+				<Dialog.Content className="fixed top-[50%] left-[50%] z-20 h-[85vh] w-[90vw] translate-x-[-50%] translate-y-[-50%] overflow-hidden rounded-xl border border-border bg-card text-sm text-card-foreground shadow outline-none">
 					<Dialog.Title className="sr-only">Versions</Dialog.Title>
 					<Dialog.Description className="sr-only">Previous versions of this document</Dialog.Description>
 					{editor && <Versions onVersionRestore={onVersionRestore} editor={editor} />}
@@ -54,9 +48,9 @@ function Versions({ onVersionRestore, editor }: { onVersionRestore: () => void; 
 	);
 
 	return isLoading ? (
-		<LoadingSpinner />
+		<Loading />
 	) : versions?.length === 0 ? (
-		<div className="text-muted-foreground flex h-full items-center justify-center p-6">No versions yet</div>
+		<div className="flex h-full items-center justify-center p-6 text-muted-foreground">No versions yet</div>
 	) : (
 		<div className="flex h-full">
 			<div className="h-full min-w-0 flex-1">
@@ -68,10 +62,10 @@ function Versions({ onVersionRestore, editor }: { onVersionRestore: () => void; 
 						editor={editor}
 					/>
 				) : (
-					<div className="text-muted-foreground flex h-full items-center justify-center p-6">No version selected</div>
+					<div className="flex h-full items-center justify-center p-6 text-muted-foreground">No version selected</div>
 				)}
 			</div>
-			<div className="border-border/80 relative h-full w-[250px] overflow-auto border-l text-sm">
+			<div className="relative h-full w-[250px] overflow-auto border-l border-border/80 text-sm">
 				<HistoryVersionSummaryList>
 					{versions?.map((version) => (
 						<HistoryVersionSummary

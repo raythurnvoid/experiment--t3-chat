@@ -63,6 +63,15 @@ export default tseslint.config(
 					allow: ["BadResult", "BadResultAbort", "BadResult_Any"],
 				},
 			],
+
+			"import/extensions": [
+				"error",
+				"ignorePackages",
+				{
+					ts: "never",
+					tsx: "never",
+				},
+			],
 		},
 	},
 );
