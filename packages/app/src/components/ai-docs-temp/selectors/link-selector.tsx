@@ -1,70 +1,101 @@
 "use client";
 
-import { Link, Unlink } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Button } from "../../ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
+import { cn } from "@/lib/utils";
+import { Check, Trash } from "lucide-react";
 import { Editor } from "@tiptap/react";
-import { useState } from "react";
+import { useEffect, useRef } from "react";
 
-interface LinkSelector_Props {
+function getUrlFromString(str: string) {
+	if (str.includes("http")) {
+		return str;
+	}
+	return `https://${str}`;
+}
+
+export function isValidUrl(url: string) {
+	try {
+		new URL(url);
+		return true;
+	} catch (_e) {
+		return false;
+	}
+}
+
+interface LinkSelectorProps {
 	editor: Editor | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }
 
-export const LinkSelector = ({ editor, open, onOpenChange }: LinkSelector_Props) => {
-	const [url, set_url] = useState("");
+export const LinkSelector = ({ editor, open, onOpenChange }: LinkSelectorProps) => {
+	const inputRef = useRef<HTMLInputElement>(null);
+
+	// Autofocus on input by default
+	useEffect(() => {
+		inputRef.current?.focus();
+	});
 
 	if (!editor) return null;
 
-	const is_link_active = editor.isActive("link");
-
-	const handle_set_link = () => {
-		if (url) {
-			editor.chain().focus().setLink({ href: url }).run();
-			set_url("");
-			onOpenChange(false);
-		}
-	};
-
-	const handle_unset_link = () => {
-		editor.chain().focus().unsetLink().run();
-		onOpenChange(false);
-	};
-
 	return (
-		<Popover open={open} onOpenChange={onOpenChange}>
+		<Popover modal={true} open={open} onOpenChange={onOpenChange}>
 			<PopoverTrigger asChild>
-				<Button variant="ghost" size="sm" className="flex h-8 items-center gap-2 px-2">
-					<Link className="h-4 w-4" />
-					<span className="text-sm">Link</span>
+				<Button size="sm" variant="ghost" className="gap-2 rounded-none border-none">
+					<p className="text-base">↗</p>
+					<p
+						className={cn("underline decoration-stone-400 underline-offset-4", {
+							"text-blue-500": editor.isActive("link"),
+						})}
+					>
+						Link
+					</p>
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent className="w-80 p-3" align="start">
-				<div className="flex flex-col gap-3">
-					<div className="flex items-center gap-2">
-						<Input
-							placeholder="Enter URL"
-							value={url}
-							onChange={(e) => set_url(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter") {
-									handle_set_link();
+			<PopoverContent align="start" className="w-60 p-0" sideOffset={10}>
+				<form
+					onSubmit={(e) => {
+						const target = e.currentTarget as HTMLFormElement;
+						e.preventDefault();
+						const input = target[0] as HTMLInputElement;
+						const url = getUrlFromString(input.value);
+						if (url) {
+							editor.chain().focus().setLink({ href: url }).run();
+							onOpenChange(false);
+						}
+					}}
+					className="flex p-1"
+				>
+					<input
+						ref={inputRef}
+						type="text"
+						placeholder="Paste a link"
+						className="flex-1 bg-background p-1 text-sm outline-none"
+						defaultValue={editor.getAttributes("link").href || ""}
+					/>
+					{editor.getAttributes("link").href ? (
+						<Button
+							size="icon"
+							variant="outline"
+							type="button"
+							className="flex h-8 items-center rounded-sm p-1 text-red-600 transition-all hover:bg-red-100 dark:hover:bg-red-800"
+							onClick={() => {
+								editor.chain().focus().unsetLink().run();
+								if (inputRef.current) {
+									inputRef.current.value = "";
 								}
+								onOpenChange(false);
 							}}
-						/>
-						<Button size="sm" onClick={handle_set_link} disabled={!url}>
-							Set Link
+						>
+							<Trash className="h-4 w-4" />
 						</Button>
-					</div>
-					{is_link_active && (
-						<Button variant="outline" size="sm" onClick={handle_unset_link} className="flex items-center gap-2">
-							<Unlink className="h-4 w-4" />
-							Remove Link
+					) : (
+						<Button size="icon" className="h-8">
+							<Check className="h-4 w-4" />
 						</Button>
 					)}
-				</div>
+				</form>
 			</PopoverContent>
 		</Popover>
 	);

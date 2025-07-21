@@ -29,28 +29,25 @@ import { AiPlaceholder } from "./ai-placeholder";
 import { AI_NAME } from "./constants";
 import { useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
+import { LinkSelector } from "./selectors/link-selector";
 
 export default function TiptapEditor() {
 	const [word_count, set_word_count] = useState<number>(0);
 	const [is_saved, set_is_saved] = useState(true);
+	const [open_link, set_open_link] = useState(false);
 
 	const liveblocks = useLiveblocksExtension({
 		ai: {
 			name: AI_NAME,
-			// resolveContextualPrompt: async ({
-			//   prompt,
-			//   context,
-			//   previous,
-			//   signal,
-			// }) => {
-			//   const response = await fetch("/api/contextual-prompt", {
-			//     method: "POST",
-			//     body: JSON.stringify({ prompt, context, previous }),
-			//     signal,
-			//   });
+			resolveContextualPrompt: async ({ prompt, context, previous, signal }) => {
+				const response = await fetch("/api/ai_docs_temp_contextual_prompt", {
+					method: "POST",
+					body: JSON.stringify({ prompt, context, previous }),
+					signal,
+				});
 
-			//   return response.json();
-			// },
+				return response.json();
+			},
 		},
 	});
 
@@ -133,11 +130,11 @@ export default function TiptapEditor() {
 	return (
 		<div className={cn("TiptapEditor", "relative w-full max-w-screen-lg")}>
 			{/* Status Bar */}
-			<div className={cn("TiptapEditor-status-bar", "absolute right-5 top-5 z-10 mb-5 flex gap-2")}>
-				<div className={cn("TiptapEditor-save-status", "bg-accent text-muted-foreground rounded-lg px-2 py-1 text-sm")}>
+			<div className={cn("TiptapEditor-status-bar", "absolute top-5 right-5 z-10 mb-5 flex gap-2")}>
+				<div className={cn("TiptapEditor-save-status", "rounded-lg bg-accent px-2 py-1 text-sm text-muted-foreground")}>
 					{is_saved ? "Saved" : "Unsaved"}
 				</div>
-				<div className={cn("TiptapEditor-word-count", "bg-accent text-muted-foreground rounded-lg px-2 py-1 text-sm")}>
+				<div className={cn("TiptapEditor-word-count", "rounded-lg bg-accent px-2 py-1 text-sm text-muted-foreground")}>
 					{word_count} Words
 				</div>
 			</div>
@@ -146,7 +143,7 @@ export default function TiptapEditor() {
 			<div
 				className={cn(
 					"TiptapEditor-header",
-					"border-border/80 bg-background flex h-[60px] items-center justify-end border-b px-4",
+					"flex h-[60px] items-center justify-end border-b border-border/80 bg-background px-4",
 				)}
 			>
 				<VersionsDialog editor={editor} />
@@ -154,13 +151,14 @@ export default function TiptapEditor() {
 			</div>
 
 			{/* Official Liveblocks Toolbar */}
-			<div className={cn("TiptapEditor-toolbar-container", "border-border/80 bg-background border-b")}>
+			<div className={cn("TiptapEditor-toolbar-container", "border-b border-border/80 bg-background")}>
 				<Toolbar editor={editor}>
 					<Toolbar.SectionHistory />
 					<Toolbar.Separator />
 					<Toolbar.SectionAi />
 					<Toolbar.Separator />
 					<Toolbar.BlockSelector />
+					<LinkSelector editor={editor} open={open_link} onOpenChange={set_open_link} />
 					<Toolbar.SectionInline />
 					<Toolbar.Separator />
 					<Toolbar.SectionCollaboration />
@@ -179,6 +177,7 @@ export default function TiptapEditor() {
 				<Toolbar.SectionAi />
 				<Toolbar.Separator />
 				<Toolbar.BlockSelector />
+				<LinkSelector editor={editor} open={open_link} onOpenChange={set_open_link} />
 				<Toolbar.SectionInline />
 				<Toolbar.Separator />
 				<Toolbar.SectionCollaboration />
