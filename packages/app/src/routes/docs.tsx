@@ -1,61 +1,77 @@
-import { useState } from "react";
-import { Button } from "../components/ui/button";
-import { PanelLeft } from "lucide-react";
-import { cn } from "../lib/utils";
-import { DocsSidebar } from "@/components/docs-sidebar";
+import React, { Suspense } from "react";
+import { LiveblocksProvider, RoomProvider, ClientSideSuspense } from "@liveblocks/react/suspense";
 
 export const Route = createFileRoute({
 	component: Docs,
 });
 
-function Docs() {
-	const [docs_sidebar_open, set_docs_sidebar_open] = useState(true);
-
+// Loading fallback component
+function LoadingEditor() {
 	return (
-		<div className={cn("Docs-content-area", "flex h-full w-full")}>
-			{/* Docs Sidebar - positioned between main sidebar and content with animation */}
-			<div
-				className={cn(
-					"Docs-sidebar-wrapper",
-					"h-full flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out",
-					docs_sidebar_open ? "w-80 opacity-100" : "w-0 opacity-0",
-				)}
-			>
-				{docs_sidebar_open && <DocsSidebar onClose={() => set_docs_sidebar_open(false)} />}
+		<div className="bg-background relative flex h-full flex-col">
+			<div className="border-border/80 bg-background flex h-[60px] items-center justify-end border-b px-4">
+				<div className="text-foreground text-sm font-medium">Loading AI Document Editor...</div>
 			</div>
+			<div className="border-border/80 bg-background border-b">
+				<div className="bg-muted/50 h-12 animate-pulse"></div>
+			</div>
+			<div className="flex-1 p-4">
+				<div className="bg-muted/30 h-32 animate-pulse rounded"></div>
+			</div>
+		</div>
+	)
+}
 
-			{/* Main Content Area - takes remaining space */}
-			<div className={cn("Docs-main-content", "flex h-full min-w-0 flex-1 flex-col")}>
-				{/* Main editor area */}
-				<div
-					className={cn(
-						"Docs-editor-panel",
-						"relative flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900",
-					)}
-				>
-					{!docs_sidebar_open && (
-						<div className={cn("Docs-editor-panel-controls", "absolute top-4 left-4 z-10")}>
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => set_docs_sidebar_open(true)}
-								className={cn("Docs-editor-panel-expand-button", "h-8 w-8 p-0")}
-							>
-								<PanelLeft className="h-4 w-4" />
-							</Button>
-						</div>
-					)}
-					<div className={cn("Docs-editor-content", "flex min-h-0 flex-1 overflow-hidden p-8")}>
-						{/* Placeholder for Tiptap Editor */}
-						<div className={cn("Docs-editor-placeholder", "flex flex-1 items-center justify-center")}>
-							<div className="text-center">
-								<h2 className="mb-2 text-2xl font-semibold text-muted-foreground">Document Editor</h2>
-								<p className="text-muted-foreground">Tiptap editor will be integrated here</p>
-							</div>
-						</div>
-					</div>
+// Dynamic import for the Tiptap editor with error boundary
+const TiptapEditor = React.lazy(() =>
+	import("../components/ai-docs-temp/editor").catch(() => ({
+		default: () => (
+			<div className="flex h-full items-center justify-center">
+				<div className="text-center">
+					<h3 className="text-foreground mb-2 text-lg font-medium">Editor Loading Error</h3>
+					<p className="text-muted-foreground text-sm">Please refresh the page to try again.</p>
 				</div>
 			</div>
+		),
+	})),
+);
+
+function Docs() {
+	return (
+		<div className="h-full w-full overflow-hidden">
+			<LiveblocksProvider
+				authEndpoint={async () => {
+					// Mock auth for development
+					return {
+						token: "mock_token_for_development",
+						user: {
+							id: "dev_user",
+							info: {
+								name: "Development User",
+								avatar: "https://via.placeholder.com/32",
+							},
+						},
+					}
+				}}
+				resolveUsers={async ({ userIds }) => {
+					// Mock user resolution for development
+					return userIds.map((id) => ({
+						id,
+						name: "Development User",
+						avatar: "https://via.placeholder.com/32",
+					}))
+				}}
+			>
+				<RoomProvider id="ai-docs-temp-room">
+					<ClientSideSuspense fallback={<LoadingEditor />}>
+						<div className="h-full w-full">
+							<Suspense fallback={<LoadingEditor />}>
+								<TiptapEditor />
+							</Suspense>
+						</div>
+					</ClientSideSuspense>
+				</RoomProvider>
+			</LiveblocksProvider>
 		</div>
 	)
 }

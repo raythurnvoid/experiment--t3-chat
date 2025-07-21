@@ -4,11 +4,41 @@
 	"version": "0.0.0",
 	"type": "module",
 	"scripts": {},
+	"dependencies": {
+		"@liveblocks/react-tiptap": "^2.9.9",
+		"@tiptap/core": "2.9.1",
+		"@tiptap/extension-character-count": "2.9.1",
+		"@tiptap/extension-color": "2.9.1",
+		"@tiptap/extension-highlight": "2.9.1",
+		"@tiptap/extension-link": "2.9.1",
+		"@tiptap/extension-text-align": "2.9.1",
+		"@tiptap/extension-text-style": "2.9.1",
+		"@tiptap/extension-typography": "2.9.1",
+		"@tiptap/pm": "2.9.1",
+		"@tiptap/react": "2.9.1",
+		"@tiptap/starter-kit": "2.9.1",
+		"react": "^19.1.0"
+	},
 	"devDependencies": {
 		"@eslint/js": "^9.25.0",
 		"eslint": "^9.25.0",
 		"eslint-plugin-react-hooks": "^5.2.0",
 		"prettier": "^3.5.3",
 		"tsc-silent": "^1.2.2"
+	},
+	"pnpm": {
+		"overrides": {
+			"@tiptap/core": "2.9.1",
+			"@tiptap/pm": "2.9.1",
+			"@tiptap/react": "2.9.1",
+			"@tiptap/starter-kit": "2.9.1",
+			"@tiptap/extension-character-count": "2.9.1",
+			"@tiptap/extension-color": "2.9.1",
+			"@tiptap/extension-highlight": "2.9.1",
+			"@tiptap/extension-link": "2.9.1",
+			"@tiptap/extension-text-align": "2.9.1",
+			"@tiptap/extension-text-style": "2.9.1",
+			"@tiptap/extension-typography": "2.9.1"
+		}
 	}
 }

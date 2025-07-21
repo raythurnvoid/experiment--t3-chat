@@ -19,18 +19,23 @@ function Layout() {
 		return null;
 	}
 
+	if (!auth.isAuthenticated) {
+		return (
+			<>
+				<Outlet />
+				<AppTanStackRouterDevTools />
+			</>
+		);
+	}
+
 	return (
-		<>
-			<div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
-				<SidebarProvider className="h-full w-full">
-					<MainAppSidebar />
-					<SidebarInset className="flex-1 overflow-hidden">
-						<Outlet />
-					</SidebarInset>
-				</SidebarProvider>
-			</div>
+		<SidebarProvider>
+			<MainAppSidebar />
+			<SidebarInset>
+				<Outlet />
+			</SidebarInset>
 			<AppTanStackRouterDevTools />
-		</>
+		</SidebarProvider>
 	);
 }
 

@@ -4,6 +4,11 @@
 @import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
 
+/* Liveblocks styles for AI docs editor */
+@import "@liveblocks/react-ui/styles.css";
+@import "@liveblocks/react-ui/styles/dark/media-query.css";
+@import "@liveblocks/react-tiptap/styles.css";
+
 /* Mantine and BlockNote styles */
 @import "@blocknote/core/fonts/inter.css";
 @import "@blocknote/mantine/style.css";
@@ -13,6 +18,98 @@
 @import "@assistant-ui/styles/index.css";
 
 @custom-variant dark (&:is(.dark *));
+
+@layer base {
+	/* Liveblocks portal z-index */
+	.lb-portal {
+		@apply z-30;
+	}
+
+	/* Tiptap editor styles to match liveblocks example */
+	.tiptap:focus p[data-placeholder]::before {
+		content: attr(data-placeholder);
+		position: absolute;
+		user-select: none;
+		pointer-events: none;
+		color: theme("colors.foreground" / 40%);
+	}
+
+	/* Typography styles */
+	.tiptap h1 {
+		font-size: 2rem;
+		font-weight: 700;
+		line-height: 1.2;
+	}
+
+	.tiptap h2 {
+		font-size: 1.5rem;
+		font-weight: 600;
+		line-height: 1.2;
+	}
+
+	.tiptap h3 {
+		font-size: 1.25rem;
+		font-weight: 600;
+		line-height: 1.2;
+	}
+
+	.tiptap h4 {
+		font-size: 1rem;
+		font-weight: 600;
+		line-height: 1.2;
+	}
+
+	.tiptap h5 {
+		font-size: 0.875rem;
+		font-weight: 600;
+		line-height: 1.2;
+	}
+
+	/* Blockquote styles */
+	.tiptap blockquote {
+		box-sizing: border-box;
+		border-left: 0.25rem solid theme("colors.foreground" / 25%);
+		padding-left: 1rem;
+	}
+
+	/* List styles */
+	.tiptap ul {
+		display: block;
+		list-style-type: disc;
+		margin-block-start: 1rem;
+		margin-block-end: 1rem;
+		margin-inline-start: 0px;
+		margin-inline-end: 0px;
+		padding-inline-start: 40px;
+		unicode-bidi: isolate;
+	}
+
+	.tiptap ol {
+		display: block;
+		list-style-type: decimal;
+		margin-block-start: 1rem;
+		margin-block-end: 1rem;
+		margin-inline-start: 0px;
+		margin-inline-end: 0px;
+		padding-inline-start: 40px;
+		unicode-bidi: isolate;
+	}
+
+	.tiptap li {
+		display: list-item;
+		text-align: -webkit-match-parent;
+		unicode-bidi: isolate;
+	}
+
+	.tiptap li::marker {
+		unicode-bidi: isolate;
+		font-variant-numeric: tabular-nums;
+		text-transform: none;
+		text-indent: 0px !important;
+		text-align: start !important;
+		text-align-last: start !important;
+	}
+}
 
 @layer normalize {
 	body {

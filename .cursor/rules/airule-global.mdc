@@ -25,6 +25,76 @@ The [+personal/](mdc:+personal) folder is used to keep indexed personal user not
 
 You can however write inside [+personal/+ai/](mdc:+personal/+ai).
 
+# Project Structure and Key Directories
+
+## Monorepo Structure
+
+This is a monorepo project with the following essential structure that you must always be aware of:
+
+### Root Level
+
+- **[package.json](mdc:package.json)** - Root package configuration
+- **[pnpm-workspace.yaml](mdc:pnpm-workspace.yaml)** - Workspace configuration for the monorepo
+- **[pnpm-lock.yaml](mdc:pnpm-lock.yaml)** - Lockfile for all dependencies
+
+### App Root
+
+- **[packages/app/](mdc:packages/app)** - **MAIN APPLICATION ROOT** - This is the primary app directory
+- **[packages/app/package.json](mdc:packages/app/package.json)** - App-specific package configuration
+
+### Core Application Code
+
+- **[packages/app/src/](mdc:packages/app/src)** - React frontend application code
+- **[packages/app/convex/](mdc:packages/app/convex)** - Convex backend code and functions
+
+### Submodules (Special Import Handling)
+
+- **[packages/app/assistant-ui/](mdc:packages/app/assistant-ui)** - Assistant UI submodule with custom overrides
+  - **IMPORTANT**: Import directly from this path, NOT from node_modules
+  - This contains custom modifications and overrides for our specific needs
+- **[packages/app/liveblocks/](mdc:packages/app/liveblocks)** - Liveblocks submodule
+  - **NOTE**: Currently used via node_modules, but source is available here
+
+### Configuration Files
+
+- **[packages/app/convex.json](mdc:packages/app/convex.json)** - Convex configuration
+- **[packages/app/components.json](mdc:packages/app/components.json)** - Component library configuration
+- **[packages/app/tsconfig.json](mdc:packages/app/tsconfig.json)** - TypeScript configuration for the app
+
+## Import Guidelines
+
+### Assistant UI Imports
+
+When importing assistant-ui components or utilities, ALWAYS import directly from the submodule:
+
+```ts
+// ✅ CORRECT - Import from submodule
+import { useAssistantTool } from "@/assistant-ui/packages/react/src/runtime";
+import { ThreadWelcome } from "@/assistant-ui/packages/react/src/ui/thread-welcome";
+
+// ❌ WRONG - Do not import from node_modules
+import { useAssistantTool } from "@assistant-ui/react";
+```
+
+### Standard Library Imports
+
+For other libraries like Liveblocks, use standard node_modules imports:
+
+```ts
+// ✅ CORRECT - Standard import
+import { LiveblocksProvider } from "@liveblocks/react";
+```
+
+## Directory Navigation Priority
+
+When navigating or making changes to the codebase, prioritize these directories in this order:
+
+1. **[packages/app/src/](mdc:packages/app/src)** - Frontend application code
+2. **[packages/app/convex/](mdc:packages/app/convex)** - Backend Convex functions
+3. **[packages/app/assistant-ui/](mdc:packages/app/assistant-ui)** - Custom assistant UI components
+4. **[packages/app/](mdc:packages/app)** - App root for configuration files
+5. **Root level** - For workspace and global configuration
+
 # Code guidelines
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
