@@ -41,26 +41,26 @@ http.route({
 
 // AI Docs Temp endpoints
 http.route({
-	path: "/api/ai-docs/contextual-prompt",
+	path: "/api/ai-docs-temp/contextual-prompt",
 	method: "POST",
 	handler: ai_docs_temp_contextual_prompt,
 });
 
 http.route({
-	path: "/api/ai-docs/liveblocks-auth",
+	path: "/api/ai-docs-temp/liveblocks-auth",
 	method: "POST",
 	handler: ai_docs_temp_liveblocks_auth,
 });
 
 http.route({
-	path: "/api/ai-docs/users",
+	path: "/api/ai-docs-temp/users",
 	method: "GET",
 	handler: ai_docs_temp_users,
 });
 
 // CORS preflight for AI docs endpoints
 http.route({
-	path: "/api/ai-docs/contextual-prompt",
+	path: "/api/ai-docs-temp/contextual-prompt",
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {
@@ -70,7 +70,7 @@ http.route({
 });
 
 http.route({
-	path: "/api/ai-docs/liveblocks-auth",
+	path: "/api/ai-docs-temp/liveblocks-auth",
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {
@@ -80,7 +80,7 @@ http.route({
 });
 
 http.route({
-	path: "/api/ai-docs/users",
+	path: "/api/ai-docs-temp/users",
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {

@@ -1,8 +1,8 @@
 import { useAuth as useClerkAuth } from "@clerk/clerk-react";
 
 interface AuthTokenManager {
-	isAuthenticated: () => boolean;
-	getToken: () => Promise<string | null>;
+	is_authenticated: () => boolean;
+	get_token_for_convex: () => Promise<string | null>;
 }
 
 /**
@@ -28,11 +28,11 @@ function init_auth_token_manager() {
 }
 
 export function auth_get_token() {
-	return auth_token_manager.promise.then((manager) => manager.getToken());
+	return auth_token_manager.promise.then((manager) => manager.get_token_for_convex());
 }
 
 export function auth_get_is_authenticated() {
-	return auth_token_manager.promise.then((manager) => manager.isAuthenticated);
+	return auth_token_manager.promise.then((manager) => manager.is_authenticated);
 }
 
 export function auth_set_token_manager(retriever: AuthTokenManager) {

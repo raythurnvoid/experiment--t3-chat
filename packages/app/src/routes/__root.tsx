@@ -10,8 +10,11 @@ function Layout() {
 
 	useEffect(() => {
 		auth_set_token_manager({
-			isAuthenticated: () => auth.isAuthenticated ?? false,
-			getToken: () => auth.getToken(),
+			is_authenticated: () => auth.isAuthenticated ?? false,
+			get_token_for_convex: () =>
+				auth.getToken({
+					template: "convex",
+				}),
 		});
 	}, [auth]);
 

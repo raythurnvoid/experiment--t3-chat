@@ -39,7 +39,7 @@ export default function TiptapEditor() {
 		ai: {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
-				const response = await fetch(`${CONVEX_URL}/api/ai-docs/contextual-prompt`, {
+				const response = await fetch(`${CONVEX_URL}/api/ai-docs-temp/contextual-prompt`, {
 					method: "POST",
 					body: JSON.stringify({ prompt, context, previous }),
 					signal,

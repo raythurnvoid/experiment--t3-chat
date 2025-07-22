@@ -1,5 +1,8 @@
 import React, { Suspense } from "react";
-import { LiveblocksProvider, RoomProvider, ClientSideSuspense } from "@liveblocks/react/suspense";
+import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
+import { ClientSideSuspense } from "@liveblocks/react";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
+import { auth_get_token } from "../lib/auth.ts";
 
 export const Route = createFileRoute({
 	component: Docs,
@@ -31,7 +34,7 @@ function LoadingEditor() {
 				</div>
 			</div>
 		</div>
-	);
+	)
 }
 
 // Dynamic import for the Tiptap editor with error boundary
@@ -48,25 +51,48 @@ const TiptapEditor = React.lazy(() =>
 					</div>
 				</div>
 			),
-		};
+		}
 	}),
 );
 
 function Docs() {
+	// Create room ID following the naming pattern: <workspace_id>:<project_id>:<document_id>
+	const room_id = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:docs-editor`;
+
 	return (
 		<div className="h-full w-full overflow-hidden">
 			<LiveblocksProvider
-				authEndpoint={`${CONVEX_HTTP_URL}/api/ai-docs/liveblocks-auth`}
+				authEndpoint={async (room) => {
+					// Get the JWT token from the auth system (same pattern as chat)
+					const token = await auth_get_token();
+
+					// Make the request to Convex HTTP action with Authorization header
+					const response = await fetch(`${CONVEX_HTTP_URL}/api/ai-docs-temp/liveblocks-auth`, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							// Pass the JWT token in Authorization header for Convex HTTP actions
+							...(token && { Authorization: `Bearer ${token}` }),
+						},
+						body: JSON.stringify({ room }),
+					})
+
+					if (!response.ok) {
+						throw new Error(`Failed to authenticate: ${response.status}`);
+					}
+
+					return await response.json();
+				}}
 				resolveUsers={async ({ userIds }: { userIds: string[] }) => {
 					// Mock user resolution for development
 					return userIds.map((id: string) => ({
 						id,
 						name: "Development User",
 						avatar: "https://via.placeholder.com/32",
-					}));
+					}))
 				}}
 			>
-				<RoomProvider id="ai-docs-temp-room">
+				<RoomProvider id={room_id}>
 					<ClientSideSuspense fallback={<LoadingEditor />}>
 						<div className="h-full w-full">
 							<Suspense fallback={<LoadingEditor />}>
@@ -77,5 +103,5 @@ function Docs() {
 				</RoomProvider>
 			</LiveblocksProvider>
 		</div>
-	);
+	)
 }

@@ -2,6 +2,13 @@ import { httpAction } from "./_generated/server";
 import { generateObject } from "ai";
 import { openai } from "@ai-sdk/openai";
 import * as z from "zod";
+import {
+	server_convex_get_user_id_fallback_to_anonymous,
+	server_convex_headers_cors,
+} from "./lib/server_convex_utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
+import { auth_ANONYMOUS_USER_ID } from "../shared/shared_auth_constants.ts";
+import { Liveblocks } from "@liveblocks/node";
 
 // Response schema for AI contextual prompts
 const ai_docs_temp_response_schema = z
@@ -79,61 +86,98 @@ export const ai_docs_temp_contextual_prompt = httpAction(async (ctx, request) =>
 
 // Liveblocks authentication action
 export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
+	let is_authenticated = false;
+	let user_id;
+	let secretKey;
+
 	try {
+		// Parse request body to get room parameter (sent from frontend)
+		const request_body = await request.json().catch(() => ({}));
+		const room_id = request_body.room || null;
+
+		console.log("Liveblocks auth for room:", room_id);
+
 		// Get the secret key from environment variables
-		const secretKey = process.env.LIVEBLOCKS_SECRET_KEY;
+		secretKey = process.env.LIVEBLOCKS_SECRET_KEY;
 
 		if (!secretKey) {
 			console.error("LIVEBLOCKS_SECRET_KEY is not configured");
 			return new Response(JSON.stringify({ error: "Liveblocks not configured" }), {
 				status: 500,
-				headers: {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "POST, OPTIONS",
-					"Access-Control-Allow-Headers": "Content-Type, Authorization",
-				},
+				headers: server_convex_headers_cors(),
 			});
 		}
 
-		// Import Liveblocks server package
-		const { Liveblocks } = await import("@liveblocks/node");
+		console.log("getting auth from convex");
+
+		// Get user ID from existing auth system (Clerk or anonymous)
+		user_id = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+		is_authenticated = user_id !== auth_ANONYMOUS_USER_ID;
+	} catch (e) {
+		console.error("Convex auth error:", e);
+		return new Response(JSON.stringify({ error: "Authentication failed" }), {
+			status: 500,
+			headers: server_convex_headers_cors(),
+		});
+	}
+
+	try {
+		console.log("creating liveblocks");
 
 		const liveblocks = new Liveblocks({
 			secret: secretKey,
 		});
 
-		// Generate a unique user ID for this session
-		// In a real app, you'd get this from your authentication system
-		const user_id = `user_${Math.random().toString(36).substring(2, 15)}`;
+		console.log("is_authenticated", is_authenticated);
 
-		// Create user info
-		const user_info = {
-			name: `User ${user_id.slice(-8)}`,
-			avatar: "https://via.placeholder.com/32",
-			color: "#" + Math.floor(Math.random() * 16777215).toString(16), // Random color
-		};
+		// Create user info based on auth status
+		const user_info = is_authenticated
+			? await (async (/* iife */) => {
+					// For authenticated users, try to get user info from Clerk
+					try {
+						const identity = await ctx.auth.getUserIdentity();
+						return {
+							name: identity?.name || identity?.nickname || `User ${user_id.slice(-8)}`,
+							avatar: identity?.pictureUrl || "https://via.placeholder.com/32",
+							color: "#" + Math.floor(Math.random() * 16777215).toString(16), // Random color for now
+						};
+					} catch (error) {
+						console.warn("Failed to get user info from Clerk:", error);
+						return {
+							name: `User ${user_id.slice(-8)}`,
+							avatar: "https://via.placeholder.com/32",
+							color: "#" + Math.floor(Math.random() * 16777215).toString(16),
+						};
+					}
+				})()
+			: {
+					name: "Anonymous User",
+					avatar: "https://via.placeholder.com/32",
+					color: "#888888", // Gray color for anonymous users
+				};
 
-		// Create a session for the current user
+		console.log("user_info", user_info);
+
+		// Create a session for access token authentication
 		const session = liveblocks.prepareSession(user_id, {
 			userInfo: user_info,
 		});
 
-		// Allow access to all rooms for development
-		// In production, you'd want to implement proper room-level permissions
-		session.allow("*", session.FULL_ACCESS);
+		// Set up room access using naming pattern: <workspace_id>:<project_id>:<document_id>
+		// For now, grant access to all documents in the hardcoded workspace/project
+		const workspace_pattern = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:*`;
+
+		// Authenticated users get full access to their workspace/project
+		session.allow(workspace_pattern, session.FULL_ACCESS);
 
 		// Authorize the user and return the result
 		const { status, body } = await session.authorize();
 
+		console.log("authorize", body);
+
 		return new Response(body, {
 			status,
-			headers: {
-				"Content-Type": "application/json",
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type, Authorization",
-			},
+			headers: server_convex_headers_cors(),
 		});
 	} catch (error) {
 		console.error("Liveblocks auth error:", error);
@@ -144,12 +188,7 @@ export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
 			}),
 			{
 				status: 500,
-				headers: {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "POST, OPTIONS",
-					"Access-Control-Allow-Headers": "Content-Type, Authorization",
-				},
+				headers: server_convex_headers_cors(),
 			},
 		);
 	}
