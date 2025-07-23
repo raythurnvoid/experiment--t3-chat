@@ -65,25 +65,25 @@ function Button({ className, variant = "default", size = "default", ...props }: 
 }
 ```
 
-### Custom Component Props (snake_case Allowed)
+### Custom Component Props (camelCase Required)
 
-For props that are specific to your component and will NOT be spread onto DOM elements, you can use snake_case:
+For props that are specific to your component and will NOT be spread onto DOM elements, use camelCase for consistency:
 
 ```tsx
 // ✅ CORRECT: Custom component props (not spread onto DOM)
 interface SearchFilter_Props {
-	search_query: string; // Custom prop - snake_case OK
-	on_search_change: (query: string) => void; // Custom prop - snake_case OK
-	show_archived: boolean; // Custom prop - snake_case OK
+	searchQuery: string; // Custom prop - camelCase
+	onSearchChange: (query: string) => void; // Custom prop - camelCase
+	showArchived: boolean; // Custom prop - camelCase
 	className?: string; // Will be manually assigned - camelCase
 }
 
-function SearchFilter({ search_query, on_search_change, show_archived, className }: SearchFilter_Props) {
+function SearchFilter({ searchQuery, onSearchChange, showArchived, className }: SearchFilter_Props) {
 	return (
 		<div className={cn("SearchFilter", className)}>
 			<input
-				value={search_query}
-				onChange={(e) => on_search_change(e.target.value)} // Used manually, not spread
+				value={searchQuery}
+				onChange={(e) => onSearchChange(e.target.value)} // Used manually, not spread
 			/>
 		</div>
 	);
@@ -96,56 +96,56 @@ When destructuring props that extend DOM element props, separate the custom prop
 
 ```tsx
 interface CustomButton_Props extends React.ComponentProps<"button"> {
-	custom_behavior?: boolean; // Custom prop - snake_case OK
-	special_mode?: "normal" | "enhanced"; // Custom prop - snake_case OK
+	customBehavior?: boolean; // Custom prop - camelCase
+	specialMode?: "normal" | "enhanced"; // Custom prop - camelCase
 }
 
 function CustomButton({
-	custom_behavior,
-	special_mode,
+	customBehavior,
+	specialMode,
 	className,
 	...props // DOM props in camelCase for spreading
 }: CustomButton_Props) {
-	// Local variables use snake_case
-	const enhanced_class = special_mode === "enhanced" ? "CustomButton-enhanced" : "";
+	// Local variables use camelCase
+	const enhancedClass = specialMode === "enhanced" ? "CustomButton-enhanced" : "";
 
 	return (
 		<button
-			className={cn("CustomButton", enhanced_class, className)}
+			className={cn("CustomButton", enhancedClass, className)}
 			{...props} // ✅ Safe to spread DOM props
 		/>
 	);
 }
 ```
 
-## Snake Case for Local Symbols
+## CamelCase for Local Symbols
 
-**MANDATORY**: Use snake_case for ALL local symbols within React components, including:
+**MANDATORY**: Use camelCase for ALL local symbols within React components, including:
 
 - State variables and their setters
 - Local functions and variables
 - Hook parameters and return values
 - Internal component identifiers
-- Component-specific custom props (that won't be spread)
+- Object properties and method parameters
 
 ### ✅ Correct Local Symbol Usage:
 
 ```tsx
 function SearchComponent() {
-	const [search_query, set_search_query] = useState("");
-	const [is_loading, set_is_loading] = useState(false);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [isLoading, setIsLoading] = useState(false);
 
-	const handle_search_change = useCallback((value: string) => {
-		set_search_query(value);
+	const handleSearchChange = useCallback((value: string) => {
+		setSearchQuery(value);
 	}, []);
 
-	const filtered_results = useMemo(() => {
-		return results.filter((item) => item.title.toLowerCase().includes(search_query.toLowerCase()));
-	}, [results, search_query]);
+	const filteredResults = useMemo(() => {
+		return results.filter((item) => item.title.toLowerCase().includes(searchQuery.toLowerCase()));
+	}, [results, searchQuery]);
 
 	return (
 		<div className="SearchComponent">
-			<input value={search_query} onChange={(e) => set_search_query(e.target.value)} />
+			<input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
 		</div>
 	);
 }
@@ -153,21 +153,20 @@ function SearchComponent() {
 
 ### External API Consistency:
 
-When interfacing with external APIs or libraries that use camelCase, keep their naming as-is but use snake_case for your local transformations:
+When interfacing with external APIs or libraries that use camelCase, keep their naming as-is and use camelCase for your local transformations:
 
 ```tsx
 function UserProfile() {
 	// External API uses camelCase - keep as-is
 	const { firstName, lastName } = useUser();
 
-	// Local transformations use snake_case
-	const [display_name, set_display_name] = useState("");
-	const [is_editing, set_is_editing] = useState(false);
+	// Local transformations use camelCase
+	const [displayName, setDisplayName] = useState("");
+	const [isEditing, setIsEditing] = useState(false);
 
-	const update_display_name = useCallback(() => {
-		set_display_name(`${firstName} ${lastName}`);
+	const updateDisplayName = useCallback(() => {
+		setDisplayName(`${firstName} ${lastName}`);
 	}, [firstName, lastName]);
-}
 ```
 
 ## Component Interface Naming
@@ -205,12 +204,12 @@ export interface MessageComposer_Props extends React.ComponentProps<"div"> {
 ```tsx
 import { createContext, use, useState, ReactNode } from "react";
 
-// Context interface with snake_case for internal state
+// Context interface with camelCase for internal state
 interface SearchContextType {
-	search_query: string;
-	set_search_query: (query: string) => void;
-	is_loading: boolean;
-	set_is_loading: (loading: boolean) => void;
+	searchQuery: string;
+	setSearchQuery: (query: string) => void;
+	isLoading: boolean;
+	setIsLoading: (loading: boolean) => void;
 }
 
 const SearchContext = createContext<SearchContextType | null>(null);
@@ -224,18 +223,18 @@ const useSearchContext = () => {
 	return context;
 };
 
-// Provider component with snake_case state
+// Provider component with camelCase state
 function SearchContextProvider({ children }: { children: ReactNode }) {
-	const [search_query, set_search_query] = useState("");
-	const [is_loading, set_is_loading] = useState(false);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [isLoading, setIsLoading] = useState(false);
 
 	return (
 		<SearchContext.Provider
 			value={{
-				search_query,
-				set_search_query,
-				is_loading,
-				set_is_loading,
+				searchQuery,
+				setSearchQuery,
+				isLoading,
+				setIsLoading,
 			}}
 		>
 			{children}
@@ -399,17 +398,17 @@ interface ShowArchivedCheckbox_Props {
 }
 
 function ShowArchivedCheckbox({ checked, onCheckedChange, className }: ShowArchivedCheckbox_Props) {
-	const checkbox_id = React.useId(); // Local variable - snake_case
+	const checkboxId = React.useId(); // Local variable - camelCase
 
 	return (
 		<div className={cn("mb-4 flex items-center space-x-2", className)}>
 			<Checkbox
-				id={checkbox_id}
+				id={checkboxId}
 				checked={checked}
 				onCheckedChange={(checked) => onCheckedChange(checked === true)}
 				className={cn("ShowArchivedCheckbox-checkbox")}
 			/>
-			<Label htmlFor={checkbox_id} className={cn("ShowArchivedCheckbox-label", "cursor-pointer")}>
+			<Label htmlFor={checkboxId} className={cn("ShowArchivedCheckbox-label", "cursor-pointer")}>
 				Show archived
 			</Label>
 		</div>
@@ -434,21 +433,21 @@ Use `useRef` instead of `useState` for values that don't need to trigger re-rend
 ### ❌ Avoid: useState for non-reactive values
 
 ```tsx
-const [is_processing, set_is_processing] = useState(false);
+const [isProcessing, setIsProcessing] = useState(false);
 // These state changes cause unnecessary re-renders
 ```
 
 ### ✅ Prefer: useRef for non-reactive values
 
 ```tsx
-const is_processing_ref = useRef(false);
-const cache_ref = useRef(new Map());
+const isProcessingRef = useRef(false);
+const cacheRef = useRef(new Map());
 
 // No re-renders triggered
-const handle_process = async () => {
-	is_processing_ref.current = true; // No re-render
+const handleProcess = async () => {
+	isProcessingRef.current = true; // No re-render
 	await processData();
-	is_processing_ref.current = false; // No re-render
+	isProcessingRef.current = false; // No re-render
 };
 ```
 
@@ -472,9 +471,9 @@ const handle_process = async () => {
 ### ✅ Prefer: useMemo for sync transformations
 
 ```tsx
-const [data, set_data] = useState(null);
+const [data, setData] = useState(null);
 
-const transformed_data = useMemo(() => {
+const transformedData = useMemo(() => {
 	return data ? processData(data) : null;
 }, [data]);
 ```
@@ -482,15 +481,15 @@ const transformed_data = useMemo(() => {
 ### ✅ Prefer: Event handlers for user interactions
 
 ```tsx
-const handle_toggle = useCallback(async (new_value: boolean) => {
-	if (new_value) {
+const handleToggle = useCallback(async (newValue: boolean) => {
+	if (newValue) {
 		const result = await processToggle();
-		set_processed_result(result);
+		setProcessedResult(result);
 	}
-	set_toggle_state(new_value);
+	setToggleState(newValue);
 }, []);
 
-<button onClick={() => handle_toggle(!toggle_state)}>Toggle</button>;
+<button onClick={() => handleToggle(!toggleState)}>Toggle</button>;
 ```
 
 ## Guidelines Summary
@@ -512,4 +511,4 @@ const handle_toggle = useCallback(async (new_value: boolean) => {
 - **Maintainability**: Clearer data flow and fewer side effects
 - **Optimization**: Use refs to prevent unnecessary re-renders for internal state
 - **Modern React patterns**: Leverage React 19 features like the `use` hook
-- **Consistent naming**: Proper casing for different contexts improves code readability and DOM compatibility
+- **Consistent naming**: Root-level exports use snake_case for namespacing, local variables use camelCase for consistency with modern JavaScript conventions

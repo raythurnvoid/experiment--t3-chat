@@ -11,12 +11,14 @@
 		"lint:eslint": "eslint src",
 		"preview": "vite preview",
 		"server": "tsx --watch src/server/main.ts",
-		"format": "prettier --write ."
+		"format": "prettier --write .",
+		"test": "vitest"
 	},
 	"dependencies": {
 		"@ai-sdk/anthropic": "^1.2.12",
 		"@ai-sdk/openai": "^1.3.22",
 		"@ai-sdk/openai-compatible": "^0.1.17",
+		"@ai-sdk/react": "^1.2.12",
 		"@assistant-ui/assistant-stream": "workspace:assistant-stream@*",
 		"@assistant-ui/cloud": "workspace:assistant-cloud@*",
 		"@assistant-ui/react": "workspace:*",

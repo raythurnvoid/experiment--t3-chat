@@ -128,10 +128,35 @@ export class BadResult<
 
 	/**
 	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+	 * For asynchronous functions, use `BadResult.tryAsync` instead.
 	 */
-	static async try<T>(fn: () => T): Promise<Awaited<T> | BadResult_Any | Error> {
+	static try<T>(fn: () => T): T | BadResult_Any | Error {
+		try {
+			return fn();
+		} catch (error) {
+			return error as any;
+		}
+	}
+
+	/**
+	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+	 * For synchronous functions, use `BadResult.try` instead.
+	 */
+	static async tryAsync<T>(fn: () => Promise<T>): Promise<T | BadResult_Any | Error> {
 		try {
 			return await fn();
+		} catch (error) {
+			return error as any;
+		}
+	}
+
+	/**
+	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+	 * For cases where you have a function that returns a promise, use `BadResult.tryAsync` instead.
+	 */
+	static async tryPromise<T>(promise: Promise<T>): Promise<T | BadResult_Any | Error> {
+		try {
+			return await promise;
 		} catch (error) {
 			return error as any;
 		}
@@ -312,6 +337,10 @@ export class AbortReason extends Error {
 
 	constructor(message: string, options?: ErrorOptions & { cause?: AbortReason["cause"] }) {
 		super(message, options);
+		this.message = message;
+		if (options?.cause) {
+			this.cause = options.cause;
+		}
 	}
 
 	/** Mostly used by sentry to format the console message */
@@ -322,14 +351,14 @@ export class AbortReason extends Error {
 	static of(signal: AbortSignal): AbortReason {
 		let message;
 		if (signal.reason?.message != null) {
-			message = signal.reason;
+			message = signal.reason.message;
 		} else {
 			message = "(Invalid abort reason)";
 		}
 
 		let cause;
 		if (signal.reason?.cause) {
-			cause = signal.reason;
+			cause = signal.reason.cause;
 		}
 
 		return new AbortReason(message, { cause });
@@ -411,12 +440,35 @@ export class Result<
 
 	/**
 	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+	 * For asynchronous functions, use `Result.tryAsync` instead.
 	 */
-	static async try<T>(
-		fn: () => T | Promise<T>,
-	): Promise<Result<{ ok: Awaited<T> }> | Result<{ bad: BadResult_Any | Error }>> {
+	static try<T>(fn: () => T): Result<{ ok: T }> | Result<{ bad: BadResult_Any | Error }> {
+		try {
+			return new Result({ ok: fn() });
+		} catch (error) {
+			return new Result({ bad: error as BadResult_Any | Error });
+		}
+	}
+
+	/**
+	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+	 * For synchronous functions, use `Result.try` instead.
+	 */
+	static async tryAsync<T>(fn: () => Promise<T>): Promise<Result<{ ok: T }> | Result<{ bad: BadResult_Any | Error }>> {
 		try {
 			return new Result({ ok: await fn() });
+		} catch (error) {
+			return new Result({ bad: error as BadResult_Any | Error });
+		}
+	}
+
+	/**
+	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+	 * For cases where you have a function that returns a promise, use `Result.tryAsync` instead.
+	 */
+	static async tryPromise<T>(promise: Promise<T>): Promise<Result<{ ok: T }> | Result<{ bad: BadResult_Any | Error }>> {
+		try {
+			return new Result({ ok: await promise });
 		} catch (error) {
 			return new Result({ bad: error as BadResult_Any | Error });
 		}

@@ -1,190 +1,157 @@
 import { httpAction } from "./_generated/server";
-import { generateObject } from "ai";
+import { streamText, smoothStream, createDataStreamResponse } from "ai";
 import { openai } from "@ai-sdk/openai";
-import * as z from "zod";
-import {
-	server_convex_get_user_id_fallback_to_anonymous,
-	server_convex_headers_cors,
-} from "./lib/server_convex_utils.ts";
+import { server_convex_get_user_fallback_to_anonymous, server_convex_headers_cors } from "./lib/server_convex_utils.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
-import { auth_ANONYMOUS_USER_ID } from "../shared/shared_auth_constants.ts";
 import { Liveblocks } from "@liveblocks/node";
+import { Result } from "../src/lib/errors-as-values-utils.ts";
 
-// Response schema for AI contextual prompts
-const ai_docs_temp_response_schema = z
-	.object({
-		type: z
-			.enum(["insert", "replace", "other"])
-			.describe(
-				'The type of response: "insert" to add new text **after** the selection (e.g. "continue writing", "complete the sentence"), "replace" to modify the selection with new text (e.g. "fix the spelling", "translate to French", "make this paragraph longer"), "other" to respond with analysis, explanations, or summaries (e.g. "explain this paragraph", "what is this word?")',
-			),
-		text: z
-			.string()
-			.describe(
-				"The text to insert or replace with, or the response to the query. If the request is unclear, ask for clarification.",
-			),
-	})
-	.describe("Response to a contextual prompt based on selected text or cursor position");
+const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
+if (!LIVEBLOCKS_SECRET_KEY) {
+	throw new Error("LIVEBLOCKS_SECRET_KEY env var is not set");
+}
 
-// AI contextual prompt action for Tiptap editor
+// AI generation endpoint for novel editor (compatible with useCompletion)
 export const ai_docs_temp_contextual_prompt = httpAction(async (ctx, request) => {
-	const body = await request.json();
-
-	// Validate request body
-	const { prompt, context } = body;
-
-	if (!prompt || typeof prompt !== "string") {
-		return new Response(JSON.stringify({ error: "Invalid prompt" }), {
-			status: 400,
-			headers: {
-				"Content-Type": "application/json",
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			},
-		});
-	}
-
 	try {
-		const { object } = await generateObject({
-			model: openai("gpt-4o-mini"),
-			schema: ai_docs_temp_response_schema,
-			system: `You are an AI writing assistant. Help users with their writing by providing contextual suggestions.
-      
-      When given a prompt and context:
-      - For "continue writing" or completion requests, use type "insert"
-      - For editing, improving, or rewriting requests, use type "replace" 
-      - For questions, explanations, or analysis, use type "other"
-      
-      Be concise and helpful. Focus on the specific request.`,
-			prompt: `Context: ${context || "No context provided"}
-      
-      User request: ${prompt}`,
+		// Parse request body - expecting format: { prompt, option, command }
+		const bodyResult = await Result.tryPromise(request.json());
+		if (bodyResult.bad) {
+			return new Response("Failed to parse request body", {
+				status: 400,
+				headers: server_convex_headers_cors(),
+			});
+		}
+
+		const { prompt, option, command } = bodyResult.ok;
+
+		if (!prompt || typeof prompt !== "string") {
+			return new Response("Invalid prompt", {
+				status: 400,
+				headers: server_convex_headers_cors(),
+			});
+		}
+
+		// Create appropriate system and user prompts based on option (matching liveblocks pattern)
+		let systemPrompt = "";
+		let userPrompt = "";
+
+		switch (option) {
+			case "continue":
+				systemPrompt =
+					"You are an AI writing assistant that continues existing text based on context from prior text. " +
+					"Give more weight/priority to the later characters than the beginning ones. " +
+					"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+					"Use Markdown formatting when appropriate.";
+				userPrompt = prompt;
+				break;
+			case "improve":
+				systemPrompt =
+					"You are an AI writing assistant that improves existing text. " +
+					"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+					"Use Markdown formatting when appropriate.";
+				userPrompt = `The existing text is: ${prompt}`;
+				break;
+			case "shorter":
+				systemPrompt =
+					"You are an AI writing assistant that shortens existing text. " + "Use Markdown formatting when appropriate.";
+				userPrompt = `The existing text is: ${prompt}`;
+				break;
+			case "longer":
+				systemPrompt =
+					"You are an AI writing assistant that lengthens existing text. " +
+					"Use Markdown formatting when appropriate.";
+				userPrompt = `The existing text is: ${prompt}`;
+				break;
+			case "fix":
+				systemPrompt =
+					"You are an AI writing assistant that fixes grammar and spelling errors in existing text. " +
+					"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+					"Use Markdown formatting when appropriate.";
+				userPrompt = `The existing text is: ${prompt}`;
+				break;
+			case "zap":
+				systemPrompt =
+					"You area an AI writing assistant that generates text based on a prompt. " +
+					"You take an input from the user and a command for manipulating the text. " +
+					"Use Markdown formatting when appropriate.";
+				userPrompt = `For this text: ${prompt}. You have to respect the command: ${command}`;
+				break;
+			default:
+				systemPrompt = "You are an AI writing assistant. Help with the given text based on the user's needs.";
+				userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
+		}
+
+		// Generate streaming completion using createDataStreamResponse (following ai_chat.ts pattern)
+		const response = createDataStreamResponse({
+			execute: async (dataStream) => {
+				const result = streamText({
+					model: openai("gpt-4o-mini"),
+					system: systemPrompt,
+					messages: [
+						{
+							role: "user",
+							content: userPrompt,
+						},
+					],
+					temperature: 0.7,
+					maxTokens: 500,
+					experimental_transform: smoothStream({
+						delayInMs: 100,
+					}),
+				});
+
+				result.mergeIntoDataStream(dataStream);
+			},
+			onError: (error) => {
+				console.error("AI generation error:", error);
+				return error instanceof Error ? error.message : String(error);
+			},
+			headers: server_convex_headers_cors(),
 		});
 
-		return new Response(JSON.stringify(object), {
-			headers: {
-				"Content-Type": "application/json",
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			},
-		});
-	} catch (error) {
-		console.error("AI contextual prompt error:", error);
-		return new Response(JSON.stringify({ error: "Failed to generate AI response" }), {
+		return response;
+	} catch (error: unknown) {
+		console.error("AI generation error:", error);
+		return new Response(error instanceof Error ? error.message : "Internal server error", {
 			status: 500,
-			headers: {
-				"Content-Type": "application/json",
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			},
+			headers: server_convex_headers_cors(),
 		});
 	}
 });
 
 // Liveblocks authentication action
 export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
-	let is_authenticated = false;
-	let user_id;
-	let secretKey;
-
-	try {
-		// Parse request body to get room parameter (sent from frontend)
-		const request_body = await request.json().catch(() => ({}));
-		const room_id = request_body.room || null;
-
-		console.log("Liveblocks auth for room:", room_id);
-
-		// Get the secret key from environment variables
-		secretKey = process.env.LIVEBLOCKS_SECRET_KEY;
-
-		if (!secretKey) {
-			console.error("LIVEBLOCKS_SECRET_KEY is not configured");
-			return new Response(JSON.stringify({ error: "Liveblocks not configured" }), {
-				status: 500,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		console.log("getting auth from convex");
-
-		// Get user ID from existing auth system (Clerk or anonymous)
-		user_id = await server_convex_get_user_id_fallback_to_anonymous(ctx);
-		is_authenticated = user_id !== auth_ANONYMOUS_USER_ID;
-	} catch (e) {
-		console.error("Convex auth error:", e);
-		return new Response(JSON.stringify({ error: "Authentication failed" }), {
-			status: 500,
+	// Parse request body to get room parameter
+	const requestBodyResult = await Result.tryPromise(request.json());
+	if (requestBodyResult.bad) {
+		return new Response(JSON.stringify({ message: "Failed to parse request body" }), {
+			status: 400,
 			headers: server_convex_headers_cors(),
 		});
 	}
 
-	try {
-		console.log("creating liveblocks");
+	const liveblocks = new Liveblocks({
+		secret: LIVEBLOCKS_SECRET_KEY,
+	});
 
-		const liveblocks = new Liveblocks({
-			secret: secretKey,
-		});
+	const userResult = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		console.log("is_authenticated", is_authenticated);
+	// Create a session for access token authentication
+	const sessionResult = Result.try(() =>
+		liveblocks.prepareSession(userResult.id, {
+			userInfo: {
+				avatar: userResult.avatar,
+				name: userResult.name,
+			},
+		}),
+	);
 
-		// Create user info based on auth status
-		const user_info = is_authenticated
-			? await (async (/* iife */) => {
-					// For authenticated users, try to get user info from Clerk
-					try {
-						const identity = await ctx.auth.getUserIdentity();
-						return {
-							name: identity?.name || identity?.nickname || `User ${user_id.slice(-8)}`,
-							avatar: identity?.pictureUrl || "https://via.placeholder.com/32",
-							color: "#" + Math.floor(Math.random() * 16777215).toString(16), // Random color for now
-						};
-					} catch (error) {
-						console.warn("Failed to get user info from Clerk:", error);
-						return {
-							name: `User ${user_id.slice(-8)}`,
-							avatar: "https://via.placeholder.com/32",
-							color: "#" + Math.floor(Math.random() * 16777215).toString(16),
-						};
-					}
-				})()
-			: {
-					name: "Anonymous User",
-					avatar: "https://via.placeholder.com/32",
-					color: "#888888", // Gray color for anonymous users
-				};
-
-		console.log("user_info", user_info);
-
-		// Create a session for access token authentication
-		const session = liveblocks.prepareSession(user_id, {
-			userInfo: user_info,
-		});
-
-		// Set up room access using naming pattern: <workspace_id>:<project_id>:<document_id>
-		// For now, grant access to all documents in the hardcoded workspace/project
-		const workspace_pattern = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:*`;
-
-		// Authenticated users get full access to their workspace/project
-		session.allow(workspace_pattern, session.FULL_ACCESS);
-
-		// Authorize the user and return the result
-		const { status, body } = await session.authorize();
-
-		console.log("authorize", body);
-
-		return new Response(body, {
-			status,
-			headers: server_convex_headers_cors(),
-		});
-	} catch (error) {
-		console.error("Liveblocks auth error:", error);
+	if (sessionResult.bad) {
+		console.error("Failed to create session:", sessionResult.bad);
 		return new Response(
 			JSON.stringify({
-				error: "Authentication failed",
-				details: error instanceof Error ? error.message : "Unknown error",
+				message: "Failed to create session",
 			}),
 			{
 				status: 500,
@@ -192,25 +159,35 @@ export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
 			},
 		);
 	}
-});
 
-// Mock users endpoint for Liveblocks
-export const ai_docs_temp_users = httpAction(async (ctx, request) => {
-	// Mock users response for development
-	const mockUsers = [
-		{
-			id: "dev_user",
-			name: "Development User",
-			avatar: "https://via.placeholder.com/32",
-		},
-	];
+	// Set up room access using naming pattern: <workspace_id>:<project_id>:<document_id>
+	// For now, grant access to all documents in the hardcoded workspace/project
+	const workspacePattern = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:*`;
+	sessionResult.ok.allow(workspacePattern, sessionResult.ok.FULL_ACCESS);
+	const accessTokenResult = await Result.tryPromise(sessionResult.ok.authorize());
+	if (accessTokenResult.bad) {
+		console.error("Authorization failed:", accessTokenResult.bad);
+		return new Response(
+			JSON.stringify({
+				message: "Authorization failed",
+			}),
+			{
+				status: 500,
+				headers: server_convex_headers_cors(),
+			},
+		);
+	}
 
-	return new Response(JSON.stringify(mockUsers), {
-		headers: {
-			"Content-Type": "application/json",
-			"Access-Control-Allow-Origin": "*",
-			"Access-Control-Allow-Methods": "GET, OPTIONS",
-			"Access-Control-Allow-Headers": "Content-Type",
-		},
+	if (accessTokenResult.ok.error) {
+		console.error("Authorization returned an error:", accessTokenResult.ok.error);
+		return new Response(JSON.stringify({ message: "Authorization returned an error" }), {
+			status: 500,
+			headers: server_convex_headers_cors(),
+		});
+	}
+
+	return new Response(accessTokenResult.ok.body, {
+		status: accessTokenResult.ok.status,
+		headers: server_convex_headers_cors(),
 	});
 });

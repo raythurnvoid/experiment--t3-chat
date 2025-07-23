@@ -95,7 +95,7 @@ describe("BadResult", () => {
 			expect(() => BadResult.throwIfBadResultOrError(notABadResult)).not.toThrow();
 		});
 
-		test("BadResult.try captures errors and returns them", async () => {
+		test("BadResult.try captures errors and returns them (sync)", () => {
 			const successFn = () => "success";
 			const errorFn = () => {
 				throw new Error("error thrown");
@@ -104,15 +104,56 @@ describe("BadResult", () => {
 				throw new BadResult("bad result thrown");
 			};
 
-			expect(await BadResult.try(successFn)).toBe("success");
+			expect(BadResult.try(successFn)).toBe("success");
 
-			const errorResult = await BadResult.try(errorFn);
+			const errorResult = BadResult.try(errorFn);
 			expect(errorResult).toBeInstanceOf(Error);
 			expect(errorResult.message).toBe("error thrown");
 
-			const badResultError = await BadResult.try(badResultFn);
+			const badResultError = BadResult.try(badResultFn);
 			expect(badResultError).toBeInstanceOf(BadResult);
 			expect(badResultError.message).toBe("bad result thrown");
+		});
+
+		test("BadResult.tryAsync captures errors and returns them (async)", async () => {
+			const asyncSuccessFn = async () => "async success";
+			const asyncErrorFn = async () => {
+				throw new Error("async error thrown");
+			};
+			const asyncBadResultFn = async () => {
+				throw new BadResult("async bad result thrown");
+			};
+
+			expect(await BadResult.tryAsync(asyncSuccessFn)).toBe("async success");
+
+			const errorResult = await BadResult.tryAsync(asyncErrorFn);
+			expect(errorResult).toBeInstanceOf(Error);
+			expect(errorResult.message).toBe("async error thrown");
+
+			const badResultError = await BadResult.tryAsync(asyncBadResultFn);
+			expect(badResultError).toBeInstanceOf(BadResult);
+			expect(badResultError.message).toBe("async bad result thrown");
+		});
+
+		test("BadResult.tryPromise captures errors from promises directly", async () => {
+			const successPromise = Promise.resolve("promise success");
+			const errorPromise = Promise.reject(new Error("promise error"));
+			const badResultPromise = Promise.reject(new BadResult("promise bad result"));
+			const badResultAbortPromise = Promise.reject(new BadResultAbort("promise aborted"));
+
+			expect(await BadResult.tryPromise(successPromise)).toBe("promise success");
+
+			const errorResult = await BadResult.tryPromise(errorPromise);
+			expect(errorResult).toBeInstanceOf(Error);
+			expect(errorResult.message).toBe("promise error");
+
+			const badResultError = await BadResult.tryPromise(badResultPromise);
+			expect(badResultError).toBeInstanceOf(BadResult);
+			expect(badResultError.message).toBe("promise bad result");
+
+			const badResultAbortError = await BadResult.tryPromise(badResultAbortPromise);
+			expect(badResultAbortError).toBeInstanceOf(BadResultAbort);
+			expect(badResultAbortError.message).toBe("promise aborted");
 		});
 
 		test("BadResult.getStack builds a stack trace with causes", () => {
@@ -215,5 +256,111 @@ describe("Result", () => {
 
 		expect(processResult(successResult)).toBe("Success: it worked");
 		expect(processResult(failureResult)).toBe("Error: it failed");
+	});
+
+	test("Result.try (sync)", () => {
+		// Test successful synchronous function
+		const successFn = () => "success";
+		const successResult = Result.try(successFn);
+		expect(successResult.ok).toBe("success");
+		expect(successResult.bad).toBeUndefined();
+
+		// Test Error thrown from synchronous function
+		const errorFn = () => {
+			throw new Error("sync error");
+		};
+		const errorResult = Result.try(errorFn);
+		expect(errorResult.ok).toBeUndefined();
+		expect(errorResult.bad).toBeInstanceOf(Error);
+		expect(errorResult.bad?.message).toBe("sync error");
+
+		// Test BadResult thrown from function
+		const badResultFn = () => {
+			throw new BadResult("bad result error");
+		};
+		const badResultResult = Result.try(badResultFn);
+		expect(badResultResult.ok).toBeUndefined();
+		expect(badResultResult.bad).toBeInstanceOf(BadResult);
+		expect(badResultResult.bad?.message).toBe("bad result error");
+
+		// Test BadResultAbort thrown from function
+		const badResultAbortFn = () => {
+			throw new BadResultAbort("operation aborted");
+		};
+		const badResultAbortResult = Result.try(badResultAbortFn);
+		expect(badResultAbortResult.ok).toBeUndefined();
+		expect(BadResult.is(badResultAbortResult.bad)).toBe(true);
+		expect(badResultAbortResult.bad?.message).toBe("operation aborted");
+	});
+
+	test("Result.tryAsync (async)", async () => {
+		// Test successful asynchronous function
+		const asyncSuccessFn = async () => "async success";
+		const asyncSuccessResult = await Result.tryAsync(asyncSuccessFn);
+		expect(asyncSuccessResult.ok).toBe("async success");
+		expect(asyncSuccessResult.bad).toBeUndefined();
+
+		// Test Error thrown from asynchronous function
+		const asyncErrorFn = async () => {
+			throw new Error("async error");
+		};
+		const asyncErrorResult = await Result.tryAsync(asyncErrorFn);
+		expect(asyncErrorResult.ok).toBeUndefined();
+		expect(asyncErrorResult.bad).toBeInstanceOf(Error);
+		expect(asyncErrorResult.bad?.message).toBe("async error");
+
+		// Test BadResult thrown from async function
+		const asyncBadResultFn = async () => {
+			throw new BadResult("async bad result error");
+		};
+		const asyncBadResultResult = await Result.tryAsync(asyncBadResultFn);
+		expect(asyncBadResultResult.ok).toBeUndefined();
+		expect(asyncBadResultResult.bad).toBeInstanceOf(BadResult);
+		expect(asyncBadResultResult.bad?.message).toBe("async bad result error");
+
+		// Test BadResultAbort thrown from async function
+		const asyncBadResultAbortFn = async () => {
+			throw new BadResultAbort("async operation aborted");
+		};
+		const asyncBadResultAbortResult = await Result.tryAsync(asyncBadResultAbortFn);
+		expect(asyncBadResultAbortResult.ok).toBeUndefined();
+		expect(BadResult.is(asyncBadResultAbortResult.bad)).toBe(true);
+		expect(asyncBadResultAbortResult.bad?.message).toBe("async operation aborted");
+	});
+
+	test("Result.tryPromise (promise)", async () => {
+		// Test successful promise
+		const successPromise = Promise.resolve("promise success");
+		const successResult = await Result.tryPromise(successPromise);
+		expect(successResult.ok).toBe("promise success");
+		expect(successResult.bad).toBeUndefined();
+
+		// Test Error rejection from promise
+		const errorPromise = Promise.reject(new Error("promise error"));
+		const errorResult = await Result.tryPromise(errorPromise);
+		expect(errorResult.ok).toBeUndefined();
+		expect(errorResult.bad).toBeInstanceOf(Error);
+		expect(errorResult.bad?.message).toBe("promise error");
+
+		// Test BadResult rejection from promise
+		const badResultPromise = Promise.reject(new BadResult("promise bad result"));
+		const badResultResult = await Result.tryPromise(badResultPromise);
+		expect(badResultResult.ok).toBeUndefined();
+		expect(badResultResult.bad).toBeInstanceOf(BadResult);
+		expect(badResultResult.bad?.message).toBe("promise bad result");
+
+		// Test BadResultAbort rejection from promise
+		const badResultAbortPromise = Promise.reject(new BadResultAbort("promise operation aborted"));
+		const badResultAbortResult = await Result.tryPromise(badResultAbortPromise);
+		expect(badResultAbortResult.ok).toBeUndefined();
+		expect(BadResult.is(badResultAbortResult.bad)).toBe(true);
+		expect(badResultAbortResult.bad?.message).toBe("promise operation aborted");
+	});
+
+	test("Result.throwIfBad", () => {
+		const badResult = new Result({ bad: new BadResult("failure") });
+		const goodResult = new Result({ ok: "success" });
+		expect(() => Result.throwIfBad(badResult)).toThrow();
+		expect(() => Result.throwIfBad(goodResult)).not.toThrow();
 	});
 });

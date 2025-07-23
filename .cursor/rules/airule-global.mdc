@@ -246,72 +246,100 @@ For third-party integrations, construct URLs manually using `VITE_CONVEX_HTTP_UR
 
 ## Casing
 
-Use snake_case for all multi-word variables and functions.
+Use **snake_case only for symbols defined at the root of a module** (except components and hooks). Everything else uses **camelCase**.
 
-You can namespace code using snake_case syntax such as:
+### Root Level Module Symbols (snake_case)
+
+Use snake_case for symbols exported or defined at the module root level:
 
 ```ts
-// namespaced constant
+// Root level constants
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
 
-// namespaced class
+// Root level classes
 export class ai_chat_MyClass {
-	constructor(public readonly project_id: string) {}
+	constructor(public projectId: string) {} // camelCase for parameters and properties
 }
 
-// namespaced interface
+// Root level interfaces
 export interface ai_chat_MyInterface {
-	project_id: string;
+	projectId: string; // camelCase for properties
 }
 
-// namespaced type
+// Root level types
 export type ai_chat_MyType = {
-	project_id: string;
+	projectId: string; // camelCase for properties
 };
 
-// namespaced function
-export function ai_chat_my_function(project_id: string) {
-	return project_id;
+// Root level functions
+export function ai_chat_my_function(projectId: string) {
+	// Local variables use camelCase
+	const processedResult = processData(projectId);
+	return processedResult;
 }
 
-// namespaced enum
+// Root level enums
 export enum ai_chat_MyEnum {
 	PROJECT_ID = "app_project_local_dev",
 }
 ```
 
-Namespacing will allow to better organize the results from the IDE autocompletion.
+### Everything Else (camelCase)
 
-### Naming hooks
-
-Use camelCase for global hooks.
+Use camelCase for all other symbols:
 
 ```ts
-// use-theme.ts
-function useTheme() {
+function ai_chat_example_function() {
+	// Local variables
+	const bodyResult = await request.json();
+	const generationResult = await generateObject();
+	const workspacePattern = `${orgId}:${projectId}:*`;
+
+	// Function parameters
+	const processData = (inputValue: string, optionFlags: boolean) => {
+		// Object properties
+		return {
+			processedValue: inputValue,
+			isComplete: optionFlags,
+		};
+	};
+}
+```
+
+### Components and Hooks (Exceptions)
+
+Components use PascalCase, hooks use camelCase:
+
+```ts
+// Components (PascalCase)
+export function ThemeProvider() {
+	/* ... */
+}
+export function MessageComposer() {
+	/* ... */
+}
+
+// Hooks (camelCase)
+export function useTheme() {
 	return {
 		mode: "light",
-		resolved_theme: "light",
-		set_mode: () => {},
+		resolvedTheme: "light", // camelCase for properties
+		setMode: () => {},
 	};
 }
 
-// component.tsx
-const { mode, resolved_theme, set_mode } = useTheme();
-```
-
-You can namespace hooks using snake_case syntax such as:
-
-```ts
-// use-theme.ts
-function useAiChat_grouped_threads() {
-	// ...
+// Namespaced hooks still use snake_case for the namespace part
+export function useAiChat_grouped_threads() {
+	const threadGroups = useMemo(() => {
+		/* ... */
+	}, []); // camelCase for local variables
+	return threadGroups;
 }
 ```
 
-### Interacting with 3rd party functions or native JavaScript functions
+### Third-Party and Native JavaScript Functions
 
-If a function is imported as camelCase, keep it as is, do not rename it.
+If a function is imported as camelCase, keep it as-is:
 
 ```ts
 import { randomUUID } from "node:crypto";
@@ -322,6 +350,14 @@ const uuid = randomUUID();
 ```ts
 window.matchMedia("(prefers-color-scheme: dark)").matches;
 ```
+
+### Summary
+
+- **Root level exports/declarations**: snake_case (except components and hooks)
+- **Local variables, parameters, object properties**: camelCase
+- **Components**: PascalCase
+- **Hooks**: camelCase (with optional snake_case namespace prefix)
+- **Third-party APIs**: Keep original casing
 
 # Use Playwright
 

@@ -89,6 +89,9 @@ importers:
       '@ai-sdk/openai-compatible':
         specifier: ^0.1.17
         version: 0.1.17(zod@3.25.76)
+      '@ai-sdk/react':
+        specifier: ^1.2.12
+        version: 1.2.12(react@19.1.0)(zod@3.25.76)
       '@assistant-ui/assistant-stream':
         specifier: workspace:assistant-stream@*
         version: link:assistant-ui/packages/assistant-stream

@@ -60,7 +60,7 @@ export async function app_fetch_ai_docs_liveblocks_auth(
 // #region Core
 const base_url_main = convex_http_url;
 
-function app_fetch_main_api_url(
+export function app_fetch_main_api_url(
 	path: api_schemas_MainPaths,
 	args?: {
 		search_params?: Record<string, string | number | boolean | string[] | number[] | boolean[]>;

@@ -1,6 +1,7 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { auth_ANONYMOUS_USER_ID } from "../../shared/shared_auth_constants.ts";
 import type { UnknownRecord } from "type-fest";
+import { Result } from "../../src/lib/errors-as-values-utils.ts";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
 if (!ALLOWED_ORIGINS) {
@@ -27,14 +28,36 @@ export function server_convex_headers_error_response() {
 
 type ConvexCtx = GenericMutationCtx<any> | GenericQueryCtx<any> | GenericActionCtx<any>;
 
-export async function server_convex_get_user_id_fallback_to_anonymous(ctx: ConvexCtx): Promise<string> {
-	const user = await ctx.auth.getUserIdentity();
-
-	if (user) {
-		return user.tokenIdentifier;
+export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCtx) {
+	const userIdentityResult = await Result.tryPromise(ctx.auth.getUserIdentity());
+	if (userIdentityResult.bad) {
+		throw new Error("Failed to get user identity", { cause: userIdentityResult.bad });
 	}
 
-	return auth_ANONYMOUS_USER_ID;
+	const randomColor = "#" + Math.floor(Math.random() * 16777215).toString(16);
+
+	if (userIdentityResult.ok) {
+		const sub = userIdentityResult.ok.tokenIdentifier.slice(userIdentityResult.ok.tokenIdentifier.indexOf("|") + 1);
+		const userId = sub.slice(sub.indexOf("_") + 1);
+
+		return {
+			isAnonymous: false,
+			id: userIdentityResult.ok.tokenIdentifier,
+			name: userIdentityResult.ok.name || userIdentityResult.ok.nickname || `User ${userId}`,
+			avatar: userIdentityResult.ok.pictureUrl || "https://via.placeholder.com/32",
+			color: randomColor, // Random color for now
+		};
+	} else {
+		const randomId = crypto.randomUUID();
+
+		return {
+			isAnonymous: true,
+			id: `${auth_ANONYMOUS_USER_ID}_${randomId}`,
+			name: `Anonymous User ${randomId}`,
+			avatar: "https://via.placeholder.com/32",
+			color: randomColor, /// Random color for now
+		};
+	}
 }
 
 function headers_append_cors_preflight_headers(headers: Headers) {

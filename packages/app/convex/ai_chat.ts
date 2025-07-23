@@ -17,7 +17,7 @@ import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
 import type { api_schemas_Main } from "../src/lib/api-schemas.ts";
 import {
 	server_convex_headers_cors,
-	server_convex_get_user_id_fallback_to_anonymous,
+	server_convex_get_user_fallback_to_anonymous,
 	server_convex_response_error,
 } from "./lib/server_convex_utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
@@ -91,7 +91,7 @@ export const thread_create = mutation({
 		external_id: v.optional(v.union(v.string())),
 	},
 	handler: async (ctx, args) => {
-		const created_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+		const created_by = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const now = Date.now();
 
@@ -125,7 +125,7 @@ export const thread_update = mutation({
 		starred: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
-		const updated_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+		const updated_by = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		await ctx.db.patch(
 			args.thread_id,
@@ -162,7 +162,7 @@ export const thread_archive = mutation({
 		thread_id: v.id("threads"),
 	},
 	handler: async (ctx, args) => {
-		const updated_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+		const updated_by = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const now = Date.now();
 
@@ -210,7 +210,7 @@ export const thread_messages_add = mutation({
 		content: app_convex_schema.tables.messages.validator.fields.content,
 	},
 	handler: async (ctx, args) => {
-		const created_by = await server_convex_get_user_id_fallback_to_anonymous(ctx);
+		const created_by = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const now = Date.now();
 

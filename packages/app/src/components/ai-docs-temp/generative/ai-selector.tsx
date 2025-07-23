@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Button } from "../../ui/button";
 import AICompletionCommands from "./ai-completion-command";
 import AISelectorCommands from "./ai-selector-commands";
+import { app_fetch_main_api_url } from "../../../lib/fetch";
 //TODO: I think it makes more sense to create a custom Tiptap extension for this functionality https://tiptap.dev/docs/editor/ai/introduction
 
 interface AISelectorProps {
@@ -23,7 +24,7 @@ export function AISelector({ onOpenChange }: AISelectorProps) {
 
 	const { completion, complete, isLoading } = useCompletion({
 		// id: "novel",
-		api: "/api/generate",
+		api: app_fetch_main_api_url("/api/ai-docs-temp/contextual-prompt"),
 		onResponse: (response) => {
 			if (response.status === 429) {
 				toast.error("You have reached your request limit for the day.");
@@ -34,6 +35,8 @@ export function AISelector({ onOpenChange }: AISelectorProps) {
 			toast.error(e.message);
 		},
 	});
+
+	console.log(completion);
 
 	const hasCompletion = completion.length > 0;
 
