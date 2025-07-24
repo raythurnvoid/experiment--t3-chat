@@ -6,6 +6,61 @@ alwaysApply: false
 
 React Components Guidelines
 
+# Understanding Component Styles First
+
+## Critical: Read Component Styles Before Custom Solutions
+
+**MANDATORY**: When working with component libraries (especially shadcn/ui), always understand the existing component styles before implementing custom solutions.
+
+### Process for Styling Issues:
+
+1. **Inspect the component's default CSS** - Understand what margins, padding, positioning the component uses by default
+2. **Identify specific style properties** that need adjustment
+3. **Override specific properties** using className props rather than creating custom solutions
+4. **Only resort to custom positioning/styling** if working with existing styles doesn't achieve the desired result
+
+### ✅ Correct Approach: Work with Existing Styles
+
+```tsx
+// Example: Fixing sidebar indentation issues
+// Instead of custom absolute positioning, override the component's default margins/padding
+<SidebarMenuSub className="mx-0 ml-3.5 px-0 pl-2.5">
+	{/* This works with the component's existing structure */}
+</SidebarMenuSub>
+```
+
+### ❌ Avoid: Custom Solutions First
+
+```tsx
+// Instead of immediately jumping to custom absolute positioning:
+<SidebarMenuSubItem className="relative">
+  <button className="absolute right-1 top-1/2 -translate-y-1/2">
+    {/* Custom positioning that fights against component defaults */}
+  </button>
+</SidebarMenuSubItem>
+
+// First try working with the component's existing styles:
+<SidebarMenuSub className="mx-0 ml-3.5 px-0 pl-2.5">
+  {/* Much cleaner and more maintainable */}
+</SidebarMenuSub>
+```
+
+### Why This Matters:
+
+- **Maintainability**: Working with component defaults is more future-proof
+- **Consistency**: Maintains the design system's intended behavior
+- **Performance**: Avoids complex CSS that fights against existing styles
+- **Debugging**: Easier to understand and modify later
+- **Component Updates**: Less likely to break when components are updated
+
+### Investigation Steps:
+
+1. **Use browser DevTools** to inspect the component's applied styles
+2. **Check the component's source code** to understand its structure
+3. **Look for existing className props** that allow style customization
+4. **Test with specific margin/padding overrides** before custom solutions
+5. **Document the solution** for future reference
+
 # File Organization
 
 ## No Barrel Exports - Index Files Are Banned

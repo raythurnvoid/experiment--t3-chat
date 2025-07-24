@@ -73,7 +73,7 @@ function ChatContent() {
 				</PanelGroup>
 			</div>
 		</div>
-	)
+	);
 }
 
 function Chat() {
@@ -85,5 +85,5 @@ function Chat() {
 			<ChatContent />
 			<CreateArtifactToolUI />
 		</AssistantRuntimeProvider>
-	)
+	);
 }

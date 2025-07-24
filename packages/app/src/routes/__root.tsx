@@ -22,15 +22,6 @@ function Layout() {
 		return null;
 	}
 
-	if (!auth.isAuthenticated) {
-		return (
-			<>
-				<Outlet />
-				<AppTanStackRouterDevTools />
-			</>
-		);
-	}
-
 	return (
 		<SidebarProvider>
 			<MainAppSidebar />
