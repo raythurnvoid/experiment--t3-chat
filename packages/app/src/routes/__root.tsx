@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { auth_set_token_manager, useAuth } from "../lib/auth.ts";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar";
-import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
+import { cn } from "../lib/utils.ts";
 
 function Layout() {
 	const auth = useAuth();
@@ -23,13 +23,12 @@ function Layout() {
 	}
 
 	return (
-		<SidebarProvider>
-			<MainAppSidebar />
-			<SidebarInset>
+		<div className={cn("RootLayout", "flex h-full flex-col")}>
+			<MainAppSidebar>
 				<Outlet />
-			</SidebarInset>
+			</MainAppSidebar>
 			<AppTanStackRouterDevTools />
-		</SidebarProvider>
+		</div>
 	);
 }
 

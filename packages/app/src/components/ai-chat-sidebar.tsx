@@ -1,6 +1,6 @@
 import * as React from "react";
 import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star } from "lucide-react";
-import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar";
+import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { ThreadListPrimitive, ThreadListItemPrimitive, useThreadListItem } from "@assistant-ui/react";
 import { useState, createContext, use } from "react";
@@ -290,19 +290,21 @@ export interface AiChatSidebar_Props extends React.ComponentProps<typeof Sidebar
 // Main sidebar wrapper component
 export function AiChatSidebar({ onClose, className, ...props }: AiChatSidebar_Props) {
 	return (
-		<SearchContextProvider>
-			<div className={cn("AiChatSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
-				<Sidebar
-					side="left"
-					variant="sidebar"
-					collapsible="none"
-					className={cn("AiChatSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
-					style={{ borderRight: "none !important", width: "320px" }}
-					{...props}
-				>
-					<AiChatSidebarContent onClose={onClose} />
-				</Sidebar>
-			</div>
-		</SearchContextProvider>
+		<SidebarProvider className={cn("AiChatSidebar", "flex h-full w-full")}>
+			<SearchContextProvider>
+				<div className={cn("AiChatSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
+					<Sidebar
+						side="left"
+						variant="sidebar"
+						collapsible="none"
+						className={cn("AiChatSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
+						style={{ borderRight: "none !important", width: "320px" }}
+						{...props}
+					>
+						<AiChatSidebarContent onClose={onClose} />
+					</Sidebar>
+				</div>
+			</SearchContextProvider>
+		</SidebarProvider>
 	);
 }

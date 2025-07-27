@@ -3,13 +3,12 @@ import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
 import { ClientSideSuspense } from "@liveblocks/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 import { auth_get_token } from "../lib/auth.ts";
-import { DocsSidebar } from "../components/docs-sidebar";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { DocsSidebar } from "../components/docs-sidebar-v2";
+import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils";
-import { SidebarProvider } from "../components/ui/sidebar.tsx";
 
 export const Route = createFileRoute({
 	component: Docs,
@@ -124,7 +123,7 @@ function Docs() {
 					docsSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
 				)}
 			>
-				{docsSidebarOpen && <DocsSidebar onClose={() => setDocsSidebarOpen(false)} />}
+				<DocsSidebar onClose={() => setDocsSidebarOpen(false)} />
 			</div>
 
 			{/* Main Content Area - takes remaining space */}

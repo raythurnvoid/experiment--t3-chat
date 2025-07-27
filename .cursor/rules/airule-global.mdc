@@ -13,6 +13,48 @@ This repository uses `pnpm` do not use `npm`.
 
 Do not run `pnpm run dev` let the user run it manually.
 
+# Terminal and Shell Command Behavior
+
+## Default Terminal Location
+
+**IMPORTANT**: When terminals are opened in this workspace, they start in the **[packages/app/](mdc:packages/app)** directory by default, NOT the workspace root.
+
+This means:
+
+- Terminal commands run relative to `packages/app/` unless explicitly navigated elsewhere
+- File paths in terminal commands should account for this starting location
+- The `packages/app/` directory contains the main application code
+
+## Navigating to Root When Needed
+
+When shell commands need to access files in the workspace root or other packages, you must explicitly navigate:
+
+```bash
+# Navigate to workspace root from packages/app/
+cd ../..
+
+# Or use relative paths from packages/app/
+../../pnpm-workspace.yaml
+```
+
+## Common Scenarios Requiring Root Navigation
+
+- Accessing workspace configuration files like [pnpm-workspace.yaml](mdc:pnpm-workspace.yaml)
+- Managing monorepo-level dependencies
+- Running workspace-level commands (e.g., `pnpm install` at root level)
+- Accessing files outside the `packages/app/` directory
+- Working with the [+personal/](mdc:+personal) folder or other root-level directories
+
+## Path Reference Examples
+
+From default terminal location (`packages/app/`):
+
+- Main app code: `./src/` or `src/` (current directory)
+- Convex backend: `./convex/` or `convex/`
+- Workspace root: `../../`
+- Package.json at root: `../../package.json`
+- Other packages: `../other-package/`
+
 # Code Quality and Linting
 
 Do not run commands to verify lints or check code quality (such as `pnpm lint`, `pnpm type-check`, or similar commands). Instead, rely only on the information that Cursor automatically provides through its built-in linting and error detection.
@@ -24,6 +66,25 @@ You can run linting commands only if the user explicitly requests it.
 The [+personal/](mdc:+personal) folder is used to keep indexed personal user notes, you are not allowed to write in this folder. However the content can be used a documentation reference.
 
 You can however write inside [+personal/+ai/](mdc:+personal/+ai).
+
+# 3rd Party Documentation Research
+
+When users ask about 3rd party libraries or request implementations using external dependencies, conduct thorough documentation research for accurate responses.
+
+## Documentation Sources
+
+- **[+personal/](mdc:+personal)** - Contains source repos of complex dependencies
+- **Submodules** - [packages/app/assistant-ui/](mdc:packages/app/assistant-ui) and [packages/app/liveblocks/](mdc:packages/app/liveblocks) have full repos
+- **Web search** - For external documentation when not available locally
+
+## Research Process
+
+1. **Find docs first** - For instance try look for `.md`, `.mdx`, `.txt`, `.stories.tsx`, and `docs/` folders
+2. **Read extensively** - Multiple sections, examples, and guides until confident
+3. **Prioritize docs over source** - Source code only for complex edge cases
+4. **Understand thoroughly** - Continue reading until no doubts remain
+
+**Standard**: Read until you can explain concepts confidently and implement without guessing.
 
 # Project Structure and Key Directories
 

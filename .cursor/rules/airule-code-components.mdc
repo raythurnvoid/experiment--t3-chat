@@ -298,6 +298,226 @@ function SearchContextProvider({ children }: { children: ReactNode }) {
 }
 ```
 
+# React 19 Ref Patterns and Modern Ref Handling
+
+## Ref Types in React 19 - No Breaking Changes
+
+**IMPORTANT**: `React.MutableRefObject<T>` is **NOT deprecated** in React 19. This type is still the standard return type for `useRef` and remains fully supported.
+
+```tsx
+// ✅ CORRECT: MutableRefObject is still the standard type in React 19
+interface TreeItemComponent_Props {
+	treeRef: React.MutableRefObject<TreeRef | null>;
+}
+
+const treeRef = useRef<TreeRef | null>(null); // Returns MutableRefObject<TreeRef | null>
+```
+
+## What Actually Changed in React 19
+
+### 1. forwardRef is Now Optional
+
+**NEW in React 19**: You can pass `ref` as a regular prop without `forwardRef`:
+
+```tsx
+// ✅ React 19: ref as regular prop (new way)
+interface ButtonProps {
+	ref?: React.Ref<HTMLButtonElement>;
+	children: React.ReactNode;
+}
+
+function Button({ ref, children, ...props }: ButtonProps) {
+	return (
+		<button ref={ref} {...props}>
+			{children}
+		</button>
+	);
+}
+
+// ✅ Still supported: forwardRef (traditional way)
+const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({ children, ...props }, ref) {
+	return (
+		<button ref={ref} {...props}>
+			{children}
+		</button>
+	);
+});
+```
+
+### 2. Callback Refs with Cleanup Functions
+
+**NEW in React 19**: Callback refs can return cleanup functions:
+
+```tsx
+// ✅ React 19: Callback refs with cleanup
+function ResizeObserverComponent() {
+	const [height, setHeight] = useState(0);
+
+	const measuredRef = (node: HTMLDivElement | null) => {
+		if (!node) return;
+
+		const observer = new ResizeObserver(([entry]) => {
+			setHeight(entry.contentRect.height);
+		});
+
+		observer.observe(node);
+
+		// ✅ NEW: Return cleanup function
+		return () => {
+			observer.disconnect();
+		};
+	};
+
+	return <div ref={measuredRef}>Height: {Math.round(height)}px</div>;
+}
+```
+
+### 3. Modern Ref Combination Patterns
+
+**RECOMMENDED**: Use `useCombinedRef` for handling multiple refs efficiently:
+
+```tsx
+// ✅ Modern pattern: Combined refs
+type RefItem<T> = ((element: T | null) => void) | React.MutableRefObject<T | null> | null | undefined;
+
+function useCombinedRef<T>(...refs: RefItem<T>[]) {
+	return useCallback(
+		(element: T | null) => {
+			refs.forEach((ref) => {
+				if (!ref) return;
+				if (typeof ref === "function") {
+					ref(element);
+				} else {
+					ref.current = element;
+				}
+			});
+		},
+		[refs],
+	);
+}
+
+// Usage
+const Input = forwardRef<HTMLInputElement, InputProps>(function Input(props, ref) {
+	const localRef = useRef<HTMLInputElement>(null);
+	const combinedRef = useCombinedRef(ref, localRef);
+
+	return <input {...props} ref={combinedRef} />;
+});
+```
+
+## When to Use Each Ref Pattern
+
+### Use `useRef` (Object Refs) When:
+
+- Simple element access
+- Non-reactive values that don't trigger re-renders
+- Storing timers, intervals, or other imperative handles
+
+```tsx
+// ✅ Object ref for simple access
+const inputRef = useRef<HTMLInputElement>(null);
+
+const focusInput = () => {
+	inputRef.current?.focus();
+};
+```
+
+### Use Callback Refs When:
+
+- Need to react to mount/unmount
+- Dynamic elements that change type
+- Need cleanup logic (React 19+)
+- Working with external libraries requiring setup/teardown
+
+```tsx
+// ✅ Callback ref for lifecycle control
+const callbackRef = useCallback((node: HTMLElement | null) => {
+	if (node) {
+		// Setup logic
+		const cleanup = setupExternalLibrary(node);
+
+		// React 19: Return cleanup function
+		return cleanup;
+	}
+}, []);
+```
+
+### Avoid `useCallback` for Stable Refs
+
+**IMPORTANT**: Don't use `useCallback` just to "stabilize" ref functions. Extract to component-level functions instead:
+
+```tsx
+// ❌ AVOID: Using useCallback for ref stabilization
+const measuredRef = useCallback((node: HTMLElement | null) => {
+	if (node) {
+		node.scrollIntoView({ behavior: "smooth" });
+	}
+}, []); // This creates a dependency on useCallback working
+
+// ✅ PREFER: Extract to stable function
+function scrollIntoView(node: HTMLElement | null) {
+	if (node) {
+		node.scrollIntoView({ behavior: "smooth" });
+	}
+}
+
+function Component() {
+	return <div ref={scrollIntoView}>Content</div>;
+}
+```
+
+## React Compiler Compatibility
+
+**FUTURE-PROOFING**: Avoid `useCallback` for ref functions that your code depends on. The React Compiler may optimize away memoization, breaking functionality:
+
+```tsx
+// ❌ RISKY: Depending on useCallback for correctness
+const handleRef = useCallback((node) => {
+	// If this MUST run only once, useCallback is risky
+	if (node) setupOnce(node);
+}, []);
+
+// ✅ SAFE: Make the function naturally stable
+function handleRef(node: HTMLElement | null) {
+	if (node) {
+		// Use patterns that work regardless of call frequency
+		if (!node.dataset.initialized) {
+			setupOnce(node);
+			node.dataset.initialized = "true";
+		}
+	}
+}
+```
+
+## Ref Type Patterns
+
+### Standard Ref Types
+
+```tsx
+// DOM element refs
+const buttonRef = useRef<HTMLButtonElement>(null);
+const divRef = useRef<HTMLDivElement>(null);
+const inputRef = useRef<HTMLInputElement>(null);
+
+// Component instance refs (when using forwardRef)
+const customComponentRef = useRef<CustomComponent_Ref>(null);
+
+// Value refs (non-DOM)
+const timerRef = useRef<NodeJS.Timeout | null>(null);
+const callbackRef = useRef<(() => void) | null>(null);
+```
+
+### Modern Combined Ref Types
+
+```tsx
+// Union type for flexible ref handling
+type FlexibleRef<T> = React.MutableRefObject<T | null> | ((instance: T | null) => void) | null;
+
+interface ComponentProps {
+	ref?: FlexibleRef<HTMLDivElement>;
+}
+```
+
 # Component Class Name Requirements
 
 ## Critical Rule: ALL Classes Must Be Prefixed
@@ -565,5 +785,6 @@ const handleToggle = useCallback(async (newValue: boolean) => {
 - **Performance**: Avoid unnecessary re-renders and infinite loops from useEffect
 - **Maintainability**: Clearer data flow and fewer side effects
 - **Optimization**: Use refs to prevent unnecessary re-renders for internal state
-- **Modern React patterns**: Leverage React 19 features like the `use` hook
+- **Modern React patterns**: Leverage React 19 features like the `use` hook and new ref patterns
+- **Future-proof**: Compatible with React Compiler and modern React development
 - **Consistent naming**: Root-level exports use snake_case for namespacing, local variables use camelCase for consistency with modern JavaScript conventions

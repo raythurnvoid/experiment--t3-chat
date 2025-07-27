@@ -1,0 +1,1053 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+
+# Building a Notion-Like File Explorer with React Complex Tree
+
+## Library Overview and Documentation Sources
+
+React Complex Tree is an "Unopinionated Accessible Tree Component with Multi-Select and Drag-And-Drop" designed for building sophisticated tree interfaces. This guide covers how to use it specifically for creating Notion-like file explorers with nested items, drag & drop, inline editing, and action buttons.
+
+**Key Features** (from [`+personal/sources/react-complex-tree-main/README.md`](mdc:+personal/sources/react-complex-tree-main/README.md)):
+
+- Unopinionated rendering with complete DOM control
+- Full accessibility with W3C compliance
+- Powerful drag & drop with multi-selection
+- Built-in renaming with F2 hotkey
+- Search functionality
+- Zero dependencies
+- Multi-tree environments
+- Controlled and Uncontrolled interfaces
+- Powered by React and TypeScript
+
+**Documentation Structure**:
+
+- **Main Documentation**: [`+personal/sources/react-complex-tree-main/packages/docs/docs/`](mdc:+personal/sources/react-complex-tree-main/packages/docs/docs/) contains 18 comprehensive guides
+- **Examples**: [`+personal/sources/react-complex-tree-main/packages/core/src/stories/`](mdc:+personal/sources/react-complex-tree-main/packages/core/src/stories/) contains 15 story files with practical examples
+- **API References**: [`+personal/sources/react-complex-tree-main/packages/docs/docs/react/`](mdc:+personal/sources/react-complex-tree-main/packages/docs/docs/react/) contains component API documentation
+
+## Core Components
+
+### 1. UncontrolledTreeEnvironment (Recommended for Notion-like UI)
+
+**Purpose**: Maintains tree state automatically, ideal for most use cases
+**Reference**: [`+personal/sources/react-complex-tree-main/packages/docs/docs/guides/uncontrolled-environment.mdx`](mdc:+personal/sources/react-complex-tree-main/packages/docs/docs/guides/uncontrolled-environment.mdx)
+
+```typescript
+import { UncontrolledTreeEnvironment } from "react-complex-tree";
+```
+
+**Key Props**:
+
+- `dataProvider`: Handles data loading and changes
+- `getItemTitle`: Function to extract item title from data
+- `viewState`: Initial tree state (expanded items, selections, etc.)
+- `canDragAndDrop`, `canDropOnFolder`, `canReorderItems`: Drag & drop configuration
+- `renderItem`: Custom rendering function for tree items
+- `shouldRenderChildren`: Controls when parent's children container should be rendered
+
+### 2. Tree Component
+
+**Purpose**: Renders individual tree instances within an environment
+**Reference**: [`+personal/sources/react-complex-tree-main/packages/docs/docs/react/Tree.mdx`](mdc:+personal/sources/react-complex-tree-main/packages/docs/docs/react/Tree.mdx)
+
+```typescript
+import { Tree } from "react-complex-tree";
+
+<Tree
+  treeId="unique-tree-id"
+  rootItem="root"
+  treeLabel="Accessible tree label"
+/>
+```
+
+## ⚡ **CRITICAL: Interaction Modes - Choose the Right Pattern**
+
+### ❌ **DON'T: Custom Click Handlers**
+
+```typescript
+// ❌ WRONG: Complex custom click logic
+<button
+  onClick={(e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedDocId(item.index.toString());
+  }}
+>
+  {title}
+</button>
+```
+
+### ✅ **DO: Use Built-in Interaction Modes**
+
+```typescript
+// ✅ CORRECT: Use proper interaction mode
+<UncontrolledTreeEnvironment
+  defaultInteractionMode={InteractionMode.ClickArrowToExpand}
+  onPrimaryAction={(item, treeId) => {
+    // Handle title clicks (selection only, no expansion)
+    setSelectedDocId(item.index.toString());
+  }}
+  onSelectItems={(items, treeId) => {
+    // Handle selection changes
+    const selectedItem = items.length > 0 ? items[0] : null;
+    setSelectedDocId(selectedItem?.toString() || null);
+  }}
+  renderItem={({ context }) => (
+    <button {...context.interactiveElementProps}>
+      {/* Built-in interaction handling */}
+    </button>
+  )}
+/>
+```
+
+**Available Interaction Modes**:
+
+1. **`InteractionMode.ClickArrowToExpand`** - VSCode-like: arrow clicks expand, title clicks select only
+2. **`InteractionMode.ClickItemToExpand`** - Default: title clicks expand AND select
+3. **`InteractionMode.DoubleClickItemToExpand`** - IntelliJ-like: single click selects, double click expands
+
+## 🎯 **Selection Management - Use Built-in State**
+
+### ❌ **DON'T: Custom Selection State**
+
+```typescript
+// ❌ WRONG: Manual selection tracking
+const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+const isSelected = selectedDocId === item.index; // Manual comparison
+```
+
+### ✅ **DO: Use Built-in Selection State**
+
+```typescript
+// ✅ CORRECT: Built-in selection management
+<UncontrolledTreeEnvironment
+  viewState={{
+    'docs-tree': {
+      selectedItems: ['initially-selected-item'], // Built-in selection state
+      expandedItems: ['root', 'folder1'],
+      focusedItem: 'focused-item',
+    }
+  }}
+  onSelectItems={(items, treeId) => {
+    // React to selection changes
+    setSelectedDocId(items[0] || null);
+  }}
+  renderItem={({ context }) => {
+    const isSelected = context.isSelected; // ✅ Built-in selection state
+    const isFocused = context.isFocused;   // ✅ Built-in focus state
+  }}
+/>
+```
+
+## 🔍 **Search Patterns - When to Use Built-in vs Custom**
+
+### ✅ **Use Built-in Search When**: Simple text search only
+
+```typescript
+// ✅ Built-in search (starts when typing, automatic UI)
+<UncontrolledTreeEnvironment
+  canSearch={true}                    // Enable search (default: true)
+  canSearchByStartingTyping={true}    // Search by typing (default: true)
+  renderItem={({ context }) => {
+    const isHighlighted = context.isSearchMatching; // Built-in highlighting
+  }}
+/>
+```
+
+### ✅ **Use Custom Search When**: Complex filtering (search + archive/visibility logic)
+
+```typescript
+// ✅ Custom search for complex filtering
+const [searchQuery, setSearchQuery] = useState("");
+const [showArchived, setShowArchived] = useState(false);
+
+<UncontrolledTreeEnvironment
+  canSearch={false} // Disable built-in search
+  shouldRenderChildren={(item, context) => {
+    const defaultShouldRender = item.isFolder && context.isExpanded;
+    if (!defaultShouldRender) return false;
+
+    // Custom logic combining search + archive filtering
+    if (searchQuery.trim() && item.children) {
+      const hasVisibleChildren = item.children.some(childId => {
+        const child = dataProvider.getAllData()[childId];
+        const titleMatches = child?.data.title.toLowerCase().includes(searchQuery.toLowerCase());
+        const isArchived = archivedItems.has(childId);
+        return titleMatches && (showArchived || !isArchived);
+      });
+      return hasVisibleChildren;
+    }
+
+    return defaultShouldRender;
+  }}
+  renderItem={({ item, context }) => {
+    const isArchived = archivedItems.has(item.index.toString());
+    // Hide archived items when toggle is off
+    if (isArchived && !showArchived) return null;
+    // ... rest of rendering
+  }}
+/>
+```
+
+## 📚 **Programmatic Control with Refs**
+
+### Essential Setup
+
+```typescript
+import { type TreeRef } from "react-complex-tree";
+
+const treeRef = useRef<TreeRef>();
+
+// Store in context for external access
+const DocsSearchContext = createContext<{
+	treeRef: React.MutableRefObject<TreeRef | null>;
+	// ... other context values
+}>();
+```
+
+### Core Programmatic Functions
+
+```typescript
+// Navigation and selection
+const navigateToDocument = (docId: string) => {
+	treeRef.current?.focusItem(docId, true); // Focus with DOM focus
+	treeRef.current?.selectItems([docId]); // Select the item
+};
+
+// Deep path expansion (for search results)
+const expandToPath = async (path: string[]) => {
+	await treeRef.current?.expandSubsequently(path);
+	const finalItem = path[path.length - 1];
+	treeRef.current?.selectItems([finalItem]);
+};
+
+// Bulk operations
+const expandAll = () => treeRef.current?.expandAll();
+const collapseAll = () => treeRef.current?.collapseAll();
+
+// Enhanced new item UX
+const createAndEditNewItem = (parentId: string) => {
+	const newItemId = dataProvider.createNewItem(parentId, "Untitled");
+
+	// Auto-focus and start renaming
+	setTimeout(() => {
+		treeRef.current?.selectItems([newItemId]);
+		treeRef.current?.focusItem(newItemId, true);
+		treeRef.current?.startRenamingItem(newItemId);
+	}, 50);
+};
+```
+
+### Keyboard Shortcuts
+
+```typescript
+useEffect(() => {
+	const handleKeyPress = (e: KeyboardEvent) => {
+		const isTreeFocused = document.activeElement?.closest(".rct-tree-root") !== null;
+
+		if (isTreeFocused && e.ctrlKey) {
+			switch (e.key) {
+				case "e":
+					e.preventDefault();
+					treeRef.current?.expandAll();
+					break;
+				case "w":
+					e.preventDefault();
+					treeRef.current?.collapseAll();
+					break;
+			}
+		}
+	};
+
+	document.addEventListener("keydown", handleKeyPress);
+	return () => document.removeEventListener("keydown", handleKeyPress);
+}, []);
+```
+
+## Data Structures
+
+### TreeItem Interface
+
+**Reference**: [`+personal/sources/react-complex-tree-main/packages/core/src/types.ts`](mdc:+personal/sources/react-complex-tree-main/packages/core/src/types.ts) (lines 8-17)
+
+```typescript
+export interface TreeItem<T = any> {
+	index: TreeItemIndex; // Unique identifier (string | number)
+	children?: Array<TreeItemIndex>; // Array of child item indices
+	isFolder?: boolean; // Shows children when true
+	canMove?: boolean; // Enables drag & drop
+	canRename?: boolean; // Enables inline renaming (true by default)
+	data: T; // Your custom data payload
+}
+```
+
+### Data Structure Example for Notion-like Files
+
+```typescript
+interface DocData {
+	id: string;
+	title: string;
+	type: "folder" | "document" | "placeholder";
+	emoji?: string;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+const treeData = {
+	root: {
+		index: "root",
+		isFolder: true,
+		children: ["folder1", "page1"],
+		data: { id: "root", title: "Workspace", type: "folder" },
+		canMove: false,
+		canRename: false,
+	},
+	folder1: {
+		index: "folder1",
+		isFolder: true,
+		children: ["page2", "page3"],
+		data: { id: "folder1", title: "Projects", type: "folder", emoji: "📁" },
+		canMove: true,
+		canRename: true,
+	},
+	page1: {
+		index: "page1",
+		isFolder: true, // Make all items foldable for Notion-like behavior
+		children: ["page1-placeholder"], // Add placeholder if no real children
+		data: { id: "page1", title: "Getting Started", type: "document", emoji: "📄" },
+		canMove: true,
+		canRename: true,
+	},
+};
+```
+
+## Custom Data Provider for Interactive Features
+
+**Reference**: [`+personal/sources/react-complex-tree-main/packages/docs/docs/guides/custom-data-provider.mdx`](mdc:+personal/sources/react-complex-tree-main/packages/docs/docs/guides/custom-data-provider.mdx)
+
+### Implementation Pattern
+
+```typescript
+class NotionLikeDataProvider implements TreeDataProvider<DocData> {
+	private data: Record<TreeItemIndex, TreeItem<DocData>>;
+	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
+
+	constructor(initialData: Record<TreeItemIndex, TreeItem<DocData>>) {
+		this.data = { ...initialData };
+	}
+
+	async getTreeItem(itemId: TreeItemIndex): Promise<TreeItem<DocData>> {
+		return this.data[itemId];
+	}
+
+	async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
+		if (this.data[itemId]) {
+			this.data[itemId] = { ...this.data[itemId], children: newChildren };
+			this.notifyTreeChange([itemId]);
+		}
+	}
+
+	async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
+		if (this.data[item.index]) {
+			this.data[item.index] = {
+				...this.data[item.index],
+				data: { ...this.data[item.index].data, title: name },
+			};
+			this.notifyTreeChange([item.index]);
+		}
+	}
+
+	onDidChangeTreeData(listener: (changedItemIds: TreeItemIndex[]) => void) {
+		this.treeChangeListeners.push(listener);
+		return { dispose: () => this.treeChangeListeners.splice(this.treeChangeListeners.indexOf(listener), 1) };
+	}
+
+	// Custom methods for Notion-like operations
+	createNewItem(parentId: string, title: string, type: "document" | "folder"): string {
+		const newId = `${type}-${Date.now()}`;
+		const parentItem = this.data[parentId];
+
+		if (!parentItem) return newId;
+
+		// Create new item
+		this.data[newId] = {
+			index: newId,
+			isFolder: true, // All items foldable in Notion-like interface
+			children: [`${newId}-placeholder`],
+			data: {
+				id: newId,
+				title,
+				type,
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			},
+			canMove: true,
+			canRename: true,
+		};
+
+		// Add placeholder
+		this.data[`${newId}-placeholder`] = {
+			index: `${newId}-placeholder`,
+			children: [],
+			data: {
+				id: `${newId}-placeholder`,
+				title: "No files inside",
+				type: "placeholder",
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			},
+			canMove: false,
+			canRename: false,
+		};
+
+		// Update parent - replace placeholder or add to existing children
+		const hasPlaceholder = parentItem.children?.some((id) => this.data[id]?.data.type === "placeholder");
+		if (hasPlaceholder) {
+			// Replace placeholder with new item
+			this.data[parentId] = {
+				...parentItem,
+				children: parentItem.children
+					?.map((id) => (this.data[id]?.data.type === "placeholder" ? newId : id))
+					.concat([`${parentId}-placeholder`]) || [newId, `${parentId}-placeholder`],
+			};
+		} else {
+			// Add to existing children
+			this.data[parentId] = {
+				...parentItem,
+				children: [...(parentItem.children || []), newId],
+			};
+		}
+
+		this.notifyTreeChange([parentId]);
+		return newId;
+	}
+
+	getAllData(): Record<TreeItemIndex, TreeItem<DocData>> {
+		return this.data;
+	}
+
+	private notifyTreeChange(changedItemIds: TreeItemIndex[]): void {
+		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
+	}
+}
+```
+
+## 🎨 **Custom Rendering with Action Buttons**
+
+### 🚨 **CRITICAL: Rules of Hooks Violation in renderItem**
+
+**❌ NEVER USE HOOKS DIRECTLY IN renderItem** - This causes app crashes with "Rendered more hooks than during the previous render":
+
+```typescript
+renderItem={({ item, context }) => {
+	const triggerId = React.useId(); // ❌ HOOK IN RENDER FUNCTION - WILL CRASH!
+	const [showActions, setShowActions] = useState(false); // ❌ HOOK IN RENDER FUNCTION - WILL CRASH!
+	// This violates Rules of Hooks and will crash the app on re-renders!
+}}
+```
+
+### ✅ **SOLUTION: Extract to Component with Proper Hook Usage**
+
+**Step 1: Create a separate component for tree items**
+
+```typescript
+// Tree Item Component - extracted to properly use hooks
+interface TreeItemComponent_Props {
+	item: TreeItem<DocData>;
+	depth: number;
+	children: React.ReactNode;
+	title: React.ReactNode;
+	context: any;
+	arrow: React.ReactNode;
+	selectedDocId: string | null;
+	setSelectedDocId: (id: string | null) => void;
+	archivedItems: Set<string>;
+	setArchivedItems: (items: Set<string>) => void;
+	showArchived: boolean;
+	dataProvider: NotionLikeDataProvider;
+}
+
+function TreeItemComponent({
+	item,
+	depth,
+	children,
+	title,
+	context,
+	arrow,
+	selectedDocId,
+	setSelectedDocId,
+	archivedItems,
+	setArchivedItems,
+	showArchived,
+	dataProvider,
+}: TreeItemComponent_Props) {
+	const triggerId = React.useId(); // ✅ Now properly used in a component
+	const data = item.data as DocData;
+	const isSelected = selectedDocId === item.index;
+	const isPlaceholder = data.type === "placeholder";
+	const isArchived = archivedItems.has(item.index.toString());
+
+	// Action handlers
+	const handleAddChild = (parentId: string) => {
+		const newItemId = dataProvider.createNewItem(parentId, "Untitled", "document");
+		setSelectedDocId(newItemId);
+	};
+
+	const handleArchive = (itemId: string) => {
+		const newArchivedSet = new Set(archivedItems);
+		newArchivedSet.add(itemId);
+		setArchivedItems(newArchivedSet);
+
+		if (selectedDocId === itemId) {
+			setSelectedDocId(null);
+		}
+	};
+
+	// Hide archived items when showArchived is false
+	if (isArchived && !showArchived) {
+		return null;
+	}
+
+	// Placeholder items have special rendering
+	if (isPlaceholder) {
+		return (
+			<li {...context.itemContainerWithChildrenProps} className="group relative">
+				<div
+					{...context.itemContainerWithoutChildrenProps}
+					style={{ paddingLeft: `${(depth + 1) * 16}px` }}
+					className="flex min-h-[32px] items-center gap-2 rounded-md px-2 py-1 text-muted-foreground italic"
+				>
+					<div className="flex h-4 w-4 items-center justify-center"></div>
+					<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
+						<FileText className="h-4 w-4 opacity-50" />
+					</span>
+					<div className="flex-1 truncate p-0 text-left text-sm">{title}</div>
+				</div>
+				{children}
+			</li>
+		);
+	}
+
+	// Regular items (folders and documents) with click forwarding
+	return (
+		<li {...context.itemContainerWithChildrenProps} className="group relative">
+			{/* Label wrapper that forwards clicks to the main selection trigger */}
+			<label
+				className={cn(
+					"DocsSidebarTreeItem-container",
+					"block w-full cursor-pointer rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+					isSelected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
+					isArchived && "line-through opacity-60",
+				)}
+				htmlFor={triggerId}
+			>
+				{/* First row - main item content */}
+				<div
+					{...context.itemContainerWithoutChildrenProps}
+					style={{ paddingLeft: `${(depth + 1) * 16}px` }}
+					className="flex h-[32px] items-center gap-2 px-2 py-1"
+				>
+					{/* Expand/collapse arrow - maintains its own behavior */}
+					{arrow}
+
+					{/* Title with icon - handles selection only */}
+					{context.isRenaming ? (
+						<div className="flex flex-1 items-center gap-2 truncate border-none bg-transparent p-0 text-left text-sm outline-none">
+							<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
+								<FileText className="h-4 w-4" />
+							</span>
+							<span className="truncate">{title}</span>
+						</div>
+					) : (
+						<button
+							{...context.interactiveElementProps}
+							id={triggerId}
+							type="button"
+							className="flex flex-1 items-center gap-2 truncate border-none bg-transparent p-0 text-left text-sm outline-none"
+						>
+							<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
+								<FileText className="h-4 w-4" />
+							</span>
+							<span className="truncate">{title}</span>
+						</button>
+					)}
+				</div>
+
+				{/* Second row - action buttons */}
+				<div
+					style={{ paddingLeft: `${(depth + 1) * 16 + 32}px` }}
+					className="flex h-[32px] items-center justify-end gap-1 px-2 py-1"
+				>
+					<TooltipIconButton
+						className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
+						variant="ghost"
+						tooltip="Add child"
+						onClick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							handleAddChild(item.index.toString());
+						}}
+					>
+						<Plus className="h-3 w-3" />
+					</TooltipIconButton>
+
+					<TooltipIconButton
+						className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
+						variant="ghost"
+						tooltip="Rename"
+						onClick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							context.startRenamingItem();
+						}}
+					>
+						<Edit2 className="h-3 w-3" />
+					</TooltipIconButton>
+
+					{item.index !== "root" && (
+						<TooltipIconButton
+							className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
+							variant="ghost"
+							tooltip={isArchived ? "Unarchive" : "Archive"}
+							onClick={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								if (isArchived) {
+									const newArchivedSet = new Set(archivedItems);
+									newArchivedSet.delete(item.index.toString());
+									setArchivedItems(newArchivedSet);
+								} else {
+									handleArchive(item.index.toString());
+								}
+							}}
+						>
+							<Archive className={cn("h-3 w-3", isArchived && "fill-current")} />
+						</TooltipIconButton>
+					)}
+				</div>
+			</label>
+
+			{/* Children */}
+			{children}
+		</li>
+	);
+}
+```
+
+**Step 2: Use the component in renderItem**
+
+```typescript
+<UncontrolledTreeEnvironment
+	renderItem={({ item, depth, children, title, context, arrow }) => {
+		return (
+			<TreeItemComponent
+				item={item}
+				depth={depth}
+				children={children}
+				title={title}
+				context={context}
+				arrow={arrow}
+				selectedDocId={selectedDocId}
+				setSelectedDocId={setSelectedDocId}
+				archivedItems={archivedItems}
+				setArchivedItems={setArchivedItems}
+				showArchived={showArchived}
+				dataProvider={dataProvider}
+			/>
+		);
+	}}
+>
+```
+
+### 🎯 **Click Forwarding Pattern**
+
+The component above implements intuitive click behavior using HTML semantics:
+
+**How it works:**
+
+1. **Label wrapper**: `<label htmlFor={triggerId}>` wraps the entire item
+2. **Main button**: `<button id={triggerId}>` is the target for forwarded clicks
+3. **Empty space clicks**: Automatically forward to the main selection button
+4. **Action buttons**: Use `preventDefault()` and `stopPropagation()` to handle their own events
+5. **Arrow clicks**: Maintain their own expand/collapse behavior
+
+**Benefits:**
+
+- **Native browser behavior**: Uses HTML's built-in label association
+- **Accessibility**: Screen readers understand the relationship
+- **Performance**: No additional JavaScript event listeners needed
+- **Clean separation**: Actions handle their own events independently
+
+**Key Pattern:**
+
+```typescript
+// Label connects to button via htmlFor/id
+<label htmlFor={triggerId}>
+	{/* Arrow and other content */}
+	<button id={triggerId} {...context.interactiveElementProps}>
+		{/* Main selectable content */}
+	</button>
+	{/* Action buttons with stopPropagation */}
+</label>
+```
+
+````
+
+## Styling and Theming
+
+### CSS Import (Required)
+
+```typescript
+import "react-complex-tree/lib/style-modern.css";
+````
+
+### Dark Theme Integration
+
+Use react-complex-tree's built-in dark theme support:
+
+```typescript
+import { useThemeContext } from "@/components/theme-provider";
+
+function TreeContainer() {
+	const { resolved_theme } = useThemeContext();
+	const isDarkMode = resolved_theme === "dark";
+
+	return (
+		<div className={cn("p-2", isDarkMode && "rct-dark")}>
+			<UncontrolledTreeEnvironment>
+				{/* ... */}
+			</UncontrolledTreeEnvironment>
+		</div>
+	);
+}
+```
+
+### CSS Variables for Customization
+
+```css
+/* docs-sidebar-v2.css */
+.rct-tree-container {
+	--rct-color-tree-bg: transparent;
+	--rct-item-height: 32px;
+	--rct-item-padding: 8px;
+	--rct-radius: 6px;
+	--rct-color-focustree-item-selected-bg: hsl(var(--sidebar-accent));
+	--rct-color-focustree-item-hover-bg: hsl(var(--sidebar-accent) / 0.5);
+}
+
+/* Dark theme automatically handled by .rct-dark class */
+```
+
+## 🚨 **Common Anti-Patterns and Solutions**
+
+### 🚨 **CRITICAL: Rules of Hooks Violation in renderItem**
+
+**Problem**: Using React hooks directly in the `renderItem` callback crashes the app.
+
+**Error**: "Rendered more hooks than during the previous render"
+
+**❌ WRONG**:
+
+```typescript
+renderItem={({ item, context }) => {
+	const triggerId = React.useId(); // ❌ CRASHES THE APP!
+	const [expanded, setExpanded] = useState(false); // ❌ CRASHES THE APP!
+	// Any hook usage here violates Rules of Hooks
+}}
+```
+
+**✅ SOLUTION**: Extract to a separate component that can properly use hooks:
+
+```typescript
+// ✅ CORRECT: Separate component for tree items
+function TreeItemComponent(props) {
+	const triggerId = React.useId(); // ✅ Safe in component
+	// ... rest of component logic
+}
+
+// ✅ CORRECT: Simple delegation in renderItem
+<UncontrolledTreeEnvironment
+	renderItem={(props) => <TreeItemComponent {...props} />}
+/>
+```
+
+**Why this happens**: The `renderItem` callback is called during React's render phase, and using hooks there violates the Rules of Hooks because the number of hooks can change between renders when items are added/removed.
+
+### 1. React Strict Mode Double Execution
+
+**Problem**: Actions like "add item" execute twice in development.
+
+**Solution**: Ensure data provider instance is stable:
+
+```typescript
+// ✅ CORRECT - Stable instance
+const dataProvider = useMemo(() => {
+	const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
+	dataProviderRef.current = provider;
+	return provider;
+}, []); // Empty dependency array
+
+// ❌ WRONG - Recreates provider
+const dataProvider = useMemo(() => {
+	return new NotionLikeDataProvider(data);
+}, [data, other, dependencies]); // Provider recreated on every change
+```
+
+### 2. ❌ **WRONG: Filtering in getTreeItem**
+
+```typescript
+// ❌ DON'T do filtering in getTreeItem
+async getTreeItem(itemId: TreeItemIndex): Promise<TreeItem<DocData>> {
+	const item = this.data[itemId];
+
+	// ❌ WRONG: Don't filter here
+	if (isArchived(item) && !showArchived) {
+		return null; // This breaks the tree structure
+	}
+
+	return item;
+}
+```
+
+### 3. ✅ **CORRECT: Separate Structural vs Individual Filtering**
+
+**Key Insight**: Use the right tool for each type of filtering:
+
+1. **Structural Filtering** (search, showing/hiding entire branches) → Use `shouldRenderChildren`
+2. **Individual Item Visibility** (archived items) → Use `renderItem` returning `null`
+
+```typescript
+<UncontrolledTreeEnvironment
+	// Structural filtering - controls when children containers are rendered
+	shouldRenderChildren={(item, context) => {
+		const defaultShouldRender = item.isFolder && context.isExpanded;
+
+		if (!defaultShouldRender) return false;
+		if (item.data.type === "placeholder") return true;
+
+		// Search filtering - only show children if they have matches
+		if (item.children && searchQuery.trim()) {
+			const hasVisibleChildren = item.children.some((childId) => {
+				const childItem = dataProvider.getAllData()[childId];
+				return childItem && childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
+			});
+			return hasVisibleChildren;
+		}
+
+		return defaultShouldRender;
+	}}
+
+	// Individual item visibility
+	renderItem={({ item, context, ...props }) => {
+		const isArchived = archivedItems.has(item.index.toString());
+
+		// Hide archived items when toggle is off
+		if (isArchived && !showArchived) {
+			return null;
+		}
+
+		// Render the item normally
+		return <YourCustomItemRenderer {...props} />;
+	}}
+/>
+```
+
+### 4. Click Behavior Issues
+
+**Problem**: Clicking item expands/collapses instead of selecting, or both happen.
+
+**Solution**: Use proper interaction mode instead of custom event handling:
+
+```typescript
+// ✅ CORRECT: Use interaction mode
+<UncontrolledTreeEnvironment
+  defaultInteractionMode={InteractionMode.ClickArrowToExpand}
+  // Remove custom onClick handlers
+/>
+```
+
+### 5. TypeScript Errors with TreeDataProvider
+
+**Problem**: Method signatures don't match interface.
+
+**Solution**: Check return types carefully:
+
+```typescript
+// ✅ CORRECT
+async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
+	// Implementation
+}
+
+// ❌ WRONG
+async onRenameItem(item: TreeItem<DocData>, name: string): Promise<TreeItem<DocData>> {
+	// Return type doesn't match interface
+}
+```
+
+### 6. Memory Leaks with Event Listeners
+
+**Problem**: Data provider listeners not cleaned up.
+
+**Solution**: Implement proper cleanup:
+
+```typescript
+onDidChangeTreeData(listener: (changedItemIds: TreeItemIndex[]) => void) {
+	this.treeChangeListeners.push(listener);
+	return {
+		dispose: () => {
+			const index = this.treeChangeListeners.indexOf(listener);
+			if (index > -1) {
+				this.treeChangeListeners.splice(index, 1);
+			}
+		}
+	};
+}
+```
+
+## 📋 **Complete Minimal Working Example**
+
+```typescript
+function DocsSidebarV2() {
+	return (
+		<DocsSearchContextProvider>
+			<div className="docs-sidebar-v2">
+				<DocsSidebarHeader />
+				<TreeContainer />
+			</div>
+		</DocsSearchContextProvider>
+	);
+}
+
+function TreeContainer() {
+	const { searchQuery, archivedItems, showArchived, treeRef } = useDocsSearchContext();
+	const { resolved_theme } = useThemeContext();
+	const isDarkMode = resolved_theme === "dark";
+
+	// Stable data provider instance
+	const dataProvider = useMemo(() => {
+		const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
+		dataProviderRef.current = provider;
+		return provider;
+	}, []);
+
+	return (
+		<div className={cn("p-2", isDarkMode && "rct-dark")}>
+			<UncontrolledTreeEnvironment
+				dataProvider={dataProvider}
+				getItemTitle={(item) => item.data.title}
+				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
+
+				// Built-in callbacks
+				onPrimaryAction={(item, treeId) => {
+					setSelectedDocId(item.index.toString());
+				}}
+				onSelectItems={(items, treeId) => {
+					const selectedItem = items.length > 0 ? items[0] : null;
+					setSelectedDocId(selectedItem?.toString() || null);
+				}}
+
+				// Drag & drop
+				canDragAndDrop={true}
+				canDropOnFolder={true}
+				canReorderItems={true}
+
+				// Initial state
+				viewState={{
+					"docs-tree": {
+						expandedItems: ["root", "getting-started"],
+					},
+				}}
+
+				// Custom filtering
+				shouldRenderChildren={(item, context) => {
+					const defaultShouldRender = item.isFolder && context.isExpanded;
+					if (!defaultShouldRender) return false;
+
+					// Complex filtering combining search + archive logic
+					if (searchQuery.trim() && item.children) {
+						const hasVisibleChildren = item.children.some((childId) => {
+							const child = dataProvider.getAllData()[childId];
+							const titleMatches = child?.data.title.toLowerCase().includes(searchQuery.toLowerCase());
+							const isArchived = archivedItems.has(childId);
+							return titleMatches && (showArchived || !isArchived);
+						});
+						return hasVisibleChildren;
+					}
+
+					return defaultShouldRender;
+				}}
+
+				// Custom rendering with proper patterns
+				renderItem={({ item, depth, children, title, context, arrow }) => {
+					const isSelected = context.isSelected; // ✅ Built-in selection state
+					const isArchived = archivedItems.has(item.index.toString());
+
+					// Individual item visibility
+					if (isArchived && !showArchived) return null;
+
+					const InteractiveComponent = context.isRenaming ? "div" : "button";
+
+					return (
+						<li {...context.itemContainerWithChildrenProps} className="group relative">
+							<div className="rounded-md hover:bg-sidebar-accent">
+								{/* Main content row */}
+								<div
+									{...context.itemContainerWithoutChildrenProps}
+									style={{ paddingLeft: `${(depth + 1) * 16}px` }}
+									className="flex h-[32px] items-center gap-2 px-2 py-1"
+								>
+									{arrow}
+									<InteractiveComponent
+										{...context.interactiveElementProps}
+										className="flex flex-1 items-center gap-2 truncate bg-transparent border-none p-0 text-left text-sm outline-none"
+									>
+										<FileText className="h-4 w-4" />
+										<span className="truncate">{title}</span>
+									</InteractiveComponent>
+								</div>
+
+								{/* Action buttons row */}
+								<div
+									style={{ paddingLeft: `${(depth + 1) * 16 + 32}px` }}
+									className="flex h-[32px] items-center justify-end gap-1 px-2 py-1"
+								>
+									<button onClick={(e) => { e.stopPropagation(); handleAddChild(item.index); }}>
+										<Plus className="h-3 w-3" />
+									</button>
+									<button onClick={(e) => { e.stopPropagation(); context.startRenamingItem(); }}>
+										<Edit2 className="h-3 w-3" />
+									</button>
+								</div>
+							</div>
+							{children}
+						</li>
+					);
+				}}
+			>
+				<Tree
+					ref={treeRef}
+					treeId="docs-tree"
+					rootItem="root"
+					treeLabel="Documentation Tree"
+				/>
+			</UncontrolledTreeEnvironment>
+		</div>
+	);
+}
+```
+
+## 🎯 **Key Takeaways**
+
+1. **Use Built-in Patterns**: Leverage interaction modes, selection state, and callbacks instead of custom logic
+2. **Proper Filtering Architecture**: Use `shouldRenderChildren` for structural filtering, `renderItem` returning `null` for individual visibility
+3. **Stable Data Provider**: Use `useMemo` with empty dependencies for data provider stability
+4. **Programmatic Control**: Use refs for external navigation, enhanced UX, and keyboard shortcuts
+5. **State Management**: External state (React context) for complex requirements like archiving
+6. **Event Handling**: Trust the library's built-in interaction patterns
+7. **Theming**: Leverage built-in `.rct-dark` class and CSS variables
+8. **Accessibility**: The library handles all accessibility requirements when using built-in patterns
+
+This implementation provides a complete, production-ready Notion-like file explorer with proper react-complex-tree patterns, avoiding all common anti-patterns and leveraging the library's full capabilities.

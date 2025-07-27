@@ -7,9 +7,11 @@ import {
 	SidebarGroup,
 	SidebarGroupContent,
 	SidebarHeader,
+	SidebarInset,
 	SidebarMenu,
 	SidebarMenuButton,
 	SidebarMenuItem,
+	SidebarProvider,
 	SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
@@ -179,73 +181,78 @@ function ProfileSection() {
 }
 
 export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
+	const { children, ...rest } = props;
+
 	return (
-		<Sidebar collapsible="icon" {...props}>
-			<SidebarHeader>
-				<SidebarTrigger />
-			</SidebarHeader>
+		<SidebarProvider className={cn("MainAppSidebar", "flex h-full w-full")}>
+			<Sidebar collapsible="icon" {...rest}>
+				<SidebarHeader>
+					<SidebarTrigger />
+				</SidebarHeader>
 
-			{/* App Name */}
-			<div
-				className={cn(
-					"main-app-sidebar-app-logo-container",
-					"px-2 transition-opacity delay-200 duration-150 ease-in-out group-data-[collapsible=icon]:opacity-0 group-data-[collapsible=icon]:delay-0 group-data-[collapsible=icon]:duration-0 starting:opacity-0",
-				)}
-			>
-				<Link to="/" className={cn("main-app-sidebar-app-link", "contents")}>
-					<div className="px-8">
-						<Logo className={cn("main-app-sidebar-logo", "flex items-center")} />
-					</div>
-				</Link>
-			</div>
+				{/* App Name */}
+				<div
+					className={cn(
+						"main-app-sidebar-app-logo-container",
+						"px-2 transition-opacity delay-200 duration-150 ease-in-out group-data-[collapsible=icon]:opacity-0 group-data-[collapsible=icon]:delay-0 group-data-[collapsible=icon]:duration-0 starting:opacity-0",
+					)}
+				>
+					<Link to="/" className={cn("main-app-sidebar-app-link", "contents")}>
+						<div className="px-8">
+							<Logo className={cn("main-app-sidebar-logo", "flex items-center")} />
+						</div>
+					</Link>
+				</div>
 
-			<SidebarContent>
-				<SidebarGroup>
-					<SidebarGroupContent>
-						<SidebarMenu>
-							{/* Home Navigation */}
-							<SidebarMenuItem>
-								<SidebarMenuButton asChild>
-									<Link to="/" className={cn("main-app-sidebar-nav-home", "flex items-center gap-2")}>
-										<Home className="h-4 w-4" />
-										<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
-									</Link>
-								</SidebarMenuButton>
-							</SidebarMenuItem>
+				<SidebarContent>
+					<SidebarGroup>
+						<SidebarGroupContent>
+							<SidebarMenu>
+								{/* Home Navigation */}
+								<SidebarMenuItem>
+									<SidebarMenuButton asChild>
+										<Link to="/" className={cn("main-app-sidebar-nav-home", "flex items-center gap-2")}>
+											<Home className="h-4 w-4" />
+											<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
+										</Link>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
 
-							{/* Chat Navigation */}
-							<SidebarMenuItem>
-								<SidebarMenuButton asChild>
-									<Link to="/chat" className={cn("main-app-sidebar-nav-chat", "flex items-center gap-2")}>
-										<MessageSquare className="h-4 w-4" />
-										<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
-									</Link>
-								</SidebarMenuButton>
-							</SidebarMenuItem>
+								{/* Chat Navigation */}
+								<SidebarMenuItem>
+									<SidebarMenuButton asChild>
+										<Link to="/chat" className={cn("main-app-sidebar-nav-chat", "flex items-center gap-2")}>
+											<MessageSquare className="h-4 w-4" />
+											<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
+										</Link>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
 
-							{/* Docs Navigation */}
-							<SidebarMenuItem>
-								<SidebarMenuButton asChild>
-									<Link to="/docs" className={cn("main-app-sidebar-nav-docs", "flex items-center gap-2")}>
-										<FileText className="h-4 w-4" />
-										<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
-									</Link>
-								</SidebarMenuButton>
-							</SidebarMenuItem>
-						</SidebarMenu>
-					</SidebarGroupContent>
-				</SidebarGroup>
-			</SidebarContent>
+								{/* Docs Navigation */}
+								<SidebarMenuItem>
+									<SidebarMenuButton asChild>
+										<Link to="/docs" className={cn("main-app-sidebar-nav-docs", "flex items-center gap-2")}>
+											<FileText className="h-4 w-4" />
+											<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
+										</Link>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+							</SidebarMenu>
+						</SidebarGroupContent>
+					</SidebarGroup>
+				</SidebarContent>
 
-			<SidebarFooter>
-				{/* Theme Toggle */}
-				<SidebarMenu>
-					<ThemeToggleMenuItem />
-				</SidebarMenu>
+				<SidebarFooter>
+					{/* Theme Toggle */}
+					<SidebarMenu>
+						<ThemeToggleMenuItem />
+					</SidebarMenu>
 
-				{/* Profile Section */}
-				<ProfileSection />
-			</SidebarFooter>
-		</Sidebar>
+					{/* Profile Section */}
+					<ProfileSection />
+				</SidebarFooter>
+			</Sidebar>
+			<SidebarInset>{children}</SidebarInset>
+		</SidebarProvider>
 	);
 }

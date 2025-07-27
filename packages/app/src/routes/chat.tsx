@@ -30,7 +30,7 @@ function ChatContent() {
 					aiChatSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
 				)}
 			>
-				{aiChatSidebarOpen && <AiChatSidebar onClose={() => setAiChatSidebarOpen(false)} />}
+				<AiChatSidebar onClose={() => setAiChatSidebarOpen(false)} />
 			</div>
 
 			{/* Main Content Area - takes remaining space */}

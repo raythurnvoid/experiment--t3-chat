@@ -82,6 +82,7 @@
 		"novel": "^1.0.2",
 		"p-queue": "^8.1.0",
 		"react": "^19.1.0",
+		"react-complex-tree": "^2.6.0",
 		"react-dom": "^19.1.0",
 		"react-dom18": "npm:react-dom@^18.3.1",
 		"react-dom19": "npm:react-dom@^19.1.0",

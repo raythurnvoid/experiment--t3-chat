@@ -6,7 +6,6 @@ import {
 	SidebarHeader,
 	SidebarProvider,
 	SidebarGroup,
-	SidebarGroupLabel,
 	SidebarMenu,
 	SidebarMenuAction,
 	SidebarMenuButton,
