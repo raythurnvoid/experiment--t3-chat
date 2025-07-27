@@ -16,6 +16,7 @@ import {
 	type TreeRef,
 	type TreeItemRenderContext,
 } from "react-complex-tree";
+import { useDocumentNavigation, shouldNavigateToDocument } from "@/stores/docs-store";
 import "./docs-sidebar-v2.css";
 
 // Types for document structure - react-complex-tree format
@@ -23,7 +24,8 @@ interface DocData {
 	id: string;
 	title: string;
 	url: string;
-	type: "folder" | "document" | "placeholder";
+	type: "document" | "placeholder";
+	content: string; // HTML content for the rich text editor - all documents have content
 }
 
 // Function to create tree data with placeholders for empty folders
@@ -38,7 +40,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "root",
 				title: "Documentation",
 				url: "#",
-				type: "folder",
+				type: "document",
+				content: `<h1>Documentation</h1><p>Welcome to our docs. Find guides, API reference, and tutorials here.</p>`,
 			},
 			canMove: false,
 			canRename: false,
@@ -51,7 +54,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "getting-started",
 				title: "Getting Started",
 				url: "#getting-started",
-				type: "folder",
+				type: "document",
+				content: `<h1>Getting Started</h1><p>Quick guide to get up and running. Follow the steps in order.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -64,6 +68,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Introduction",
 				url: "#introduction",
 				type: "document",
+				content: `<h1>Introduction</h1><p>Welcome to our documentation! Get started with our platform's core concepts and features.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -76,6 +81,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Installation",
 				url: "#installation",
 				type: "document",
+				content: `<h1>Installation</h1><p>Quick setup guide:</p><ol><li>Install Node.js 18+</li><li>Run npm install</li><li>Start the development server</li></ol>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -88,6 +94,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Quick Start Guide",
 				url: "#quick-start",
 				type: "document",
+				content: `<h1>Quick Start</h1><p>Get started in 5 minutes:</p><ol><li>Create account</li><li>Set up workspace</li><li>Create first document</li></ol>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -100,7 +107,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "user-guide",
 				title: "User Guide",
 				url: "#user-guide",
-				type: "folder",
+				type: "document",
+				content: `<h1>User Guide</h1><p>Learn how to use all platform features.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -113,6 +121,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Dashboard Overview",
 				url: "#dashboard",
 				type: "document",
+				content: `<h1>Dashboard Overview</h1><p>Your main control center with project stats, recent activity, and quick actions.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -125,6 +134,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Managing Projects",
 				url: "#projects",
 				type: "document",
+				content: `<h1>Managing Projects</h1><p>Create, organize, and manage your projects. Learn about project settings, permissions, and collaboration features.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -137,7 +147,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "collaboration",
 				title: "Collaboration",
 				url: "#collaboration",
-				type: "folder",
+				type: "document",
+				content: `<h1>Collaboration</h1><p>Work together with sharing, comments, and real-time editing.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -150,6 +161,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Sharing Documents",
 				url: "#sharing",
 				type: "document",
+				content: `<h1>Sharing Documents</h1><p>Share documents with team members and external collaborators. Configure permissions and access levels.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -162,6 +174,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Comments & Reviews",
 				url: "#comments",
 				type: "document",
+				content: `<h1>Comments & Reviews</h1><p>Add comments, suggestions, and reviews to documents. Track feedback and approve changes collaboratively.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -174,6 +187,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Real-time Editing",
 				url: "#real-time",
 				type: "document",
+				content: `<h1>Real-time Editing</h1><p>Collaborate seamlessly with real-time editing. See live cursors, instant updates, and conflict resolution.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -186,7 +200,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "api",
 				title: "API Reference",
 				url: "#api",
-				type: "folder",
+				type: "document",
+				content: `<h1>API Reference</h1><p>Technical documentation for developers.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -199,6 +214,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Authentication",
 				url: "#authentication",
 				type: "document",
+				content: `<h1>Authentication</h1><p>Secure API access with JWT tokens, OAuth, and API keys. Learn about authentication flows and best practices.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -211,6 +227,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "API Endpoints",
 				url: "#endpoints",
 				type: "document",
+				content: `<h1>API Endpoints</h1><p>Complete reference for all REST API endpoints: CRUD operations, filtering, pagination, and response formats.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -223,6 +240,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Webhooks",
 				url: "#webhooks",
 				type: "document",
+				content: `<h1>Webhooks</h1><p>Set up webhook endpoints to receive real-time notifications about document changes, user events, and system updates.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -235,7 +253,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "examples",
 				title: "Examples",
 				url: "#examples",
-				type: "folder",
+				type: "document",
+				content: `<h1>Code Examples</h1><p>Code samples in different languages.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -248,6 +267,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "JavaScript SDK",
 				url: "#javascript",
 				type: "document",
+				content: `<h1>JavaScript SDK</h1><p>JavaScript code examples.</p><pre><code>const client = new Client({ apiKey: 'key' });\nconst doc = await client.create({ title: 'Doc' });</code></pre>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -260,6 +280,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Python SDK",
 				url: "#python",
 				type: "document",
+				content: `<h1>Python SDK</h1><p>Python code examples.</p><pre><code>from sdk import Client\n\nclient = Client(api_key='key')\ndoc = client.create(title='Doc')</code></pre>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -272,6 +293,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "cURL Examples",
 				url: "#curl",
 				type: "document",
+				content: `<h1>cURL Examples</h1><p>Command-line examples.</p><pre><code>curl -X POST api.com/docs \\\n  -H "Authorization: Bearer KEY" \\\n  -d '{"title": "Doc"}'</code></pre>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -284,7 +306,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "tutorials",
 				title: "Tutorials",
 				url: "#tutorials",
-				type: "folder",
+				type: "document",
+				content: `<h1>Tutorials</h1><p>Step-by-step guides and tutorials.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -297,6 +320,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Basic Setup",
 				url: "#basic-setup",
 				type: "document",
+				content: `<h1>Basic Setup</h1><p>First-time setup tutorial.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -309,6 +333,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Advanced Features",
 				url: "#advanced-features",
 				type: "document",
+				content: `<h1>Advanced Features</h1><p>Power user features like workflows, search, and version control.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -321,6 +346,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Third-party Integrations",
 				url: "#integrations",
 				type: "document",
+				content: `<h1>Integrations</h1><p>Connect with Slack, Google Drive, GitHub, and more.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -333,7 +359,8 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				id: "troubleshooting",
 				title: "Troubleshooting",
 				url: "#troubleshooting",
-				type: "folder",
+				type: "document",
+				content: `<h1>Troubleshooting</h1><p>Common issues and solutions.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -346,6 +373,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Common Issues",
 				url: "#common-issues",
 				type: "document",
+				content: `<h1>Common Issues</h1><p>Solutions for authentication, uploads, and performance problems.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -358,6 +386,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Performance Tips",
 				url: "#performance",
 				type: "document",
+				content: `<h1>Performance Tips</h1><p>Best practices for speed and efficiency.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -370,6 +399,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 				title: "Getting Support",
 				url: "#support",
 				type: "document",
+				content: `<h1>Getting Support</h1><p>Email, chat, and community support options.</p>`,
 			},
 			canMove: true,
 			canRename: true,
@@ -400,6 +430,7 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 					title: "No files inside",
 					url: "#",
 					type: "placeholder",
+					content: "",
 				},
 				canMove: false,
 				canRename: false,
@@ -414,8 +445,6 @@ const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocDat
 interface DocsSearchContextType {
 	searchQuery: string;
 	setSearchQuery: (query: string) => void;
-	selectedDocId: string | null;
-	setSelectedDocId: (id: string | null) => void;
 	showArchived: boolean;
 	setShowArchived: (show: boolean) => void;
 	archivedItems: Set<string>;
@@ -440,7 +469,6 @@ interface DocsSearchContextProvider_Props {
 
 function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props) {
 	const [searchQuery, setSearchQuery] = useState("");
-	const [selectedDocId, setSelectedDocId] = useState<string | null>("getting-started");
 	const [showArchived, setShowArchived] = useState(false);
 	const [archivedItems, setArchivedItems] = useState<Set<string>>(new Set());
 	const dataProviderRef = useRef<NotionLikeDataProvider | null>(null);
@@ -451,8 +479,6 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 			value={{
 				searchQuery,
 				setSearchQuery,
-				selectedDocId,
-				setSelectedDocId,
 				showArchived,
 				setShowArchived,
 				archivedItems,
@@ -611,7 +637,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 	}
 
 	// Custom methods for Notion-like operations
-	createNewItem(parentId: string, title: string = "Untitled", type: "folder" | "document" = "document"): string {
+	createNewItem(parentId: string, title: string = "Untitled", type: "document" = "document"): string {
 		const newItemId = `${type}-${Date.now()}`;
 		const parentItem = this.data[parentId];
 
@@ -627,10 +653,11 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					title,
 					url: `#${newItemId}`,
 					type,
+					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 				},
 				canMove: true,
 				canRename: true,
-				isFolder: type === "folder",
+				isFolder: true,
 			};
 
 			this.data[newItemId] = newItem;
@@ -686,7 +713,7 @@ interface TreeItemComponent_Props {
 	context: TreeItemRenderContext;
 	arrow: React.ReactNode;
 	selectedDocId: string | null;
-	setSelectedDocId: (id: string | null) => void;
+	navigateToDocument: (id: string | null) => void;
 	archivedItems: Set<string>;
 	setArchivedItems: (items: Set<string>) => void;
 	showArchived: boolean;
@@ -702,7 +729,7 @@ function TreeItemComponent({
 	context,
 	arrow,
 	selectedDocId,
-	setSelectedDocId,
+	navigateToDocument,
 	archivedItems,
 	setArchivedItems,
 	showArchived,
@@ -724,7 +751,7 @@ function TreeItemComponent({
 		console.log("Created new item:", newItemId, "in parent:", parentId);
 
 		// Enhanced UX: Auto-select, focus, and start renaming the new item
-		setSelectedDocId(newItemId);
+		navigateToDocument(newItemId);
 
 		// Use setTimeout to ensure the item is rendered before we interact with it
 		setTimeout(() => {
@@ -744,7 +771,7 @@ function TreeItemComponent({
 
 		// If we archived the currently selected item, clear selection
 		if (selectedDocId === itemId) {
-			setSelectedDocId(null);
+			navigateToDocument(null);
 		}
 	};
 
@@ -939,16 +966,11 @@ function TreeRenameInput({ item, inputProps, inputRef, formProps, treeRef }: Tre
 
 // Separate component to use the theme context
 function TreeContainer() {
-	const {
-		searchQuery,
-		selectedDocId,
-		setSelectedDocId,
-		archivedItems,
-		setArchivedItems,
-		showArchived,
-		dataProviderRef,
-		treeRef,
-	} = useDocsSearchContext();
+	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef, treeRef } =
+		useDocsSearchContext();
+
+	// Get document navigation from parent context
+	const { selectedDocId, navigateToDocument } = useDocumentNavigation();
 	const { resolved_theme } = useThemeContext();
 	const isDarkMode = resolved_theme === "dark";
 
@@ -962,11 +984,11 @@ function TreeContainer() {
 	// No automatic synchronization - state updated explicitly in event handlers
 
 	// Programmatic tree control functions
-	const navigateToDocument = (docId: string) => {
+	const navigateToDocumentProgrammatically = (docId: string) => {
 		// Programmatically focus and select a document
 		treeRef.current?.focusItem(docId, true); // Focus with DOM focus
 		treeRef.current?.selectItems([docId]); // Select the item
-		setSelectedDocId(docId);
+		navigateToDocument(docId);
 		console.log("Navigated to document:", docId);
 	};
 
@@ -976,7 +998,7 @@ function TreeContainer() {
 		// Then select the final item
 		const finalItem = path[path.length - 1];
 		treeRef.current?.selectItems([finalItem]);
-		setSelectedDocId(finalItem);
+		navigateToDocument(finalItem);
 		console.log("Expanded to path:", path);
 	};
 
@@ -996,7 +1018,7 @@ function TreeContainer() {
 		console.log("Created new item:", newItemId, "in parent:", parentId);
 
 		// Enhanced UX: Auto-select, focus, and start renaming the new item
-		setSelectedDocId(newItemId);
+		navigateToDocument(newItemId);
 
 		// Use setTimeout to ensure the item is rendered before we interact with it
 		setTimeout(() => {
@@ -1016,7 +1038,7 @@ function TreeContainer() {
 
 		// If we archived the currently selected item, clear selection
 		if (selectedDocId === itemId) {
-			setSelectedDocId(null);
+			navigateToDocument(null);
 		}
 	};
 
@@ -1077,13 +1099,28 @@ function TreeContainer() {
 				)}
 				onPrimaryAction={(item, treeId) => {
 					// Handle primary action (title click) - selection only, no expansion
-					setSelectedDocId(item.index.toString());
+					// Skip navigation for placeholder and folder items
+					if (shouldNavigateToDocument(item.data.type)) {
+						navigateToDocument(item.index.toString());
+					}
 					console.log(`Primary action on ${item.data.type}:`, item.data.title);
 				}}
 				onSelectItems={(items, treeId) => {
 					// Handle selection changes from built-in selection logic
 					const selectedItem = items.length > 0 ? items[0] : null;
-					setSelectedDocId(selectedItem?.toString() || null);
+					const selectedItemId = selectedItem?.toString() || null;
+
+					// Only navigate for document items, not folders or placeholders
+					if (selectedItemId) {
+						const provider = dataProviderRef.current;
+						if (provider) {
+							const allData = provider.getAllData();
+							const itemData = allData[selectedItemId];
+							if (itemData && shouldNavigateToDocument(itemData.data.type)) {
+								navigateToDocument(selectedItemId);
+							}
+						}
+					}
 					console.log("Selection changed:", items);
 				}}
 				renderItemArrow={({ item, context }) => {
@@ -1151,7 +1188,7 @@ function TreeContainer() {
 							context={context}
 							arrow={arrow}
 							selectedDocId={selectedDocId}
-							setSelectedDocId={setSelectedDocId}
+							navigateToDocument={navigateToDocument}
 							archivedItems={archivedItems}
 							setArchivedItems={setArchivedItems}
 							showArchived={showArchived}

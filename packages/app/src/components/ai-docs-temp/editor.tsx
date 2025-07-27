@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useImperativeHandle, useEffect } from "react";
 import {
 	EditorCommand,
 	EditorCommandEmpty,
@@ -8,8 +8,9 @@ import {
 	EditorRoot,
 	useEditor,
 } from "novel";
+import { Editor } from "@tiptap/react";
 import { ImageResizer, handleCommandNavigation, handleImageDrop, handleImagePaste } from "novel";
-import { Toolbar, useLiveblocksExtension } from "@liveblocks/react-tiptap";
+import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
 import { defaultExtensions } from "./extensions.ts";
 import { ColorSelector } from "./selectors/color-selector.tsx";
@@ -32,10 +33,18 @@ import { HistoryButtons } from "./selectors/history-buttons.tsx";
 // Get Convex URL for HTTP endpoints
 const CONVEX_URL = import.meta.env.VITE_CONVEX_URL || "https://your-convex-deployment.convex.site";
 
-export default function TiptapEditor() {
+// Imperative handle interface for programmatic control
+export interface TiptapEditor_Handle {
+	setContent: (content: string) => void;
+	getEditor: () => any;
+}
+
+// Outer component - React 19: ref is now available as a prop, no need for forwardRef
+function TiptapEditor({ ref, documentContent }: { ref?: React.Ref<TiptapEditor_Handle>; documentContent?: string }) {
 	const liveblocks = useLiveblocksExtension({
 		comments: true,
-
+		// ✅ Use the proper initialContent option instead of setting content imperatively
+		initialContent: documentContent || "<p>Start writing your document...</p>",
 		ai: {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
@@ -50,98 +59,157 @@ export default function TiptapEditor() {
 		},
 	});
 
-	const [open_ai, set_open_ai] = useState(false);
-	const [open_node, set_open_node] = useState(false);
-	const [open_color, set_open_color] = useState(false);
-	const [open_link, set_open_link] = useState(false);
-
 	const extensions = [...defaultExtensions, slashCommand, liveblocks];
-	const [chars_count, set_chars_count] = useState<number>(0);
 
-	const sync_status = useSyncStatus({ smooth: true });
+	useEffect(() => {
+		console.log("TiptapEditor mounted");
+	}, []);
 
 	return (
 		<div className={cn("TiptapEditor", "h-full w-full")}>
 			{/* Novel Editor */}
 			<EditorRoot>
-				<EditorContent
-					extensions={extensions}
-					className="h-full w-full"
-					onUpdate={({ editor }) => set_chars_count(editor.storage.characterCount.words())}
-					editorContainerProps={{
-						className: "h-full w-full ",
-					}}
-					editorProps={{
-						handleDOMEvents: {
-							keydown: (_view, event) => handleCommandNavigation(event),
-						},
-						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-						attributes: {
-							class:
-								"prose dark:prose-invert prose-headings:font-title font-default px-16 py-4 h-full focus:outline-none",
-						},
-					}}
-					slotBefore={
-						/* Status Bar */
-						<div className="flex gap-2 px-8 pt-8 pb-2 outline-none">
-							<EditorToolbar charsCount={chars_count} syncStatus={sync_status} />
-						</div>
-					}
-					slotAfter={<ImageResizer />}
-					immediatelyRender={false}
-				>
-					<div className="absolute right-0 mr-4">
-						<Threads />
-					</div>
-
-					<EditorCommand className="z-50 h-auto max-h-[330px] overflow-y-auto rounded-md border border-muted bg-background px-1 py-2 shadow-md transition-all">
-						<EditorCommandEmpty className="px-2 text-muted-foreground">No results</EditorCommandEmpty>
-						<EditorCommandList>
-							{suggestionItems.map((item) => (
-								<EditorCommandItem
-									value={item.title}
-									onCommand={(val) => {
-										if (!item?.command) {
-											return;
-										}
-
-										item.command(val);
-									}}
-									className="flex w-full items-center space-x-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent aria-selected:bg-accent"
-									key={item.title}
-								>
-									<div className="flex h-10 w-10 items-center justify-center rounded-md border border-muted bg-background">
-										{item.icon}
-									</div>
-									<div>
-										<p className="font-medium">{item.title}</p>
-										<p className="text-xs text-muted-foreground">{item.description}</p>
-									</div>
-								</EditorCommandItem>
-							))}
-						</EditorCommandList>
-					</EditorCommand>
-
-					<GenerativeMenuSwitch open={open_ai} onOpenChange={set_open_ai}>
-						<Separator orientation="vertical" />
-						<NodeSelector open={open_node} onOpenChange={set_open_node} />
-						<Separator orientation="vertical" />
-						<LinkSelector open={open_link} onOpenChange={set_open_link} />
-						<Separator orientation="vertical" />
-						<MathSelector />
-						<Separator orientation="vertical" />
-						<TextButtons />
-						<Separator orientation="vertical" />
-						<ColorSelector open={open_color} onOpenChange={set_open_color} />
-						<Separator orientation="vertical" />
-						<AddCommentSelector />
-					</GenerativeMenuSwitch>
-				</EditorContent>
+				<TiptapEditorContent ref={ref} extensions={extensions} documentContent={documentContent} />
 			</EditorRoot>
 		</div>
 	);
 }
+
+// Inner component - lives inside EditorRoot, can safely use useEditor hook
+function TiptapEditorContent({
+	ref,
+	extensions,
+	documentContent,
+}: {
+	ref?: React.Ref<TiptapEditor_Handle>;
+	extensions: any[];
+	documentContent?: string;
+}) {
+	const [open_ai, set_open_ai] = useState(false);
+	const [open_node, set_open_node] = useState(false);
+	const [open_color, set_open_color] = useState(false);
+	const [open_link, set_open_link] = useState(false);
+
+	const [chars_count, set_chars_count] = useState<number>(0);
+
+	const sync_status = useSyncStatus({ smooth: true });
+	const isEditorReady = useIsEditorReady();
+
+	// State to store editor instance (set via onCreate)
+	const [editor, setEditor] = useState<Editor | null>(null);
+
+	// ✅ Force content update when document changes (fixes room content persistence issue)
+	useEffect(() => {
+		if (!editor || !isEditorReady || !documentContent) return;
+
+		console.log("Document changed, updating content:", documentContent.substring(0, 50) + "...");
+
+		// Always set content when document changes, regardless of hasContentSet flag
+		editor.commands.setContent(documentContent);
+	}, [editor, isEditorReady, documentContent]);
+
+	// Expose imperative handle for programmatic control
+	useImperativeHandle(
+		ref,
+		() => ({
+			setContent: (content: string) => {
+				console.log("Setting content via imperative handle", { content, editor, isEditorReady });
+
+				if (editor && isEditorReady) {
+					editor.commands.setContent(content);
+				}
+			},
+			getEditor: () => editor,
+		}),
+		[editor, isEditorReady],
+	);
+
+	console.log("isEditorReady", isEditorReady);
+
+	return (
+		<EditorContent
+			extensions={extensions}
+			className="h-full w-full"
+			onCreate={({ editor }) => {
+				console.log("Editor created via onCreate:", editor);
+				setEditor(editor);
+			}}
+			onUpdate={({ editor }) => set_chars_count(editor.storage.characterCount.words())}
+			editorContainerProps={{
+				className: "h-full w-full ",
+			}}
+			editorProps={{
+				handleDOMEvents: {
+					keydown: (_view, event) => handleCommandNavigation(event),
+				},
+				handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+				handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+				attributes: {
+					class: "prose dark:prose-invert prose-headings:font-title font-default px-16 py-4 h-full focus:outline-none",
+				},
+			}}
+			slotBefore={
+				/* Status Bar */
+				<div className="flex gap-2 px-8 pt-8 pb-2 outline-none">
+					<EditorToolbar charsCount={chars_count} syncStatus={sync_status} />
+				</div>
+			}
+			slotAfter={<ImageResizer />}
+			immediatelyRender={false}
+		>
+			<div className="absolute right-0 mr-4">
+				<Threads />
+			</div>
+
+			<EditorCommand className="z-50 h-auto max-h-[330px] overflow-y-auto rounded-md border border-muted bg-background px-1 py-2 shadow-md transition-all">
+				<EditorCommandEmpty className="px-2 text-muted-foreground">No results</EditorCommandEmpty>
+				<EditorCommandList>
+					{suggestionItems.map((item) => (
+						<EditorCommandItem
+							value={item.title}
+							onCommand={(val) => {
+								if (!item?.command) {
+									return;
+								}
+
+								item.command(val);
+							}}
+							className="flex w-full items-center space-x-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent aria-selected:bg-accent"
+							key={item.title}
+						>
+							<div className="flex h-10 w-10 items-center justify-center rounded-md border border-muted bg-background">
+								{item.icon}
+							</div>
+							<div>
+								<p className="font-medium">{item.title}</p>
+								<p className="text-xs text-muted-foreground">{item.description}</p>
+							</div>
+						</EditorCommandItem>
+					))}
+				</EditorCommandList>
+			</EditorCommand>
+
+			<GenerativeMenuSwitch open={open_ai} onOpenChange={set_open_ai}>
+				<Separator orientation="vertical" />
+				<NodeSelector open={open_node} onOpenChange={set_open_node} />
+				<Separator orientation="vertical" />
+				<LinkSelector open={open_link} onOpenChange={set_open_link} />
+				<Separator orientation="vertical" />
+				<MathSelector />
+				<Separator orientation="vertical" />
+				<TextButtons />
+				<Separator orientation="vertical" />
+				<ColorSelector open={open_color} onOpenChange={set_open_color} />
+				<Separator orientation="vertical" />
+				<AddCommentSelector />
+			</GenerativeMenuSwitch>
+		</EditorContent>
+	);
+}
+
+TiptapEditor.displayName = "TiptapEditor";
+
+export default TiptapEditor;
 
 type EditorToolbar_Props = {
 	charsCount: number;

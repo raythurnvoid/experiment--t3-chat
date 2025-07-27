@@ -1,6 +1,7 @@
-import React, { Suspense } from "react";
+import React from "react";
 import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
 import { ClientSideSuspense } from "@liveblocks/react";
+import { useSearch, useNavigate } from "@tanstack/react-router";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 import { auth_get_token } from "../lib/auth.ts";
 import { DocsSidebar } from "../components/docs-sidebar-v2";
@@ -9,9 +10,15 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils";
+import { DocumentNavigationContext, createRoomId, getDocumentContent } from "../stores/docs-store";
 
 export const Route = createFileRoute({
 	component: Docs,
+	validateSearch: (search: Record<string, unknown>) => {
+		return {
+			docId: (search.docId as string) || null,
+		};
+	},
 });
 
 // Get Convex HTTP URL for HTTP endpoints
@@ -44,26 +51,18 @@ function LoadingEditor() {
 }
 
 // Dynamic import for the Tiptap editor with error boundary
-const TiptapEditor = React.lazy(() =>
-	import("../components/ai-docs-temp/editor").catch((e) => {
-		console.error("Error loading TiptapEditor:", e);
-
-		return {
-			default: () => (
-				<div className="flex h-full items-center justify-center">
-					<div className="text-center">
-						<h3 className="mb-2 text-lg font-medium text-foreground">Editor Loading Error</h3>
-						<p className="text-sm text-muted-foreground">Please refresh the page to try again.</p>
-					</div>
-				</div>
-			),
-		};
-	}),
-);
+const TiptapEditor = React.lazy(() => import("../components/ai-docs-temp/editor"));
 
 function DocsContent() {
-	// Create room ID following the naming pattern: <workspace_id>:<project_id>:<document_id>
-	const room_id = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:docs-editor`;
+	// Get selected document from URL search params
+	const search = useSearch({ from: "/docs" });
+	const selectedDocId = search.docId;
+
+	// Create room ID using helper function
+	const room_id = createRoomId(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, selectedDocId);
+
+	// Get the document content for initialization
+	const documentContent = getDocumentContent(selectedDocId);
 
 	return (
 		<LiveblocksProvider
@@ -99,10 +98,9 @@ function DocsContent() {
 		>
 			<RoomProvider id={room_id}>
 				<ClientSideSuspense fallback={<LoadingEditor />}>
+					{/* ✅ Pass documentContent directly to TiptapEditor - Liveblocks handles the rest */}
 					<div className="h-full w-full">
-						<Suspense fallback={<LoadingEditor />}>
-							<TiptapEditor />
-						</Suspense>
+						<TiptapEditor documentContent={documentContent} />
 					</div>
 				</ClientSideSuspense>
 			</RoomProvider>
@@ -112,45 +110,58 @@ function DocsContent() {
 
 function Docs() {
 	const [docsSidebarOpen, setDocsSidebarOpen] = useState(true);
+	const navigate = useNavigate();
+	const search = useSearch({ from: "/docs" });
+	const selectedDocId = search.docId;
+
+	// Navigation function to update URL with selected document
+	const navigateToDocument = (docId: string | null) => {
+		navigate({
+			to: "/docs",
+			search: { docId },
+		});
+	};
 
 	return (
-		<div className={cn("Docs-content-area", "flex h-full w-full")}>
-			{/* Docs Sidebar - positioned between main sidebar and content with animation */}
-			<div
-				className={cn(
-					"Docs-sidebar-wrapper",
-					"h-full flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out",
-					docsSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
-				)}
-			>
-				<DocsSidebar onClose={() => setDocsSidebarOpen(false)} />
-			</div>
+		<DocumentNavigationContext.Provider value={{ selectedDocId, navigateToDocument }}>
+			<div className={cn("Docs-content-area", "flex h-full w-full")}>
+				{/* Docs Sidebar - positioned between main sidebar and content with animation */}
+				<div
+					className={cn(
+						"Docs-sidebar-wrapper",
+						"h-full flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out",
+						docsSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
+					)}
+				>
+					<DocsSidebar onClose={() => setDocsSidebarOpen(false)} />
+				</div>
 
-			{/* Main Content Area - takes remaining space */}
-			<div className={cn("Docs-main-content", "flex h-full min-w-0 flex-1 flex-col")}>
-				<PanelGroup direction="horizontal" className="h-full">
-					{/* Docs Editor Panel */}
-					<Panel defaultSize={100} minSize={50}>
-						<div className={cn("Docs-editor-panel", "relative flex h-full flex-col overflow-hidden bg-background")}>
-							{!docsSidebarOpen && (
-								<div className={cn("Docs-editor-panel-controls", "absolute top-4 left-4 z-10")}>
-									<Button
-										variant="outline"
-										size="sm"
-										onClick={() => setDocsSidebarOpen(true)}
-										className={cn("Docs-editor-panel-expand-button", "h-8 w-8 p-0")}
-									>
-										<PanelLeft className="h-4 w-4" />
-									</Button>
+				{/* Main Content Area - takes remaining space */}
+				<div className={cn("Docs-main-content", "flex h-full min-w-0 flex-1 flex-col")}>
+					<PanelGroup direction="horizontal" className="h-full">
+						{/* Docs Editor Panel */}
+						<Panel defaultSize={100} minSize={50}>
+							<div className={cn("Docs-editor-panel", "relative flex h-full flex-col overflow-hidden bg-background")}>
+								{!docsSidebarOpen && (
+									<div className={cn("Docs-editor-panel-controls", "absolute top-4 left-4 z-10")}>
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={() => setDocsSidebarOpen(true)}
+											className={cn("Docs-editor-panel-expand-button", "h-8 w-8 p-0")}
+										>
+											<PanelLeft className="h-4 w-4" />
+										</Button>
+									</div>
+								)}
+								<div className={cn("Docs-editor-content", "flex min-h-0 flex-1 overflow-hidden")}>
+									<DocsContent />
 								</div>
-							)}
-							<div className={cn("Docs-editor-content", "flex min-h-0 flex-1 overflow-hidden")}>
-								<DocsContent />
 							</div>
-						</div>
-					</Panel>
-				</PanelGroup>
+						</Panel>
+					</PanelGroup>
+				</div>
 			</div>
-		</div>
+		</DocumentNavigationContext.Provider>
 	);
 }
