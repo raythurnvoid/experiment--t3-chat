@@ -1,5 +1,5 @@
 /* https://tailwindcss.com/docs/preflight#disabling-preflight */
-@layer normalize, theme, base, external, common-components, components, utilities, top-layer;
+@layer external, normalize, theme, base, common-components, components, utilities, top-layer;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);

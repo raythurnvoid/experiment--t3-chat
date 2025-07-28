@@ -51,7 +51,9 @@ function LoadingEditor() {
 }
 
 // Dynamic import for the Tiptap editor with error boundary
-const TiptapEditor = React.lazy(() => import("../components/ai-docs-temp/editor"));
+const TiptapEditor = React.lazy(() =>
+	import("../components/ai-docs-temp/editor").then((module) => ({ default: module.RichTextDocEditor })),
+);
 
 function DocsContent() {
 	// Get selected document from URL search params
@@ -59,7 +61,7 @@ function DocsContent() {
 	const selectedDocId = search.docId;
 
 	// Create room ID using helper function
-	const room_id = createRoomId(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, selectedDocId);
+	const roomId = createRoomId(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, selectedDocId);
 
 	// Get the document content for initialization
 	const documentContent = getDocumentContent(selectedDocId);
@@ -96,11 +98,11 @@ function DocsContent() {
 				}));
 			}}
 		>
-			<RoomProvider id={room_id}>
+			<RoomProvider id={roomId}>
 				<ClientSideSuspense fallback={<LoadingEditor />}>
 					{/* ✅ Pass documentContent directly to TiptapEditor - Liveblocks handles the rest */}
 					<div className="h-full w-full">
-						<TiptapEditor documentContent={documentContent} />
+						<TiptapEditor initialContent={documentContent} />
 					</div>
 				</ClientSideSuspense>
 			</RoomProvider>

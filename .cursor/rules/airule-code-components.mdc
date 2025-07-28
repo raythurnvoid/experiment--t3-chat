@@ -322,7 +322,7 @@ const treeRef = useRef<TreeRef | null>(null); // Returns MutableRefObject<TreeRe
 ```tsx
 // ✅ React 19: ref as regular prop (new way)
 interface ButtonProps {
-	ref?: React.Ref<HTMLButtonElement>;
+	ref?: React.RefObject<HTMLButtonElement>;
 	children: React.ReactNode;
 }
 

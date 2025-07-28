@@ -23,7 +23,6 @@ import { cx } from "class-variance-authority";
 import { common, createLowlight } from "lowlight";
 
 const MarkdownExtension = Markdown.configure({
-	html: false,
 	transformCopiedText: true,
 });
 

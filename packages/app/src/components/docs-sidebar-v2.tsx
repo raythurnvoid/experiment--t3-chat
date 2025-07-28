@@ -1,7 +1,9 @@
+import "./docs-sidebar-v2.css";
 import * as React from "react";
 import { FileText, Plus, Search, X, Archive, Edit2, ChevronRight, ChevronDown } from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useState, createContext, use, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useThemeContext } from "@/components/theme-provider";
@@ -10,450 +12,31 @@ import {
 	UncontrolledTreeEnvironment,
 	Tree,
 	InteractionMode,
-	type TreeDataProvider,
-	type TreeItemIndex,
-	type TreeItem,
 	type TreeRef,
 	type TreeItemRenderContext,
+	type TreeItem,
 } from "react-complex-tree";
-import { useDocumentNavigation, shouldNavigateToDocument } from "@/stores/docs-store";
-import "./docs-sidebar-v2.css";
-
-// Types for document structure - react-complex-tree format
-interface DocData {
-	id: string;
-	title: string;
-	url: string;
-	type: "document" | "placeholder";
-	content: string; // HTML content for the rich text editor - all documents have content
-}
-
-// Function to create tree data with placeholders for empty folders
-const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocData>> => {
-	// Base tree data
-	const baseData: Record<TreeItemIndex, TreeItem<DocData>> = {
-		root: {
-			index: "root",
-			isFolder: true,
-			children: ["getting-started", "user-guide", "api", "tutorials", "troubleshooting"],
-			data: {
-				id: "root",
-				title: "Documentation",
-				url: "#",
-				type: "document",
-				content: `<h1>Documentation</h1><p>Welcome to our docs. Find guides, API reference, and tutorials here.</p>`,
-			},
-			canMove: false,
-			canRename: false,
-		},
-		"getting-started": {
-			index: "getting-started",
-			isFolder: true,
-			children: ["introduction", "installation", "quick-start"],
-			data: {
-				id: "getting-started",
-				title: "Getting Started",
-				url: "#getting-started",
-				type: "document",
-				content: `<h1>Getting Started</h1><p>Quick guide to get up and running. Follow the steps in order.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		introduction: {
-			index: "introduction",
-			children: [],
-			data: {
-				id: "introduction",
-				title: "Introduction",
-				url: "#introduction",
-				type: "document",
-				content: `<h1>Introduction</h1><p>Welcome to our documentation! Get started with our platform's core concepts and features.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		installation: {
-			index: "installation",
-			children: [],
-			data: {
-				id: "installation",
-				title: "Installation",
-				url: "#installation",
-				type: "document",
-				content: `<h1>Installation</h1><p>Quick setup guide:</p><ol><li>Install Node.js 18+</li><li>Run npm install</li><li>Start the development server</li></ol>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"quick-start": {
-			index: "quick-start",
-			children: [],
-			data: {
-				id: "quick-start",
-				title: "Quick Start Guide",
-				url: "#quick-start",
-				type: "document",
-				content: `<h1>Quick Start</h1><p>Get started in 5 minutes:</p><ol><li>Create account</li><li>Set up workspace</li><li>Create first document</li></ol>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"user-guide": {
-			index: "user-guide",
-			isFolder: true,
-			children: ["dashboard", "projects", "collaboration"],
-			data: {
-				id: "user-guide",
-				title: "User Guide",
-				url: "#user-guide",
-				type: "document",
-				content: `<h1>User Guide</h1><p>Learn how to use all platform features.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		dashboard: {
-			index: "dashboard",
-			children: [],
-			data: {
-				id: "dashboard",
-				title: "Dashboard Overview",
-				url: "#dashboard",
-				type: "document",
-				content: `<h1>Dashboard Overview</h1><p>Your main control center with project stats, recent activity, and quick actions.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		projects: {
-			index: "projects",
-			children: [],
-			data: {
-				id: "projects",
-				title: "Managing Projects",
-				url: "#projects",
-				type: "document",
-				content: `<h1>Managing Projects</h1><p>Create, organize, and manage your projects. Learn about project settings, permissions, and collaboration features.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		collaboration: {
-			index: "collaboration",
-			isFolder: true,
-			children: ["sharing", "comments", "real-time"],
-			data: {
-				id: "collaboration",
-				title: "Collaboration",
-				url: "#collaboration",
-				type: "document",
-				content: `<h1>Collaboration</h1><p>Work together with sharing, comments, and real-time editing.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		sharing: {
-			index: "sharing",
-			children: [],
-			data: {
-				id: "sharing",
-				title: "Sharing Documents",
-				url: "#sharing",
-				type: "document",
-				content: `<h1>Sharing Documents</h1><p>Share documents with team members and external collaborators. Configure permissions and access levels.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		comments: {
-			index: "comments",
-			children: [],
-			data: {
-				id: "comments",
-				title: "Comments & Reviews",
-				url: "#comments",
-				type: "document",
-				content: `<h1>Comments & Reviews</h1><p>Add comments, suggestions, and reviews to documents. Track feedback and approve changes collaboratively.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"real-time": {
-			index: "real-time",
-			children: [],
-			data: {
-				id: "real-time",
-				title: "Real-time Editing",
-				url: "#real-time",
-				type: "document",
-				content: `<h1>Real-time Editing</h1><p>Collaborate seamlessly with real-time editing. See live cursors, instant updates, and conflict resolution.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		api: {
-			index: "api",
-			isFolder: true,
-			children: ["authentication", "endpoints", "webhooks", "examples"],
-			data: {
-				id: "api",
-				title: "API Reference",
-				url: "#api",
-				type: "document",
-				content: `<h1>API Reference</h1><p>Technical documentation for developers.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		authentication: {
-			index: "authentication",
-			children: [],
-			data: {
-				id: "authentication",
-				title: "Authentication",
-				url: "#authentication",
-				type: "document",
-				content: `<h1>Authentication</h1><p>Secure API access with JWT tokens, OAuth, and API keys. Learn about authentication flows and best practices.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		endpoints: {
-			index: "endpoints",
-			children: [],
-			data: {
-				id: "endpoints",
-				title: "API Endpoints",
-				url: "#endpoints",
-				type: "document",
-				content: `<h1>API Endpoints</h1><p>Complete reference for all REST API endpoints: CRUD operations, filtering, pagination, and response formats.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		webhooks: {
-			index: "webhooks",
-			children: [],
-			data: {
-				id: "webhooks",
-				title: "Webhooks",
-				url: "#webhooks",
-				type: "document",
-				content: `<h1>Webhooks</h1><p>Set up webhook endpoints to receive real-time notifications about document changes, user events, and system updates.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		examples: {
-			index: "examples",
-			isFolder: true,
-			children: ["javascript", "python", "curl"],
-			data: {
-				id: "examples",
-				title: "Examples",
-				url: "#examples",
-				type: "document",
-				content: `<h1>Code Examples</h1><p>Code samples in different languages.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		javascript: {
-			index: "javascript",
-			children: [],
-			data: {
-				id: "javascript",
-				title: "JavaScript SDK",
-				url: "#javascript",
-				type: "document",
-				content: `<h1>JavaScript SDK</h1><p>JavaScript code examples.</p><pre><code>const client = new Client({ apiKey: 'key' });\nconst doc = await client.create({ title: 'Doc' });</code></pre>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		python: {
-			index: "python",
-			children: [],
-			data: {
-				id: "python",
-				title: "Python SDK",
-				url: "#python",
-				type: "document",
-				content: `<h1>Python SDK</h1><p>Python code examples.</p><pre><code>from sdk import Client\n\nclient = Client(api_key='key')\ndoc = client.create(title='Doc')</code></pre>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		curl: {
-			index: "curl",
-			children: [],
-			data: {
-				id: "curl",
-				title: "cURL Examples",
-				url: "#curl",
-				type: "document",
-				content: `<h1>cURL Examples</h1><p>Command-line examples.</p><pre><code>curl -X POST api.com/docs \\\n  -H "Authorization: Bearer KEY" \\\n  -d '{"title": "Doc"}'</code></pre>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		tutorials: {
-			index: "tutorials",
-			isFolder: true,
-			children: ["basic-setup", "advanced-features", "integrations"],
-			data: {
-				id: "tutorials",
-				title: "Tutorials",
-				url: "#tutorials",
-				type: "document",
-				content: `<h1>Tutorials</h1><p>Step-by-step guides and tutorials.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"basic-setup": {
-			index: "basic-setup",
-			children: [],
-			data: {
-				id: "basic-setup",
-				title: "Basic Setup",
-				url: "#basic-setup",
-				type: "document",
-				content: `<h1>Basic Setup</h1><p>First-time setup tutorial.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"advanced-features": {
-			index: "advanced-features",
-			children: [],
-			data: {
-				id: "advanced-features",
-				title: "Advanced Features",
-				url: "#advanced-features",
-				type: "document",
-				content: `<h1>Advanced Features</h1><p>Power user features like workflows, search, and version control.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		integrations: {
-			index: "integrations",
-			children: [],
-			data: {
-				id: "integrations",
-				title: "Third-party Integrations",
-				url: "#integrations",
-				type: "document",
-				content: `<h1>Integrations</h1><p>Connect with Slack, Google Drive, GitHub, and more.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		troubleshooting: {
-			index: "troubleshooting",
-			isFolder: true,
-			children: ["common-issues", "performance", "support"],
-			data: {
-				id: "troubleshooting",
-				title: "Troubleshooting",
-				url: "#troubleshooting",
-				type: "document",
-				content: `<h1>Troubleshooting</h1><p>Common issues and solutions.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"common-issues": {
-			index: "common-issues",
-			children: [],
-			data: {
-				id: "common-issues",
-				title: "Common Issues",
-				url: "#common-issues",
-				type: "document",
-				content: `<h1>Common Issues</h1><p>Solutions for authentication, uploads, and performance problems.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		performance: {
-			index: "performance",
-			children: [],
-			data: {
-				id: "performance",
-				title: "Performance Tips",
-				url: "#performance",
-				type: "document",
-				content: `<h1>Performance Tips</h1><p>Best practices for speed and efficiency.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		support: {
-			index: "support",
-			children: [],
-			data: {
-				id: "support",
-				title: "Getting Support",
-				url: "#support",
-				type: "document",
-				content: `<h1>Getting Support</h1><p>Email, chat, and community support options.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-	};
-
-	// Create modified data where all items are foldable and empty ones get placeholders
-	const modifiedData: Record<TreeItemIndex, TreeItem<DocData>> = {};
-
-	// Copy base data and modify
-	for (const [key, item] of Object.entries(baseData)) {
-		const hasChildren = item.children && item.children.length > 0;
-		const placeholderId = `${key}-placeholder`;
-
-		modifiedData[key] = {
-			...item,
-			isFolder: true, // Make all items foldable
-			children: hasChildren ? item.children : [placeholderId], // Add placeholder for empty items
-		};
-
-		// Add placeholder item for empty folders
-		if (!hasChildren) {
-			modifiedData[placeholderId] = {
-				index: placeholderId,
-				children: [],
-				data: {
-					id: placeholderId,
-					title: "No files inside",
-					url: "#",
-					type: "placeholder",
-					content: "",
-				},
-				canMove: false,
-				canRename: false,
-			};
-		}
-	}
-
-	return modifiedData;
-};
+import {
+	useDocumentNavigation,
+	shouldNavigateToDocument,
+	createTreeDataWithPlaceholders,
+	NotionLikeDataProvider,
+	type DocData,
+} from "@/stores/docs-store";
 
 // Search Context
-interface DocsSearchContextType {
+interface DocsSearchContext {
 	searchQuery: string;
-	setSearchQuery: (query: string) => void;
-	showArchived: boolean;
-	setShowArchived: (show: boolean) => void;
 	archivedItems: Set<string>;
+	showArchived: boolean;
+	dataProviderRef: React.RefObject<NotionLikeDataProvider | null>;
+	treeRef: React.RefObject<TreeRef | null>;
+	setSearchQuery: (query: string) => void;
+	setShowArchived: (show: boolean) => void;
 	setArchivedItems: (items: Set<string>) => void;
-	dataProviderRef: React.MutableRefObject<NotionLikeDataProvider | null>;
-	treeRef: React.MutableRefObject<TreeRef | null>;
 }
 
-const DocsSearchContext = createContext<DocsSearchContextType | null>(null);
+const DocsSearchContext = createContext<DocsSearchContext | null>(null);
 
 const useDocsSearchContext = () => {
 	const context = use(DocsSearchContext);
@@ -494,7 +77,7 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 
 // Main sidebar content component
 function DocsSidebarContent({ onClose }: { onClose?: () => void }) {
-	const { searchQuery, setSearchQuery, showArchived, setShowArchived, archivedItems, dataProviderRef, treeRef } =
+	const { searchQuery, setSearchQuery, showArchived, setShowArchived, archivedItems, dataProviderRef } =
 		useDocsSearchContext();
 
 	return (
@@ -586,124 +169,6 @@ function DocsSidebarContent({ onClose }: { onClose?: () => void }) {
 	);
 }
 
-// Custom TreeDataProvider for dynamic operations
-class NotionLikeDataProvider implements TreeDataProvider<DocData> {
-	private data: Record<TreeItemIndex, TreeItem<DocData>>;
-	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
-
-	constructor(initialData: Record<TreeItemIndex, TreeItem<DocData>>) {
-		this.data = { ...initialData };
-	}
-
-	async getTreeItem(itemId: TreeItemIndex): Promise<TreeItem<DocData>> {
-		const item = this.data[itemId];
-		if (!item) {
-			throw new Error(`Item ${itemId} not found`);
-		}
-
-		// ✅ CORRECT: Return data as-is, no filtering in getTreeItem
-		return item;
-	}
-
-	async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
-		if (this.data[itemId]) {
-			this.data[itemId] = {
-				...this.data[itemId],
-				children: newChildren,
-			};
-			this.notifyTreeChange([itemId]);
-		}
-	}
-
-	onDidChangeTreeData(listener: (changedItemIds: TreeItemIndex[]) => void): { dispose(): void } {
-		this.treeChangeListeners.push(listener);
-		return {
-			dispose: () => {
-				const index = this.treeChangeListeners.indexOf(listener);
-				if (index > -1) {
-					this.treeChangeListeners.splice(index, 1);
-				}
-			},
-		};
-	}
-
-	async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
-		const updatedItem = {
-			...item,
-			data: { ...item.data, title: name },
-		};
-		this.data[item.index] = updatedItem;
-		this.notifyTreeChange([item.index]);
-	}
-
-	// Custom methods for Notion-like operations
-	createNewItem(parentId: string, title: string = "Untitled", type: "document" = "document"): string {
-		const newItemId = `${type}-${Date.now()}`;
-		const parentItem = this.data[parentId];
-
-		console.log("createNewItem called:", { parentId, newItemId, parentChildren: parentItem?.children });
-
-		if (parentItem) {
-			// Create new item
-			const newItem: TreeItem<DocData> = {
-				index: newItemId,
-				children: [],
-				data: {
-					id: newItemId,
-					title,
-					url: `#${newItemId}`,
-					type,
-					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
-				},
-				canMove: true,
-				canRename: true,
-				isFolder: true,
-			};
-
-			this.data[newItemId] = newItem;
-
-			// Check if parent has a placeholder that needs to be replaced
-			const placeholderId = `${parentId}-placeholder`;
-			const hasPlaceholder = this.data[placeholderId] && parentItem.children?.includes(placeholderId);
-
-			let updatedChildren: TreeItemIndex[];
-			if (hasPlaceholder) {
-				// Replace placeholder with new item
-				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? newItemId : id)) || [newItemId];
-				delete this.data[placeholderId];
-				console.log("Replaced placeholder with new item");
-			} else {
-				// Just add the new item to existing children
-				updatedChildren = [...(parentItem.children || []), newItemId];
-				console.log("Added new item to existing children");
-			}
-
-			// Update parent with new children array
-			const updatedParent = {
-				...parentItem,
-				children: updatedChildren,
-				isFolder: true,
-			};
-
-			this.data[parentId] = updatedParent;
-
-			this.notifyTreeChange([parentId, newItemId]);
-		}
-
-		return newItemId;
-	}
-
-	// Helper methods
-	private notifyTreeChange(changedItemIds: TreeItemIndex[]): void {
-		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
-	}
-
-	// Get all tree data (for debugging)
-	getAllData(): Record<TreeItemIndex, TreeItem<DocData>> {
-		return { ...this.data };
-	}
-}
-
 // Tree Item Component - extracted to properly use hooks
 interface TreeItemComponent_Props {
 	item: TreeItem<DocData>;
@@ -713,12 +178,11 @@ interface TreeItemComponent_Props {
 	context: TreeItemRenderContext;
 	arrow: React.ReactNode;
 	selectedDocId: string | null;
-	navigateToDocument: (id: string | null) => void;
 	archivedItems: Set<string>;
-	setArchivedItems: (items: Set<string>) => void;
 	showArchived: boolean;
-	dataProvider: NotionLikeDataProvider;
-	treeRef: React.MutableRefObject<TreeRef | null>;
+	onAdd: (parentId: string) => void;
+	onArchive: (itemId: string) => void;
+	onUnarchive: (itemId: string) => void;
 }
 
 function TreeItemComponent({
@@ -729,51 +193,17 @@ function TreeItemComponent({
 	context,
 	arrow,
 	selectedDocId,
-	navigateToDocument,
 	archivedItems,
-	setArchivedItems,
 	showArchived,
-	dataProvider,
-	treeRef,
+	onAdd,
+	onArchive,
+	onUnarchive,
 }: TreeItemComponent_Props) {
 	const triggerId = React.useId(); // Now properly used in a component
 	const data = item.data as DocData;
 	const isSelected = selectedDocId === item.index;
 	const isPlaceholder = data.type === "placeholder";
 	const isArchived = archivedItems.has(item.index.toString());
-
-	// Action handlers
-	const handleAddChild = (parentId: string) => {
-		// First, expand the parent item if it's not already expanded
-		treeRef.current?.expandItem(parentId);
-
-		const newItemId = dataProvider.createNewItem(parentId, "Untitled", "document");
-		console.log("Created new item:", newItemId, "in parent:", parentId);
-
-		// Enhanced UX: Auto-select, focus, and start renaming the new item
-		navigateToDocument(newItemId);
-
-		// Use setTimeout to ensure the item is rendered before we interact with it
-		setTimeout(() => {
-			treeRef.current?.selectItems([newItemId]);
-			treeRef.current?.focusItem(newItemId, true);
-			treeRef.current?.startRenamingItem(newItemId);
-		}, 50);
-	};
-
-	const handleArchive = (itemId: string) => {
-		// Update context state
-		const newArchivedSet = new Set(archivedItems);
-		newArchivedSet.add(itemId);
-		setArchivedItems(newArchivedSet);
-
-		console.log("Archived item:", itemId);
-
-		// If we archived the currently selected item, clear selection
-		if (selectedDocId === itemId) {
-			navigateToDocument(null);
-		}
-	};
 
 	// Hide archived items when showArchived is false
 	if (isArchived && !showArchived) {
@@ -806,7 +236,7 @@ function TreeItemComponent({
 		);
 	}
 
-	// Regular items (folders and documents)
+	// Regular items
 	return (
 		<li {...context.itemContainerWithChildrenProps} className="group relative">
 			{/* Label wrapper that forwards clicks to the main selection trigger */}
@@ -816,6 +246,7 @@ function TreeItemComponent({
 					"block w-full cursor-pointer rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
 					isSelected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
 					isArchived && "line-through opacity-60",
+					"group-[.TreeContainer-focused]/tree-container:has-[.TreeItemComponent-button:focus]:outline-3",
 				)}
 				htmlFor={triggerId}
 			>
@@ -842,7 +273,10 @@ function TreeItemComponent({
 							{...context.interactiveElementProps}
 							id={triggerId}
 							type="button"
-							className="flex flex-1 items-center gap-2 truncate border-none bg-transparent p-0 text-left text-sm outline-none"
+							className={cn(
+								"TreeItemComponent-button",
+								"flex flex-1 items-center gap-2 truncate border-none bg-transparent p-0 text-left text-sm outline-none",
+							)}
 						>
 							{/* Icon for document type */}
 							<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
@@ -866,7 +300,7 @@ function TreeItemComponent({
 						onClick={(e) => {
 							e.preventDefault();
 							e.stopPropagation();
-							handleAddChild(item.index.toString());
+							onAdd(item.index.toString());
 						}}
 					>
 						<Plus className="h-3 w-3" />
@@ -896,14 +330,9 @@ function TreeItemComponent({
 								e.preventDefault();
 								e.stopPropagation();
 								if (isArchived) {
-									// Update context state
-									const newArchivedSet = new Set(archivedItems);
-									newArchivedSet.delete(item.index.toString());
-									setArchivedItems(newArchivedSet);
-
-									console.log("Unarchived item:", item.index);
+									onUnarchive(item.index.toString());
 								} else {
-									handleArchive(item.index.toString());
+									onArchive(item.index.toString());
 								}
 							}}
 						>
@@ -919,47 +348,22 @@ function TreeItemComponent({
 	);
 }
 
-// Tree Rename Input Component - handles blur to complete and escape to abort
 interface TreeRenameInput_Props {
-	item: TreeItem<DocData>;
 	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
-	inputRef: React.Ref<HTMLInputElement>;
+	inputRef: React.RefObject<HTMLInputElement | null>;
 	formProps: React.FormHTMLAttributes<HTMLFormElement>;
-	treeRef: React.MutableRefObject<TreeRef | null>;
+	treeRef: React.RefObject<TreeRef | null>;
 }
 
-function TreeRenameInput({ item, inputProps, inputRef, formProps, treeRef }: TreeRenameInput_Props) {
+function TreeRenameInput({ inputProps, inputRef, formProps }: TreeRenameInput_Props) {
+	// Override native
+	const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+		e.target.form?.requestSubmit();
+	};
+
 	return (
-		<form
-			{...formProps}
-			onSubmit={(e) => {
-				e.preventDefault();
-				// Complete rename on form submit (Enter key)
-				treeRef.current?.completeRenamingItem();
-			}}
-			className="flex w-full"
-		>
-			<input
-				{...inputProps}
-				ref={inputRef}
-				className={cn(
-					"flex-1 rounded border border-input bg-background px-2 py-1 text-sm",
-					"focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-none",
-				)}
-				onBlur={() => {
-					// Apply changes on blur (losing focus)
-					treeRef.current?.completeRenamingItem();
-				}}
-				onKeyDown={(e) => {
-					if (e.key === "Escape") {
-						e.preventDefault();
-						// Revert changes on Escape
-						treeRef.current?.abortRenamingItem();
-					}
-					// Let other keys (like Enter) bubble up to form submit
-				}}
-				autoFocus
-			/>
+		<form {...formProps} className="flex w-full">
+			<Input {...inputProps} ref={inputRef} className="flex-1" autoFocus onBlur={handleBlur} />
 		</form>
 	);
 }
@@ -980,17 +384,6 @@ function TreeContainer() {
 		dataProviderRef.current = provider; // Store in ref for access from other components
 		return provider;
 	}, []); // Empty dependency array - provider should only be created once
-
-	// No automatic synchronization - state updated explicitly in event handlers
-
-	// Programmatic tree control functions
-	const navigateToDocumentProgrammatically = (docId: string) => {
-		// Programmatically focus and select a document
-		treeRef.current?.focusItem(docId, true); // Focus with DOM focus
-		treeRef.current?.selectItems([docId]); // Select the item
-		navigateToDocument(docId);
-		console.log("Navigated to document:", docId);
-	};
 
 	const expandToPath = async (path: string[]) => {
 		// Expand the full path to show a deeply nested item
@@ -1014,6 +407,9 @@ function TreeContainer() {
 
 	// Action handlers
 	const handleAddChild = (parentId: string) => {
+		// First, expand the parent item if it's not already expanded
+		treeRef.current?.expandItem(parentId);
+
 		const newItemId = dataProvider.createNewItem(parentId, "Untitled", "document");
 		console.log("Created new item:", newItemId, "in parent:", parentId);
 
@@ -1029,17 +425,22 @@ function TreeContainer() {
 	};
 
 	const handleArchive = (itemId: string) => {
-		// Update context state
 		const newArchivedSet = new Set(archivedItems);
 		newArchivedSet.add(itemId);
 		setArchivedItems(newArchivedSet);
-
 		console.log("Archived item:", itemId);
 
 		// If we archived the currently selected item, clear selection
 		if (selectedDocId === itemId) {
 			navigateToDocument(null);
 		}
+	};
+
+	const handleUnarchive = (itemId: string) => {
+		const newArchivedSet = new Set(archivedItems);
+		newArchivedSet.delete(itemId);
+		setArchivedItems(newArchivedSet);
+		console.log("Unarchived item:", itemId);
 	};
 
 	// Keyboard shortcuts for additional tree control
@@ -1088,14 +489,8 @@ function TreeContainer() {
 				canDropOnFolder={true}
 				canReorderItems={true}
 				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
-				renderRenameInput={({ item, inputProps, inputRef, formProps }) => (
-					<TreeRenameInput
-						item={item}
-						inputProps={inputProps}
-						inputRef={inputRef}
-						formProps={formProps}
-						treeRef={treeRef}
-					/>
+				renderRenameInput={({ inputProps, inputRef, formProps }) => (
+					<TreeRenameInput inputProps={inputProps} inputRef={inputRef as any} formProps={formProps} treeRef={treeRef} />
 				)}
 				onPrimaryAction={(item, treeId) => {
 					// Handle primary action (title click) - selection only, no expansion
@@ -1134,7 +529,7 @@ function TreeContainer() {
 								side="bottom"
 								variant="ghost"
 								size="icon"
-								className="h-4 w-4 p-0"
+								className="h-4 w-4 p-0 text-muted-foreground hover:text-foreground"
 							>
 								{context.isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
 							</TooltipIconButton>
@@ -1188,13 +583,22 @@ function TreeContainer() {
 							context={context}
 							arrow={arrow}
 							selectedDocId={selectedDocId}
-							navigateToDocument={navigateToDocument}
 							archivedItems={archivedItems}
-							setArchivedItems={setArchivedItems}
+							onAdd={handleAddChild}
+							onArchive={handleArchive}
+							onUnarchive={handleUnarchive}
 							showArchived={showArchived}
-							dataProvider={dataProvider}
-							treeRef={treeRef}
 						/>
+					);
+				}}
+				renderTreeContainer={({ children, containerProps, info }) => {
+					return (
+						<div
+							{...containerProps}
+							className={cn("TreeContainer", info.isFocused && "TreeContainer-focused", "group/tree-container")}
+						>
+							{children}
+						</div>
 					);
 				}}
 			>
