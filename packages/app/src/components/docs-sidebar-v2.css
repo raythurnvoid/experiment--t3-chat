@@ -1,9 +1,1 @@
-@import "react-complex-tree/lib/style-modern.css" layer(external);
 
-/* React Complex Tree CSS Overrides to match shadcn/ui sidebar styling */
-@layer components {
-	/* Remove default focus styles */
-	.rct-tree-root-focus {
-		outline: none;
-	}
-}

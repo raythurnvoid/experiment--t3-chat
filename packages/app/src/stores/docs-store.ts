@@ -140,7 +140,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 		collaboration: {
 			index: "collaboration",
 			isFolder: true,
-			children: ["sharing", "comments", "real-time"],
+			children: [],
 			data: {
 				id: "collaboration",
 				title: "Collaboration",

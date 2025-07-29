@@ -344,6 +344,66 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({ chil
 });
 ```
 
+### React 19 Component Definition Best Practices
+
+**PREFERRED in React 19**: Use regular function declarations and avoid unnecessary complexity:
+
+#### ✅ Preferred: Regular Function Declaration
+
+```tsx
+// ✅ PREFERRED: Regular function declaration with ref as prop
+export type IconButton_Props = React.ComponentProps<typeof Button> & {
+	tooltip?: string;
+	side?: "top" | "bottom" | "left" | "right";
+	ref?: React.RefObject<HTMLButtonElement>;
+};
+
+export function IconButton({ children, tooltip, side = "bottom", className, ref, ...props }: IconButton_Props) {
+	return (
+		<Button ref={ref} className={cn("IconButton", className)} {...props}>
+			{children}
+		</Button>
+	);
+}
+```
+
+**Benefits:**
+
+- ✅ **Automatic naming**: Function name automatically becomes component name in DevTools
+- ✅ **No displayName needed**: Eliminates boilerplate
+- ✅ **Simpler syntax**: No forwardRef wrapper complexity
+- ✅ **Better debugging**: Clear function names in stack traces
+- ✅ **Future-proof**: Aligned with React 19 patterns
+
+#### ❌ Avoid: Unnecessary Complexity
+
+```tsx
+// ❌ AVOID: forwardRef when not needed (React 19)
+export const IconButton = forwardRef<HTMLButtonElement, IconButton_Props>(
+	({ children, tooltip, side = "bottom", className, ...props }, ref) => {
+		// Component logic
+	},
+);
+
+// ❌ AVOID: Manual displayName when using function declarations
+IconButton.displayName = "IconButton"; // Unnecessary with function declarations
+```
+
+#### When to Still Use forwardRef
+
+Only use `forwardRef` in React 19 when:
+
+- Working with libraries that expect the forwardRef pattern
+- Need to maintain backward compatibility
+- Component name would be unclear without explicit naming
+
+```tsx
+// ✅ Acceptable: When library integration requires it
+const CustomInput = forwardRef<HTMLInputElement, CustomInputProps>(function CustomInput(props, ref) {
+	return <SomeLibraryInput {...props} ref={ref} />;
+});
+```
+
 ### 2. Callback Refs with Cleanup Functions
 
 **NEW in React 19**: Callback refs can return cleanup functions:

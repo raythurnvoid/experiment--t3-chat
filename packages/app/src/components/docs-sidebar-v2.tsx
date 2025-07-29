@@ -1,13 +1,23 @@
 import "./docs-sidebar-v2.css";
-import * as React from "react";
-import { FileText, Plus, Search, X, Archive, Edit2, ChevronRight, ChevronDown } from "lucide-react";
+import React, { useState, createContext, use, useMemo, useRef } from "react";
+import {
+	FileText,
+	Plus,
+	Search,
+	X,
+	Archive,
+	Edit2,
+	ChevronRight,
+	ChevronDown,
+	ChevronsDown,
+	ChevronsUp,
+} from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useState, createContext, use, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useThemeContext } from "@/components/theme-provider";
-import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button";
+import { IconButton } from "@/components/icon-button";
 import {
 	UncontrolledTreeEnvironment,
 	Tree,
@@ -25,16 +35,15 @@ import {
 } from "@/stores/docs-store";
 
 // Search Context
-interface DocsSearchContext {
+type DocsSearchContext = {
 	searchQuery: string;
 	archivedItems: Set<string>;
 	showArchived: boolean;
 	dataProviderRef: React.RefObject<NotionLikeDataProvider | null>;
-	treeRef: React.RefObject<TreeRef | null>;
 	setSearchQuery: (query: string) => void;
 	setShowArchived: (show: boolean) => void;
 	setArchivedItems: (items: Set<string>) => void;
-}
+};
 
 const DocsSearchContext = createContext<DocsSearchContext | null>(null);
 
@@ -46,16 +55,15 @@ const useDocsSearchContext = () => {
 	return context;
 };
 
-interface DocsSearchContextProvider_Props {
+type DocsSearchContextProvider_Props = {
 	children: React.ReactNode;
-}
+};
 
 function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props) {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
 	const [archivedItems, setArchivedItems] = useState<Set<string>>(new Set());
 	const dataProviderRef = useRef<NotionLikeDataProvider | null>(null);
-	const treeRef = useRef<TreeRef | null>(null);
 
 	return (
 		<DocsSearchContext.Provider
@@ -67,7 +75,6 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 				archivedItems,
 				setArchivedItems,
 				dataProviderRef,
-				treeRef,
 			}}
 		>
 			{children}
@@ -75,28 +82,53 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 	);
 }
 
-// Main sidebar content component
-function DocsSidebarContent({ onClose }: { onClose?: () => void }) {
+type DocsSidebarContent_Props = {
+	onClose: () => void;
+};
+
+function DocsSidebarContent(props: DocsSidebarContent_Props) {
+	const { onClose } = props;
+
 	const { searchQuery, setSearchQuery, showArchived, setShowArchived, archivedItems, dataProviderRef } =
 		useDocsSearchContext();
+
+	const treeRef = useRef<TreeRef | null>(null);
+
+	// Handler functions for tree actions
+	const handleFold = () => {
+		treeRef.current?.collapseAll();
+	};
+
+	const handleUnfold = () => {
+		treeRef.current?.expandAll();
+	};
+
+	const handleNewDoc = () => {
+		// Add to root by default - could access treeRef.current for programmatic control
+		// For now, this would need to be connected to handleAddChild in TreeContainer
+		// or use treeRef.current?.navigateToDocument() for external navigation
+		if (dataProviderRef.current) {
+			const newItemId = dataProviderRef.current.createNewItem("root", "New Document", "document");
+			console.log("Created new document from header button:", newItemId);
+		}
+	};
 
 	return (
 		<div className={cn("DocsSidebarContent", "flex h-full flex-col")}>
 			<SidebarHeader className="border-b">
 				{/* Close button only if onClose is provided */}
-				{onClose && (
-					<div className="mb-4 flex items-center justify-between">
-						<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Documentation</h2>
-						<Button
-							variant="ghost"
-							size="icon"
-							onClick={onClose}
-							className={cn("DocsSidebarContent-close-button", "h-8 w-8")}
-						>
-							<X className="h-4 w-4" />
-						</Button>
-					</div>
-				)}
+				<div className="mb-4 flex items-center justify-between">
+					<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Documentation</h2>
+					<IconButton
+						variant="ghost"
+						size="icon"
+						onClick={onClose}
+						tooltip="Close"
+						className={cn("DocsSidebarContent-close-button", "h-8 w-8")}
+					>
+						<X />
+					</IconButton>
+				</div>
 
 				{/* Search Form */}
 				<div className={cn("DocsSidebarContent-search-container", "relative mb-4")}>
@@ -124,25 +156,28 @@ function DocsSidebarContent({ onClose }: { onClose?: () => void }) {
 					/>
 				</div>
 
-				{/* New Document Button */}
-				<Button
-					className={cn("DocsSidebarContent-new-doc-button", "mb-2 w-full justify-start gap-2")}
-					variant="outline"
-					onClick={() => {
-						// Add to root by default - could access treeRef.current for programmatic control
-						// For now, this would need to be connected to handleAddChild in TreeContainer
-						// or use treeRef.current?.navigateToDocument() for external navigation
-						if (dataProviderRef.current) {
-							const newItemId = dataProviderRef.current.createNewItem("root", "New Document", "document");
-							console.log("Created new document from header button:", newItemId);
-						}
-					}}
-				>
-					<Plus className="h-4 w-4" />
-					New Document
-				</Button>
+				<div className="mb-2 flex items-center gap-2">
+					<div className="flex gap-1">
+						<IconButton tooltip="Unfold" onClick={handleUnfold} variant="secondary">
+							<ChevronsDown className="h-4 w-4" />
+						</IconButton>
 
-				{/* Show Archived Toggle */}
+						<IconButton tooltip="Fold" onClick={handleFold} variant="secondary">
+							<ChevronsUp className="h-4 w-4" />
+						</IconButton>
+					</div>
+
+					<Button
+						className={cn("DocsSidebarContent-new-doc-button", "flex-1 justify-start gap-2")}
+						variant="outline"
+						onClick={handleNewDoc}
+					>
+						<Plus className="h-4 w-4" />
+						New Document
+					</Button>
+				</div>
+
+				{/* Archived Toggle */}
 				{archivedItems.size > 0 && (
 					<div className="flex items-center justify-between">
 						<span className="text-sm text-muted-foreground">Show archived ({archivedItems.size})</span>
@@ -163,14 +198,14 @@ function DocsSidebarContent({ onClose }: { onClose?: () => void }) {
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
-				<TreeContainer />
+				<TreeContainer ref={treeRef} />
 			</SidebarContent>
 		</div>
 	);
 }
 
 // Tree Item Component - extracted to properly use hooks
-interface TreeItemComponent_Props {
+type TreeItemComponent_Props = {
 	item: TreeItem<DocData>;
 	depth: number;
 	children: React.ReactNode;
@@ -183,7 +218,7 @@ interface TreeItemComponent_Props {
 	onAdd: (parentId: string) => void;
 	onArchive: (itemId: string) => void;
 	onUnarchive: (itemId: string) => void;
-}
+};
 
 function TreeItemComponent({
 	item,
@@ -293,7 +328,7 @@ function TreeItemComponent({
 					className="flex h-[32px] items-center justify-end gap-1 px-2 py-1"
 				>
 					{/* Add child button - for all items (since all are now foldable) */}
-					<TooltipIconButton
+					<IconButton
 						className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
 						variant="ghost"
 						tooltip="Add child"
@@ -304,10 +339,10 @@ function TreeItemComponent({
 						}}
 					>
 						<Plus className="h-3 w-3" />
-					</TooltipIconButton>
+					</IconButton>
 
 					{/* Edit button - for all items */}
-					<TooltipIconButton
+					<IconButton
 						className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
 						variant="ghost"
 						tooltip="Rename"
@@ -318,11 +353,11 @@ function TreeItemComponent({
 						}}
 					>
 						<Edit2 className="h-3 w-3" />
-					</TooltipIconButton>
+					</IconButton>
 
 					{/* Archive/Unarchive button - for all items except root */}
 					{item.index !== "root" && (
-						<TooltipIconButton
+						<IconButton
 							className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
 							variant="ghost"
 							tooltip={isArchived ? "Unarchive" : "Archive"}
@@ -337,7 +372,7 @@ function TreeItemComponent({
 							}}
 						>
 							<Archive className={cn("h-3 w-3", isArchived && "fill-current")} />
-						</TooltipIconButton>
+						</IconButton>
 					)}
 				</div>
 			</label>
@@ -348,12 +383,11 @@ function TreeItemComponent({
 	);
 }
 
-interface TreeRenameInput_Props {
+type TreeRenameInput_Props = {
 	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
 	inputRef: React.RefObject<HTMLInputElement | null>;
 	formProps: React.FormHTMLAttributes<HTMLFormElement>;
-	treeRef: React.RefObject<TreeRef | null>;
-}
+};
 
 function TreeRenameInput({ inputProps, inputRef, formProps }: TreeRenameInput_Props) {
 	// Override native
@@ -368,10 +402,14 @@ function TreeRenameInput({ inputProps, inputRef, formProps }: TreeRenameInput_Pr
 	);
 }
 
+// Props interface for TreeContainer using React 19 ref pattern
+type TreeContainer_Props = {
+	ref: React.RefObject<TreeRef | null>;
+};
+
 // Separate component to use the theme context
-function TreeContainer() {
-	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef, treeRef } =
-		useDocsSearchContext();
+function TreeContainer({ ref: treeRef }: TreeContainer_Props) {
+	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
 
 	// Get document navigation from parent context
 	const { selectedDocId, navigateToDocument } = useDocumentNavigation();
@@ -385,24 +423,56 @@ function TreeContainer() {
 		return provider;
 	}, []); // Empty dependency array - provider should only be created once
 
-	const expandToPath = async (path: string[]) => {
-		// Expand the full path to show a deeply nested item
-		await treeRef.current?.expandSubsequently(path);
-		// Then select the final item
-		const finalItem = path[path.length - 1];
-		treeRef.current?.selectItems([finalItem]);
-		navigateToDocument(finalItem);
-		console.log("Expanded to path:", path);
-	};
+	// Keyboard shortcuts for additional tree control
+	React.useEffect(() => {
+		const handleKeyPress = (e: KeyboardEvent) => {
+			// Only handle if the tree area is focused (not when typing in search input)
+			const isTreeFocused = document.activeElement?.closest(".rct-tree-root") !== null;
+
+			if (isTreeFocused && e.ctrlKey) {
+				switch (e.key) {
+					case "e":
+						e.preventDefault();
+						expandAll();
+						break;
+					case "w":
+						e.preventDefault();
+						collapseAll();
+						break;
+					default:
+						break;
+				}
+			}
+		};
+
+		document.addEventListener("keydown", handleKeyPress);
+		return () => document.removeEventListener("keydown", handleKeyPress);
+	}, []);
+
+	// Store helper functions in refs for external access (could be used by parent components)
+	React.useEffect(() => {
+		if (treeRef.current) {
+			// Extend the tree ref with our custom helper functions
+			(treeRef.current as any).navigateToDocument = navigateToDocument;
+		}
+	}, []);
+
+	// Dynamically compute expanded items (root + depth 1 elements)
+	const expandedItems = useMemo(() => {
+		const treeData = dataProvider.getAllData();
+		const rootItem = treeData["root"];
+		if (!rootItem) return ["root"];
+
+		const depth1Items = rootItem.children || [];
+		return ["root", ...depth1Items];
+	}, [dataProvider]);
 
 	const expandAll = () => {
 		treeRef.current?.expandAll();
-		console.log("Expanded all items");
 	};
 
 	const collapseAll = () => {
 		treeRef.current?.collapseAll();
-		console.log("Collapsed all items");
 	};
 
 	// Action handlers
@@ -443,43 +513,6 @@ function TreeContainer() {
 		console.log("Unarchived item:", itemId);
 	};
 
-	// Keyboard shortcuts for additional tree control
-	React.useEffect(() => {
-		const handleKeyPress = (e: KeyboardEvent) => {
-			// Only handle if the tree area is focused (not when typing in search input)
-			const isTreeFocused = document.activeElement?.closest(".rct-tree-root") !== null;
-
-			if (isTreeFocused && e.ctrlKey) {
-				switch (e.key) {
-					case "e":
-						e.preventDefault();
-						expandAll();
-						break;
-					case "w":
-						e.preventDefault();
-						collapseAll();
-						break;
-					default:
-						break;
-				}
-			}
-		};
-
-		document.addEventListener("keydown", handleKeyPress);
-		return () => document.removeEventListener("keydown", handleKeyPress);
-	}, []);
-
-	// Store helper functions in refs for external access (could be used by parent components)
-	React.useEffect(() => {
-		if (treeRef.current) {
-			// Extend the tree ref with our custom helper functions
-			(treeRef.current as any).navigateToDocument = navigateToDocument;
-			(treeRef.current as any).expandToPath = expandToPath;
-			(treeRef.current as any).expandAll = expandAll;
-			(treeRef.current as any).collapseAll = collapseAll;
-		}
-	}, []);
-
 	return (
 		<div className={cn("p-2", isDarkMode && "rct-dark")}>
 			<UncontrolledTreeEnvironment
@@ -490,7 +523,7 @@ function TreeContainer() {
 				canReorderItems={true}
 				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
 				renderRenameInput={({ inputProps, inputRef, formProps }) => (
-					<TreeRenameInput inputProps={inputProps} inputRef={inputRef as any} formProps={formProps} treeRef={treeRef} />
+					<TreeRenameInput inputProps={inputProps} inputRef={inputRef as any} formProps={formProps} />
 				)}
 				onPrimaryAction={(item, treeId) => {
 					// Handle primary action (title click) - selection only, no expansion
@@ -524,7 +557,7 @@ function TreeContainer() {
 
 					return (
 						<div {...context.arrowProps} className="DocsSidebarTreeArrow flex h-4 w-4 items-center justify-center">
-							<TooltipIconButton
+							<IconButton
 								tooltip={context.isExpanded ? "Collapse file" : "Expand file"}
 								side="bottom"
 								variant="ghost"
@@ -532,7 +565,7 @@ function TreeContainer() {
 								className="h-4 w-4 p-0 text-muted-foreground hover:text-foreground"
 							>
 								{context.isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-							</TooltipIconButton>
+							</IconButton>
 						</div>
 					);
 				}}
@@ -570,7 +603,7 @@ function TreeContainer() {
 				}}
 				viewState={{
 					"docs-tree": {
-						expandedItems: ["root", "getting-started", "user-guide", "api", "tutorials", "troubleshooting"],
+						expandedItems,
 					},
 				}}
 				renderItem={({ item, depth, children, title, context, arrow }) => {
@@ -609,12 +642,14 @@ function TreeContainer() {
 }
 
 // Props interface for the DocsSidebar wrapper component
-export interface DocsSidebar_Props extends React.ComponentProps<typeof Sidebar> {
-	onClose?: (() => void) | undefined;
-}
+export type DocsSidebar_Props = React.ComponentProps<typeof Sidebar> & {
+	onClose: () => void;
+};
 
 // Main sidebar wrapper component
-export function DocsSidebar({ onClose, className, ...props }: DocsSidebar_Props) {
+export function DocsSidebar(props: DocsSidebar_Props) {
+	const { onClose, className, ...rest } = props;
+
 	return (
 		<SidebarProvider className={cn("DocsSidebar", "flex h-full w-full")}>
 			<DocsSearchContextProvider>
@@ -625,7 +660,7 @@ export function DocsSidebar({ onClose, className, ...props }: DocsSidebar_Props)
 						collapsible="none"
 						className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
 						style={{ borderRight: "none !important", width: "320px" }}
-						{...props}
+						{...rest}
 					>
 						<DocsSidebarContent onClose={onClose} />
 					</Sidebar>
