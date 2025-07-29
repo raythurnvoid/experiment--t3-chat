@@ -18,7 +18,7 @@
 		"+personal/sources/**": true
 	},
 	"files.associations": {
-		"**/src/app.css": "tailwindcss"
+		"packages/app/src/*.css": "tailwindcss"
 	},
 	"terminal.integrated.cwd": "packages/app",
 	"typescript.tsdk": "node_modules/typescript/lib",

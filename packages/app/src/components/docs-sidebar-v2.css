@@ -1,1 +1,30 @@
+@reference "@/app.css";
 
+@layer components {
+	/* Both navigation and tree selection active */
+	.TreeItemComponent-dual-selected {
+		@apply relative border-l-4 border-green-600 bg-green-600/10;
+	}
+
+	.dark .TreeItemComponent-dual-selected {
+		@apply border-green-400 bg-green-400/15;
+	}
+
+	/* Selection badge for multi-selection counter */
+	.TreeItemComponent-selection-badge {
+		@apply absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-blue-500 text-xs font-medium text-white;
+	}
+
+	.dark .TreeItemComponent-selection-badge {
+		@apply bg-blue-400 text-slate-950;
+	}
+
+	/* Selection counter in header */
+	.TreeContainer-selection-counter {
+		@apply rounded-md bg-blue-500/10 px-2 py-1 text-sm font-medium text-blue-500;
+	}
+
+	.dark .TreeContainer-selection-counter {
+		@apply bg-blue-400/15 text-blue-400;
+	}
+}

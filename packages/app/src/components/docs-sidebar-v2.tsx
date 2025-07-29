@@ -94,6 +94,9 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 
 	const treeRef = useRef<TreeRef | null>(null);
 
+	// Track multi-selection count from TreeContainer
+	const [multiSelectionCount, setMultiSelectionCount] = useState(0);
+
 	// Handler functions for tree actions
 	const handleFold = () => {
 		treeRef.current?.collapseAll();
@@ -113,6 +116,11 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		}
 	};
 
+	const handleClearSelection = () => {
+		// Clear all tree selections
+		treeRef.current?.selectItems([]);
+	};
+
 	return (
 		<div className={cn("DocsSidebarContent", "flex h-full flex-col")}>
 			<SidebarHeader className="border-b">
@@ -129,6 +137,16 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 						<X />
 					</IconButton>
 				</div>
+
+				{/* Multi-selection counter */}
+				{multiSelectionCount > 1 && (
+					<div className="TreeContainer-selection-counter mb-4">
+						<span className="font-medium">{multiSelectionCount} items selected</span>
+						<button onClick={handleClearSelection} className="ml-auto text-xs hover:underline">
+							Clear
+						</button>
+					</div>
+				)}
 
 				{/* Search Form */}
 				<div className={cn("DocsSidebarContent-search-container", "relative mb-4")}>
@@ -198,7 +216,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
-				<TreeContainer ref={treeRef} />
+				<TreeContainer ref={treeRef} onMultiSelectionChange={setMultiSelectionCount} />
 			</SidebarContent>
 		</div>
 	);
@@ -236,7 +254,10 @@ function TreeItemComponent({
 }: TreeItemComponent_Props) {
 	const triggerId = React.useId(); // Now properly used in a component
 	const data = item.data as DocData;
-	const isSelected = selectedDocId === item.index;
+
+	// Different types of selection states
+	const isNavigated = selectedDocId === item.index; // Single navigation selection (current document)
+
 	const isPlaceholder = data.type === "placeholder";
 	const isArchived = archivedItems.has(item.index.toString());
 
@@ -279,7 +300,15 @@ function TreeItemComponent({
 				className={cn(
 					"DocsSidebarTreeItem-container",
 					"block w-full cursor-pointer rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-					isSelected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
+
+					isNavigated && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
+
+					context.isSelected && "ring-4 ring-sidebar-ring",
+
+					// Focus state
+					context.isFocused && "outline-3 brightness-125",
+
+					// Archived state
 					isArchived && "line-through opacity-60",
 					"group-[.TreeContainer-focused]/tree-container:has-[.TreeItemComponent-button:focus]:outline-3",
 				)}
@@ -405,10 +434,11 @@ function TreeRenameInput({ inputProps, inputRef, formProps }: TreeRenameInput_Pr
 // Props interface for TreeContainer using React 19 ref pattern
 type TreeContainer_Props = {
 	ref: React.RefObject<TreeRef | null>;
+	onMultiSelectionChange?: (count: number) => void;
 };
 
 // Separate component to use the theme context
-function TreeContainer({ ref: treeRef }: TreeContainer_Props) {
+function TreeContainer({ ref: treeRef, onMultiSelectionChange }: TreeContainer_Props) {
 	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
 
 	// Get document navigation from parent context
@@ -423,75 +453,28 @@ function TreeContainer({ ref: treeRef }: TreeContainer_Props) {
 		return provider;
 	}, []); // Empty dependency array - provider should only be created once
 
-	// Keyboard shortcuts for additional tree control
-	React.useEffect(() => {
-		const handleKeyPress = (e: KeyboardEvent) => {
-			// Only handle if the tree area is focused (not when typing in search input)
-			const isTreeFocused = document.activeElement?.closest(".rct-tree-root") !== null;
-
-			if (isTreeFocused && e.ctrlKey) {
-				switch (e.key) {
-					case "e":
-						e.preventDefault();
-						expandAll();
-						break;
-					case "w":
-						e.preventDefault();
-						collapseAll();
-						break;
-					default:
-						break;
-				}
-			}
-		};
-
-		document.addEventListener("keydown", handleKeyPress);
-		return () => document.removeEventListener("keydown", handleKeyPress);
-	}, []);
-
-	// Store helper functions in refs for external access (could be used by parent components)
-	React.useEffect(() => {
-		if (treeRef.current) {
-			// Extend the tree ref with our custom helper functions
-			(treeRef.current as any).navigateToDocument = navigateToDocument;
-		}
-	}, []);
-
-	// Dynamically compute expanded items (root + depth 1 elements)
+	// Get expanded items for view state
 	const expandedItems = useMemo(() => {
-		const treeData = dataProvider.getAllData();
-		const rootItem = treeData["root"];
-		if (!rootItem) return ["root"];
+		if (!dataProvider) return [];
+		const allData = dataProvider.getAllData();
+		const expanded: string[] = [];
 
-		const depth1Items = rootItem.children || [];
-		return ["root", ...depth1Items];
-	}, [dataProvider]);
+		Object.values(allData).forEach((item) => {
+			if (item.isFolder && item.children && item.children.length > 0) {
+				expanded.push(item.index.toString());
+			}
+		});
 
-	const expandAll = () => {
-		treeRef.current?.expandAll();
-	};
-
-	const collapseAll = () => {
-		treeRef.current?.collapseAll();
-	};
+		return expanded;
+	}, [dataProvider, searchQuery]); // Re-calculate when search query changes
 
 	// Action handlers
 	const handleAddChild = (parentId: string) => {
-		// First, expand the parent item if it's not already expanded
-		treeRef.current?.expandItem(parentId);
-
-		const newItemId = dataProvider.createNewItem(parentId, "Untitled", "document");
-		console.log("Created new item:", newItemId, "in parent:", parentId);
-
-		// Enhanced UX: Auto-select, focus, and start renaming the new item
-		navigateToDocument(newItemId);
-
-		// Use setTimeout to ensure the item is rendered before we interact with it
-		setTimeout(() => {
-			treeRef.current?.selectItems([newItemId]);
-			treeRef.current?.focusItem(newItemId, true);
-			treeRef.current?.startRenamingItem(newItemId);
-		}, 50);
+		if (dataProviderRef.current) {
+			const newItemId = dataProviderRef.current.createNewItem(parentId, "New Document", "document");
+			navigateToDocument(newItemId);
+			console.log("Created new document:", newItemId);
+		}
 	};
 
 	const handleArchive = (itemId: string) => {
@@ -526,30 +509,27 @@ function TreeContainer({ ref: treeRef }: TreeContainer_Props) {
 					<TreeRenameInput inputProps={inputProps} inputRef={inputRef as any} formProps={formProps} />
 				)}
 				onPrimaryAction={(item, treeId) => {
-					// Handle primary action (title click) - selection only, no expansion
-					// Skip navigation for placeholder and folder items
+					console.log("Primary action (regular click):", item.data.title);
 					if (shouldNavigateToDocument(item.data.type)) {
 						navigateToDocument(item.index.toString());
 					}
-					console.log(`Primary action on ${item.data.type}:`, item.data.title);
 				}}
 				onSelectItems={(items, treeId) => {
-					// Handle selection changes from built-in selection logic
-					const selectedItem = items.length > 0 ? items[0] : null;
-					const selectedItemId = selectedItem?.toString() || null;
+					// 🎯 Track all selection changes (including multi-selection)
+					onMultiSelectionChange?.(items.length);
+					console.log(
+						"Selection changed:",
+						items.length > 1
+							? `${items.length} items selected`
+							: items.length === 1
+								? "1 item selected"
+								: "No items selected",
+					);
 
-					// Only navigate for document items, not folders or placeholders
-					if (selectedItemId) {
-						const provider = dataProviderRef.current;
-						if (provider) {
-							const allData = provider.getAllData();
-							const itemData = allData[selectedItemId];
-							if (itemData && shouldNavigateToDocument(itemData.data.type)) {
-								navigateToDocument(selectedItemId);
-							}
-						}
+					if (items.length > 1) {
+						console.log("Multi-selection active - ready for drag operations");
 					}
-					console.log("Selection changed:", items);
+					// Note: Navigation is handled by onPrimaryAction, not here
 				}}
 				renderItemArrow={({ item, context }) => {
 					// Only render arrow for folders
