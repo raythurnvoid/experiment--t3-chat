@@ -6,6 +6,83 @@ alwaysApply: false
 
 React Components Guidelines
 
+# Component Function Signature Pattern
+
+## MANDATORY: Props Parameter Pattern
+
+**CRITICAL**: All React components MUST use a single `props` parameter instead of destructuring in the function signature, followed by destructuring on the first line of the component.
+
+### ✅ Correct Pattern:
+
+```tsx
+interface ComponentName_Props {
+	title: string;
+	isActive: boolean;
+	onClick: () => void;
+	className?: string;
+}
+
+function ComponentName(props: ComponentName_Props) {
+	const { title, isActive, onClick, className, ...rest } = props;
+	// Component logic here
+
+	return (
+		<div className={cn("ComponentName", className)} {...rest}>
+			{title}
+		</div>
+	);
+}
+```
+
+### ❌ Avoid: Destructuring in Function Signature
+
+```tsx
+// ❌ DON'T DO THIS
+function ComponentName({ title, isActive, onClick, className }: ComponentName_Props) {
+	// Component logic
+}
+```
+
+### Benefits of This Pattern:
+
+1. **Props object access**: Full `props` object remains available for debugging and conditional logic
+2. **Rest parameters**: Easy access to `...rest` for spreading unused props
+3. **Flexibility**: Can conditionally destructure props or pass entire props object to children
+4. **Debugging**: Can log entire `props` object when troubleshooting
+5. **Prop forwarding**: Easier to forward all props to child components when needed
+
+### Examples with Rest Parameters:
+
+```tsx
+function Button(props: Button_Props) {
+	const { variant, size, className, children, ...rest } = props;
+
+	return (
+		<button
+			className={cn("Button", VARIANTS[variant], SIZES[size], className)}
+			{...rest} // Forward all other DOM props
+		>
+			{children}
+		</button>
+	);
+}
+
+function CustomInput(props: CustomInput_Props) {
+	const { label, error, className, ...inputProps } = props;
+
+	return (
+		<div className={cn("CustomInput-wrapper", className)}>
+			<label>{label}</label>
+			<input
+				className={cn("CustomInput-field", error && "CustomInput-field-error")}
+				{...inputProps} // Forward all input-specific props
+			/>
+			{error && <span className="CustomInput-error">{error}</span>}
+		</div>
+	);
+}
+```
+
 # Understanding Component Styles First
 
 ## Critical: Read Component Styles Before Custom Solutions
@@ -110,11 +187,13 @@ interface Button_Props extends React.ComponentProps<"button"> {
 	children?: React.ReactNode;
 }
 
-function Button({ className, variant = "default", size = "default", ...props }: Button_Props) {
+function Button(props: Button_Props) {
+	const { className, variant = "default", size = "default", ...rest } = props;
+
 	return (
 		<button
 			className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)}
-			{...props} // ✅ Works because props use camelCase
+			{...rest} // ✅ Works because props use camelCase
 		/>
 	);
 }
@@ -133,7 +212,9 @@ interface SearchFilter_Props {
 	className?: string; // Will be manually assigned - camelCase
 }
 
-function SearchFilter({ searchQuery, onSearchChange, showArchived, className }: SearchFilter_Props) {
+function SearchFilter(props: SearchFilter_Props) {
+	const { searchQuery, onSearchChange, showArchived, className } = props;
+
 	return (
 		<div className={cn("SearchFilter", className)}>
 			<input
@@ -155,19 +236,16 @@ interface CustomButton_Props extends React.ComponentProps<"button"> {
 	specialMode?: "normal" | "enhanced"; // Custom prop - camelCase
 }
 
-function CustomButton({
-	customBehavior,
-	specialMode,
-	className,
-	...props // DOM props in camelCase for spreading
-}: CustomButton_Props) {
+function CustomButton(props: CustomButton_Props) {
+	const { customBehavior, specialMode, className, ...rest } = props;
+
 	// Local variables use camelCase
 	const enhancedClass = specialMode === "enhanced" ? "CustomButton-enhanced" : "";
 
 	return (
 		<button
 			className={cn("CustomButton", enhancedClass, className)}
-			{...props} // ✅ Safe to spread DOM props
+			{...rest} // ✅ Safe to spread DOM props
 		/>
 	);
 }
@@ -186,8 +264,9 @@ function CustomButton({
 ### ✅ Correct Local Symbol Usage:
 
 ```tsx
-function SearchComponent() {
-	const [searchQuery, setSearchQuery] = useState("");
+function SearchComponent(props: SearchComponent_Props) {
+	const { initialQuery } = props;
+	const [searchQuery, setSearchQuery] = useState(initialQuery || "");
 	const [isLoading, setIsLoading] = useState(false);
 
 	const handleSearchChange = useCallback((value: string) => {
@@ -211,9 +290,10 @@ function SearchComponent() {
 When interfacing with external APIs or libraries that use camelCase, keep their naming as-is and use camelCase for your local transformations:
 
 ```tsx
-function UserProfile() {
+function UserProfile(props: UserProfile_Props) {
+	const { userId } = props;
 	// External API uses camelCase - keep as-is
-	const { firstName, lastName } = useUser();
+	const { firstName, lastName } = useUser(userId);
 
 	// Local transformations use camelCase
 	const [displayName, setDisplayName] = useState("");
@@ -279,7 +359,8 @@ const useSearchContext = () => {
 };
 
 // Provider component with camelCase state
-function SearchContextProvider({ children }: { children: ReactNode }) {
+function SearchContextProvider(props: { children: ReactNode }) {
+	const { children } = props;
 	const [searchQuery, setSearchQuery] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
 
@@ -326,18 +407,22 @@ interface ButtonProps {
 	children: React.ReactNode;
 }
 
-function Button({ ref, children, ...props }: ButtonProps) {
+function Button(props: ButtonProps) {
+	const { ref, children, ...rest } = props;
+
 	return (
-		<button ref={ref} {...props}>
+		<button ref={ref} {...rest}>
 			{children}
 		</button>
 	);
 }
 
 // ✅ Still supported: forwardRef (traditional way)
-const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({ children, ...props }, ref) {
+const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(props, ref) {
+	const { children, ...rest } = props;
+
 	return (
-		<button ref={ref} {...props}>
+		<button ref={ref} {...rest}>
 			{children}
 		</button>
 	);
@@ -358,9 +443,11 @@ export type IconButton_Props = React.ComponentProps<typeof Button> & {
 	ref?: React.RefObject<HTMLButtonElement>;
 };
 
-export function IconButton({ children, tooltip, side = "bottom", className, ref, ...props }: IconButton_Props) {
+export function IconButton(props: IconButton_Props) {
+	const { children, tooltip, side = "bottom", className, ref, ...rest } = props;
+
 	return (
-		<Button ref={ref} className={cn("IconButton", className)} {...props}>
+		<Button ref={ref} className={cn("IconButton", className)} {...rest}>
 			{children}
 		</Button>
 	);
@@ -379,11 +466,10 @@ export function IconButton({ children, tooltip, side = "bottom", className, ref,
 
 ```tsx
 // ❌ AVOID: forwardRef when not needed (React 19)
-export const IconButton = forwardRef<HTMLButtonElement, IconButton_Props>(
-	({ children, tooltip, side = "bottom", className, ...props }, ref) => {
-		// Component logic
-	},
-);
+export const IconButton = forwardRef<HTMLButtonElement, IconButton_Props>((props, ref) => {
+	const { children, tooltip, side = "bottom", className, ...rest } = props;
+	// Component logic
+});
 
 // ❌ AVOID: Manual displayName when using function declarations
 IconButton.displayName = "IconButton"; // Unnecessary with function declarations
@@ -400,7 +486,8 @@ Only use `forwardRef` in React 19 when:
 ```tsx
 // ✅ Acceptable: When library integration requires it
 const CustomInput = forwardRef<HTMLInputElement, CustomInputProps>(function CustomInput(props, ref) {
-	return <SomeLibraryInput {...props} ref={ref} />;
+	const { ...inputProps } = props;
+	return <SomeLibraryInput {...inputProps} ref={ref} />;
 });
 ```
 
@@ -410,7 +497,8 @@ const CustomInput = forwardRef<HTMLInputElement, CustomInputProps>(function Cust
 
 ```tsx
 // ✅ React 19: Callback refs with cleanup
-function ResizeObserverComponent() {
+function ResizeObserverComponent(props: ResizeObserverComponent_Props) {
+	const { onResize } = props;
 	const [height, setHeight] = useState(0);
 
 	const measuredRef = (node: HTMLDivElement | null) => {
@@ -418,6 +506,7 @@ function ResizeObserverComponent() {
 
 		const observer = new ResizeObserver(([entry]) => {
 			setHeight(entry.contentRect.height);
+			onResize?.(entry.contentRect.height);
 		});
 
 		observer.observe(node);
@@ -458,10 +547,11 @@ function useCombinedRef<T>(...refs: RefItem<T>[]) {
 
 // Usage
 const Input = forwardRef<HTMLInputElement, InputProps>(function Input(props, ref) {
+	const { ...inputProps } = props;
 	const localRef = useRef<HTMLInputElement>(null);
 	const combinedRef = useCombinedRef(ref, localRef);
 
-	return <input {...props} ref={combinedRef} />;
+	return <input {...inputProps} ref={combinedRef} />;
 });
 ```
 
@@ -521,8 +611,9 @@ function scrollIntoView(node: HTMLElement | null) {
 	}
 }
 
-function Component() {
-	return <div ref={scrollIntoView}>Content</div>;
+function Component(props: Component_Props) {
+	const { children } = props;
+	return <div ref={scrollIntoView}>{children}</div>;
 }
 ```
 
@@ -612,7 +703,7 @@ interface ComponentProps {
 ```tsx
 <button className={cn(
   "ComposerAction-send-button",
-  is_loading && "ComposerAction-send-button-loading",
+  isLoading && "ComposerAction-send-button-loading",
   "my-2.5 size-8 p-2"
 )}>
 ```
@@ -640,7 +731,7 @@ When adding custom classes, use the prefixed naming pattern directly:
 ```tsx
 // Custom class example
 <div
-	ref={user_button_ref}
+	ref={userButtonRef}
 	className={cn(
 		"MainAppSidebar-clerk-wrapper", // New custom class with proper prefix
 		"absolute sr-only right-[-30px] bottom-0 h-0 w-0"
@@ -690,8 +781,10 @@ type Button_Props = React.ComponentProps<"button"> & {
 	size?: Size;
 };
 
-function Button({ className, variant = "default", size = "default", ...props }: Button_Props) {
-	return <button className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)} {...props} />;
+function Button(props: Button_Props) {
+	const { className, variant = "default", size = "default", ...rest } = props;
+
+	return <button className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)} {...rest} />;
 }
 ```
 
@@ -703,7 +796,9 @@ Allow `null` as a valid value to opt out of variant styling entirely:
 type Variant = keyof typeof BUTTON_VARIANTS | null;
 
 // Usage in JSX with null check
-function Button({ className, variant = "default", size = "default", ...props }: Button_Props) {
+function Button(props: Button_Props) {
+	const { className, variant = "default", size = "default", ...rest } = props;
+
 	return (
 		<button
 			className={cn(
@@ -712,7 +807,7 @@ function Button({ className, variant = "default", size = "default", ...props }: 
 				size && BUTTON_SIZES[size],
 				className,
 			)}
-			{...props}
+			{...rest}
 		/>
 	);
 }
@@ -732,7 +827,8 @@ interface ShowArchivedCheckbox_Props {
 	className?: string; // camelCase - for DOM compatibility
 }
 
-function ShowArchivedCheckbox({ checked, onCheckedChange, className }: ShowArchivedCheckbox_Props) {
+function ShowArchivedCheckbox(props: ShowArchivedCheckbox_Props) {
+	const { checked, onCheckedChange, className } = props;
 	const checkboxId = React.useId(); // Local variable - camelCase
 
 	return (
@@ -848,3 +944,4 @@ const handleToggle = useCallback(async (newValue: boolean) => {
 - **Modern React patterns**: Leverage React 19 features like the `use` hook and new ref patterns
 - **Future-proof**: Compatible with React Compiler and modern React development
 - **Consistent naming**: Root-level exports use snake_case for namespacing, local variables use camelCase for consistency with modern JavaScript conventions
+- **Props accessibility**: Full props object available for debugging, conditional logic, and flexible prop forwarding

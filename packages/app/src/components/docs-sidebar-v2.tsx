@@ -25,6 +25,7 @@ import {
 	type TreeRef,
 	type TreeItemRenderContext,
 	type TreeItem,
+	type TreeInformation,
 } from "react-complex-tree";
 import {
 	useDocumentNavigation,
@@ -32,6 +33,7 @@ import {
 	createTreeDataWithPlaceholders,
 	NotionLikeDataProvider,
 	type DocData,
+	type docs_TypedUncontrolledTreeEnvironmentProps,
 } from "@/stores/docs-store";
 
 // Search Context
@@ -82,6 +84,32 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 	);
 }
 
+interface TreeItemArrow_Props {
+	item: TreeItem<DocData>;
+	context: TreeItemRenderContext;
+	info: TreeInformation;
+}
+
+function TreeItemArrow({ item, context }: TreeItemArrow_Props) {
+	// Only render arrow for folders
+	if (!item.isFolder) return null;
+
+	return (
+		<IconButton
+			tooltip={context.isExpanded ? "Collapse file" : "Expand file"}
+			side="bottom"
+			variant="ghost"
+			size="icon"
+			className={cn(
+				"DocsSidebar-TreeItemArrow",
+				"flex h-5 w-5 items-center justify-center p-0 text-muted-foreground hover:text-foreground",
+			)}
+		>
+			{context.isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+		</IconButton>
+	);
+}
+
 type DocsSidebarContent_Props = {
 	onClose: () => void;
 };
@@ -119,6 +147,10 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	const handleClearSelection = () => {
 		// Clear all tree selections
 		treeRef.current?.selectItems([]);
+	};
+
+	const handleSelectItems: TreeContainer_Props["onSelectItems"] = (items, treeId) => {
+		setMultiSelectionCount(items.length);
 	};
 
 	return (
@@ -216,13 +248,12 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
-				<TreeContainer ref={treeRef} onMultiSelectionChange={setMultiSelectionCount} />
+				<TreeContainer ref={treeRef} onSelectItems={handleSelectItems} />
 			</SidebarContent>
 		</div>
 	);
 }
 
-// Tree Item Component - extracted to properly use hooks
 type TreeItemComponent_Props = {
 	item: TreeItem<DocData>;
 	depth: number;
@@ -230,6 +261,7 @@ type TreeItemComponent_Props = {
 	title: React.ReactNode;
 	context: TreeItemRenderContext;
 	arrow: React.ReactNode;
+	info: TreeInformation;
 	selectedDocId: string | null;
 	archivedItems: Set<string>;
 	showArchived: boolean;
@@ -238,20 +270,22 @@ type TreeItemComponent_Props = {
 	onUnarchive: (itemId: string) => void;
 };
 
-function TreeItemComponent({
-	item,
-	depth,
-	children,
-	title,
-	context,
-	arrow,
-	selectedDocId,
-	archivedItems,
-	showArchived,
-	onAdd,
-	onArchive,
-	onUnarchive,
-}: TreeItemComponent_Props) {
+function TreeItemComponent(props: TreeItemComponent_Props) {
+	const {
+		item,
+		depth,
+		children,
+		title,
+		context,
+		arrow,
+		selectedDocId,
+		archivedItems,
+		showArchived,
+		onAdd,
+		onArchive,
+		onUnarchive,
+	} = props;
+
 	const triggerId = React.useId(); // Now properly used in a component
 	const data = item.data as DocData;
 
@@ -306,11 +340,10 @@ function TreeItemComponent({
 					context.isSelected && "ring-4 ring-sidebar-ring",
 
 					// Focus state
-					context.isFocused && "outline-3 brightness-125",
+					context.isFocused && "outline-3",
 
 					// Archived state
 					isArchived && "line-through opacity-60",
-					"group-[.TreeContainer-focused]/tree-container:has-[.TreeItemComponent-button:focus]:outline-3",
 				)}
 				htmlFor={triggerId}
 			>
@@ -412,14 +445,19 @@ function TreeItemComponent({
 	);
 }
 
-type TreeRenameInput_Props = {
+type TreeRenameInputComponent_Props = {
+	item: TreeItem<DocData>;
 	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
-	inputRef: React.RefObject<HTMLInputElement | null>;
+	inputRef: React.Ref<HTMLInputElement>;
+	submitButtonProps: React.HTMLProps<any>;
+	submitButtonRef: React.Ref<any>;
 	formProps: React.FormHTMLAttributes<HTMLFormElement>;
 };
 
-function TreeRenameInput({ inputProps, inputRef, formProps }: TreeRenameInput_Props) {
-	// Override native
+function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
+	const { inputProps, inputRef, formProps } = props;
+
+	// Override native blur behavior
 	const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
 		e.target.form?.requestSubmit();
 	};
@@ -431,14 +469,35 @@ function TreeRenameInput({ inputProps, inputRef, formProps }: TreeRenameInput_Pr
 	);
 }
 
+type TreeContainerComponent_Props = {
+	children: React.ReactNode;
+	containerProps: React.HTMLProps<any>;
+	info: TreeInformation;
+};
+
+function TreeContainerComponent(props: TreeContainerComponent_Props) {
+	const { children, containerProps, info } = props;
+
+	return (
+		<div
+			{...containerProps}
+			className={cn("TreeContainer", info.isFocused && "TreeContainer-focused", "group/tree-container")}
+		>
+			{children}
+		</div>
+	);
+}
+
+const TREE_ID = "docs-tree";
+
 // Props interface for TreeContainer using React 19 ref pattern
 type TreeContainer_Props = {
 	ref: React.RefObject<TreeRef | null>;
-	onMultiSelectionChange?: (count: number) => void;
+	onSelectItems?: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
 };
 
 // Separate component to use the theme context
-function TreeContainer({ ref: treeRef, onMultiSelectionChange }: TreeContainer_Props) {
+function TreeContainer({ ref: treeRef, onSelectItems }: TreeContainer_Props) {
 	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
 
 	// Get document navigation from parent context
@@ -496,6 +555,48 @@ function TreeContainer({ ref: treeRef, onMultiSelectionChange }: TreeContainer_P
 		console.log("Unarchived item:", itemId);
 	};
 
+	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (item, treeId) => {
+		if (!shouldNavigateToDocument(item.data.type)) return;
+
+		navigateToDocument(item.index.toString());
+	};
+
+	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
+		item,
+		context,
+	) => {
+		// Default behavior for expanded state
+		const defaultShouldRender = item.isFolder && context.isExpanded;
+
+		// If not expanded, don't render children
+		if (!defaultShouldRender) {
+			return false;
+		}
+
+		// For placeholder items, always render if expanded
+		if (item.data.type === "placeholder") {
+			return true;
+		}
+
+		// Filter children based on search query
+		if (item.children && item.children.length > 0 && searchQuery.trim()) {
+			const hasVisibleChildren = item.children.some((childId) => {
+				// Check if child matches search query
+				const childItem = dataProvider.getAllData()[childId];
+				if (childItem) {
+					const titleMatches = childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
+					// For now, just check title match. Could add recursive search here if needed
+					return titleMatches;
+				}
+				return false;
+			});
+
+			return hasVisibleChildren;
+		}
+
+		return defaultShouldRender;
+	};
+
 	return (
 		<div className={cn("p-2", isDarkMode && "rct-dark")}>
 			<UncontrolledTreeEnvironment
@@ -505,117 +606,37 @@ function TreeContainer({ ref: treeRef, onMultiSelectionChange }: TreeContainer_P
 				canDropOnFolder={true}
 				canReorderItems={true}
 				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
-				renderRenameInput={({ inputProps, inputRef, formProps }) => (
-					<TreeRenameInput inputProps={inputProps} inputRef={inputRef as any} formProps={formProps} />
-				)}
-				onPrimaryAction={(item, treeId) => {
-					console.log("Primary action (regular click):", item.data.title);
-					if (shouldNavigateToDocument(item.data.type)) {
-						navigateToDocument(item.index.toString());
-					}
+				canInvokePrimaryActionOnItemContainer={true}
+				shouldRenderChildren={handleShouldRenderChildren}
+				renderRenameInput={(props) => {
+					return <TreeRenameInputComponent {...props} />;
 				}}
-				onSelectItems={(items, treeId) => {
-					// 🎯 Track all selection changes (including multi-selection)
-					onMultiSelectionChange?.(items.length);
-					console.log(
-						"Selection changed:",
-						items.length > 1
-							? `${items.length} items selected`
-							: items.length === 1
-								? "1 item selected"
-								: "No items selected",
-					);
-
-					if (items.length > 1) {
-						console.log("Multi-selection active - ready for drag operations");
-					}
-					// Note: Navigation is handled by onPrimaryAction, not here
-				}}
-				renderItemArrow={({ item, context }) => {
-					// Only render arrow for folders
-					if (!item.isFolder) return null;
-
-					return (
-						<div {...context.arrowProps} className="DocsSidebarTreeArrow flex h-4 w-4 items-center justify-center">
-							<IconButton
-								tooltip={context.isExpanded ? "Collapse file" : "Expand file"}
-								side="bottom"
-								variant="ghost"
-								size="icon"
-								className="h-4 w-4 p-0 text-muted-foreground hover:text-foreground"
-							>
-								{context.isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-							</IconButton>
-						</div>
-					);
-				}}
-				shouldRenderChildren={(item, context) => {
-					// Default behavior for expanded state
-					const defaultShouldRender = item.isFolder && context.isExpanded;
-
-					// If not expanded, don't render children
-					if (!defaultShouldRender) {
-						return false;
-					}
-
-					// For placeholder items, always render if expanded
-					if (item.data.type === "placeholder") {
-						return true;
-					}
-
-					// Filter children based on search query
-					if (item.children && item.children.length > 0 && searchQuery.trim()) {
-						const hasVisibleChildren = item.children.some((childId) => {
-							// Check if child matches search query
-							const childItem = dataProvider.getAllData()[childId];
-							if (childItem) {
-								const titleMatches = childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
-								// For now, just check title match. Could add recursive search here if needed
-								return titleMatches;
-							}
-							return false;
-						});
-
-						return hasVisibleChildren;
-					}
-
-					return defaultShouldRender;
-				}}
+				onPrimaryAction={handlePrimaryAction}
+				onSelectItems={onSelectItems}
+				renderItemArrow={(props) => <TreeItemArrow {...props} />}
 				viewState={{
-					"docs-tree": {
+					[TREE_ID]: {
 						expandedItems,
 					},
 				}}
-				renderItem={({ item, depth, children, title, context, arrow }) => {
+				renderItem={(props) => {
 					return (
 						<TreeItemComponent
-							item={item}
-							depth={depth}
-							children={children}
-							title={title}
-							context={context}
-							arrow={arrow}
+							{...props}
 							selectedDocId={selectedDocId}
 							archivedItems={archivedItems}
+							showArchived={showArchived}
 							onAdd={handleAddChild}
 							onArchive={handleArchive}
 							onUnarchive={handleUnarchive}
-							showArchived={showArchived}
 						/>
 					);
 				}}
-				renderTreeContainer={({ children, containerProps, info }) => {
-					return (
-						<div
-							{...containerProps}
-							className={cn("TreeContainer", info.isFocused && "TreeContainer-focused", "group/tree-container")}
-						>
-							{children}
-						</div>
-					);
+				renderTreeContainer={(props) => {
+					return <TreeContainerComponent {...props} />;
 				}}
 			>
-				<Tree ref={treeRef} treeId="docs-tree" rootItem="root" treeLabel="Documentation Tree" />
+				<Tree ref={treeRef} treeId={TREE_ID} rootItem="root" treeLabel="Documentation Tree" />
 			</UncontrolledTreeEnvironment>
 		</div>
 	);

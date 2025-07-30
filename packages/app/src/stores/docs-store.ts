@@ -1,5 +1,5 @@
 import { createContext, use } from "react";
-import type { TreeDataProvider, TreeItemIndex, TreeItem } from "react-complex-tree";
+import type { TreeDataProvider, TreeItemIndex, TreeItem, UncontrolledTreeEnvironmentProps } from "react-complex-tree";
 
 // Document Navigation Context for communication between sidebar and main content
 export interface DocumentNavigationContextType {
@@ -19,9 +19,7 @@ export const useDocumentNavigation = () => {
 
 // Types for document structure - react-complex-tree format
 export interface DocData {
-	id: string;
 	title: string;
-	url: string;
 	type: "document" | "placeholder";
 	content: string; // HTML content for the rich text editor - all documents have content
 }
@@ -35,9 +33,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			isFolder: true,
 			children: ["getting-started", "user-guide"],
 			data: {
-				id: "root",
 				title: "Documentation",
-				url: "#",
 				type: "document",
 				content: `<h1>Documentation</h1><p>Welcome to our docs. Find guides, API reference, and tutorials here.</p>`,
 			},
@@ -49,9 +45,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			isFolder: true,
 			children: ["introduction", "installation", "quick-start"],
 			data: {
-				id: "getting-started",
 				title: "Getting Started",
-				url: "#getting-started",
 				type: "document",
 				content: `<h1>Getting Started</h1><p>Quick guide to get up and running. Follow the steps in order.</p>`,
 			},
@@ -62,9 +56,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "introduction",
 			children: [],
 			data: {
-				id: "introduction",
 				title: "Introduction",
-				url: "#introduction",
 				type: "document",
 				content: `<h1>Introduction</h1><p>Welcome to our documentation! Get started with our platform's core concepts and features.</p>`,
 			},
@@ -75,9 +67,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "installation",
 			children: [],
 			data: {
-				id: "installation",
 				title: "Installation",
-				url: "#installation",
 				type: "document",
 				content: `<h1>Installation</h1><p>Quick setup guide:</p><ol><li>Install Node.js 18+</li><li>Run npm install</li><li>Start the development server</li></ol>`,
 			},
@@ -88,9 +78,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "quick-start",
 			children: [],
 			data: {
-				id: "quick-start",
 				title: "Quick Start Guide",
-				url: "#quick-start",
 				type: "document",
 				content: `<h1>Quick Start</h1><p>Get started in 5 minutes:</p><ol><li>Create account</li><li>Set up workspace</li><li>Create first document</li></ol>`,
 			},
@@ -102,9 +90,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			isFolder: true,
 			children: ["dashboard", "projects", "collaboration"],
 			data: {
-				id: "user-guide",
 				title: "User Guide",
-				url: "#user-guide",
 				type: "document",
 				content: `<h1>User Guide</h1><p>Learn how to use all platform features.</p>`,
 			},
@@ -115,9 +101,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "dashboard",
 			children: [],
 			data: {
-				id: "dashboard",
 				title: "Dashboard Overview",
-				url: "#dashboard",
 				type: "document",
 				content: `<h1>Dashboard Overview</h1><p>Your main control center with project stats, recent activity, and quick actions.</p>`,
 			},
@@ -128,9 +112,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "projects",
 			children: [],
 			data: {
-				id: "projects",
 				title: "Managing Projects",
-				url: "#projects",
 				type: "document",
 				content: `<h1>Managing Projects</h1><p>Create, organize, and manage your projects. Learn about project settings, permissions, and collaboration features.</p>`,
 			},
@@ -142,9 +124,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			isFolder: true,
 			children: [],
 			data: {
-				id: "collaboration",
 				title: "Collaboration",
-				url: "#collaboration",
 				type: "document",
 				content: `<h1>Collaboration</h1><p>Work together with sharing, comments, and real-time editing.</p>`,
 			},
@@ -155,9 +135,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "sharing",
 			children: [],
 			data: {
-				id: "sharing",
 				title: "Sharing Documents",
-				url: "#sharing",
 				type: "document",
 				content: `<h1>Sharing Documents</h1><p>Share documents with team members and external collaborators. Configure permissions and access levels.</p>`,
 			},
@@ -168,9 +146,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			index: "comments",
 			children: [],
 			data: {
-				id: "comments",
 				title: "Comments & Reviews",
-				url: "#comments",
 				type: "document",
 				content: `<h1>Comments & Reviews</h1><p>Add comments, suggestions, and reviews to documents. Track feedback and approve changes collaboratively.</p>`,
 			},
@@ -199,9 +175,7 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 				index: placeholderId,
 				children: [],
 				data: {
-					id: placeholderId,
 					title: "No files inside",
-					url: "#",
 					type: "placeholder",
 					content: "",
 				},
@@ -303,9 +277,7 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				index: newItemId,
 				children: [],
 				data: {
-					id: newItemId,
 					title,
-					url: `#${newItemId}`,
 					type,
 					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 				},
@@ -357,3 +329,5 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		return { ...this.data };
 	}
 }
+
+export type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<DocData>;
