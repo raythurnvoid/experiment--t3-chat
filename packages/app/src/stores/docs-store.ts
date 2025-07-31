@@ -131,28 +131,6 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			canMove: true,
 			canRename: true,
 		},
-		sharing: {
-			index: "sharing",
-			children: [],
-			data: {
-				title: "Sharing Documents",
-				type: "document",
-				content: `<h1>Sharing Documents</h1><p>Share documents with team members and external collaborators. Configure permissions and access levels.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		comments: {
-			index: "comments",
-			children: [],
-			data: {
-				title: "Comments & Reviews",
-				type: "document",
-				content: `<h1>Comments & Reviews</h1><p>Add comments, suggestions, and reviews to documents. Track feedback and approve changes collaboratively.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
 	};
 
 	// Create modified data where all items are foldable and empty ones get placeholders
@@ -184,6 +162,26 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 			};
 		}
 	}
+
+	// ✅ Sort all children arrays BEFORE returning
+	Object.values(modifiedData).forEach((item) => {
+		if (item.children && item.children.length > 0) {
+			item.children = [...item.children].sort((a, b) => {
+				const itemA = modifiedData[a];
+				const itemB = modifiedData[b];
+
+				if (itemA?.data.type === "placeholder") return 1;
+				if (itemB?.data.type === "placeholder") return -1;
+
+				const titleA = itemA?.data.title || "";
+				const titleB = itemB?.data.title || "";
+				return titleA.localeCompare(titleB, undefined, {
+					numeric: true,
+					sensitivity: "base",
+				});
+			});
+		}
+	});
 
 	return modifiedData;
 };
@@ -220,6 +218,7 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
 	constructor(initialData: Record<TreeItemIndex, TreeItem<DocData>>) {
+		// ✅ Store the already-sorted data
 		this.data = { ...initialData };
 	}
 
@@ -233,11 +232,15 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		return item;
 	}
 
+	// ✅ Accept children from library, then sort them before storing
 	async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
 		if (this.data[itemId]) {
+			// Sort the children alphabetically before storing
+			const sortedChildren = this.sortChildren(newChildren);
+
 			this.data[itemId] = {
 				...this.data[itemId],
-				children: newChildren,
+				children: sortedChildren,
 			};
 			this.notifyTreeChange([itemId]);
 		}
@@ -255,6 +258,7 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		};
 	}
 
+	// ✅ Re-sort parent after rename (title affects alphabetical order)
 	async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
 		const updatedItem = {
 			...item,
@@ -262,6 +266,17 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		};
 		this.data[item.index] = updatedItem;
 		this.notifyTreeChange([item.index]);
+
+		// Find parent and re-sort its children since title changed
+		const parentItem = Object.values(this.data).find((parent) => parent.children?.includes(item.index));
+		if (parentItem && parentItem.children) {
+			const sortedChildren = this.sortChildren(parentItem.children);
+			this.data[parentItem.index] = {
+				...parentItem,
+				children: sortedChildren,
+			};
+			this.notifyTreeChange([parentItem.index]);
+		}
 	}
 
 	// Custom methods for Notion-like operations
@@ -319,7 +334,24 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		return newItemId;
 	}
 
-	// Helper methods
+	// Helper methods for sorting
+	private sortChildren(children: TreeItemIndex[]): TreeItemIndex[] {
+		return [...children].sort((a, b) => {
+			const itemA = this.data[a];
+			const itemB = this.data[b];
+
+			if (itemA?.data.type === "placeholder") return 1;
+			if (itemB?.data.type === "placeholder") return -1;
+
+			const titleA = itemA?.data.title || "";
+			const titleB = itemB?.data.title || "";
+			return titleA.localeCompare(titleB, undefined, {
+				numeric: true,
+				sensitivity: "base",
+			});
+		});
+	}
+
 	private notifyTreeChange(changedItemIds: TreeItemIndex[]): void {
 		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
 	}

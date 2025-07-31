@@ -1,30 +1,38 @@
 @reference "@/app.css";
 
 @layer components {
-	/* Both navigation and tree selection active */
-	.TreeItemComponent-dual-selected {
-		@apply relative border-l-4 border-green-600 bg-green-600/10;
+	.DocsSidebar-TreeItem-content {
+		display: grid;
+		grid-template:
+			"arrow 		primary-action	primary-action" auto
+			". 				.								actions" auto
+			/ auto 1fr;
 	}
 
-	.dark .TreeItemComponent-dual-selected {
-		@apply border-green-400 bg-green-400/15;
+	.DocsSidebar-TreeItem-main-row {
+		grid-area: arrow / arrow / primary-action / primary-action;
+		/* grid-area: 1 / 1 / -1 / -1; */
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
 	}
 
-	/* Selection badge for multi-selection counter */
-	.TreeItemComponent-selection-badge {
-		@apply absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-blue-500 text-xs font-medium text-white;
+	.DocsSidebar-TreeItem-arrow {
+		grid-area: arrow;
 	}
 
-	.dark .TreeItemComponent-selection-badge {
-		@apply bg-blue-400 text-slate-950;
+	.DocsSidebar-TreeItem-primary-action {
+		grid-area: primary-action;
 	}
 
-	/* Selection counter in header */
-	.TreeContainer-selection-counter {
-		@apply rounded-md bg-blue-500/10 px-2 py-1 text-sm font-medium text-blue-500;
+	.DocsSidebar-TreeItem-primary-action-interactive-area {
+		grid-area: 1 / 1 / -1 / -1;
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
 	}
 
-	.dark .TreeContainer-selection-counter {
-		@apply bg-blue-400/15 text-blue-400;
+	.DocsSidebar-TreeItem-actions {
+		grid-area: actions;
 	}
 }

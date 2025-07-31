@@ -98,6 +98,15 @@ This is a monorepo project with the following essential structure that you must 
 - **[pnpm-workspace.yaml](mdc:pnpm-workspace.yaml)** - Workspace configuration for the monorepo
 - **[pnpm-lock.yaml](mdc:pnpm-lock.yaml)** - Lockfile for all dependencies
 
+### Documentation and Research Resources
+
+- **[+personal/](mdc:+personal)** - **DOCUMENTATION & RESEARCH FOLDER**
+  - Contains files useful for answering questions and resolving complex problems
+  - Includes 3rd party codebases and documentation for research purposes
+  - Examples: React Complex Tree, AI SDK, BlockNote, Shadcn, TanStack Router sources
+  - **[+personal/+ai/](mdc:+personal/+ai)** - Only writable subfolder for AI-generated content
+  - **DO NOT MODIFY** other files in +personal/ - they are reference material only
+
 ### App Root
 
 - **[packages/app/](mdc:packages/app)** - **MAIN APPLICATION ROOT** - This is the primary app directory
@@ -105,22 +114,41 @@ This is a monorepo project with the following essential structure that you must 
 
 ### Core Application Code
 
-- **[packages/app/src/](mdc:packages/app/src)** - React frontend application code
-- **[packages/app/convex/](mdc:packages/app/convex)** - Convex backend code and functions
+- **[packages/app/src/](mdc:packages/app/src)** - **React frontend application code**
+  - **[src/components/](mdc:packages/app/src/components)** - React components (UI, assistant-ui, canvas)
+  - **[src/routes/](mdc:packages/app/src/routes)** - TanStack Router route definitions
+  - **[src/lib/](mdc:packages/app/src/lib)** - Shared utilities and helpers
+  - **[src/hooks/](mdc:packages/app/src/hooks)** - Custom React hooks
+  - **[src/stores/](mdc:packages/app/src/stores)** - State management (Zustand stores)
+  - **[src/types/](mdc:packages/app/src/types)** - TypeScript type definitions
+  - **[src/app.css](mdc:packages/app/src/app.css)** - Main CSS file with Tailwind 4 configuration
+
+- **[packages/app/convex/](mdc:packages/app/convex)** - **Convex backend code and functions**
+  - Backend API endpoints, database schemas, authentication logic
+  - Real-time subscriptions, AI chat functionality, tool calling
+
+- **[packages/app/shared/](mdc:packages/app/shared)** - **Shared code between frontend and backend**
+  - Types, constants, and utilities used by both browser app and Convex functions
+  - Authentication constants and shared interfaces
 
 ### Submodules (Special Import Handling)
 
-- **[packages/app/assistant-ui/](mdc:packages/app/assistant-ui)** - Assistant UI submodule with custom overrides
+- **[packages/app/assistant-ui/](mdc:packages/app/assistant-ui)** - **Assistant UI submodule** with custom overrides
   - **IMPORTANT**: Import directly from this path, NOT from node_modules
-  - This contains custom modifications and overrides for our specific needs
-- **[packages/app/liveblocks/](mdc:packages/app/liveblocks)** - Liveblocks submodule
-  - **NOTE**: Currently used via node_modules, but source is available here
+  - Contains custom modifications and overrides for our specific needs
+  - Full repository with packages for React components, streaming, and utilities
+
+- **[packages/app/liveblocks/](mdc:packages/app/liveblocks)** - **Liveblocks submodule**
+  - Real-time collaboration features and components
+  - Currently used via node_modules, but full source is available here for reference
 
 ### Configuration Files
 
 - **[packages/app/convex.json](mdc:packages/app/convex.json)** - Convex configuration
-- **[packages/app/components.json](mdc:packages/app/components.json)** - Component library configuration
+- **[packages/app/components.json](mdc:packages/app/components.json)** - shadcn/ui component library configuration
 - **[packages/app/tsconfig.json](mdc:packages/app/tsconfig.json)** - TypeScript configuration for the app
+- **[packages/app/index.html](mdc:packages/app/index.html)** - HTML entry point for Vite
+- **[packages/app/vite.config.ts](mdc:packages/app/vite.config.ts)** - Vite development server configuration
 
 ## Import Guidelines
 
@@ -248,11 +276,15 @@ The frontend is a React 19 application located in [packages/app/src/](mdc:packag
 
 - **Convex** - Backend platform with real-time database
 - **Clerk** - Authentication provider
-- **Assistant UI** - Chat interface components
+- **Assistant UI** - Chat interface components (submodule)
+- **Liveblocks** - Real-time collaboration (submodule)
 - **BlockNote** - Rich text editor for canvas/artifacts
 - **TanStack Router** - File-based routing
 - **Tailwind 4** - Utility-first CSS framework
 - **React 19** - Frontend framework
+- **shadcn/ui** - Component library with Tailwind styling
+- **React Complex Tree** - Tree component for file/folder navigation
+- **AI SDK** - AI integration and streaming utilities
 
 ## Technology Stack
 
@@ -260,6 +292,21 @@ This project uses the latest versions of core technologies:
 
 - **React 19** - Latest React version with new features and improvements
 - **Tailwind 4** - Latest Tailwind CSS with modern features and syntax
+
+### Tailwind Configuration
+
+**IMPORTANT**: This project uses **CSS-based Tailwind V4 configuration** instead of traditional `tailwind.config.js`:
+
+- **[packages/app/src/app.css](mdc:packages/app/src/app.css)** - Main CSS file containing Tailwind configuration
+- Tailwind is configured using CSS `@config` directive and CSS custom properties
+- This is the modern Tailwind 4 approach - do NOT look for `tailwind.config.js`
+- All theme customization, plugins, and configuration are handled in the CSS file
+
+### Component Styling
+
+- **shadcn/ui** components provide pre-styled, accessible components
+- Components follow Tailwind utility patterns with CSS custom properties
+- Design system tokens are defined in [packages/app/src/app.css](mdc:packages/app/src/app.css)
 
 ### Documentation Requirements
 

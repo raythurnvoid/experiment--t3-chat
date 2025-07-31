@@ -36,6 +36,15 @@ import {
 	type docs_TypedUncontrolledTreeEnvironmentProps,
 } from "@/stores/docs-store";
 
+type DocsSidebar_ClassNames =
+	| "DocsSidebar-TreeItem"
+	| "DocsSidebar-TreeItem-content"
+	| "DocsSidebar-TreeItem-main-row"
+	| "DocsSidebar-TreeItem-arrow"
+	| "DocsSidebar-TreeItem-primary-action"
+	| "DocsSidebar-TreeItem-primary-action-interactive-area"
+	| "DocsSidebar-TreeItem-actions";
+
 // Search Context
 type DocsSearchContext = {
 	searchQuery: string;
@@ -96,6 +105,7 @@ function TreeItemArrow({ item, context }: TreeItemArrow_Props) {
 
 	return (
 		<IconButton
+			{...(context.arrowProps as any)}
 			tooltip={context.isExpanded ? "Collapse file" : "Expand file"}
 			side="bottom"
 			variant="ghost"
@@ -286,7 +296,6 @@ function TreeItemComponent(props: TreeItemComponent_Props) {
 		onUnarchive,
 	} = props;
 
-	const triggerId = React.useId(); // Now properly used in a component
 	const data = item.data as DocData;
 
 	// Different types of selection states
@@ -328,51 +337,69 @@ function TreeItemComponent(props: TreeItemComponent_Props) {
 
 	// Regular items
 	return (
-		<li {...context.itemContainerWithChildrenProps} className="group relative">
+		<li
+			{...context.itemContainerWithChildrenProps}
+			className={cn("DocsSidebar-TreeItem" satisfies DocsSidebar_ClassNames, "group relative")}
+		>
 			{/* Label wrapper that forwards clicks to the main selection trigger */}
-			<label
+			<div
+				{...context.itemContainerWithoutChildrenProps}
+				style={{ paddingLeft: `${(depth + 1) * 16}px` }}
 				className={cn(
-					"DocsSidebarTreeItem-container",
-					"block w-full cursor-pointer rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+					"DocsSidebar-TreeItem-content" satisfies DocsSidebar_ClassNames,
+					"w-full cursor-pointer rounded-md transition-all duration-200 ease-out",
 
+					// Normal hover state
+					"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+
+					// Navigation state (current document)
 					isNavigated && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
 
-					context.isSelected && "ring-4 ring-sidebar-ring",
+					// Multi-selection state (tree selection)
+					context.isSelected && "ring-2 ring-ring ring-offset-2 ring-offset-background",
 
 					// Focus state
-					context.isFocused && "outline-3",
+					context.isFocused && "outline-2 outline-ring",
+
+					// ✅ DROP AREA STYLING - when someone is dragging over this item
+					context.isDraggingOver && [
+						"relative",
+						"bg-gradient-to-r from-primary/10 via-primary/20 to-primary/10",
+						"border-2 border-dashed border-primary/40",
+						"shadow-lg shadow-primary/20",
+						"scale-[1.02]",
+						"before:absolute before:inset-0 before:rounded-md",
+						"before:bg-gradient-to-br before:from-primary/5 before:to-transparent",
+						"animate-pulse",
+					],
 
 					// Archived state
 					isArchived && "line-through opacity-60",
 				)}
-				htmlFor={triggerId}
 			>
-				{/* First row - main item content */}
-				<div
-					{...context.itemContainerWithoutChildrenProps}
-					style={{ paddingLeft: `${(depth + 1) * 16}px` }}
-					className={cn("flex h-[32px] items-center gap-2 px-2 py-1")}
-				>
-					{/* Expand/collapse arrow - now with custom icon and tooltip */}
-					{arrow}
-
-					{/* Title with icon - handles selection only, prevents default expand/collapse */}
-					{context.isRenaming ? (
-						<div className="flex flex-1 items-center gap-2 truncate border-none bg-transparent p-0 text-left text-sm outline-none">
-							{/* Icon for document type */}
-							<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
-								<FileText className="h-4 w-4" />
-							</span>
-							<span className="truncate">{title}</span>
-						</div>
-					) : (
-						<button
-							{...context.interactiveElementProps}
-							id={triggerId}
-							type="button"
+				{context.isRenaming ? (
+					<div
+						className={cn(
+							"DocsSidebar-TreeItem-primary-action" satisfies DocsSidebar_ClassNames,
+							"flex gap-2 border-none bg-transparent p-0 text-left text-sm outline-none",
+						)}
+					>
+						{/* Icon for document type */}
+						<span className="flex h-4 w-4 flex-shrink-0 justify-center text-sm">
+							<FileText className="h-4 w-4" />
+						</span>
+						<span className="truncate">{title}</span>
+					</div>
+				) : (
+					<button
+						{...context.interactiveElementProps}
+						type="button"
+						className={cn("DocsSidebar-TreeItem-primary-action-interactive-area" satisfies DocsSidebar_ClassNames)}
+					>
+						<div
 							className={cn(
-								"TreeItemComponent-button",
-								"flex flex-1 items-center gap-2 truncate border-none bg-transparent p-0 text-left text-sm outline-none",
+								"DocsSidebar-TreeItem-primary-action" satisfies DocsSidebar_ClassNames,
+								"flex gap-2 border-none bg-transparent p-0 text-left text-sm outline-none",
 							)}
 						>
 							{/* Icon for document type */}
@@ -380,14 +407,19 @@ function TreeItemComponent(props: TreeItemComponent_Props) {
 								<FileText className="h-4 w-4" />
 							</span>
 							<span className="truncate">{title}</span>
-						</button>
-					)}
-				</div>
+						</div>
+					</button>
+				)}
+
+				{/* Expand/collapse arrow - now with custom icon and tooltip */}
+				<div className={cn("DocsSidebar-TreeItem-arrow" satisfies DocsSidebar_ClassNames)}>{arrow}</div>
 
 				{/* Second row - action buttons */}
 				<div
-					style={{ paddingLeft: `${(depth + 1) * 16 + 32}px` }}
-					className="flex h-[32px] items-center justify-end gap-1 px-2 py-1"
+					className={cn(
+						"DocsSidebar-TreeItem-actions" satisfies DocsSidebar_ClassNames,
+						"flex h-[32px] items-center justify-end gap-1 px-2 py-1",
+					)}
 				>
 					{/* Add child button - for all items (since all are now foldable) */}
 					<IconButton
@@ -437,7 +469,7 @@ function TreeItemComponent(props: TreeItemComponent_Props) {
 						</IconButton>
 					)}
 				</div>
-			</label>
+			</div>
 
 			{/* Children */}
 			{children}
@@ -604,7 +636,8 @@ function TreeContainer({ ref: treeRef, onSelectItems }: TreeContainer_Props) {
 				getItemTitle={(item) => item.data.title}
 				canDragAndDrop={true}
 				canDropOnFolder={true}
-				canReorderItems={true}
+				canReorderItems={false}
+				canDropOnNonFolder={false}
 				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
 				canInvokePrimaryActionOnItemContainer={true}
 				shouldRenderChildren={handleShouldRenderChildren}
