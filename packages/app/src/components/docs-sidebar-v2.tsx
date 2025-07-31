@@ -39,6 +39,7 @@ import {
 type DocsSidebar_ClassNames =
 	| "DocsSidebar-TreeItem"
 	| "DocsSidebar-TreeItem-content"
+	| "DocsSidebar-TreeItem-content-placeholder"
 	| "DocsSidebar-TreeItem-main-row"
 	| "DocsSidebar-TreeItem-arrow"
 	| "DocsSidebar-TreeItem-primary-action"
@@ -316,11 +317,12 @@ function TreeItemComponent(props: TreeItemComponent_Props) {
 				<div
 					{...context.itemContainerWithoutChildrenProps}
 					style={{ paddingLeft: `${(depth + 1) * 16}px` }}
-					className={cn("flex min-h-[32px] items-center gap-2 rounded-md px-2 py-1", "text-muted-foreground italic")}
+					className={cn(
+						"DocsSidebar-TreeItem-content" satisfies DocsSidebar_ClassNames,
+						"DocsSidebar-TreeItem-content-placeholder" satisfies DocsSidebar_ClassNames,
+						"text-muted-foreground italic",
+					)}
 				>
-					{/* No arrow for placeholders */}
-					<div className="flex h-4 w-4 items-center justify-center"></div>
-
 					{/* Icon for placeholder */}
 					<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
 						<FileText className="h-4 w-4 opacity-50" />
@@ -347,7 +349,7 @@ function TreeItemComponent(props: TreeItemComponent_Props) {
 				style={{ paddingLeft: `${(depth + 1) * 16}px` }}
 				className={cn(
 					"DocsSidebar-TreeItem-content" satisfies DocsSidebar_ClassNames,
-					"w-full cursor-pointer rounded-md transition-all duration-200 ease-out",
+					"rounded-md",
 
 					// Normal hover state
 					"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",

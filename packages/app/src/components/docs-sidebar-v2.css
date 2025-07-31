@@ -2,11 +2,21 @@
 
 @layer components {
 	.DocsSidebar-TreeItem-content {
-		display: grid;
-		grid-template:
-			"arrow 		primary-action	primary-action" auto
-			". 				.								actions" auto
-			/ auto 1fr;
+		&:not(.DocsSidebar-TreeItem-content-placeholder) {
+			display: grid;
+			grid-template:
+				"arrow 		primary-action	primary-action" auto
+				". 				.								actions" auto
+				/ auto 1fr;
+		}
+
+		&.DocsSidebar-TreeItem-content-placeholder {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		height: 52px;
 	}
 
 	.DocsSidebar-TreeItem-main-row {
