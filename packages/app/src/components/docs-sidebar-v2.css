@@ -1,8 +1,15 @@
 @reference "@/app.css";
 
 @layer components {
-	.DocsSidebar-tree-container {
-		padding: 4px;
+	.DocsSidebar-tree-area {
+		min-height: 100%;
+		padding: 14px 6px;
+		border: 2px dashed transparent;
+	}
+
+	.DocsSidebar-tree-area-drag-over {
+		border-color: var(--color-sidebar-accent-foreground);
+		background-color: var(--color-sidebar-accent);
 	}
 
 	.DocsSidebar-tree-item-content {

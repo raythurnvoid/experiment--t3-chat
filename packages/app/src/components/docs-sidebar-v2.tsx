@@ -37,6 +37,7 @@ import {
 
 type DocsSidebar_ClassNames =
 	| "DocsSidebar-tree-area"
+	| "DocsSidebar-tree-area-drag-over"
 	| "DocsSidebar-tree-container"
 	| "DocsSidebar-tree-container-focused"
 	| "DocsSidebar-tree-item"
@@ -367,7 +368,7 @@ type TreeArea_Props = {
 	onSelectItems?: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
 };
 
-function TreeArea({ ref: treeRef, onSelectItems }: TreeArea_Props) {
+function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
 
 	// Get document navigation from parent context
@@ -376,7 +377,9 @@ function TreeArea({ ref: treeRef, onSelectItems }: TreeArea_Props) {
 	// Create custom data provider (stable instance)
 	const dataProvider = useMemo(() => {
 		const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
-		dataProviderRef.current = provider; // Store in ref for access from other components
+		if (!dataProviderRef.current) {
+			dataProviderRef.current = provider; // Store in ref for access from other components
+		}
 		return provider;
 	}, []); // Empty dependency array - provider should only be created once
 
@@ -394,6 +397,10 @@ function TreeArea({ ref: treeRef, onSelectItems }: TreeArea_Props) {
 
 		return expanded;
 	}, [dataProvider, searchQuery]); // Re-calculate when search query changes
+
+	const rootElement = useRef<HTMLDivElement>(null);
+
+	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
 	// Action handlers
 	const handleAddChild = (parentId: string) => {
@@ -465,8 +472,86 @@ function TreeArea({ ref: treeRef, onSelectItems }: TreeArea_Props) {
 		return defaultShouldRender;
 	};
 
+	const handleDragOverRootArea = (e: React.DragEvent<HTMLDivElement>) => {
+		if (e.target === rootElement.current) {
+			e.preventDefault();
+			setIsDraggingOverRootArea(true);
+		} else if (isDraggingOverRootArea) {
+			setIsDraggingOverRootArea(false);
+		}
+	};
+
+	const handleDropOnRootArea = async (e: React.DragEvent<HTMLDivElement>) => {
+		setIsDraggingOverRootArea(false);
+
+		if (e.target === rootElement.current) {
+			e.preventDefault();
+
+			// Get the currently dragged items from react-complex-tree
+			const draggingItems = ref.current?.dragAndDropContext.draggingItems;
+
+			if (!draggingItems || draggingItems.length === 0 || !dataProviderRef.current) {
+				console.log("No dragging items found or no data provider");
+				return;
+			}
+
+			try {
+				const provider = dataProviderRef.current;
+				const itemIds = draggingItems.map((item: any) => item.index as string);
+
+				// ✅ Use currentItems (tree's live state) as source of truth - EXACTLY like internal drop
+				const currentItems = ref.current?.treeEnvironmentContext.items || {};
+
+				// ✅ Follow EXACT same pattern as UncontrolledTreeEnvironment's onDrop
+				const promises: Promise<void>[] = [];
+
+				// Step 1: Remove items from old parents (same logic as internal drop)
+				for (const item of draggingItems) {
+					const parent = Object.values(currentItems).find((potentialParent: any) =>
+						potentialParent?.children?.includes?.((item as any).index),
+					) as any;
+
+					if (!parent) {
+						continue;
+					}
+
+					// Only remove if not already at root (same check as internal drop)
+					if (parent.index !== "root") {
+						promises.push(
+							provider.onChangeItemChildren(
+								parent.index,
+								parent.children.filter((child: any) => child !== (item as any).index),
+							),
+						);
+					}
+				}
+
+				// Step 2: Add items to root (same logic as internal drop for targetType === 'root')
+				promises.push(
+					provider.onChangeItemChildren("root", [
+						...(currentItems["root"]?.children ?? []).filter((i: any) => !itemIds.includes(i)),
+						...itemIds,
+					]),
+				);
+
+				// Step 3: Wait for all changes (same as internal drop)
+				await Promise.all(promises);
+			} catch (error) {
+				console.error("Error in root drop operation:", error);
+			}
+		}
+	};
+
 	return (
-		<div className={cn("DocsSidebar-tree-area" satisfies DocsSidebar_ClassNames)}>
+		<div
+			ref={rootElement}
+			className={cn(
+				"DocsSidebar-tree-area" satisfies DocsSidebar_ClassNames,
+				isDraggingOverRootArea && ("DocsSidebar-tree-area-drag-over" satisfies DocsSidebar_ClassNames),
+			)}
+			onDragOver={handleDragOverRootArea}
+			onDrop={handleDropOnRootArea}
+		>
 			<UncontrolledTreeEnvironment
 				viewState={{
 					[TREE_ID]: {
@@ -531,7 +616,7 @@ function TreeArea({ ref: treeRef, onSelectItems }: TreeArea_Props) {
 					);
 				}}
 			>
-				<Tree ref={treeRef} treeId={TREE_ID} rootItem="root" treeLabel="Documentation Tree" />
+				<Tree ref={ref} treeId={TREE_ID} rootItem="root" treeLabel="Documentation Tree" />
 			</UncontrolledTreeEnvironment>
 		</div>
 	);
