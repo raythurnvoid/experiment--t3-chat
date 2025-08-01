@@ -1,4 +1,5 @@
 import { clsx, type ClassValue } from "clsx";
+import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
 import type { KeysOfUnion, Primitive } from "type-fest";
 
@@ -8,6 +9,12 @@ import type { KeysOfUnion, Primitive } from "type-fest";
 export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }
+
+export function sx(style: CSSPropertiesX) {
+	return style;
+}
+
+export type CSSPropertiesX = CSSProperties & Record<string, string | number | undefined | null>;
 
 /**
  * Clamp a value between a minimum and maximum.

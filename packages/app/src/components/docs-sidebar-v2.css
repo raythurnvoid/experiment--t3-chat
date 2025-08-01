@@ -1,25 +1,39 @@
 @reference "@/app.css";
 
 @layer components {
-	.DocsSidebar-TreeItem-content {
-		&:not(.DocsSidebar-TreeItem-content-placeholder) {
+	.DocsSidebar-tree-container {
+		padding: 4px;
+	}
+
+	.DocsSidebar-tree-item-content {
+		height: 44px;
+
+		&:not(:has(> .DocsSidebar-tree-item-content-arrow)) {
+			padding-left: calc((var(--DocsSidebar-tree-item-content-depth) + 1) * 16px);
+		}
+
+		&:has(> .DocsSidebar-tree-item-arrow) {
+			padding-left: calc(((var(--DocsSidebar-tree-item-content-depth) + 1) * 16px) - 20px);
+		}
+
+		&:not(.DocsSidebar-tree-item-content-placeholder) {
 			display: grid;
 			grid-template:
 				"arrow 		primary-action	primary-action" auto
 				". 				.								actions" auto
 				/ auto 1fr;
+
+			margin-block: 6px;
 		}
 
-		&.DocsSidebar-TreeItem-content-placeholder {
+		&.DocsSidebar-tree-item-content-placeholder {
 			display: flex;
 			gap: 8px;
 			align-items: center;
 		}
-
-		height: 52px;
 	}
 
-	.DocsSidebar-TreeItem-main-row {
+	.DocsSidebar-tree-item-main-row {
 		grid-area: arrow / arrow / primary-action / primary-action;
 		/* grid-area: 1 / 1 / -1 / -1; */
 		display: grid;
@@ -27,22 +41,37 @@
 		grid-template-rows: subgrid;
 	}
 
-	.DocsSidebar-TreeItem-arrow {
+	.DocsSidebar-tree-item-arrow {
 		grid-area: arrow;
 	}
 
-	.DocsSidebar-TreeItem-primary-action {
+	.DocsSidebar-tree-item-primary-action-content {
 		grid-area: primary-action;
+
+		display: flex;
+		gap: 4px;
+		align-items: center;
 	}
 
-	.DocsSidebar-TreeItem-primary-action-interactive-area {
+	.DocsSidebar-tree-item-primary-action-interactive-area {
 		grid-area: 1 / 1 / -1 / -1;
 		display: grid;
 		grid-template-columns: subgrid;
 		grid-template-rows: subgrid;
+
+		outline: none;
 	}
 
-	.DocsSidebar-TreeItem-actions {
+	.DocsSidebar-tree-item-actions {
 		grid-area: actions;
+
+		display: flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: flex-end;
+
+		padding-inline: 4px;
+
+		height: 20px;
 	}
 }

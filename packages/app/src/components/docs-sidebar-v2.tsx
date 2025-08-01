@@ -15,8 +15,7 @@ import {
 import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { useThemeContext } from "@/components/theme-provider";
+import { cn, sx } from "@/lib/utils";
 import { IconButton } from "@/components/icon-button";
 import {
 	UncontrolledTreeEnvironment,
@@ -37,14 +36,22 @@ import {
 } from "@/stores/docs-store";
 
 type DocsSidebar_ClassNames =
-	| "DocsSidebar-TreeItem"
-	| "DocsSidebar-TreeItem-content"
-	| "DocsSidebar-TreeItem-content-placeholder"
-	| "DocsSidebar-TreeItem-main-row"
-	| "DocsSidebar-TreeItem-arrow"
-	| "DocsSidebar-TreeItem-primary-action"
-	| "DocsSidebar-TreeItem-primary-action-interactive-area"
-	| "DocsSidebar-TreeItem-actions";
+	| "DocsSidebar-tree-area"
+	| "DocsSidebar-tree-container"
+	| "DocsSidebar-tree-container-focused"
+	| "DocsSidebar-tree-item"
+	| "DocsSidebar-tree-item-content"
+	| "DocsSidebar-tree-item-content-placeholder"
+	| "DocsSidebar-tree-item-main-row"
+	| "DocsSidebar-tree-item-arrow"
+	| "DocsSidebar-tree-item-file-icon"
+	| "DocsSidebar-tree-item-primary-action-content"
+	| "DocsSidebar-tree-item-primary-action-interactive-area"
+	| "DocsSidebar-tree-item-actions";
+
+type DocsSidebar_CssVars = {
+	"--DocsSidebar-tree-item-content-depth": number;
+};
 
 // Search Context
 type DocsSearchContext = {
@@ -100,7 +107,9 @@ interface TreeItemArrow_Props {
 	info: TreeInformation;
 }
 
-function TreeItemArrow({ item, context }: TreeItemArrow_Props) {
+function TreeItemArrow(props: TreeItemArrow_Props) {
+	const { item, context } = props;
+
 	// Only render arrow for folders
 	if (!item.isFolder) return null;
 
@@ -118,6 +127,413 @@ function TreeItemArrow({ item, context }: TreeItemArrow_Props) {
 		>
 			{context.isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
 		</IconButton>
+	);
+}
+
+function TreeItemFileIcon() {
+	return (
+		<span
+			className={cn(
+				"DocsSidebar-tree-item-file-icon" satisfies DocsSidebar_ClassNames,
+				"inline-flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm",
+			)}
+		>
+			<FileText className="h-4 w-4" />
+		</span>
+	);
+}
+
+type TreeItemPrimaryActionContent_Props = {
+	title: React.ReactNode;
+};
+
+function TreeItemPrimaryActionContent(props: TreeItemPrimaryActionContent_Props) {
+	const { title } = props;
+
+	return (
+		<div
+			className={cn(
+				"DocsSidebar-tree-item-primary-action-content" satisfies DocsSidebar_ClassNames,
+				"text-sm outline-none",
+			)}
+		>
+			<TreeItemFileIcon />
+			<div className={cn("flex-1 truncate text-left")}>{title}</div>
+		</div>
+	);
+}
+
+type TreeItemNoChildrenPlaceholder_Props = {
+	children: React.ReactNode;
+	title: React.ReactNode;
+	context: TreeItemRenderContext;
+	depth: number;
+};
+
+function TreeItemNoChildrenPlaceholder(props: TreeItemNoChildrenPlaceholder_Props) {
+	const { children, title, context, depth } = props;
+
+	return (
+		<li {...context.itemContainerWithChildrenProps} className="group relative">
+			<div
+				{...context.itemContainerWithoutChildrenProps}
+				style={sx({ "--DocsSidebar-tree-item-content-depth": depth } satisfies Partial<DocsSidebar_CssVars>)}
+				className={cn(
+					"DocsSidebar-tree-item-content" satisfies DocsSidebar_ClassNames,
+					"DocsSidebar-tree-item-content-placeholder" satisfies DocsSidebar_ClassNames,
+					"border-2 border-transparent text-muted-foreground italic",
+				)}
+			>
+				<TreeItemPrimaryActionContent title={title} />
+			</div>
+			{children}
+		</li>
+	);
+}
+
+type TreeItemActionIconButton_Props = {
+	tooltip: string;
+	onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+	children: React.ReactNode;
+};
+
+function TreeItemActionIconButton(props: TreeItemActionIconButton_Props) {
+	const { tooltip, onClick, children } = props;
+
+	return (
+		<IconButton
+			className="h-5 w-5 text-muted-foreground hover:text-sidebar-accent-foreground"
+			variant="ghost"
+			tooltip={tooltip}
+			onClick={onClick}
+		>
+			{children}
+		</IconButton>
+	);
+}
+
+type TreeItem_Props = {
+	item: TreeItem<DocData>;
+	depth: number;
+	children: React.ReactNode;
+	title: React.ReactNode;
+	context: TreeItemRenderContext;
+	arrow: React.ReactNode;
+	info: TreeInformation;
+	selectedDocId: string | null;
+	archivedItems: Set<string>;
+	showArchived: boolean;
+	onAdd: (parentId: string) => void;
+	onArchive: (itemId: string) => void;
+	onUnarchive: (itemId: string) => void;
+};
+
+function TreeItem(props: TreeItem_Props) {
+	const {
+		item,
+		depth,
+		children,
+		title,
+		context,
+		arrow,
+		selectedDocId,
+		archivedItems,
+		showArchived,
+		onAdd,
+		onArchive,
+		onUnarchive,
+	} = props;
+
+	const data = item.data as DocData;
+
+	// Current selected document
+	const isNavigated = selectedDocId === item.index;
+	const isPlaceholder = data.type === "placeholder";
+	const isArchived = archivedItems.has(item.index.toString());
+	const isRenaming = context.isRenaming;
+
+	// Hide archived items when showArchived is false
+	if (isArchived && !showArchived) {
+		return null;
+	}
+
+	// Placeholder items
+	if (isPlaceholder) {
+		return <TreeItemNoChildrenPlaceholder children={children} title={title} context={context} depth={depth} />;
+	}
+
+	// Regular items
+	return (
+		<li
+			{...context.itemContainerWithChildrenProps}
+			className={cn("DocsSidebar-tree-item" satisfies DocsSidebar_ClassNames, "group relative")}
+		>
+			{/* Primary action */}
+			<div
+				{...context.itemContainerWithoutChildrenProps}
+				style={sx({ "--DocsSidebar-tree-item-content-depth": depth } satisfies Partial<DocsSidebar_CssVars>)}
+				className={cn(
+					"DocsSidebar-tree-item-content" satisfies DocsSidebar_ClassNames,
+					"rounded-md border-2 border-transparent ring-ring ring-offset-2 ring-offset-background hover:bg-sidebar-accent",
+
+					isNavigated && "font-medium ring-1",
+					context.isSelected && !isRenaming && "ring-2",
+					context.isFocused &&
+						!isRenaming &&
+						"group-[.DocsSidebar-tree-container-focused]/DocsSidebar-tree-container:outline-2",
+					context.isSelected && context.isFocused && !isRenaming && "ring-3 outline-0",
+					context.isDraggingOver && [
+						"border-dashed border-primary/40",
+						"shadow-lg shadow-primary/20",
+						"bg-gradient-to-br from-primary/10 via-primary/20 to-primary/10",
+					],
+					isArchived && "line-through opacity-60",
+				)}
+			>
+				{context.isRenaming ? (
+					<TreeItemPrimaryActionContent title={title} />
+				) : (
+					<button
+						{...context.interactiveElementProps}
+						type="button"
+						className={cn("DocsSidebar-tree-item-primary-action-interactive-area" satisfies DocsSidebar_ClassNames)}
+					>
+						<TreeItemPrimaryActionContent title={title} />
+					</button>
+				)}
+
+				{/* Expand/collapse arrow */}
+				<div className={cn("DocsSidebar-tree-item-arrow" satisfies DocsSidebar_ClassNames)}>{arrow}</div>
+
+				{/* Second row - action buttons */}
+				<div className={cn("DocsSidebar-tree-item-actions" satisfies DocsSidebar_ClassNames)}>
+					<TreeItemActionIconButton tooltip="Add child" onClick={() => onAdd(item.index.toString())}>
+						<Plus />
+					</TreeItemActionIconButton>
+
+					<TreeItemActionIconButton tooltip="Rename" onClick={() => context.startRenamingItem()}>
+						<Edit2 />
+					</TreeItemActionIconButton>
+
+					<TreeItemActionIconButton
+						tooltip={isArchived ? "Unarchive" : "Archive"}
+						onClick={() => {
+							if (isArchived) {
+								onUnarchive(item.index.toString());
+							} else {
+								onArchive(item.index.toString());
+							}
+						}}
+					>
+						<Archive className={cn(isArchived && "fill-current")} />
+					</TreeItemActionIconButton>
+				</div>
+			</div>
+
+			{children}
+		</li>
+	);
+}
+
+type TreeRenameInputComponent_Props = {
+	item: TreeItem<DocData>;
+	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
+	inputRef: React.Ref<HTMLInputElement>;
+	submitButtonProps: React.HTMLProps<any>;
+	submitButtonRef: React.Ref<any>;
+	formProps: React.FormHTMLAttributes<HTMLFormElement>;
+};
+
+function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
+	const { inputProps, inputRef, formProps } = props;
+
+	// Override native blur behavior
+	const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+		e.target.form?.requestSubmit();
+	};
+
+	return (
+		<form {...formProps} className="flex w-full">
+			<Input {...inputProps} ref={inputRef} className="h-5 flex-1 px-0.5" autoFocus onBlur={handleBlur} />
+		</form>
+	);
+}
+
+const TREE_ID = "docs-tree";
+
+// Props interface for TreeContainer using React 19 ref pattern
+type TreeArea_Props = {
+	ref: React.RefObject<TreeRef | null>;
+	onSelectItems?: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
+};
+
+function TreeArea({ ref: treeRef, onSelectItems }: TreeArea_Props) {
+	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
+
+	// Get document navigation from parent context
+	const { selectedDocId, navigateToDocument } = useDocumentNavigation();
+
+	// Create custom data provider (stable instance)
+	const dataProvider = useMemo(() => {
+		const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
+		dataProviderRef.current = provider; // Store in ref for access from other components
+		return provider;
+	}, []); // Empty dependency array - provider should only be created once
+
+	// Get expanded items for view state
+	const expandedItems = useMemo(() => {
+		if (!dataProvider) return [];
+		const allData = dataProvider.getAllData();
+		const expanded: string[] = [];
+
+		Object.values(allData).forEach((item) => {
+			if (item.isFolder && item.children && item.children.length > 0) {
+				expanded.push(item.index.toString());
+			}
+		});
+
+		return expanded;
+	}, [dataProvider, searchQuery]); // Re-calculate when search query changes
+
+	// Action handlers
+	const handleAddChild = (parentId: string) => {
+		if (dataProviderRef.current) {
+			const newItemId = dataProviderRef.current.createNewItem(parentId, "New Document", "document");
+			navigateToDocument(newItemId);
+			console.log("Created new document:", newItemId);
+		}
+	};
+
+	const handleArchive = (itemId: string) => {
+		const newArchivedSet = new Set(archivedItems);
+		newArchivedSet.add(itemId);
+		setArchivedItems(newArchivedSet);
+		console.log("Archived item:", itemId);
+
+		// If we archived the currently selected item, clear selection
+		if (selectedDocId === itemId) {
+			navigateToDocument(null);
+		}
+	};
+
+	const handleUnarchive = (itemId: string) => {
+		const newArchivedSet = new Set(archivedItems);
+		newArchivedSet.delete(itemId);
+		setArchivedItems(newArchivedSet);
+		console.log("Unarchived item:", itemId);
+	};
+
+	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (item, treeId) => {
+		if (!shouldNavigateToDocument(item.data.type)) return;
+
+		navigateToDocument(item.index.toString());
+	};
+
+	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
+		item,
+		context,
+	) => {
+		// Default behavior for expanded state
+		const defaultShouldRender = item.isFolder && context.isExpanded;
+
+		// If not expanded, don't render children
+		if (!defaultShouldRender) {
+			return false;
+		}
+
+		// For placeholder items, always render if expanded
+		if (item.data.type === "placeholder") {
+			return true;
+		}
+
+		// Filter children based on search query
+		if (item.children && item.children.length > 0 && searchQuery.trim()) {
+			const hasVisibleChildren = item.children.some((childId) => {
+				// Check if child matches search query
+				const childItem = dataProvider.getAllData()[childId];
+				if (childItem) {
+					const titleMatches = childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
+					// For now, just check title match. Could add recursive search here if needed
+					return titleMatches;
+				}
+				return false;
+			});
+
+			return hasVisibleChildren;
+		}
+
+		return defaultShouldRender;
+	};
+
+	return (
+		<div className={cn("DocsSidebar-tree-area" satisfies DocsSidebar_ClassNames)}>
+			<UncontrolledTreeEnvironment
+				viewState={{
+					[TREE_ID]: {
+						expandedItems,
+					},
+				}}
+				dataProvider={dataProvider}
+				getItemTitle={(item) => item.data.title}
+				canDropAt={(items, target) => {
+					return true;
+				}}
+				canReorderItems={true}
+				canDragAndDrop={true}
+				canDropOnFolder={true}
+				canDropOnNonFolder={true}
+				canDropBelowOpenFolders={false}
+				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
+				canInvokePrimaryActionOnItemContainer={true}
+				shouldRenderChildren={handleShouldRenderChildren}
+				onPrimaryAction={handlePrimaryAction}
+				onSelectItems={onSelectItems}
+				renderDragBetweenLine={(props) => {
+					return (
+						<div
+							{...props.lineProps}
+							className={cn(
+								"DocsSidebar-tree-drag-between-line",
+								"h-2 border-2 border-solid border-red-500 bg-red-500",
+							)}
+						/>
+					);
+				}}
+				renderRenameInput={(props) => {
+					return <TreeRenameInputComponent {...props} />;
+				}}
+				renderItemArrow={(props) => <TreeItemArrow {...props} />}
+				renderItem={(props) => {
+					return (
+						<TreeItem
+							{...props}
+							selectedDocId={selectedDocId}
+							archivedItems={archivedItems}
+							showArchived={showArchived}
+							onAdd={handleAddChild}
+							onArchive={handleArchive}
+							onUnarchive={handleUnarchive}
+						/>
+					);
+				}}
+				renderTreeContainer={(props) => {
+					return (
+						<div
+							{...props.containerProps}
+							className={cn(
+								"DocsSidebar-tree-container" satisfies DocsSidebar_ClassNames,
+								props.info.isFocused && ("DocsSidebar-tree-container-focused" satisfies DocsSidebar_ClassNames),
+								"group/DocsSidebar-tree-container",
+							)}
+						>
+							{props.children}
+						</div>
+					);
+				}}
+			>
+				<Tree ref={treeRef} treeId={TREE_ID} rootItem="root" treeLabel="Documentation Tree" />
+			</UncontrolledTreeEnvironment>
+		</div>
 	);
 }
 
@@ -160,7 +576,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		treeRef.current?.selectItems([]);
 	};
 
-	const handleSelectItems: TreeContainer_Props["onSelectItems"] = (items, treeId) => {
+	const handleSelectItems: TreeArea_Props["onSelectItems"] = (items, treeId) => {
 		setMultiSelectionCount(items.length);
 	};
 
@@ -259,420 +675,8 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
-				<TreeContainer ref={treeRef} onSelectItems={handleSelectItems} />
+				<TreeArea ref={treeRef} onSelectItems={handleSelectItems} />
 			</SidebarContent>
-		</div>
-	);
-}
-
-type TreeItemComponent_Props = {
-	item: TreeItem<DocData>;
-	depth: number;
-	children: React.ReactNode;
-	title: React.ReactNode;
-	context: TreeItemRenderContext;
-	arrow: React.ReactNode;
-	info: TreeInformation;
-	selectedDocId: string | null;
-	archivedItems: Set<string>;
-	showArchived: boolean;
-	onAdd: (parentId: string) => void;
-	onArchive: (itemId: string) => void;
-	onUnarchive: (itemId: string) => void;
-};
-
-function TreeItemComponent(props: TreeItemComponent_Props) {
-	const {
-		item,
-		depth,
-		children,
-		title,
-		context,
-		arrow,
-		selectedDocId,
-		archivedItems,
-		showArchived,
-		onAdd,
-		onArchive,
-		onUnarchive,
-	} = props;
-
-	const data = item.data as DocData;
-
-	// Different types of selection states
-	const isNavigated = selectedDocId === item.index; // Single navigation selection (current document)
-
-	const isPlaceholder = data.type === "placeholder";
-	const isArchived = archivedItems.has(item.index.toString());
-
-	// Hide archived items when showArchived is false
-	if (isArchived && !showArchived) {
-		return null;
-	}
-
-	// Placeholder items have special rendering
-	if (isPlaceholder) {
-		return (
-			<li {...context.itemContainerWithChildrenProps} className="group relative">
-				<div
-					{...context.itemContainerWithoutChildrenProps}
-					style={{ paddingLeft: `${(depth + 1) * 16}px` }}
-					className={cn(
-						"DocsSidebar-TreeItem-content" satisfies DocsSidebar_ClassNames,
-						"DocsSidebar-TreeItem-content-placeholder" satisfies DocsSidebar_ClassNames,
-						"text-muted-foreground italic",
-					)}
-				>
-					{/* Icon for placeholder */}
-					<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
-						<FileText className="h-4 w-4 opacity-50" />
-					</span>
-
-					{/* Non-interactive title */}
-					<div className="flex-1 truncate p-0 text-left text-sm">{title}</div>
-				</div>
-				{/* No action buttons for placeholders */}
-				{children}
-			</li>
-		);
-	}
-
-	// Regular items
-	return (
-		<li
-			{...context.itemContainerWithChildrenProps}
-			className={cn("DocsSidebar-TreeItem" satisfies DocsSidebar_ClassNames, "group relative")}
-		>
-			{/* Label wrapper that forwards clicks to the main selection trigger */}
-			<div
-				{...context.itemContainerWithoutChildrenProps}
-				style={{ paddingLeft: `${(depth + 1) * 16}px` }}
-				className={cn(
-					"DocsSidebar-TreeItem-content" satisfies DocsSidebar_ClassNames,
-					"rounded-md",
-
-					// Normal hover state
-					"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-
-					// Navigation state (current document)
-					isNavigated && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
-
-					// Multi-selection state (tree selection)
-					context.isSelected && "ring-2 ring-ring ring-offset-2 ring-offset-background",
-
-					// Focus state
-					context.isFocused && "outline-2 outline-ring",
-
-					// ✅ DROP AREA STYLING - when someone is dragging over this item
-					context.isDraggingOver && [
-						"relative",
-						"bg-gradient-to-r from-primary/10 via-primary/20 to-primary/10",
-						"border-2 border-dashed border-primary/40",
-						"shadow-lg shadow-primary/20",
-						"scale-[1.02]",
-						"before:absolute before:inset-0 before:rounded-md",
-						"before:bg-gradient-to-br before:from-primary/5 before:to-transparent",
-						"animate-pulse",
-					],
-
-					// Archived state
-					isArchived && "line-through opacity-60",
-				)}
-			>
-				{context.isRenaming ? (
-					<div
-						className={cn(
-							"DocsSidebar-TreeItem-primary-action" satisfies DocsSidebar_ClassNames,
-							"flex gap-2 border-none bg-transparent p-0 text-left text-sm outline-none",
-						)}
-					>
-						{/* Icon for document type */}
-						<span className="flex h-4 w-4 flex-shrink-0 justify-center text-sm">
-							<FileText className="h-4 w-4" />
-						</span>
-						<span className="truncate">{title}</span>
-					</div>
-				) : (
-					<button
-						{...context.interactiveElementProps}
-						type="button"
-						className={cn("DocsSidebar-TreeItem-primary-action-interactive-area" satisfies DocsSidebar_ClassNames)}
-					>
-						<div
-							className={cn(
-								"DocsSidebar-TreeItem-primary-action" satisfies DocsSidebar_ClassNames,
-								"flex gap-2 border-none bg-transparent p-0 text-left text-sm outline-none",
-							)}
-						>
-							{/* Icon for document type */}
-							<span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm">
-								<FileText className="h-4 w-4" />
-							</span>
-							<span className="truncate">{title}</span>
-						</div>
-					</button>
-				)}
-
-				{/* Expand/collapse arrow - now with custom icon and tooltip */}
-				<div className={cn("DocsSidebar-TreeItem-arrow" satisfies DocsSidebar_ClassNames)}>{arrow}</div>
-
-				{/* Second row - action buttons */}
-				<div
-					className={cn(
-						"DocsSidebar-TreeItem-actions" satisfies DocsSidebar_ClassNames,
-						"flex h-[32px] items-center justify-end gap-1 px-2 py-1",
-					)}
-				>
-					{/* Add child button - for all items (since all are now foldable) */}
-					<IconButton
-						className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
-						variant="ghost"
-						tooltip="Add child"
-						onClick={(e) => {
-							e.preventDefault();
-							e.stopPropagation();
-							onAdd(item.index.toString());
-						}}
-					>
-						<Plus className="h-3 w-3" />
-					</IconButton>
-
-					{/* Edit button - for all items */}
-					<IconButton
-						className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
-						variant="ghost"
-						tooltip="Rename"
-						onClick={(e) => {
-							e.preventDefault();
-							e.stopPropagation();
-							context.startRenamingItem();
-						}}
-					>
-						<Edit2 className="h-3 w-3" />
-					</IconButton>
-
-					{/* Archive/Unarchive button - for all items except root */}
-					{item.index !== "root" && (
-						<IconButton
-							className="h-6 w-6 p-0 text-muted-foreground hover:text-sidebar-accent-foreground"
-							variant="ghost"
-							tooltip={isArchived ? "Unarchive" : "Archive"}
-							onClick={(e) => {
-								e.preventDefault();
-								e.stopPropagation();
-								if (isArchived) {
-									onUnarchive(item.index.toString());
-								} else {
-									onArchive(item.index.toString());
-								}
-							}}
-						>
-							<Archive className={cn("h-3 w-3", isArchived && "fill-current")} />
-						</IconButton>
-					)}
-				</div>
-			</div>
-
-			{/* Children */}
-			{children}
-		</li>
-	);
-}
-
-type TreeRenameInputComponent_Props = {
-	item: TreeItem<DocData>;
-	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
-	inputRef: React.Ref<HTMLInputElement>;
-	submitButtonProps: React.HTMLProps<any>;
-	submitButtonRef: React.Ref<any>;
-	formProps: React.FormHTMLAttributes<HTMLFormElement>;
-};
-
-function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
-	const { inputProps, inputRef, formProps } = props;
-
-	// Override native blur behavior
-	const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
-		e.target.form?.requestSubmit();
-	};
-
-	return (
-		<form {...formProps} className="flex w-full">
-			<Input {...inputProps} ref={inputRef} className="flex-1" autoFocus onBlur={handleBlur} />
-		</form>
-	);
-}
-
-type TreeContainerComponent_Props = {
-	children: React.ReactNode;
-	containerProps: React.HTMLProps<any>;
-	info: TreeInformation;
-};
-
-function TreeContainerComponent(props: TreeContainerComponent_Props) {
-	const { children, containerProps, info } = props;
-
-	return (
-		<div
-			{...containerProps}
-			className={cn("TreeContainer", info.isFocused && "TreeContainer-focused", "group/tree-container")}
-		>
-			{children}
-		</div>
-	);
-}
-
-const TREE_ID = "docs-tree";
-
-// Props interface for TreeContainer using React 19 ref pattern
-type TreeContainer_Props = {
-	ref: React.RefObject<TreeRef | null>;
-	onSelectItems?: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
-};
-
-// Separate component to use the theme context
-function TreeContainer({ ref: treeRef, onSelectItems }: TreeContainer_Props) {
-	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
-
-	// Get document navigation from parent context
-	const { selectedDocId, navigateToDocument } = useDocumentNavigation();
-	const { resolved_theme } = useThemeContext();
-	const isDarkMode = resolved_theme === "dark";
-
-	// Create custom data provider (stable instance)
-	const dataProvider = useMemo(() => {
-		const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
-		dataProviderRef.current = provider; // Store in ref for access from other components
-		return provider;
-	}, []); // Empty dependency array - provider should only be created once
-
-	// Get expanded items for view state
-	const expandedItems = useMemo(() => {
-		if (!dataProvider) return [];
-		const allData = dataProvider.getAllData();
-		const expanded: string[] = [];
-
-		Object.values(allData).forEach((item) => {
-			if (item.isFolder && item.children && item.children.length > 0) {
-				expanded.push(item.index.toString());
-			}
-		});
-
-		return expanded;
-	}, [dataProvider, searchQuery]); // Re-calculate when search query changes
-
-	// Action handlers
-	const handleAddChild = (parentId: string) => {
-		if (dataProviderRef.current) {
-			const newItemId = dataProviderRef.current.createNewItem(parentId, "New Document", "document");
-			navigateToDocument(newItemId);
-			console.log("Created new document:", newItemId);
-		}
-	};
-
-	const handleArchive = (itemId: string) => {
-		const newArchivedSet = new Set(archivedItems);
-		newArchivedSet.add(itemId);
-		setArchivedItems(newArchivedSet);
-		console.log("Archived item:", itemId);
-
-		// If we archived the currently selected item, clear selection
-		if (selectedDocId === itemId) {
-			navigateToDocument(null);
-		}
-	};
-
-	const handleUnarchive = (itemId: string) => {
-		const newArchivedSet = new Set(archivedItems);
-		newArchivedSet.delete(itemId);
-		setArchivedItems(newArchivedSet);
-		console.log("Unarchived item:", itemId);
-	};
-
-	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (item, treeId) => {
-		if (!shouldNavigateToDocument(item.data.type)) return;
-
-		navigateToDocument(item.index.toString());
-	};
-
-	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
-		item,
-		context,
-	) => {
-		// Default behavior for expanded state
-		const defaultShouldRender = item.isFolder && context.isExpanded;
-
-		// If not expanded, don't render children
-		if (!defaultShouldRender) {
-			return false;
-		}
-
-		// For placeholder items, always render if expanded
-		if (item.data.type === "placeholder") {
-			return true;
-		}
-
-		// Filter children based on search query
-		if (item.children && item.children.length > 0 && searchQuery.trim()) {
-			const hasVisibleChildren = item.children.some((childId) => {
-				// Check if child matches search query
-				const childItem = dataProvider.getAllData()[childId];
-				if (childItem) {
-					const titleMatches = childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
-					// For now, just check title match. Could add recursive search here if needed
-					return titleMatches;
-				}
-				return false;
-			});
-
-			return hasVisibleChildren;
-		}
-
-		return defaultShouldRender;
-	};
-
-	return (
-		<div className={cn("p-2", isDarkMode && "rct-dark")}>
-			<UncontrolledTreeEnvironment
-				dataProvider={dataProvider}
-				getItemTitle={(item) => item.data.title}
-				canDragAndDrop={true}
-				canDropOnFolder={true}
-				canReorderItems={false}
-				canDropOnNonFolder={false}
-				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
-				canInvokePrimaryActionOnItemContainer={true}
-				shouldRenderChildren={handleShouldRenderChildren}
-				renderRenameInput={(props) => {
-					return <TreeRenameInputComponent {...props} />;
-				}}
-				onPrimaryAction={handlePrimaryAction}
-				onSelectItems={onSelectItems}
-				renderItemArrow={(props) => <TreeItemArrow {...props} />}
-				viewState={{
-					[TREE_ID]: {
-						expandedItems,
-					},
-				}}
-				renderItem={(props) => {
-					return (
-						<TreeItemComponent
-							{...props}
-							selectedDocId={selectedDocId}
-							archivedItems={archivedItems}
-							showArchived={showArchived}
-							onAdd={handleAddChild}
-							onArchive={handleArchive}
-							onUnarchive={handleUnarchive}
-						/>
-					);
-				}}
-				renderTreeContainer={(props) => {
-					return <TreeContainerComponent {...props} />;
-				}}
-			>
-				<Tree ref={treeRef} treeId={TREE_ID} rootItem="root" treeLabel="Documentation Tree" />
-			</UncontrolledTreeEnvironment>
 		</div>
 	);
 }
