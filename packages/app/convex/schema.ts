@@ -199,6 +199,17 @@ const app_convex_schema = defineSchema({
 		.index("by_parent", ["parent_id"])
 		.index("by_thread_and_parent", ["thread_id", "parent_id"])
 		.index("by_updated_at", ["updated_at"]),
+
+	// Table to persist Yjs documents mirrored from Liveblocks
+	docs_yjs: defineTable({
+		roomId: v.string(),
+		/** Base64-encoded Yjs document state from Liveblocks */
+		yjsDocumentState: v.string(),
+		/** timestamp in milliseconds when document was last updated */
+		lastUpdatedAt: v.number(),
+		/** Document version - always 0 for now until versioning is implemented */
+		version: v.number(),
+	}).index("by_roomId", ["roomId"]),
 });
 
 export default app_convex_schema;

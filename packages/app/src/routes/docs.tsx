@@ -2,15 +2,15 @@ import React from "react";
 import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
 import { ClientSideSuspense } from "@liveblocks/react";
 import { useSearch, useNavigate } from "@tanstack/react-router";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 import { auth_get_token } from "../lib/auth.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 import { DocsSidebar } from "../components/docs-sidebar-v2";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils";
-import { DocumentNavigationContext, createRoomId, getDocumentContent } from "../stores/docs-store";
+import { DocumentNavigationContext, getDocumentContent, createRoomId } from "../stores/docs-store";
 
 export const Route = createFileRoute({
 	component: Docs,
@@ -60,8 +60,7 @@ function DocsContent() {
 	const search = useSearch({ from: "/docs" });
 	const selectedDocId = search.docId;
 
-	// Create room ID using helper function
-	const roomId = createRoomId(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, selectedDocId);
+	const roomId = createRoomId(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, selectedDocId || "default");
 
 	// Get the document content for initialization
 	const documentContent = getDocumentContent(selectedDocId);

@@ -1,5 +1,5 @@
 import { ConvexReactClient } from "convex/react";
-import type { ai_chat_Message, ai_chat_Thread } from "./ai_chat.ts";
+import type { ai_chat_Message, ai_chat_Thread } from "./ai-chat.ts";
 import type { Doc as app_convex_Doc, Id as app_convex_Id } from "../../convex/_generated/dataModel.js";
 import type convex_schema from "../../convex/schema.ts";
 
