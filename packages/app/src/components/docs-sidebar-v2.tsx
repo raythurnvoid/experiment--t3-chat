@@ -361,6 +361,7 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 }
 
 const TREE_ID = "docs-tree";
+const ROOT_TREE_ID = "root";
 
 // Props interface for TreeContainer using React 19 ref pattern
 type TreeArea_Props = {
@@ -389,11 +390,17 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 		const allData = dataProvider.getAllData();
 		const expanded: string[] = [];
 
-		Object.values(allData).forEach((item) => {
-			if (item.isFolder && item.children && item.children.length > 0) {
-				expanded.push(item.index.toString());
-			}
-		});
+		// Get the root item to find its direct children
+		const rootItem = allData[ROOT_TREE_ID];
+		if (rootItem && rootItem.children) {
+			// Only expand direct children of root that are folders with children
+			rootItem.children.forEach((childId) => {
+				const childItem = allData[childId];
+				if (childItem && childItem.isFolder && childItem.children && childItem.children.length > 0) {
+					expanded.push(childId.toString());
+				}
+			});
+		}
 
 		return expanded;
 	}, [dataProvider, searchQuery]); // Re-calculate when search query changes
@@ -516,7 +523,7 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 					}
 
 					// Only remove if not already at root (same check as internal drop)
-					if (parent.index !== "root") {
+					if (parent.index !== ROOT_TREE_ID) {
 						promises.push(
 							provider.onChangeItemChildren(
 								parent.index,
@@ -528,8 +535,8 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 
 				// Step 2: Add items to root (same logic as internal drop for targetType === 'root')
 				promises.push(
-					provider.onChangeItemChildren("root", [
-						...(currentItems["root"]?.children ?? []).filter((i: any) => !itemIds.includes(i)),
+					provider.onChangeItemChildren(ROOT_TREE_ID, [
+						...(currentItems[ROOT_TREE_ID]?.children ?? []).filter((i: any) => !itemIds.includes(i)),
 						...itemIds,
 					]),
 				);
@@ -616,7 +623,7 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 					);
 				}}
 			>
-				<Tree ref={ref} treeId={TREE_ID} rootItem="root" treeLabel="Documentation Tree" />
+				<Tree ref={ref} treeId={TREE_ID} rootItem={ROOT_TREE_ID} treeLabel="Documentation Tree" />
 			</UncontrolledTreeEnvironment>
 		</div>
 	);
