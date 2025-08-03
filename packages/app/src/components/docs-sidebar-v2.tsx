@@ -29,11 +29,13 @@ import {
 import {
 	useDocumentNavigation,
 	shouldNavigateToDocument,
-	createTreeDataWithPlaceholders,
 	NotionLikeDataProvider,
 	type DocData,
 	type docs_TypedUncontrolledTreeEnvironmentProps,
 } from "@/stores/docs-store";
+import { useConvex, useQuery, useMutation } from "convex/react";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
+import { api } from "../../convex/_generated/api";
 
 type DocsSidebar_ClassNames =
 	| "DocsSidebar-tree-area"
@@ -376,14 +378,58 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 	// Get document navigation from parent context
 	const { selectedDocId, navigateToDocument } = useDocumentNavigation();
 
-	// Create custom data provider (stable instance)
+	const convex = useConvex();
+
+	// Query tree data from Convex
+	const treeData = useQuery(api.ai_docs_temp.ai_docs_temp_get_document_tree, {
+		workspace_id: ai_chat_HARDCODED_ORG_ID,
+		project_id: ai_chat_HARDCODED_PROJECT_ID,
+	});
+
+	// Create custom data provider (stable instance) - pure Convex, no hardcoded fallback
 	const dataProvider = useMemo(() => {
-		const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
+		const emptyData: Record<string, any> = {
+			root: {
+				index: "root",
+				children: [],
+				data: {
+					title: "Documents",
+					type: "document",
+					content: "",
+				},
+				isFolder: true,
+				canMove: false,
+				canRename: false,
+			},
+		};
+
+		const provider = new NotionLikeDataProvider(
+			emptyData,
+			convex,
+			ai_chat_HARDCODED_ORG_ID,
+			ai_chat_HARDCODED_PROJECT_ID,
+		);
 		if (!dataProviderRef.current) {
 			dataProviderRef.current = provider; // Store in ref for access from other components
 		}
 		return provider;
 	}, []); // Empty dependency array - provider should only be created once
+
+	// Update data provider when tree data changes
+	React.useEffect(() => {
+		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
+			dataProvider.updateTreeData(treeData);
+		}
+	}, [treeData, dataProvider]);
+
+	// Cleanup on unmount
+	React.useEffect(() => {
+		return () => {
+			if (dataProvider) {
+				dataProvider.destroy();
+			}
+		};
+	}, [dataProvider]);
 
 	// Get expanded items for view state
 	const expandedItems = useMemo(() => {
@@ -419,6 +465,9 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 		}
 	};
 
+	// Archive mutation
+	const archiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_archive_document);
+
 	const handleArchive = (itemId: string) => {
 		const newArchivedSet = new Set(archivedItems);
 		newArchivedSet.add(itemId);
@@ -429,6 +478,14 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 		if (selectedDocId === itemId) {
 			navigateToDocument(null);
 		}
+
+		// Sync to Convex
+		if (convex) {
+			archiveDocument({
+				doc_id: itemId,
+				is_archived: true,
+			}).catch(console.error);
+		}
 	};
 
 	const handleUnarchive = (itemId: string) => {
@@ -436,6 +493,14 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 		newArchivedSet.delete(itemId);
 		setArchivedItems(newArchivedSet);
 		console.log("Unarchived item:", itemId);
+
+		// Sync to Convex
+		if (convex) {
+			archiveDocument({
+				doc_id: itemId,
+				is_archived: false,
+			}).catch(console.error);
+		}
 	};
 
 	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (item, treeId) => {

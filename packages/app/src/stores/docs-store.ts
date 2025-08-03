@@ -1,5 +1,8 @@
 import { createContext, use } from "react";
 import type { TreeDataProvider, TreeItemIndex, TreeItem, UncontrolledTreeEnvironmentProps } from "react-complex-tree";
+import type { ConvexReactClient } from "convex/react";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
+import { api } from "../../convex/_generated/api";
 
 // Document Navigation Context for communication between sidebar and main content
 export interface DocumentNavigationContextType {
@@ -22,6 +25,14 @@ export interface DocData {
 	title: string;
 	type: "document" | "placeholder";
 	content: string; // HTML content for the rich text editor - all documents have content
+}
+
+// New simplified tree item structure from Convex
+export interface ConvexTreeItem {
+	index: string;
+	children: string[];
+	title: string;
+	content: string;
 }
 
 // Function to create tree data with placeholders for empty folders
@@ -188,7 +199,10 @@ export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem
 
 // Helper function to create room ID from document ID
 export const createRoomId = (orgId: string, projectId: string, docId: string | null): string => {
-	return docId ? `${orgId}:${projectId}:${docId}` : `${orgId}:${projectId}:docs-default`;
+	if (!docId) return `${orgId}:${projectId}:docs-default`;
+
+	// Build roomId from components
+	return `${orgId}:${projectId}:${docId}`;
 };
 
 // Helper function to validate if a document type should trigger navigation
@@ -196,20 +210,13 @@ export const shouldNavigateToDocument = (itemType: string): boolean => {
 	return itemType === "document"; // All items are documents now, except placeholders
 };
 
-// Helper function to get document content by ID using the tree data
+// Helper function to get document content by ID - pure Convex approach
 export const getDocumentContent = (docId: string | null): string => {
 	if (!docId) return `<h1>Welcome</h1><p>Select a document from the sidebar to start editing.</p>`;
 
-	// Get content from the tree data
-	const treeData = createTreeDataWithPlaceholders();
-	const item = treeData[docId];
-
-	if (item && item.data.content) {
-		return item.data.content;
-	}
-
-	// Fallback for new documents
-	return `<h1>${docId}</h1><p>Start writing your content here...</p>`;
+	// For all documents (UUID-based), provide default content
+	// The actual content will be loaded from Liveblocks/Convex
+	return `<h1>Loading Document</h1><p>Document content is loading...</p>`;
 };
 
 // Custom TreeDataProvider for dynamic operations
@@ -217,9 +224,53 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 	private data: Record<TreeItemIndex, TreeItem<DocData>>;
 	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
-	constructor(initialData: Record<TreeItemIndex, TreeItem<DocData>>) {
+	// NEW: Convex integration
+	private convex: ConvexReactClient | null = null;
+	private workspaceId: string;
+	private projectId: string;
+
+	constructor(
+		initialData: Record<TreeItemIndex, TreeItem<DocData>>,
+		convex?: ConvexReactClient,
+		workspaceId?: string,
+		projectId?: string,
+	) {
 		// ✅ Store the already-sorted data
 		this.data = { ...initialData };
+		this.convex = convex || null;
+		this.workspaceId = workspaceId || ai_chat_HARDCODED_ORG_ID;
+		this.projectId = projectId || ai_chat_HARDCODED_PROJECT_ID;
+	}
+
+	// Method to update tree data from external source (like Convex query)
+	updateTreeData(convexData: Record<string, ConvexTreeItem>) {
+		// Convert Convex format to React Complex Tree format
+		const convertedData: Record<TreeItemIndex, TreeItem<DocData>> = {};
+
+		for (const [key, item] of Object.entries(convexData)) {
+			const isPlaceholder = item.title === "No files inside";
+
+			convertedData[key] = {
+				index: item.index,
+				children: item.children,
+				data: {
+					title: item.title,
+					type: isPlaceholder ? "placeholder" : "document",
+					content: item.content,
+				},
+				// Client-side defaults
+				isFolder: true,
+				canMove: !isPlaceholder && key !== "root",
+				canRename: !isPlaceholder && key !== "root",
+			};
+		}
+
+		this.data = convertedData;
+		this.notifyTreeChange(Object.keys(convertedData));
+	}
+
+	destroy() {
+		this.treeChangeListeners = [];
 	}
 
 	async getTreeItem(itemId: TreeItemIndex): Promise<TreeItem<DocData>> {
@@ -243,6 +294,18 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				children: sortedChildren,
 			};
 			this.notifyTreeChange([itemId]);
+
+			// Sync to Convex using doc_ids
+			if (this.convex) {
+				this.convex
+					.mutation(api.ai_docs_temp.ai_docs_temp_move_items, {
+						item_ids: newChildren.map((id) => id.toString()),
+						target_parent_id: itemId.toString(),
+						workspace_id: this.workspaceId,
+						project_id: this.projectId,
+					})
+					.catch(console.error);
+			}
 		}
 	}
 
@@ -277,23 +340,36 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			};
 			this.notifyTreeChange([parentItem.index]);
 		}
+
+		// Sync to Convex using doc_id
+		if (this.convex) {
+			try {
+				await this.convex.mutation(api.ai_docs_temp.ai_docs_temp_rename_document, {
+					doc_id: item.index.toString(),
+					title: name,
+				});
+			} catch (error) {
+				console.error("Failed to rename in Convex:", error);
+			}
+		}
 	}
 
 	// Custom methods for Notion-like operations
 	createNewItem(parentId: string, title: string = "Untitled", type: "document" = "document"): string {
-		const newItemId = `${type}-${Date.now()}`;
+		// Generate doc_id
+		const doc_id = `doc-${crypto.randomUUID()}`;
 		const parentItem = this.data[parentId];
 
-		console.log("createNewItem called:", { parentId, newItemId, parentChildren: parentItem?.children });
+		console.log("createNewItem called:", { parentId, doc_id, parentChildren: parentItem?.children });
 
 		if (parentItem) {
-			// Create new item
+			// Create new item using doc_id as index
 			const newItem: TreeItem<DocData> = {
-				index: newItemId,
+				index: doc_id,
 				children: [],
 				data: {
 					title,
-					type,
+					type: "document",
 					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 				},
 				canMove: true,
@@ -301,7 +377,7 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				isFolder: true,
 			};
 
-			this.data[newItemId] = newItem;
+			this.data[doc_id] = newItem;
 
 			// Check if parent has a placeholder that needs to be replaced
 			const placeholderId = `${parentId}-placeholder`;
@@ -310,12 +386,12 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			let updatedChildren: TreeItemIndex[];
 			if (hasPlaceholder) {
 				// Replace placeholder with new item
-				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? newItemId : id)) || [newItemId];
+				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? doc_id : id)) || [doc_id];
 				delete this.data[placeholderId];
 				console.log("Replaced placeholder with new item");
 			} else {
 				// Just add the new item to existing children
-				updatedChildren = [...(parentItem.children || []), newItemId];
+				updatedChildren = [...(parentItem.children || []), doc_id];
 				console.log("Added new item to existing children");
 			}
 
@@ -328,10 +404,25 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 
 			this.data[parentId] = updatedParent;
 
-			this.notifyTreeChange([parentId, newItemId]);
+			this.notifyTreeChange([parentId, doc_id]);
 		}
 
-		return newItemId;
+		// Sync to Convex
+		if (this.convex) {
+			this.convex
+				.mutation(api.ai_docs_temp.ai_docs_temp_create_document, {
+					parent_id: parentId,
+					title,
+					workspace_id: this.workspaceId,
+					project_id: this.projectId,
+				})
+				.then((result) => {
+					console.log("Document created in Convex:", result.doc_id);
+				})
+				.catch(console.error);
+		}
+
+		return doc_id;
 	}
 
 	// Helper methods for sorting

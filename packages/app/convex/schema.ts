@@ -200,16 +200,46 @@ const app_convex_schema = defineSchema({
 		.index("by_thread_and_parent", ["thread_id", "parent_id"])
 		.index("by_updated_at", ["updated_at"]),
 
-	// Table to persist Yjs documents mirrored from Liveblocks
+	// Table to persist Yjs documents mirrored from Liveblocks with enhanced metadata
 	docs_yjs: defineTable({
-		roomId: v.string(),
 		/** Base64-encoded Yjs document state from Liveblocks */
-		yjsDocumentState: v.string(),
+		yjs_document_state: v.string(),
 		/** timestamp in milliseconds when document was last updated */
-		lastUpdatedAt: v.number(),
+		last_updated_at: v.number(),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
-	}).index("by_roomId", ["roomId"]),
+
+		// NEW: Tree metadata fields
+		/** Document title for display in tree */
+		title: v.optional(v.string()),
+		/** Whether document is archived */
+		is_archived: v.optional(v.boolean()),
+		/** Workspace ID extracted from roomId */
+		workspace_id: v.optional(v.string()),
+		/** Project ID extracted from roomId */
+		project_id: v.optional(v.string()),
+		/** Document ID extracted from roomId */
+		doc_id: v.optional(v.string()),
+		/** Created by user ID */
+		created_by: v.optional(v.string()),
+		/** Updated by user ID */
+		updated_by: v.optional(v.string()),
+		/** timestamp in milliseconds when document was created */
+		created_at: v.optional(v.number()),
+	})
+		.index("by_workspace_project", ["workspace_id", "project_id"])
+		.index("by_doc_id", ["doc_id"]),
+
+	// NEW: Tree structure table (relationships only)
+	file_tree: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		parent_id: v.string(), // "root" for root items
+		child_id: v.string(), // doc_id (not roomId)
+	})
+		.index("by_workspace_project", ["workspace_id", "project_id"])
+		.index("by_parent", ["parent_id"])
+		.index("by_child", ["child_id"]),
 });
 
 export default app_convex_schema;
