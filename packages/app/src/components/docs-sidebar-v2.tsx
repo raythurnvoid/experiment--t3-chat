@@ -48,7 +48,8 @@ type DocsSidebar_ClassNames =
 	| "DocsSidebar-tree-item-file-icon"
 	| "DocsSidebar-tree-item-primary-action-content"
 	| "DocsSidebar-tree-item-primary-action-interactive-area"
-	| "DocsSidebar-tree-item-actions";
+	| "DocsSidebar-tree-item-actions"
+	| "DocsSidebar-selection-counter";
 
 type DocsSidebar_CssVars = {
 	"--DocsSidebar-tree-item-content-depth": number;
@@ -636,13 +637,20 @@ type DocsSidebarContent_Props = {
 function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	const { onClose } = props;
 
-	const { searchQuery, setSearchQuery, showArchived, setShowArchived, archivedItems, dataProviderRef } =
-		useDocsSearchContext();
+	const {
+		searchQuery,
+		setSearchQuery,
+		showArchived,
+		setShowArchived,
+		archivedItems,
+		setArchivedItems,
+		dataProviderRef,
+	} = useDocsSearchContext();
 
 	const treeRef = useRef<TreeRef | null>(null);
 
-	// Track multi-selection count from TreeContainer
 	const [multiSelectionCount, setMultiSelectionCount] = useState(0);
+	const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
 
 	// Handler functions for tree actions
 	const handleFold = () => {
@@ -658,7 +666,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		// For now, this would need to be connected to handleAddChild in TreeContainer
 		// or use treeRef.current?.navigateToDocument() for external navigation
 		if (dataProviderRef.current) {
-			const newItemId = dataProviderRef.current.createNewItem("root", "New Document", "document");
+			const newItemId = dataProviderRef.current.createNewItem(ROOT_TREE_ID, "New Document", "document");
 			console.log("Created new document from header button:", newItemId);
 		}
 	};
@@ -668,8 +676,22 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		treeRef.current?.selectItems([]);
 	};
 
+	const handleArchiveAll = () => {
+		// Archive all selected items
+		const newArchivedSet = new Set(archivedItems);
+
+		selectedItemIds.forEach((itemId: string) => {
+			newArchivedSet.add(itemId);
+		});
+
+		setArchivedItems(newArchivedSet);
+
+		handleClearSelection();
+	};
+
 	const handleSelectItems: TreeArea_Props["onSelectItems"] = (items, treeId) => {
 		setMultiSelectionCount(items.length);
+		setSelectedItemIds(items.map((item) => item.toString()));
 	};
 
 	return (
@@ -691,11 +713,28 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 
 				{/* Multi-selection counter */}
 				{multiSelectionCount > 1 && (
-					<div className="TreeContainer-selection-counter mb-4">
+					<div className={cn("DocsSidebar-selection-counter" satisfies DocsSidebar_ClassNames, "mb-4")}>
 						<span className="font-medium">{multiSelectionCount} items selected</span>
-						<button onClick={handleClearSelection} className="ml-auto text-xs hover:underline">
-							Clear
-						</button>
+						<div className="flex gap-1">
+							<IconButton
+								variant="ghost"
+								size="icon"
+								onClick={handleArchiveAll}
+								tooltip="Archive all"
+								className="h-6 w-6"
+							>
+								<Archive className="h-3 w-3" />
+							</IconButton>
+							<IconButton
+								variant="ghost"
+								size="icon"
+								onClick={handleClearSelection}
+								tooltip="Clear"
+								className="h-6 w-6"
+							>
+								<X className="h-3 w-3" />
+							</IconButton>
+						</div>
 					</div>
 				)}
 

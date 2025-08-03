@@ -81,4 +81,10 @@
 
 		height: 20px;
 	}
+
+	.DocsSidebar-selection-counter {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
 }
