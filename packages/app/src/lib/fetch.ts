@@ -57,6 +57,25 @@ export async function app_fetch_ai_docs_liveblocks_auth(
 	});
 }
 
+export async function app_fetch_ai_docs_contextual_prompt(
+	args: app_fetch_JsonArgs & {
+		input: {
+			prompt: string;
+			context?: any;
+			previous?: any;
+		};
+	},
+) {
+	const url = `${convex_http_url}/api/ai-docs-temp/contextual-prompt`;
+
+	return await app_fetch_json({
+		...args,
+		url,
+		method: "POST",
+		body: args.input,
+	});
+}
+
 // #region Core
 const base_url_main = convex_http_url;
 

@@ -1,24 +1,8 @@
-import { createContext, use } from "react";
 import type { TreeDataProvider, TreeItemIndex, TreeItem, UncontrolledTreeEnvironmentProps } from "react-complex-tree";
 import type { ConvexReactClient } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
 import { api } from "../../convex/_generated/api";
-
-// Document Navigation Context for communication between sidebar and main content
-export interface DocumentNavigationContextType {
-	selectedDocId: string | null;
-	navigateToDocument: (docId: string | null) => void;
-}
-
-export const DocumentNavigationContext = createContext<DocumentNavigationContextType | null>(null);
-
-export const useDocumentNavigation = () => {
-	const context = use(DocumentNavigationContext);
-	if (!context) {
-		throw new Error("useDocumentNavigation must be used within DocumentNavigationProvider");
-	}
-	return context;
-};
+import { generate_timestamp_uuid } from "../lib/utils.ts";
 
 // Types for document structure - react-complex-tree format
 export interface DocData {
@@ -34,190 +18,6 @@ export interface ConvexTreeItem {
 	title: string;
 	content: string;
 }
-
-// Function to create tree data with placeholders for empty folders
-export const createTreeDataWithPlaceholders = (): Record<TreeItemIndex, TreeItem<DocData>> => {
-	// Base tree data
-	const baseData: Record<TreeItemIndex, TreeItem<DocData>> = {
-		root: {
-			index: "root",
-			isFolder: true,
-			children: ["getting-started", "user-guide"],
-			data: {
-				title: "Documentation",
-				type: "document",
-				content: `<h1>Documentation</h1><p>Welcome to our docs. Find guides, API reference, and tutorials here.</p>`,
-			},
-			canMove: false,
-			canRename: false,
-		},
-		"getting-started": {
-			index: "getting-started",
-			isFolder: true,
-			children: ["introduction", "installation", "quick-start"],
-			data: {
-				title: "Getting Started",
-				type: "document",
-				content: `<h1>Getting Started</h1><p>Quick guide to get up and running. Follow the steps in order.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		introduction: {
-			index: "introduction",
-			children: [],
-			data: {
-				title: "Introduction",
-				type: "document",
-				content: `<h1>Introduction</h1><p>Welcome to our documentation! Get started with our platform's core concepts and features.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		installation: {
-			index: "installation",
-			children: [],
-			data: {
-				title: "Installation",
-				type: "document",
-				content: `<h1>Installation</h1><p>Quick setup guide:</p><ol><li>Install Node.js 18+</li><li>Run npm install</li><li>Start the development server</li></ol>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"quick-start": {
-			index: "quick-start",
-			children: [],
-			data: {
-				title: "Quick Start Guide",
-				type: "document",
-				content: `<h1>Quick Start</h1><p>Get started in 5 minutes:</p><ol><li>Create account</li><li>Set up workspace</li><li>Create first document</li></ol>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		"user-guide": {
-			index: "user-guide",
-			isFolder: true,
-			children: ["dashboard", "projects", "collaboration"],
-			data: {
-				title: "User Guide",
-				type: "document",
-				content: `<h1>User Guide</h1><p>Learn how to use all platform features.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		dashboard: {
-			index: "dashboard",
-			children: [],
-			data: {
-				title: "Dashboard Overview",
-				type: "document",
-				content: `<h1>Dashboard Overview</h1><p>Your main control center with project stats, recent activity, and quick actions.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		projects: {
-			index: "projects",
-			children: [],
-			data: {
-				title: "Managing Projects",
-				type: "document",
-				content: `<h1>Managing Projects</h1><p>Create, organize, and manage your projects. Learn about project settings, permissions, and collaboration features.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-		collaboration: {
-			index: "collaboration",
-			isFolder: true,
-			children: [],
-			data: {
-				title: "Collaboration",
-				type: "document",
-				content: `<h1>Collaboration</h1><p>Work together with sharing, comments, and real-time editing.</p>`,
-			},
-			canMove: true,
-			canRename: true,
-		},
-	};
-
-	// Create modified data where all items are foldable and empty ones get placeholders
-	const modifiedData: Record<TreeItemIndex, TreeItem<DocData>> = {};
-
-	// Copy base data and modify
-	for (const [key, item] of Object.entries(baseData)) {
-		const hasChildren = item.children && item.children.length > 0;
-		const placeholderId = `${key}-placeholder`;
-
-		modifiedData[key] = {
-			...item,
-			isFolder: true, // Make all items foldable
-			children: hasChildren ? item.children : [placeholderId], // Add placeholder for empty items
-		};
-
-		// Add placeholder item for empty folders
-		if (!hasChildren) {
-			modifiedData[placeholderId] = {
-				index: placeholderId,
-				children: [],
-				data: {
-					title: "No files inside",
-					type: "placeholder",
-					content: "",
-				},
-				canMove: false,
-				canRename: false,
-			};
-		}
-	}
-
-	// ✅ Sort all children arrays BEFORE returning
-	Object.values(modifiedData).forEach((item) => {
-		if (item.children && item.children.length > 0) {
-			item.children = [...item.children].sort((a, b) => {
-				const itemA = modifiedData[a];
-				const itemB = modifiedData[b];
-
-				if (itemA?.data.type === "placeholder") return 1;
-				if (itemB?.data.type === "placeholder") return -1;
-
-				const titleA = itemA?.data.title || "";
-				const titleB = itemB?.data.title || "";
-				return titleA.localeCompare(titleB, undefined, {
-					numeric: true,
-					sensitivity: "base",
-				});
-			});
-		}
-	});
-
-	return modifiedData;
-};
-
-// Helper function to create room ID from document ID
-export const createRoomId = (orgId: string, projectId: string, docId: string | null): string => {
-	if (!docId) return `${orgId}:${projectId}:docs-default`;
-
-	// Build roomId from components
-	return `${orgId}:${projectId}:${docId}`;
-};
-
-// Helper function to validate if a document type should trigger navigation
-export const shouldNavigateToDocument = (itemType: string): boolean => {
-	return itemType === "document"; // All items are documents now, except placeholders
-};
-
-// Helper function to get document content by ID - pure Convex approach
-export const getDocumentContent = (docId: string | null): string => {
-	if (!docId) return `<h1>Welcome</h1><p>Select a document from the sidebar to start editing.</p>`;
-
-	// For all documents (UUID-based), provide default content
-	// The actual content will be loaded from Liveblocks/Convex
-	return `<h1>Loading Document</h1><p>Document content is loading...</p>`;
-};
 
 // Custom TreeDataProvider for dynamic operations
 export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
@@ -258,7 +58,6 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					type: isPlaceholder ? "placeholder" : "document",
 					content: item.content,
 				},
-				// Client-side defaults
 				isFolder: true,
 				canMove: !isPlaceholder && key !== "root",
 				canRename: !isPlaceholder && key !== "root",
@@ -279,11 +78,9 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			throw new Error(`Item ${itemId} not found`);
 		}
 
-		// ✅ CORRECT: Return data as-is, no filtering in getTreeItem
 		return item;
 	}
 
-	// ✅ Accept children from library, then sort them before storing
 	async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
 		if (this.data[itemId]) {
 			// Sort the children alphabetically before storing
@@ -356,14 +153,12 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 
 	// Custom methods for Notion-like operations
 	createNewItem(parentId: string, title: string = "Untitled", type: "document" = "document"): string {
-		// Generate doc_id
-		const doc_id = `doc-${crypto.randomUUID()}`;
+		const doc_id = generate_timestamp_uuid("doc");
 		const parentItem = this.data[parentId];
 
 		console.log("createNewItem called:", { parentId, doc_id, parentChildren: parentItem?.children });
 
 		if (parentItem) {
-			// Create new item using doc_id as index
 			const newItem: TreeItem<DocData> = {
 				index: doc_id,
 				children: [],

@@ -1,5 +1,5 @@
 import "./docs-sidebar-v2.css";
-import React, { useState, createContext, use, useMemo, useRef } from "react";
+import React, { useState, createContext, use, useMemo, useRef, useEffect } from "react";
 import {
 	FileText,
 	Plus,
@@ -27,8 +27,6 @@ import {
 	type TreeInformation,
 } from "react-complex-tree";
 import {
-	useDocumentNavigation,
-	shouldNavigateToDocument,
 	NotionLikeDataProvider,
 	type DocData,
 	type docs_TypedUncontrolledTreeEnvironmentProps,
@@ -224,7 +222,7 @@ type TreeItem_Props = {
 	context: TreeItemRenderContext;
 	arrow: React.ReactNode;
 	info: TreeInformation;
-	selectedDocId: string | null;
+	selectedDocId?: string;
 	archivedItems: Set<string>;
 	showArchived: boolean;
 	onAdd: (parentId: string) => void;
@@ -366,27 +364,27 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 const TREE_ID = "docs-tree";
 const ROOT_TREE_ID = "root";
 
-// Props interface for TreeContainer using React 19 ref pattern
 type TreeArea_Props = {
 	ref: React.RefObject<TreeRef | null>;
-	onSelectItems?: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
+	selectedDocId?: string;
+	onSelectItems: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
+	onAddChild: (parentId: string, newItemId: string) => void;
+	onArchive: (itemId: string) => void;
+	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
-function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
-	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
+function TreeArea(props: TreeArea_Props) {
+	const { ref, selectedDocId, onSelectItems, onAddChild, onArchive, onPrimaryAction } = props;
 
-	// Get document navigation from parent context
-	const { selectedDocId, navigateToDocument } = useDocumentNavigation();
+	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
 
 	const convex = useConvex();
 
-	// Query tree data from Convex
 	const treeData = useQuery(api.ai_docs_temp.ai_docs_temp_get_document_tree, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
 		project_id: ai_chat_HARDCODED_PROJECT_ID,
 	});
 
-	// Create custom data provider (stable instance) - pure Convex, no hardcoded fallback
 	const dataProvider = useMemo(() => {
 		const emptyData: Record<string, any> = {
 			root: {
@@ -413,17 +411,17 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 			dataProviderRef.current = provider; // Store in ref for access from other components
 		}
 		return provider;
-	}, []); // Empty dependency array - provider should only be created once
+	}, []);
 
 	// Update data provider when tree data changes
-	React.useEffect(() => {
+	useEffect(() => {
 		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
 			dataProvider.updateTreeData(treeData);
 		}
 	}, [treeData, dataProvider]);
 
 	// Cleanup on unmount
-	React.useEffect(() => {
+	useEffect(() => {
 		return () => {
 			if (dataProvider) {
 				dataProvider.destroy();
@@ -456,28 +454,21 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
-	// Action handlers
+	const archiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_archive_document);
+
 	const handleAddChild = (parentId: string) => {
 		if (dataProviderRef.current) {
 			const newItemId = dataProviderRef.current.createNewItem(parentId, "New Document", "document");
-			navigateToDocument(newItemId);
 			console.log("Created new document:", newItemId);
+			onAddChild(parentId, newItemId);
 		}
 	};
-
-	// Archive mutation
-	const archiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_archive_document);
 
 	const handleArchive = (itemId: string) => {
 		const newArchivedSet = new Set(archivedItems);
 		newArchivedSet.add(itemId);
 		setArchivedItems(newArchivedSet);
 		console.log("Archived item:", itemId);
-
-		// If we archived the currently selected item, clear selection
-		if (selectedDocId === itemId) {
-			navigateToDocument(null);
-		}
 
 		// Sync to Convex
 		if (convex) {
@@ -486,6 +477,8 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 				is_archived: true,
 			}).catch(console.error);
 		}
+
+		onArchive(itemId);
 	};
 
 	const handleUnarchive = (itemId: string) => {
@@ -504,9 +497,9 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 	};
 
 	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (item, treeId) => {
-		if (!shouldNavigateToDocument(item.data.type)) return;
-
-		navigateToDocument(item.index.toString());
+		if (item.data.type === "document") {
+			onPrimaryAction(item.index.toString(), item.data.type);
+		}
 	};
 
 	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
@@ -696,11 +689,15 @@ function TreeArea({ ref, onSelectItems }: TreeArea_Props) {
 }
 
 type DocsSidebarContent_Props = {
+	selectedDocId?: string;
 	onClose: () => void;
+	onAddChild: (parentId: string, newItemId: string) => void;
+	onArchive: (itemId: string) => void;
+	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
 function DocsSidebarContent(props: DocsSidebarContent_Props) {
-	const { onClose } = props;
+	const { selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction } = props;
 
 	const {
 		searchQuery,
@@ -871,20 +868,29 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
-				<TreeArea ref={treeRef} onSelectItems={handleSelectItems} />
+				<TreeArea
+					ref={treeRef}
+					onSelectItems={handleSelectItems}
+					selectedDocId={selectedDocId}
+					onAddChild={onAddChild}
+					onArchive={onArchive}
+					onPrimaryAction={onPrimaryAction}
+				/>
 			</SidebarContent>
 		</div>
 	);
 }
 
-// Props interface for the DocsSidebar wrapper component
 export type DocsSidebar_Props = React.ComponentProps<typeof Sidebar> & {
+	selectedDocId?: string;
 	onClose: () => void;
+	onAddChild: (parentId: string, newItemId: string) => void;
+	onArchive: (itemId: string) => void;
+	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
-// Main sidebar wrapper component
 export function DocsSidebar(props: DocsSidebar_Props) {
-	const { onClose, className, ...rest } = props;
+	const { className, selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction, ...rest } = props;
 
 	return (
 		<SidebarProvider className={cn("DocsSidebar", "flex h-full w-full")}>
@@ -898,7 +904,13 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 						style={{ borderRight: "none !important", width: "320px" }}
 						{...rest}
 					>
-						<DocsSidebarContent onClose={onClose} />
+						<DocsSidebarContent
+							onClose={onClose}
+							selectedDocId={selectedDocId}
+							onAddChild={onAddChild}
+							onArchive={onArchive}
+							onPrimaryAction={onPrimaryAction}
+						/>
 					</Sidebar>
 				</div>
 			</DocsSearchContextProvider>

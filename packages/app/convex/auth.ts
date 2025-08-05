@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { AssistantCloudConvex } from "@assistant-ui/cloud";
-import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "../shared/shared_auth_constants.ts";
+import { auth_ANONYMOUS_USER_ID, auth_ANONYMOUS_WORKSPACE_ID } from "../shared/shared-auth-constants.ts";
 
 export const generate_assistant_ui_token = action({
 	args: {

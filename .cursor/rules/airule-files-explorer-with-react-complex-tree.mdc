@@ -1,6 +1,6 @@
 ---
 description: Complete implementation guide for the React Complex Tree sidebar with Convex, Liveblocks, and AI features
-globs: 
+globs:
   - packages/app/src/components/docs-sidebar-v2.tsx
   - packages/app/src/stores/docs-store.ts
   - packages/app/convex/ai_docs_temp.ts
@@ -22,7 +22,7 @@ The DocsSidebar v2 component is a sophisticated Notion-like file explorer for an
 │  React Complex Tree + shadcn/ui + Tailwind CSS          │
 ├─────────────────────────────────────────────────────────┤
 │                  State Management                        │
-│  Local Context (Navigation) + DocsSearchContext         │
+│              DocsSearchContext                           │
 ├─────────────────────────────────────────────────────────┤
 │                 Real-time Collaboration                  │
 │         Liveblocks (Yjs + TipTap Editor)                │
@@ -62,29 +62,23 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 
 ### 2. Data Store (`packages/app/src/stores/docs-store.ts`)
 
-Manages document data and navigation state:
+Manages document data:
 
 ```typescript
 // Document data structure
 interface DocData {
-  id: string;
-  title: string;
-  type: "folder" | "document" | "placeholder";
-  content?: string; // HTML content for TipTap editor
+	id: string;
+	title: string;
+	type: "folder" | "document" | "placeholder";
+	content?: string; // HTML content for TipTap editor
 }
 
 // Custom data provider
 class NotionLikeDataProvider implements TreeDataProvider<DocData> {
-  // Handles all tree operations with automatic sorting
-  // Manages placeholder items for empty folders
-  // Notifies listeners of tree changes
+	// Handles all tree operations with automatic sorting
+	// Manages placeholder items for empty folders
+	// Notifies listeners of tree changes
 }
-
-// Navigation context
-const DocumentNavigationContext = createContext<{
-  selectedDocId: string | null;
-  navigateToDocument: (docId: string | null) => void;
-}>();
 ```
 
 ### 3. Convex Backend (`packages/app/convex/ai_docs_temp.ts`)
@@ -94,45 +88,22 @@ Backend integration for persistence and AI:
 ```typescript
 // Database schema
 const schema = defineSchema({
-  docs_yjs: defineTable({
-    roomId: v.string(),
-    content: v.bytes(), // Yjs document state
-    orgId: v.string(),
-    projectId: v.string(),
-    docId: v.string(),
-  }).index("by_room_id", ["roomId"])
+	docs_yjs: defineTable({
+		roomId: v.string(),
+		content: v.bytes(), // Yjs document state
+		orgId: v.string(),
+		projectId: v.string(),
+		docId: v.string(),
+	}).index("by_room_id", ["roomId"]),
 });
 
 // HTTP actions
-export const ai_docs_temp_liveblocks_auth // JWT auth for Liveblocks
-export const ai_docs_temp_contextual_prompt // AI generation endpoint
-export const ai_docs_temp_liveblocks_webhook // Persistence webhook
+export const ai_docs_temp_liveblocks_auth; // JWT auth for Liveblocks
+export const ai_docs_temp_contextual_prompt; // AI generation endpoint
+export const ai_docs_temp_liveblocks_webhook; // Persistence webhook
 
 // Mutations
-export const ai_docs_temp_upsert_yjs_document // Save document changes
-```
-
-### 4. Routes Integration (`packages/app/src/routes/docs.tsx`)
-
-Connects all components together:
-
-```typescript
-function DocsRoute() {
-  const { selectedDocId } = useDocumentNavigation();
-  
-  return (
-    <DocumentNavigationContextProvider>
-      <div className="flex">
-        <DocsSidebar />
-        {selectedDocId && (
-          <LiveblocksRoomProvider roomId={`${orgId}:${projectId}:${docId}`}>
-            <TipTapEditor initialContent={getDocumentContent(selectedDocId)} />
-          </LiveblocksRoomProvider>
-        )}
-      </div>
-    </DocumentNavigationContextProvider>
-  );
-}
+export const ai_docs_temp_upsert_yjs_document; // Save document changes
 ```
 
 ## React Complex Tree Integration Details
@@ -146,25 +117,25 @@ The UncontrolledTreeEnvironment is configured with specific patterns for Notion-
   // Data management
   dataProvider={dataProvider} // Stable instance via useMemo
   getItemTitle={(item) => item.data.title}
-  
+
   // Interaction modes
   defaultInteractionMode={InteractionMode.ClickArrowToExpand}
   // Arrow expands/collapses, title click selects only (VSCode-like)
-  
+
   // Drag & drop configuration
   canDragAndDrop={true}
   canDropOnFolder={true}
   canDropOnNonFolder={true} // All items can receive drops
   canReorderItems={true}
   canDropBelowOpenFolders={false}
-  
+
   // Custom filtering for search
   shouldRenderChildren={handleShouldRenderChildren}
-  
+
   // Selection handling
   onPrimaryAction={handlePrimaryAction}
   onSelectItems={handleSelectItems}
-  
+
   // Custom rendering
   renderItem={(props) => <TreeItem {...props} />}
   renderItemArrow={(props) => <TreeItemArrow {...props} />}
@@ -183,41 +154,41 @@ The NotionLikeDataProvider extends TreeDataProvider with critical features:
 
 ```typescript
 class NotionLikeDataProvider implements TreeDataProvider<DocData> {
-  private data: Record<TreeItemIndex, TreeItem<DocData>>;
-  private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
-  
-  async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
-    // Sort children alphabetically
-    const sortedChildren = this.sortChildren(newChildren);
-    
-    // Update data
-    this.data[itemId] = {
-      ...this.data[itemId],
-      children: sortedChildren
-    };
-    
-    // Notify listeners
-    this.notifyTreeChange([itemId]);
-  }
-  
-  createNewItem(parentId: string, title: string, type: "document" | "folder"): string {
-    const newId = `${type}-${Date.now()}`;
-    
-    // Create item with placeholder if it's a folder
-    this.data[newId] = {
-      index: newId,
-      isFolder: true, // All items are foldable
-      children: [`${newId}-placeholder`],
-      data: { id: newId, title, type },
-      canMove: true,
-      canRename: true
-    };
-    
-    // Update parent's children
-    this.updateParentChildren(parentId, newId);
-    
-    return newId;
-  }
+	private data: Record<TreeItemIndex, TreeItem<DocData>>;
+	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
+
+	async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
+		// Sort children alphabetically
+		const sortedChildren = this.sortChildren(newChildren);
+
+		// Update data
+		this.data[itemId] = {
+			...this.data[itemId],
+			children: sortedChildren,
+		};
+
+		// Notify listeners
+		this.notifyTreeChange([itemId]);
+	}
+
+	createNewItem(parentId: string, title: string, type: "document" | "folder"): string {
+		const newId = `${type}-${Date.now()}`;
+
+		// Create item with placeholder if it's a folder
+		this.data[newId] = {
+			index: newId,
+			isFolder: true, // All items are foldable
+			children: [`${newId}-placeholder`],
+			data: { id: newId, title, type },
+			canMove: true,
+			canRename: true,
+		};
+
+		// Update parent's children
+		this.updateParentChildren(parentId, newId);
+
+		return newId;
+	}
 }
 ```
 
@@ -231,26 +202,26 @@ By default, React Complex Tree doesn't support dropping items directly onto the 
 function TreeArea() {
   const rootElement = useRef<HTMLDivElement>(null);
   const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
-  
+
   const handleDropOnRootArea = async (e: React.DragEvent<HTMLDivElement>) => {
     if (e.target !== rootElement.current) return;
-    
+
     // Get dragging items from react-complex-tree's internal context
     const draggingItems = treeRef.current?.dragAndDropContext.draggingItems;
     if (!draggingItems) return;
-    
+
     // Use the tree's live state as source of truth
     const currentItems = treeRef.current?.treeEnvironmentContext.items || {};
-    
+
     // Follow same pattern as library's internal drop handling
     const promises: Promise<void>[] = [];
-    
+
     // Step 1: Remove items from old parents
     for (const item of draggingItems) {
       const parent = Object.values(currentItems).find(
         p => p?.children?.includes(item.index)
       );
-      
+
       if (parent && parent.index !== ROOT_TREE_ID) {
         promises.push(
           dataProvider.onChangeItemChildren(
@@ -260,7 +231,7 @@ function TreeArea() {
         );
       }
     }
-    
+
     // Step 2: Add items to root
     const itemIds = draggingItems.map(item => item.index);
     promises.push(
@@ -269,10 +240,10 @@ function TreeArea() {
         ...itemIds
       ])
     );
-    
+
     await Promise.all(promises);
   };
-  
+
   return (
     <div
       ref={rootElement}
@@ -325,23 +296,23 @@ Real-time search with hierarchical filtering:
 
 ```typescript
 const handleShouldRenderChildren: TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (item, context) => {
-  // Default expansion check
-  const defaultShouldRender = item.isFolder && context.isExpanded;
-  if (!defaultShouldRender) return false;
-  
-  // Placeholder items always render if expanded
-  if (item.data.type === "placeholder") return true;
-  
-  // Search filtering
-  if (searchQuery.trim() && item.children) {
-    const hasVisibleChildren = item.children.some(childId => {
-      const child = dataProvider.getAllData()[childId];
-      return child?.data.title.toLowerCase().includes(searchQuery.toLowerCase());
-    });
-    return hasVisibleChildren;
-  }
-  
-  return defaultShouldRender;
+	// Default expansion check
+	const defaultShouldRender = item.isFolder && context.isExpanded;
+	if (!defaultShouldRender) return false;
+
+	// Placeholder items always render if expanded
+	if (item.data.type === "placeholder") return true;
+
+	// Search filtering
+	if (searchQuery.trim() && item.children) {
+		const hasVisibleChildren = item.children.some((childId) => {
+			const child = dataProvider.getAllData()[childId];
+			return child?.data.title.toLowerCase().includes(searchQuery.toLowerCase());
+		});
+		return hasVisibleChildren;
+	}
+
+	return defaultShouldRender;
 };
 ```
 
@@ -384,7 +355,7 @@ const webhook = `${CONVEX_URL}/api/ai-docs-temp/liveblocks-webhook`;
 
 // TipTap editor with Liveblocks
 <LiveblocksRoomProvider roomId={roomId}>
-  <TipTapEditor 
+  <TipTapEditor
     extensions={[LiveblocksYjsExtension]}
     initialContent={documentContent}
   />
@@ -431,21 +402,21 @@ AI can generate new documents or sections based on prompts, with the generated c
 ```css
 /* Grid layout for tree items with action buttons */
 .DocsSidebar-tree-item-content {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: 32px 32px;
+	display: grid;
+	grid-template-columns: 1fr auto;
+	grid-template-rows: 32px 32px;
 }
 
 /* Dynamic indentation using CSS variables */
 .DocsSidebar-tree-item-main-row {
-  padding-left: calc(var(--DocsSidebar-tree-item-content-depth) * 16px);
+	padding-left: calc(var(--DocsSidebar-tree-item-content-depth) * 16px);
 }
 
 /* Action buttons on second row */
 .DocsSidebar-tree-item-actions {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  padding-left: calc(var(--DocsSidebar-tree-item-content-depth) * 16px + 32px);
+	grid-column: 1 / -1;
+	grid-row: 2;
+	padding-left: calc(var(--DocsSidebar-tree-item-content-depth) * 16px + 32px);
 }
 ```
 
@@ -467,12 +438,13 @@ className={cn(
 ### ⚠️ NEVER Violate These Patterns
 
 1. **Hook Usage in renderItem**
+
    ```typescript
    // ❌ WRONG - Will crash
    renderItem={({ item }) => {
      const id = useId(); // CRASH!
    }}
-   
+
    // ✅ CORRECT - Extract to component
    function TreeItem(props) {
      const id = useId(); // Safe
@@ -482,25 +454,26 @@ className={cn(
    ```
 
 2. **Data Provider Stability**
+
    ```typescript
    // ❌ WRONG - Recreates every render
    const dataProvider = new NotionLikeDataProvider(data);
-   
+
    // ✅ CORRECT - Stable instance
    const dataProvider = useMemo(() => {
-     const provider = new NotionLikeDataProvider(data);
-     dataProviderRef.current = provider;
-     return provider;
+   	const provider = new NotionLikeDataProvider(data);
+   	dataProviderRef.current = provider;
+   	return provider;
    }, []); // Empty deps
    ```
 
 3. **Selection Management**
+
    ```typescript
    // ❌ WRONG - Custom click handlers
    <button onClick={() => setSelectedId(item.id)}>
-   
+
    // ✅ CORRECT - Use library callbacks
-   onPrimaryAction={(item) => navigateToDocument(item.index)}
    onSelectItems={(items) => handleSelection(items)}
    ```
 

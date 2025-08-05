@@ -3,6 +3,8 @@ import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
 import type { KeysOfUnion, Primitive } from "type-fest";
 
+export * from "../../shared/shared-utils.ts";
+
 /**
  * Useful to make it easier to concat class names in react components
  **/

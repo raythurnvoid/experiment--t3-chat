@@ -35,8 +35,6 @@
 		"noErrorTruncation": true
 	},
 	"include": [
-		"src",
-		"convex",
-		"assistant-ui/packages/**/app_aui_bridge.ts"
+		"src"
 	]
 }

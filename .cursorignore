@@ -1,2 +1,4 @@
-# Allow Cursor to index your personal stuff
+# Allow Cursor to index +personal/
 !+personal/
+
+!.cursor/

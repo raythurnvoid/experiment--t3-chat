@@ -1,5 +1,5 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
-import { auth_ANONYMOUS_USER_ID } from "../../shared/shared_auth_constants.ts";
+import { auth_ANONYMOUS_USER_ID } from "../../shared/shared-auth-constants.ts";
 import type { UnknownRecord } from "type-fest";
 import { Result } from "../../src/lib/errors-as-values-utils.ts";
 

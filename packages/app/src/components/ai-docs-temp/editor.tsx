@@ -29,21 +29,15 @@ import VersionsDialog from "./version-history-dialog.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn } from "../../lib/utils.ts";
 import { HistoryButtons } from "./selectors/history-buttons.tsx";
+import { app_fetch_ai_docs_contextual_prompt } from "../../lib/fetch.ts";
 
-// Get Convex URL for HTTP endpoints
-const CONVEX_URL = import.meta.env.VITE_CONVEX_URL || "https://your-convex-deployment.convex.site";
+interface RichTextDocEditor_Props {}
 
-interface RichTextDocEditor_Props {
-	initialContent?: string;
-}
-
-// Outer component - React 19: ref is now available as a prop, no need for forwardRef
 export function RichTextDocEditor(props: RichTextDocEditor_Props) {
 	return (
 		<div className={cn("TiptapEditor", "h-full w-full")}>
-			{/* Novel Editor */}
 			<EditorRoot>
-				<TiptapEditorContent initialContent={props.initialContent} />
+				<TiptapEditorContent initialContent={initialContent} />
 			</EditorRoot>
 		</div>
 	);
@@ -53,7 +47,6 @@ interface TiptapEditorContent_Props {
 	initialContent?: string;
 }
 
-// Inner component - lives inside EditorRoot, can safely use useEditor hook
 function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	const [openAi, setOpenAi] = useState(false);
 	const [openNode, setOpenNode] = useState(false);
@@ -68,13 +61,16 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 		ai: {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
-				const response = await fetch(`${CONVEX_URL}/api/ai-docs-temp/contextual-prompt`, {
-					method: "POST",
-					body: JSON.stringify({ prompt, context, previous }),
+				const result = await app_fetch_ai_docs_contextual_prompt({
+					input: { prompt, context, previous },
 					signal,
 				});
 
-				return response.json();
+				if (result.ok) {
+					return result.ok.payload;
+				} else {
+					throw new Error(`Failed to resolve contextual prompt: ${result.bad.message}`);
+				}
 			},
 		},
 	});
@@ -218,3 +214,8 @@ function EditorToolbar({ charsCount, syncStatus }: EditorToolbar_Props) {
 		</Toolbar>
 	);
 }
+
+const initialContent = `
+<h1>Welcome</h1>
+<p>You can start editing your document here.</p>
+`;
