@@ -24,17 +24,279 @@ import {
 	type TreeRef,
 	type TreeItemRenderContext,
 	type TreeItem,
+	type TreeItemIndex,
 	type TreeInformation,
+	type TreeDataProvider,
+	type UncontrolledTreeEnvironmentProps,
 } from "react-complex-tree";
-import {
-	NotionLikeDataProvider,
-	useItems,
-	type DocData,
-	type docs_TypedUncontrolledTreeEnvironmentProps,
-} from "@/stores/docs-store";
+
+import type { ConvexReactClient } from "convex/react";
 import { useConvex, useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
 import { api } from "../../convex/_generated/api";
+import { generate_timestamp_uuid } from "@/lib/utils";
+
+// Types for document structure - react-complex-tree format
+interface DocData {
+	title: string;
+	type: "document" | "placeholder";
+	content: string; // HTML content for the rich text editor - all documents have content
+	isArchived: boolean;
+}
+
+// New simplified tree item structure from Convex
+interface ConvexTreeItem {
+	index: string;
+	children: string[];
+	title: string;
+	content: string;
+	isArchived: boolean;
+}
+
+// Custom TreeDataProvider for dynamic operations
+class NotionLikeDataProvider implements TreeDataProvider<DocData> {
+	private data: Record<TreeItemIndex, TreeItem<DocData>>;
+	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
+
+	// NEW: Convex integration
+	private convex: ConvexReactClient | null = null;
+	private workspaceId: string;
+	private projectId: string;
+
+	constructor(
+		initialData: Record<TreeItemIndex, TreeItem<DocData>>,
+		convex?: ConvexReactClient,
+		workspaceId?: string,
+		projectId?: string,
+	) {
+		// ✅ Store the already-sorted data
+		this.data = { ...initialData };
+		this.convex = convex || null;
+		this.workspaceId = workspaceId || ai_chat_HARDCODED_ORG_ID;
+		this.projectId = projectId || ai_chat_HARDCODED_PROJECT_ID;
+	}
+
+	// Method to update tree data from external source (like Convex query)
+	updateTreeData(convexData: Record<string, ConvexTreeItem>) {
+		// Convert Convex format to React Complex Tree format
+		const convertedData: Record<TreeItemIndex, TreeItem<DocData>> = {};
+
+		for (const [key, item] of Object.entries(convexData)) {
+			const isPlaceholder = item.title === "No files inside";
+
+			convertedData[key] = {
+				index: item.index,
+				children: item.children,
+				data: {
+					title: item.title,
+					type: isPlaceholder ? "placeholder" : "document",
+					content: item.content,
+					isArchived: item.isArchived || false,
+				},
+				isFolder: true,
+				canMove: !isPlaceholder && key !== "root",
+				canRename: !isPlaceholder && key !== "root",
+			};
+		}
+
+		this.data = convertedData;
+		this.notifyTreeChange(Object.keys(convertedData));
+	}
+
+	destroy() {
+		this.treeChangeListeners = [];
+	}
+
+	async getTreeItem(itemId: TreeItemIndex): Promise<TreeItem<DocData>> {
+		const item = this.data[itemId];
+		if (!item) {
+			throw new Error(`Item ${itemId} not found`);
+		}
+
+		return item;
+	}
+
+	async onChangeItemChildren(itemId: TreeItemIndex, newChildren: TreeItemIndex[]): Promise<void> {
+		if (this.data[itemId]) {
+			// Sort the children alphabetically before storing
+			const sortedChildren = this.sortChildren(newChildren);
+
+			this.data[itemId] = {
+				...this.data[itemId],
+				children: sortedChildren,
+			};
+			this.notifyTreeChange([itemId]);
+
+			// Sync to Convex using doc_ids
+			if (this.convex) {
+				this.convex
+					.mutation(api.ai_docs_temp.ai_docs_temp_move_items, {
+						item_ids: newChildren.map((id) => id.toString()),
+						target_parent_id: itemId.toString(),
+						workspace_id: this.workspaceId,
+						project_id: this.projectId,
+					})
+					.catch(console.error);
+			}
+		}
+	}
+
+	onDidChangeTreeData(listener: (changedItemIds: TreeItemIndex[]) => void): { dispose(): void } {
+		this.treeChangeListeners.push(listener);
+		return {
+			dispose: () => {
+				const index = this.treeChangeListeners.indexOf(listener);
+				if (index > -1) {
+					this.treeChangeListeners.splice(index, 1);
+				}
+			},
+		};
+	}
+
+	// ✅ Re-sort parent after rename (title affects alphabetical order)
+	async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
+		const updatedItem = {
+			...item,
+			data: { ...item.data, title: name },
+		};
+		this.data[item.index] = updatedItem;
+		this.notifyTreeChange([item.index]);
+
+		// Find parent and re-sort its children since title changed
+		const parentItem = Object.values(this.data).find((parent) => parent.children?.includes(item.index));
+		if (parentItem && parentItem.children) {
+			const sortedChildren = this.sortChildren(parentItem.children);
+			this.data[parentItem.index] = {
+				...parentItem,
+				children: sortedChildren,
+			};
+			this.notifyTreeChange([parentItem.index]);
+		}
+
+		// Sync to Convex using doc_id
+		if (this.convex) {
+			try {
+				await this.convex.mutation(api.ai_docs_temp.ai_docs_temp_rename_document, {
+					doc_id: item.index.toString(),
+					title: name,
+				});
+			} catch (error) {
+				console.error("Failed to rename in Convex:", error);
+			}
+		}
+	}
+
+	// Custom methods for Notion-like operations
+	createNewItem(parentId: string, title: string = "Untitled", type: "document" = "document"): string {
+		const doc_id = generate_timestamp_uuid("doc");
+		const parentItem = this.data[parentId];
+
+		console.log("createNewItem called:", { parentId, doc_id, parentChildren: parentItem?.children });
+
+		if (parentItem) {
+			const newItem: TreeItem<DocData> = {
+				index: doc_id,
+				children: [],
+				data: {
+					title,
+					type: "document",
+					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
+					isArchived: false,
+				},
+				canMove: true,
+				canRename: true,
+				isFolder: true,
+			};
+
+			this.data[doc_id] = newItem;
+
+			// Check if parent has a placeholder that needs to be replaced
+			const placeholderId = `${parentId}-placeholder`;
+			const hasPlaceholder = this.data[placeholderId] && parentItem.children?.includes(placeholderId);
+
+			let updatedChildren: TreeItemIndex[];
+			if (hasPlaceholder) {
+				// Replace placeholder with new item
+				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? doc_id : id)) || [doc_id];
+				delete this.data[placeholderId];
+				console.log("Replaced placeholder with new item");
+			} else {
+				// Just add the new item to existing children
+				updatedChildren = [...(parentItem.children || []), doc_id];
+				console.log("Added new item to existing children");
+			}
+
+			// Update parent with new children array
+			const updatedParent = {
+				...parentItem,
+				children: updatedChildren,
+				isFolder: true,
+			};
+
+			this.data[parentId] = updatedParent;
+
+			this.notifyTreeChange([parentId, doc_id]);
+		}
+
+		// Sync to Convex
+		if (this.convex) {
+			this.convex
+				.mutation(api.ai_docs_temp.ai_docs_temp_create_document, {
+					parent_id: parentId,
+					title,
+					workspace_id: this.workspaceId,
+					project_id: this.projectId,
+				})
+				.then((result) => {
+					console.log("Document created in Convex:", result.doc_id);
+				})
+				.catch(console.error);
+		}
+
+		return doc_id;
+	}
+
+	// Helper methods for sorting
+	private sortChildren(children: TreeItemIndex[]): TreeItemIndex[] {
+		return [...children].sort((a, b) => {
+			const itemA = this.data[a];
+			const itemB = this.data[b];
+
+			if (itemA?.data.type === "placeholder") return 1;
+			if (itemB?.data.type === "placeholder") return -1;
+
+			const titleA = itemA?.data.title || "";
+			const titleB = itemB?.data.title || "";
+			return titleA.localeCompare(titleB, undefined, {
+				numeric: true,
+				sensitivity: "base",
+			});
+		});
+	}
+
+	private notifyTreeChange(changedItemIds: TreeItemIndex[]): void {
+		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
+	}
+
+	updateArchiveStatus(itemId: TreeItemIndex, isArchived: boolean): void {
+		if (this.data[itemId]) {
+			this.data[itemId] = {
+				...this.data[itemId],
+				data: {
+					...this.data[itemId].data,
+					isArchived: isArchived,
+				},
+			};
+			this.notifyTreeChange([itemId]);
+		}
+	}
+
+	getAllData(): Record<TreeItemIndex, TreeItem<DocData>> {
+		return { ...this.data };
+	}
+}
+
+type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<DocData>;
 
 type DocsSidebar_ClassNames =
 	| "DocsSidebar-tree-area"
@@ -56,11 +318,110 @@ type DocsSidebar_CssVars = {
 	"--DocsSidebar-tree-item-content-depth": number;
 };
 
+type DocsTreeContext = {
+	dataProvider: NotionLikeDataProvider;
+	items: Record<TreeItemIndex, TreeItem<DocData>>;
+};
+
+const DocsTreeContext = createContext<DocsTreeContext | null>(null);
+
+function useDocsTree() {
+	const context = use(DocsTreeContext);
+	if (!context) {
+		throw new Error(`${useDocsTree.name} must be used within ${DocsTreeProvider.name}`);
+	}
+	return context;
+}
+
+type DocsTreeProvider_Props = {
+	children: React.ReactNode;
+};
+
+function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
+	const convex = useConvex();
+
+	const treeData = useQuery(api.ai_docs_temp.ai_docs_temp_get_document_tree, {
+		workspace_id: ai_chat_HARDCODED_ORG_ID,
+		project_id: ai_chat_HARDCODED_PROJECT_ID,
+	});
+
+	const dataProvider = useMemo(() => {
+		const emptyData: Record<string, any> = {
+			root: {
+				index: "root",
+				children: [],
+				data: {
+					title: "Documents",
+					type: "document",
+					content: "",
+				},
+				isFolder: true,
+				canMove: false,
+				canRename: false,
+			},
+		};
+
+		const provider = new NotionLikeDataProvider(
+			emptyData,
+			convex,
+			ai_chat_HARDCODED_ORG_ID,
+			ai_chat_HARDCODED_PROJECT_ID,
+		);
+		return provider;
+	}, [convex]);
+
+	// Update data provider when tree data changes
+	useEffect(() => {
+		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
+			dataProvider.updateTreeData(treeData);
+		}
+	}, [treeData, dataProvider]);
+
+	// Cleanup on unmount
+	useEffect(() => {
+		return () => {
+			if (dataProvider) {
+				dataProvider.destroy();
+			}
+		};
+	}, [dataProvider]);
+
+	// Reactive items state that updates when tree data changes
+	const [items, setItems] = useState<Record<TreeItemIndex, TreeItem<DocData>>>(() => {
+		return dataProvider?.getAllData() || {};
+	});
+
+	useEffect(() => {
+		if (!dataProvider) {
+			setItems({});
+			return;
+		}
+
+		setItems(dataProvider.getAllData());
+
+		const disposable = dataProvider.onDidChangeTreeData(() => {
+			setItems(dataProvider.getAllData());
+		});
+
+		return disposable.dispose;
+	}, [dataProvider]);
+
+	return (
+		<DocsTreeContext.Provider
+			value={{
+				dataProvider,
+				items,
+			}}
+		>
+			{children}
+		</DocsTreeContext.Provider>
+	);
+}
+
 // Search Context
 type DocsSearchContext = {
 	searchQuery: string;
 	showArchived: boolean;
-	dataProviderRef: React.RefObject<NotionLikeDataProvider | null>;
 	setSearchQuery: (query: string) => void;
 	setShowArchived: (show: boolean) => void;
 };
@@ -82,7 +443,6 @@ type DocsSearchContextProvider_Props = {
 function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props) {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
-	const dataProviderRef = useRef<NotionLikeDataProvider | null>(null);
 
 	return (
 		<DocsSearchContext.Provider
@@ -91,7 +451,6 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 				setSearchQuery,
 				showArchived,
 				setShowArchived,
-				dataProviderRef,
 			}}
 		>
 			{children}
@@ -359,63 +718,10 @@ type TreeArea_Props = {
 function TreeArea(props: TreeArea_Props) {
 	const { ref, selectedDocId, onSelectItems, onAddChild, onArchive, onPrimaryAction } = props;
 
-	const { searchQuery, showArchived, dataProviderRef } = useDocsSearchContext();
-
-	// Use the reactive items hook to automatically update when data changes
-	const treeItems = useItems(dataProviderRef.current);
+	const { searchQuery, showArchived } = useDocsSearchContext();
+	const { dataProvider, items: treeItems } = useDocsTree();
 
 	const convex = useConvex();
-
-	const treeData = useQuery(api.ai_docs_temp.ai_docs_temp_get_document_tree, {
-		workspace_id: ai_chat_HARDCODED_ORG_ID,
-		project_id: ai_chat_HARDCODED_PROJECT_ID,
-	});
-
-	console.log("treeData", treeData);
-
-	const dataProvider = useMemo(() => {
-		const emptyData: Record<string, any> = {
-			root: {
-				index: "root",
-				children: [],
-				data: {
-					title: "Documents",
-					type: "document",
-					content: "",
-				},
-				isFolder: true,
-				canMove: false,
-				canRename: false,
-			},
-		};
-
-		const provider = new NotionLikeDataProvider(
-			emptyData,
-			convex,
-			ai_chat_HARDCODED_ORG_ID,
-			ai_chat_HARDCODED_PROJECT_ID,
-		);
-		if (!dataProviderRef.current) {
-			dataProviderRef.current = provider; // Store in ref for access from other components
-		}
-		return provider;
-	}, []);
-
-	// Update data provider when tree data changes
-	useEffect(() => {
-		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
-			dataProvider.updateTreeData(treeData);
-		}
-	}, [treeData, dataProvider]);
-
-	// Cleanup on unmount
-	useEffect(() => {
-		return () => {
-			if (dataProvider) {
-				dataProvider.destroy();
-			}
-		};
-	}, [dataProvider]);
 
 	// Get expanded items for view state
 	const expandedItems = useMemo(() => {
@@ -445,8 +751,8 @@ function TreeArea(props: TreeArea_Props) {
 	const archiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_archive_document);
 
 	const handleAddChild = (parentId: string) => {
-		if (dataProviderRef.current) {
-			const newItemId = dataProviderRef.current.createNewItem(parentId, "New Document", "document");
+		if (dataProvider) {
+			const newItemId = dataProvider.createNewItem(parentId, "New Document", "document");
 			console.log("Created new document:", newItemId);
 			onAddChild(parentId, newItemId);
 		}
@@ -456,8 +762,8 @@ function TreeArea(props: TreeArea_Props) {
 		console.log("Archived item:", itemId);
 
 		// Update local data immediately for better UX
-		if (dataProviderRef.current) {
-			dataProviderRef.current.updateArchiveStatus(itemId, true);
+		if (dataProvider) {
+			dataProvider.updateArchiveStatus(itemId, true);
 		}
 
 		// Sync to Convex
@@ -475,8 +781,8 @@ function TreeArea(props: TreeArea_Props) {
 		console.log("Unarchived item:", itemId);
 
 		// Update local data immediately for better UX
-		if (dataProviderRef.current) {
-			dataProviderRef.current.updateArchiveStatus(itemId, false);
+		if (dataProvider) {
+			dataProvider.updateArchiveStatus(itemId, false);
 		}
 
 		// Sync to Convex
@@ -488,15 +794,18 @@ function TreeArea(props: TreeArea_Props) {
 		}
 	};
 
-	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (item, treeId) => {
+	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (
+		item: TreeItem<DocData>,
+		treeId: string,
+	) => {
 		if (item.data.type === "document") {
 			onPrimaryAction(item.index.toString(), item.data.type);
 		}
 	};
 
 	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
-		item,
-		context,
+		item: TreeItem<DocData>,
+		context: any,
 	) => {
 		// Default behavior for expanded state
 		const defaultShouldRender = item.isFolder && context.isExpanded;
@@ -548,13 +857,13 @@ function TreeArea(props: TreeArea_Props) {
 			// Get the currently dragged items from react-complex-tree
 			const draggingItems = ref.current?.dragAndDropContext.draggingItems;
 
-			if (!draggingItems || draggingItems.length === 0 || !dataProviderRef.current) {
+			if (!draggingItems || draggingItems.length === 0 || !dataProvider) {
 				console.log("No dragging items found or no data provider");
 				return;
 			}
 
 			try {
-				const provider = dataProviderRef.current;
+				const provider = dataProvider;
 				const itemIds = draggingItems.map((item: any) => item.index as string);
 
 				// ✅ Use currentItems (tree's live state) as source of truth - EXACTLY like internal drop
@@ -690,10 +999,8 @@ type DocsSidebarContent_Props = {
 function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	const { selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction } = props;
 
-	const { searchQuery, setSearchQuery, showArchived, setShowArchived, dataProviderRef } = useDocsSearchContext();
-
-	// Use the reactive items hook to automatically update when data changes
-	const treeItems = useItems(dataProviderRef.current);
+	const { searchQuery, setSearchQuery, showArchived, setShowArchived } = useDocsSearchContext();
+	const { dataProvider, items: treeItems } = useDocsTree();
 
 	const treeRef = useRef<TreeRef | null>(null);
 
@@ -712,8 +1019,8 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		// Add to root by default - could access treeRef.current for programmatic control
 		// For now, this would need to be connected to handleAddChild in TreeContainer
 		// or use treeRef.current?.navigateToDocument() for external navigation
-		if (dataProviderRef.current) {
-			const newItemId = dataProviderRef.current.createNewItem(ROOT_TREE_ID, "New Document", "document");
+		if (dataProvider) {
+			const newItemId = dataProvider.createNewItem(ROOT_TREE_ID, "New Document", "document");
 			console.log("Created new document from header button:", newItemId);
 		}
 	};
@@ -877,24 +1184,26 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 	return (
 		<SidebarProvider className={cn("DocsSidebar", "flex h-full w-full")}>
 			<DocsSearchContextProvider>
-				<div className={cn("DocsSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
-					<Sidebar
-						side="left"
-						variant="sidebar"
-						collapsible="none"
-						className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
-						style={{ borderRight: "none !important", width: "320px" }}
-						{...rest}
-					>
-						<DocsSidebarContent
-							onClose={onClose}
-							selectedDocId={selectedDocId}
-							onAddChild={onAddChild}
-							onArchive={onArchive}
-							onPrimaryAction={onPrimaryAction}
-						/>
-					</Sidebar>
-				</div>
+				<DocsTreeProvider>
+					<div className={cn("DocsSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
+						<Sidebar
+							side="left"
+							variant="sidebar"
+							collapsible="none"
+							className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
+							style={{ borderRight: "none !important", width: "320px" }}
+							{...rest}
+						>
+							<DocsSidebarContent
+								onClose={onClose}
+								selectedDocId={selectedDocId}
+								onAddChild={onAddChild}
+								onArchive={onArchive}
+								onPrimaryAction={onPrimaryAction}
+							/>
+						</Sidebar>
+					</div>
+				</DocsTreeProvider>
 			</DocsSearchContextProvider>
 		</SidebarProvider>
 	);
