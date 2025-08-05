@@ -1,5 +1,6 @@
 import type { TreeDataProvider, TreeItemIndex, TreeItem, UncontrolledTreeEnvironmentProps } from "react-complex-tree";
 import type { ConvexReactClient } from "convex/react";
+import { useState, useEffect } from "react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
 import { api } from "../../convex/_generated/api";
 import { generate_timestamp_uuid } from "../lib/utils.ts";
@@ -9,6 +10,7 @@ export interface DocData {
 	title: string;
 	type: "document" | "placeholder";
 	content: string; // HTML content for the rich text editor - all documents have content
+	isArchived: boolean;
 }
 
 // New simplified tree item structure from Convex
@@ -17,6 +19,7 @@ export interface ConvexTreeItem {
 	children: string[];
 	title: string;
 	content: string;
+	isArchived: boolean;
 }
 
 // Custom TreeDataProvider for dynamic operations
@@ -57,6 +60,7 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					title: item.title,
 					type: isPlaceholder ? "placeholder" : "document",
 					content: item.content,
+					isArchived: item.isArchived || false,
 				},
 				isFolder: true,
 				canMove: !isPlaceholder && key !== "root",
@@ -166,6 +170,7 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					title,
 					type: "document",
 					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
+					isArchived: false,
 				},
 				canMove: true,
 				canRename: true,
@@ -242,10 +247,45 @@ export class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
 	}
 
-	// Get all tree data (for debugging)
+	updateArchiveStatus(itemId: TreeItemIndex, isArchived: boolean): void {
+		if (this.data[itemId]) {
+			this.data[itemId] = {
+				...this.data[itemId],
+				data: {
+					...this.data[itemId].data,
+					isArchived: isArchived,
+				},
+			};
+			this.notifyTreeChange([itemId]);
+		}
+	}
+
 	getAllData(): Record<TreeItemIndex, TreeItem<DocData>> {
 		return { ...this.data };
 	}
+}
+
+export function useItems(dataProvider: NotionLikeDataProvider | null): Record<TreeItemIndex, TreeItem<DocData>> {
+	const [items, setItems] = useState<Record<TreeItemIndex, TreeItem<DocData>>>(() => {
+		return dataProvider?.getAllData() || {};
+	});
+
+	useEffect(() => {
+		if (!dataProvider) {
+			setItems({});
+			return;
+		}
+
+		setItems(dataProvider.getAllData());
+
+		const disposable = dataProvider.onDidChangeTreeData(() => {
+			setItems(dataProvider.getAllData());
+		});
+
+		return disposable.dispose;
+	}, [dataProvider]);
+
+	return items;
 }
 
 export type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<DocData>;

@@ -436,6 +436,7 @@ export const ai_docs_temp_get_document_tree = query({
 			children: v.array(v.string()),
 			title: v.string(),
 			content: v.string(),
+			isArchived: v.boolean(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -462,21 +463,20 @@ export const ai_docs_temp_get_document_tree = query({
 				children: [],
 				title: "Documents",
 				content: "",
+				isArchived: false,
 			},
 		};
 
 		// Add all documents to tree using doc_id as index
 		for (const doc of docs) {
-			if (doc.is_archived) continue; // Handle archived in UI
+			if (!doc.doc_id) continue; // Skip documents without doc_id
 
-			const docId = doc.doc_id;
-			if (!docId) continue; // Skip documents without doc_id
-
-			treeData[docId] = {
-				index: docId,
+			treeData[doc.doc_id] = {
+				index: doc.doc_id,
 				children: [],
 				title: doc.title || "Untitled",
 				content: `<h1>${doc.title || "Untitled"}</h1><p>Start writing your content here...</p>`,
+				isArchived: doc.is_archived || false,
 			};
 		}
 
@@ -510,6 +510,7 @@ export const ai_docs_temp_get_document_tree = query({
 					children: [],
 					title: "No files inside",
 					content: "",
+					isArchived: false,
 				};
 				item.children = [placeholderId];
 			}

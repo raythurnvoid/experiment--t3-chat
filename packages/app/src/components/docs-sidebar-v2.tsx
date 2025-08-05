@@ -28,6 +28,7 @@ import {
 } from "react-complex-tree";
 import {
 	NotionLikeDataProvider,
+	useItems,
 	type DocData,
 	type docs_TypedUncontrolledTreeEnvironmentProps,
 } from "@/stores/docs-store";
@@ -58,12 +59,10 @@ type DocsSidebar_CssVars = {
 // Search Context
 type DocsSearchContext = {
 	searchQuery: string;
-	archivedItems: Set<string>;
 	showArchived: boolean;
 	dataProviderRef: React.RefObject<NotionLikeDataProvider | null>;
 	setSearchQuery: (query: string) => void;
 	setShowArchived: (show: boolean) => void;
-	setArchivedItems: (items: Set<string>) => void;
 };
 
 const DocsSearchContext = createContext<DocsSearchContext | null>(null);
@@ -83,7 +82,6 @@ type DocsSearchContextProvider_Props = {
 function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props) {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
-	const [archivedItems, setArchivedItems] = useState<Set<string>>(new Set());
 	const dataProviderRef = useRef<NotionLikeDataProvider | null>(null);
 
 	return (
@@ -93,8 +91,6 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 				setSearchQuery,
 				showArchived,
 				setShowArchived,
-				archivedItems,
-				setArchivedItems,
 				dataProviderRef,
 			}}
 		>
@@ -223,7 +219,6 @@ type TreeItem_Props = {
 	arrow: React.ReactNode;
 	info: TreeInformation;
 	selectedDocId?: string;
-	archivedItems: Set<string>;
 	showArchived: boolean;
 	onAdd: (parentId: string) => void;
 	onArchive: (itemId: string) => void;
@@ -231,27 +226,15 @@ type TreeItem_Props = {
 };
 
 function TreeItem(props: TreeItem_Props) {
-	const {
-		item,
-		depth,
-		children,
-		title,
-		context,
-		arrow,
-		selectedDocId,
-		archivedItems,
-		showArchived,
-		onAdd,
-		onArchive,
-		onUnarchive,
-	} = props;
+	const { item, depth, children, title, context, arrow, selectedDocId, showArchived, onAdd, onArchive, onUnarchive } =
+		props;
 
 	const data = item.data as DocData;
 
 	// Current selected document
 	const isNavigated = selectedDocId === item.index;
 	const isPlaceholder = data.type === "placeholder";
-	const isArchived = archivedItems.has(item.index.toString());
+	const isArchived = item.data.isArchived;
 	const isRenaming = context.isRenaming;
 
 	// Hide archived items when showArchived is false
@@ -376,7 +359,10 @@ type TreeArea_Props = {
 function TreeArea(props: TreeArea_Props) {
 	const { ref, selectedDocId, onSelectItems, onAddChild, onArchive, onPrimaryAction } = props;
 
-	const { searchQuery, archivedItems, setArchivedItems, showArchived, dataProviderRef } = useDocsSearchContext();
+	const { searchQuery, showArchived, dataProviderRef } = useDocsSearchContext();
+
+	// Use the reactive items hook to automatically update when data changes
+	const treeItems = useItems(dataProviderRef.current);
 
 	const convex = useConvex();
 
@@ -384,6 +370,8 @@ function TreeArea(props: TreeArea_Props) {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
 		project_id: ai_chat_HARDCODED_PROJECT_ID,
 	});
+
+	console.log("treeData", treeData);
 
 	const dataProvider = useMemo(() => {
 		const emptyData: Record<string, any> = {
@@ -432,7 +420,7 @@ function TreeArea(props: TreeArea_Props) {
 	// Get expanded items for view state
 	const expandedItems = useMemo(() => {
 		if (!dataProvider) return [];
-		const allData = dataProvider.getAllData();
+		const allData = treeItems;
 		const expanded: string[] = [];
 
 		// Get the root item to find its direct children
@@ -448,7 +436,7 @@ function TreeArea(props: TreeArea_Props) {
 		}
 
 		return expanded;
-	}, [dataProvider, searchQuery]); // Re-calculate when search query changes
+	}, [dataProvider, searchQuery, treeItems]);
 
 	const rootElement = useRef<HTMLDivElement>(null);
 
@@ -465,10 +453,12 @@ function TreeArea(props: TreeArea_Props) {
 	};
 
 	const handleArchive = (itemId: string) => {
-		const newArchivedSet = new Set(archivedItems);
-		newArchivedSet.add(itemId);
-		setArchivedItems(newArchivedSet);
 		console.log("Archived item:", itemId);
+
+		// Update local data immediately for better UX
+		if (dataProviderRef.current) {
+			dataProviderRef.current.updateArchiveStatus(itemId, true);
+		}
 
 		// Sync to Convex
 		if (convex) {
@@ -482,10 +472,12 @@ function TreeArea(props: TreeArea_Props) {
 	};
 
 	const handleUnarchive = (itemId: string) => {
-		const newArchivedSet = new Set(archivedItems);
-		newArchivedSet.delete(itemId);
-		setArchivedItems(newArchivedSet);
 		console.log("Unarchived item:", itemId);
+
+		// Update local data immediately for better UX
+		if (dataProviderRef.current) {
+			dataProviderRef.current.updateArchiveStatus(itemId, false);
+		}
 
 		// Sync to Convex
 		if (convex) {
@@ -523,7 +515,7 @@ function TreeArea(props: TreeArea_Props) {
 		if (item.children && item.children.length > 0 && searchQuery.trim()) {
 			const hasVisibleChildren = item.children.some((childId) => {
 				// Check if child matches search query
-				const childItem = dataProvider.getAllData()[childId];
+				const childItem = treeItems[childId];
 				if (childItem) {
 					const titleMatches = childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
 					// For now, just check title match. Could add recursive search here if needed
@@ -659,7 +651,6 @@ function TreeArea(props: TreeArea_Props) {
 						<TreeItem
 							{...props}
 							selectedDocId={selectedDocId}
-							archivedItems={archivedItems}
 							showArchived={showArchived}
 							onAdd={handleAddChild}
 							onArchive={handleArchive}
@@ -699,20 +690,14 @@ type DocsSidebarContent_Props = {
 function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	const { selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction } = props;
 
-	const {
-		searchQuery,
-		setSearchQuery,
-		showArchived,
-		setShowArchived,
-		archivedItems,
-		setArchivedItems,
-		dataProviderRef,
-	} = useDocsSearchContext();
+	const { searchQuery, setSearchQuery, showArchived, setShowArchived, dataProviderRef } = useDocsSearchContext();
+
+	// Use the reactive items hook to automatically update when data changes
+	const treeItems = useItems(dataProviderRef.current);
 
 	const treeRef = useRef<TreeRef | null>(null);
 
 	const [multiSelectionCount, setMultiSelectionCount] = useState(0);
-	const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
 
 	// Handler functions for tree actions
 	const handleFold = () => {
@@ -739,21 +724,11 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	};
 
 	const handleArchiveAll = () => {
-		// Archive all selected items
-		const newArchivedSet = new Set(archivedItems);
-
-		selectedItemIds.forEach((itemId: string) => {
-			newArchivedSet.add(itemId);
-		});
-
-		setArchivedItems(newArchivedSet);
-
 		handleClearSelection();
 	};
 
 	const handleSelectItems: TreeArea_Props["onSelectItems"] = (items, treeId) => {
 		setMultiSelectionCount(items.length);
-		setSelectedItemIds(items.map((item) => item.toString()));
 	};
 
 	return (
@@ -848,23 +823,30 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 				</div>
 
 				{/* Archived Toggle */}
-				{archivedItems.size > 0 && (
-					<div className="flex items-center justify-between">
-						<span className="text-sm text-muted-foreground">Show archived ({archivedItems.size})</span>
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => {
-								const newShowArchived = !showArchived;
-								setShowArchived(newShowArchived);
-								// Filtering is now handled by shouldRenderChildren prop
-							}}
-							className={cn("text-xs", showArchived && "bg-sidebar-accent")}
-						>
-							{showArchived ? "Hide" : "Show"}
-						</Button>
-					</div>
-				)}
+				{(() => {
+					const archivedCount = Object.values(treeItems).filter(
+						(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== "root",
+					).length;
+					return (
+						archivedCount > 0 && (
+							<div className="flex items-center justify-between">
+								<span className="text-sm text-muted-foreground">Show archived ({archivedCount})</span>
+								<Button
+									variant="ghost"
+									size="sm"
+									onClick={() => {
+										const newShowArchived = !showArchived;
+										setShowArchived(newShowArchived);
+										// Filtering is now handled by shouldRenderChildren prop
+									}}
+									className={cn("text-xs", showArchived && "bg-sidebar-accent")}
+								>
+									{showArchived ? "Hide" : "Show"}
+								</Button>
+							</div>
+						)
+					);
+				})()}
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
