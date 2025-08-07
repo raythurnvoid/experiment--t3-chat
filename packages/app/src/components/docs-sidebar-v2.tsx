@@ -29,7 +29,6 @@ import {
 	type TreeDataProvider,
 	type UncontrolledTreeEnvironmentProps,
 } from "react-complex-tree";
-
 import type { ConvexReactClient } from "convex/react";
 import { useConvex, useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
@@ -100,7 +99,14 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		}
 
 		this.data = convertedData;
-		this.notifyTreeChange(Object.keys(convertedData));
+		const itemsKeys = Object.keys(convertedData);
+		itemsKeys.forEach((key) => {
+			const children = this.data[key].children;
+			if (children) {
+				this.data[key].children = this.sortChildren(children);
+			}
+		});
+		this.notifyTreeChange(itemsKeys);
 	}
 
 	destroy() {
@@ -153,7 +159,6 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		};
 	}
 
-	// ✅ Re-sort parent after rename (title affects alphabetical order)
 	async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
 		const updatedItem = {
 			...item,
@@ -186,16 +191,15 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		}
 	}
 
-	// Custom methods for Notion-like operations
-	createNewItem(parentId: string, title: string = "Untitled", type: "document" = "document"): string {
-		const doc_id = generate_timestamp_uuid("doc");
+	createNewItem(parentId: string, title: string = "Untitled"): string {
+		const docId = generate_timestamp_uuid("doc");
 		const parentItem = this.data[parentId];
 
-		console.log("createNewItem called:", { parentId, doc_id, parentChildren: parentItem?.children });
+		console.log("createNewItem called:", { parentId, doc_id: docId, parentChildren: parentItem?.children });
 
 		if (parentItem) {
 			const newItem: TreeItem<DocData> = {
-				index: doc_id,
+				index: docId,
 				children: [],
 				data: {
 					title,
@@ -208,7 +212,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				isFolder: true,
 			};
 
-			this.data[doc_id] = newItem;
+			this.data[docId] = newItem;
 
 			// Check if parent has a placeholder that needs to be replaced
 			const placeholderId = `${parentId}-placeholder`;
@@ -217,12 +221,12 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			let updatedChildren: TreeItemIndex[];
 			if (hasPlaceholder) {
 				// Replace placeholder with new item
-				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? doc_id : id)) || [doc_id];
+				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? docId : id)) || [docId];
 				delete this.data[placeholderId];
 				console.log("Replaced placeholder with new item");
 			} else {
 				// Just add the new item to existing children
-				updatedChildren = [...(parentItem.children || []), doc_id];
+				updatedChildren = [...(parentItem.children || []), docId];
 				console.log("Added new item to existing children");
 			}
 
@@ -235,28 +239,28 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 
 			this.data[parentId] = updatedParent;
 
-			this.notifyTreeChange([parentId, doc_id]);
+			this.notifyTreeChange([parentId, docId]);
 		}
 
 		// Sync to Convex
 		if (this.convex) {
 			this.convex
 				.mutation(api.ai_docs_temp.ai_docs_temp_create_document, {
+					doc_id: docId,
 					parent_id: parentId,
 					title,
 					workspace_id: this.workspaceId,
 					project_id: this.projectId,
 				})
-				.then((result) => {
-					console.log("Document created in Convex:", result.doc_id);
+				.then(() => {
+					console.log("Document created in Convex");
 				})
 				.catch(console.error);
 		}
 
-		return doc_id;
+		return docId;
 	}
 
-	// Helper methods for sorting
 	private sortChildren(children: TreeItemIndex[]): TreeItemIndex[] {
 		return [...children].sort((a, b) => {
 			const itemA = this.data[a];
@@ -749,10 +753,11 @@ function TreeArea(props: TreeArea_Props) {
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
 	const archiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_archive_document);
+	const unarchiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_unarchive_document);
 
 	const handleAddChild = (parentId: string) => {
 		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(parentId, "New Document", "document");
+			const newItemId = dataProvider.createNewItem(parentId, "New Document");
 			console.log("Created new document:", newItemId);
 			onAddChild(parentId, newItemId);
 		}
@@ -770,7 +775,6 @@ function TreeArea(props: TreeArea_Props) {
 		if (convex) {
 			archiveDocument({
 				doc_id: itemId,
-				is_archived: true,
 			}).catch(console.error);
 		}
 
@@ -787,9 +791,8 @@ function TreeArea(props: TreeArea_Props) {
 
 		// Sync to Convex
 		if (convex) {
-			archiveDocument({
+			unarchiveDocument({
 				doc_id: itemId,
-				is_archived: false,
 			}).catch(console.error);
 		}
 	};
@@ -1020,8 +1023,9 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		// For now, this would need to be connected to handleAddChild in TreeContainer
 		// or use treeRef.current?.navigateToDocument() for external navigation
 		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(ROOT_TREE_ID, "New Document", "document");
+			const newItemId = dataProvider.createNewItem(ROOT_TREE_ID, "New Document");
 			console.log("Created new document from header button:", newItemId);
+			onAddChild(ROOT_TREE_ID, newItemId);
 		}
 	};
 

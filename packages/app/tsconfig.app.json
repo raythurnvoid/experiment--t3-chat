@@ -35,6 +35,7 @@
 		"noErrorTruncation": true
 	},
 	"include": [
-		"src"
+		"src",
+		"convex",
 	]
 }

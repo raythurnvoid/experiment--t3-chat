@@ -1,3 +1,10 @@
+/*
+Pages are organized in a emuted file system in which each page exists in a tree and each page can have children.
+
+This structure allows file system like operations such has finding all items under a certain path (`foo/bar/*`) or
+listing all children or the content of a certain page (`foo/bar/baz`).
+*/
+
 import { httpAction, mutation, query } from "./_generated/server";
 import { api } from "./_generated/api";
 import { streamText, smoothStream, createDataStreamResponse } from "ai";
@@ -253,7 +260,6 @@ function is_timestamp_valid(timestampHeader: string): boolean {
 	}
 }
 
-// Mutation to persist Yjs document to Convex
 export const ai_docs_temp_upsert_yjs_document = mutation({
 	args: {
 		doc_id: v.string(),
@@ -264,6 +270,8 @@ export const ai_docs_temp_upsert_yjs_document = mutation({
 		id: v.id("docs_yjs"),
 	}),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
 		// Check if document exists
 		const existingDoc = await ctx.db
 			.query("docs_yjs")
@@ -274,20 +282,24 @@ export const ai_docs_temp_upsert_yjs_document = mutation({
 			// Update existing document
 			await ctx.db.patch(existingDoc._id, {
 				yjs_document_state: args.yjs_document_state,
-				last_updated_at: Date.now(),
 				version: (existingDoc.version || 0) + 1,
+				updated_at: Date.now(),
 			});
 			return { action: "updated", id: existingDoc._id };
 		} else {
 			// Create new document with metadata
 			const newId = await ctx.db.insert("docs_yjs", {
 				yjs_document_state: args.yjs_document_state,
-				last_updated_at: Date.now(),
 				version: 0,
 				doc_id: args.doc_id,
 				title: "Untitled Document", // Default title
 				is_archived: false,
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				created_by: user.name,
+				updated_by: user.name,
 				created_at: Date.now(),
+				updated_at: Date.now(),
 			});
 
 			return { action: "created", id: newId };
@@ -520,35 +532,31 @@ export const ai_docs_temp_get_document_tree = query({
 	},
 });
 
-// Create new document
 export const ai_docs_temp_create_document = mutation({
 	args: {
+		doc_id: v.string(),
 		parent_id: v.string(),
 		title: v.string(),
 		workspace_id: v.string(),
 		project_id: v.string(),
 	},
-	returns: v.object({
-		doc_id: v.string(),
-	}),
 	handler: async (ctx, args) => {
-		const doc_id = `doc-${crypto.randomUUID()}`;
 		const user = await getCurrentUser(ctx);
 		const now = Date.now();
 
 		// Create document in docs_yjs table
 		await ctx.db.insert("docs_yjs", {
 			yjs_document_state: "", // Empty initial state
-			last_updated_at: now,
 			version: 0,
 			title: args.title,
 			is_archived: false,
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
-			doc_id: doc_id,
+			doc_id: args.doc_id,
 			created_by: user.id,
 			updated_by: user.id,
 			created_at: now,
+			updated_at: now,
 		});
 
 		// Add to tree structure using doc_id
@@ -556,20 +564,17 @@ export const ai_docs_temp_create_document = mutation({
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
 			parent_id: args.parent_id,
-			child_id: doc_id,
+			child_id: args.doc_id,
+			name: args.title,
 		});
-
-		return { doc_id };
 	},
 });
 
-// Rename document
 export const ai_docs_temp_rename_document = mutation({
 	args: {
 		doc_id: v.string(),
 		title: v.string(),
 	},
-	returns: v.null(),
 	handler: async (ctx, args) => {
 		const user = await getCurrentUser(ctx);
 
@@ -581,15 +586,24 @@ export const ai_docs_temp_rename_document = mutation({
 		if (doc) {
 			await ctx.db.patch(doc._id, {
 				title: args.title,
-				last_updated_at: Date.now(),
 				updated_by: user.id,
+				updated_at: Date.now(),
 			});
 		}
-		return null;
+
+		const treeItem = await ctx.db
+			.query("file_tree")
+			.withIndex("by_child", (q) => q.eq("child_id", args.doc_id))
+			.first();
+
+		if (treeItem) {
+			await ctx.db.patch(treeItem._id, {
+				name: args.title,
+			});
+		}
 	},
 });
 
-// Move items to new parent
 export const ai_docs_temp_move_items = mutation({
 	args: {
 		item_ids: v.array(v.string()), // doc_ids
@@ -597,9 +611,7 @@ export const ai_docs_temp_move_items = mutation({
 		workspace_id: v.string(),
 		project_id: v.string(),
 	},
-	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Remove from old parents
 		for (const item_id of args.item_ids) {
 			const existing = await ctx.db
 				.query("file_tree")
@@ -607,30 +619,22 @@ export const ai_docs_temp_move_items = mutation({
 				.first();
 
 			if (existing) {
-				await ctx.db.delete(existing._id);
+				await ctx.db.patch(existing._id, {
+					workspace_id: args.workspace_id,
+					project_id: args.project_id,
+					parent_id: args.target_parent_id,
+					child_id: item_id,
+					name: existing.name,
+				});
 			}
 		}
-
-		// Add to new parent
-		for (const item_id of args.item_ids) {
-			await ctx.db.insert("file_tree", {
-				workspace_id: args.workspace_id,
-				project_id: args.project_id,
-				parent_id: args.target_parent_id,
-				child_id: item_id,
-			});
-		}
-		return null;
 	},
 });
 
-// Archive/unarchive document
 export const ai_docs_temp_archive_document = mutation({
 	args: {
 		doc_id: v.string(),
-		is_archived: v.boolean(),
 	},
-	returns: v.null(),
 	handler: async (ctx, args) => {
 		const user = await getCurrentUser(ctx);
 
@@ -641,16 +645,36 @@ export const ai_docs_temp_archive_document = mutation({
 
 		if (doc) {
 			await ctx.db.patch(doc._id, {
-				is_archived: args.is_archived,
-				last_updated_at: Date.now(),
+				is_archived: true,
 				updated_by: user.id,
+				updated_at: Date.now(),
 			});
 		}
-		return null;
 	},
 });
 
-// Get document by doc_id
+export const ai_docs_temp_unarchive_document = mutation({
+	args: {
+		doc_id: v.string(),
+	},
+	handler: async (ctx, args) => {
+		const user = await getCurrentUser(ctx);
+
+		const doc = await ctx.db
+			.query("docs_yjs")
+			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+			.first();
+
+		if (doc) {
+			await ctx.db.patch(doc._id, {
+				is_archived: false,
+				updated_by: user.id,
+				updated_at: Date.now(),
+			});
+		}
+	},
+});
+
 export const ai_docs_temp_get_document_by_id = query({
 	args: { doc_id: v.string() },
 	returns: v.union(
@@ -681,12 +705,10 @@ export const ai_docs_temp_get_document_by_id = query({
 	},
 });
 
-// Delete document (removes from both tables)
 export const ai_docs_temp_delete_document = mutation({
 	args: {
 		doc_id: v.string(),
 	},
-	returns: v.null(),
 	handler: async (ctx, args) => {
 		// Remove from docs_yjs
 		const doc = await ctx.db
@@ -707,6 +729,48 @@ export const ai_docs_temp_delete_document = mutation({
 		if (treeItem) {
 			await ctx.db.delete(treeItem._id);
 		}
-		return null;
+	},
+});
+
+export const ai_docs_temp_get_document_by_path = query({
+	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	returns: v.union(
+		v.object({
+			doc_id: v.string(),
+			title: v.string(),
+			is_archived: v.boolean(),
+			workspace_id: v.union(v.string(), v.null()),
+			project_id: v.union(v.string(), v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const normalizedPath = args.path.replaceAll("\\", "/");
+		const pathSegments = normalizedPath.split("/").filter(Boolean);
+
+		let currentParent = "root";
+		for (const segment of pathSegments) {
+			const row = await ctx.db
+				.query("file_tree")
+				.withIndex("by_parent_and_name", (q) => q.eq("parent_id", currentParent).eq("name", segment))
+				.unique();
+			if (!row) return null; // segment not found
+			currentParent = row.child_id; // descend
+		}
+
+		const doc = await ctx.db
+			.query("docs_yjs")
+			.withIndex("by_doc_id", (q) => q.eq("doc_id", currentParent))
+			.first();
+
+		return doc
+			? {
+					doc_id: doc.doc_id!,
+					title: doc.title,
+					is_archived: doc.is_archived,
+					workspace_id: doc.workspace_id,
+					project_id: doc.project_id,
+				}
+			: null;
 	},
 });

@@ -100,8 +100,8 @@ export const thread_create = mutation({
 			last_message_at: args.last_message_at,
 			archived: false,
 			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			created_by: created_by,
-			updated_by: created_by,
+			created_by: created_by.name,
+			updated_by: created_by.name,
 			updated_at: now,
 			external_id: args.external_id ?? null,
 			project_id: ai_chat_HARDCODED_PROJECT_ID,
@@ -131,7 +131,7 @@ export const thread_update = mutation({
 			args.thread_id,
 			Object.assign(
 				{
-					updated_by: updated_by,
+					updated_by: updated_by.name,
 					updated_at: Date.now(),
 				},
 				args.title !== undefined
@@ -168,7 +168,7 @@ export const thread_archive = mutation({
 
 		await ctx.db.patch(args.thread_id, {
 			archived: true,
-			updated_by: updated_by,
+			updated_by: updated_by.name,
 			updated_at: now,
 		});
 	},
@@ -218,8 +218,8 @@ export const thread_messages_add = mutation({
 		const message_id = await ctx.db.insert("messages", {
 			parent_id: args.parent_id,
 			thread_id: args.thread_id,
-			created_by: created_by,
-			updated_by: created_by,
+			created_by: created_by.name,
+			updated_by: created_by.name,
 			created_at: now,
 			updated_at: now,
 			format: args.format,
@@ -232,7 +232,7 @@ export const thread_messages_add = mutation({
 			await ctx.db.patch(args.thread_id, {
 				last_message_at: now,
 				updated_at: now,
-				updated_by: created_by,
+				updated_by: created_by.name,
 			});
 		} catch (error) {
 			console.error("Failed to update thread when adding message", error);

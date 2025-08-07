@@ -204,42 +204,43 @@ const app_convex_schema = defineSchema({
 	docs_yjs: defineTable({
 		/** Base64-encoded Yjs document state from Liveblocks */
 		yjs_document_state: v.string(),
-		/** timestamp in milliseconds when document was last updated */
-		last_updated_at: v.number(),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
 
-		// NEW: Tree metadata fields
 		/** Document title for display in tree */
-		title: v.optional(v.string()),
+		title: v.string(),
 		/** Whether document is archived */
-		is_archived: v.optional(v.boolean()),
+		is_archived: v.boolean(),
 		/** Workspace ID extracted from roomId */
-		workspace_id: v.optional(v.string()),
+		workspace_id: v.string(),
 		/** Project ID extracted from roomId */
-		project_id: v.optional(v.string()),
-		/** Document ID extracted from roomId */
-		doc_id: v.optional(v.string()),
+		project_id: v.string(),
+		/** Document ID generated client side */
+		doc_id: v.string(),
 		/** Created by user ID */
-		created_by: v.optional(v.string()),
+		created_by: v.string(),
 		/** Updated by user ID */
-		updated_by: v.optional(v.string()),
+		updated_by: v.string(),
 		/** timestamp in milliseconds when document was created */
-		created_at: v.optional(v.number()),
+		created_at: v.number(),
+		/** timestamp in milliseconds when document was last updated */
+		updated_at: v.number(),
 	})
 		.index("by_workspace_project", ["workspace_id", "project_id"])
 		.index("by_doc_id", ["doc_id"]),
 
-	// NEW: Tree structure table (relationships only)
 	file_tree: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),
-		parent_id: v.string(), // "root" for root items
-		child_id: v.string(), // doc_id (not roomId)
+		/** "root" for root items */
+		parent_id: v.string(),
+		child_id: v.string(),
+		name: v.string(),
 	})
 		.index("by_workspace_project", ["workspace_id", "project_id"])
 		.index("by_parent", ["parent_id"])
-		.index("by_child", ["child_id"]),
+		.index("by_child", ["child_id"])
+		.index("by_parent_and_name", ["parent_id", "name"]),
 });
 
 export default app_convex_schema;
