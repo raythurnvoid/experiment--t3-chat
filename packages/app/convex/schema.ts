@@ -65,7 +65,7 @@ const app_convex_schema = defineSchema({
 							toolCallId: v.string(),
 							toolName: v.string(),
 							args: v.record(v.string(), v.any()),
-							argsText: v.string(),
+							argsText: v.optional(v.string()),
 							result: v.optional(v.any()),
 							isError: v.optional(v.literal(true)),
 						}),
@@ -204,6 +204,8 @@ const app_convex_schema = defineSchema({
 	docs_yjs: defineTable({
 		/** Base64-encoded Yjs document state from Liveblocks */
 		yjs_document_state: v.string(),
+		/** Plain text content extracted from the editor for search and display */
+		text_content: v.optional(v.string()),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
 

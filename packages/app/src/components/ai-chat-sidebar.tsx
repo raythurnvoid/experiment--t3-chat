@@ -67,6 +67,7 @@ function ThreadListItemAlt() {
 	const trigger_id = React.useId();
 	const { search_query } = useSearchContext();
 	const thread_title = useThreadListItem((t) => t.title) || "New Chat";
+	const thread_id = useThreadListItem((t) => t.remoteId);
 
 	// Check if thread matches search query
 	const matches_search = !search_query || thread_title.toLowerCase().includes(search_query.toLowerCase());
@@ -97,7 +98,9 @@ function ThreadListItemAlt() {
 					</span>
 				</ThreadListItemPrimitive.Trigger>
 				<div className={cn("AiChatSidebarContent-thread-list-item-alt-actions", "mt-1 flex justify-end px-1")}>
-					<ThreadListItemOptionToggle toggle={(args) => <StarToggle {...args} />} />
+					<ThreadListItemOptionToggle
+						toggle={(args) => (thread_id ? <StarToggle {...args} thread_id={thread_id} /> : null)}
+					/>
 					<ThreadListItemOptionToggle toggle={(args) => <ArchiveToggle {...args} />} />
 				</div>
 			</label>
@@ -127,13 +130,14 @@ function ThreadListItemOptionToggle({ toggle }: ThreadListItemOptionToggle_Props
 
 interface StarToggle_Props {
 	className: { root: string; icon: string }; // camelCase - standard React prop
+	thread_id: string;
 }
 
-function StarToggle({ className }: StarToggle_Props) {
-	const thread_id = useThreadListItem((t) => t.remoteId);
+function StarToggle(props: StarToggle_Props) {
+	const { className, thread_id } = props;
 
 	const thread = useQuery(app_convex_api.ai_chat.thread_get, {
-		thread_id: thread_id as app_convex_Id<"threads">,
+		thread_id: thread_id,
 	});
 	const thread_update_mutation = useMutation(app_convex_api.ai_chat.thread_update);
 

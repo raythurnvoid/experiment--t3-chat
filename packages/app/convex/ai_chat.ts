@@ -5,7 +5,7 @@ import {
 	type ai_chat_MessageContentPartToolCall,
 } from "../src/lib/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction } from "./_generated/server";
+import { query, mutation, httpAction, type ActionCtx } from "./_generated/server";
 import { api } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
@@ -21,6 +21,96 @@ import {
 	server_convex_response_error,
 } from "./lib/server_convex_utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
+import { ReadTool } from "opencode/packages/opencode/src/tool/read.ts";
+
+/**
+ * Create database-backed adapters for the Convex environment
+ */
+function createOpenCodeAdapters(ctx: ActionCtx) {
+	// File system adapter that reads from database
+	const fs = {
+		readdirSync: async (path: string): Promise<string[]> => {
+			const items = await ctx.runQuery(api.ai_docs_temp.read_dir, {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				path,
+			});
+			return items;
+		},
+	};
+
+	// FileTime tracker using database
+	const FileTime = {
+		read: async (sessionID: string, filepath: string): Promise<void> => {
+			// Could store file access times in a separate table if needed
+			console.log(`FileTime.read called for session ${sessionID}, file ${filepath}`);
+			// For now, just log - you could implement a file_access_times table
+		},
+	};
+
+	// Bun file adapter that reads from docs_yjs table
+	const Bun = {
+		file: async (filepath: string) => {
+			const pageExists = async () =>
+				ctx.runQuery(api.ai_docs_temp.page_exists_by_path, {
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					path: filepath,
+				});
+
+			const getText = async () =>
+				ctx.runQuery(api.ai_docs_temp.get_page_text_content_by_path, {
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					path: filepath,
+				});
+
+			return {
+				exists: async (): Promise<boolean> => {
+					return await pageExists();
+				},
+				text: async (): Promise<string> => {
+					const text = await getText();
+					return text ?? "";
+				},
+				arrayBuffer: async (): Promise<ArrayBuffer> => {
+					const text = (await getText()) ?? "";
+					const bytes = new TextEncoder().encode(text);
+					return bytes.buffer as ArrayBuffer;
+				},
+			};
+		},
+	};
+
+	return {
+		fs,
+		FileTime,
+		Bun,
+	};
+}
+
+async function createReadTool(ctx: ActionCtx) {
+	const read = await ReadTool.init();
+	return tool({
+		description: read.description,
+		parameters: read.parameters as unknown as z.ZodTypeAny,
+		execute: async (args: { filePath: string; offset?: number; limit?: number }) => {
+			try {
+				const result = await read.execute(args, {
+					sessionID: crypto.randomUUID(),
+					messageID: crypto.randomUUID(),
+					abort: new AbortController().signal,
+					metadata: () => {},
+					appOpenCodeDbAdapters: createOpenCodeAdapters(ctx),
+				});
+
+				return { title: result.title, content: result.output, metadata: result.metadata };
+			} catch (error) {
+				throw error;
+			}
+		},
+	});
+}
 
 /**
  * Query to list all threads for a workspace with pagination
@@ -311,6 +401,7 @@ export const chat = httpAction(async (ctx, request) => {
 								return { requested: true };
 							},
 						}),
+						read_file: await createReadTool(ctx),
 					},
 					experimental_transform: smoothStream({
 						delayInMs: 100,

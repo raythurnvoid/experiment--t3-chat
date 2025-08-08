@@ -430,9 +430,24 @@ export const ai_docs_temp_liveblocks_webhook = httpAction(async (ctx, request) =
 	}
 });
 
-// Helper function to get user (implement based on your auth system)
-async function getCurrentUser(ctx: any) {
-	return { id: "system" }; // Replace with actual auth logic
+function normalize_path_to_segments(path: string): string[] {
+	const normalizedPath = path.replaceAll("\\", "/").trim();
+	if (normalizedPath === "" || normalizedPath === "/") return [];
+	return normalizedPath.split("/").filter(Boolean);
+}
+
+async function resolve_page_id_for_path(ctx: any, path: string): Promise<string | null> {
+	const segments = normalize_path_to_segments(path);
+	let currentParent = "root";
+	for (const segment of segments) {
+		const row = await ctx.db
+			.query("file_tree")
+			.withIndex("by_parent_and_name", (q: any) => q.eq("parent_id", currentParent).eq("name", segment))
+			.unique();
+		if (!row) return null;
+		currentParent = row.child_id;
+	}
+	return currentParent;
 }
 
 // Get entire tree structure for workspace/project
@@ -541,7 +556,7 @@ export const ai_docs_temp_create_document = mutation({
 		project_id: v.string(),
 	},
 	handler: async (ctx, args) => {
-		const user = await getCurrentUser(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const now = Date.now();
 
 		// Create document in docs_yjs table
@@ -553,8 +568,8 @@ export const ai_docs_temp_create_document = mutation({
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
 			doc_id: args.doc_id,
-			created_by: user.id,
-			updated_by: user.id,
+			created_by: user.name,
+			updated_by: user.name,
 			created_at: now,
 			updated_at: now,
 		});
@@ -576,7 +591,7 @@ export const ai_docs_temp_rename_document = mutation({
 		title: v.string(),
 	},
 	handler: async (ctx, args) => {
-		const user = await getCurrentUser(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const doc = await ctx.db
 			.query("docs_yjs")
@@ -586,7 +601,7 @@ export const ai_docs_temp_rename_document = mutation({
 		if (doc) {
 			await ctx.db.patch(doc._id, {
 				title: args.title,
-				updated_by: user.id,
+				updated_by: user.name,
 				updated_at: Date.now(),
 			});
 		}
@@ -636,7 +651,7 @@ export const ai_docs_temp_archive_document = mutation({
 		doc_id: v.string(),
 	},
 	handler: async (ctx, args) => {
-		const user = await getCurrentUser(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const doc = await ctx.db
 			.query("docs_yjs")
@@ -646,7 +661,7 @@ export const ai_docs_temp_archive_document = mutation({
 		if (doc) {
 			await ctx.db.patch(doc._id, {
 				is_archived: true,
-				updated_by: user.id,
+				updated_by: user.name,
 				updated_at: Date.now(),
 			});
 		}
@@ -658,7 +673,7 @@ export const ai_docs_temp_unarchive_document = mutation({
 		doc_id: v.string(),
 	},
 	handler: async (ctx, args) => {
-		const user = await getCurrentUser(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const doc = await ctx.db
 			.query("docs_yjs")
@@ -668,7 +683,7 @@ export const ai_docs_temp_unarchive_document = mutation({
 		if (doc) {
 			await ctx.db.patch(doc._id, {
 				is_archived: false,
-				updated_by: user.id,
+				updated_by: user.name,
 				updated_at: Date.now(),
 			});
 		}
@@ -732,7 +747,7 @@ export const ai_docs_temp_delete_document = mutation({
 	},
 });
 
-export const ai_docs_temp_get_document_by_path = query({
+export const get_page_by_path = query({
 	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
 	returns: v.union(
 		v.object({
@@ -745,18 +760,8 @@ export const ai_docs_temp_get_document_by_path = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const normalizedPath = args.path.replaceAll("\\", "/");
-		const pathSegments = normalizedPath.split("/").filter(Boolean);
-
-		let currentParent = "root";
-		for (const segment of pathSegments) {
-			const row = await ctx.db
-				.query("file_tree")
-				.withIndex("by_parent_and_name", (q) => q.eq("parent_id", currentParent).eq("name", segment))
-				.unique();
-			if (!row) return null; // segment not found
-			currentParent = row.child_id; // descend
-		}
+		const currentParent = await resolve_page_id_for_path(ctx, args.path);
+		if (!currentParent) return null;
 
 		const doc = await ctx.db
 			.query("docs_yjs")
@@ -772,5 +777,110 @@ export const ai_docs_temp_get_document_by_path = query({
 					project_id: doc.project_id,
 				}
 			: null;
+	},
+});
+
+export const read_dir = query({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		path: v.string(),
+	},
+	returns: v.array(v.string()),
+	handler: async (ctx, args) => {
+		const currentParent = await resolve_page_id_for_path(ctx, args.path);
+		if (!currentParent) return [];
+
+		// List children under the resolved parent, return only names
+		const children = await ctx.db
+			.query("file_tree")
+			.withIndex("by_parent", (q) => q.eq("parent_id", currentParent))
+			.collect();
+
+		const names = children
+			.filter((c) => c.workspace_id === args.workspace_id && c.project_id === args.project_id)
+			.map((c) => c.name);
+		return names;
+	},
+});
+
+export const page_exists_by_path = query({
+	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const currentParent = await resolve_page_id_for_path(ctx, args.path);
+		if (!currentParent) return false;
+
+		const doc = await ctx.db
+			.query("docs_yjs")
+			.withIndex("by_doc_id", (q) => q.eq("doc_id", currentParent))
+			.first();
+
+		if (!doc) return false;
+		if (doc.workspace_id !== args.workspace_id || doc.project_id !== args.project_id) return false;
+		return true;
+	},
+});
+
+export const get_page_text_content_by_path = query({
+	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	returns: v.union(v.string(), v.null()),
+	handler: async (ctx, args) => {
+		const currentParent = await resolve_page_id_for_path(ctx, args.path);
+		if (!currentParent) return null;
+
+		const doc = await ctx.db
+			.query("docs_yjs")
+			.withIndex("by_doc_id", (q) => q.eq("doc_id", currentParent))
+			.first();
+
+		if (!doc) return null;
+		if (doc.workspace_id !== args.workspace_id || doc.project_id !== args.project_id) return null;
+		return doc.text_content ?? null;
+	},
+});
+
+export const get_page_text_content_by_page_id = query({
+	args: { doc_id: v.string() },
+	returns: v.union(v.string(), v.null()),
+	handler: async (ctx, args) => {
+		const doc = await ctx.db
+			.query("docs_yjs")
+			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+			.first();
+
+		if (!doc) return null;
+		return doc.text_content ?? null;
+	},
+});
+
+export const update_page_text_content = mutation({
+	args: {
+		doc_id: v.string(),
+		text_content: v.string(),
+	},
+	returns: v.union(v.null(), v.object({ bad: v.object({ message: v.string() }) })),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const doc = await ctx.db
+			.query("docs_yjs")
+			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+			.first();
+
+		if (!doc) {
+			return {
+				bad: { message: "Page not found" },
+			};
+		}
+
+		// Update the text content and timestamp
+		await ctx.db.patch(doc._id, {
+			text_content: args.text_content,
+			updated_by: user.name,
+			updated_at: Date.now(),
+		});
+
+		return null;
 	},
 });

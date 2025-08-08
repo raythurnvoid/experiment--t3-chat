@@ -56,7 +56,7 @@ function DocsContent() {
 		? ai_docs_create_liveblocks_room_id(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, searchParams.docId)
 		: undefined;
 
-	if (!roomId) {
+	if (!roomId || !searchParams.docId) {
 		return <div>No document selected</div>;
 	}
 
@@ -86,7 +86,7 @@ function DocsContent() {
 			<RoomProvider id={roomId}>
 				<ClientSideSuspense fallback={<LoadingEditor />}>
 					<div className="h-full w-full">
-						<TiptapEditor />
+						<TiptapEditor doc_id={searchParams.docId} />
 					</div>
 				</ClientSideSuspense>
 			</RoomProvider>
