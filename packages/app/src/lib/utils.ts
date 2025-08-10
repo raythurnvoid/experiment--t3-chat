@@ -19,21 +19,6 @@ export function sx(style: CSSPropertiesX) {
 export type CSSPropertiesX = CSSProperties & Record<string, string | number | undefined | null>;
 
 /**
- * Clamp a value between a minimum and maximum.
- *
- * @example
- *
- * ```ts
- * math_clamp(10, 0, 100); // 10
- * math_clamp(200, 0, 100); // 100
- * math_clamp(-10, 0, 100); // 0
- * ```
- **/
-export function math_clamp(value: number, min: number, max: number) {
-	return Math.min(Math.max(value, min), max);
-}
-
-/**
  * Delay for a given number of milliseconds.
  *
  * @example

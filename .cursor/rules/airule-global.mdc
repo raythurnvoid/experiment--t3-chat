@@ -194,6 +194,8 @@ The [packages/app/src/](mdc:packages/app/src) folder contains the React frontend
 
 The [packages/app/convex/](mdc:packages/app/convex) folder contains the Convex backend code.
 
+Use tab indentation for `.ts`, `.tsx` and `.css` files.
+
 ## Object.assign Usage
 
 When using `Object.assign`, always verify that arguments are not `undefined` before passing them to prevent unexpected behaviors and potential runtime errors.

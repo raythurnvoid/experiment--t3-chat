@@ -159,7 +159,7 @@ export type ai_chat_MessageContentPartToolCall = {
 	toolCallId: string;
 	toolName: string;
 	args: unknown;
-	argsText: string;
+	argsText?: string;
 	result?: unknown;
 	isError?: true;
 };

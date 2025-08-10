@@ -5,15 +5,22 @@ This structure allows file system like operations such has finding all items und
 listing all children or the content of a certain page (`foo/bar/baz`).
 */
 
-import { httpAction, mutation, query } from "./_generated/server";
-import { api } from "./_generated/api";
+import { httpAction, internalQuery, mutation, query } from "./_generated/server";
+import { paginationOptsValidator } from "convex/server";
+import { api, internal } from "./_generated/api";
 import { streamText, smoothStream, createDataStreamResponse } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { server_convex_get_user_fallback_to_anonymous, server_convex_headers_cors } from "./lib/server_convex_utils.ts";
+import {
+	server_path_extract_segments_from,
+	server_convex_get_user_fallback_to_anonymous,
+	server_convex_headers_cors,
+	server_path_normalize,
+} from "./lib/server_utils.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { v } from "convex/values";
+import { math_clamp } from "../shared/shared-utils.ts";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
 if (!LIVEBLOCKS_SECRET_KEY) {
@@ -430,14 +437,10 @@ export const ai_docs_temp_liveblocks_webhook = httpAction(async (ctx, request) =
 	}
 });
 
-function normalize_path_to_segments(path: string): string[] {
-	const normalizedPath = path.replaceAll("\\", "/").trim();
-	if (normalizedPath === "" || normalizedPath === "/") return [];
-	return normalizedPath.split("/").filter(Boolean);
-}
-
 async function resolve_page_id_for_path(ctx: any, path: string): Promise<string | null> {
-	const segments = normalize_path_to_segments(path);
+	if (path === "/") return "root";
+
+	const segments = server_path_extract_segments_from(path);
 	let currentParent = "root";
 	for (const segment of segments) {
 		const row = await ctx.db
@@ -801,6 +804,108 @@ export const read_dir = query({
 			.filter((c) => c.workspace_id === args.workspace_id && c.project_id === args.project_id)
 			.map((c) => c.name);
 		return names;
+	},
+});
+
+export const list_dir_paginated = internalQuery({
+	args: {
+		parent_id: v.string(),
+		pagination_opts: paginationOptsValidator,
+	},
+	// Note: Paginated queries intentionally omit a `returns` validator per Convex guidelines.
+	handler: async (ctx, args) => {
+		return await ctx.db
+			.query("file_tree")
+			.withIndex("by_parent", (q) => q.eq("parent_id", args.parent_id))
+			.paginate(args.pagination_opts);
+	},
+});
+
+export const list_dir = query({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		path: v.string(),
+		max_depth: v.optional(v.number()),
+		limit: v.optional(v.number()),
+	},
+	returns: v.array(v.string()),
+	handler: async (ctx, args) => {
+		// Resolve the starting parent id for the provided path
+		const startParent = await resolve_page_id_for_path(ctx, args.path);
+		if (!startParent) return [];
+
+		// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
+		const basePath = server_path_normalize(args.path);
+
+		const maxDepth = args.max_depth ? math_clamp(args.max_depth, 0, 10) : 5;
+		const limit = args.limit ? math_clamp(args.limit, 1, 100) : 100;
+
+		const resultPaths: string[] = [];
+
+		// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
+		// so we fetch one child at a time for the current parent, then dive deeper first.
+		const stack: Array<{ parentId: string; absPath: string; cursor: string | null; depth: number }> = [
+			{ parentId: startParent, absPath: basePath, cursor: null, depth: 0 },
+		];
+
+		while (stack.length > 0) {
+			const frame = stack.pop();
+			if (!frame) continue;
+
+			const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.list_dir_paginated, {
+				parent_id: frame.parentId,
+				pagination_opts: { cursor: frame.cursor, numItems: 1 },
+			});
+
+			// No more children at this cursor for this parent or page is empty
+			if (paginatedResult.isDone) continue;
+
+			const child = paginatedResult.page.at(0);
+			if (!child) continue; // just for type safety
+
+			// If this child doesn't belong to the requested workspace/project, skip it
+			// but continue to the next sibling if present.
+			if (child.workspace_id !== args.workspace_id || child.project_id !== args.project_id) {
+				if (!paginatedResult.isDone) {
+					// Push the same parent back with advanced cursor to continue siblings
+					stack.push({
+						parentId: frame.parentId,
+						absPath: frame.absPath,
+						cursor: paginatedResult.continueCursor,
+						depth: frame.depth,
+					});
+				}
+				continue;
+			}
+
+			const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
+			resultPaths.push(childPath);
+
+			// Respect limit if provided
+			if (resultPaths.length >= limit) {
+				return resultPaths;
+			}
+
+			// First, if there are more siblings for the current parent, push the parent back with updated cursor
+			// so we'll process siblings after we finish the deep dive into this child.
+			if (!paginatedResult.isDone) {
+				stack.push({
+					parentId: frame.parentId,
+					absPath: frame.absPath,
+					cursor: paginatedResult.continueCursor,
+					depth: frame.depth,
+				});
+			}
+
+			// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
+			const nextDepth = frame.depth + 1;
+			if (nextDepth < maxDepth) {
+				stack.push({ parentId: child.child_id, absPath: childPath, cursor: null, depth: nextDepth });
+			}
+		}
+
+		return resultPaths;
 	},
 });
 

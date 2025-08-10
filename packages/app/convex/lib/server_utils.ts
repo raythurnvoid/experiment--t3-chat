@@ -92,3 +92,23 @@ export function server_convex_response_error(args: {
 		status: args?.status ?? 500,
 	});
 }
+
+export function server_path_extract_segments_from(path: string): string[] {
+	const normalizedPath = path.replaceAll("\\", "/").trim();
+	if (normalizedPath === "" || normalizedPath === "/") return [];
+	return normalizedPath.split("/").filter(Boolean);
+}
+
+export function server_path_normalize(path: string): string {
+	return `/${server_path_extract_segments_from(path).join("/")}`;
+}
+
+export function server_path_parent_of(path: string): string {
+	const segments = server_path_extract_segments_from(path);
+	if (segments.length === 0) return "/";
+	return `/${segments.slice(0, -1).join("/")}`;
+}
+
+export function server_path_name_of(path: string): string {
+	return server_path_extract_segments_from(path).at(-1) ?? "";
+}
