@@ -2,8 +2,7 @@ import { tool } from "ai";
 import z from "zod";
 import dedent from "dedent";
 import type { ActionCtx } from "../_generated/server";
-import { api } from "../_generated/api";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../src/lib/ai-chat.ts";
+import { api, internal } from "../_generated/api";
 import {
 	server_path_extract_segments_from,
 	server_path_name_of,
@@ -11,6 +10,92 @@ import {
 	server_path_parent_of,
 } from "./server_utils.ts";
 import { minimatch } from "minimatch";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../src/lib/ai-chat.ts";
+import { math_clamp } from "../../shared/shared-utils.ts";
+
+async function list_dir(
+	ctx: ActionCtx,
+	args: {
+		workspace_id: string;
+		project_id: string;
+		path: string;
+		max_depth?: number;
+		limit?: number;
+	},
+): Promise<{ items: Array<{ path: string; updated_at: number }>; metadata: { count: number; truncated: boolean } }> {
+	// Resolve the starting node id for the provided path
+	const startNodeId = await ctx.runQuery(internal.ai_docs_temp.resolve_tree_node_id_from_path, {
+		workspace_id: args.workspace_id,
+		project_id: args.project_id,
+		path: args.path,
+	});
+	if (!startNodeId) return { items: [], metadata: { count: 0, truncated: false } };
+
+	// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
+	const basePath = server_path_normalize(args.path);
+
+	const maxDepth = args.max_depth ? math_clamp(args.max_depth, 0, 10) : 5;
+	const limit = args.limit ? math_clamp(args.limit, 1, 100) : 100;
+
+	const resultPaths: Array<{ path: string; updated_at: number }> = [];
+	let truncated = false;
+
+	// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
+	// so we fetch one child at a time for the current parent, then dive deeper first.
+	const stack: Array<{ parentId: string; absPath: string; cursor: string | null; depth: number }> = [
+		{ parentId: startNodeId, absPath: basePath, cursor: null, depth: 0 },
+	];
+
+	while (stack.length > 0) {
+		const frame = stack.pop();
+		if (!frame) continue;
+
+		const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.get_page_info_for_list_dir_pagination, {
+			parent_id: frame.parentId,
+			cursor: frame.cursor,
+		});
+
+		// No more children at this cursor for this parent or page is empty
+		if (paginatedResult.isDone) continue;
+
+		const child = paginatedResult.page.at(0);
+		if (!child) continue; // just for type safety
+
+		const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
+		resultPaths.push({ path: childPath, updated_at: child.updated_at });
+
+		// Respect limit if provided
+		if (resultPaths.length >= limit) {
+			truncated = true;
+			break;
+		}
+
+		// First, if there are more siblings for the current parent, push the parent back with updated cursor
+		// so we'll process siblings after we finish the deep dive into this child.
+		if (!paginatedResult.isDone) {
+			stack.push({
+				parentId: frame.parentId,
+				absPath: frame.absPath,
+				cursor: paginatedResult.continueCursor,
+				depth: frame.depth,
+			});
+		}
+
+		// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
+		const nextDepth = frame.depth + 1;
+		if (nextDepth < maxDepth) {
+			stack.push({ parentId: child.page_id, absPath: childPath, cursor: null, depth: nextDepth });
+		}
+	}
+
+	return {
+		items: resultPaths,
+		metadata: {
+			count: resultPaths.length,
+			truncated,
+		},
+	};
+}
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
@@ -41,7 +126,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 		execute: async (args) => {
 			const normalizedPath = server_path_normalize(args.path);
 
-			const pageExists = await ctx.runQuery(api.ai_docs_temp.page_exists_by_path, {
+			const pageExists = await ctx.runQuery(internal.ai_docs_temp.page_exists_by_path, {
 				path: normalizedPath,
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
@@ -51,7 +136,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 				// Try to get suggestions for similar paths
 				const parentPath = server_path_parent_of(normalizedPath);
 				if (parentPath) {
-					const siblingPaths = await ctx.runQuery(api.ai_docs_temp.read_dir, {
+					const siblingPaths = await ctx.runQuery(internal.ai_docs_temp.read_dir, {
 						path: parentPath,
 						workspace_id: ai_chat_HARDCODED_ORG_ID,
 						project_id: ai_chat_HARDCODED_PROJECT_ID,
@@ -134,7 +219,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
-export function ai_tool_create_list_page(ctx: ActionCtx) {
+export function ai_tool_create_list_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Lists descendants pages in a given path. \
@@ -161,7 +246,7 @@ export function ai_tool_create_list_page(ctx: ActionCtx) {
 
 			const normalizedPath = server_path_normalize(args.path);
 
-			const list = await ctx.runQuery(api.ai_docs_temp.list_dir, {
+			const list = await list_dir(ctx, {
 				path: normalizedPath,
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
@@ -170,13 +255,13 @@ export function ai_tool_create_list_page(ctx: ActionCtx) {
 			});
 
 			// Apply ignore filters (on absolute paths)
-			const visiblePaths = list.filter((p) => !matchesAnyIgnore(p, args.ignore));
+			const visiblePaths = list.items.filter((p) => !matchesAnyIgnore(p.path, args.ignore));
 
 			// Build directory structure (directories only)
 			const dirs = new Set<string>();
 
 			for (const visiblePath of visiblePaths) {
-				const segments = server_path_extract_segments_from(visiblePath);
+				const segments = server_path_extract_segments_from(visiblePath.path);
 
 				// Add all parent directories including the path itself
 				for (let i = 0; i <= segments.length; i++) {
@@ -205,7 +290,73 @@ export function ai_tool_create_list_page(ctx: ActionCtx) {
 
 			return {
 				title: normalizedPath,
+				metadata: {
+					count: visiblePaths.length,
+					truncated: list.metadata.truncated,
+				},
 				output,
+			};
+		},
+	});
+}
+
+/**
+ * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
+ */
+export function ai_tool_create_glob_page(ctx: ActionCtx) {
+	return tool({
+		description: dedent`\
+			Fast page pattern matching tool that works with any database size. \
+			Supports glob patterns like "**/bar" or "foo/**/bar*". \
+			Returns matching page paths sorted by modification time (newest first). \
+			Use this tool when you need to find pages by name patterns. \
+			When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead. \
+			You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.`,
+
+		parameters: z.object({
+			pattern: z.string().describe("The glob pattern to match pages against"),
+			path: z
+				.string()
+				.describe(
+					'The directory to search in. If not specified, the root directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.',
+				)
+				.optional(),
+			limit: z.number().int().gte(1).lte(100).describe("The maximum number of items to list").default(100),
+		}),
+
+		execute: async (args) => {
+			const searchPath = server_path_normalize(args.path || "/");
+
+			// Get all pages under the search path
+			const listResult = await list_dir(ctx, {
+				path: searchPath,
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				max_depth: 10,
+				limit: args.limit,
+			});
+
+			// Sort by modification time (newest first)
+			listResult.items.sort((a, b) => b.updated_at - a.updated_at);
+
+			const output = [];
+			if (listResult.items.length === 0) {
+				output.push("No pages found");
+			} else {
+				output.push(...listResult.items.map((f) => f.path));
+				if (listResult.metadata.truncated) {
+					output.push("");
+					output.push("(Results are truncated. Consider using a more specific path or pattern.)");
+				}
+			}
+
+			return {
+				title: searchPath,
+				metadata: {
+					count: listResult.items.length,
+					truncated: listResult.metadata.truncated,
+				},
+				output: output.join("\n"),
 			};
 		},
 	});

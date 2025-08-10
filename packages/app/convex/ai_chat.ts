@@ -21,7 +21,11 @@ import {
 	server_convex_response_error,
 } from "./lib/server_utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
-import { ai_tool_create_list_page, ai_tool_create_read_page } from "./lib/server_ai_tools.ts";
+import {
+	ai_tool_create_list_pages,
+	ai_tool_create_read_page,
+	ai_tool_create_glob_page,
+} from "./lib/server_ai_tools.ts";
 
 // Removed opencode-based read tool; using DB-backed tool from server_ai_tools
 
@@ -315,7 +319,8 @@ export const chat = httpAction(async (ctx, request) => {
 							},
 						}),
 						read_file: ai_tool_create_read_page(ctx),
-						list_pages: ai_tool_create_list_page(ctx),
+						list_pages: ai_tool_create_list_pages(ctx),
+						glob_pages: ai_tool_create_glob_page(ctx),
 					},
 					experimental_transform: smoothStream({
 						delayInMs: 100,

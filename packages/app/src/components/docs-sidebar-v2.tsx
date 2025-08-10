@@ -136,7 +136,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			// Sync to Convex using doc_ids
 			if (this.convex) {
 				this.convex
-					.mutation(api.ai_docs_temp.ai_docs_temp_move_items, {
+					.mutation(api.ai_docs_temp.move_pages, {
 						item_ids: newChildren.map((id) => id.toString()),
 						target_parent_id: itemId.toString(),
 						workspace_id: this.workspaceId,
@@ -181,9 +181,11 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		// Sync to Convex using doc_id
 		if (this.convex) {
 			try {
-				await this.convex.mutation(api.ai_docs_temp.ai_docs_temp_rename_document, {
-					doc_id: item.index.toString(),
-					title: name,
+				await this.convex.mutation(api.ai_docs_temp.rename_page, {
+					workspace_id: this.workspaceId,
+					project_id: this.projectId,
+					page_id: item.index.toString(),
+					name: name,
 				});
 			} catch (error) {
 				console.error("Failed to rename in Convex:", error);
@@ -245,10 +247,10 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		// Sync to Convex
 		if (this.convex) {
 			this.convex
-				.mutation(api.ai_docs_temp.ai_docs_temp_create_document, {
-					doc_id: docId,
+				.mutation(api.ai_docs_temp.create_page, {
+					page_id: docId,
 					parent_id: parentId,
-					title,
+					name: title,
 					workspace_id: this.workspaceId,
 					project_id: this.projectId,
 				})
@@ -344,7 +346,7 @@ type DocsTreeProvider_Props = {
 function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
 	const convex = useConvex();
 
-	const treeData = useQuery(api.ai_docs_temp.ai_docs_temp_get_document_tree, {
+	const treeData = useQuery(api.ai_docs_temp.get_tree, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
 		project_id: ai_chat_HARDCODED_PROJECT_ID,
 	});
@@ -752,8 +754,8 @@ function TreeArea(props: TreeArea_Props) {
 
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
-	const archiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_archive_document);
-	const unarchiveDocument = useMutation(api.ai_docs_temp.ai_docs_temp_unarchive_document);
+	const archiveDocument = useMutation(api.ai_docs_temp.archive_pages);
+	const unarchiveDocument = useMutation(api.ai_docs_temp.unarchive_pages);
 
 	const handleAddChild = (parentId: string) => {
 		if (dataProvider) {
@@ -774,7 +776,9 @@ function TreeArea(props: TreeArea_Props) {
 		// Sync to Convex
 		if (convex) {
 			archiveDocument({
-				doc_id: itemId,
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: itemId,
 			}).catch(console.error);
 		}
 
@@ -792,7 +796,9 @@ function TreeArea(props: TreeArea_Props) {
 		// Sync to Convex
 		if (convex) {
 			unarchiveDocument({
-				doc_id: itemId,
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: itemId,
 			}).catch(console.error);
 		}
 	};

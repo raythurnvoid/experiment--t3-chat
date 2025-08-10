@@ -34,6 +34,7 @@ import { app_fetch_ai_docs_contextual_prompt } from "../../lib/fetch.ts";
 import { useMutation, useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ySyncPluginKey } from "y-prosemirror";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 
 interface RichTextDocEditor_Props {
 	doc_id: string;
@@ -102,7 +103,9 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 
 	useEffect(() => {
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-			doc_id: props.doc_id,
+			workspace_id: ai_chat_HARDCODED_ORG_ID,
+			project_id: ai_chat_HARDCODED_PROJECT_ID,
+			page_id: props.doc_id,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -192,7 +195,9 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 				try {
 					const textContent = editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
 					await updateTextContent({
-						doc_id: props.doc_id!,
+						workspace_id: ai_chat_HARDCODED_ORG_ID,
+						project_id: ai_chat_HARDCODED_PROJECT_ID,
+						page_id: props.doc_id!,
 						text_content: textContent,
 					});
 				} catch (error) {

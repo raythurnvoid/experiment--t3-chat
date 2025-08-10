@@ -3,11 +3,7 @@ import { chat, thread_generate_title } from "./ai_chat";
 import type { api_schemas_MainPaths } from "../src/lib/api-schemas.ts";
 import { httpAction } from "./_generated/server";
 import { server_convex_headers_preflight_cors } from "./lib/server_utils.ts";
-import {
-	ai_docs_temp_contextual_prompt,
-	ai_docs_temp_liveblocks_auth,
-	ai_docs_temp_liveblocks_webhook,
-} from "./ai_docs_temp";
+import { contextual_prompt, liveblocks_auth } from "./ai_docs_temp";
 
 const http = httpRouter();
 
@@ -47,7 +43,7 @@ http.route({
 http.route({
 	path: "/api/ai-docs-temp/contextual-prompt",
 	method: "POST",
-	handler: ai_docs_temp_contextual_prompt,
+	handler: contextual_prompt,
 });
 http.route({
 	path: "/api/ai-docs-temp/contextual-prompt",
@@ -62,27 +58,11 @@ http.route({
 http.route({
 	path: "/api/ai-docs-temp/liveblocks-auth",
 	method: "POST",
-	handler: ai_docs_temp_liveblocks_auth,
+	handler: liveblocks_auth,
 });
 
 http.route({
 	path: "/api/ai-docs-temp/liveblocks-auth",
-	method: "OPTIONS",
-	handler: httpAction(async () => {
-		return new Response(null, {
-			headers: server_convex_headers_preflight_cors(),
-		});
-	}),
-});
-
-http.route({
-	path: "/api/ai-docs-temp/liveblocks-webhook",
-	method: "POST",
-	handler: ai_docs_temp_liveblocks_webhook,
-});
-
-http.route({
-	path: "/api/ai-docs-temp/liveblocks-webhook",
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {

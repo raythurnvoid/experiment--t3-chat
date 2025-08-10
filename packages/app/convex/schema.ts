@@ -200,25 +200,23 @@ const app_convex_schema = defineSchema({
 		.index("by_thread_and_parent", ["thread_id", "parent_id"])
 		.index("by_updated_at", ["updated_at"]),
 
-	// Table to persist Yjs documents mirrored from Liveblocks with enhanced metadata
-	docs_yjs: defineTable({
-		/** Base64-encoded Yjs document state from Liveblocks */
-		yjs_document_state: v.string(),
-		/** Plain text content extracted from the editor for search and display */
-		text_content: v.optional(v.string()),
-		/** Document version - always 0 for now until versioning is implemented */
-		version: v.number(),
-
-		/** Document title for display in tree */
-		title: v.string(),
-		/** Whether document is archived */
-		is_archived: v.boolean(),
+	pages: defineTable({
 		/** Workspace ID extracted from roomId */
 		workspace_id: v.string(),
 		/** Project ID extracted from roomId */
 		project_id: v.string(),
-		/** Document ID generated client side */
-		doc_id: v.string(),
+		/** Document ID generated client side (renamed from doc_id) */
+		page_id: v.string(),
+		/** Display name used in path resolution */
+		name: v.string(),
+		/** Plain text content extracted from the editor for search and display */
+		text_content: v.string(),
+		/** Document version - always 0 for now until versioning is implemented */
+		version: v.number(),
+		/** Whether document is archived */
+		is_archived: v.boolean(),
+		/** "root" for root items */
+		parent_id: v.string(),
 		/** Created by user ID */
 		created_by: v.string(),
 		/** Updated by user ID */
@@ -229,20 +227,14 @@ const app_convex_schema = defineSchema({
 		updated_at: v.number(),
 	})
 		.index("by_workspace_project", ["workspace_id", "project_id"])
-		.index("by_doc_id", ["doc_id"]),
-
-	file_tree: defineTable({
-		workspace_id: v.string(),
-		project_id: v.string(),
-		/** "root" for root items */
-		parent_id: v.string(),
-		child_id: v.string(),
-		name: v.string(),
-	})
-		.index("by_workspace_project", ["workspace_id", "project_id"])
-		.index("by_parent", ["parent_id"])
-		.index("by_child", ["child_id"])
-		.index("by_parent_and_name", ["parent_id", "name"]),
+		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
+		.index("by_workspace_project_and_parent_id", ["workspace_id", "project_id", "parent_id"])
+		.index("by_workspace_project_and_parent_id_and_name", ["workspace_id", "project_id", "parent_id", "name"])
+		.index("by_parent_id_and_name", ["parent_id", "name"])
+		.index("by_parent_id", ["parent_id"])
+		.searchIndex("search_text_content", {
+			searchField: "text_content",
+		}),
 });
 
 export default app_convex_schema;

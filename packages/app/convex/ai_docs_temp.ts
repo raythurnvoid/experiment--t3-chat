@@ -5,22 +5,19 @@ This structure allows file system like operations such has finding all items und
 listing all children or the content of a certain page (`foo/bar/baz`).
 */
 
-import { httpAction, internalQuery, mutation, query } from "./_generated/server";
+import { httpAction, internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
-import { api, internal } from "./_generated/api";
 import { streamText, smoothStream, createDataStreamResponse } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
 	server_path_extract_segments_from,
 	server_convex_get_user_fallback_to_anonymous,
 	server_convex_headers_cors,
-	server_path_normalize,
 } from "./lib/server_utils.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { v } from "convex/values";
-import { math_clamp } from "../shared/shared-utils.ts";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
 if (!LIVEBLOCKS_SECRET_KEY) {
@@ -32,8 +29,7 @@ if (!LIVEBLOCKS_WEBHOOK_SECRET) {
 	console.warn("LIVEBLOCKS_WEBHOOK_SECRET env var is not set");
 }
 
-// AI generation endpoint for novel editor (compatible with useCompletion)
-export const ai_docs_temp_contextual_prompt = httpAction(async (ctx, request) => {
+export const contextual_prompt = httpAction(async (ctx, request) => {
 	try {
 		// Parse request body - expecting format: { prompt, option, command }
 		const bodyResult = await Result.tryPromise(request.json());
@@ -141,8 +137,7 @@ export const ai_docs_temp_contextual_prompt = httpAction(async (ctx, request) =>
 	}
 });
 
-// Liveblocks authentication action
-export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
+export const liveblocks_auth = httpAction(async (ctx, request) => {
 	// Parse request body to get room parameter
 	const requestBodyResult = await Result.tryPromise(request.json());
 	if (requestBodyResult.bad) {
@@ -213,6 +208,7 @@ export const ai_docs_temp_liveblocks_auth = httpAction(async (ctx, request) => {
 	});
 });
 
+// @ts-ignore
 async function verify_webhook_signature(
 	body: string,
 	webhookId: string,
@@ -255,6 +251,7 @@ async function verify_webhook_signature(
 	}
 }
 
+// @ts-ignore
 function is_timestamp_valid(timestampHeader: string): boolean {
 	try {
 		const webhookTimestamp = parseInt(timestampHeader, 10);
@@ -267,194 +264,101 @@ function is_timestamp_valid(timestampHeader: string): boolean {
 	}
 }
 
-export const ai_docs_temp_upsert_yjs_document = mutation({
-	args: {
-		doc_id: v.string(),
-		yjs_document_state: v.string(),
-	},
-	returns: v.object({
-		action: v.string(),
-		id: v.id("docs_yjs"),
-	}),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string; project_id: string; path: string }) {
+	if (args.path === "/") return null;
 
-		// Check if document exists
-		const existingDoc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
-			.first();
+	const segments = server_path_extract_segments_from(args.path);
 
-		if (existingDoc) {
-			// Update existing document
-			await ctx.db.patch(existingDoc._id, {
-				yjs_document_state: args.yjs_document_state,
-				version: (existingDoc.version || 0) + 1,
-				updated_at: Date.now(),
-			});
-			return { action: "updated", id: existingDoc._id };
-		} else {
-			// Create new document with metadata
-			const newId = await ctx.db.insert("docs_yjs", {
-				yjs_document_state: args.yjs_document_state,
-				version: 0,
-				doc_id: args.doc_id,
-				title: "Untitled Document", // Default title
-				is_archived: false,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				created_by: user.name,
-				updated_by: user.name,
-				created_at: Date.now(),
-				updated_at: Date.now(),
-			});
+	let docId = null;
+	let currentNode = "root";
 
-			return { action: "created", id: newId };
-		}
-	},
-});
-
-// HTTP action to handle Liveblocks webhooks
-export const ai_docs_temp_liveblocks_webhook = httpAction(async (ctx, request) => {
-	try {
-		// Verify request method
-		if (request.method !== "POST") {
-			return new Response("Method not allowed", {
-				status: 405,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		// Get headers
-		const webhookId = request.headers.get("webhook-id");
-		const webhookTimestamp = request.headers.get("webhook-timestamp");
-		const webhookSignature = request.headers.get("webhook-signature");
-
-		if (!webhookId || !webhookTimestamp || !webhookSignature) {
-			console.error("Missing webhook headers");
-			return new Response("Missing webhook headers", {
-				status: 400,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		// Get raw body
-		const body = await request.text();
-
-		// Verify timestamp
-		if (!is_timestamp_valid(webhookTimestamp)) {
-			console.error("Webhook timestamp is too old or invalid");
-			return new Response("Invalid timestamp", {
-				status: 400,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		// Verify signature
-		const isValidSignature = await verify_webhook_signature(
-			body,
-			webhookId,
-			webhookTimestamp,
-			webhookSignature,
-			LIVEBLOCKS_WEBHOOK_SECRET,
-		);
-
-		if (!isValidSignature) {
-			console.error("Invalid webhook signature");
-			return new Response("Invalid signature", {
-				status: 401,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		// Parse the webhook payload
-		const payload = JSON.parse(body) as { type: "ydocUpdated"; data: { roomId: string; updatedAt: string } };
-		console.log("Received Liveblocks webhook:", payload.type, payload.data);
-
-		// Handle ydocUpdated events
-		if (payload.type === "ydocUpdated") {
-			const { roomId } = payload.data;
-
-			try {
-				// Extract doc_id from roomId (format: workspace:project:doc_id)
-				const parts = roomId.split(":");
-				const doc_id = parts[2];
-
-				if (!doc_id) {
-					console.error("Invalid roomId format - cannot extract doc_id:", roomId);
-					return new Response("Invalid roomId format", {
-						status: 400,
-						headers: server_convex_headers_cors(),
-					});
-				}
-
-				// Fetch the Yjs document from Liveblocks REST API
-				const yjsResponse = await fetch(`https://api.liveblocks.io/v2/rooms/${roomId}/ydoc`, {
-					headers: {
-						Authorization: `Bearer ${LIVEBLOCKS_SECRET_KEY}`,
-					},
-				});
-
-				if (!yjsResponse.ok) {
-					console.error("Failed to fetch Yjs document from Liveblocks:", yjsResponse.status);
-					return new Response("Failed to fetch document", {
-						status: 500,
-						headers: server_convex_headers_cors(),
-					});
-				}
-
-				// Get the Yjs document as base64-encoded binary data
-				const yjsBuffer = await yjsResponse.arrayBuffer();
-				const yjsBase64 = btoa(String.fromCharCode(...new Uint8Array(yjsBuffer)));
-
-				// Persist to Convex using doc_id
-				await ctx.runMutation(api.ai_docs_temp.ai_docs_temp_upsert_yjs_document, {
-					doc_id,
-					yjs_document_state: yjsBase64,
-				});
-
-				console.log(`Successfully persisted Yjs document for doc_id: ${doc_id}`);
-			} catch (error) {
-				console.error("Error processing ydocUpdated webhook:", error);
-				return new Response("Error processing webhook", {
-					status: 500,
-					headers: server_convex_headers_cors(),
-				});
-			}
-		}
-
-		// Return success response
-		return new Response("OK", {
-			status: 200,
-			headers: server_convex_headers_cors(),
-		});
-	} catch (error) {
-		console.error("Webhook handler error:", error);
-		return new Response("Internal server error", {
-			status: 500,
-			headers: server_convex_headers_cors(),
-		});
-	}
-});
-
-async function resolve_page_id_for_path(ctx: any, path: string): Promise<string | null> {
-	if (path === "/") return "root";
-
-	const segments = server_path_extract_segments_from(path);
-	let currentParent = "root";
 	for (const segment of segments) {
-		const row = await ctx.db
-			.query("file_tree")
-			.withIndex("by_parent_and_name", (q: any) => q.eq("parent_id", currentParent).eq("name", segment))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+				q
+					.eq("workspace_id", args.workspace_id)
+					.eq("project_id", args.project_id)
+					.eq("parent_id", currentNode)
+					.eq("name", segment),
+			)
 			.unique();
-		if (!row) return null;
-		currentParent = row.child_id;
+		if (!page) return null;
+		currentNode = page.parent_id;
+		docId = page._id;
 	}
-	return currentParent;
+
+	return docId;
 }
 
-// Get entire tree structure for workspace/project
-export const ai_docs_temp_get_document_tree = query({
+async function resolve_page_id_from_path_fn(
+	ctx: QueryCtx,
+	args: { workspace_id: string; project_id: string; path: string },
+) {
+	const segments = server_path_extract_segments_from(args.path);
+
+	let pageId = null;
+	let currentNode = "root";
+
+	for (const segment of segments) {
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+				q
+					.eq("workspace_id", args.workspace_id)
+					.eq("project_id", args.project_id)
+					.eq("parent_id", currentNode)
+					.eq("name", segment),
+			)
+			.unique();
+		if (!page) return null;
+		currentNode = page.page_id;
+		pageId = page.page_id;
+	}
+
+	return pageId;
+}
+
+export const resolve_page_id_from_path = internalQuery({
+	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	returns: v.union(v.string(), v.null()),
+	handler: (ctx, args) => resolve_page_id_from_path_fn(ctx, args),
+});
+
+async function resolve_tree_node_id_from_path_fn(
+	ctx: QueryCtx,
+	args: { workspace_id: string; project_id: string; path: string },
+) {
+	if (args.path === "/") return "root";
+	const segments = server_path_extract_segments_from(args.path);
+
+	let currentNode = "root";
+
+	for (const segment of segments) {
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+				q
+					.eq("workspace_id", args.workspace_id)
+					.eq("project_id", args.project_id)
+					.eq("parent_id", currentNode)
+					.eq("name", segment),
+			)
+			.unique();
+		if (!page) return null;
+		currentNode = page.page_id;
+	}
+
+	return currentNode;
+}
+
+export const resolve_tree_node_id_from_path = internalQuery({
+	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	returns: v.union(v.string(), v.null()),
+	handler: (ctx, args) => resolve_tree_node_id_from_path_fn(ctx, args),
+});
+
+export const get_tree = query({
 	args: {
 		workspace_id: v.string(),
 		project_id: v.string(),
@@ -470,17 +374,8 @@ export const ai_docs_temp_get_document_tree = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		// Get all documents for this workspace/project
-		const docs = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_workspace_project", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id),
-			)
-			.collect();
-
-		// Get tree structure relationships
-		const structure = await ctx.db
-			.query("file_tree")
+		const pages = await ctx.db
+			.query("pages")
 			.withIndex("by_workspace_project", (q) =>
 				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id),
 			)
@@ -497,23 +392,23 @@ export const ai_docs_temp_get_document_tree = query({
 			},
 		};
 
-		// Add all documents to tree using doc_id as index
-		for (const doc of docs) {
-			if (!doc.doc_id) continue; // Skip documents without doc_id
+		// Add all documents to tree using page_id as index
+		for (const page of pages) {
+			if (!page.page_id) continue; // Skip documents without page_id
 
-			treeData[doc.doc_id] = {
-				index: doc.doc_id,
+			treeData[page.page_id] = {
+				index: page.page_id,
 				children: [],
-				title: doc.title || "Untitled",
-				content: `<h1>${doc.title || "Untitled"}</h1><p>Start writing your content here...</p>`,
-				isArchived: doc.is_archived || false,
+				title: page.name || "Untitled",
+				content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
+				isArchived: page.is_archived || false,
 			};
 		}
 
 		// Build parent-child relationships using doc_ids
-		for (const rel of structure) {
-			if (treeData[rel.parent_id] && treeData[rel.child_id]) {
-				treeData[rel.parent_id].children.push(rel.child_id);
+		for (const page of pages) {
+			if (treeData[page.parent_id] && treeData[page.page_id]) {
+				treeData[page.parent_id].children.push(page.page_id);
 			}
 		}
 
@@ -550,11 +445,11 @@ export const ai_docs_temp_get_document_tree = query({
 	},
 });
 
-export const ai_docs_temp_create_document = mutation({
+export const create_page = mutation({
 	args: {
-		doc_id: v.string(),
+		page_id: v.string(),
 		parent_id: v.string(),
-		title: v.string(),
+		name: v.string(),
 		workspace_id: v.string(),
 		project_id: v.string(),
 	},
@@ -562,107 +457,96 @@ export const ai_docs_temp_create_document = mutation({
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const now = Date.now();
 
-		// Create document in docs_yjs table
-		await ctx.db.insert("docs_yjs", {
-			yjs_document_state: "", // Empty initial state
-			version: 0,
-			title: args.title,
-			is_archived: false,
+		await ctx.db.insert("pages", {
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
-			doc_id: args.doc_id,
+			page_id: args.page_id,
+			parent_id: args.parent_id,
+			text_content: "",
+			version: 0,
+			name: args.name,
+			is_archived: false,
 			created_by: user.name,
 			updated_by: user.name,
 			created_at: now,
 			updated_at: now,
 		});
-
-		// Add to tree structure using doc_id
-		await ctx.db.insert("file_tree", {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
-			parent_id: args.parent_id,
-			child_id: args.doc_id,
-			name: args.title,
-		});
 	},
 });
 
-export const ai_docs_temp_rename_document = mutation({
+export const rename_page = mutation({
 	args: {
-		doc_id: v.string(),
-		title: v.string(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+		name: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
 			.first();
 
-		if (doc) {
-			await ctx.db.patch(doc._id, {
-				title: args.title,
+		if (page) {
+			await ctx.db.patch(page._id, {
+				name: args.name,
 				updated_by: user.name,
 				updated_at: Date.now(),
-			});
-		}
-
-		const treeItem = await ctx.db
-			.query("file_tree")
-			.withIndex("by_child", (q) => q.eq("child_id", args.doc_id))
-			.first();
-
-		if (treeItem) {
-			await ctx.db.patch(treeItem._id, {
-				name: args.title,
 			});
 		}
 	},
 });
 
-export const ai_docs_temp_move_items = mutation({
+export const move_pages = mutation({
 	args: {
-		item_ids: v.array(v.string()), // doc_ids
+		item_ids: v.array(v.string()),
 		target_parent_id: v.string(),
 		workspace_id: v.string(),
 		project_id: v.string(),
 	},
 	handler: async (ctx, args) => {
 		for (const item_id of args.item_ids) {
-			const existing = await ctx.db
-				.query("file_tree")
-				.withIndex("by_child", (q) => q.eq("child_id", item_id))
+			const page = await ctx.db
+				.query("pages")
+				.withIndex("by_workspace_project_and_page_id", (q) =>
+					q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", item_id),
+				)
 				.first();
 
-			if (existing) {
-				await ctx.db.patch(existing._id, {
+			if (page) {
+				await ctx.db.patch(page._id, {
 					workspace_id: args.workspace_id,
 					project_id: args.project_id,
 					parent_id: args.target_parent_id,
-					child_id: item_id,
-					name: existing.name,
+					updated_at: Date.now(),
 				});
 			}
 		}
 	},
 });
 
-export const ai_docs_temp_archive_document = mutation({
+export const archive_pages = mutation({
 	args: {
-		doc_id: v.string(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
 			.first();
 
-		if (doc) {
-			await ctx.db.patch(doc._id, {
+		if (page) {
+			await ctx.db.patch(page._id, {
 				is_archived: true,
 				updated_by: user.name,
 				updated_at: Date.now(),
@@ -671,20 +555,24 @@ export const ai_docs_temp_archive_document = mutation({
 	},
 });
 
-export const ai_docs_temp_unarchive_document = mutation({
+export const unarchive_pages = mutation({
 	args: {
-		doc_id: v.string(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
 			.first();
 
-		if (doc) {
-			await ctx.db.patch(doc._id, {
+		if (page) {
+			await ctx.db.patch(page._id, {
 				is_archived: false,
 				updated_by: user.name,
 				updated_at: Date.now(),
@@ -693,97 +581,45 @@ export const ai_docs_temp_unarchive_document = mutation({
 	},
 });
 
-export const ai_docs_temp_get_document_by_id = query({
-	args: { doc_id: v.string() },
-	returns: v.union(
-		v.object({
-			doc_id: v.string(),
-			title: v.string(),
-			is_archived: v.boolean(),
-			workspace_id: v.union(v.string(), v.null()),
-			project_id: v.union(v.string(), v.null()),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
-			.first();
-
-		return doc
-			? {
-					doc_id: doc.doc_id!,
-					title: doc.title || "Untitled",
-					is_archived: doc.is_archived || false,
-					workspace_id: doc.workspace_id || null,
-					project_id: doc.project_id || null,
-				}
-			: null;
-	},
-});
-
-export const ai_docs_temp_delete_document = mutation({
-	args: {
-		doc_id: v.string(),
-	},
-	handler: async (ctx, args) => {
-		// Remove from docs_yjs
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
-			.first();
-
-		if (doc) {
-			await ctx.db.delete(doc._id);
-		}
-
-		// Remove from file_tree
-		const treeItem = await ctx.db
-			.query("file_tree")
-			.withIndex("by_child", (q) => q.eq("child_id", args.doc_id))
-			.first();
-
-		if (treeItem) {
-			await ctx.db.delete(treeItem._id);
-		}
-	},
-});
-
 export const get_page_by_path = query({
 	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
 	returns: v.union(
 		v.object({
-			doc_id: v.string(),
-			title: v.string(),
-			is_archived: v.boolean(),
 			workspace_id: v.union(v.string(), v.null()),
 			project_id: v.union(v.string(), v.null()),
+			page_id: v.string(),
+			name: v.string(),
+			is_archived: v.boolean(),
 		}),
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const currentParent = await resolve_page_id_for_path(ctx, args.path);
-		if (!currentParent) return null;
+		const docId = await resolve_id_from_path(ctx, {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			path: args.path,
+		});
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", currentParent))
+		if (!docId) return null;
+
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_id", (q) => q.eq("_id", docId))
 			.first();
 
-		return doc
+		return page
 			? {
-					doc_id: doc.doc_id!,
-					title: doc.title,
-					is_archived: doc.is_archived,
-					workspace_id: doc.workspace_id,
-					project_id: doc.project_id,
+					workspace_id: page.workspace_id,
+					project_id: page.project_id,
+					page_id: page.page_id,
+					name: page.name,
+					is_archived: page.is_archived,
 				}
 			: null;
 	},
 });
 
-export const read_dir = query({
+export const read_dir = internalQuery({
 	args: {
 		workspace_id: v.string(),
 		project_id: v.string(),
@@ -791,138 +627,68 @@ export const read_dir = query({
 	},
 	returns: v.array(v.string()),
 	handler: async (ctx, args) => {
-		const currentParent = await resolve_page_id_for_path(ctx, args.path);
-		if (!currentParent) return [];
+		const nodeId = await resolve_tree_node_id_from_path_fn(ctx, {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			path: args.path,
+		});
+		if (!nodeId) return [];
 
-		// List children under the resolved parent, return only names
 		const children = await ctx.db
-			.query("file_tree")
-			.withIndex("by_parent", (q) => q.eq("parent_id", currentParent))
+			.query("pages")
+			.withIndex("by_parent_id", (q) => q.eq("parent_id", nodeId))
 			.collect();
 
-		const names = children
-			.filter((c) => c.workspace_id === args.workspace_id && c.project_id === args.project_id)
-			.map((c) => c.name);
+		const names = children.map((page) => page.name);
 		return names;
 	},
 });
 
-export const list_dir_paginated = internalQuery({
+export const get_page_info_for_list_dir_pagination = internalQuery({
 	args: {
 		parent_id: v.string(),
-		pagination_opts: paginationOptsValidator,
+		cursor: paginationOptsValidator.fields.cursor,
 	},
-	// Note: Paginated queries intentionally omit a `returns` validator per Convex guidelines.
 	handler: async (ctx, args) => {
-		return await ctx.db
-			.query("file_tree")
-			.withIndex("by_parent", (q) => q.eq("parent_id", args.parent_id))
-			.paginate(args.pagination_opts);
-	},
-});
-
-export const list_dir = query({
-	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		path: v.string(),
-		max_depth: v.optional(v.number()),
-		limit: v.optional(v.number()),
-	},
-	returns: v.array(v.string()),
-	handler: async (ctx, args) => {
-		// Resolve the starting parent id for the provided path
-		const startParent = await resolve_page_id_for_path(ctx, args.path);
-		if (!startParent) return [];
-
-		// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
-		const basePath = server_path_normalize(args.path);
-
-		const maxDepth = args.max_depth ? math_clamp(args.max_depth, 0, 10) : 5;
-		const limit = args.limit ? math_clamp(args.limit, 1, 100) : 100;
-
-		const resultPaths: string[] = [];
-
-		// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
-		// so we fetch one child at a time for the current parent, then dive deeper first.
-		const stack: Array<{ parentId: string; absPath: string; cursor: string | null; depth: number }> = [
-			{ parentId: startParent, absPath: basePath, cursor: null, depth: 0 },
-		];
-
-		while (stack.length > 0) {
-			const frame = stack.pop();
-			if (!frame) continue;
-
-			const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.list_dir_paginated, {
-				parent_id: frame.parentId,
-				pagination_opts: { cursor: frame.cursor, numItems: 1 },
+		const result = await ctx.db
+			.query("pages")
+			.withIndex("by_parent_id", (q) => q.eq("parent_id", args.parent_id))
+			.paginate({
+				cursor: args.cursor,
+				numItems: 1,
 			});
 
-			// No more children at this cursor for this parent or page is empty
-			if (paginatedResult.isDone) continue;
-
-			const child = paginatedResult.page.at(0);
-			if (!child) continue; // just for type safety
-
-			// If this child doesn't belong to the requested workspace/project, skip it
-			// but continue to the next sibling if present.
-			if (child.workspace_id !== args.workspace_id || child.project_id !== args.project_id) {
-				if (!paginatedResult.isDone) {
-					// Push the same parent back with advanced cursor to continue siblings
-					stack.push({
-						parentId: frame.parentId,
-						absPath: frame.absPath,
-						cursor: paginatedResult.continueCursor,
-						depth: frame.depth,
-					});
-				}
-				continue;
-			}
-
-			const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
-			resultPaths.push(childPath);
-
-			// Respect limit if provided
-			if (resultPaths.length >= limit) {
-				return resultPaths;
-			}
-
-			// First, if there are more siblings for the current parent, push the parent back with updated cursor
-			// so we'll process siblings after we finish the deep dive into this child.
-			if (!paginatedResult.isDone) {
-				stack.push({
-					parentId: frame.parentId,
-					absPath: frame.absPath,
-					cursor: paginatedResult.continueCursor,
-					depth: frame.depth,
-				});
-			}
-
-			// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
-			const nextDepth = frame.depth + 1;
-			if (nextDepth < maxDepth) {
-				stack.push({ parentId: child.child_id, absPath: childPath, cursor: null, depth: nextDepth });
-			}
-		}
-
-		return resultPaths;
+		return {
+			...result,
+			page: result.page.map((page) => ({
+				name: page.name,
+				page_id: page.page_id,
+				updated_at: page.updated_at,
+			})),
+		};
 	},
 });
 
-export const page_exists_by_path = query({
+export const page_exists_by_path = internalQuery({
 	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		const currentParent = await resolve_page_id_for_path(ctx, args.path);
-		if (!currentParent) return false;
+		const pageId = await resolve_id_from_path(ctx, {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			path: args.path,
+		});
+		if (!pageId) return false;
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", currentParent))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", pageId),
+			)
 			.first();
 
-		if (!doc) return false;
-		if (doc.workspace_id !== args.workspace_id || doc.project_id !== args.project_id) return false;
+		if (!page) return false;
+		if (page.workspace_id !== args.workspace_id || page.project_id !== args.project_id) return false;
 		return true;
 	},
 });
@@ -931,56 +697,65 @@ export const get_page_text_content_by_path = query({
 	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		const currentParent = await resolve_page_id_for_path(ctx, args.path);
-		if (!currentParent) return null;
+		const id = await resolve_id_from_path(ctx, {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			path: args.path,
+		});
+		if (!id) return null;
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", currentParent))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_id", (q) => q.eq("_id", id))
 			.first();
 
-		if (!doc) return null;
-		if (doc.workspace_id !== args.workspace_id || doc.project_id !== args.project_id) return null;
-		return doc.text_content ?? null;
+		if (!page) return null;
+		return page.text_content ?? null;
 	},
 });
 
 export const get_page_text_content_by_page_id = query({
-	args: { doc_id: v.string() },
+	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
 			.first();
 
-		if (!doc) return null;
-		return doc.text_content ?? null;
+		if (!page) return null;
+		return page.text_content ?? null;
 	},
 });
 
 export const update_page_text_content = mutation({
 	args: {
-		doc_id: v.string(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
 		text_content: v.string(),
 	},
 	returns: v.union(v.null(), v.object({ bad: v.object({ message: v.string() }) })),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const doc = await ctx.db
-			.query("docs_yjs")
-			.withIndex("by_doc_id", (q) => q.eq("doc_id", args.doc_id))
+		// Query pages table using page_id (formerly page_id)
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
 			.first();
 
-		if (!doc) {
+		if (!page) {
 			return {
 				bad: { message: "Page not found" },
 			};
 		}
 
-		// Update the text content and timestamp
-		await ctx.db.patch(doc._id, {
+		await ctx.db.patch(page._id, {
 			text_content: args.text_content,
 			updated_by: user.name,
 			updated_at: Date.now(),
