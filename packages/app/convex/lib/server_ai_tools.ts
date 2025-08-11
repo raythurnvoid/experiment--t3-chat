@@ -13,6 +13,7 @@ import { minimatch } from "minimatch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../src/lib/ai-chat.ts";
 import { math_clamp } from "../../shared/shared-utils.ts";
 
+// TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
 async function list_dir(
 	ctx: ActionCtx,
 	args: {
@@ -21,6 +22,7 @@ async function list_dir(
 		path: string;
 		max_depth?: number;
 		limit?: number;
+		include?: string;
 	},
 ): Promise<{ items: Array<{ path: string; updated_at: number }>; metadata: { count: number; truncated: boolean } }> {
 	// Resolve the starting node id for the provided path
@@ -62,12 +64,17 @@ async function list_dir(
 		if (!child) continue; // just for type safety
 
 		const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
-		resultPaths.push({ path: childPath, updated_at: child.updated_at });
 
-		// Respect limit if provided
-		if (resultPaths.length >= limit) {
-			truncated = true;
-			break;
+		// If include pattern is provided, only add items that match the glob
+		const matchesInclude = args.include ? minimatch(childPath, args.include) : true;
+		if (matchesInclude) {
+			resultPaths.push({ path: childPath, updated_at: child.updated_at });
+
+			// Respect limit if provided (only counts included items)
+			if (resultPaths.length >= limit) {
+				truncated = true;
+				break;
+			}
 		}
 
 		// First, if there are more siblings for the current parent, push the parent back with updated cursor
@@ -162,7 +169,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 				throw new Error(`Page not found: ${normalizedPath}`);
 			}
 
-			const textContent = await ctx.runQuery(api.ai_docs_temp.get_page_text_content_by_path, {
+			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
 				path: normalizedPath,
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
@@ -303,7 +310,7 @@ export function ai_tool_create_list_pages(ctx: ActionCtx) {
 /**
  * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
  */
-export function ai_tool_create_glob_page(ctx: ActionCtx) {
+export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Fast page pattern matching tool that works with any database size. \
@@ -334,6 +341,7 @@ export function ai_tool_create_glob_page(ctx: ActionCtx) {
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
 				max_depth: 10,
 				limit: args.limit,
+				include: args.pattern,
 			});
 
 			// Sort by modification time (newest first)
@@ -357,6 +365,128 @@ export function ai_tool_create_glob_page(ctx: ActionCtx) {
 					truncated: listResult.metadata.truncated,
 				},
 				output: output.join("\n"),
+			};
+		},
+	});
+}
+
+/**
+ * Inspired by `opencode/packages/opencode/src/tool/grep.ts`
+ * Search pages by applying a regex pattern against page name + text_content
+ */
+export function ai_tool_create_grep_pages(ctx: ActionCtx) {
+	return tool({
+		description: dedent`\
+      Fast content search over pages using regular expressions.\
+      Searches concatenated page name + "\n" + text_content.\
+      Use optional include glob to restrict paths and path to scope the root.\
+      Results are grouped by page path and sorted by most recently updated.\
+      The traversal is limited by depth and limit, identical to list_pages.`,
+
+		parameters: z.object({
+			pattern: z.string().describe("The regex pattern to search for (JavaScript RegExp syntax, case-sensitive)"),
+			path: z
+				.string()
+				.describe('The directory to search in (absolute path starting with "/"). Defaults to root.')
+				.optional(),
+			include: z.string().describe('Glob pattern to include (e.g. "**/Guides/*")').optional(),
+			maxDepth: z
+				.number()
+				.int()
+				.gte(0)
+				.lte(10)
+				.describe("Maximum depth to traverse (same semantics as list_pages)")
+				.default(5),
+			limit: z
+				.number()
+				.int()
+				.gte(1)
+				.lte(100)
+				.describe("Maximum number of pages to traverse (same semantics as list_pages)")
+				.default(100),
+		}),
+
+		execute: async (args) => {
+			const searchPath = server_path_normalize(args.path || "/");
+
+			// Compile regex
+			let regex: RegExp;
+			try {
+				regex = new RegExp(args.pattern);
+			} catch (error) {
+				throw new Error(`Invalid regex pattern: ${args.pattern}. ${(error instanceof Error && error.message) || ""}`);
+			}
+
+			// Discover candidate pages using the same traversal logic as list_pages
+			const list = await list_dir(ctx, {
+				path: searchPath,
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				max_depth: args.maxDepth,
+				limit: args.limit,
+				include: args.include,
+			});
+
+			type Match = { path: string; updated_at: number; lineNum: number; lineText: string };
+			const matches: Match[] = [];
+
+			for (const item of list.items) {
+				// Read page content
+				const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+					path: item.path,
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+				});
+
+				const pageName = server_path_name_of(item.path);
+				const fullText = `${pageName}\n${textContent ?? ""}`;
+
+				// Line-based scan to produce line numbers and line snippets, similar to ripgrep output
+				const lines = fullText.split(/\r?\n/);
+				for (let i = 0; i < lines.length; i++) {
+					const line = lines[i];
+					if (regex.test(line)) {
+						matches.push({
+							path: item.path,
+							updated_at: item.updated_at,
+							lineNum: i + 1,
+							lineText: line,
+						});
+					}
+				}
+			}
+
+			// Sort by update time (newest first) to mirror opencode behavior
+			matches.sort((a, b) => b.updated_at - a.updated_at);
+
+			if (matches.length === 0) {
+				return {
+					title: args.pattern,
+					metadata: { matches: 0, truncated: list.metadata.truncated },
+					output: "No files found",
+				};
+			}
+
+			const outputLines: string[] = [`Found ${matches.length} matches`];
+			let currentPath = "";
+			for (const m of matches) {
+				if (currentPath !== m.path) {
+					if (currentPath !== "") outputLines.push("");
+					currentPath = m.path;
+					outputLines.push(`${m.path}:`);
+				}
+				outputLines.push(`  Line ${m.lineNum}: ${m.lineText}`);
+			}
+
+			if (list.metadata.truncated) {
+				outputLines.push("");
+				outputLines.push("(Results may be truncated due to traversal limits. Consider adjusting maxDepth or limit.)");
+			}
+
+			return {
+				title: args.pattern,
+				metadata: { matches: matches.length, truncated: list.metadata.truncated },
+				output: outputLines.join("\n"),
 			};
 		},
 	});

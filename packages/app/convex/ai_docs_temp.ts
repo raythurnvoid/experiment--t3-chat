@@ -283,8 +283,9 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string;
 					.eq("name", segment),
 			)
 			.unique();
+
 		if (!page) return null;
-		currentNode = page.parent_id;
+		currentNode = page.page_id;
 		docId = page._id;
 	}
 
@@ -673,7 +674,7 @@ export const page_exists_by_path = internalQuery({
 	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		const pageId = await resolve_id_from_path(ctx, {
+		const pageId = await resolve_page_id_from_path_fn(ctx, {
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
 			path: args.path,
@@ -693,23 +694,25 @@ export const page_exists_by_path = internalQuery({
 	},
 });
 
-export const get_page_text_content_by_path = query({
+export const get_page_text_content_by_path = internalQuery({
 	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		const id = await resolve_id_from_path(ctx, {
+		const docId = await resolve_id_from_path(ctx, {
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
 			path: args.path,
 		});
-		if (!id) return null;
+
+		if (!docId) return null;
 
 		const page = await ctx.db
 			.query("pages")
-			.withIndex("by_id", (q) => q.eq("_id", id))
+			.withIndex("by_id", (q) => q.eq("_id", docId))
 			.first();
 
 		if (!page) return null;
+
 		return page.text_content ?? null;
 	},
 });
