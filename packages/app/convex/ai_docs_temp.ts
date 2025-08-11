@@ -359,6 +359,30 @@ export const resolve_tree_node_id_from_path = internalQuery({
 	handler: (ctx, args) => resolve_tree_node_id_from_path_fn(ctx, args),
 });
 
+async function resolve_path_from_page_id(
+	ctx: QueryCtx,
+	args: { workspace_id: string; project_id: string; page_id: string },
+): Promise<string> {
+	if (args.page_id === "root") return "/";
+	const segments: string[] = [];
+	let currentId: string | null = args.page_id;
+	while (currentId && currentId !== "root") {
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q
+					.eq("workspace_id", args.workspace_id)
+					.eq("project_id", args.project_id)
+					.eq("page_id", currentId as string),
+			)
+			.first();
+		if (!page) break;
+		segments.unshift(page.name);
+		currentId = page.parent_id;
+	}
+	return segments.length === 0 ? "/" : `/${segments.join("/")}`;
+}
+
 export const get_tree = query({
 	args: {
 		workspace_id: v.string(),
@@ -730,6 +754,45 @@ export const get_page_text_content_by_page_id = query({
 
 		if (!page) return null;
 		return page.text_content ?? null;
+	},
+});
+
+export const text_search_pages = internalQuery({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		query: v.string(),
+		limit: v.number(),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				preview: v.string(),
+			}),
+		),
+	}),
+	handler: async (ctx, args): Promise<{ items: Array<{ path: string; preview: string }> }> => {
+		const matches = await ctx.db
+			.query("pages")
+			.withSearchIndex("search_text_content", (q) =>
+				q.search("text_content", args.query).eq("workspace_id", args.workspace_id).eq("project_id", args.project_id),
+			)
+			.take(Math.max(1, Math.min(100, args.limit)));
+
+		const items: Array<{ path: string; preview: string }> = await Promise.all(
+			matches.map(async (page): Promise<{ path: string; preview: string }> => {
+				const path: string = await resolve_path_from_page_id(ctx, {
+					workspace_id: args.workspace_id,
+					project_id: args.project_id,
+					page_id: page.page_id,
+				});
+				const preview = page.text_content.slice(0, 160);
+				return { path, preview };
+			}),
+		);
+
+		return { items };
 	},
 });
 

@@ -2,7 +2,7 @@ import { tool } from "ai";
 import z from "zod";
 import dedent from "dedent";
 import type { ActionCtx } from "../_generated/server";
-import { api, internal } from "../_generated/api";
+import { internal } from "../_generated/api";
 import {
 	server_path_extract_segments_from,
 	server_path_name_of,
@@ -487,6 +487,54 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx) {
 				title: args.pattern,
 				metadata: { matches: matches.length, truncated: list.metadata.truncated },
 				output: outputLines.join("\n"),
+			};
+		},
+	});
+}
+
+export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
+	return tool({
+		description: dedent`\
+			Ultra-fast text search over page content using the database search index.\
+			Behaves like using grep with the expression "<search_term>.*" (the .* means any letters, using regexp syntax),\
+			but leverages Convex full-text search so it's much faster and ranked by relevance.
+
+			Notes:\
+			- Searches the text_content field only.\
+			- Results are relevance-ranked by Convex and limited to the specified limit.\
+			- Prefer this over grep for general keyword search; use grep for precise regex line matches.`,
+
+		parameters: z.object({
+			query: z.string().describe("Search terms (e.g. 'hello hi'). Prefix matching applies to the last term."),
+			limit: z.number().int().gte(1).lte(100).default(20),
+		}),
+
+		execute: async (args) => {
+			const res = await ctx.runQuery(internal.ai_docs_temp.text_search_pages, {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				query: args.query,
+				limit: args.limit,
+			});
+
+			if (!res.items.length) {
+				return {
+					title: args.query,
+					metadata: { matches: 0 },
+					output: "No pages found",
+				};
+			}
+
+			const lines: string[] = [
+				`Found ${res.items.length} results (relevance-ranked)`,
+				"",
+				...res.items.map((i) => `${i.path}\n  Preview: ${i.preview}`),
+			];
+
+			return {
+				title: args.query,
+				metadata: { matches: res.items.length },
+				output: lines.join("\n"),
 			};
 		},
 	});

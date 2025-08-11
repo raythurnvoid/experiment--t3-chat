@@ -234,6 +234,7 @@ const app_convex_schema = defineSchema({
 		.index("by_parent_id", ["parent_id"])
 		.searchIndex("search_text_content", {
 			searchField: "text_content",
+			filterFields: ["workspace_id", "project_id"],
 		}),
 });
 

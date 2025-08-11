@@ -26,6 +26,7 @@ import {
 	ai_tool_create_read_page,
 	ai_tool_create_glob_pages,
 	ai_tool_create_grep_pages,
+	ai_tool_create_text_search_pages,
 } from "./lib/server_ai_tools.ts";
 
 // Removed opencode-based read tool; using DB-backed tool from server_ai_tools
@@ -323,6 +324,7 @@ export const chat = httpAction(async (ctx, request) => {
 						list_pages: ai_tool_create_list_pages(ctx),
 						glob_pages: ai_tool_create_glob_pages(ctx),
 						grep_pages: ai_tool_create_grep_pages(ctx),
+						text_search_pages: ai_tool_create_text_search_pages(ctx),
 					},
 					experimental_transform: smoothStream({
 						delayInMs: 100,
