@@ -347,7 +347,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 			// Sort by modification time (newest first)
 			listResult.items.sort((a, b) => b.updated_at - a.updated_at);
 
-			const output = [];
+			const output: string[] = [];
 			if (listResult.items.length === 0) {
 				output.push("No pages found");
 			} else {
