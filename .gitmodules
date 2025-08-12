@@ -1,10 +1,13 @@
 [submodule "assistant-ui"]
-	path = packages/app/assistant-ui
+	path = packages/app/vendor/assistant-ui
 	url = ../assistant-ui.git
 	branch = main
 [submodule "liveblocks"]
-	path = packages/app/liveblocks
+	path = packages/app/vendor/liveblocks
 	url = https://github.com/raythurnvoid/liveblocks.git
 [submodule "packages/app/opencode"]
-	path = packages/app/opencode
+	path = packages/app/vendor/opencode
 	url = https://github.com/sst/opencode
+[submodule "packages/app/ai"]
+	path = packages/app/vendor/ai
+	url = https://github.com/vercel/ai.git

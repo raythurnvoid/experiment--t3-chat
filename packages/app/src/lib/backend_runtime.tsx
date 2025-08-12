@@ -1,8 +1,11 @@
-import { useChatRuntime } from "@assistant-ui/react-ai-sdk";
+import { AssistantChatTransport, useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { AssistantCloud } from "@assistant-ui/react";
 import { api } from "../../convex/_generated/api";
 import { ai_chat_HARDCODED_PROJECT_ID } from "./ai-chat.ts";
 import { app_convex } from "./app-convex-client.ts";
+import { app_fetch_main_chat } from "./fetch.ts";
+import type { UnknownRecord } from "type-fest";
+import type { UIMessage, UITools } from "ai";
 
 // ===== CONVEX BACKEND CONFIGURATION =====
 // Get Convex deployment URL from environment or use default
@@ -52,8 +55,39 @@ export const useBackendRuntime = () => {
 	// });
 
 	const runtime = useChatRuntime({
-		useAssistantUiFetch: false,
 		cloud: assistant_cloud,
+		transport: new AssistantChatTransport({
+			// Route through app_fetch_main_chat by default
+			fetch: async (_input, init) => {
+				const raw = init?.body as unknown;
+				const body =
+					typeof raw === "string"
+						? (JSON.parse(raw) as {
+								id: string;
+								messages: UIMessage[];
+								tools: UITools;
+								trigger: string;
+							})
+						: null;
+
+				if (!body) {
+					throw new Error("`body` is null when calling `app_fetch_main_chat`");
+				}
+
+				const result = await app_fetch_main_chat({
+					input: {
+						...body,
+						thread_id: window.rt0_chat_current_thread_id,
+					},
+					signal: init?.signal ?? undefined,
+				});
+
+				if (result.bad) {
+					throw result.bad;
+				}
+				return result.ok.response;
+			},
+		}),
 	});
 
 	return runtime;

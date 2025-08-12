@@ -17,7 +17,7 @@ Do not run `pnpm run dev` let the user run it manually.
 
 ## Default Terminal Location
 
-**IMPORTANT**: When terminals are opened in this workspace, they start in the **[packages/app/](mdc:packages/app)** directory by default, NOT the workspace root.
+IMPORTANT: When terminals are opened in this workspace, they start in the [packages/app/](mdc:packages/app) directory by default, NOT the workspace root.
 
 This means:
 
@@ -26,8 +26,6 @@ This means:
 - The `packages/app/` directory contains the main application code
 
 ## Navigating to Root When Needed
-
-When shell commands need to access files in the workspace root or other packages, you must explicitly navigate:
 
 ```bash
 # Navigate to workspace root from packages/app/
@@ -61,94 +59,112 @@ Do not run commands to verify lints or check code quality (such as `pnpm lint`, 
 
 You can run linting commands only if the user explicitly requests it.
 
-# +personal/ folder
-
-The [+personal/](mdc:+personal) folder is used to keep indexed personal user notes, you are not allowed to write in this folder. However the content can be used a documentation reference.
-
-You can however write inside [+personal/+ai/](mdc:+personal/+ai).
-
-# 3rd Party Documentation Research
-
-When users ask about 3rd party libraries or request implementations using external dependencies, conduct thorough documentation research for accurate responses.
-
-## Documentation Sources
-
-- **[+personal/](mdc:+personal)** - Contains source repos of complex dependencies
-- **Submodules** - [packages/app/assistant-ui/](mdc:packages/app/assistant-ui) and [packages/app/liveblocks/](mdc:packages/app/liveblocks) have full repos
-- **Web search** - For external documentation when not available locally
-
-## Research Process
-
-1. **Find docs first** - For instance try look for `.md`, `.mdx`, `.txt`, `.stories.tsx`, and `docs/` folders
-2. **Read extensively** - Multiple sections, examples, and guides until confident
-3. **Prioritize docs over source** - Source code only for complex edge cases
-4. **Understand thoroughly** - Continue reading until no doubts remain
-
-**Standard**: Read until you can explain concepts confidently and implement without guessing.
-
 # Project Structure and Key Directories
 
 ## Monorepo Structure
 
 This is a monorepo project with the following essential structure that you must always be aware of:
 
-### Root Level
+- [package.json](mdc:package.json) - Root package configuration
+- [pnpm-workspace.yaml](mdc:pnpm-workspace.yaml) - Workspace configuration for the monorepo
+- [pnpm-lock.yaml](mdc:pnpm-lock.yaml) - Lockfile for all dependencies
 
-- **[package.json](mdc:package.json)** - Root package configuration
-- **[pnpm-workspace.yaml](mdc:pnpm-workspace.yaml)** - Workspace configuration for the monorepo
-- **[pnpm-lock.yaml](mdc:pnpm-lock.yaml)** - Lockfile for all dependencies
+## Folders organization
 
-### Documentation and Research Resources
+- [packages/app/](mdc:packages/app) - MAIN APPLICATION ROOT
+  - [src/](mdc:packages/app/src) - React frontend application code
+    - [src/components/](mdc:packages/app/src/components) - React components (UI, assistant-ui, canvas)
+    - [src/routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
+    - [src/lib/](mdc:packages/app/src/lib) - Shared utilities and helpers
+    - [src/hooks/](mdc:packages/app/src/hooks) - Custom React hooks
+    - [src/stores/](mdc:packages/app/src/stores) - State management (Zustand stores)
+    - [src/types/](mdc:packages/app/src/types) - TypeScript type definitions
+    - [src/app.css](mdc:packages/app/src/app.css) - Main CSS file with Tailwind 4 configuration
+  - [convex/](mdc:packages/app/convex) - Convex backend code and functions
+  - [shared/](mdc:packages/app/shared) - Shared code between frontend and backend
+  - [vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui) - Assistant UI submodule (full repo for reference)
+  - [vendor/liveblocks/](mdc:packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
+  - [vendor/ai/](mdc:packages/app/vendor/ai) - AI SDK submodule (full repo for reference)
+  - [vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
 
-- **[+personal/](mdc:+personal)** - **DOCUMENTATION & RESEARCH FOLDER**
+- [+personal/](mdc:+personal) - DOCUMENTATION & RESEARCH FOLDER
   - Contains files useful for answering questions and resolving complex problems
   - Includes 3rd party codebases and documentation for research purposes
-  - Examples: React Complex Tree, AI SDK, BlockNote, Shadcn, TanStack Router sources
-  - **[+personal/+ai/](mdc:+personal/+ai)** - Only writable subfolder for AI-generated content
-  - **DO NOT MODIFY** other files in +personal/ - they are reference material only
+  - Examples: React Complex Tree, AI SDK, BlockNote, shadcn, TanStack Router sources
+  - [+personal/+ai/](mdc:+personal/+ai) - Only writable subfolder for AI-generated content
+  - DO NOT MODIFY other files in +personal/ - they are reference material only
 
-### App Root
+## Submodules (Special Import Handling)
 
-- **[packages/app/](mdc:packages/app)** - **MAIN APPLICATION ROOT** - This is the primary app directory
-- **[packages/app/package.json](mdc:packages/app/package.json)** - App-specific package configuration
+- [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui) - Assistant UI submodule with custom overrides
+  - Importing: Import directly from the submodule (NOT from node_modules)
+    - Correct:
+      ```ts
+      import { useAssistantTool } from "@/vendor/assistant-ui/packages/react/src/runtime";
+      import { ThreadWelcome } from "@/vendor/assistant-ui/packages/react/src/ui/thread-welcome";
+      ```
+  - Documentation folders:
+    - [apps/docs/](mdc:packages/app/vendor/assistant-ui/apps/docs)
+  - Examples folders:
+    - [examples/](mdc:packages/app/vendor/assistant-ui/examples)
 
-### Core Application Code
+- [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks) - Liveblocks submodule
+  - Importing: Use standard node_modules imports in the app, submodule is for reference
+    - Correct:
+      ```ts
+      import { LiveblocksProvider } from "@liveblocks/react";
+      ```
+  - Documentation folders:
+    - [docs/](mdc:packages/app/vendor/liveblocks/docs)
+    - [guides/](mdc:packages/app/vendor/liveblocks/guides)
+    - [tutorial/](mdc:packages/app/vendor/liveblocks/tutorial)
+  - Examples folders:
+    - [examples/](mdc:packages/app/vendor/liveblocks/examples)
+    - [starter-kits/](mdc:packages/app/vendor/liveblocks/starter-kits)
 
-- **[packages/app/src/](mdc:packages/app/src)** - **React frontend application code**
-  - **[src/components/](mdc:packages/app/src/components)** - React components (UI, assistant-ui, canvas)
-  - **[src/routes/](mdc:packages/app/src/routes)** - TanStack Router route definitions
-  - **[src/lib/](mdc:packages/app/src/lib)** - Shared utilities and helpers
-  - **[src/hooks/](mdc:packages/app/src/hooks)** - Custom React hooks
-  - **[src/stores/](mdc:packages/app/src/stores)** - State management (Zustand stores)
-  - **[src/types/](mdc:packages/app/src/types)** - TypeScript type definitions
-  - **[src/app.css](mdc:packages/app/src/app.css)** - Main CSS file with Tailwind 4 configuration
+- [packages/app/vendor/ai/](mdc:packages/app/vendor/ai) - AI SDK repository
+  - Importing: Use standard node_modules imports in the app, submodule is for reference
+  - Documentation folders:
+    - [content/docs/](mdc:packages/app/vendor/ai/content/docs)
+    - [content/providers/](mdc:packages/app/vendor/ai/content/providers)
+  - Examples folders:
+    - [examples/](mdc:packages/app/vendor/ai/examples)
 
-- **[packages/app/convex/](mdc:packages/app/convex)** - **Convex backend code and functions**
-  - Backend API endpoints, database schemas, authentication logic
-  - Real-time subscriptions, AI chat functionality, tool calling
+- [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule
+  - Importing: Use standard node_modules imports in the app, submodule is for reference
+  - Documentation folders:
+    - [README.md](mdc:packages/app/vendor/opencode/README.md)
+    - [AGENTS.md](mdc:packages/app/vendor/opencode/AGENTS.md)
+  - Package folders:
+    - [packages/](mdc:packages/app/vendor/opencode/packages)
 
-- **[packages/app/shared/](mdc:packages/app/shared)** - **Shared code between frontend and backend**
-  - Types, constants, and utilities used by both browser app and Convex functions
-  - Authentication constants and shared interfaces
+## 3rd Party Documentation Research
 
-### Submodules (Special Import Handling)
+When users ask about 3rd party libraries or request implementations using external dependencies, conduct thorough documentation research for accurate responses.
 
-- **[packages/app/assistant-ui/](mdc:packages/app/assistant-ui)** - **Assistant UI submodule** with custom overrides
-  - **IMPORTANT**: Import directly from this path, NOT from node_modules
-  - Contains custom modifications and overrides for our specific needs
-  - Full repository with packages for React components, streaming, and utilities
+Documentation Sources
 
-- **[packages/app/liveblocks/](mdc:packages/app/liveblocks)** - **Liveblocks submodule**
-  - Real-time collaboration features and components
-  - Currently used via node_modules, but full source is available here for reference
+- [+personal/](mdc:+personal) - Contains source repos of complex dependencies
+- Submodules - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks), [packages/app/vendor/ai/](mdc:packages/app/vendor/ai), and [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) have full repos for reference
+- Web search - For external documentation when not available locally
+
+Research Process
+
+1. Find docs first - Look for `.md`, `.mdx`, `.txt`, and `docs/` folders
+2. Read extensively - Multiple sections, examples, and guides until confident
+3. Prioritize docs over source - Use source code only for complex edge cases
+4. Understand thoroughly - Continue reading until no doubts remain
+5. Look for examples - Prefer real code examples and usage patterns
+
+Quality Standard: Understanding should be deep enough to explain concepts confidently and implement solutions without guessing. If uncertain, keep researching until clear.
 
 ### Configuration Files
 
-- **[packages/app/convex.json](mdc:packages/app/convex.json)** - Convex configuration
-- **[packages/app/components.json](mdc:packages/app/components.json)** - shadcn/ui component library configuration
-- **[packages/app/tsconfig.json](mdc:packages/app/tsconfig.json)** - TypeScript configuration for the app
-- **[packages/app/index.html](mdc:packages/app/index.html)** - HTML entry point for Vite
-- **[packages/app/vite.config.ts](mdc:packages/app/vite.config.ts)** - Vite development server configuration
+- [packages/app/convex.json](mdc:packages/app/convex.json) - Convex configuration
+- [packages/app/components.json](mdc:packages/app/components.json) - shadcn/ui component library configuration
+- [packages/app/tsconfig.json](mdc:packages/app/tsconfig.json) - TypeScript configuration for the app
+- [packages/app/index.html](mdc:packages/app/index.html) - HTML entry point for Vite
+- [packages/app/vite.config.ts](mdc:packages/app/vite.config.ts) - Vite development server configuration
 
 ## Import Guidelines
 
@@ -158,8 +174,8 @@ When importing assistant-ui components or utilities, ALWAYS import directly from
 
 ```ts
 // ✅ CORRECT - Import from submodule
-import { useAssistantTool } from "@/assistant-ui/packages/react/src/runtime";
-import { ThreadWelcome } from "@/assistant-ui/packages/react/src/ui/thread-welcome";
+import { useAssistantTool } from "@/vendor/assistant-ui/packages/react/src/runtime";
+import { ThreadWelcome } from "@/vendor/assistant-ui/packages/react/src/ui/thread-welcome";
 
 // ❌ WRONG - Do not import from node_modules
 import { useAssistantTool } from "@assistant-ui/react";
@@ -174,25 +190,11 @@ For other libraries like Liveblocks, use standard node_modules imports:
 import { LiveblocksProvider } from "@liveblocks/react";
 ```
 
-## Directory Navigation Priority
-
-When navigating or making changes to the codebase, prioritize these directories in this order:
-
-1. **[packages/app/src/](mdc:packages/app/src)** - Frontend application code
-2. **[packages/app/convex/](mdc:packages/app/convex)** - Backend Convex functions
-3. **[packages/app/assistant-ui/](mdc:packages/app/assistant-ui)** - Custom assistant UI components
-4. **[packages/app/](mdc:packages/app)** - App root for configuration files
-5. **Root level** - For workspace and global configuration
-
 # Code guidelines
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
 The code of the app is located at [packages/app/](mdc:packages/app).
-
-The [packages/app/src/](mdc:packages/app/src) folder contains the React frontend code.
-
-The [packages/app/convex/](mdc:packages/app/convex) folder contains the Convex backend code.
 
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
@@ -200,7 +202,7 @@ Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 When using `Object.assign`, always verify that arguments are not `undefined` before passing them to prevent unexpected behaviors and potential runtime errors.
 
-### ✅ Correct Pattern
+✅ Correct Pattern
 
 ```ts
 Object.assign(
@@ -208,23 +210,14 @@ Object.assign(
 		updated_by: updated_by,
 		updated_at: Date.now(),
 	},
-	args.title !== undefined
-		? {
-				title: args.title,
-			}
-		: {},
-	args.is_archived !== undefined
-		? {
-				archived: args.is_archived,
-			}
-		: {},
+	args.title !== undefined ? { title: args.title } : {},
+	args.is_archived !== undefined ? { archived: args.is_archived } : {},
 );
 ```
 
-### ❌ Problematic Pattern
+❌ Problematic Pattern
 
 ```ts
-// This can cause unexpected behavior if args properties are undefined
 Object.assign(
 	{
 		updated_by: updated_by,
@@ -237,20 +230,18 @@ Object.assign(
 );
 ```
 
-Always use conditional checks (`!== undefined`) or provide fallback values when merging objects with `Object.assign` to ensure predictable behavior.
-
 # Application Architecture
 
 This app is an AI chatbot that allows users to chat with AI, call tools, and produce documents in a canvas panel.
 
 ## Backend Architecture
 
-The backend uses **Convex** as the primary backend platform, located in [packages/app/convex/](mdc:packages/app/convex):
+The backend uses Convex as the primary backend platform, located in [packages/app/convex/](mdc:packages/app/convex):
 
-- **[ai_chat.ts](mdc:packages/app/convex/ai_chat.ts)** - Main AI chat functionality with streaming, tool calling, and artifact creation
-- **[schema.ts](mdc:packages/app/convex/schema.ts)** - Database schema for threads and messages
-- **[auth.ts](mdc:packages/app/convex/auth.ts)** - Authentication with Clerk integration
-- **[http.ts](mdc:packages/app/convex/http.ts)** - HTTP routing for API endpoints
+- [ai_chat.ts](mdc:packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming, tool calling, and artifact creation
+- [schema.ts](mdc:packages/app/convex/schema.ts) - Database schema for threads and messages
+- [auth.ts](mdc:packages/app/convex/auth.ts) - Authentication with Clerk integration
+- [http.ts](mdc:packages/app/convex/http.ts) - HTTP routing for API endpoints
 
 The Convex backend handles:
 
@@ -264,70 +255,65 @@ The Convex backend handles:
 
 The frontend is a React 19 application located in [packages/app/src/](mdc:packages/app/src):
 
-- **[main.tsx](mdc:packages/app/src/main.tsx)** - Application entry point with providers
-- **[routes/](mdc:packages/app/src/routes)** - TanStack Router route definitions
-  - **[\_\_root.tsx](mdc:packages/app/src/routes/__root.tsx)** - Root layout with auth setup
-  - **[index.tsx](mdc:packages/app/src/routes/index.tsx)** - Home page
-  - **[chat.tsx](mdc:packages/app/src/routes/chat.tsx)** - Main chat interface with canvas
-- **[components/](mdc:packages/app/src/components)** - React components organized by feature
-  - **[assistant-ui/](mdc:packages/app/src/components/assistant-ui)** - Chat interface components
-  - **[canvas/](mdc:packages/app/src/components/canvas)** - Canvas/artifact editing components
-  - **[ui/](mdc:packages/app/src/components/ui)** - Shared UI components
+- [main.tsx](mdc:packages/app/src/main.tsx) - Application entry point with providers
+- [routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
+  - [\_\_root.tsx](mdc:packages/app/src/routes/__root.tsx) - Root layout with auth setup
+  - [index.tsx](mdc:packages/app/src/routes/index.tsx) - Home page
+  - [chat.tsx](mdc:packages/app/src/routes/chat.tsx) - Main chat interface with canvas
+- [components/](mdc:packages/app/src/components) - React components organized by feature
+  - [assistant-ui/](mdc:packages/app/src/components/assistant-ui) - Chat interface components
+  - [canvas/](mdc:packages/app/src/components/canvas) - Canvas/artifact editing components
+  - [ui/](mdc:packages/app/src/components/ui) - Shared UI components
 
 ## Key Technologies
 
-- **Convex** - Backend platform with real-time database
-- **Clerk** - Authentication provider
-- **Assistant UI** - Chat interface components (submodule)
-- **Liveblocks** - Real-time collaboration (submodule)
-- **BlockNote** - Rich text editor for canvas/artifacts
-- **TanStack Router** - File-based routing
-- **Tailwind 4** - Utility-first CSS framework
-- **React 19** - Frontend framework
-- **shadcn/ui** - Component library with Tailwind styling
-- **React Complex Tree** - Tree component for file/folder navigation
-- **AI SDK** - AI integration and streaming utilities
+- Convex - Backend platform with real-time database
+- Clerk - Authentication provider
+- Assistant UI - Chat interface components (submodule)
+- Liveblocks - Real-time collaboration (submodule)
+- BlockNote - Rich text editor for canvas/artifacts
+- TanStack Router - File-based routing
+- Tailwind 4 - Utility-first CSS framework
+- React 19 - Frontend framework
+- shadcn/ui - Component library with Tailwind styling
+- React Complex Tree - Tree component for file/folder navigation
+- AI SDK - AI integration and streaming utilities
 
 ## Technology Stack
 
 This project uses the latest versions of core technologies:
 
-- **React 19** - Latest React version with new features and improvements
-- **Tailwind 4** - Latest Tailwind CSS with modern features and syntax
+- React 19
+- Tailwind 4
 
 ### Tailwind Configuration
 
-**IMPORTANT**: This project uses **CSS-based Tailwind V4 configuration** instead of traditional `tailwind.config.js`:
+IMPORTANT: This project uses CSS-based Tailwind V4 configuration instead of `tailwind.config.js`:
 
-- **[packages/app/src/app.css](mdc:packages/app/src/app.css)** - Main CSS file containing Tailwind configuration
+- [packages/app/src/app.css](mdc:packages/app/src/app.css) - Main CSS file containing Tailwind configuration
 - Tailwind is configured using CSS `@config` directive and CSS custom properties
-- This is the modern Tailwind 4 approach - do NOT look for `tailwind.config.js`
 - All theme customization, plugins, and configuration are handled in the CSS file
 
 ### Component Styling
 
-- **shadcn/ui** components provide pre-styled, accessible components
+- shadcn/ui components provide pre-styled, accessible components
 - Components follow Tailwind utility patterns with CSS custom properties
 - Design system tokens are defined in [packages/app/src/app.css](mdc:packages/app/src/app.css)
 
 ### Documentation Requirements
 
-When working with React 19 and Tailwind 4, you must prioritize the most current documentation:
-
-- Always reference **React 19** documentation for React-specific features, hooks, and patterns
-- Always reference **Tailwind 4** documentation for CSS utilities, configuration, and new features
-- These are cutting-edge versions that may have significant changes from previous versions
-- If encountering unfamiliar patterns or errors, search for the latest documentation rather than relying on older version knowledge
-- Pay special attention to breaking changes and new features introduced in these versions
+- Always reference React 19 documentation for React-specific features
+- Always reference Tailwind 4 documentation for CSS utilities/config
+- If encountering unfamiliar patterns or errors, prefer the latest docs
 
 ## Application Structure
 
-The app runs at **http://localhost:5173/** during development.
+The app runs at http://localhost:5173/ during development.
 
 The app has two main views:
 
-1. **Home page** (`/`) - Basic landing page with navigation
-2. **Chat page** (`/chat`) - Split-panel interface with:
+1. Home page (`/`) - Basic landing page with navigation
+2. Chat page (`/chat`) - Split-panel interface with:
    - Left sidebar: Thread list and navigation
    - Center panel: Chat interface with AI conversation
    - Right panel: Canvas for editing artifacts and documents
@@ -345,50 +331,41 @@ The app has two main views:
 
 ## Two URLs for Different Purposes
 
-- **VITE_CONVEX_URL** - WebSocket/real-time (queries, mutations, subscriptions)
-- **VITE_CONVEX_HTTP_URL** - HTTP actions (API endpoints, authentication)
+- VITE_CONVEX_URL - WebSocket/real-time (queries, mutations, subscriptions)
+- VITE_CONVEX_HTTP_URL - HTTP actions (API endpoints, authentication)
 
 ## HTTP Request Configuration
 
-Use centralized fetch utilities from **[packages/app/src/lib/fetch.ts](mdc:packages/app/src/lib/fetch.ts)** for internal HTTP requests.
+Use centralized fetch utilities from [packages/app/src/lib/fetch.ts](mdc:packages/app/src/lib/fetch.ts) for internal HTTP requests.
 
 For third-party integrations, construct URLs manually using `VITE_CONVEX_HTTP_URL`.
 
 ## Casing
 
-Use **snake_case only for symbols defined at the root of a module** (except components and hooks). Everything else uses **camelCase**.
+Use snake_case only for symbols defined at the root of a module (except components and hooks). Everything else uses camelCase.
 
 ### Root Level Module Symbols (snake_case)
 
-Use snake_case for symbols exported or defined at the module root level:
-
 ```ts
-// Root level constants
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
 
-// Root level classes
 export class ai_chat_MyClass {
-	constructor(public projectId: string) {} // camelCase for parameters and properties
+	constructor(public projectId: string) {}
 }
 
-// Root level interfaces
 export interface ai_chat_MyInterface {
-	projectId: string; // camelCase for properties
+	projectId: string;
 }
 
-// Root level types
 export type ai_chat_MyType = {
-	projectId: string; // camelCase for properties
+	projectId: string;
 };
 
-// Root level functions
 export function ai_chat_my_function(projectId: string) {
-	// Local variables use camelCase
 	const processedResult = processData(projectId);
 	return processedResult;
 }
 
-// Root level enums
 export enum ai_chat_MyEnum {
 	PROJECT_ID = "app_project_local_dev",
 }
@@ -396,18 +373,13 @@ export enum ai_chat_MyEnum {
 
 ### Everything Else (camelCase)
 
-Use camelCase for all other symbols:
-
 ```ts
 function ai_chat_example_function() {
-	// Local variables
 	const bodyResult = await request.json();
 	const generationResult = await generateObject();
 	const workspacePattern = `${orgId}:${projectId}:*`;
 
-	// Function parameters
 	const processData = (inputValue: string, optionFlags: boolean) => {
-		// Object properties
 		return {
 			processedValue: inputValue,
 			isComplete: optionFlags,
@@ -421,28 +393,13 @@ function ai_chat_example_function() {
 Components use PascalCase, hooks use camelCase:
 
 ```ts
-// Components (PascalCase)
-export function ThemeProvider() {
-	/* ... */
-}
-export function MessageComposer() {
-	/* ... */
-}
-
-// Hooks (camelCase)
+export function ThemeProvider() {}
+export function MessageComposer() {}
 export function useTheme() {
-	return {
-		mode: "light",
-		resolvedTheme: "light", // camelCase for properties
-		setMode: () => {},
-	};
+	return { mode: "light", resolvedTheme: "light", setMode: () => {} };
 }
-
-// Namespaced hooks still use snake_case for the namespace part
 export function useAiChat_grouped_threads() {
-	const threadGroups = useMemo(() => {
-		/* ... */
-	}, []); // camelCase for local variables
+	const threadGroups = useMemo(() => {}, []);
 	return threadGroups;
 }
 ```
@@ -453,29 +410,15 @@ If a function is imported as camelCase, keep it as-is:
 
 ```ts
 import { randomUUID } from "node:crypto";
-
 const uuid = randomUUID();
-```
-
-```ts
 window.matchMedia("(prefers-color-scheme: dark)").matches;
 ```
-
-### Summary
-
-- **Root level exports/declarations**: snake_case (except components and hooks)
-- **Local variables, parameters, object properties**: camelCase
-- **Components**: PascalCase
-- **Hooks**: camelCase (with optional snake_case namespace prefix)
-- **Third-party APIs**: Keep original casing
 
 # Use Playwright
 
 When performing frontend changes, you can use Playwright tools to verify your changes and ensure the UI meets the user's requirements.
 
-## Verification Workflow
+Verification Workflow
 
-Use the following approach when making frontend modifications:
-
-1. **Take snapshots** to understand the current page structure and navigate it properly
-2. **Capture screenshots** to verify if the UI changes match the user's requests
+1. Take snapshots to understand the current page structure and navigate it properly
+2. Capture screenshots to verify if the UI changes match the user's requests

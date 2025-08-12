@@ -1,4 +1,4 @@
 packages:
   - "packages/*"
-  - "packages/app/assistant-ui/packages/*"
-  - "packages/app/opencode"
+  - "packages/app/vendor/assistant-ui/packages/*"
+  - "packages/app/vendor/opencode"

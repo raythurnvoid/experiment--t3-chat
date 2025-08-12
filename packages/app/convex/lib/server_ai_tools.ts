@@ -122,7 +122,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 			- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 
 			- If you read a page that exists but has empty contents you will receive a system reminder warning in place of page contents.`,
 
-		parameters: z.object({
+		inputSchema: z.object({
 			path: z
 				.string()
 				.describe('The absolute path to the page to read (must be absolute, starting with a slash "/", not relative)'),
@@ -187,7 +187,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 
 			const lines = textContent.split("\n");
 			const offset = args.offset || 0;
-			const limit = args.limit;
+			const limit = args.limit ?? 2000;
 
 			// Apply offset and limit
 			const selectedLines = lines.slice(offset, offset + limit);
@@ -235,7 +235,7 @@ export function ai_tool_create_list_pages(ctx: ActionCtx) {
 			You should generally prefer the Glob and Grep tools, if you know which directories to search.
 			The root path is "/", you can use it to list all pages.`,
 
-		parameters: z.object({
+		inputSchema: z.object({
 			path: z
 				.string()
 				.describe("The absolute path to the directory to list (must be absolute, not relative)")
@@ -251,7 +251,7 @@ export function ai_tool_create_list_pages(ctx: ActionCtx) {
 				return ignores.some((pattern) => minimatch(path, pattern));
 			};
 
-			const normalizedPath = server_path_normalize(args.path);
+			const normalizedPath = server_path_normalize(args.path ?? "/");
 
 			const list = await list_dir(ctx, {
 				path: normalizedPath,
@@ -320,7 +320,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 			When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead. \
 			You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.`,
 
-		parameters: z.object({
+		inputSchema: z.object({
 			pattern: z.string().describe("The glob pattern to match pages against"),
 			path: z
 				.string()
@@ -383,7 +383,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx) {
       Results are grouped by page path and sorted by most recently updated.\
       The traversal is limited by depth and limit, identical to list_pages.`,
 
-		parameters: z.object({
+		inputSchema: z.object({
 			pattern: z.string().describe("The regex pattern to search for (JavaScript RegExp syntax, case-sensitive)"),
 			path: z
 				.string()
@@ -504,7 +504,7 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
 			- Results are relevance-ranked by Convex and limited to the specified limit.\
 			- Prefer this over grep for general keyword search; use grep for precise regex line matches.`,
 
-		parameters: z.object({
+		inputSchema: z.object({
 			query: z.string().describe("Search terms (e.g. 'hello hi'). Prefix matching applies to the last term."),
 			limit: z.number().int().gte(1).lte(100).default(20),
 		}),
@@ -514,7 +514,7 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
 				query: args.query,
-				limit: args.limit,
+				limit: args.limit ?? 20,
 			});
 
 			if (!res.items.length) {

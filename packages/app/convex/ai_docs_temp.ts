@@ -7,7 +7,7 @@ listing all children or the content of a certain page (`foo/bar/baz`).
 
 import { httpAction, internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
-import { streamText, smoothStream, createDataStreamResponse } from "ai";
+import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
 	server_path_extract_segments_from,
@@ -99,35 +99,30 @@ export const contextual_prompt = httpAction(async (ctx, request) => {
 				userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
 		}
 
-		// Generate streaming completion using createDataStreamResponse (following ai_chat.ts pattern)
-		const response = createDataStreamResponse({
-			execute: async (dataStream) => {
-				const result = streamText({
-					model: openai("gpt-4o-mini"),
-					system: systemPrompt,
-					messages: [
-						{
-							role: "user",
-							content: userPrompt,
-						},
-					],
-					temperature: 0.7,
-					maxTokens: 500,
-					experimental_transform: smoothStream({
-						delayInMs: 100,
-					}),
-				});
+		// Generate streaming completion using AI SDK v5 UI message stream response
+		const result = streamText({
+			model: openai("gpt-5-mini"),
+			system: systemPrompt,
+			messages: [
+				{
+					role: "user",
+					content: userPrompt,
+				},
+			],
+			temperature: 0.7,
+			maxOutputTokens: 500,
+			experimental_transform: smoothStream({
+				delayInMs: 100,
+			}),
+		});
 
-				result.mergeIntoDataStream(dataStream);
-			},
+		return result.toUIMessageStreamResponse({
 			onError: (error) => {
 				console.error("AI generation error:", error);
 				return error instanceof Error ? error.message : String(error);
 			},
 			headers: server_convex_headers_cors(),
 		});
-
-		return response;
 	} catch (error: unknown) {
 		console.error("AI generation error:", error);
 		return new Response(error instanceof Error ? error.message : "Internal server error", {

@@ -52,6 +52,8 @@ This file existists because the generated schema is unstable and changes to it b
 ## The headers field are used for custom headers, or for headers that are valuable to specify.
 */
 
+import type { UIMessage, UITools } from "ai";
+
 // #region Schema validation
 /*
 The point of the following 2 types is only to validate the shape of the schema since it's AI generated.
@@ -89,8 +91,8 @@ export interface api_schemas_Main {
 			searchParams: never;
 			body: {
 				// Assistant UI fields
-				messages: any[];
-				tools: any;
+				messages: UIMessage[];
+				tools: UITools;
 				system?: string | undefined;
 				runConfig?: any;
 				unstable_assistantMessageId?: string;

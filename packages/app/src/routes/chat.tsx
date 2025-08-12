@@ -7,7 +7,7 @@ import { Button } from "../components/ui/button";
 import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils";
 import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui";
-import { useBackendRuntime } from "@/lib/backend-runtime";
+import { useBackendRuntime } from "@/lib/backend_runtime.tsx";
 import { AiChatSidebar } from "@/components/ai-chat-sidebar";
 
 export const Route = createFileRoute({
