@@ -14,6 +14,8 @@ import {
 	stepCountIs,
 	convertToModelMessages,
 	type UIMessage,
+	createIdGenerator,
+	type ModelMessage,
 } from "ai";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
@@ -33,6 +35,10 @@ import {
 } from "./lib/server_ai_tools.ts";
 import app_convex_schema from "./schema.ts";
 
+/**
+ * This function exists only becase is not possible to define a type specific enough to make ts happy when using
+ * the data saved in convex as {@link UIMessage}. However, {@link UIMessage} is the type that is saved in convex.
+ */
 function convert_convex_db_message_to_aisdk_ui_message(message: app_convex_Doc<"messages">): UIMessage {
 	return {
 		id: message._id,
@@ -281,27 +287,63 @@ export const chat = httpAction(async (ctx, request) => {
 			});
 		}
 
-		const messages = body.thread_id
-			? await (async (/* iife */) => {
-					const thread_messages_result = await ctx.runQuery(api.ai_chat.thread_messages_list, {
-						thread_id: body.thread_id as app_convex_Id<"threads">,
-						order: "asc",
-					});
+		const threadId = body.threadId;
+		let messages: ModelMessage[] = [];
 
-					return thread_messages_result
-						? convertToModelMessages(
-								thread_messages_result.messages.map((msg) => convert_convex_db_message_to_aisdk_ui_message(msg)),
-							)
-						: [];
-				})()
-			: convertToModelMessages(body.messages);
+		do {
+			if (threadId) {
+				const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
+					thread_id: threadId as app_convex_Id<"threads">,
+					order: "asc",
+				});
 
-		console.log("messages", messages);
+				if (!threadMessagesResult) {
+					messages = convertToModelMessages(body.messages);
+					break;
+				}
+
+				let messagesMap = new Map<string, app_convex_Doc<"messages">>(
+					threadMessagesResult.messages.map((msg) => [msg._id, msg]),
+				);
+
+				const reconstructedMessages: app_convex_Doc<"messages">[] = [];
+
+				let nextParentId: app_convex_Id<"messages"> | null = null;
+				if (body.parentId) {
+					nextParentId = body.parentId as app_convex_Id<"messages">;
+				}
+
+				while (nextParentId) {
+					const parentMessage = messagesMap.get(nextParentId);
+					if (parentMessage) {
+						// the messages has to be from the oldest to the newest
+						reconstructedMessages.unshift(parentMessage);
+						nextParentId = parentMessage.parent_id;
+					} else {
+						console.warn(`Parent message not found: ${nextParentId}`);
+						break;
+					}
+				}
+
+				messages = convertToModelMessages(
+					reconstructedMessages
+						.map((msg) => convert_convex_db_message_to_aisdk_ui_message(msg))
+						.concat(...body.messages),
+				);
+			} else {
+				messages = convertToModelMessages(body.messages);
+			}
+		} while (false);
 
 		const stream = createUIMessageStream({
+			generateId: createIdGenerator({
+				prefix: threadId,
+				separator: "-",
+				size: 16,
+			}),
 			execute: async ({ writer }) => {
 				const result1 = streamText({
-					model: openai("gpt-5-mini"),
+					model: openai("gpt-5-nano"),
 					system:
 						`Either respond directly to the user or use the tools at your disposal.\n` +
 						"If you decide to create an artifact, do not answer and just call the tool or answer with `On it...`.\n",
@@ -309,7 +351,7 @@ export const chat = httpAction(async (ctx, request) => {
 					temperature: 0.7,
 					maxOutputTokens: 2000,
 					toolChoice: "auto",
-					stopWhen: stepCountIs(2),
+					stopWhen: stepCountIs(5),
 					tools: {
 						weather: tool({
 							description: "Get the weather in a location (in Celsius)",
@@ -381,7 +423,7 @@ export const chat = httpAction(async (ctx, request) => {
 					});
 
 					const result2 = streamText({
-						model: openai("gpt-5-mini"),
+						model: openai("gpt-5-nano"),
 						system: `Generate comprehensive, well-structured content that directly addresses what the user requested. 
 								Format the content as markdown when appropriate.`,
 						messages: [...messages, ...response1.messages],
@@ -422,7 +464,7 @@ export const chat = httpAction(async (ctx, request) => {
 					const response2 = await result2.response;
 
 					const result3 = streamText({
-						model: openai("gpt-5-mini"),
+						model: openai("gpt-5-nano"),
 						system: `Send a brief confirmation message to the user that the artifact has been created successfully. 
 								Keep the message concise and friendly.`,
 						messages: [...messages, ...response1.messages, ...response2.messages],
@@ -446,6 +488,7 @@ export const chat = httpAction(async (ctx, request) => {
 				console.error("AI chat stream error:", error);
 				return error instanceof Error ? error.message : String(error);
 			},
+			onFinish: async (result) => {},
 		});
 
 		return createUIMessageStreamResponse({
@@ -498,7 +541,7 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 
 		// Generate title using AI with streaming
 		const result = streamText({
-			model: openai("gpt-5-mini"),
+			model: openai("gpt-4.1-nano"),
 			system: `Generate a concise, descriptive title (max 6 words) for this conversation.
 				The title should capture the main topic or purpose.
 				Respond with ONLY the title, no quotes or extra text.`,
@@ -508,12 +551,15 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 					content: `Generate a title for this conversation:\n\n${conversation_text}`,
 				},
 			],
+			stopWhen: stepCountIs(1),
 			temperature: 0.3,
 			maxOutputTokens: 50,
 			experimental_transform: smoothStream({
 				delayInMs: 100,
 			}),
 		});
+
+		result.pipeTextStreamToResponse;
 
 		// Transform the AI stream to properly encode text chunks
 		let title = "";
@@ -532,8 +578,10 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			},
 		});
 
-		// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createDataStreamResponse`
+		// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createTextStreamResponse`
 		const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
+
+		result.consumeStream();
 
 		return new Response(stream, {
 			headers: server_convex_headers_cors(),

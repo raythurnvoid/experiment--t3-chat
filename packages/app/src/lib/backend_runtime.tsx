@@ -3,9 +3,10 @@ import { AssistantCloud } from "@assistant-ui/react";
 import { api } from "../../convex/_generated/api";
 import { ai_chat_HARDCODED_PROJECT_ID } from "./ai-chat.ts";
 import { app_convex } from "./app-convex-client.ts";
-import { app_fetch_main_chat } from "./fetch.ts";
-import type { UnknownRecord } from "type-fest";
-import type { UIMessage, UITools } from "ai";
+import { app_fetch_main_api_url } from "./fetch.ts";
+import { auth_get_token } from "./auth.ts";
+import type { api_schemas_Main } from "./api-schemas.ts";
+import type { Tool as assistant_ui_Tool, AssistantRuntime } from "@assistant-ui/react";
 
 // ===== CONVEX BACKEND CONFIGURATION =====
 // Get Convex deployment URL from environment or use default
@@ -57,35 +58,58 @@ export const useBackendRuntime = () => {
 	const runtime = useChatRuntime({
 		cloud: assistant_cloud,
 		transport: new AssistantChatTransport({
+			api: app_fetch_main_api_url("/api/chat"),
 			// Route through app_fetch_main_chat by default
-			fetch: async (_input, init) => {
-				const raw = init?.body as unknown;
-				const body =
-					typeof raw === "string"
-						? (JSON.parse(raw) as {
-								id: string;
-								messages: UIMessage[];
-								tools: UITools;
-								trigger: string;
-							})
-						: null;
+			prepareSendMessagesRequest: async (options) => {
+				const body = options.body as Record<string, unknown> & {
+					system?: string | undefined;
+					tools: Record<string, assistant_ui_Tool>;
+				};
 
-				if (!body) {
-					throw new Error("`body` is null when calling `app_fetch_main_chat`");
+				if (body == null) {
+					throw new Error('`body` is null when calling `useChatRuntime.app_fetch_main_api_url("/api/chat")`');
 				}
 
-				const result = await app_fetch_main_chat({
-					input: {
+				const headers = new Headers(options.headers);
+				headers.set("Accept", "text/event-stream");
+
+				const token = await auth_get_token();
+				if (token) {
+					headers.set("Authorization", `Bearer ${token}`);
+				}
+
+				debugger;
+
+				// This will prevent TS to break because of self-referencing `runtime`
+				const runtime_local = runtime as AssistantRuntime;
+
+				const threadId = runtime_local.threads.mainItem.getState().remoteId;
+				const messages = threadId ? runtime_local.threads.main.getState().messages : [];
+				const lastMessage = messages.findLast(
+					(message) =>
+						message.status?.type && (message.status.type === "complete" || message.status.type === "incomplete"),
+				);
+				const remoteParentId = lastMessage
+					? ((await assistant_cloud.__historyAdapter?._getIdForLocalId?.[lastMessage.id]) ?? lastMessage.id)
+					: undefined;
+
+				// Inspired from AssistantChatTransport.prepareSendMessagesRequest
+				return {
+					...options,
+					body: {
 						...body,
-						thread_id: window.rt0_chat_current_thread_id,
-					},
-					signal: init?.signal ?? undefined,
-				});
+						id: options.id,
+						// Send only the last message
+						messages: options.messages.slice(-1),
+						trigger: options.trigger,
+						messageId: options.messageId,
 
-				if (result.bad) {
-					throw result.bad;
-				}
-				return result.ok.response;
+						threadId,
+						parentId: remoteParentId,
+					} satisfies api_schemas_Main["/api/chat"]["get"]["body"],
+					credentials: "omit",
+					headers,
+				};
 			},
 		}),
 	});

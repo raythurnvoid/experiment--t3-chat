@@ -52,7 +52,9 @@ This file existists because the generated schema is unstable and changes to it b
 ## The headers field are used for custom headers, or for headers that are valuable to specify.
 */
 
-import type { UIMessage, UITools } from "ai";
+import type { Tool as assistant_ui_Tool } from "@assistant-ui/react";
+import type { AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
+import type { PrepareSendMessagesRequest, UIMessage } from "ai";
 
 // #region Schema validation
 /*
@@ -89,17 +91,28 @@ export interface api_schemas_Main {
 		get: {
 			pathParams: never;
 			searchParams: never;
+			/**
+			 * See {@link PrepareSendMessagesRequest}.
+			 *
+			 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
+			 **/
 			body: {
-				// Assistant UI fields
+				// AI SDK fields
+				id: string;
 				messages: UIMessage[];
-				tools: UITools;
+				trigger: "submit-message" | "regenerate-message";
+				messageId: string | undefined;
+
+				// Assistant UI fields
 				system?: string | undefined;
-				runConfig?: any;
-				unstable_assistantMessageId?: string;
-				state?: any;
+				tools: Record<string, assistant_ui_Tool>;
 
 				// Custom fields
-				thread_id?: string | undefined;
+				/**
+				 * `undefined` when the thread is not created yet.
+				 */
+				threadId: string | undefined;
+				parentId: string | undefined;
 			};
 			headers: {
 				Authorization: string;
@@ -179,3 +192,6 @@ export interface api_schemas_Main {
 export type api_schemas_MainPaths = keyof api_schemas_Main;
 
 // #endregion Main Schema
+
+// @ts-expect-error Make ts happy
+type _ = PrepareSendMessagesRequest | AssistantChatTransport | typeof toAISDKTools;
