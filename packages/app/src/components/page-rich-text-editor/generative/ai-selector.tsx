@@ -1,7 +1,7 @@
 "use client";
 
 import { Command, CommandInput } from "../../ui/command";
-import { useCompletion } from "ai/react";
+import { useCompletion } from "@ai-sdk/react";
 import { ArrowUp, Loader, Sparkles } from "lucide-react";
 import { useEditor, addAIHighlight } from "novel";
 import { useState } from "react";
@@ -25,18 +25,18 @@ export function AISelector({ onOpenChange }: AISelectorProps) {
 	const { completion, complete, isLoading } = useCompletion({
 		// id: "novel",
 		api: app_fetch_main_api_url("/api/ai-docs-temp/contextual-prompt"),
-		onResponse: (response) => {
+		fetch: async (input, requestInit) => {
+			const response = await fetch(input, requestInit);
 			if (response.status === 429) {
 				toast.error("You have reached your request limit for the day.");
-				return;
+				return response;
 			}
+			return response;
 		},
 		onError: (e) => {
 			toast.error(e.message);
 		},
 	});
-
-	console.log(completion);
 
 	const hasCompletion = completion.length > 0;
 

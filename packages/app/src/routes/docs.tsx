@@ -1,8 +1,4 @@
 import React from "react";
-import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
-import { ClientSideSuspense } from "@liveblocks/react";
-import { app_fetch_ai_docs_liveblocks_auth } from "../lib/fetch.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 import { DocsSidebar } from "../components/docs-sidebar-v2";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState } from "react";
@@ -11,7 +7,6 @@ import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
-import { useAuth } from "../lib/auth.ts";
 
 export const Route = createFileRoute({
 	component: Docs,
@@ -22,75 +17,25 @@ export const Route = createFileRoute({
 	),
 });
 
-function LoadingEditor() {
-	return (
-		<div className="relative flex h-full flex-col bg-background">
-			<div className="flex h-[60px] items-center justify-end border-b border-border/80 bg-background px-4">
-				<div className="text-sm font-medium text-foreground">Loading AI Document Editor...</div>
-			</div>
-			<div className="border-b border-border/80 bg-background">
-				<div className="h-12 animate-pulse bg-muted/50"></div>
-			</div>
-			<div className="flex-1 p-8">
-				<div className="mx-auto max-w-4xl animate-pulse rounded-lg bg-muted/30 p-8">
-					<div className="mb-4 h-8 w-3/4 rounded bg-muted/50"></div>
-					<div className="mb-2 h-4 rounded bg-muted/50"></div>
-					<div className="mb-2 h-4 w-5/6 rounded bg-muted/50"></div>
-					<div className="h-4 w-4/5 rounded bg-muted/50"></div>
-				</div>
-			</div>
-		</div>
-	);
-}
-
-const TiptapEditor = React.lazy(() =>
-	import("../components/ai-docs-temp/editor").then((module) => ({ default: module.RichTextDocEditor })),
+const PageRichTextEditor = React.lazy(() =>
+	import("../components/page-rich-text-editor/page-rich-text-editor").then((module) => ({
+		default: module.PageRichTextEditor,
+	})),
 );
 
 function DocsContent() {
 	const searchParams = Route.useSearch();
 
-	const auth = useAuth();
-
-	const roomId = searchParams.docId
-		? ai_docs_create_liveblocks_room_id(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, searchParams.docId)
-		: undefined;
-
-	if (!roomId || !searchParams.docId) {
+	if (!searchParams.docId) {
 		return <div>No document selected</div>;
 	}
 
 	return (
-		<LiveblocksProvider
-			authEndpoint={async (room) => {
-				const result = await app_fetch_ai_docs_liveblocks_auth({
-					input: { room },
-					auth: auth.isAuthenticated,
-				});
-
-				if (result.ok) {
-					return result.ok.payload;
-				} else {
-					throw new Error(`Failed to authenticate: ${result.bad.message}`);
-				}
-			}}
-			resolveUsers={async ({ userIds }: { userIds: string[] }) => {
-				// Mock user resolution for development
-				return userIds.map((id: string) => ({
-					id,
-					name: "Development User",
-					avatar: "https://via.placeholder.com/32",
-				}));
-			}}
-		>
-			<RoomProvider id={roomId}>
-				<ClientSideSuspense fallback={<LoadingEditor />}>
-					<div className="h-full w-full">
-						<TiptapEditor doc_id={searchParams.docId} />
-					</div>
-				</ClientSideSuspense>
-			</RoomProvider>
-		</LiveblocksProvider>
+		<React.Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Loading editor…</div>}>
+			<div className="h-full w-full">
+				<PageRichTextEditor pageId={searchParams.docId} />
+			</div>
+		</React.Suspense>
 	);
 }
 
@@ -177,8 +122,4 @@ function Docs() {
 			</div>
 		</div>
 	);
-}
-
-function ai_docs_create_liveblocks_room_id(orgId: string, projectId: string, docId: string) {
-	return `${orgId}:${projectId}:${docId}`;
 }
