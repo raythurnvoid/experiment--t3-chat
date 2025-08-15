@@ -1,11 +1,21 @@
-import { ArtifactRenderer } from "./artifact-renderer.tsx";
+import { memo, useState } from "react";
 import { QuickStart } from "./quick-start.tsx";
-import { useCanvasStore } from "../../stores/canvas-store.ts";
-import { memo } from "react";
+import { PageRichTextEditor } from "../page-rich-text-editor/page-rich-text-editor.tsx";
 
 export const Canvas = memo(() => {
-	const { getCurrentArtifact } = useCanvasStore();
-	const currentArtifact = getCurrentArtifact();
+	const [editorPageId, setEditorPageId] = useState<string | null>(null);
 
-	return <div className="Canvas h-full">{currentArtifact ? <ArtifactRenderer /> : <QuickStart />}</div>;
+	if (editorPageId) {
+		return (
+			<div className="Canvas h-full">
+				<PageRichTextEditor pageId={editorPageId} />
+			</div>
+		);
+	}
+
+	return (
+		<div className="Canvas h-full">
+			<QuickStart onOpenEditor={(pageId) => setEditorPageId(pageId)} />
+		</div>
+	);
 });
