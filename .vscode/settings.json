@@ -9,6 +9,10 @@
 	},
 	"editor.defaultFormatter": "esbenp.prettier-vscode",
 	"editor.pasteAs.enabled": true,
+	"editor.codeActionsOnSave": {
+		"source.fixAll.eslint": "always",
+		"source.fixAll.ts": "always"
+	},
 	"files.eol": "\n",
 	"files.watcherExclude": {
 		"**/.git/objects/**": true,
@@ -27,6 +31,9 @@
 	"typescript.preferences.importModuleSpecifierEnding": "js",
 	"javascript.preferences.importModuleSpecifier": "relative",
 	"javascript.preferences.importModuleSpecifierEnding": "js",
+	"eslint.workingDirectories": [
+		"packages/app"
+	],
 	"prettier.prettierPath": "node_modules/prettier/index.cjs",
 	"markdown.copyFiles.destination": {
 		"**/*": "docs-assets/${documentRelativeDirName}${fileName}"

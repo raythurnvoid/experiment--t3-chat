@@ -24,7 +24,7 @@ import {
 	server_convex_headers_cors,
 	server_convex_get_user_fallback_to_anonymous,
 	server_convex_response_error,
-} from "./lib/server_utils.ts";
+} from "./lib/server-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
 	ai_tool_create_list_pages,

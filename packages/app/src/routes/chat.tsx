@@ -1,14 +1,14 @@
 import { AssistantRuntimeProvider, useThreadListItem } from "@assistant-ui/react";
-import { Canvas } from "../components/canvas/canvas";
-import { Thread } from "../components/assistant-ui/thread";
+import { Canvas } from "../components/canvas/canvas.tsx";
+import { Thread } from "../components/assistant-ui/thread.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useState } from "react";
-import { Button } from "../components/ui/button";
+import { Button } from "../components/ui/button.tsx";
 import { PanelLeft } from "lucide-react";
-import { cn } from "../lib/utils";
-import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui";
-import { useBackendRuntime } from "@/lib/backend_runtime.tsx";
-import { AiChatSidebar } from "@/components/ai-chat-sidebar";
+import { cn } from "../lib/utils.ts";
+import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui.tsx";
+import { useBackendRuntime } from "@/lib/backend-runtime.tsx";
+import { AiChatSidebar } from "@/components/ai-chat-sidebar.tsx";
 
 export const Route = createFileRoute({
 	component: Chat,

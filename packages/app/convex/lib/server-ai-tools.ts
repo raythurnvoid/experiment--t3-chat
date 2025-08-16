@@ -8,7 +8,7 @@ import {
 	server_path_name_of,
 	server_path_normalize,
 	server_path_parent_of,
-} from "./server_utils.ts";
+} from "./server-utils.ts";
 import { minimatch } from "minimatch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../src/lib/ai-chat.ts";
 import { math_clamp } from "../../shared/shared-utils.ts";
