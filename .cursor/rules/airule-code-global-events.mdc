@@ -1,0 +1,156 @@
+---
+description: Guidelines for creating and using global events in the application. These events enable cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application. To be used when creating new global events, modifying existing ones or when you need to use (listen and dispatch) global events in a React component but also outside of React components.
+globs:
+alwaysApply: false
+---
+
+# Global Events Guidelines
+
+Global events are used for cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application.
+
+## Core Patterns
+
+The global events system lives at `packages/app/src/lib/global-events.tsx` and exposes:
+
+- `global_event`: Core namespace with `dispatch` and `listen`
+- `useGlobalEvent`: React hook that safely subscribes with fresh handlers via `useLiveRef`
+- Per-event namespaces (e.g., `global_event_ai_chat_open_canvas`) that wrap `global_event`
+
+### Core API
+
+```typescript
+// packages/app/src/lib/global-events.tsx
+type Key = "module::event_name"; // Union of all event keys defined centrally
+
+type GlobalEventOptions = {
+	signal?: AbortSignal;
+};
+
+export namespace global_event {
+	export function dispatch(eventName: Key, payload?: unknown) {
+		const domEvent = new CustomEvent(eventName, { detail: payload });
+		window.dispatchEvent(domEvent);
+	}
+
+	export function listen(eventName: Key, handler: (payload?: unknown) => void, options?: GlobalEventOptions) {
+		function listener(e: Event) {
+			const event = e as CustomEvent<unknown>;
+			handler(event.detail);
+		}
+
+		window.addEventListener(eventName, listener, options);
+
+		return function cleanup() {
+			window.removeEventListener(eventName, listener);
+		};
+	}
+}
+
+export function useGlobalEvent<Handler extends (...args: any[]) => void>(
+	listenFn: (handler: Handler) => () => void,
+	handler: Handler,
+) {
+	const handlerRef = useLiveRef(handler);
+
+	useEffect(() => {
+		const cleanup = listenFn(((...args) => {
+			handlerRef.current(...args);
+		}) as Handler);
+		return cleanup;
+	}, []);
+}
+```
+
+### Event Family Namespaces
+
+Define a small wrapper namespace for each event to strongly type the payload and centralize the event key:
+
+```typescript
+// Example: ai_chat::open_canvas
+type AiChatOpenCanvas_Payload = { pageId: string };
+
+export namespace global_event_ai_chat_open_canvas {
+	export function listen(handler: (payload: AiChatOpenCanvas_Payload) => void, options?: GlobalEventOptions) {
+		return global_event.listen("ai_chat::open_canvas", handler, options);
+	}
+
+	export function dispatch(payload: AiChatOpenCanvas_Payload) {
+		return global_event.dispatch("ai_chat::open_canvas", payload);
+	}
+}
+```
+
+### Naming Rules
+
+- **Event keys**: `module::event_name` (e.g., `ai_chat::open_canvas`)
+- **Namespaces**: Root-level exports use snake_case per repository conventions
+  - Core: `global_event`
+  - Per-event: `global_event_<module>_<event_name>`
+- **Functions** inside per-event namespaces: `listen(payloadHandler, options?)`, `dispatch(payload)`
+
+### Types
+
+- Create a `Key` union in `global-events.tsx` with all supported event strings
+- For each event namespace, strongly type the `payload`
+- `GlobalEventOptions = { signal?: AbortSignal }`
+
+## Usage in React Components
+
+Preferred pattern uses `useGlobalEvent` to avoid stale closures and ensure cleanup:
+
+```typescript
+import { useState } from "react";
+import { useGlobalEvent, global_event_ai_chat_open_canvas } from "@/src/lib/global-events";
+
+function Canvas(props: {}) {
+	const [editorPageId, setEditorPageId] = useState<string | null>(null);
+
+	useGlobalEvent(global_event_ai_chat_open_canvas.listen, (payload) => {
+		setEditorPageId(payload.pageId);
+	});
+
+	// ...render
+}
+```
+
+Alternate direct `listen` usage with manual cleanup is still valid when you need AbortController control:
+
+```typescript
+useEffect(() => {
+	const controller = new AbortController();
+
+	const cleanup = global_event_ai_chat_open_canvas.listen(
+		(payload) => {
+			// handle payload
+		},
+		{ signal: controller.signal },
+	);
+
+	return () => {
+		controller.abort();
+		cleanup();
+	};
+}, []);
+```
+
+## Dispatching Events (Anywhere)
+
+Dispatch from React components, utilities, or other client-side code:
+
+```typescript
+import { global_event_ai_chat_open_canvas } from "@/src/lib/global-events";
+
+global_event_ai_chat_open_canvas.dispatch({ pageId: "abc123" });
+```
+
+## Options Parameter
+
+The `options` parameter supports:
+
+- **signal**: `AbortSignal` — enables automatic listener removal when aborted
+
+## File Locations and Imports
+
+- Core implementation: `packages/app/src/lib/global-events.tsx`
+- Live ref utility: `packages/app/src/hooks/utils-hooks.ts` (`useLiveRef`)
+- Example consumer: `packages/app/src/components/canvas/canvas.tsx`

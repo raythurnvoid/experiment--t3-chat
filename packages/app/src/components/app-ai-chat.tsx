@@ -9,6 +9,8 @@ import { Actions, Action } from "./ai-elements/actions.tsx";
 import { CodeBlock } from "./ai-elements/code-block.tsx";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
 import { Thread } from "@/components/assistant-ui/thread.tsx";
+import { useEffect } from "react";
+import { global_event_ai_chat_open_canvas } from "../lib/global-events.tsx";
 
 function mapStatusToToolState(status: {
 	type: string;
@@ -62,7 +64,7 @@ function ToolMetaHeader(props: { metadata: Record<string, any> }) {
 	);
 }
 
-function CreateArtifactToolComponent(props: ToolCallContentPartProps<CreateArtifactArgs, void>) {
+function CreateArtifactToolUiComponent(props: ToolCallContentPartProps<CreateArtifactArgs, void>) {
 	const { args, status } = props;
 	// Safely parse arguments using Zod
 	const argsParseResult = parseCreateArtifactArgs(args);
@@ -124,18 +126,18 @@ function CreateArtifactToolComponent(props: ToolCallContentPartProps<CreateArtif
 	);
 }
 
-const CreateArtifactToolUI = makeAssistantToolUI<CreateArtifactArgs, void>({
+const CreateArtifactToolUi = makeAssistantToolUI<CreateArtifactArgs, void>({
 	toolName: "create_artifact",
-	render: CreateArtifactToolComponent,
+	render: CreateArtifactToolUiComponent,
 });
 
-type ReadPageArgs = {
+type ReadPageToolUi_Args = {
 	path: string;
 	offset?: number;
 	limit?: number;
 };
 
-type ReadPageResult = {
+type ReadPageToolUi_Result = {
 	title: string;
 	output: string;
 	metadata: {
@@ -143,7 +145,7 @@ type ReadPageResult = {
 	};
 };
 
-function ReadPageToolComponent(props: ToolCallContentPartProps<ReadPageArgs, ReadPageResult>) {
+function ReadPageToolUiComponent(props: ToolCallContentPartProps<ReadPageToolUi_Args, ReadPageToolUi_Result>) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
@@ -169,19 +171,19 @@ function ReadPageToolComponent(props: ToolCallContentPartProps<ReadPageArgs, Rea
 	);
 }
 
-const ReadPageToolUI = makeAssistantToolUI<ReadPageArgs, ReadPageResult>({
+const ReadPageToolUI = makeAssistantToolUI<ReadPageToolUi_Args, ReadPageToolUi_Result>({
 	toolName: "read_page",
-	render: ReadPageToolComponent,
+	render: ReadPageToolUiComponent,
 });
 
-type ListPagesArgs = {
+type ListPagesToolUi_Args = {
 	path?: string;
 	ignore?: string[];
 	maxDepth?: number;
 	limit?: number;
 };
 
-type ListPagesResult = {
+type ListPagesToolUi_Result = {
 	title: string;
 	metadata: {
 		count: number;
@@ -190,7 +192,7 @@ type ListPagesResult = {
 	output: string;
 };
 
-function ListPagesToolComponent(props: ToolCallContentPartProps<ListPagesArgs, ListPagesResult>) {
+function ListPagesToolUiComponent(props: ToolCallContentPartProps<ListPagesToolUi_Args, ListPagesToolUi_Result>) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
@@ -216,18 +218,18 @@ function ListPagesToolComponent(props: ToolCallContentPartProps<ListPagesArgs, L
 	);
 }
 
-const ListPagesToolUI = makeAssistantToolUI<ListPagesArgs, ListPagesResult>({
+const ListPagesToolUi = makeAssistantToolUI<ListPagesToolUi_Args, ListPagesToolUi_Result>({
 	toolName: "list_pages",
-	render: ListPagesToolComponent,
+	render: ListPagesToolUiComponent,
 });
 
-type GlobPagesArgs = {
+type GlobPagesToolUi_Args = {
 	pattern: string;
 	path?: string;
 	limit?: number;
 };
 
-type GlobPagesResult = {
+type GlobPagesToolUi_Result = {
 	title: string;
 	metadata: {
 		count: number;
@@ -236,7 +238,7 @@ type GlobPagesResult = {
 	output: string;
 };
 
-function GlobPagesToolComponent(props: ToolCallContentPartProps<GlobPagesArgs, GlobPagesResult>) {
+function GlobPagesToolUiComponent(props: ToolCallContentPartProps<GlobPagesToolUi_Args, GlobPagesToolUi_Result>) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
@@ -262,12 +264,12 @@ function GlobPagesToolComponent(props: ToolCallContentPartProps<GlobPagesArgs, G
 	);
 }
 
-const GlobPagesToolUI = makeAssistantToolUI<GlobPagesArgs, GlobPagesResult>({
+const GlobPagesToolUi = makeAssistantToolUI<GlobPagesToolUi_Args, GlobPagesToolUi_Result>({
 	toolName: "glob_pages",
-	render: GlobPagesToolComponent,
+	render: GlobPagesToolUiComponent,
 });
 
-type GrepPagesArgs = {
+type GrepPagesToolUi_Args = {
 	pattern: string;
 	path?: string;
 	include?: string;
@@ -275,7 +277,7 @@ type GrepPagesArgs = {
 	limit?: number;
 };
 
-type GrepPagesResult = {
+type GrepPagesToolUi_Result = {
 	title: string;
 	metadata: {
 		matches: number;
@@ -284,7 +286,7 @@ type GrepPagesResult = {
 	output: string;
 };
 
-function GrepPagesToolComponent(props: ToolCallContentPartProps<GrepPagesArgs, GrepPagesResult>) {
+function GrepPagesToolUiComponent(props: ToolCallContentPartProps<GrepPagesToolUi_Args, GrepPagesToolUi_Result>) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
@@ -310,17 +312,17 @@ function GrepPagesToolComponent(props: ToolCallContentPartProps<GrepPagesArgs, G
 	);
 }
 
-const GrepPagesToolUI = makeAssistantToolUI<GrepPagesArgs, GrepPagesResult>({
+const GrepPagesToolUi = makeAssistantToolUI<GrepPagesToolUi_Args, GrepPagesToolUi_Result>({
 	toolName: "grep_pages",
-	render: GrepPagesToolComponent,
+	render: GrepPagesToolUiComponent,
 });
 
-type TextSearchArgs = {
+type TextSearchToolUi_Args = {
 	query: string;
 	limit?: number;
 };
 
-type TextSearchResult = {
+type TextSearchToolUi_Result = {
 	title: string;
 	metadata: {
 		matches: number;
@@ -328,7 +330,9 @@ type TextSearchResult = {
 	output: string;
 };
 
-function TextSearchPagesToolComponent(props: ToolCallContentPartProps<TextSearchArgs, TextSearchResult>) {
+function TextSearchPagesToolUiComponent(
+	props: ToolCallContentPartProps<TextSearchToolUi_Args, TextSearchToolUi_Result>,
+) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
@@ -354,9 +358,71 @@ function TextSearchPagesToolComponent(props: ToolCallContentPartProps<TextSearch
 	);
 }
 
-const TextSearchPagesToolUI = makeAssistantToolUI<TextSearchArgs, TextSearchResult>({
+const TextSearchPagesToolUi = makeAssistantToolUI<TextSearchToolUi_Args, TextSearchToolUi_Result>({
 	toolName: "text_search_pages",
-	render: TextSearchPagesToolComponent,
+	render: TextSearchPagesToolUiComponent,
+});
+
+type WritePageToolUi_Args = {
+	path: string;
+	content: string;
+	overwrite?: boolean;
+	confirm?: boolean;
+};
+
+type WritePageToolUi_Result = {
+	title: string;
+	output: string;
+	metadata: {
+		exists: boolean;
+		applied?: boolean;
+		preview?: string;
+		diff?: string;
+		page_id?: string;
+	};
+};
+
+function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolUi_Args, WritePageToolUi_Result>) {
+	const { args, result, status } = props;
+	const toolState = mapStatusToToolState(status);
+
+	useEffect(() => {
+		if (status.type === "complete" && result?.metadata.page_id) {
+			global_event_ai_chat_open_canvas.dispatch({ pageId: result.metadata.page_id });
+		}
+	}, [status, result?.metadata.page_id]);
+
+	return (
+		<Tool defaultOpen={false} className="AppAiChat-write-page-tool">
+			<ToolHeader type="tool-write_page" state={toolState as any} />
+			<ToolContent>
+				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
+					<ToolMetaHeader metadata={result?.metadata || {}} />
+					<Actions className="AppAiChat-tool-actions">
+						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
+							<CopyIcon className="size-4" />
+						</Action>
+					</Actions>
+				</div>
+				<ToolInput input={args} />
+				<ToolOutput
+					output={
+						result?.metadata?.diff ? (
+							<CodeBlock code={result.metadata.diff} language="diff" />
+						) : result?.output ? (
+							<CodeBlock code={result.output} language="text" />
+						) : null
+					}
+					errorText={(result as any)?.errorText}
+				/>
+			</ToolContent>
+		</Tool>
+	);
+}
+
+const WritePageToolUi = makeAssistantToolUI<WritePageToolUi_Args, WritePageToolUi_Result>({
+	toolName: "write_page",
+	render: WritePageToolUiComponent,
 });
 
 export interface AppAiChat_Props {
@@ -369,12 +435,13 @@ export function AppAiChat(props: AppAiChat_Props) {
 	return (
 		<div className={cn("AppAiChat", className)}>
 			<Thread />
-			<CreateArtifactToolUI />
+			<CreateArtifactToolUi />
 			<ReadPageToolUI />
-			<ListPagesToolUI />
-			<GlobPagesToolUI />
-			<GrepPagesToolUI />
-			<TextSearchPagesToolUI />
+			<ListPagesToolUi />
+			<GlobPagesToolUi />
+			<GrepPagesToolUi />
+			<TextSearchPagesToolUi />
+			<WritePageToolUi />
 		</div>
 	);
 }

@@ -3,7 +3,11 @@
 		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
 		"target": "ESNext",
 		"useDefineForClassFields": true,
-		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"lib": [
+			"ESNext",
+			"DOM",
+			"DOM.Iterable"
+		],
 		"module": "ESNext",
 		"skipLibCheck": true,
 		/* Bundler mode */
@@ -17,17 +21,26 @@
 		"strict": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": false,
-		"erasableSyntaxOnly": true,
+		"erasableSyntaxOnly": false,
 		"noFallthroughCasesInSwitch": true,
 		"noUncheckedSideEffectImports": true,
 		"exactOptionalPropertyTypes": false,
 		/* Paths */
 		"baseUrl": ".",
 		"paths": {
-			"@/*": ["./src/*"]
+			"@/*": [
+				"./src/*"
+			]
 		},
 		"noErrorTruncation": true
 	},
-	"include": ["src", "convex", "server/server-ai-tools.ts", "server/server-utils.ts"],
-	"exclude": ["convex/lib"]
+	"include": [
+		"src",
+		"convex",
+		"server/server-ai-tools.ts",
+		"server/server-utils.ts"
+	],
+	"exclude": [
+		"convex/lib"
+	]
 }

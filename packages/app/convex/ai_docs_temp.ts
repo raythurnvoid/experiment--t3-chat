@@ -5,7 +5,15 @@ This structure allows file system like operations such has finding all items und
 listing all children or the content of a certain page (`foo/bar/baz`).
 */
 
-import { httpAction, internalQuery, mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server";
+import {
+	httpAction,
+	internalQuery,
+	mutation,
+	query,
+	type QueryCtx,
+	type MutationCtx,
+	internalMutation,
+} from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -865,7 +873,7 @@ export const text_search_pages = internalQuery({
 	},
 });
 
-export const update_page_text_content = mutation({
+export const update_page_text_content = internalMutation({
 	args: {
 		workspace_id: v.string(),
 		project_id: v.string(),
@@ -897,5 +905,63 @@ export const update_page_text_content = mutation({
 		});
 
 		return null;
+	},
+});
+
+export const create_page_by_path = internalMutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		path: v.string(),
+		text_content: v.string(),
+	},
+	returns: v.object({ page_id: v.string() }),
+	handler: async (ctx, args) => {
+		const { workspace_id, project_id } = args;
+		const segments = server_path_extract_segments_from(args.path);
+		let currentParent = "root";
+		let lastPageId = "root";
+
+		for (let i = 0; i < segments.length; i++) {
+			const name = segments[i];
+
+			// Does this segment exist?
+			const existing = await ctx.db
+				.query("pages")
+				.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+					q
+						.eq("workspace_id", workspace_id)
+						.eq("project_id", project_id)
+						.eq("parent_id", currentParent)
+						.eq("name", name),
+				)
+				.unique();
+
+			if (!existing) {
+				// Create missing segment
+				const isLeaf = i === segments.length - 1;
+				const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+				await create_page_in_db(ctx, {
+					workspace_id,
+					project_id,
+					page_id,
+					parent_id: currentParent,
+					name: name,
+					text_content: isLeaf ? args.text_content : "",
+				});
+				currentParent = page_id;
+				lastPageId = page_id;
+			} else {
+				// Continue traversal
+				currentParent = existing.page_id;
+				lastPageId = existing.page_id;
+
+				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
+				if (i === segments.length - 1) {
+					return { page_id: lastPageId };
+				}
+			}
+		}
+		return { page_id: lastPageId };
 	},
 });

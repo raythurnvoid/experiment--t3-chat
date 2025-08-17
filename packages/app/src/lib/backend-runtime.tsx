@@ -1,6 +1,6 @@
 import { AssistantChatTransport, useChatRuntime } from "@assistant-ui/react-ai-sdk";
 import { AssistantCloud } from "@assistant-ui/react";
-import { api } from "../../convex/_generated/api";
+import { api } from "../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_PROJECT_ID } from "./ai-chat.ts";
 import { app_convex } from "./app-convex-client.ts";
 import { app_fetch_main_api_url } from "./fetch.ts";
@@ -83,10 +83,16 @@ export const useBackendRuntime = () => {
 
 				const threadId = runtime_local.threads.mainItem.getState().remoteId;
 				const messages = threadId ? runtime_local.threads.main.getState().messages : [];
-				const lastMessage = messages.findLast(
-					(message) =>
-						message.status?.type && (message.status.type === "complete" || message.status.type === "incomplete"),
-				);
+
+				const lastMessage = messages
+					// Ignore the last 2 items because they are the user message and an optimistic assistant response
+					.slice(0, -2)
+					.findLast(
+						(message) =>
+							(message.status?.type && (message.status.type === "complete" || message.status.type === "incomplete")) ||
+							message.role === "user",
+					);
+
 				const remoteParentId = lastMessage
 					? ((await assistant_cloud.__historyAdapter?._getIdForLocalId?.[lastMessage.id]) ?? lastMessage.id)
 					: undefined;

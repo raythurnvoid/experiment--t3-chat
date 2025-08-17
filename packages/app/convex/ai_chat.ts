@@ -32,6 +32,7 @@ import {
 	ai_tool_create_glob_pages,
 	ai_tool_create_grep_pages,
 	ai_tool_create_text_search_pages,
+	ai_tool_create_write_page,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 
@@ -350,6 +351,11 @@ export const chat = httpAction(async (ctx, request) => {
 					messages,
 					temperature: 0.7,
 					maxOutputTokens: 2000,
+					providerOptions: {
+						openai: {
+							reasoningEffort: "low",
+						},
+					},
 					toolChoice: "auto",
 					stopWhen: stepCountIs(5),
 					tools: {
@@ -382,6 +388,7 @@ export const chat = httpAction(async (ctx, request) => {
 						glob_pages: ai_tool_create_glob_pages(ctx),
 						grep_pages: ai_tool_create_grep_pages(ctx),
 						text_search_pages: ai_tool_create_text_search_pages(ctx),
+						write_page: ai_tool_create_write_page(ctx),
 					},
 					experimental_transform: smoothStream({
 						delayInMs: 100,

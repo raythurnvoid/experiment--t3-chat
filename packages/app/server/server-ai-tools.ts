@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import z from "zod";
 import dedent from "dedent";
+import { createTwoFilesPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import { internal } from "../convex/_generated/api";
 import {
@@ -372,6 +373,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/grep.ts`
+ *
  * Search pages by applying a regex pattern against page name + text_content
  */
 export function ai_tool_create_grep_pages(ctx: ActionCtx) {
@@ -535,6 +537,126 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
 				title: args.query,
 				metadata: { matches: res.items.length },
 				output: lines.join("\n"),
+			};
+		},
+	});
+}
+
+export type server_ai_tools_write_page_args = {
+	path: string;
+	content: string;
+	overwrite?: boolean;
+	confirm?: boolean;
+};
+
+export type server_ai_tools_write_page_result = {
+	title: string;
+	output: string;
+	metadata: {
+		exists: boolean;
+		applied?: boolean;
+		preview: string;
+		diff?: string;
+		page_id?: string;
+	};
+};
+
+/**
+ * Inspired by `opencode/packages/opencode/src/tool/write.ts`
+ *
+ * Tool for creating or overwriting page content with preview diff
+ */
+export function ai_tool_create_write_page(ctx: ActionCtx) {
+	return tool({
+		description: dedent`\
+			Writes a page in the system.
+
+			Usage:
+			- This tool will overwrite the existing page if there is one at the provided path.
+			- If this is an existing page, you MUST use the Read tool first to read the page's contents. This tool will fail if you did not read the page first.
+			- ALWAYS prefer editing existing pages in the codebase. NEVER write new pages unless explicitly required.
+			- NEVER proactively create documentation pages. Only create documentation pages if explicitly requested by the User.
+			- Only use emojis if the user explicitly requests it. Avoid writing emojis to pages unless asked.
+			- Do not add a file extension to the page path unless explicitly requested by the user.
+				- The system supports only markdown and the name of the pages are usually extensionless.
+			- The content must be valid GitHub Flavored Markdown.`,
+
+		inputSchema: z.object({
+			path: z
+				.string()
+				.describe('The absolute path to the page to write, must be absolute, not relative, starts with "/", not "/"'),
+			content: z.string().describe("The GitHub Flavored Markdown content to write to the page"),
+			overwrite: z.boolean().optional().describe("Required to overwrite existing pages"),
+			confirm: z.boolean().optional().describe("When true, apply the write; otherwise preview only"),
+		}),
+
+		execute: async (args: server_ai_tools_write_page_args): Promise<server_ai_tools_write_page_result> => {
+			const path = server_path_normalize(args.path);
+			if (!path.startsWith("/") || path === "/") {
+				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
+			}
+
+			const exists = await ctx.runQuery(internal.ai_docs_temp.page_exists_by_path, {
+				path,
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+			});
+
+			const oldText = exists
+				? ((await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+						path,
+						workspace_id: ai_chat_HARDCODED_ORG_ID,
+						project_id: ai_chat_HARDCODED_PROJECT_ID,
+					})) ?? "")
+				: "";
+
+			const newText = args.content;
+			const diff = createTwoFilesPatch(path, path, oldText, newText);
+			const preview = newText.slice(0, 160);
+
+			// Preflight: show diff & preview; do not write
+			if (args.confirm !== true) {
+				return {
+					title: path,
+					output: exists ? "Preview overwrite" : "Preview create",
+					metadata: { exists, preview, diff },
+				};
+			}
+
+			// Apply: explicit overwrite required if page exists
+			if (exists && args.overwrite !== true) {
+				throw new Error("Refusing to overwrite existing page without overwrite: true");
+			}
+
+			let resultingPageId: string | null = null;
+			if (exists) {
+				const pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
+					path,
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+				});
+				if (!pageId) throw new Error("Failed to resolve page id");
+				await ctx.runMutation(internal.ai_docs_temp.update_page_text_content, {
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					page_id: pageId,
+					text_content: newText,
+				});
+				resultingPageId = pageId;
+			} else {
+				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					path,
+					text_content: newText,
+				});
+				resultingPageId = created.page_id;
+			}
+
+			return {
+				title: path,
+				output: "Write applied successfully",
+				metadata: { exists, applied: true, preview, diff, page_id: resultingPageId ?? null },
 			};
 		},
 	});
