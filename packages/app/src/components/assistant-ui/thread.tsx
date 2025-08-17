@@ -8,7 +8,6 @@ import {
 	BranchPickerPrimitive,
 	ErrorPrimitive,
 } from "@assistant-ui/react";
-import type { FC } from "react";
 import {
 	ArrowDownIcon,
 	ArrowUpIcon,
@@ -25,11 +24,11 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button.tsx";
-import { cn } from "@/lib/utils.ts";
+import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { MarkdownText } from "./markdown-text.tsx";
 import { ToolFallback } from "./tool-fallback.tsx";
 
-export const Thread: FC = () => {
+export function Thread() {
 	return (
 		<ThreadPrimitive.Root
 			className={cn("Thread", "flex h-full flex-col bg-background")}
@@ -60,9 +59,9 @@ export const Thread: FC = () => {
 			<Composer />
 		</ThreadPrimitive.Root>
 	);
-};
+}
 
-const ThreadScrollToBottom: FC = () => {
+function ThreadScrollToBottom() {
 	return (
 		<ThreadPrimitive.ScrollToBottom asChild>
 			<TooltipIconButton
@@ -77,9 +76,9 @@ const ThreadScrollToBottom: FC = () => {
 			</TooltipIconButton>
 		</ThreadPrimitive.ScrollToBottom>
 	);
-};
+}
 
-const ThreadWelcome: FC = () => {
+function ThreadWelcome() {
 	return (
 		<ThreadPrimitive.Empty>
 			<div
@@ -113,9 +112,9 @@ const ThreadWelcome: FC = () => {
 			</div>
 		</ThreadPrimitive.Empty>
 	);
-};
+}
 
-const ThreadWelcomeSuggestions: FC = () => {
+function ThreadWelcomeSuggestions() {
 	return (
 		<div className="grid w-full gap-2 sm:grid-cols-2">
 			{[
@@ -162,9 +161,9 @@ const ThreadWelcomeSuggestions: FC = () => {
 			))}
 		</div>
 	);
-};
+}
 
-const Composer: FC = () => {
+function Composer() {
 	return (
 		<div
 			className={cn(
@@ -190,15 +189,16 @@ const Composer: FC = () => {
 					)}
 					rows={1}
 					autoFocus
+					autoComplete={ui_create_auto_complete_off_value()}
 					aria-label="Message input"
 				/>
 				<ComposerAction />
 			</ComposerPrimitive.Root>
 		</div>
 	);
-};
+}
 
-const ComposerAction: FC = () => {
+function ComposerAction() {
 	return (
 		<div
 			className={cn(
@@ -253,9 +253,9 @@ const ComposerAction: FC = () => {
 			</ThreadPrimitive.If>
 		</div>
 	);
-};
+}
 
-const MessageError: FC = () => {
+function MessageError() {
 	return (
 		<MessagePrimitive.Error>
 			<ErrorPrimitive.Root className="mt-2 rounded-md border border-destructive bg-destructive/10 p-3 text-sm text-destructive dark:bg-destructive/5 dark:text-red-200">
@@ -263,9 +263,9 @@ const MessageError: FC = () => {
 			</ErrorPrimitive.Root>
 		</MessagePrimitive.Error>
 	);
-};
+}
 
-const AssistantMessage: FC = () => {
+function AssistantMessage() {
 	return (
 		<MessagePrimitive.Root asChild>
 			<motion.div
@@ -302,9 +302,9 @@ const AssistantMessage: FC = () => {
 			</motion.div>
 		</MessagePrimitive.Root>
 	);
-};
+}
 
-const AssistantActionBar: FC = () => {
+function AssistantActionBar() {
 	return (
 		<ActionBarPrimitive.Root
 			hideWhenRunning
@@ -332,9 +332,9 @@ const AssistantActionBar: FC = () => {
 			</ActionBarPrimitive.Reload>
 		</ActionBarPrimitive.Root>
 	);
-};
+}
 
-const UserMessage: FC = () => {
+function UserMessage() {
 	return (
 		<MessagePrimitive.Root asChild>
 			<motion.div
@@ -363,9 +363,9 @@ const UserMessage: FC = () => {
 			</motion.div>
 		</MessagePrimitive.Root>
 	);
-};
+}
 
-const UserActionBar: FC = () => {
+function UserActionBar() {
 	return (
 		<ActionBarPrimitive.Root
 			hideWhenRunning
@@ -379,9 +379,9 @@ const UserActionBar: FC = () => {
 			</ActionBarPrimitive.Edit>
 		</ActionBarPrimitive.Root>
 	);
-};
+}
 
-const EditComposer: FC = () => {
+function EditComposer() {
 	return (
 		<div className="mx-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 px-[var(--thread-padding-x)]">
 			<ComposerPrimitive.Root className="ml-auto flex w-full max-w-7/8 flex-col rounded-xl bg-muted">
@@ -408,9 +408,10 @@ const EditComposer: FC = () => {
 			</ComposerPrimitive.Root>
 		</div>
 	);
-};
+}
 
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({ className, ...rest }) => {
+function BranchPicker(props: BranchPickerPrimitive.Root.Props) {
+	const { className, ...rest } = props;
 	return (
 		<BranchPickerPrimitive.Root
 			hideWhenSingleBranch
@@ -432,7 +433,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({ className, ...rest
 			</BranchPickerPrimitive.Next>
 		</BranchPickerPrimitive.Root>
 	);
-};
+}
 
 const StarIcon = ({ size = 14 }: { size?: number }) => (
 	<svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">

@@ -1,7 +1,6 @@
-"use client";
+// Original file at: 263f9e51
 
-import "@assistant-ui/react-markdown/styles/dot.css";
-
+import "./markdown-text.css";
 import {
 	type CodeHeaderProps,
 	MarkdownTextPrimitive,
@@ -9,11 +8,10 @@ import {
 	useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useState } from "react";
+import { memo, useState } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
-
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { cn } from "@/lib/utils";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
+import { cn } from "@/lib/utils.ts";
 
 const MarkdownTextImpl = () => {
 	return <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} className="aui-md" components={defaultComponents} />;
@@ -21,7 +19,8 @@ const MarkdownTextImpl = () => {
 
 export const MarkdownText = memo(MarkdownTextImpl);
 
-const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
+function CodeHeader(props: CodeHeaderProps) {
+	const { language, code } = props;
 	const { isCopied, copyToClipboard } = useCopyToClipboard();
 	const onCopy = () => {
 		if (!code || isCopied) return;
@@ -37,7 +36,7 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
 			</TooltipIconButton>
 		</div>
 	);
-};
+}
 
 const useCopyToClipboard = ({
 	copiedDuration = 3000,
@@ -49,92 +48,176 @@ const useCopyToClipboard = ({
 	const copyToClipboard = (value: string) => {
 		if (!value) return;
 
-		navigator.clipboard.writeText(value).then(() => {
-			setIsCopied(true);
-			setTimeout(() => setIsCopied(false), copiedDuration);
-		});
+		navigator.clipboard
+			.writeText(value)
+			.then(() => {
+				setIsCopied(true);
+				setTimeout(() => setIsCopied(false), copiedDuration);
+			})
+			.catch(() => {});
 	};
 
 	return { isCopied, copyToClipboard };
 };
 
-const defaultComponents = memoizeMarkdownComponents({
-	h1: ({ className, ...props }) => (
-		<h1 className={cn("mb-8 scroll-m-20 text-4xl font-extrabold tracking-tight last:mb-0", className)} {...props} />
-	),
-	h2: ({ className, ...props }) => (
+function H1Component(props: React.ComponentPropsWithoutRef<"h1">) {
+	const { className, ...rest } = props;
+	return (
+		<h1 className={cn("mb-8 scroll-m-20 text-4xl font-extrabold tracking-tight last:mb-0", className)} {...rest} />
+	);
+}
+
+function H2Component(props: React.ComponentProps<"h2">) {
+	const { className, ...rest } = props;
+	return (
 		<h2
 			className={cn("mt-8 mb-4 scroll-m-20 text-3xl font-semibold tracking-tight first:mt-0 last:mb-0", className)}
-			{...props}
+			{...rest}
 		/>
-	),
-	h3: ({ className, ...props }) => (
+	);
+}
+
+function H3Component(props: React.ComponentProps<"h3">) {
+	const { className, ...rest } = props;
+	return (
 		<h3
 			className={cn("mt-6 mb-4 scroll-m-20 text-2xl font-semibold tracking-tight first:mt-0 last:mb-0", className)}
-			{...props}
+			{...rest}
 		/>
-	),
-	h4: ({ className, ...props }) => (
+	);
+}
+
+function H4Component(props: React.ComponentProps<"h4">) {
+	const { className, ...rest } = props;
+	return (
 		<h4
 			className={cn("mt-6 mb-4 scroll-m-20 text-xl font-semibold tracking-tight first:mt-0 last:mb-0", className)}
-			{...props}
+			{...rest}
 		/>
-	),
-	h5: ({ className, ...props }) => (
-		<h5 className={cn("my-4 text-lg font-semibold first:mt-0 last:mb-0", className)} {...props} />
-	),
-	h6: ({ className, ...props }) => (
-		<h6 className={cn("my-4 font-semibold first:mt-0 last:mb-0", className)} {...props} />
-	),
-	p: ({ className, ...props }) => (
-		<p className={cn("mt-5 mb-5 leading-7 first:mt-0 last:mb-0", className)} {...props} />
-	),
-	a: ({ className, ...props }) => (
-		<a className={cn("font-medium text-primary underline underline-offset-4", className)} {...props} />
-	),
-	blockquote: ({ className, ...props }) => (
-		<blockquote className={cn("border-l-2 pl-6 italic", className)} {...props} />
-	),
-	ul: ({ className, ...props }) => <ul className={cn("my-5 ml-6 list-disc [&>li]:mt-2", className)} {...props} />,
-	ol: ({ className, ...props }) => <ol className={cn("my-5 ml-6 list-decimal [&>li]:mt-2", className)} {...props} />,
-	hr: ({ className, ...props }) => <hr className={cn("my-5 border-b", className)} {...props} />,
-	table: ({ className, ...props }) => (
-		<table className={cn("my-5 w-full border-separate border-spacing-0 overflow-y-auto", className)} {...props} />
-	),
-	th: ({ className, ...props }) => (
+	);
+}
+
+function H5Component(props: React.ComponentProps<"h5">) {
+	const { className, ...rest } = props;
+	return <h5 className={cn("my-4 text-lg font-semibold first:mt-0 last:mb-0", className)} {...rest} />;
+}
+
+function H6Component(props: React.ComponentProps<"h6">) {
+	const { className, ...rest } = props;
+	return <h6 className={cn("my-4 font-semibold first:mt-0 last:mb-0", className)} {...rest} />;
+}
+
+function PComponent(props: React.ComponentProps<"p">) {
+	const { className, ...rest } = props;
+	return <p className={cn("mt-5 mb-5 leading-7 first:mt-0 last:mb-0", className)} {...rest} />;
+}
+
+function AComponent(props: React.ComponentProps<"a">) {
+	const { className, ...rest } = props;
+	return <a className={cn("font-medium text-primary underline underline-offset-4", className)} {...rest} />;
+}
+
+function BlockquoteComponent(props: React.ComponentProps<"blockquote">) {
+	const { className, ...rest } = props;
+	return <blockquote className={cn("border-l-2 pl-6 italic", className)} {...rest} />;
+}
+
+function UlComponent(props: React.ComponentProps<"ul">) {
+	const { className, ...rest } = props;
+	return <ul className={cn("my-5 ml-6 list-disc [&>li]:mt-2", className)} {...rest} />;
+}
+
+function OlComponent(props: React.ComponentProps<"ol">) {
+	const { className, ...rest } = props;
+	return <ol className={cn("my-5 ml-6 list-decimal [&>li]:mt-2", className)} {...rest} />;
+}
+
+function HrComponent(props: React.ComponentProps<"hr">) {
+	const { className, ...rest } = props;
+	return <hr className={cn("my-5 border-b", className)} {...rest} />;
+}
+
+function TableComponent(props: React.ComponentProps<"table">) {
+	const { className, ...rest } = props;
+	return <table className={cn("my-5 w-full border-separate border-spacing-0 overflow-y-auto", className)} {...rest} />;
+}
+
+function ThComponent(props: React.ComponentProps<"th">) {
+	const { className, ...rest } = props;
+	return (
 		<th
 			className={cn(
 				"bg-muted px-4 py-2 text-left font-bold first:rounded-tl-lg last:rounded-tr-lg [&[align=center]]:text-center [&[align=right]]:text-right",
 				className,
 			)}
-			{...props}
+			{...rest}
 		/>
-	),
-	td: ({ className, ...props }) => (
+	);
+}
+
+function TdComponent(props: React.ComponentProps<"td">) {
+	const { className, ...rest } = props;
+	return (
 		<td
 			className={cn(
 				"border-b border-l px-4 py-2 text-left last:border-r [&[align=center]]:text-center [&[align=right]]:text-right",
 				className,
 			)}
-			{...props}
+			{...rest}
 		/>
-	),
-	tr: ({ className, ...props }) => (
+	);
+}
+
+function TrComponent(props: React.ComponentProps<"tr">) {
+	const { className, ...rest } = props;
+	return (
 		<tr
 			className={cn(
 				"m-0 border-b p-0 first:border-t [&:last-child>td:first-child]:rounded-bl-lg [&:last-child>td:last-child]:rounded-br-lg",
 				className,
 			)}
-			{...props}
+			{...rest}
 		/>
-	),
-	sup: ({ className, ...props }) => <sup className={cn("[&>a]:text-xs [&>a]:no-underline", className)} {...props} />,
-	pre: ({ className, ...props }) => (
-		<pre className={cn("overflow-x-auto !rounded-t-none rounded-b-lg bg-black p-4 text-white", className)} {...props} />
-	),
-	code: function Code({ className, ...props }) {
-		const isCodeBlock = useIsMarkdownCodeBlock();
-		return <code className={cn(!isCodeBlock && "rounded border bg-muted font-semibold", className)} {...props} />;
-	},
+	);
+}
+
+function SupComponent(props: React.ComponentProps<"sup">) {
+	const { className, ...rest } = props;
+	return <sup className={cn("[&>a]:text-xs [&>a]:no-underline", className)} {...rest} />;
+}
+
+function PreComponent(props: React.ComponentProps<"pre">) {
+	const { className, ...rest } = props;
+	return (
+		<pre className={cn("overflow-x-auto !rounded-t-none rounded-b-lg bg-black p-4 text-white", className)} {...rest} />
+	);
+}
+
+function CodeComponent(props: React.ComponentProps<"code">) {
+	const { className, ...rest } = props;
+	const isCodeBlock = useIsMarkdownCodeBlock();
+	return <code className={cn(!isCodeBlock && "rounded border bg-muted font-semibold", className)} {...rest} />;
+}
+
+const defaultComponents = memoizeMarkdownComponents({
+	h1: H1Component,
+	h2: H2Component,
+	h3: H3Component,
+	h4: H4Component,
+	h5: H5Component,
+	h6: H6Component,
+	p: PComponent,
+	a: AComponent,
+	blockquote: BlockquoteComponent,
+	ul: UlComponent,
+	ol: OlComponent,
+	hr: HrComponent,
+	table: TableComponent,
+	th: ThComponent,
+	td: TdComponent,
+	tr: TrComponent,
+	sup: SupComponent,
+	pre: PreComponent,
+	code: CodeComponent,
 	CodeHeader,
 });

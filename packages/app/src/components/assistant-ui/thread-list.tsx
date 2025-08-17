@@ -1,6 +1,5 @@
 // Original file at: 263f9e51
 
-import type { FC } from "react";
 import { ThreadListItemPrimitive, ThreadListPrimitive } from "@assistant-ui/react";
 import { cn } from "@/lib/utils.ts";
 import { ArchiveIcon, PlusIcon } from "lucide-react";
@@ -8,16 +7,16 @@ import { ArchiveIcon, PlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
 
-export const ThreadList: FC = () => {
+export function ThreadList() {
 	return (
 		<ThreadListPrimitive.Root className={cn("ThreadList", "flex w-[250px] flex-col items-stretch gap-1.5")}>
 			<ThreadListNew />
 			<ThreadListItems />
 		</ThreadListPrimitive.Root>
 	);
-};
+}
 
-const ThreadListNew: FC = () => {
+function ThreadListNew() {
 	return (
 		<ThreadListPrimitive.New asChild>
 			<Button
@@ -29,13 +28,13 @@ const ThreadListNew: FC = () => {
 			</Button>
 		</ThreadListPrimitive.New>
 	);
-};
+}
 
-const ThreadListItems: FC = () => {
+function ThreadListItems() {
 	return <ThreadListPrimitive.Items components={{ ThreadListItem }} />;
-};
+}
 
-const ThreadListItem: FC = () => {
+function ThreadListItem() {
 	return (
 		<ThreadListItemPrimitive.Root
 			className={cn(
@@ -54,13 +53,13 @@ const ThreadListItem: FC = () => {
 			<ThreadListItemArchive />
 		</ThreadListItemPrimitive.Root>
 	);
-};
+}
 
-const ThreadListItemTitle: FC = () => {
+function ThreadListItemTitle() {
 	return <ThreadListItemPrimitive.Title fallback="New Chat" />;
-};
+}
 
-const ThreadListItemArchive: FC = () => {
+function ThreadListItemArchive() {
 	return (
 		<ThreadListItemPrimitive.Archive asChild>
 			<TooltipIconButton
@@ -72,4 +71,4 @@ const ThreadListItemArchive: FC = () => {
 			</TooltipIconButton>
 		</ThreadListItemPrimitive.Archive>
 	);
-};
+}

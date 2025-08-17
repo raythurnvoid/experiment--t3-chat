@@ -72,3 +72,13 @@ type ExtractTypeByPropertyAndAssertNotUndefined<O extends object, P extends Keys
 > & {
 	[K in P]: Exclude<ExtractTypeByProperty<O, K>[K], undefined>;
 };
+
+/**
+ * Chromium do not adhere to the standard and does not support `autocomplete="off"` forcing developers to resort to workarounds.
+ *
+ * @link https://stackoverflow.com/questions/12374442
+ * @link https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes/autocomplete
+ */
+export function ui_create_auto_complete_off_value(): string {
+	return `off=${Date.now()}`;
+}

@@ -1,15 +1,15 @@
 import * as React from "react";
 import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star } from "lucide-react";
-import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
+import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar.tsx";
+import { Button } from "@/components/ui/button.tsx";
 import { ThreadListPrimitive, ThreadListItemPrimitive, useThreadListItem } from "@assistant-ui/react";
 import { useState, createContext, use } from "react";
-import { cn } from "@/lib/utils";
-import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
+import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
+import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button.tsx";
+import { Checkbox } from "@/components/ui/checkbox.tsx";
+import { Label } from "@/components/ui/label.tsx";
 import { useMutation, useQuery } from "convex/react";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
 
 // Search Context
 interface SearchContextType {
@@ -242,13 +242,14 @@ function AiChatSidebarContent({ onClose }: AiChatSidebarContent_Props) {
 						Search chats
 					</div>
 					<input
-						placeholder="Search chats..."
-						value={search_query}
-						onChange={(e) => set_search_query(e.target.value)}
 						className={cn(
 							"AiChatSidebarContent-search-input",
 							"h-8 w-full rounded-md border border-input bg-background px-3 py-1 pl-8 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",
 						)}
+						placeholder="Search chats..."
+						value={search_query}
+						autoComplete={ui_create_auto_complete_off_value()}
+						onChange={(e) => set_search_query(e.target.value)}
 					/>
 					<Search
 						className={cn(

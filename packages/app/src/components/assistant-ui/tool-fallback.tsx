@@ -1,7 +1,9 @@
-import { ToolCallMessagePartComponent } from "@assistant-ui/react";
+// Original file at: 263f9e51
+
+import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { useState } from "react";
-import { Button } from "../ui/button";
+import { Button } from "@/components/ui/button.tsx";
 
 export const ToolFallback: ToolCallMessagePartComponent = ({ toolName, argsText, result }) => {
 	const [isCollapsed, setIsCollapsed] = useState(true);
