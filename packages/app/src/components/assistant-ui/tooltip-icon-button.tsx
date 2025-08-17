@@ -1,6 +1,6 @@
 "use client";
 
-import { type ComponentPropsWithoutRef, forwardRef } from "react";
+import { ComponentPropsWithoutRef, forwardRef } from "react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -16,9 +16,9 @@ export const TooltipIconButton = forwardRef<HTMLButtonElement, TooltipIconButton
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Button variant="ghost" size="icon" {...rest} className={cn("aui-button-icon", className)} ref={ref}>
+					<Button variant="ghost" size="icon" {...rest} className={cn("size-6 p-1", className)} ref={ref}>
 						{children}
-						<span className="aui-sr-only">{tooltip}</span>
+						<span className="sr-only">{tooltip}</span>
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent side={side}>{tooltip}</TooltipContent>
