@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import { chat, thread_generate_title } from "./ai_chat";
 import type { api_schemas_MainPaths } from "../src/lib/api-schemas.ts";
 import { httpAction } from "./_generated/server";
-import { server_convex_headers_preflight_cors } from "./lib/server-utils.ts";
+import { server_convex_headers_preflight_cors } from "../server/server-utils.ts";
 import { contextual_prompt, liveblocks_auth } from "./ai_docs_temp";
 
 const http = httpRouter();

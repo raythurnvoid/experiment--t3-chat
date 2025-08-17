@@ -20,14 +20,14 @@ export function ArtifactRenderer() {
 	if (!artifact || !currentContent || !currentArtifactId) {
 		return (
 			<div
-				className={cn("ArtifactRenderer-empty", "flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900")}
+				className={cn("ArtifactRenderer-empty", "flex h-full items-center justify-center bg-gray-50 dark:bg-gray-900")}
 			>
 				<div className={cn("ArtifactRenderer-empty-content", "text-center")}>
-					<div className={cn("ArtifactRenderer-empty-icon", "text-6xl mb-4")}>📝</div>
+					<div className={cn("ArtifactRenderer-empty-icon", "mb-4 text-6xl")}>📝</div>
 					<h2
 						className={cn(
 							"ArtifactRenderer-empty-title",
-							"text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2",
+							"mb-2 text-xl font-semibold text-gray-700 dark:text-gray-300",
 						)}
 					>
 						Canvas is ready
@@ -46,12 +46,12 @@ export function ArtifactRenderer() {
 		artifact.contents.length === 1 || currentContent.index === artifact.contents.length || isStreaming;
 
 	return (
-		<div className={cn("ArtifactRenderer", "relative w-full h-full bg-white dark:bg-gray-900 flex flex-col")}>
+		<div className={cn("ArtifactRenderer", "relative flex h-full w-full flex-col bg-white dark:bg-gray-900")}>
 			{/* Header */}
 			<div
 				className={cn(
 					"ArtifactRenderer-header",
-					"border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800",
+					"border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800",
 				)}
 			>
 				<div className={cn("ArtifactRenderer-header-content", "flex items-center justify-between")}>
@@ -108,7 +108,7 @@ export function ArtifactRenderer() {
 									onClick={() => setIsEditing(false)}
 									className={cn("ArtifactRenderer-cancel-button", "h-8")}
 								>
-									<X className="h-4 w-4 mr-1" />
+									<X className="mr-1 h-4 w-4" />
 									Cancel
 								</Button>
 								<Button
@@ -116,7 +116,7 @@ export function ArtifactRenderer() {
 									onClick={() => setIsEditing(false)}
 									className={cn("ArtifactRenderer-save-button", "h-8")}
 								>
-									<Save className="h-4 w-4 mr-1" />
+									<Save className="mr-1 h-4 w-4" />
 									Save
 								</Button>
 							</div>
@@ -128,7 +128,7 @@ export function ArtifactRenderer() {
 								disabled={isStreaming}
 								className={cn("ArtifactRenderer-edit-button", "h-8")}
 							>
-								<Edit3 className="h-4 w-4 mr-1" />
+								<Edit3 className="mr-1 h-4 w-4" />
 								Edit
 							</Button>
 						)}

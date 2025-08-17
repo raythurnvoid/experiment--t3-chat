@@ -26,20 +26,23 @@ This module implements a Notion-like file explorer using React Complex Tree libr
 ## Key Components
 
 ### `DocsSidebar` (Main Export)
+
 - **File**: `docs-sidebar-v2.tsx`
 - **Purpose**: Main wrapper component that provides sidebar structure
 - **Props**: Extends Sidebar props with `onClose` callback
 - **Dependencies**: Uses SidebarProvider, DocsSearchContextProvider
 
 ### `DocsSearchContextProvider`
+
 - **Purpose**: Manages search state, archived items, and data provider reference
-- **State**: 
+- **State**:
   - `searchQuery`: Current search text
   - `archivedItems`: Set of archived document IDs
   - `showArchived`: Boolean toggle for archived visibility
   - `dataProviderRef`: Reference to NotionLikeDataProvider instance
 
 ### `TreeArea` (Core Tree Implementation)
+
 - **Purpose**: Renders the UncontrolledTreeEnvironment with custom logic
 - **Key Features**:
   - Uses `InteractionMode.ClickArrowToExpand` (VSCode-like behavior)
@@ -49,6 +52,7 @@ This module implements a Notion-like file explorer using React Complex Tree libr
   - Auto-expansion of root-level folders
 
 ### `TreeItem` (Custom Item Renderer)
+
 - **Purpose**: Renders individual tree items with action buttons
 - **Features**:
   - Primary action area with file icon and title
@@ -68,12 +72,14 @@ This module implements a Notion-like file explorer using React Complex Tree libr
 ## Key Patterns Used
 
 ### ✅ Correct Interaction Mode
+
 ```typescript
 defaultInteractionMode={InteractionMode.ClickArrowToExpand}
 onPrimaryAction={handlePrimaryAction}
 ```
 
 ### ✅ Proper Component Extraction (No Hooks in renderItem)
+
 ```typescript
 renderItem={(props) => (
   <TreeItem
@@ -88,23 +94,26 @@ renderItem={(props) => (
 ```
 
 ### ✅ Stable Data Provider
+
 ```typescript
 const dataProvider = useMemo(() => {
-  const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
-  if (!dataProviderRef.current) {
-    dataProviderRef.current = provider;
-  }
-  return provider;
+	const provider = new NotionLikeDataProvider(createTreeDataWithPlaceholders());
+	if (!dataProviderRef.current) {
+		dataProviderRef.current = provider;
+	}
+	return provider;
 }, []); // Empty deps - created once
 ```
 
 ### ✅ Filtering Architecture
+
 - **Structural filtering** (search): `shouldRenderChildren`
 - **Individual visibility** (archived): `renderItem` returning `null`
 
 ## CSS Classes
 
 Uses systematic CSS class naming with `DocsSidebar_ClassNames` type for maintainability:
+
 - `DocsSidebar-tree-area`
 - `DocsSidebar-tree-container`
 - `DocsSidebar-tree-item`
@@ -130,19 +139,23 @@ Uses systematic CSS class naming with `DocsSidebar_ClassNames` type for maintain
 ## Advanced Features
 
 ### Drag & Drop to Root Area
+
 Custom implementation allows dropping items directly onto empty space:
+
 - Tracks drag state with `isDraggingOverRootArea`
 - Accesses internal `dragAndDropContext.draggingItems`
 - Batch updates parent-child relationships
 - Maintains alphabetical sorting after drop
 
 ### Multi-Selection Operations
+
 - Selection counter shows when 2+ items selected
 - Bulk archive/unarchive functionality
 - Clear selection action
 - Keyboard shortcuts support
 
 ### Search with Hierarchical Filtering
+
 - Real-time search as you type
 - Filters children based on title match
 - Preserves folder structure during search
@@ -151,17 +164,19 @@ Custom implementation allows dropping items directly onto empty space:
 ## Convex Backend Integration
 
 ### Database Schema
+
 ```typescript
 docs_yjs: defineTable({
-  roomId: v.string(),
-  content: v.bytes(), // Yjs document state
-  orgId: v.string(),
-  projectId: v.string(),
-  docId: v.string(),
-}).index("by_room_id", ["roomId"])
+	roomId: v.string(),
+	content: v.bytes(), // Yjs document state
+	orgId: v.string(),
+	projectId: v.string(),
+	docId: v.string(),
+}).index("by_room_id", ["roomId"]);
 ```
 
 ### HTTP Actions
+
 - `ai_docs_temp_liveblocks_auth`: JWT authentication for Liveblocks
 - `ai_docs_temp_contextual_prompt`: AI generation endpoint
 - `ai_docs_temp_liveblocks_webhook`: Persistence webhook
@@ -170,12 +185,13 @@ docs_yjs: defineTable({
 ## Liveblocks Real-time Collaboration
 
 ### Room Setup
+
 ```typescript
 // Room ID pattern: orgId:projectId:docId
 const roomId = `${orgId}:${projectId}:${selectedDocId}`;
 
 <LiveblocksRoomProvider roomId={roomId}>
-  <TipTapEditor 
+  <TipTapEditor
     extensions={[LiveblocksYjsExtension]}
     initialContent={documentContent}
   />
@@ -183,6 +199,7 @@ const roomId = `${orgId}:${projectId}:${selectedDocId}`;
 ```
 
 ### Authentication Flow
+
 - JWT tokens generated via Convex HTTP action
 - Webhook for automatic persistence to database
 - Yjs for conflict-free concurrent editing
@@ -190,18 +207,20 @@ const roomId = `${orgId}:${projectId}:${selectedDocId}`;
 ## AI Features Integration
 
 ### Contextual AI Operations
+
 ```typescript
 const AI_OPERATIONS = {
-  continue: "Continue writing from current position",
-  improve: "Improve selected text",
-  shorter: "Make text more concise",
-  longer: "Expand on the text",
-  fix: "Fix grammar and spelling",
-  zap: "Custom command generation"
+	continue: "Continue writing from current position",
+	improve: "Improve selected text",
+	shorter: "Make text more concise",
+	longer: "Expand on the text",
+	fix: "Fix grammar and spelling",
+	zap: "Custom command generation",
 };
 ```
 
 ### AI Resolver
+
 - Integrates with Novel Editor
 - Sends context to Convex HTTP endpoint
 - Streams responses back to editor

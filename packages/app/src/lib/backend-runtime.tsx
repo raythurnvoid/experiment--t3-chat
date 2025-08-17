@@ -78,8 +78,6 @@ export const useBackendRuntime = () => {
 					headers.set("Authorization", `Bearer ${token}`);
 				}
 
-				debugger;
-
 				// This will prevent TS to break because of self-referencing `runtime`
 				const runtime_local = runtime as AssistantRuntime;
 

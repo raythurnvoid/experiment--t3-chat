@@ -5,5 +5,8 @@
 	"useTabs": true,
 	"arrowParens": "always",
 	"endOfLine": "lf",
-	"proseWrap": "preserve"
+	"proseWrap": "preserve",
+	"plugins": ["prettier-plugin-tailwindcss"],
+	"tailwindFunctions": ["cn"],
+	"tailwindStylesheet": "./src/app.css"
 }

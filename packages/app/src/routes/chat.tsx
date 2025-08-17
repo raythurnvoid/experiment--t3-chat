@@ -1,12 +1,11 @@
 import { AssistantRuntimeProvider, useThreadListItem } from "@assistant-ui/react";
 import { Canvas } from "../components/canvas/canvas.tsx";
-import { Thread } from "../components/assistant-ui/thread.tsx";
+import { AppAiChat } from "../components/app-ai-chat.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { PanelLeft } from "lucide-react";
 import { cn } from "../lib/utils.ts";
-import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui.tsx";
 import { useBackendRuntime } from "@/lib/backend-runtime.tsx";
 import { AiChatSidebar } from "@/components/ai-chat-sidebar.tsx";
 
@@ -57,7 +56,7 @@ function ChatContent() {
 								</div>
 							)}
 							<div className={cn("Chat-thread-content", "flex min-h-0 flex-1 overflow-hidden")}>
-								<Thread />
+								<AppAiChat />
 							</div>
 						</div>
 					</Panel>
@@ -83,7 +82,6 @@ function Chat() {
 	return (
 		<AssistantRuntimeProvider runtime={runtime}>
 			<ChatContent />
-			<CreateArtifactToolUI />
 		</AssistantRuntimeProvider>
 	);
 }

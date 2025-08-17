@@ -83,6 +83,81 @@ function CustomInput(props: CustomInput_Props) {
 }
 ```
 
+## Component Declaration Rules (Project Standard)
+
+The following rules are mandatory across this codebase:
+
+### BAN: React.FC
+
+Do not use `React.FC` (or `FC`) for component typing. Type the props on the function parameter instead.
+
+```tsx
+// ❌ Do not use
+const Button: React.FC<Button_Props> = (props) => {
+	const { children } = props;
+	return <button>{children}</button>;
+};
+
+// ✅ Use regular function with typed props
+function Button(props: Button_Props) {
+	const { children, ...rest } = props;
+	return <button {...rest}>{children}</button>;
+}
+```
+
+### BAN: React.memo
+
+Do not wrap components with `React.memo`. Components must be declared as regular functions without memoization wrappers.
+
+```tsx
+// ❌ Do not use
+const Toolbar = React.memo(function Toolbar(props: Toolbar_Props) {
+	const { className } = props;
+	return <div className={className} />;
+});
+
+// ✅ Use regular function
+function Toolbar(props: Toolbar_Props) {
+	const { className } = props;
+	return <div className={className} />;
+}
+```
+
+### REQUIRED: Regular Function Declarations
+
+Prefer named function declarations for all components. This improves DevTools names, stack traces, and aligns with React 19 best practices.
+
+```tsx
+// ❌ Avoid anonymous arrow component expressions for top-level components
+export const Card = (props: Card_Props) => {
+	const { children } = props;
+	return <section>{children}</section>;
+};
+
+// ✅ Prefer named function declarations
+export function Card(props: Card_Props) {
+	const { children } = props;
+	return <section>{children}</section>;
+}
+```
+
+### REQUIRED: Props Parameter Pattern (First-line Destructuring)
+
+All components must accept a single `props` parameter and destructure on the first line inside the function body.
+
+```tsx
+// ❌ Do not destructure in the signature
+function Input({ value, onChange, className }: Input_Props) {
+	return <input value={value} onChange={onChange} className={className} />;
+}
+
+// ✅ Destructure on the first line
+function Input(props: Input_Props) {
+	const { value, onChange, className, ...rest } = props;
+	return <input value={value} onChange={onChange} className={className} {...rest} />;
+}
+```
+
 # Understanding Component Styles First
 
 ## Critical: Read Component Styles Before Custom Solutions

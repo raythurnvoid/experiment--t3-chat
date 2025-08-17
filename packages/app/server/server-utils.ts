@@ -1,7 +1,7 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
-import { auth_ANONYMOUS_USER_ID } from "../../shared/shared-auth-constants.ts";
+import { auth_ANONYMOUS_USER_ID } from "../shared/shared-auth-constants.ts";
 import type { UnknownRecord } from "type-fest";
-import { Result } from "../../src/lib/errors-as-values-utils.ts";
+import { Result } from "../src/lib/errors-as-values-utils.ts";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
 if (!ALLOWED_ORIGINS) {

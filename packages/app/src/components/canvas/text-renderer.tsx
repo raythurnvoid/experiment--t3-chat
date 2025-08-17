@@ -34,9 +34,9 @@ function ViewRawText({
 				<TooltipTrigger asChild>
 					<Button variant="outline" size="sm" onClick={() => setIsRawView((p) => !p)} className="h-8 w-8 p-0">
 						{isRawView ? (
-							<EyeOff className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+							<EyeOff className="h-4 w-4 text-gray-600 dark:text-gray-400" />
 						) : (
-							<Eye className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+							<Eye className="h-4 w-4 text-gray-600 dark:text-gray-400" />
 						)}
 					</Button>
 				</TooltipTrigger>
@@ -62,7 +62,7 @@ function CopyText({ content }: { content: string }) {
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<Button variant="outline" size="sm" onClick={handleCopy} className="h-8 w-8 p-0">
-						<Copy className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+						<Copy className="h-4 w-4 text-gray-600 dark:text-gray-400" />
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent>
@@ -223,7 +223,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 	if (!currentContent) {
 		return (
 			<div
-				className={cn("TextRenderer-empty", "flex items-center justify-center h-64 text-gray-500 dark:text-gray-400")}
+				className={cn("TextRenderer-empty", "flex h-64 items-center justify-center text-gray-500 dark:text-gray-400")}
 			>
 				No text content available
 			</div>
@@ -232,9 +232,9 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 	return (
 		<MantineProvider forceColorScheme={isDarkMode ? "dark" : "light"}>
-			<div className="w-full h-full mt-2 flex flex-col border-t-[1px] border-gray-200 dark:border-gray-700 overflow-y-auto py-5 relative">
+			<div className="relative mt-2 flex h-full w-full flex-col overflow-y-auto border-t-[1px] border-gray-200 py-5 dark:border-gray-700">
 				{isHovering && (
-					<div className="absolute flex gap-2 top-2 right-4 z-10">
+					<div className="absolute top-2 right-4 z-10 flex gap-2">
 						<CopyText content={currentContent.fullMarkdown} />
 						<ViewRawText isRawView={isRawView} setIsRawView={handleViewRawTextToggle} />
 					</div>
@@ -242,7 +242,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 
 				{isRawView ? (
 					<textarea
-						className="whitespace-pre-wrap font-mono text-sm px-[54px] border-0 shadow-none h-full outline-none ring-0 rounded-none focus-visible:ring-0 focus-visible:ring-offset-0 bg-transparent text-gray-900 dark:text-gray-100 resize-none"
+						className="h-full resize-none rounded-none border-0 bg-transparent px-[54px] font-mono text-sm whitespace-pre-wrap text-gray-900 shadow-none ring-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:text-gray-100"
 						value={rawMarkdown}
 						onChange={onChangeRawMarkdown}
 						placeholder="Start writing your markdown content..."
@@ -252,7 +252,7 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 					<div
 						className={cn(
 							isStreaming && !hasReceivedFirstToken ? "pulse-text" : "",
-							"w-full h-full custom-blocknote-theme",
+							"custom-blocknote-theme h-full w-full",
 						)}
 					>
 						<BlockNoteView

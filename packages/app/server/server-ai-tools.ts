@@ -1,8 +1,8 @@
 import { tool } from "ai";
 import z from "zod";
 import dedent from "dedent";
-import type { ActionCtx } from "../_generated/server";
-import { internal } from "../_generated/api";
+import type { ActionCtx } from "../convex/_generated/server";
+import { internal } from "../convex/_generated/api";
 import {
 	server_path_extract_segments_from,
 	server_path_name_of,
@@ -10,8 +10,8 @@ import {
 	server_path_parent_of,
 } from "./server-utils.ts";
 import { minimatch } from "minimatch";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../src/lib/ai-chat.ts";
-import { math_clamp } from "../../shared/shared-utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
+import { math_clamp } from "../shared/shared-utils.ts";
 
 // TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
 async function list_dir(

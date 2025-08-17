@@ -13,7 +13,7 @@ import {
 	server_path_extract_segments_from,
 	server_convex_get_user_fallback_to_anonymous,
 	server_convex_headers_cors,
-} from "./lib/server-utils.ts";
+} from "../server/server-utils.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
