@@ -16,10 +16,10 @@ import {
 	RefreshCwIcon,
 	SendHorizontalIcon,
 } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { cn } from "../../lib/utils.ts";
 
-import { Button } from "../ui/button";
-import { TooltipIconButton } from "./tooltip-icon-button";
+import { Button } from "../ui/button.tsx";
+import { TooltipIconButton } from "./tooltip-icon-button.tsx";
 import { MarkdownText } from "./markdown-text.tsx";
 
 export const Thread: FC = memo(() => {

@@ -1,10 +1,10 @@
 import { memo, useEffect } from "react";
 import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
 import type { ToolCallContentPartProps } from "@assistant-ui/react";
-import { useCanvasStore } from "../stores/canvas-store";
-import type { ArtifactTextContent, Artifact } from "../types/canvas";
-import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas";
-import { Button } from "./ui/button";
+import { useCanvasStore } from "../stores/canvas-store.ts";
+import type { ArtifactTextContent, Artifact } from "../types/canvas.ts";
+import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
+import { Button } from "./ui/button.tsx";
 import { FileText, Eye, AlertCircle, Loader2 } from "lucide-react";
 
 // Define props interface for better typing
@@ -17,7 +17,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	const argsParseResult = parseCreateArtifactArgs(args);
 
 	const message = useMessage();
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 	const artifactId = (message.metadata.unstable_data?.[0] as any)?.id;
 
 	useEffect(() => {
@@ -65,8 +65,8 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	// Show loading state while tool is executing
 	if (status.type === "running") {
 		return (
-			<div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-				<Loader2 className="h-4 w-4 text-blue-600 dark:text-blue-400 animate-spin" />
+			<div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
+				<Loader2 className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
 				<div className="flex flex-col">
 					<span className="text-sm text-blue-800 dark:text-blue-200">
 						{status.type === "running" ? "Generating artifact content..." : "Creating artifact..."}
@@ -84,7 +84,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	// Show error state if parsing failed
 	if (status.type === "complete" && argsParseResult.error) {
 		return (
-			<div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg">
+			<div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
 				<AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
 				<span className="text-sm text-red-800 dark:text-red-200">
 					Invalid artifact arguments: {argsParseResult.error.message}
@@ -96,7 +96,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	// Show success state with view button
 	if (status.type === "complete" && argsParseResult.success) {
 		return (
-			<div className="flex items-center justify-between gap-3 p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+			<div className="flex items-center justify-between gap-3 rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
 				<div className="flex items-center gap-2">
 					<FileText className="h-4 w-4 text-green-600 dark:text-green-400" />
 					<div className="flex flex-col">
@@ -112,7 +112,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 					variant="outline"
 					className="border-green-300 hover:bg-green-100 dark:border-green-700 dark:hover:bg-green-900"
 				>
-					<Eye className="h-4 w-4 mr-1" />
+					<Eye className="mr-1 h-4 w-4" />
 					View
 				</Button>
 			</div>
@@ -121,7 +121,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 
 	// Default processing state
 	return (
-		<div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg">
+		<div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900">
 			<FileText className="h-4 w-4 text-gray-600 dark:text-gray-400" />
 			<span className="text-sm text-gray-700 dark:text-gray-300">Processing artifact...</span>
 		</div>
