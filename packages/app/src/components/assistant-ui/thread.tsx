@@ -1,3 +1,5 @@
+// Original file at: 263f9e51
+
 import {
 	ThreadPrimitive,
 	ComposerPrimitive,
@@ -20,23 +22,26 @@ import {
 	Square,
 } from "lucide-react";
 
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
 import { motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { MarkdownText } from "./markdown-text";
-import { ToolFallback } from "./tool-fallback";
+import { Button } from "@/components/ui/button.tsx";
+import { cn } from "@/lib/utils.ts";
+import { MarkdownText } from "./markdown-text.tsx";
+import { ToolFallback } from "./tool-fallback.tsx";
 
 export const Thread: FC = () => {
 	return (
 		<ThreadPrimitive.Root
-			className="flex h-full flex-col bg-background"
+			className={cn("Thread", "flex h-full flex-col bg-background")}
 			style={{
 				["--thread-max-width" as string]: "48rem",
 				["--thread-padding-x" as string]: "1rem",
 			}}
 		>
-			<ThreadPrimitive.Viewport className="relative flex min-w-0 flex-1 flex-col gap-6 overflow-y-scroll">
+			<ThreadPrimitive.Viewport
+				autoScroll
+				className={cn("Thread-viewport", "relative flex min-w-0 flex-1 flex-col gap-6 overflow-y-scroll")}
+			>
 				<ThreadWelcome />
 
 				<ThreadPrimitive.Messages
@@ -48,7 +53,7 @@ export const Thread: FC = () => {
 				/>
 
 				<ThreadPrimitive.If empty={false}>
-					<motion.div className="min-h-6 min-w-6 shrink-0" />
+					<motion.div className={cn("Thread-spacer", "min-h-6 min-w-6 shrink-0")} />
 				</ThreadPrimitive.If>
 			</ThreadPrimitive.Viewport>
 
@@ -63,7 +68,10 @@ const ThreadScrollToBottom: FC = () => {
 			<TooltipIconButton
 				tooltip="Scroll to bottom"
 				variant="outline"
-				className="absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent"
+				className={cn(
+					"ThreadScrollToBottom",
+					"absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible dark:bg-background dark:hover:bg-accent",
+				)}
 			>
 				<ArrowDownIcon />
 			</TooltipIconButton>
@@ -74,15 +82,20 @@ const ThreadScrollToBottom: FC = () => {
 const ThreadWelcome: FC = () => {
 	return (
 		<ThreadPrimitive.Empty>
-			<div className="mx-auto flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col px-[var(--thread-padding-x)]">
-				<div className="flex w-full flex-grow flex-col items-center justify-center">
+			<div
+				className={cn(
+					"ThreadWelcome",
+					"mx-auto flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col px-[var(--thread-padding-x)]",
+				)}
+			>
+				<div className={cn("ThreadWelcome-content", "flex w-full flex-grow flex-col items-center justify-center")}>
 					<div className="flex size-full flex-col justify-center px-8 md:mt-20">
 						<motion.div
 							initial={{ opacity: 0, y: 10 }}
 							animate={{ opacity: 1, y: 0 }}
 							exit={{ opacity: 0, y: 10 }}
 							transition={{ delay: 0.5 }}
-							className="text-2xl font-semibold"
+							className={cn("ThreadWelcome-title", "text-2xl font-semibold")}
 						>
 							Hello there!
 						</motion.div>
@@ -91,7 +104,7 @@ const ThreadWelcome: FC = () => {
 							animate={{ opacity: 1, y: 0 }}
 							exit={{ opacity: 0, y: 10 }}
 							transition={{ delay: 0.6 }}
-							className="text-2xl text-muted-foreground/65"
+							className={cn("ThreadWelcome-title", "text-2xl text-muted-foreground/65")}
 						>
 							How can I help you today?
 						</motion.div>
@@ -153,15 +166,28 @@ const ThreadWelcomeSuggestions: FC = () => {
 
 const Composer: FC = () => {
 	return (
-		<div className="relative mx-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 bg-background px-[var(--thread-padding-x)] pb-4 md:pb-6">
+		<div
+			className={cn(
+				"Thread-composer-container",
+				"relative mx-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 bg-background px-[var(--thread-padding-x)] pb-4 md:pb-6",
+			)}
+		>
 			<ThreadScrollToBottom />
 			<ThreadPrimitive.Empty>
 				<ThreadWelcomeSuggestions />
 			</ThreadPrimitive.Empty>
-			<ComposerPrimitive.Root className="relative flex w-full flex-col rounded-2xl focus-within:ring-2 focus-within:ring-black focus-within:ring-offset-2 dark:focus-within:ring-white">
+			<ComposerPrimitive.Root
+				className={cn(
+					"Composer",
+					"relative flex w-full flex-col rounded-2xl focus-within:ring-2 focus-within:ring-black focus-within:ring-offset-2 dark:focus-within:ring-white",
+				)}
+			>
 				<ComposerPrimitive.Input
 					placeholder="Send a message..."
-					className="max-h-[calc(50dvh)] min-h-16 w-full resize-none rounded-t-2xl border-x border-t border-border bg-muted px-4 pt-2 pb-3 text-base outline-none placeholder:text-muted-foreground focus:outline-primary dark:border-muted-foreground/15"
+					className={cn(
+						"Composer-input",
+						"max-h-[calc(50dvh)] min-h-16 w-full resize-none rounded-t-2xl border-x border-t border-border bg-muted px-4 pt-2 pb-3 text-base outline-none placeholder:text-muted-foreground focus:outline-primary dark:border-muted-foreground/15",
+					)}
 					rows={1}
 					autoFocus
 					aria-label="Message input"
@@ -174,11 +200,19 @@ const Composer: FC = () => {
 
 const ComposerAction: FC = () => {
 	return (
-		<div className="relative flex items-center justify-between rounded-b-2xl border-x border-b border-border bg-muted p-2 dark:border-muted-foreground/15">
+		<div
+			className={cn(
+				"Composer-actions",
+				"relative flex items-center justify-between rounded-b-2xl border-x border-b border-border bg-muted p-2 dark:border-muted-foreground/15",
+			)}
+		>
 			<TooltipIconButton
 				tooltip="Attach file"
 				variant="ghost"
-				className="scale-115 p-3.5 hover:bg-foreground/15 dark:hover:bg-background/50"
+				className={cn(
+					"ComposerAction-attach-button",
+					"scale-115 p-3.5 hover:bg-foreground/15 dark:hover:bg-background/50",
+				)}
 				onClick={() => {
 					console.log("Attachment clicked - not implemented");
 				}}
@@ -191,7 +225,10 @@ const ComposerAction: FC = () => {
 					<Button
 						type="submit"
 						variant="default"
-						className="size-8 rounded-full border border-muted-foreground/60 hover:bg-primary/75 dark:border-muted-foreground/90"
+						className={cn(
+							"ComposerAction-send-button",
+							"size-8 rounded-full border border-muted-foreground/60 hover:bg-primary/75 dark:border-muted-foreground/90",
+						)}
 						aria-label="Send message"
 					>
 						<ArrowUpIcon className="size-5" />
@@ -204,7 +241,10 @@ const ComposerAction: FC = () => {
 					<Button
 						type="button"
 						variant="default"
-						className="size-8 rounded-full border border-muted-foreground/60 hover:bg-primary/75 dark:border-muted-foreground/90"
+						className={cn(
+							"ComposerAction-cancel-button",
+							"size-8 rounded-full border border-muted-foreground/60 hover:bg-primary/75 dark:border-muted-foreground/90",
+						)}
 						aria-label="Stop generating"
 					>
 						<Square className="size-3.5 fill-white dark:size-4 dark:fill-black" />
@@ -229,7 +269,10 @@ const AssistantMessage: FC = () => {
 	return (
 		<MessagePrimitive.Root asChild>
 			<motion.div
-				className="relative mx-auto grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_auto_1fr] grid-rows-[auto_1fr] px-[var(--thread-padding-x)] py-4"
+				className={cn(
+					"AssistantMessage",
+					"relative mx-auto grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_auto_1fr] grid-rows-[auto_1fr] px-[var(--thread-padding-x)] py-4",
+				)}
 				initial={{ y: 5, opacity: 0 }}
 				animate={{ y: 0, opacity: 1 }}
 				data-role="assistant"
@@ -238,7 +281,12 @@ const AssistantMessage: FC = () => {
 					<StarIcon size={14} />
 				</div>
 
-				<div className="col-span-2 col-start-2 row-start-1 ml-4 leading-7 break-words text-foreground">
+				<div
+					className={cn(
+						"AssistantMessage-content",
+						"col-span-2 col-start-2 row-start-1 ml-4 leading-7 break-words text-foreground",
+					)}
+				>
 					<MessagePrimitive.Content
 						components={{
 							Text: MarkdownText,
@@ -250,7 +298,7 @@ const AssistantMessage: FC = () => {
 
 				<AssistantActionBar />
 
-				<BranchPicker className="col-start-2 row-start-2 mr-2 -ml-2" />
+				<BranchPicker className={cn("AssistantMessage-branch-picker", "col-start-2 row-start-2 mr-2 -ml-2")} />
 			</motion.div>
 		</MessagePrimitive.Root>
 	);
@@ -262,10 +310,13 @@ const AssistantActionBar: FC = () => {
 			hideWhenRunning
 			autohide="not-last"
 			autohideFloat="single-branch"
-			className="col-start-3 row-start-2 mt-3 ml-3 flex gap-1 text-muted-foreground data-floating:absolute data-floating:mt-2 data-floating:rounded-md data-floating:border data-floating:bg-background data-floating:p-1 data-floating:shadow-sm"
+			className={cn(
+				"AssistantActionBar",
+				"col-start-3 row-start-2 mt-3 ml-3 flex gap-1 text-muted-foreground data-floating:absolute data-floating:mt-2 data-floating:rounded-md data-floating:border data-floating:bg-background data-floating:p-1 data-floating:shadow-sm",
+			)}
 		>
 			<ActionBarPrimitive.Copy asChild>
-				<TooltipIconButton tooltip="Copy">
+				<TooltipIconButton tooltip="Copy" className="AssistantActionBar-copy-button">
 					<MessagePrimitive.If copied>
 						<CheckIcon />
 					</MessagePrimitive.If>
@@ -275,7 +326,7 @@ const AssistantActionBar: FC = () => {
 				</TooltipIconButton>
 			</ActionBarPrimitive.Copy>
 			<ActionBarPrimitive.Reload asChild>
-				<TooltipIconButton tooltip="Refresh">
+				<TooltipIconButton tooltip="Refresh" className="AssistantActionBar-reload-button">
 					<RefreshCwIcon />
 				</TooltipIconButton>
 			</ActionBarPrimitive.Reload>
@@ -287,18 +338,28 @@ const UserMessage: FC = () => {
 	return (
 		<MessagePrimitive.Root asChild>
 			<motion.div
-				className="mx-auto grid w-full max-w-[var(--thread-max-width)] auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] gap-y-1 px-[var(--thread-padding-x)] py-4 [&:where(>*)]:col-start-2"
+				className={cn(
+					"UserMessage",
+					"mx-auto grid w-full max-w-[var(--thread-max-width)] auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] gap-y-1 px-[var(--thread-padding-x)] py-4 [&:where(>*)]:col-start-2",
+				)}
 				initial={{ y: 5, opacity: 0 }}
 				animate={{ y: 0, opacity: 1 }}
 				data-role="user"
 			>
 				<UserActionBar />
 
-				<div className="col-start-2 rounded-3xl bg-muted px-5 py-2.5 break-words text-foreground">
+				<div
+					className={cn(
+						"UserMessage-content",
+						"col-start-2 rounded-3xl bg-muted px-5 py-2.5 break-words text-foreground",
+					)}
+				>
 					<MessagePrimitive.Content components={{ Text: MarkdownText }} />
 				</div>
 
-				<BranchPicker className="col-span-full col-start-1 row-start-3 -mr-1 justify-end" />
+				<BranchPicker
+					className={cn("UserMessage-branch-picker", "col-span-full col-start-1 row-start-3 -mr-1 justify-end")}
+				/>
 			</motion.div>
 		</MessagePrimitive.Root>
 	);
@@ -309,10 +370,10 @@ const UserActionBar: FC = () => {
 		<ActionBarPrimitive.Root
 			hideWhenRunning
 			autohide="not-last"
-			className="col-start-1 mt-2.5 mr-3 flex flex-col items-end"
+			className={cn("UserActionBar", "col-start-1 mt-2.5 mr-3 flex flex-col items-end")}
 		>
 			<ActionBarPrimitive.Edit asChild>
-				<TooltipIconButton tooltip="Edit">
+				<TooltipIconButton tooltip="Edit" className="UserActionBar-edit-button">
 					<PencilIcon />
 				</TooltipIconButton>
 			</ActionBarPrimitive.Edit>
@@ -325,18 +386,21 @@ const EditComposer: FC = () => {
 		<div className="mx-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 px-[var(--thread-padding-x)]">
 			<ComposerPrimitive.Root className="ml-auto flex w-full max-w-7/8 flex-col rounded-xl bg-muted">
 				<ComposerPrimitive.Input
-					className="flex min-h-[60px] w-full resize-none bg-transparent p-4 text-foreground outline-none"
+					className={cn(
+						"EditComposer-input",
+						"flex min-h-[60px] w-full resize-none bg-transparent p-4 text-foreground outline-none",
+					)}
 					autoFocus
 				/>
 
-				<div className="mx-3 mb-3 flex items-center justify-center gap-2 self-end">
+				<div className={cn("EditComposer-actions", "mx-3 mb-3 flex items-center justify-center gap-2 self-end")}>
 					<ComposerPrimitive.Cancel asChild>
-						<Button variant="ghost" size="sm" aria-label="Cancel edit">
+						<Button variant="ghost" size="sm" aria-label="Cancel edit" className="EditComposer-cancel-button">
 							Cancel
 						</Button>
 					</ComposerPrimitive.Cancel>
 					<ComposerPrimitive.Send asChild>
-						<Button size="sm" aria-label="Update message">
+						<Button size="sm" aria-label="Update message" className="EditComposer-send-button">
 							Update
 						</Button>
 					</ComposerPrimitive.Send>
@@ -350,19 +414,19 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({ className, ...rest
 	return (
 		<BranchPickerPrimitive.Root
 			hideWhenSingleBranch
-			className={cn("inline-flex items-center text-xs text-muted-foreground", className)}
+			className={cn("BranchPicker", "inline-flex items-center text-xs text-muted-foreground", className)}
 			{...rest}
 		>
 			<BranchPickerPrimitive.Previous asChild>
-				<TooltipIconButton tooltip="Previous">
+				<TooltipIconButton tooltip="Previous" className="BranchPicker-previous-button">
 					<ChevronLeftIcon />
 				</TooltipIconButton>
 			</BranchPickerPrimitive.Previous>
-			<span className="font-medium">
+			<span className={cn("BranchPicker-counter", "font-medium")}>
 				<BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
 			</span>
 			<BranchPickerPrimitive.Next asChild>
-				<TooltipIconButton tooltip="Next">
+				<TooltipIconButton tooltip="Next" className="BranchPicker-next-button">
 					<ChevronRightIcon />
 				</TooltipIconButton>
 			</BranchPickerPrimitive.Next>
