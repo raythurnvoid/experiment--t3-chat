@@ -101,6 +101,11 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 		unsubscribe: () => void;
 	} | null>(null);
 
+	const pageBroadcastWatch = useRef<{
+		unsubscribe: () => void;
+		lastAppliedCreationTime: number;
+	} | null>(null);
+
 	useEffect(
 		() => {
 			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
@@ -137,33 +142,62 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 			return;
 		}
 
-		// Apply content once when editor becomes ready
-		const applyContent = () => {
-			if (!editor || !isEditorReady) return;
+		const ydoc = editor.storage.liveblocksExtension.doc;
+		const hasContentSet = ydoc.getMap("liveblocks_config").get("hasContentSet");
 
-			const ydoc = editor.storage.liveblocksExtension.doc;
-			const hasContentSet = ydoc.getMap("liveblocks_config").get("hasContentSet");
+		if (!hasContentSet) {
+			ydoc.getMap("liveblocks_config").set("hasContentSet", true);
 
-			if (!hasContentSet) {
-				ydoc.getMap("liveblocks_config").set("hasContentSet", true);
-
-				if (props.initialContent) {
-					console.log("Setting fallback initial content:", props.initialContent);
-					editor.commands.setContent(props.initialContent);
-				}
-			} else if (pageTextContentQueryWatch.current?.value) {
-				const content = pageTextContentQueryWatch.current.value;
-				console.log("Setting content from Convex:", content);
-				editor.commands.setContent(content, false);
+			if (props.initialContent) {
+				console.log("Setting fallback initial content:", props.initialContent);
+				editor.commands.setContent(props.initialContent);
 			}
+		} else if (pageTextContentQueryWatch.current?.value) {
+			const content = pageTextContentQueryWatch.current.value;
+			console.log("Setting content from Convex:", content);
+			editor.commands.setContent(content, false);
+		}
 
-			pageTextContentQueryWatch.current?.unsubscribe();
-			setContentLoaded(true);
-		};
-
-		// Try to apply content immediately if we already have it
-		applyContent();
+		pageTextContentQueryWatch.current?.unsubscribe();
+		setContentLoaded(true);
 	}, [editor, isEditorReady, props.doc_id, props.initialContent, contentLoaded, convex, pageTextContentQueryWatch]);
+
+	// Subscribe to page updates broadcast and apply incoming content
+	useEffect(
+		() => {
+			if (!editor || !isEditorReady || !props.doc_id) return;
+
+			pageBroadcastWatch.current?.unsubscribe?.();
+
+			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_broadcast_latest, {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: props.doc_id,
+			});
+
+			const unsubscribe = watcher.onUpdate(() => {
+				const update = watcher.localQueryResult();
+				if (!editor || !update) return;
+				/*
+				Apply whenever we receive a new update while editor is ready.
+				We avoid feedback loops by using setContent with emitUpdate=false below.
+				*/
+				editor.commands.setContent(update.text_content, false);
+			});
+
+			pageBroadcastWatch.current = {
+				unsubscribe,
+				lastAppliedCreationTime: 0,
+			};
+
+			return () => {
+				pageBroadcastWatch.current?.unsubscribe?.();
+				pageBroadcastWatch.current = null;
+			};
+		},
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[editor, isEditorReady, props.doc_id],
+	);
 
 	// Cleanup timeout on unmount
 	useEffect(() => {

@@ -12,6 +12,9 @@ import { Thread } from "@/components/assistant-ui/thread.tsx";
 import { useEffect } from "react";
 import { global_event_ai_chat_open_canvas } from "../lib/global-events.tsx";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
+import { useMutation } from "convex/react";
+import { api } from "../../convex/_generated/api.js";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 
 function mapStatusToToolState(status: {
 	type: string;
@@ -376,10 +379,10 @@ type WritePageToolUi_Result = {
 	output: string;
 	metadata: {
 		exists: boolean;
-		applied?: boolean;
+		applied: boolean;
 		preview?: string;
 		diff?: string;
-		page_id?: string;
+		page_id: string;
 	};
 };
 
@@ -388,22 +391,35 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 
 	const toolState = mapStatusToToolState(status);
 	const partRuntime = useMessagePartRuntime();
+	const updateAndBroadcast = useMutation(api.ai_docs_temp.update_page_and_broadcast);
 
-	const handleToolComplete = useLiveRef(() => {
-		console.log("handleToolComplete", result);
+	const handleToolComplete = useLiveRef(async () => {
 		if (!result) return;
 
 		const pageId = result.metadata.page_id;
 		if (pageId) {
+			// Broadcast the final content to editors via Convex, keeping server tool pure for HITL workflows
+			try {
+				await updateAndBroadcast({
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					page_id: pageId,
+					text_content: args.content,
+				});
+			} catch (e) {
+				console.error("Failed to broadcast page update:", e);
+				return;
+			}
+
 			global_event_ai_chat_open_canvas.dispatch({ pageId });
 		}
 	});
 
 	useEffect(() => {
-		const cleanup = partRuntime.subscribe(() => {
+		const cleanup = partRuntime.subscribe(async () => {
 			const state = partRuntime.getState();
 			if (state.type === "tool-call" && state.status.type === "complete") {
-				handleToolComplete.current();
+				await handleToolComplete.current();
 			}
 		});
 

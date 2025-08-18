@@ -229,6 +229,19 @@ const app_convex_schema = defineSchema({
 			searchField: "text_content",
 			filterFields: ["workspace_id", "project_id"],
 		}),
+
+	page_updates_broadcast: defineTable({
+		/** Workspace ID extracted from roomId */
+		workspace_id: v.string(),
+		/** Project ID extracted from roomId */
+		project_id: v.string(),
+		/** Related page id (same as pages.page_id) */
+		page_id: v.string(),
+		/** Text content to broadcast */
+		text_content: v.string(),
+	})
+		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
+		.index("by_page_id", ["page_id"]),
 });
 
 export default app_convex_schema;

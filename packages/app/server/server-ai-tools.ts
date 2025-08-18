@@ -3,7 +3,7 @@ import z from "zod";
 import dedent from "dedent";
 import { createTwoFilesPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
-import { internal } from "../convex/_generated/api";
+import { api, internal } from "../convex/_generated/api";
 import {
 	server_path_extract_segments_from,
 	server_path_name_of,
@@ -554,7 +554,7 @@ export type server_ai_tools_write_page_result = {
 	output: string;
 	metadata: {
 		exists: boolean;
-		applied?: boolean;
+		applied: boolean;
 		preview: string;
 		diff?: string;
 		page_id?: string;
@@ -596,13 +596,15 @@ export function ai_tool_create_write_page(ctx: ActionCtx) {
 				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
 			}
 
-			const exists = await ctx.runQuery(internal.ai_docs_temp.page_exists_by_path, {
+			const pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
 				path,
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
 			});
 
-			const oldText = exists
+			const exists = !!pageId;
+
+			const oldText = pageId
 				? ((await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
 						path,
 						workspace_id: ai_chat_HARDCODED_ORG_ID,
@@ -618,25 +620,19 @@ export function ai_tool_create_write_page(ctx: ActionCtx) {
 			if (args.confirm !== true) {
 				return {
 					title: path,
-					output: exists ? "Preview overwrite" : "Preview create",
-					metadata: { exists, preview, diff },
+					output: pageId ? "Preview overwrite" : "Preview create",
+					metadata: { exists, preview, diff, applied: false },
 				};
 			}
 
 			// Apply: explicit overwrite required if page exists
-			if (exists && args.overwrite !== true) {
+			if (pageId && args.overwrite !== true) {
 				throw new Error("Refusing to overwrite existing page without overwrite: true");
 			}
 
 			let resultingPageId: string | null = null;
-			if (exists) {
-				const pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-					path,
-					workspace_id: ai_chat_HARDCODED_ORG_ID,
-					project_id: ai_chat_HARDCODED_PROJECT_ID,
-				});
-				if (!pageId) throw new Error("Failed to resolve page id");
-				await ctx.runMutation(internal.ai_docs_temp.update_page_text_content, {
+			if (pageId) {
+				await ctx.runMutation(api.ai_docs_temp.update_page_text_content, {
 					workspace_id: ai_chat_HARDCODED_ORG_ID,
 					project_id: ai_chat_HARDCODED_PROJECT_ID,
 					page_id: pageId,
@@ -656,7 +652,7 @@ export function ai_tool_create_write_page(ctx: ActionCtx) {
 			return {
 				title: path,
 				output: "Write applied successfully",
-				metadata: { exists, applied: true, preview, diff, page_id: resultingPageId ?? null },
+				metadata: { exists: true, preview, diff, page_id: resultingPageId ?? null, applied: true },
 			};
 		},
 	});
