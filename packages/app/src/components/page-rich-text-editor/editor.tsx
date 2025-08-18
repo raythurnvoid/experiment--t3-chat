@@ -101,31 +101,35 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 		unsubscribe: () => void;
 	} | null>(null);
 
-	useEffect(() => {
-		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: props.doc_id,
-		});
+	useEffect(
+		() => {
+			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: props.doc_id,
+			});
 
-		const unsubscribe = watcher.onUpdate(() => {
-			if (pageTextContentQueryWatch.current) {
-				pageTextContentQueryWatch.current.value = watcher.localQueryResult();
-			}
-		});
+			const unsubscribe = watcher.onUpdate(() => {
+				if (pageTextContentQueryWatch.current) {
+					pageTextContentQueryWatch.current.value = watcher.localQueryResult();
+				}
+			});
 
-		pageTextContentQueryWatch.current = {
-			value: watcher.localQueryResult(),
-			unsubscribe: () => {
-				unsubscribe();
-				pageTextContentQueryWatch.current = null;
-			},
-		};
+			pageTextContentQueryWatch.current = {
+				value: watcher.localQueryResult(),
+				unsubscribe: () => {
+					unsubscribe();
+					pageTextContentQueryWatch.current = null;
+				},
+			};
 
-		return () => {
-			pageTextContentQueryWatch.current?.unsubscribe();
-		};
-	}, [props.doc_id]);
+			return () => {
+				pageTextContentQueryWatch.current?.unsubscribe();
+			};
+		},
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[props.doc_id],
+	);
 
 	// Set content from Convex when editor is ready
 	useEffect(() => {
@@ -171,11 +175,16 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	}, []);
 
 	// Detect if the sync status changed
-	useEffect(() => {
-		if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
-			setSyncChanged(true);
-		}
-	}, [syncStatus]);
+	useEffect(
+		() => {
+			if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
+				setSyncChanged(true);
+			}
+		},
+
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[syncStatus],
+	);
 
 	const handleCreate = ({ editor }: { editor: Editor }) => {
 		setEditor(editor);

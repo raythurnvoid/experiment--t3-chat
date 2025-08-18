@@ -60,6 +60,7 @@ export default tseslint.config(
 			"@typescript-eslint/no-unused-expressions": "off",
 			"@typescript-eslint/no-unused-vars": "off",
 			"@typescript-eslint/prefer-as-const": "off",
+			"@typescript-eslint/require-await": "off",
 			"@typescript-eslint/only-throw-error": [
 				"error",
 				{

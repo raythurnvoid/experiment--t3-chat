@@ -12,11 +12,11 @@ import {
 	ChevronsDown,
 	ChevronsUp,
 } from "lucide-react";
-import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn, sx } from "@/lib/utils";
-import { IconButton } from "@/components/icon-button";
+import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { cn, sx } from "@/lib/utils.ts";
+import { IconButton } from "@/components/icon-button.tsx";
 import {
 	UncontrolledTreeEnvironment,
 	Tree,
@@ -31,9 +31,9 @@ import {
 } from "react-complex-tree";
 import type { ConvexReactClient } from "convex/react";
 import { useConvex, useQuery, useMutation } from "convex/react";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
-import { api } from "../../convex/_generated/api";
-import { generate_timestamp_uuid } from "@/lib/utils";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { api } from "../../convex/_generated/api.ts";
+import { generate_timestamp_uuid } from "@/lib/utils.ts";
 
 // Types for document structure - react-complex-tree format
 interface DocData {
@@ -409,7 +409,9 @@ function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
 			setItems(dataProvider.getAllData());
 		});
 
-		return disposable.dispose;
+		return () => {
+			disposable.dispose();
+		};
 	}, [dataProvider]);
 
 	return (
@@ -730,25 +732,29 @@ function TreeArea(props: TreeArea_Props) {
 	const convex = useConvex();
 
 	// Get expanded items for view state
-	const expandedItems = useMemo(() => {
-		if (!dataProvider) return [];
-		const allData = treeItems;
-		const expanded: string[] = [];
+	const expandedItems = useMemo(
+		() => {
+			if (!dataProvider) return [];
+			const allData = treeItems;
+			const expanded: string[] = [];
 
-		// Get the root item to find its direct children
-		const rootItem = allData[ROOT_TREE_ID];
-		if (rootItem && rootItem.children) {
-			// Only expand direct children of root that are folders with children
-			rootItem.children.forEach((childId) => {
-				const childItem = allData[childId];
-				if (childItem && childItem.isFolder && childItem.children && childItem.children.length > 0) {
-					expanded.push(childId.toString());
-				}
-			});
-		}
+			// Get the root item to find its direct children
+			const rootItem = allData[ROOT_TREE_ID];
+			if (rootItem && rootItem.children) {
+				// Only expand direct children of root that are folders with children
+				rootItem.children.forEach((childId) => {
+					const childItem = allData[childId];
+					if (childItem && childItem.isFolder && childItem.children && childItem.children.length > 0) {
+						expanded.push(childId.toString());
+					}
+				});
+			}
 
-		return expanded;
-	}, [dataProvider, searchQuery, treeItems]);
+			return expanded;
+		},
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[dataProvider, searchQuery, treeItems],
+	);
 
 	const rootElement = useRef<HTMLDivElement>(null);
 

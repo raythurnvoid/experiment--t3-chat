@@ -1,5 +1,5 @@
 import "./app-ai-chat.css";
-import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
+import { makeAssistantToolUI, useMessage, useMessagePartRuntime } from "@assistant-ui/react";
 import type { ToolCallContentPartProps } from "@assistant-ui/react";
 import { CopyIcon, FileText, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -11,6 +11,7 @@ import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artif
 import { Thread } from "@/components/assistant-ui/thread.tsx";
 import { useEffect } from "react";
 import { global_event_ai_chat_open_canvas } from "../lib/global-events.tsx";
+import { useLiveRef } from "../hooks/utils-hooks.ts";
 
 function mapStatusToToolState(status: {
 	type: string;
@@ -151,7 +152,7 @@ function ReadPageToolUiComponent(props: ToolCallContentPartProps<ReadPageToolUi_
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-read-page-tool">
-			<ToolHeader type="tool-read_page" state={toolState as any} />
+			<ToolHeader type="tool-read_page" state={toolState} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />
@@ -198,7 +199,7 @@ function ListPagesToolUiComponent(props: ToolCallContentPartProps<ListPagesToolU
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-list-pages-tool">
-			<ToolHeader type="tool-list_pages" state={toolState as any} />
+			<ToolHeader type="tool-list_pages" state={toolState} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />
@@ -244,7 +245,7 @@ function GlobPagesToolUiComponent(props: ToolCallContentPartProps<GlobPagesToolU
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-glob-pages-tool">
-			<ToolHeader type="tool-glob_pages" state={toolState as any} />
+			<ToolHeader type="tool-glob_pages" state={toolState} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />
@@ -292,7 +293,7 @@ function GrepPagesToolUiComponent(props: ToolCallContentPartProps<GrepPagesToolU
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-grep-pages-tool">
-			<ToolHeader type="tool-grep_pages" state={toolState as any} />
+			<ToolHeader type="tool-grep_pages" state={toolState} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />
@@ -338,7 +339,7 @@ function TextSearchPagesToolUiComponent(
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-text-search-pages-tool">
-			<ToolHeader type="tool-text_search_pages" state={toolState as any} />
+			<ToolHeader type="tool-text_search_pages" state={toolState} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />
@@ -384,17 +385,34 @@ type WritePageToolUi_Result = {
 
 function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolUi_Args, WritePageToolUi_Result>) {
 	const { args, result, status } = props;
+
 	const toolState = mapStatusToToolState(status);
+	const partRuntime = useMessagePartRuntime();
+
+	const handleToolComplete = useLiveRef(() => {
+		console.log("handleToolComplete", result);
+		if (!result) return;
+
+		const pageId = result.metadata.page_id;
+		if (pageId) {
+			global_event_ai_chat_open_canvas.dispatch({ pageId });
+		}
+	});
 
 	useEffect(() => {
-		if (status.type === "complete" && result?.metadata.page_id) {
-			global_event_ai_chat_open_canvas.dispatch({ pageId: result.metadata.page_id });
-		}
-	}, [status, result?.metadata.page_id]);
+		const cleanup = partRuntime.subscribe(() => {
+			const state = partRuntime.getState();
+			if (state.type === "tool-call" && state.status.type === "complete") {
+				handleToolComplete.current();
+			}
+		});
+
+		return cleanup;
+	}, [partRuntime, handleToolComplete]);
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-write-page-tool">
-			<ToolHeader type="tool-write_page" state={toolState as any} />
+			<ToolHeader type="tool-write_page" state={toolState} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />

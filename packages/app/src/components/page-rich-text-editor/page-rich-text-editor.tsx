@@ -1,9 +1,9 @@
 import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
 import { ClientSideSuspense } from "@liveblocks/react";
-import { useAuth } from "../../lib/auth";
-import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat";
-import { RichTextDocEditor } from "./editor";
+import { useAuth } from "../../lib/auth.ts";
+import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
+import { RichTextDocEditor } from "./editor.tsx";
 
 export interface PageRichTextEditor_Props {
 	pageId: string | null | undefined;
@@ -58,7 +58,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 					throw new Error(`Failed to authenticate: ${result.bad.message}`);
 				}
 			}}
-			resolveUsers={async ({ userIds }: { userIds: string[] }) => {
+			resolveUsers={({ userIds }: { userIds: string[] }) => {
 				return userIds.map((id: string) => ({
 					id,
 					name: "Development User",

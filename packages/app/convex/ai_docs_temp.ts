@@ -873,7 +873,7 @@ export const text_search_pages = internalQuery({
 	},
 });
 
-export const update_page_text_content = internalMutation({
+export const update_page_text_content = mutation({
 	args: {
 		workspace_id: v.string(),
 		project_id: v.string(),
