@@ -41,6 +41,7 @@
 		"@liveblocks/yjs": "^3.1.4",
 		"@mantine/core": "^8.1.1",
 		"@mantine/hooks": "^8.1.1",
+		"@monaco-editor/react": "^4.7.0",
 		"@openrouter/ai-sdk-provider": "1.1.2",
 		"@radix-ui/react-avatar": "^1.1.10",
 		"@radix-ui/react-checkbox": "^1.3.2",
@@ -54,6 +55,7 @@
 		"@radix-ui/react-select": "^2.2.6",
 		"@radix-ui/react-separator": "^1.1.7",
 		"@radix-ui/react-slot": "^1.2.3",
+		"@radix-ui/react-switch": "^1.2.6",
 		"@radix-ui/react-tooltip": "^1.2.7",
 		"@radix-ui/react-use-controllable-state": "^1.2.2",
 		"@tailwindcss/vite": "^4.1.10",
@@ -91,6 +93,7 @@
 		"lowlight": "^3.3.0",
 		"lucide-react": "^0.514.0",
 		"minimatch": "^10.0.3",
+		"monaco-editor": "^0.52.2",
 		"novel": "^1.0.2",
 		"opencode": "workspace:*",
 		"p-queue": "^8.1.0",
@@ -113,7 +116,10 @@
 		"use-stick-to-bottom": "^1.1.1",
 		"uuid": "^10.0.0",
 		"vitest": "^3.2.4",
+		"y-monaco": "^0.1.6",
 		"y-prosemirror": "1.3.7",
+		"y-protocols": "^1.0.6",
+		"yjs": "^13.6.27",
 		"zod": "^3.25.76",
 		"zod-to-json-schema": "^3.24.6",
 		"zustand": "^5.0.3"
@@ -135,6 +141,7 @@
 		"tw-animate-css": "^1.3.4",
 		"typescript": "~5.8.3",
 		"typescript-eslint": "^8.30.1",
-		"vite": "^6.3.5"
+		"vite": "^6.3.5",
+		"vite-plugin-monaco-editor-esm": "^2.0.2"
 	}
 }

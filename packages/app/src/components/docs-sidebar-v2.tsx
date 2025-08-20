@@ -32,8 +32,8 @@ import {
 import type { ConvexReactClient } from "convex/react";
 import { useConvex, useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
-import { api } from "../../convex/_generated/api.ts";
 import { generate_timestamp_uuid } from "@/lib/utils.ts";
+import { app_convex_api } from "../lib/app-convex-client.ts";
 
 // Types for document structure - react-complex-tree format
 interface DocData {
@@ -136,7 +136,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			// Sync to Convex using doc_ids
 			if (this.convex) {
 				this.convex
-					.mutation(api.ai_docs_temp.move_pages, {
+					.mutation(app_convex_api.ai_docs_temp.move_pages, {
 						item_ids: newChildren.map((id) => id.toString()),
 						target_parent_id: itemId.toString(),
 						workspace_id: this.workspaceId,
@@ -181,7 +181,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		// Sync to Convex using doc_id
 		if (this.convex) {
 			try {
-				await this.convex.mutation(api.ai_docs_temp.rename_page, {
+				await this.convex.mutation(app_convex_api.ai_docs_temp.rename_page, {
 					workspace_id: this.workspaceId,
 					project_id: this.projectId,
 					page_id: item.index.toString(),
@@ -247,7 +247,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		// Sync to Convex
 		if (this.convex) {
 			this.convex
-				.mutation(api.ai_docs_temp.create_page, {
+				.mutation(app_convex_api.ai_docs_temp.create_page, {
 					page_id: docId,
 					parent_id: parentId,
 					name: title,
@@ -346,7 +346,7 @@ type DocsTreeProvider_Props = {
 function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
 	const convex = useConvex();
 
-	const treeData = useQuery(api.ai_docs_temp.get_tree, {
+	const treeData = useQuery(app_convex_api.ai_docs_temp.get_tree, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
 		project_id: ai_chat_HARDCODED_PROJECT_ID,
 	});
@@ -760,8 +760,8 @@ function TreeArea(props: TreeArea_Props) {
 
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
-	const archiveDocument = useMutation(api.ai_docs_temp.archive_pages);
-	const unarchiveDocument = useMutation(api.ai_docs_temp.unarchive_pages);
+	const archiveDocument = useMutation(app_convex_api.ai_docs_temp.archive_pages);
+	const unarchiveDocument = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
 
 	const handleAddChild = (parentId: string) => {
 		if (dataProvider) {

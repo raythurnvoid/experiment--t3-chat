@@ -4,6 +4,9 @@ import { useAuth } from "../../lib/auth.ts";
 import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { RichTextDocEditor } from "./editor.tsx";
+import { useState } from "react";
+import { Switch } from "../ui/switch.tsx";
+import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
 
 export interface PageRichTextEditor_Props {
 	pageId: string | null | undefined;
@@ -37,6 +40,7 @@ function LoadingEditor() {
 export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 	const { pageId } = props;
 	const auth = useAuth();
+	const [editorMode, setEditorMode] = useState<"rich" | "markdown">("rich");
 
 	if (!pageId) {
 		return <div>No document selected</div>;
@@ -68,8 +72,23 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 		>
 			<RoomProvider id={roomId}>
 				<ClientSideSuspense fallback={<LoadingEditor />}>
-					<div className="h-full w-full">
-						<RichTextDocEditor doc_id={pageId} />
+					<div className="PageRichTextEditor h-full w-full">
+						<div className="PageRichTextEditor-switch-bar flex h-[48px] items-center justify-end gap-3 border-b border-border/80 bg-background px-4">
+							<span className="PageRichTextEditor-switch-label text-sm text-muted-foreground">
+								{editorMode === "rich" ? "Rich Text" : "Markdown"}
+							</span>
+							<div className="PageRichTextEditor-switch-container flex items-center gap-2">
+								<span className="text-xs text-muted-foreground/80">Rich</span>
+								<Switch
+									checked={editorMode === "markdown"}
+									onCheckedChange={(checked: boolean) => setEditorMode(checked ? "markdown" : "rich")}
+								/>
+								<span className="text-xs text-muted-foreground/80">Markdown</span>
+							</div>
+						</div>
+						<div className="PageRichTextEditor-editor-container h-[calc(100%-48px)]">
+							{editorMode === "rich" ? <RichTextDocEditor doc_id={pageId} /> : <MonacoMarkdownEditor docId={pageId} />}
+						</div>
 					</div>
 				</ClientSideSuspense>
 			</RoomProvider>

@@ -31,7 +31,7 @@ function mapStatusToToolState(status: {
 
 const handleCopyOutput = (text?: string) => {
 	if (text) {
-		navigator.clipboard.writeText(text).catch(() => {});
+		navigator.clipboard.writeText(text).catch(console.error);
 	}
 };
 

@@ -1,10 +1,10 @@
 import React from "react";
-import { DocsSidebar } from "../components/docs-sidebar-v2";
+import { DocsSidebar } from "../components/docs-sidebar-v2.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState } from "react";
-import { Button } from "../components/ui/button";
+import { Button } from "../components/ui/button.tsx";
 import { PanelLeft } from "lucide-react";
-import { cn } from "../lib/utils";
+import { cn } from "../lib/utils.ts";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 
@@ -18,7 +18,7 @@ export const Route = createFileRoute({
 });
 
 const PageRichTextEditor = React.lazy(() =>
-	import("../components/page-rich-text-editor/page-rich-text-editor").then((module) => ({
+	import("../components/page-rich-text-editor/page-rich-text-editor.tsx").then((module) => ({
 		default: module.PageRichTextEditor,
 	})),
 );
@@ -50,7 +50,7 @@ function Docs() {
 		navigate({
 			to: "/docs",
 			search: { docId },
-		});
+		}).catch(console.error);
 	};
 
 	const handleAddChild = (parentId: string, newItemId: string) => {

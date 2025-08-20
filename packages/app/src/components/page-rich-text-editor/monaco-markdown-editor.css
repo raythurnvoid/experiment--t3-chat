@@ -1,0 +1,40 @@
+@layer common-components {
+	/* Scope all styles to the component root and keep specificity low with :where() */
+	:where(.MonacoMarkdownEditor) {
+		/* Remote user selection highlight (fallback color uses design token) */
+		& :where(.yRemoteSelection) {
+			background-color: hsl(var(--ring) / 0.75);
+		}
+
+		/* Remote caret/selection head decoration */
+		& :where(.yRemoteSelectionHead) {
+			position: absolute;
+			border-left: 2px solid hsl(var(--ring));
+			border-top: 2px solid hsl(var(--ring));
+			border-bottom: 2px solid hsl(var(--ring));
+			height: 100%;
+			box-sizing: border-box;
+
+			&::after {
+				position: absolute;
+				content: "";
+				border: 2px solid hsl(var(--ring));
+				border-radius: 4px;
+				left: -5px;
+				top: -5px;
+				height: 8px;
+				width: 8px;
+				background-color: hsl(var(--ring));
+			}
+		}
+
+		/* Improve local caret and current line visibility inside Monaco */
+		& :where(.monaco-editor) .cursors-layer .cursor {
+			border-left: 2px solid hsl(var(--ring)) !important;
+		}
+
+		& :where(.monaco-editor) .view-overlays .current-line {
+			border-color: hsl(var(--ring)) !important;
+		}
+	}
+}
