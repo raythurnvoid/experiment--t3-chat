@@ -162,6 +162,7 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 			userInfo: {
 				avatar: userResult.avatar,
 				name: userResult.name,
+				color: userResult.color,
 			},
 		}),
 	);

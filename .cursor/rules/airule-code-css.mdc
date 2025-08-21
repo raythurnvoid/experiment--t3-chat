@@ -25,7 +25,6 @@ Examples of when to use Tailwind:
 
 1. **User explicitly requests vanilla CSS** ("use vanilla CSS", "create a CSS file", etc.)
 2. **Complex styling patterns** that require:
-   - Low-specificity `:where()` selectors
    - Advanced CSS nesting
    - Complex state management that's difficult with Tailwind
    - Component-specific CSS custom properties
@@ -43,25 +42,8 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 # Layering
 
 ```css
-@layer common-components {
+@layer common_components {
 	/* All component styles must be wrapped in this layer */
-}
-```
-
-# Selectors and Specificity
-
-- Use `:where()` for component's own classes to keep specificity low
-- This allows easy overriding and prevents specificity wars
-
-```css
-/* ✅ Good */
-:where(.Button) {
-	/* base styles */
-}
-
-/* ❌ Bad */
-.Button {
-	/* base styles */
 }
 ```
 
@@ -83,15 +65,15 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 
 ```css
 /* ✅ Good - explicit modifier naming */
-:where(.Button-variant-destructive) {
+.Button-variant-destructive {
 }
-:where(.Button-size-lg) {
+.Button-size-lg {
 }
 
 /* ❌ Bad - double dashes or unclear naming */
-:where(.Button--destructive) {
+.Button--destructive {
 }
-:where(.Button--lg) {
+.Button--lg {
 }
 ```
 
@@ -99,7 +81,7 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 
 ### Important Rule for CSS Selectors
 
-**CRITICAL**: When creating class names that will be used in CSS selectors (including Tailwind's `has-[]`, `:not()`, `:is()`, `:where()`, etc.), you **MUST use dashes (kebab-case) instead of underscores** for the selectors to work properly.
+**CRITICAL**: When creating class names that will be used in CSS selectors (including Tailwind's `has-[]`, `:not()`, `:is()`, etc.), you **MUST use dashes (kebab-case) instead of underscores** for the selectors to work properly.
 
 ### Why Dashes Are Required
 
@@ -112,11 +94,11 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 
 ```css
 /* ✅ Correct: Dashes work in all CSS selectors */
-:where(.Button-variant-primary) {
+.Button-variant-primary {
 	background: hsl(var(--primary));
 }
 
-:where(.Card-size-large) {
+.Card-size-large {
 	padding: 2rem;
 }
 
@@ -126,7 +108,7 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 }
 
 /* ❌ Incorrect: Underscores don't work in CSS selectors */
-:where(.Button_variant_primary) {
+.Button_variant_primary {
 	/* This may not work as expected */
 }
 
@@ -141,15 +123,15 @@ When creating CSS files, ensure all class names use dashes:
 
 ```css
 /* ✅ Correct CSS class naming */
-:where(.MessageComposer-input-field) {
+.MessageComposer-input-field {
 	/* Base styles */
 }
 
-:where(.MessageComposer-send-button) {
+.MessageComposer-send-button {
 	/* Button styles */
 }
 
-:where(.MessageComposer-attachment-area) {
+.MessageComposer-attachment-area {
 	/* Attachment styles */
 }
 ```
@@ -167,7 +149,7 @@ const MessageComposer_class_names = {
 };
 
 // In CSS file
-:where(.MessageComposer-input-field) {
+.MessageComposer-input-field {
 	border: 1px solid hsl(var(--border));
 }
 
@@ -185,23 +167,23 @@ const MessageComposer_class_names = {
 # Modern CSS Nesting
 
 - Use the `&` syntax for nesting selectors within a component
-- Keep all component states within the main `:where()` selector
-- For nested selectors that need low specificity, use `&:where(:hover)` syntax
+- Keep all component states nested under the base component selector to maintain low specificity
+- For nested selectors, use simple pseudo-classes like `&:hover` and `&:focus-visible`
 
 ```css
-/* ✅ Good - using modern CSS nesting with proper :where() usage */
-:where(.Button) {
+/* ✅ Good - using modern CSS nesting with low specificity */
+.Button {
 	/* Base styles */
 
-	&:where(:hover) {
+	&:hover {
 		/* Hover styles with low specificity */
 	}
 
-	&:where(:focus-visible) {
+	&:focus-visible {
 		/* Focus styles with low specificity */
 	}
 
-	&:where(svg) {
+	& svg {
 		/* SVG child styles with low specificity */
 		pointer-events: none;
 		flex-shrink: 0;
@@ -209,11 +191,11 @@ const MessageComposer_class_names = {
 }
 
 /* ❌ Bad - separate selectors increase complexity */
-:where(.Button) {
+.Button {
 	/* Base styles */
 }
 
-:where(.Button:hover) {
+.Button:hover {
 	/* Hover styles - separate selector */
 }
 ```
@@ -230,7 +212,7 @@ const MessageComposer_class_names = {
   - Transitions and animations
 
 ```css
-:where(.Button) {
+.Button {
 	box-sizing: border-box;
 	position: relative;
 
@@ -275,7 +257,7 @@ background: var(--primary);
 - Place dark mode overrides within the component scope
 
 ```css
-:where(.Button-variant-outline) {
+.Button-variant-outline {
 	background: hsl(var(--background));
 	border: 1px solid hsl(var(--border));
 
@@ -288,25 +270,25 @@ background: var(--primary);
 
 # State Handling
 
-- Use `&:where()` syntax for interactive states
+- Use nested pseudo-classes for interactive states
 - Handle disabled, focus, hover, and active states consistently
 
 ```css
-:where(.Button) {
+.Button {
 	/* Base styles */
 
-	&:where(:disabled) {
+	&:disabled {
 		pointer-events: none;
 		opacity: 0.5;
 	}
 
-	&:where(:focus-visible) {
+	&:focus-visible {
 		outline: none;
 		border-color: hsl(var(--ring));
 		box-shadow: 0 0 0 3px hsl(var(--ring) / 0.5);
 	}
 
-	&:where(:hover) {
+	&:hover {
 		background: hsl(var(--primary) / 0.9);
 	}
 }
@@ -314,14 +296,14 @@ background: var(--primary);
 
 # Child Element Styling
 
-- Wrap child selectors in `:where()` for low specificity
+- Use low-specificity child selectors via nesting
 - Use semantic child selectors
 
 ```css
-:where(.Button) {
+.Button {
 	/* Base styles */
 
-	&:where(svg) {
+	& svg {
 		pointer-events: none;
 		flex-shrink: 0;
 
@@ -331,7 +313,7 @@ background: var(--primary);
 		}
 	}
 
-	&:where(:has(> svg)) {
+	&:has(> svg) {
 		padding-left: 0.75rem;
 		padding-right: 0.75rem;
 	}
@@ -352,7 +334,7 @@ When converting from Tailwind utility classes to CSS:
 /* className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90" */
 
 /* After: CSS properties with dash-based class names */
-:where(.Button) {
+.Button {
 	display: inline-flex;
 	align-items: center;
 	gap: 0.5rem;
@@ -362,17 +344,17 @@ When converting from Tailwind utility classes to CSS:
 	background: hsl(var(--primary));
 	color: hsl(var(--primary-foreground));
 
-	&:where(:hover) {
+	&:hover {
 		background: hsl(var(--primary) / 0.9);
 	}
 }
 
 /* Variant classes use dashes for CSS compatibility */
-:where(.Button-variant-primary) {
+.Button-variant-primary {
 	background: hsl(var(--primary));
 }
 
-:where(.Button-size-large) {
+.Button-size-large {
 	padding: 0.75rem 1.5rem;
 }
 ```
@@ -380,8 +362,8 @@ When converting from Tailwind utility classes to CSS:
 # Example Complete Component
 
 ```css
-@layer common-components {
-	:where(.Card) {
+@layer common_components {
+	.Card {
 		box-sizing: border-box;
 		position: relative;
 
@@ -399,21 +381,21 @@ When converting from Tailwind utility classes to CSS:
 	}
 
 	/* Variant: Elevated */
-	:where(.Card-variant-elevated) {
+	.Card-variant-elevated {
 		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
 
-		&:where(:hover) {
+		&:hover {
 			box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
 		}
 	}
 
 	/* Size: Compact */
-	:where(.Card-size-compact) {
+	.Card-size-compact {
 		padding: 1rem;
 	}
 
 	/* Size: Large */
-	:where(.Card-size-large) {
+	.Card-size-large {
 		padding: 2rem;
 	}
 }

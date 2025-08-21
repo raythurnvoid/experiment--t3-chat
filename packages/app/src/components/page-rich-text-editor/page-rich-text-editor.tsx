@@ -62,13 +62,6 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 					throw new Error(`Failed to authenticate: ${result.bad.message}`);
 				}
 			}}
-			resolveUsers={({ userIds }: { userIds: string[] }) => {
-				return userIds.map((id: string) => ({
-					id,
-					name: "Development User",
-					avatar: "https://via.placeholder.com/32",
-				}));
-			}}
 		>
 			<RoomProvider id={roomId}>
 				<ClientSideSuspense fallback={<LoadingEditor />}>

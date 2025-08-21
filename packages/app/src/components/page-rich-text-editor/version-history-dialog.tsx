@@ -1,9 +1,9 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useCallback, useMemo, useState } from "react";
 import { Editor } from "@tiptap/react";
-import Loading from "./loading";
+import Loading from "./loading.tsx";
 import { HistoryVersionSummaryList, HistoryVersionSummary } from "@liveblocks/react-ui";
-import { useHistoryVersions } from "@liveblocks/react";
+import { useHistoryVersions } from "@liveblocks/react/suspense";
 import { HistoryVersionPreview } from "@liveblocks/react-tiptap";
 import { useEditor } from "novel";
 

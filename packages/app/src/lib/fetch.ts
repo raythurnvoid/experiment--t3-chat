@@ -49,7 +49,7 @@ export async function app_fetch_ai_docs_liveblocks_auth(
 ) {
 	const url = `${convex_http_url}/api/ai-docs-temp/liveblocks-auth`;
 
-	return await app_fetch_json({
+	return await app_fetch_json<{ token: string }>({
 		...args,
 		url,
 		method: "POST",
@@ -68,7 +68,7 @@ export async function app_fetch_ai_docs_contextual_prompt(
 ) {
 	const url = `${convex_http_url}/api/ai-docs-temp/contextual-prompt`;
 
-	return await app_fetch_json({
+	return await app_fetch_json<any>({
 		...args,
 		url,
 		method: "POST",
@@ -217,7 +217,7 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 	return result;
 }
 
-export async function app_fetch_json(args: { url: string } & app_fetch_JsonArgs) {
+export async function app_fetch_json<Response>(args: { url: string } & app_fetch_JsonArgs) {
 	const auth = args.auth ?? true;
 	// It's correct to default to `application/json` even in case we don't expect any response body, because in case of non-ok response it would be a json anyway.
 	const accept = "application/json";
@@ -294,7 +294,7 @@ export async function app_fetch_json(args: { url: string } & app_fetch_JsonArgs)
 			return new Result({
 				ok: {
 					response,
-					payload: response_json,
+					payload: response_json as Response,
 				},
 			});
 		} catch (e) {
