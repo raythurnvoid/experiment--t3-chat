@@ -691,7 +691,6 @@ export const update_page_and_broadcast = mutation({
 		page_id: v.string(),
 		text_content: v.string(),
 	},
-	returns: v.null(),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
@@ -711,8 +710,87 @@ export const update_page_and_broadcast = mutation({
 			});
 		}
 
-		// Insert broadcast row; consumers will use _creationTime ordering
-		await ctx.db.insert("page_updates_broadcast", {
+		// Insert broadcast rows for both editors; consumers will use _creationTime ordering
+		await Promise.all([
+			ctx.db.insert("page_updates_richtext_broadcast", {
+				workspace_id: args.workspace_id,
+				project_id: args.project_id,
+				page_id: args.page_id,
+				text_content: args.text_content,
+			}),
+			ctx.db.insert("page_updates_markdown_broadcast", {
+				workspace_id: args.workspace_id,
+				project_id: args.project_id,
+				page_id: args.page_id,
+				text_content: args.text_content,
+			}),
+		]);
+	},
+});
+
+export const get_page_updates_richtext_broadcast_latest = query({
+	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
+	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
+	handler: async (ctx, args) => {
+		const rows = await ctx.db
+			.query("page_updates_richtext_broadcast")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
+			.order("desc")
+			.take(1);
+
+		const row = rows[0];
+		if (!row) return null;
+		return { page_id: row.page_id, text_content: row.text_content };
+	},
+});
+
+export const get_page_updates_markdown_broadcast_latest = query({
+	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
+	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
+	handler: async (ctx, args) => {
+		const rows = await ctx.db
+			.query("page_updates_markdown_broadcast")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
+			.order("desc")
+			.take(1);
+
+		const row = rows[0];
+		if (!row) return null;
+		return { page_id: row.page_id, text_content: row.text_content };
+	},
+});
+
+export const update_page_and_broadcast_richtext = mutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+		text_content: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
+			.first();
+
+		if (page) {
+			await ctx.db.patch(page._id, {
+				text_content: args.text_content,
+				updated_by: user.name,
+				updated_at: Date.now(),
+			});
+		}
+
+		await ctx.db.insert("page_updates_richtext_broadcast", {
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
 			page_id: args.page_id,
@@ -723,21 +801,40 @@ export const update_page_and_broadcast = mutation({
 	},
 });
 
-export const get_page_updates_broadcast_latest = query({
-	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
-	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
+export const update_page_and_broadcast_markdown = mutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+		text_content: v.string(),
+	},
+	returns: v.null(),
 	handler: async (ctx, args) => {
-		const rows = await ctx.db
-			.query("page_updates_broadcast")
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const page = await ctx.db
+			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
 				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
 			)
-			.order("desc")
-			.take(1);
+			.first();
 
-		const row = rows[0];
-		if (!row) return null;
-		return { page_id: row.page_id, text_content: row.text_content };
+		if (page) {
+			await ctx.db.patch(page._id, {
+				text_content: args.text_content,
+				updated_by: user.name,
+				updated_at: Date.now(),
+			});
+		}
+
+		await ctx.db.insert("page_updates_markdown_broadcast", {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			page_id: args.page_id,
+			text_content: args.text_content,
+		});
+
+		return null;
 	},
 });
 

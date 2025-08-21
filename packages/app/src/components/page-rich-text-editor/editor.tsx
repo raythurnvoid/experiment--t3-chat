@@ -67,7 +67,7 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 
 	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-	const updateTextContent = useMutation(api.ai_docs_temp.update_page_text_content);
+	const updateAndBroadcastMarkdown = useMutation(api.ai_docs_temp.update_page_and_broadcast_markdown);
 	const convex = useConvex();
 
 	const liveblocks = useLiveblocksExtension({
@@ -105,6 +105,11 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 		unsubscribe: () => void;
 		lastAppliedCreationTime: number;
 	} | null>(null);
+
+	/**
+	 * Prevent feedback loops when applying remote broadcasts
+	 */
+	const isApplyingBroadcastRef = useRef(false);
 
 	useEffect(
 		() => {
@@ -169,7 +174,7 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 
 			pageBroadcastWatch.current?.unsubscribe?.();
 
-			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_broadcast_latest, {
+			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
 				page_id: props.doc_id,
@@ -178,11 +183,12 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 			const unsubscribe = watcher.onUpdate(() => {
 				const update = watcher.localQueryResult();
 				if (!editor || !update) return;
-				/*
-				Apply whenever we receive a new update while editor is ready.
-				We avoid feedback loops by using setContent with emitUpdate=false below.
-				*/
+				/* Apply update without triggering our own save; guard using ref */
+				isApplyingBroadcastRef.current = true;
 				editor.commands.setContent(update.text_content, false);
+				queueMicrotask(() => {
+					isApplyingBroadcastRef.current = false;
+				});
 			});
 
 			pageBroadcastWatch.current = {
@@ -225,11 +231,13 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	};
 
 	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor, transaction }) => {
+		if (isApplyingBroadcastRef.current) {
+			return;
+		}
 		setCharsCount(editor.storage.characterCount.words());
 
 		// Debounce content save to Convex (100ms)
 		if (!transaction.getMeta(ySyncPluginKey)) {
-			console.log("handleUpdate");
 			if (saveOnDbDebounce.current) {
 				clearTimeout(saveOnDbDebounce.current);
 			}
@@ -237,7 +245,7 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 			saveOnDbDebounce.current = setTimeout(async () => {
 				try {
 					const textContent = editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
-					await updateTextContent({
+					await updateAndBroadcastMarkdown({
 						workspace_id: ai_chat_HARDCODED_ORG_ID,
 						project_id: ai_chat_HARDCODED_PROJECT_ID,
 						page_id: props.doc_id!,

@@ -1,12 +1,12 @@
 import "./monaco-markdown-editor.css";
 import "../../lib/app-monaco-config.ts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Editor } from "@monaco-editor/react";
 import type { editor as M } from "monaco-editor";
 import { useRoom } from "@liveblocks/react/suspense";
 import { getYjsProviderForRoom } from "@liveblocks/yjs";
 import { MonacoBinding } from "y-monaco";
-import { useQuery } from "convex/react";
+import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { cn } from "../../lib/utils.ts";
@@ -24,6 +24,7 @@ export interface MonacoMarkdownEditor_Props {
 export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 	const { docId, className } = props;
 	const room = useRoom();
+	const convex = useConvex();
 	const selfUser = useSelf();
 	const otherUsers = useOthers();
 	const yProvider = useMemo(() => getYjsProviderForRoom(room), [room]);
@@ -34,10 +35,12 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		page_id: docId,
 	});
 
-	const [editorRef, setEditorRef] = useState<M.IStandaloneCodeEditor | null>(null);
+	const [editor, setEditor] = useState<M.IStandaloneCodeEditor | null>(null);
+	const updateAndBroadcastRichtext = useMutation(api.ai_docs_temp.update_page_and_broadcast_richtext);
+	const isApplyingBroadcastRef = useRef(false);
 
 	useEffect(() => {
-		if (!editorRef) return;
+		if (!editor) return;
 		const yDoc = yProvider.getYDoc();
 		const cfg = yDoc.getMap("liveblocks_config");
 		const yText = yDoc.getText(`markdown:${docId}`);
@@ -50,21 +53,68 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 			yText.insert(0, initialContent);
 		}
 
-		const model = editorRef.getModel();
+		const model = editor.getModel();
 		const awareness = yProvider.awareness as unknown as Awareness;
 		const binding = ((/* iife */) => {
 			if (model) {
-				return new MonacoBinding(yText, model, new Set([editorRef]), awareness);
+				return new MonacoBinding(yText, model, new Set([editor]), awareness);
 			}
 		})();
 
 		return () => {
 			binding?.destroy();
 		};
-	}, [editorRef, yProvider, initialContent, docId]);
+	}, [editor, yProvider, initialContent, docId]);
+
+	// Watch markdown broadcasts from Convex and apply to Monaco editor
+	useEffect(() => {
+		if (!editor) return;
+		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_markdown_broadcast_latest, {
+			workspace_id: ai_chat_HARDCODED_ORG_ID,
+			project_id: ai_chat_HARDCODED_PROJECT_ID,
+			page_id: docId,
+		});
+
+		const unsubscribe = watcher.onUpdate(() => {
+			const update = watcher.localQueryResult();
+			if (!editor || !update) return;
+			const model = editor.getModel();
+			if (!model) return;
+			const current = model.getValue();
+			if (current === update.text_content) return;
+			isApplyingBroadcastRef.current = true;
+			model.setValue(update.text_content);
+			// Small delay to allow Monaco to emit change event, then clear the flag
+			queueMicrotask(() => {
+				isApplyingBroadcastRef.current = false;
+			});
+		});
+
+		return () => {
+			unsubscribe();
+		};
+	}, [convex, editor, docId]);
+
+	// On Monaco content changes, update Convex and broadcast to richtext
+	useEffect(() => {
+		if (!editor) return;
+		const disposable = editor.onDidChangeModelContent(async () => {
+			if (isApplyingBroadcastRef.current) return;
+			const value = editor.getValue();
+			await updateAndBroadcastRichtext({
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: docId,
+				text_content: value,
+			});
+		});
+		return () => {
+			disposable.dispose();
+		};
+	}, [editor, updateAndBroadcastRichtext, docId]);
 
 	const handleOnMount = useCallback((e: M.IStandaloneCodeEditor) => {
-		setEditorRef(e);
+		setEditor(e);
 	}, []);
 
 	return (
