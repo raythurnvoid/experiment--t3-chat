@@ -6,7 +6,7 @@ import type { editor as M } from "monaco-editor";
 import { useRoom } from "@liveblocks/react/suspense";
 import { getYjsProviderForRoom } from "@liveblocks/yjs";
 import { MonacoBinding } from "y-monaco";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { cn } from "../../lib/utils.ts";
@@ -29,29 +29,35 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 	const otherUsers = useOthers();
 	const yProvider = useMemo(() => getYjsProviderForRoom(room), [room]);
 
-	const initialContent = useQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-		workspace_id: ai_chat_HARDCODED_ORG_ID,
-		project_id: ai_chat_HARDCODED_PROJECT_ID,
-		page_id: docId,
-	});
-
 	const [editor, setEditor] = useState<M.IStandaloneCodeEditor | null>(null);
 	const updateAndBroadcastRichtext = useMutation(api.ai_docs_temp.update_page_and_broadcast_richtext);
 	const isApplyingBroadcastRef = useRef(false);
+	const textContentWatchRef = useRef<{ unsubscribe: () => void } | null>(null);
+	const [initialValue, setInitialValue] = useState<string | null | undefined>(undefined);
+
+	// Approximate useIsEditorReady for Monaco/Yjs: ready when Yjs provider is synchronizing or synchronized
+	const [isYjsReady, setIsYjsReady] = useState(false);
+	useEffect(() => {
+		const provider = yProvider;
+		if (!provider) return;
+		const updateStatus = () => {
+			const status = provider.getStatus();
+			setIsYjsReady(status === "synchronizing" || status === "synchronized");
+		};
+		updateStatus();
+		const handler = () => updateStatus();
+		provider.on("status", handler);
+		return () => {
+			provider.off("status", handler);
+		};
+	}, [yProvider]);
 
 	useEffect(() => {
 		if (!editor) return;
-		const yDoc = yProvider.getYDoc();
-		const cfg = yDoc.getMap("liveblocks_config");
-		const yText = yDoc.getText(`markdown:${docId}`);
+		console.log("editor");
 
-		// Seed initial content once
-		const seedKey = `monaco:hasContentSet:${docId}`;
-		if (!cfg.get(seedKey) && typeof initialContent === "string" && initialContent.length > 0) {
-			cfg.set(seedKey, true);
-			yText.delete(0, yText.length);
-			yText.insert(0, initialContent);
-		}
+		const yDoc = yProvider.getYDoc();
+		const yText = yDoc.getText(`markdown:${docId}`);
 
 		const model = editor.getModel();
 		const awareness = yProvider.awareness as unknown as Awareness;
@@ -64,9 +70,68 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		return () => {
 			binding?.destroy();
 		};
-	}, [editor, yProvider, initialContent, docId]);
+	}, [editor, yProvider, docId]);
 
-	// Watch markdown broadcasts from Convex and apply to Monaco editor
+	// Listen for updates once
+	useEffect(() => {
+		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
+			workspace_id: ai_chat_HARDCODED_ORG_ID,
+			project_id: ai_chat_HARDCODED_PROJECT_ID,
+			page_id: docId,
+		});
+
+		const unsubscribe = watcher.onUpdate(() => {
+			if (initialValue === undefined) {
+				const v = watcher.localQueryResult();
+				setInitialValue(typeof v === "string" ? v : "");
+			}
+		});
+
+		textContentWatchRef.current = {
+			unsubscribe: () => {
+				unsubscribe();
+				textContentWatchRef.current = null;
+			},
+		};
+
+		return () => {
+			textContentWatchRef.current?.unsubscribe();
+		};
+	}, [convex, docId, initialValue]);
+
+	// After editor mounts, fetch latest value once and set initialValue if still undefined
+	useEffect(() => {
+		if (!editor || initialValue !== undefined) return;
+		void (async () => {
+			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: docId,
+			});
+
+			// Set the initial value if it's not already set
+			if (fetchedValue) {
+				setInitialValue((currentValue) => currentValue ?? fetchedValue);
+			}
+		})();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [convex, docId]);
+
+	// Apply initialValue once editor is mounted, then unsubscribe the watch
+	useEffect(() => {
+		if (!editor || !isYjsReady || initialValue === undefined) return;
+		const yDoc = yProvider.getYDoc();
+		const seed = typeof initialValue === "string" ? initialValue : "";
+		if (seed.length > 0) {
+			const yText = yDoc.getText(`markdown:${docId}`);
+			yText.delete(0, yText.length);
+			yText.insert(0, seed);
+		}
+		// Unsubscribe the text watcher now that we seeded once
+		textContentWatchRef.current?.unsubscribe();
+	}, [editor, isYjsReady, initialValue, yProvider, docId]);
+
+	// Listen for Convex markdown broadcasts
 	useEffect(() => {
 		if (!editor) return;
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_markdown_broadcast_latest, {
@@ -173,15 +238,10 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 				)}
 				<Editor
 					height="100%"
-					defaultLanguage="markdown"
+					language="markdown"
 					onMount={handleOnMount}
 					options={{
 						wordWrap: "on",
-						minimap: { enabled: false },
-						lineNumbers: "off",
-						folding: false,
-						lineDecorationsWidth: 0,
-						lineNumbersMinChars: 0,
 					}}
 				/>
 			</div>
