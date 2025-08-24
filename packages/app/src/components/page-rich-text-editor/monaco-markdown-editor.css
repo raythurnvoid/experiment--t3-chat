@@ -31,3 +31,30 @@
 		}
 	}
 }
+
+/* Separate decorations: accept & discard */
+.MonacoMarkdownDiffEditor-accept,
+.MonacoMarkdownDiffEditor-discard {
+	position: absolute;
+	top: 50%;
+	left: 0;
+	width: 24px !important; /* override Monaco inline width */
+	height: 24px !important;
+	transform: translateY(-50%);
+	border-radius: 4px;
+	border: 1px solid hsl(var(--border));
+	cursor: pointer;
+	z-index: 2; /* above codicon glyphs */
+}
+
+/* offset away from +/- glyphs in the gutter */
+.MonacoMarkdownDiffEditor-accept {
+	transform: translateY(-50%) translateX(1em);
+	background: hsl(var(--success, 142 76% 36%));
+}
+
+/* sit to the right of accept */
+.MonacoMarkdownDiffEditor-discard {
+	transform: translateY(-50%) translateX(calc(1em + 24px + 0.25rem));
+	background: hsl(var(--muted));
+}

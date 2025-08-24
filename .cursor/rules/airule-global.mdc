@@ -144,8 +144,7 @@ When users ask about 3rd party libraries or request implementations using extern
 
 Documentation Sources
 
-- [+personal/](mdc:+personal) - Contains source repos of complex dependencies
-- [+personal/sources/vercel-ai-sdk-ui-ai-elements-docs/](mdc:+personal/sources/vercel-ai-sdk-ui-ai-elements-docs) - AI SDK AI Elements components documentation (specific UI component docs)
+- [+personal/sources/README.md](mdc:+personal/sources/README.md) - Master list of local research sources
 - Submodules - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks), [packages/app/vendor/ai/](mdc:packages/app/vendor/ai), and [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) have full repos for reference
 - Web search - For external documentation when not available locally
 

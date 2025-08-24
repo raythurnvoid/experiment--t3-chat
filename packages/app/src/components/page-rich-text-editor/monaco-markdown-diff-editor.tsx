@@ -2,6 +2,7 @@ import "./monaco-markdown-editor.css";
 import "../../lib/app-monaco-config.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
 import type { editor as M } from "monaco-editor";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
@@ -18,11 +19,104 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 	const convex = useConvex();
 
 	const [diffEditor, setDiffEditor] = useState<M.IStandaloneDiffEditor | null>(null);
-	const isApplyingBroadcastRef = useRef(false);
 	const textContentWatchRef = useRef<{ unsubscribe: () => void } | null>(null);
 	const [initialValue, setInitialValue] = useState<string | null | undefined>(undefined);
 
-	// Listen for updates once
+	// Local copy of modified content for quick access without re-renders
+	const modifiedContentRef = useRef<string>("");
+
+	// Latest line changes without triggering React re-renders
+	const lineChangesRef = useRef<M.ILineChange[] | null>(null);
+
+	// Line decorations for custom actions in the line decorations gutter
+	const lineActionsDecorationIdsRef = useRef<string[]>([]);
+
+	function getLines(model: M.ITextModel, startLine: number, endLine: number) {
+		if (startLine <= 0 || endLine <= 0 || endLine < startLine) return "";
+		const range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
+		return model.getValueInRange(range);
+	}
+
+	const acceptChange = useCallback(
+		(change: M.ILineChange) => {
+			if (!diffEditor) return;
+			const original = diffEditor.getOriginalEditor();
+			const modified = diffEditor.getModifiedEditor();
+			const originalModel = original.getModel();
+			const modifiedModel = modified.getModel();
+			if (!originalModel || !modifiedModel) return;
+
+			const newSegment =
+				change.modifiedEndLineNumber === 0
+					? ""
+					: getLines(modifiedModel, change.modifiedStartLineNumber, change.modifiedEndLineNumber);
+
+			// Determine target range in original model
+			const start = change.originalStartLineNumber || change.originalEndLineNumber || 1;
+			const end = change.originalEndLineNumber || 0;
+			const startLine = Math.max(start, 1);
+			const endLine = Math.max(end, 0);
+			const startPos = new monaco.Position(startLine, 1);
+			const endPos = new monaco.Position(endLine, endLine > 0 ? originalModel.getLineMaxColumn(endLine) : 1);
+			const replaceRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+
+			// Apply minimal edit to original model to avoid full reset
+			originalModel.pushEditOperations(
+				[],
+				[
+					{
+						range: replaceRange,
+						text: newSegment,
+						forceMoveMarkers: false,
+					},
+				],
+				() => null,
+			);
+
+			// Content updated via model; no state sync needed
+		},
+		[diffEditor],
+	);
+
+	const discardChange = useCallback(
+		(change: M.ILineChange) => {
+			if (!diffEditor) return;
+			const original = diffEditor.getOriginalEditor();
+			const modified = diffEditor.getModifiedEditor();
+			const originalModel = original.getModel();
+			const modifiedModel = modified.getModel();
+			if (!originalModel || !modifiedModel) return;
+
+			const newSegment =
+				change.originalEndLineNumber === 0
+					? ""
+					: getLines(originalModel, change.originalStartLineNumber, change.originalEndLineNumber);
+
+			const start = change.modifiedStartLineNumber || change.modifiedEndLineNumber || 1;
+			const end = change.modifiedEndLineNumber || 0;
+			const startLine = Math.max(start, 1);
+			const endLine = Math.max(end, 0);
+			const startPos = new monaco.Position(startLine, 1);
+			const endPos = new monaco.Position(endLine, endLine > 0 ? modifiedModel.getLineMaxColumn(endLine) : 1);
+			const replaceRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+
+			modifiedModel.pushEditOperations(
+				[],
+				[
+					{
+						range: replaceRange,
+						text: newSegment,
+						forceMoveMarkers: false,
+					},
+				],
+				() => null,
+			);
+			modifiedContentRef.current = modifiedModel.getValue();
+		},
+		[diffEditor],
+	);
+
+	// Listen for updates once and also fetch latest as a fallback
 	useEffect(() => {
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
 			workspace_id: ai_chat_HARDCODED_ORG_ID,
@@ -31,10 +125,8 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
-			if (initialValue === undefined) {
-				const v = watcher.localQueryResult();
-				setInitialValue(typeof v === "string" ? v : "");
-			}
+			const v = watcher.localQueryResult();
+			setInitialValue((currentValue) => currentValue ?? (typeof v === "string" ? v : ""));
 		});
 
 		textContentWatchRef.current = {
@@ -44,27 +136,20 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			},
 		};
 
-		return () => {
-			textContentWatchRef.current?.unsubscribe();
-		};
-	}, [convex, docId, initialValue]);
-
-	// After editor mounts, fetch latest value once and set initialValue if still undefined
-	useEffect(() => {
-		if (!diffEditor || initialValue !== undefined) return;
 		void (async () => {
 			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
 				page_id: docId,
 			});
-
-			// Set the initial value if it's not already set
-			if (fetchedValue) {
+			if (typeof fetchedValue === "string") {
 				setInitialValue((currentValue) => currentValue ?? fetchedValue);
 			}
 		})();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
+
+		return () => {
+			textContentWatchRef.current?.unsubscribe();
+		};
 	}, [convex, docId]);
 
 	// Apply initialValue once editor is mounted, then unsubscribe the watch
@@ -78,53 +163,117 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		const seed = typeof initialValue === "string" ? initialValue : "";
 		originalModel.setValue(seed);
 		modifiedModel.setValue(seed);
+		// Seed local value for modified copy
+		modifiedContentRef.current = seed;
 		// Unsubscribe the text watcher now that we seeded once
 		textContentWatchRef.current?.unsubscribe();
 	}, [diffEditor, initialValue]);
 
-	// Listen for Convex markdown broadcasts; update original side only
+	// Track modified editor content and listen for diff updates
 	useEffect(() => {
 		if (!diffEditor) return;
-		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_markdown_broadcast_latest, {
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: docId,
-		});
+		const modified = diffEditor.getModifiedEditor();
 
-		const unsubscribe = watcher.onUpdate(() => {
-			const update = watcher.localQueryResult();
-			if (!diffEditor || !update) return;
-			const original = diffEditor.getOriginalEditor();
-			const model = original?.getModel();
-			if (!model) return;
-			const current = model.getValue();
-			if (current === update.text_content) return;
-			isApplyingBroadcastRef.current = true;
-			model.setValue(update.text_content);
-			// Small delay to allow Monaco to emit change event, then clear the flag
-			queueMicrotask(() => {
-				isApplyingBroadcastRef.current = false;
-			});
+		const contentDisposable = modified
+			? modified.onDidChangeModelContent(() => {
+					const v = modified.getValue();
+					modifiedContentRef.current = v;
+				})
+			: null;
+
+		const diffDisposable = diffEditor.onDidUpdateDiff(() => {
+			const changes = diffEditor.getLineChanges();
+			if (!changes) return;
+			lineChangesRef.current = changes;
+			// Update gutter decorations immediately (no React state)
+			const modifiedEditor = diffEditor.getModifiedEditor();
+			const model = modifiedEditor.getModel();
+			if (!modifiedEditor || !model) return;
+			const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+			for (let i = 0; i < changes.length; i++) {
+				const change = changes[i]!;
+				const line = change.modifiedStartLineNumber || change.originalStartLineNumber || 1;
+				decorations.push(
+					{
+						range: new monaco.Range(line, 1, line, 1),
+						options: {
+							isWholeLine: false,
+							linesDecorationsClassName: `MonacoMarkdownDiffEditor-accept MonacoMarkdownDiffEditor-accept-${i}`,
+							hoverMessage: { value: "Accept this change" },
+						},
+					} as monaco.editor.IModelDeltaDecoration,
+					{
+						range: new monaco.Range(line, 1, line, 1),
+						options: {
+							isWholeLine: false,
+							linesDecorationsClassName: `MonacoMarkdownDiffEditor-discard MonacoMarkdownDiffEditor-discard-${i}`,
+							hoverMessage: { value: "Discard this change" },
+						},
+					} as monaco.editor.IModelDeltaDecoration,
+				);
+			}
+			lineActionsDecorationIdsRef.current = modifiedEditor.deltaDecorations(
+				lineActionsDecorationIdsRef.current,
+				decorations,
+			);
 		});
 
 		return () => {
-			unsubscribe();
+			contentDisposable?.dispose();
+			diffDisposable.dispose();
 		};
-	}, [convex, diffEditor, docId]);
+	}, [diffEditor]);
 
-	// Track modified editor content locally only
-	const modifiedLocalValueRef = useRef<string>("");
+	// Clear decorations on unmount/editor dispose
+	useEffect(() => {
+		return () => {
+			if (!diffEditor) return;
+			const modified = diffEditor.getModifiedEditor();
+			if (!modified) return;
+			if (lineActionsDecorationIdsRef.current.length) {
+				modified.deltaDecorations(lineActionsDecorationIdsRef.current, []);
+				lineActionsDecorationIdsRef.current = [];
+			}
+		};
+	}, [diffEditor]);
+
+	// Handle clicks on the line decorations gutter to trigger accept/discard
 	useEffect(() => {
 		if (!diffEditor) return;
 		const modified = diffEditor.getModifiedEditor();
 		if (!modified) return;
-		const disposable = modified.onDidChangeModelContent(() => {
-			modifiedLocalValueRef.current = modified.getValue();
+
+		const d = modified.onMouseDown((e) => {
+			if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS) return;
+			const el = e.target.element as HTMLElement | null;
+			if (!el) return;
+
+			// Determine which button was clicked and extract its hunk index
+			let isAccept = false;
+			let idxFromClass: number | null = null;
+			for (const cls of Array.from(el.classList)) {
+				const m = cls.match(/^MonacoMarkdownDiffEditor-(accept|discard)-(\d+)$/);
+				if (m) {
+					isAccept = m[1] === "accept";
+					idxFromClass = Number(m[2]);
+					break;
+				}
+			}
+			if (idxFromClass == null) return;
+
+			const changes = lineChangesRef.current ?? [];
+			const change = changes[idxFromClass] ?? null;
+			if (!change) return;
+			if (isAccept) acceptChange(change);
+			else discardChange(change);
+			e.event.preventDefault();
+			e.event.stopPropagation();
 		});
+
 		return () => {
-			disposable.dispose();
+			d.dispose();
 		};
-	}, [diffEditor]);
+	}, [diffEditor, acceptChange, discardChange]);
 
 	const handleOnMount = useCallback((e: M.IStandaloneDiffEditor) => {
 		setDiffEditor(e);
@@ -140,6 +289,11 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 				options={{
 					renderSideBySide: false,
 					wordWrap: "on",
+					glyphMargin: false,
+					lineDecorationsWidth: 72,
+					lineHeight: 24,
+					renderMarginRevertIcon: false,
+					renderGutterMenu: false,
 				}}
 			/>
 		</div>
