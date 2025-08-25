@@ -32,29 +32,31 @@
 	}
 }
 
-/* Separate decorations: accept & discard */
-.MonacoMarkdownDiffEditor-accept,
-.MonacoMarkdownDiffEditor-discard {
+/* Floating content widget container positioned top-left of line content */
+.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget) {
 	position: absolute;
-	top: 50%;
-	left: 0;
-	width: 24px !important; /* override Monaco inline width */
-	height: 24px !important;
-	transform: translateY(-50%);
-	border-radius: 4px;
-	border: 1px solid hsl(var(--border));
-	cursor: pointer;
-	z-index: 2; /* above codicon glyphs */
+	display: inline-flex;
+	gap: 4px;
+	align-items: center;
+	white-space: nowrap;
+	z-index: 10;
 }
 
-/* offset away from +/- glyphs in the gutter */
-.MonacoMarkdownDiffEditor-accept {
-	transform: translateY(-50%) translateX(1em);
+/* Green and black square buttons, 24px */
+.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-accept),
+.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-discard) {
+	width: 24px;
+	height: 24px;
+	border: 1px solid hsl(var(--border));
+	border-radius: 4px;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+
+.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-accept) {
 	background: hsl(var(--success, 142 76% 36%));
 }
 
-/* sit to the right of accept */
-.MonacoMarkdownDiffEditor-discard {
-	transform: translateY(-50%) translateX(calc(1em + 24px + 0.25rem));
-	background: hsl(var(--muted));
+.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-discard) {
+	background: #000;
 }
