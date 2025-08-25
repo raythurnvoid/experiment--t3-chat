@@ -8,6 +8,7 @@ import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { cn } from "../../lib/utils.ts";
+import { makePatches, stringifyPatches } from "@sanity/diff-match-patch";
 
 export interface MonacoMarkdownDiffEditor_Props {
 	docId: string;
@@ -28,13 +29,39 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 	// Latest line changes without triggering React re-renders
 	const lineChangesRef = useRef<M.ILineChange[] | null>(null);
 
-	// Line decorations for custom actions in the line decorations gutter
-	const lineActionsDecorationIdsRef = useRef<string[]>([]);
+	// Decorations collection for custom actions in the line decorations gutter
+	const lineActionsCollectionRef = useRef<M.IEditorDecorationsCollection | null>(null);
 
 	function getLines(model: M.ITextModel, startLine: number, endLine: number) {
 		if (startLine <= 0 || endLine <= 0 || endLine < startLine) return "";
 		const range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
 		return model.getValueInRange(range);
+	}
+
+	function logPatchForModelChange(
+		model: M.ITextModel,
+		startPos: monaco.Position,
+		endPos: monaco.Position,
+		newSegment: string,
+		action: "accept" | "discard",
+		baseTextOverride?: string,
+	) {
+		try {
+			const oldText = baseTextOverride ?? model.getValue();
+			const startOffset = model.getOffsetAt(startPos);
+			const endOffset = model.getOffsetAt(endPos);
+			const newText = oldText.slice(0, startOffset) + newSegment + oldText.slice(endOffset);
+			const patches = makePatches(oldText, newText, { margin: 100 });
+			const patchText = stringifyPatches(patches);
+			// For now we only log; caller will handle sending to DB later
+			console.log(
+				"MonacoMarkdownDiffEditor patch",
+				{ action, startOffset, endOffset, newSegmentLength: newSegment.length },
+				patchText,
+			);
+		} catch (err) {
+			console.error("MonacoMarkdownDiffEditor patch generation failed", err);
+		}
 	}
 
 	const acceptChange = useCallback(
@@ -60,7 +87,10 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			const endPos = new monaco.Position(endLine, endLine > 0 ? originalModel.getLineMaxColumn(endLine) : 1);
 			const replaceRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
 
-			// Apply minimal edit to original model to avoid full reset
+			// Capture original content BEFORE applying the edit
+			const oldOriginalText = originalModel.getValue();
+
+			// Apply minimal edit to original model to avoid full reset in the editor
 			originalModel.pushEditOperations(
 				[],
 				[
@@ -73,7 +103,15 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 				() => null,
 			);
 
-			// Content updated via model; no state sync needed
+			// Prepare patch for DB (accept updates original content based on modified)
+			logPatchForModelChange(
+				originalModel,
+				startPos,
+				endPos,
+				newSegment,
+				"accept",
+				/* baseTextOverride */ oldOriginalText,
+			);
 		},
 		[diffEditor],
 	);
@@ -112,6 +150,8 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 				() => null,
 			);
 			modifiedContentRef.current = modifiedModel.getValue();
+
+			// No patch on discard per requirement
 		},
 		[diffEditor],
 	);
@@ -189,6 +229,10 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			const modifiedEditor = diffEditor.getModifiedEditor();
 			const model = modifiedEditor.getModel();
 			if (!modifiedEditor || !model) return;
+			// Ensure a decorations collection exists (preferred over deltaDecorations)
+			if (!lineActionsCollectionRef.current) {
+				lineActionsCollectionRef.current = modifiedEditor.createDecorationsCollection();
+			}
 			const decorations: monaco.editor.IModelDeltaDecoration[] = [];
 			for (let i = 0; i < changes.length; i++) {
 				const change = changes[i]!;
@@ -212,10 +256,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 					} as monaco.editor.IModelDeltaDecoration,
 				);
 			}
-			lineActionsDecorationIdsRef.current = modifiedEditor.deltaDecorations(
-				lineActionsDecorationIdsRef.current,
-				decorations,
-			);
+			lineActionsCollectionRef.current.set(decorations);
 		});
 
 		return () => {
@@ -230,10 +271,8 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			if (!diffEditor) return;
 			const modified = diffEditor.getModifiedEditor();
 			if (!modified) return;
-			if (lineActionsDecorationIdsRef.current.length) {
-				modified.deltaDecorations(lineActionsDecorationIdsRef.current, []);
-				lineActionsDecorationIdsRef.current = [];
-			}
+			lineActionsCollectionRef.current?.clear();
+			lineActionsCollectionRef.current = null;
 		};
 	}, [diffEditor]);
 
@@ -293,7 +332,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 					lineDecorationsWidth: 72,
 					lineHeight: 24,
 					renderMarginRevertIcon: false,
-					renderGutterMenu: false,
+					renderGutterMenu: true,
 				}}
 			/>
 		</div>
