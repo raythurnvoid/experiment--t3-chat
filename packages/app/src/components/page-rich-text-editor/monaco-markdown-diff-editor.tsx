@@ -434,8 +434,12 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 					glyphMargin: false,
 					lineDecorationsWidth: 72,
 					renderMarginRevertIcon: false,
-					renderGutterMenu: true,
+					renderGutterMenu: false,
 					fixedOverflowWidgets: false,
+
+					lineNumbers: "on",
+					renderLineHighlight: "all", // or "gutter" if you only want the gutter
+					renderLineHighlightOnlyWhenFocus: true,
 				}}
 			/>
 		</div>
