@@ -1,14 +1,15 @@
-import "./monaco-markdown-editor.css";
+import "./monaco-markdown-diff-editor.css";
 import "../../lib/app-monaco-config.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { editor as M } from "monaco-editor";
-import { useConvex } from "convex/react";
+import { useConvex, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { cn } from "../../lib/utils.ts";
 import { makePatches, stringifyPatches } from "@sanity/diff-match-patch";
+import { Button } from "../ui/button.tsx";
 
 class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 	private readonly id: string;
@@ -111,13 +112,15 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 }
 
 export interface MonacoMarkdownDiffEditor_Props {
-	docId: string;
 	className?: string;
+	docId: string;
+	onExit: () => void;
 }
 
 export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) {
-	const { docId, className } = props;
+	const { className, docId, onExit } = props;
 	const convex = useConvex();
+	const applyPatchToPageAndBroadcast = useMutation(api.ai_docs_temp.apply_patch_to_page_and_broadcast);
 
 	const [diffEditor, setDiffEditor] = useState<M.IStandaloneDiffEditor | null>(null);
 	const textContentWatchRef = useRef<{ unsubscribe: () => void } | null>(null);
@@ -125,6 +128,9 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 
 	// Local copy of modified content for quick access without re-renders
 	const modifiedContentRef = useRef<string>("");
+
+	// Keep the original seeded content to build patches on Save & Exit
+	const originalSeedRef = useRef<string>("");
 
 	// Latest line changes without triggering React re-renders
 	const lineChangesRef = useRef<M.ILineChange[] | null>(null);
@@ -138,32 +144,6 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		if (startLine <= 0 || endLine <= 0 || endLine < startLine) return "";
 		const range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
 		return model.getValueInRange(range);
-	}
-
-	function logPatchForModelChange(
-		model: M.ITextModel,
-		startPos: monaco.Position,
-		endPos: monaco.Position,
-		newSegment: string,
-		action: "accept" | "discard",
-		baseTextOverride?: string,
-	) {
-		try {
-			const oldText = baseTextOverride ?? model.getValue();
-			const startOffset = model.getOffsetAt(startPos);
-			const endOffset = model.getOffsetAt(endPos);
-			const newText = oldText.slice(0, startOffset) + newSegment + oldText.slice(endOffset);
-			const patches = makePatches(oldText, newText, { margin: 100 });
-			const patchText = stringifyPatches(patches);
-			// For now we only log; caller will handle sending to DB later
-			console.log(
-				"MonacoMarkdownDiffEditor patch",
-				{ action, startOffset, endOffset, newSegmentLength: newSegment.length },
-				patchText,
-			);
-		} catch (err) {
-			console.error("MonacoMarkdownDiffEditor patch generation failed", err);
-		}
 	}
 
 	const acceptChange = useCallback(
@@ -189,9 +169,6 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			const endPos = new monaco.Position(endLine, endLine > 0 ? originalModel.getLineMaxColumn(endLine) : 1);
 			const replaceRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
 
-			// Capture original content BEFORE applying the edit
-			const oldOriginalText = originalModel.getValue();
-
 			// Apply minimal edit to original model to avoid full reset in the editor
 			originalModel.pushEditOperations(
 				[],
@@ -205,15 +182,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 				() => null,
 			);
 
-			// Prepare patch for DB (accept updates original content based on modified)
-			logPatchForModelChange(
-				originalModel,
-				startPos,
-				endPos,
-				newSegment,
-				"accept",
-				/* baseTextOverride */ oldOriginalText,
-			);
+			// No patch here anymore; patch is created on Save & Exit
 		},
 		[diffEditor],
 	);
@@ -307,6 +276,8 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		modifiedModel.setValue(seed);
 		// Seed local value for modified copy
 		modifiedContentRef.current = seed;
+		// Preserve the original content for later patch creation
+		originalSeedRef.current = seed;
 		// Unsubscribe the text watcher now that we seeded once
 		textContentWatchRef.current?.unsubscribe();
 	}, [diffEditor, initialValue]);
@@ -421,8 +392,78 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		setDiffEditor(e);
 	}, []);
 
+	const handleDiscardAll = useCallback(() => {
+		if (!diffEditor) return;
+		const original = diffEditor.getOriginalEditor();
+		const modified = diffEditor.getModifiedEditor();
+		const originalModel = original.getModel();
+		const modifiedModel = modified.getModel();
+		if (!originalModel || !modifiedModel) return;
+		const originalText = originalModel.getValue();
+		modifiedModel.setValue(originalText);
+		modifiedContentRef.current = originalText;
+	}, [diffEditor]);
+
+	const handleAcceptAll = useCallback(() => {
+		if (!diffEditor) return;
+		const original = diffEditor.getOriginalEditor();
+		const modified = diffEditor.getModifiedEditor();
+		const originalModel = original.getModel();
+		const modifiedModel = modified.getModel();
+		if (!originalModel || !modifiedModel) return;
+		const modifiedText = modifiedModel.getValue();
+		originalModel.setValue(modifiedText);
+	}, [diffEditor]);
+
+	const handleSaveAndExit = useCallback(async () => {
+		if (!diffEditor) return;
+		const original = diffEditor.getOriginalEditor();
+		const originalModel = original.getModel();
+		if (!originalModel) return;
+		const before = (originalSeedRef.current ?? "").replace(/\r\n?/g, "\n");
+		const after = originalModel.getValue().replace(/\r\n?/g, "\n");
+		try {
+			const patches = makePatches(before, after, { margin: 100 });
+			const patchText = stringifyPatches(patches);
+			await applyPatchToPageAndBroadcast({
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: docId,
+				patch: patchText,
+			});
+			onExit();
+		} catch (err) {
+			console.error("MonacoMarkdownDiffEditor save-and-exit: patch generation/apply failed", err);
+		}
+	}, [diffEditor, applyPatchToPageAndBroadcast, docId, onExit]);
+
 	return (
 		<div className={cn("MonacoMarkdownDiffEditor flex h-full w-full flex-col", className)}>
+			{/* Header similar to regular editor avatars bar, with actions on the right */}
+			<div className="MonacoMarkdownDiffEditor-header flex items-center gap-2 border-b border-border/80 bg-background/50 p-2">
+				<div className="MonacoMarkdownDiffEditor-header-title text-sm text-muted-foreground">Review changes</div>
+				<div className="MonacoMarkdownDiffEditor-header-actions ml-auto flex items-center gap-2">
+					<Button
+						variant="destructive"
+						size="sm"
+						className="MonacoMarkdownDiffEditor-header-discard"
+						onClick={handleDiscardAll}
+					>
+						Discard All
+					</Button>
+					<Button
+						size="sm"
+						className="MonacoMarkdownDiffEditor-header-accept text-white"
+						style={{ background: "hsl(var(--success, 142 76% 36%))" }}
+						onClick={handleAcceptAll}
+					>
+						Accept All
+					</Button>
+					<Button size="sm" className="MonacoMarkdownDiffEditor-header-save" onClick={handleSaveAndExit}>
+						Save and exit
+					</Button>
+				</div>
+			</div>
 			<DiffEditor
 				height="100%"
 				onMount={handleOnMount}

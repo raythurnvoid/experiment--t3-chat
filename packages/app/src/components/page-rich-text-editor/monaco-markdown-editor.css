@@ -1,5 +1,4 @@
 @layer common_components {
-	/* Scope all styles to the component root and keep specificity low with :where() */
 	:where(.MonacoMarkdownEditor) {
 		& :where(.yRemoteSelection) {
 			filter: opacity(0.5);
@@ -30,33 +29,4 @@
 			}
 		}
 	}
-}
-
-/* Floating content widget container positioned top-left of line content */
-.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget) {
-	position: absolute;
-	display: inline-flex;
-	gap: 4px;
-	align-items: center;
-	white-space: nowrap;
-	z-index: 10;
-}
-
-/* Green and black square buttons, 24px */
-.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-accept),
-.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-discard) {
-	width: 24px;
-	height: 24px;
-	border: 1px solid hsl(var(--border));
-	border-radius: 4px;
-	cursor: pointer;
-	box-sizing: border-box;
-}
-
-.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-accept) {
-	background: hsl(var(--success, 142 76% 36%));
-}
-
-.MonacoMarkdownDiffEditor :where(.MonacoMarkdownDiffEditor-widget-discard) {
-	background: #000;
 }

@@ -4,7 +4,7 @@ import { useAuth } from "../../lib/auth.ts";
 import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { RichTextDocEditor } from "./editor.tsx";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
 import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
@@ -44,6 +44,10 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 	const auth = useAuth();
 	const [editorMode, setEditorMode] = useState<"rich" | "markdown">("rich");
 	const [diffMode, setDiffMode] = useState(false);
+
+	const handleDiffExit = useCallback(() => {
+		setDiffMode(false);
+	}, []);
 
 	if (!pageId) {
 		return <div>No document selected</div>;
@@ -100,7 +104,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 							{editorMode === "rich" ? (
 								<RichTextDocEditor doc_id={pageId} />
 							) : diffMode ? (
-								<MonacoMarkdownDiffEditor docId={pageId} />
+								<MonacoMarkdownDiffEditor docId={pageId} onExit={handleDiffExit} />
 							) : (
 								<MonacoMarkdownEditor docId={pageId} />
 							)}

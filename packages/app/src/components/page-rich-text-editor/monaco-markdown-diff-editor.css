@@ -1,0 +1,36 @@
+@layer common_components {
+	/* Monaco Markdown Diff Editor - Accept/Discard widget styles */
+	:where(.MonacoMarkdownDiffEditor) {
+		/* Floating content widget container */
+		:where(.MonacoMarkdownDiffEditor-widget) {
+			position: absolute;
+			display: inline-flex;
+			gap: 4px;
+			align-items: center;
+			white-space: nowrap;
+			z-index: 10;
+		}
+
+		/* Accept and discard button styles */
+		:where(.MonacoMarkdownDiffEditor-widget-accept),
+		:where(.MonacoMarkdownDiffEditor-widget-discard) {
+			/* Base button properties */
+			width: 24px;
+			height: 24px;
+			border: 1px solid hsl(var(--border));
+			border-radius: 4px;
+			cursor: pointer;
+			box-sizing: border-box;
+		}
+
+		/* Accept button variant */
+		:where(.MonacoMarkdownDiffEditor-widget-accept) {
+			background: hsl(var(--success, 142 76% 36%));
+		}
+
+		/* Discard button variant */
+		:where(.MonacoMarkdownDiffEditor-widget-discard) {
+			background: #000;
+		}
+	}
+}

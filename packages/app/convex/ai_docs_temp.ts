@@ -22,6 +22,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_convex_headers_cors,
 } from "../server/server-utils.ts";
+import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
@@ -833,6 +834,61 @@ export const update_page_and_broadcast_markdown = mutation({
 			page_id: args.page_id,
 			text_content: args.text_content,
 		});
+
+		return null;
+	},
+});
+
+export const apply_patch_to_page_and_broadcast = mutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+		patch: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+			)
+			.first();
+
+		if (!page) {
+			throw new Error("Page not found");
+		}
+
+		const currentText = page.text_content ?? "";
+		const patches = parsePatch(args.patch);
+		const [newText, results] = applyPatches(patches, currentText);
+
+		if (!results.every(Boolean)) {
+			throw new Error("Failed to apply all patches to the page text");
+		}
+
+		await ctx.db.patch(page._id, {
+			text_content: newText,
+			updated_by: user.name,
+			updated_at: Date.now(),
+		});
+
+		await Promise.all([
+			ctx.db.insert("page_updates_richtext_broadcast", {
+				workspace_id: args.workspace_id,
+				project_id: args.project_id,
+				page_id: args.page_id,
+				text_content: newText,
+			}),
+			ctx.db.insert("page_updates_markdown_broadcast", {
+				workspace_id: args.workspace_id,
+				project_id: args.project_id,
+				page_id: args.page_id,
+				text_content: newText,
+			}),
+		]);
 
 		return null;
 	},
