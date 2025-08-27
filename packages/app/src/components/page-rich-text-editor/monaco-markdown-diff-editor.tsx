@@ -1,6 +1,6 @@
 import "./monaco-markdown-diff-editor.css";
 import "../../lib/app-monaco-config.ts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { editor as M } from "monaco-editor";
@@ -17,6 +17,7 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 	private lineNumber: number;
 	public readonly allowEditorOverflow = true;
 	private anchorDecorationId: string | null = null;
+
 	constructor(
 		private readonly editor: M.IStandaloneCodeEditor,
 		changeIndex: number,
@@ -140,92 +141,179 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 
 	// Class moved to module scope above
 
-	function getLines(model: M.ITextModel, startLine: number, endLine: number) {
-		if (startLine <= 0 || endLine <= 0 || endLine < startLine) return "";
-		const range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
-		return model.getValueInRange(range);
+	// (legacy helper kept for reference) toExclusiveLineRange no longer used
+
+	// retained helper previously used for minimal edits; no longer used in applyLineChanges path
+	// function getLines(model: M.ITextModel, startLine: number, endLine: number) {
+	// 	if (startLine <= 0 || endLine <= 0 || endLine < startLine) return "";
+	// 	const range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
+	// 	return model.getValueInRange(range);
+	// }
+
+	// VS Code accurate algorithm: applyLineChanges(original, modified, diffs) → string
+	function applyLineChanges_like_vscode(
+		originalText: string,
+		modifiedText: string,
+		diffs: ReadonlyArray<M.ILineChange>,
+	): string {
+		function computeLineIndex(text: string) {
+			const lineStarts: number[] = [0];
+			const lineContentEnds: number[] = [];
+			for (let i = 0; i < text.length; i++) {
+				const ch = text.charCodeAt(i);
+				if (ch === 10 /* \n */) {
+					const prevIdx = i - 1;
+					const prevWasCR = prevIdx >= 0 && text.charCodeAt(prevIdx) === 13; /* \r */
+					lineContentEnds.push(prevWasCR ? i - 1 : i);
+					lineStarts.push(i + 1);
+				}
+			}
+			// Last line (may have no trailing EOL)
+			lineContentEnds.push(text.length);
+			return { lineStarts, lineContentEnds, lineCount: lineStarts.length };
+		}
+
+		function getTextRange(
+			text: string,
+			index: { lineStarts: number[]; lineContentEnds: number[]; lineCount: number },
+			startLineZero: number,
+			startChar: number,
+			endLineZeroExclusive: number,
+			endChar: number,
+		): string {
+			// Clamp line indices to valid bounds to avoid out-of-range indexing when accepting EOF insertions
+			const startLineClamped = Math.max(0, Math.min(index.lineCount, startLineZero));
+			const endLineClamped = Math.max(0, Math.min(index.lineCount, endLineZeroExclusive));
+			const startOffset =
+				startLineClamped >= index.lineCount ? text.length : index.lineStarts[startLineClamped]! + startChar;
+			const endOffset = endLineClamped >= index.lineCount ? text.length : index.lineStarts[endLineClamped]! + endChar;
+			const from = Math.max(0, Math.min(startOffset, text.length));
+			const to = Math.max(from, Math.min(endOffset, text.length));
+			return text.substring(from, to);
+		}
+
+		const original = computeLineIndex(originalText);
+		const modified = computeLineIndex(modifiedText);
+
+		const resultParts: string[] = [];
+		let currentLine = 0; // zero-based
+
+		for (const diff of diffs) {
+			const isInsertion = diff.originalEndLineNumber === 0;
+			const isDeletion = diff.modifiedEndLineNumber === 0;
+
+			let endLine = isInsertion ? diff.originalStartLineNumber : diff.originalStartLineNumber - 1; // zero-based
+			let endCharacter = 0;
+
+			// deletion at end of document: account for trailing EOL of the last kept line
+			if (isDeletion && diff.originalEndLineNumber === original.lineCount) {
+				endLine -= 1;
+				const contentEndOffset = original.lineContentEnds[endLine]!;
+				endCharacter = contentEndOffset - original.lineStarts[endLine]!;
+			}
+
+			// keep original chunk up to start of this diff
+			if (endLine >= currentLine) {
+				const kept = getTextRange(originalText, original, currentLine, 0, endLine, endCharacter);
+				resultParts.push(kept);
+			}
+
+			if (!isDeletion) {
+				let fromLine = diff.modifiedStartLineNumber - 1; // zero-based
+				let fromCharacter = 0;
+				// insertion at or after end of original: take correct EOL of the last existing line
+				if (isInsertion && diff.originalStartLineNumber >= original.lineCount) {
+					fromLine -= 1;
+					const contentEndOffset = modified.lineContentEnds[fromLine]!;
+					fromCharacter = contentEndOffset - modified.lineStarts[fromLine]!;
+				}
+				resultParts.push(getTextRange(modifiedText, modified, fromLine, fromCharacter, diff.modifiedEndLineNumber, 0));
+			}
+
+			// Move currentLine to the next segment in original. Guard against EOF insertions using clamping.
+			const nextCurrentLineOneBased = isInsertion ? diff.originalStartLineNumber : diff.originalEndLineNumber;
+			// Convert to zero-based exclusive start for the remainder copy
+			currentLine = Math.max(0, Math.min(original.lineCount, nextCurrentLineOneBased));
+		}
+
+		// append the remainder of the original text
+		resultParts.push(getTextRange(originalText, original, currentLine, 0, original.lineCount, 0));
+		return resultParts.join("");
 	}
 
-	const acceptChange = useCallback(
-		(change: M.ILineChange) => {
-			if (!diffEditor) return;
-			const original = diffEditor.getOriginalEditor();
-			const modified = diffEditor.getModifiedEditor();
-			const originalModel = original.getModel();
-			const modifiedModel = modified.getModel();
-			if (!originalModel || !modifiedModel) return;
+	const test = useRef(false);
 
-			const newSegment =
-				change.modifiedEndLineNumber === 0
-					? ""
-					: getLines(modifiedModel, change.modifiedStartLineNumber, change.modifiedEndLineNumber);
+	function acceptChangeAtIndex(changeIndex: number) {
+		if (!diffEditor) return;
 
-			// Determine target range in original model
-			const start = change.originalStartLineNumber || change.originalEndLineNumber || 1;
-			const end = change.originalEndLineNumber || 0;
-			const startLine = Math.max(start, 1);
-			const endLine = Math.max(end, 0);
-			const startPos = new monaco.Position(startLine, 1);
-			const endPos = new monaco.Position(endLine, endLine > 0 ? originalModel.getLineMaxColumn(endLine) : 1);
-			const replaceRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+		test.current = true;
 
-			// Apply minimal edit to original model to avoid full reset in the editor
-			originalModel.pushEditOperations(
-				[],
-				[
-					{
-						range: replaceRange,
-						text: newSegment,
-						forceMoveMarkers: false,
-					},
-				],
-				() => null,
-			);
+		const baseEditor = diffEditor.getOriginalEditor();
+		const modifiedEditor = diffEditor.getModifiedEditor();
+		const baseModel = baseEditor.getModel();
+		const modifiedModel = modifiedEditor.getModel();
+		const diffs = diffEditor.getLineChanges() ?? [];
+		if (!baseModel || !modifiedModel || changeIndex < 0 || changeIndex >= diffs.length) return;
 
-			// No patch here anymore; patch is created on Save & Exit
-		},
-		[diffEditor],
-	);
+		// Preserve selections and visible ranges (VS Code-like behavior)
+		const selectionsBefore = baseEditor.getSelections();
+		const visibleRangesBefore = baseEditor.getVisibleRanges();
 
-	const discardChange = useCallback(
-		(change: M.ILineChange) => {
-			if (!diffEditor) return;
-			const original = diffEditor.getOriginalEditor();
-			const modified = diffEditor.getModifiedEditor();
-			const originalModel = original.getModel();
-			const modifiedModel = modified.getModel();
-			if (!originalModel || !modifiedModel) return;
+		const originalText = baseModel.getValue();
+		const modifiedText = modifiedModel.getValue();
+		const selected = [diffs[changeIndex]!];
+		const result = applyLineChanges_like_vscode(originalText, modifiedText, selected);
 
-			const newSegment =
-				change.originalEndLineNumber === 0
-					? ""
-					: getLines(originalModel, change.originalStartLineNumber, change.originalEndLineNumber);
+		baseEditor.pushUndoStop();
+		baseEditor.executeEdits("MonacoMarkdownDiffEditor.accept.vscode", [
+			{ range: baseModel.getFullModelRange(), text: result, forceMoveMarkers: false },
+		]);
+		baseEditor.pushUndoStop();
 
-			const start = change.modifiedStartLineNumber || change.modifiedEndLineNumber || 1;
-			const end = change.modifiedEndLineNumber || 0;
-			const startLine = Math.max(start, 1);
-			const endLine = Math.max(end, 0);
-			const startPos = new monaco.Position(startLine, 1);
-			const endPos = new monaco.Position(endLine, endLine > 0 ? modifiedModel.getLineMaxColumn(endLine) : 1);
-			const replaceRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+		// Restore selections and reveal previous viewport
+		if (selectionsBefore) {
+			baseEditor.setSelections(selectionsBefore);
+		}
+		const vr = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
+		if (vr) {
+			baseEditor.revealRange(vr, monaco.editor.ScrollType.Smooth);
+		}
+	}
 
-			modifiedModel.pushEditOperations(
-				[],
-				[
-					{
-						range: replaceRange,
-						text: newSegment,
-						forceMoveMarkers: false,
-					},
-				],
-				() => null,
-			);
-			modifiedContentRef.current = modifiedModel.getValue();
+	function discardChangeAtIndex(changeIndex: number) {
+		if (!diffEditor) return;
+		const baseEditor = diffEditor.getOriginalEditor();
+		const modifiedEditor = diffEditor.getModifiedEditor();
+		const baseModel = baseEditor.getModel();
+		const modifiedModel = modifiedEditor.getModel();
+		const diffs = diffEditor.getLineChanges() ?? [];
+		if (!baseModel || !modifiedModel || changeIndex < 0 || changeIndex >= diffs.length) return;
 
-			// No patch on discard per requirement
-		},
-		[diffEditor],
-	);
+		// Preserve selections and visible ranges (VS Code-like behavior)
+		const selectionsBefore = modifiedEditor.getSelections();
+		const visibleRangesBefore = modifiedEditor.getVisibleRanges();
+
+		const originalText = baseModel.getValue();
+		const modifiedText = modifiedModel.getValue();
+		const keep = diffs.filter((_, i) => i !== changeIndex);
+		const result = applyLineChanges_like_vscode(originalText, modifiedText, keep);
+
+		modifiedEditor.pushUndoStop();
+		modifiedEditor.executeEdits("MonacoMarkdownDiffEditor.discard.vscode", [
+			{ range: modifiedModel.getFullModelRange(), text: result, forceMoveMarkers: false },
+		]);
+		modifiedEditor.pushUndoStop();
+		modifiedContentRef.current = result;
+
+		// Restore selections and reveal previous viewport
+		if (selectionsBefore) {
+			modifiedEditor.setSelections(selectionsBefore);
+		}
+		const vr = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
+		if (vr) {
+			modifiedEditor.revealRange(vr, monaco.editor.ScrollType.Smooth);
+		}
+	}
 
 	// Listen for updates once and also fetch latest as a fallback
 	useEffect(() => {
@@ -266,14 +354,17 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 	// Apply initialValue once editor is mounted, then unsubscribe the watch
 	useEffect(() => {
 		if (!diffEditor || initialValue === undefined) return;
-		const original = diffEditor.getOriginalEditor();
-		const modified = diffEditor.getModifiedEditor();
-		const originalModel = original?.getModel();
-		const modifiedModel = modified?.getModel();
-		if (!originalModel || !modifiedModel) return;
+		const baseEditor = diffEditor.getOriginalEditor();
+		const modifiedEditor = diffEditor.getModifiedEditor();
+		const baseModel = baseEditor?.getModel();
+		const modifiedModel = modifiedEditor?.getModel();
+		if (!baseModel || !modifiedModel) return;
 		const seed = typeof initialValue === "string" ? initialValue : "";
-		originalModel.setValue(seed);
+		baseModel.setValue(seed);
 		modifiedModel.setValue(seed);
+		// Force consistent EOL across both models
+		baseModel.setEOL(monaco.editor.EndOfLineSequence.LF);
+		modifiedModel.setEOL(monaco.editor.EndOfLineSequence.LF);
 		// Seed local value for modified copy
 		modifiedContentRef.current = seed;
 		// Preserve the original content for later patch creation
@@ -283,24 +374,28 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 	}, [diffEditor, initialValue]);
 
 	// Track modified editor content and listen for diff updates
-	useEffect(() => {
-		if (!diffEditor) return;
-		const modified = diffEditor.getModifiedEditor();
+	useEffect(
+		() => {
+			if (!diffEditor) return;
 
-		const modifiedEditor = modified;
+			const modifiedEditor = diffEditor.getModifiedEditor();
 
-		const contentDisposable = modifiedEditor
-			? modified.onDidChangeModelContent(() => {
-					const v = modified.getValue();
+			if (!modifiedEditor) return;
+
+			const listeners = [
+				modifiedEditor.onDidChangeModelContent(() => {
+					const v = modifiedEditor.getValue();
 					modifiedContentRef.current = v;
 					// Immediately realign widgets based on their anchor decorations
 					const modelNow = modifiedEditor.getModel();
 					if (!modelNow) return;
+
 					for (const [, w] of contentWidgetsRef.current) {
 						const anyWidget = w as unknown as {
 							anchorDecorationId?: string | null;
 							updateLine: (ln: number) => void;
 						};
+
 						const decoId = anyWidget.anchorDecorationId;
 						if (decoId) {
 							const range = modelNow.getDecorationRange(decoId);
@@ -309,77 +404,76 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 								continue;
 							}
 						}
-						anyWidget.updateLine((w as any).lineNumber ?? 1);
 					}
-				})
-			: null;
+				}),
 
-		const diffDisposable = diffEditor.onDidUpdateDiff(() => {
-			const changes = diffEditor.getLineChanges();
-			if (!changes) return;
-			lineChangesRef.current = changes;
-			// Create/update floating content widgets at the top-left of content
-			const modifiedEditor = diffEditor.getModifiedEditor();
-			const model = modifiedEditor.getModel();
-			if (!modifiedEditor || !model) return;
+				diffEditor.onDidUpdateDiff(() => {
+					const changes = diffEditor.getLineChanges();
+					if (!changes) return;
+					lineChangesRef.current = changes;
+					// Create/update floating content widgets at the top-left of content
+					const modifiedEditor = diffEditor.getModifiedEditor();
+					const model = modifiedEditor.getModel();
+					if (!modifiedEditor || !model) return;
 
-			const existing = contentWidgetsRef.current;
-			const seen = new Set<number>();
+					const existing = contentWidgetsRef.current;
+					const seen = new Set<number>();
 
-			for (let i = 0; i < changes.length; i++) {
-				const change = changes[i]!;
-				const line = change.modifiedStartLineNumber || change.originalStartLineNumber || 1;
-				seen.add(i);
-				const key = i;
-				const existingWidget = existing.get(key) as AcceptDiscardContentWidget | undefined;
-				if (existingWidget) {
-					existingWidget.updateLine(line);
-					continue;
+					for (let i = 0; i < changes.length; i++) {
+						const change = changes[i]!;
+						const line = change.modifiedStartLineNumber || change.originalStartLineNumber || 1;
+						seen.add(i);
+						const key = i;
+						const existingWidget = existing.get(key) as AcceptDiscardContentWidget | undefined;
+						if (existingWidget) {
+							existingWidget.updateLine(line);
+							continue;
+						}
+						const widget = new AcceptDiscardContentWidget(
+							modifiedEditor,
+							key,
+							line,
+							(index) => {
+								acceptChangeAtIndex(index);
+							},
+							(index) => {
+								discardChangeAtIndex(index);
+							},
+						);
+						modifiedEditor.addContentWidget(widget);
+						existing.set(key, widget);
+					}
+
+					// Remove widgets for changes that no longer exist
+					for (const [key, widget] of Array.from(existing.entries())) {
+						if (!seen.has(key)) {
+							(modifiedEditor as any).removeContentWidget(widget);
+							if ((widget as any).dispose) (widget as any).dispose();
+							existing.delete(key);
+						}
+					}
+				}),
+			];
+
+			return () => {
+				for (const listener of listeners) {
+					listener.dispose();
 				}
-				const widget = new AcceptDiscardContentWidget(
-					modifiedEditor,
-					key,
-					line,
-					(index) => {
-						const list = lineChangesRef.current ?? [];
-						const c = list[index];
-						if (c) acceptChange(c);
-					},
-					(index) => {
-						const list = lineChangesRef.current ?? [];
-						const c = list[index];
-						if (c) discardChange(c);
-					},
-				);
-				modifiedEditor.addContentWidget(widget);
-				existing.set(key, widget);
-			}
-
-			// Remove widgets for changes that no longer exist
-			for (const [key, widget] of Array.from(existing.entries())) {
-				if (!seen.has(key)) {
-					(modifiedEditor as any).removeContentWidget(widget);
-					if ((widget as any).dispose) (widget as any).dispose();
-					existing.delete(key);
-				}
-			}
-		});
-
-		return () => {
-			contentDisposable?.dispose();
-			diffDisposable.dispose();
-		};
-	}, [diffEditor, acceptChange, discardChange]);
+			};
+		},
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[diffEditor],
+	);
 
 	// Cleanup content widgets on unmount/editor dispose
 	useEffect(() => {
 		const mapRef = contentWidgetsRef.current;
 		return () => {
 			if (!diffEditor) return;
-			const modified = diffEditor.getModifiedEditor();
-			if (!modified) return;
+			const modifiedEditor = diffEditor.getModifiedEditor();
+			if (!modifiedEditor) return;
 			for (const [, widget] of mapRef) {
-				modified.removeContentWidget(widget);
+				modifiedEditor.removeContentWidget(widget);
 				if ((widget as any).dispose) (widget as any).dispose();
 			}
 			mapRef.clear();
@@ -388,40 +482,81 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 
 	// Gutter click handler removed; actions handled via content widget buttons
 
-	const handleOnMount = useCallback((e: M.IStandaloneDiffEditor) => {
+	function handleOnMount(e: M.IStandaloneDiffEditor) {
 		setDiffEditor(e);
-	}, []);
+	}
 
-	const handleDiscardAll = useCallback(() => {
+	function handleDiscardAll() {
 		if (!diffEditor) return;
-		const original = diffEditor.getOriginalEditor();
-		const modified = diffEditor.getModifiedEditor();
-		const originalModel = original.getModel();
-		const modifiedModel = modified.getModel();
-		if (!originalModel || !modifiedModel) return;
-		const originalText = originalModel.getValue();
-		modifiedModel.setValue(originalText);
-		modifiedContentRef.current = originalText;
-	}, [diffEditor]);
-
-	const handleAcceptAll = useCallback(() => {
-		if (!diffEditor) return;
-		const original = diffEditor.getOriginalEditor();
-		const modified = diffEditor.getModifiedEditor();
-		const originalModel = original.getModel();
-		const modifiedModel = modified.getModel();
-		if (!originalModel || !modifiedModel) return;
+		const baseEditor = diffEditor.getOriginalEditor();
+		const modifiedEditor = diffEditor.getModifiedEditor();
+		const baseModel = baseEditor.getModel();
+		const modifiedModel = modifiedEditor.getModel();
+		if (!baseModel || !modifiedModel) return;
+		const originalText = baseModel.getValue();
 		const modifiedText = modifiedModel.getValue();
-		originalModel.setValue(modifiedText);
-	}, [diffEditor]);
+		// VS Code: applyLineChanges(original, modified, []) -> original text
+		const result = applyLineChanges_like_vscode(originalText, modifiedText, []);
 
-	const handleSaveAndExit = useCallback(async () => {
+		// Preserve selections and visible ranges (VS Code-like behavior)
+		const selectionsBefore = modifiedEditor.getSelections();
+		const visibleRangesBefore = modifiedEditor.getVisibleRanges();
+		modifiedEditor.pushUndoStop();
+		modifiedEditor.executeEdits("MonacoMarkdownDiffEditor.discardAll.vscode", [
+			{ range: modifiedModel.getFullModelRange(), text: result, forceMoveMarkers: false },
+		]);
+		modifiedEditor.pushUndoStop();
+		modifiedContentRef.current = result;
+
+		// Restore selections and reveal previous viewport
+		if (selectionsBefore) {
+			modifiedEditor.setSelections(selectionsBefore);
+		}
+		const vrDiscardAll = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
+		if (vrDiscardAll) {
+			modifiedEditor.revealRange(vrDiscardAll, monaco.editor.ScrollType.Smooth);
+		}
+	}
+
+	function handleAcceptAll() {
 		if (!diffEditor) return;
-		const original = diffEditor.getOriginalEditor();
-		const originalModel = original.getModel();
-		if (!originalModel) return;
+		const baseEditor = diffEditor.getOriginalEditor();
+		const modifiedEditor = diffEditor.getModifiedEditor();
+		const baseModel = baseEditor.getModel();
+		const modifiedModel = modifiedEditor.getModel();
+		if (!baseModel || !modifiedModel) return;
+		const originalText = baseModel.getValue();
+		const modifiedText = modifiedModel.getValue();
+		const diffs = diffEditor.getLineChanges() ?? [];
+		const result = applyLineChanges_like_vscode(originalText, modifiedText, diffs);
+
+		// Preserve selections and visible ranges (VS Code-like behavior)
+		const selectionsBefore = baseEditor.getSelections();
+		const visibleRangesBefore = baseEditor.getVisibleRanges();
+
+		baseEditor.pushUndoStop();
+		baseEditor.executeEdits("MonacoMarkdownDiffEditor.acceptAll.vscode", [
+			{ range: baseModel.getFullModelRange(), text: result, forceMoveMarkers: false },
+		]);
+		baseEditor.pushUndoStop();
+
+		// Restore selections and reveal previous viewport
+		if (selectionsBefore) {
+			baseEditor.setSelections(selectionsBefore);
+		}
+		const vrAcceptAll = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
+		if (vrAcceptAll) {
+			baseEditor.revealRange(vrAcceptAll, monaco.editor.ScrollType.Smooth);
+		}
+	}
+
+	async function handleSaveAndExit() {
+		if (!diffEditor) return;
+		const baseEditor = diffEditor.getOriginalEditor();
+		const baseModel = baseEditor.getModel();
+		if (!baseModel) return;
 		const before = (originalSeedRef.current ?? "").replace(/\r\n?/g, "\n");
-		const after = originalModel.getValue().replace(/\r\n?/g, "\n");
+		const after = baseModel.getValue().replace(/\r\n?/g, "\n");
 		try {
 			const patches = makePatches(before, after, { margin: 100 });
 			const patchText = stringifyPatches(patches);
@@ -435,7 +570,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		} catch (err) {
 			console.error("MonacoMarkdownDiffEditor save-and-exit: patch generation/apply failed", err);
 		}
-	}, [diffEditor, applyPatchToPageAndBroadcast, docId, onExit]);
+	}
 
 	return (
 		<div className={cn("MonacoMarkdownDiffEditor flex h-full w-full flex-col", className)}>
@@ -470,6 +605,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 				originalLanguage="markdown"
 				modifiedLanguage="markdown"
 				options={{
+					originalEditable: true,
 					renderSideBySide: false,
 					wordWrap: "on",
 					glyphMargin: false,
