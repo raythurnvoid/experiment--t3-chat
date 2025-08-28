@@ -1,196 +1,133 @@
 import { describe, test, expect } from "vitest";
-import { BadResult, BadResultAbort, AbortReason, Result, type BadResult_Any } from "./errors-as-values-utils";
+import {
+	AbortReason,
+	Result,
+	Result_nay_from,
+	Result_try,
+	Result_try_async,
+	Result_try_promise,
+} from "./errors-as-values-utils.ts";
 
-describe("BadResult", () => {
-	test("creates BadResult with message", () => {
-		const badResult = new BadResult("test error");
-		expect(badResult.message).toBe("test error");
-		expect(badResult.name).toBe("BadResult");
-		expect(badResult.cause).toBeUndefined();
-		expect(badResult.meta).toBeUndefined();
+describe("Result", () => {
+	test("creates Result _nay with message", () => {
+		const badResult = Result({ _nay: { message: "test error" } });
+		expect(badResult._nay.message).toBe("test error");
+		expect(badResult._nay.name).toBe("nay");
+		expect(badResult._nay.cause).toBeUndefined();
+		expect(badResult._nay.data).toBeUndefined();
 	});
 
-	test("creates BadResult with message and cause", () => {
+	test("creates Result _nay with message and cause", () => {
 		const cause = new Error("cause error");
-		const badResult = new BadResult("test error", { cause });
+		const badResult = Result({ _nay: { message: "test error", cause } });
 
-		expect(badResult.message).toBe("test error");
-		expect(badResult.cause).toBe(cause);
-		expect(badResult.meta).toBeUndefined();
+		expect(badResult._nay.message).toBe("test error");
+		expect(badResult._nay.cause).toBe(cause);
+		expect(badResult._nay.data).toBeUndefined();
 	});
 
-	test("creates BadResult with message and meta", () => {
-		const meta = { foo: "bar" };
-		const badResult = new BadResult("test error", { meta });
+	test("creates Result _nay with message and data", () => {
+		const data = { foo: "bar" };
+		const badResult = Result({ _nay: { message: "test error", data } });
 
-		expect(badResult.message).toBe("test error");
-		expect(badResult.meta).toBe(meta);
-		expect(badResult.cause).toBeUndefined();
+		expect(badResult._nay.message).toBe("test error");
+		expect(badResult._nay.data).toBe(data);
+		expect(badResult._nay.cause).toBeUndefined();
 	});
 
-	test("creates BadResult with message, cause, and meta", () => {
+	test("creates Result _nay with message, cause, and data", () => {
 		const cause = new Error("cause error");
-		const meta = { foo: "bar" };
-		const badResult = new BadResult("test error", { cause, meta });
+		const data = { foo: "bar" };
+		const badResult = Result({ _nay: { message: "test error", cause, data } });
 
-		expect(badResult.message).toBe("test error");
-		expect(badResult.cause).toBe(cause);
-		expect(badResult.meta).toBe(meta);
+		expect(badResult._nay.message).toBe("test error");
+		expect(badResult._nay.cause).toBe(cause);
+		expect(badResult._nay.data).toBe(data);
 	});
 
-	describe("static methods", () => {
-		test("BadResult.is identifies BadResult instances", () => {
-			const badResult = new BadResult("test error");
-			const badResultAbort = new BadResultAbort("aborted");
-			const error = new Error("regular error");
-			const notAnError = { message: "not an error" };
-
-			expect(BadResult.is(badResult)).toBe(true);
-			expect(BadResult.is(badResultAbort)).toBe(true);
-			expect(BadResult.is(error)).toBe(false);
-			expect(BadResult.is(notAnError)).toBe(false);
-			expect(BadResult.is(null)).toBe(false);
-			expect(BadResult.is(undefined)).toBe(false);
-		});
-
-		test("BadResult.isError identifies Error instances", () => {
-			const badResult = new BadResult("test error");
-			const error = new Error("regular error");
-			const notAnError = { message: "not an error" };
-
-			expect(BadResult.isError(badResult)).toBe(false);
-			expect(BadResult.isError(error)).toBe(true);
-			expect(BadResult.isError(notAnError)).toBe(false);
-			expect(BadResult.isError(null)).toBe(false);
-			expect(BadResult.isError(undefined)).toBe(false);
-		});
-
-		test("BadResult.isBadResultOrError identifies both BadResult and Error instances", () => {
-			const badResult = new BadResult("test error");
-			const badResultAbort = new BadResultAbort("aborted");
-			const error = new Error("regular error");
-			const notAnError = { message: "not an error" };
-
-			expect(BadResult.isBadResultOrError(badResult)).toBe(true);
-			expect(BadResult.isBadResultOrError(badResultAbort)).toBe(true);
-			expect(BadResult.isBadResultOrError(error)).toBe(true);
-			expect(BadResult.isBadResultOrError(notAnError)).toBe(false);
-			expect(BadResult.isBadResultOrError(null)).toBe(false);
-			expect(BadResult.isBadResultOrError(undefined)).toBe(false);
-		});
-
-		test("BadResult.isNot correctly identifies non-BadResult values", () => {
-			const badResult = new BadResult("test error");
-			const notABadResult = "not a bad result";
-
-			expect(BadResult.isNot(badResult)).toBe(false);
-			expect(BadResult.isNot(notABadResult)).toBe(true);
-		});
-
-		test("BadResult.throwIfBadResult throws if value is BadResult", () => {
-			const badResult = new BadResult("test error");
-			const notABadResult = "not a bad result";
-
-			expect(() => BadResult.throwIfBadResultOrError(badResult)).toThrow();
-			expect(() => BadResult.throwIfBadResultOrError(notABadResult)).not.toThrow();
-		});
-
-		test("BadResult.try captures errors and returns them (sync)", () => {
+	describe("helper functions", () => {
+		test("Result_try captures errors and returns them (sync)", () => {
 			const successFn = () => "success";
 			const errorFn = () => {
 				throw new Error("error thrown");
 			};
 			const badResultFn = () => {
-				throw new BadResult("bad result thrown");
+				throw Result({ _nay: { message: "bad result thrown" } }) as any;
 			};
 
-			expect(BadResult.try(successFn)).toBe("success");
+			expect(Result_try(successFn)._yay).toBe("success");
 
-			const errorResult = BadResult.try(errorFn);
-			expect(errorResult).toBeInstanceOf(Error);
-			expect(errorResult.message).toBe("error thrown");
+			const errorResult = Result_try(errorFn);
+			expect(errorResult._nay?.message).toBe("error thrown");
 
-			const badResultError = BadResult.try(badResultFn);
-			expect(badResultError).toBeInstanceOf(BadResult);
-			expect(badResultError.message).toBe("bad result thrown");
+			const badResultError = Result_try(badResultFn);
+			expect(badResultError._nay?.message).toBe("bad result thrown");
 		});
 
-		test("BadResult.tryAsync captures errors and returns them (async)", async () => {
+		test("Result_try_async captures errors and returns them (async)", async () => {
 			const asyncSuccessFn = async () => "async success";
 			const asyncErrorFn = async () => {
 				throw new Error("async error thrown");
 			};
-			const asyncBadResultFn = async () => {
-				throw new BadResult("async bad result thrown");
+			const asyncNayResultFn = async () => {
+				throw Result({ _nay: { message: "async bad result thrown" } }) as any;
 			};
 
-			expect(await BadResult.tryAsync(asyncSuccessFn)).toBe("async success");
+			expect((await Result_try_async(asyncSuccessFn))._yay).toBe("async success");
 
-			const errorResult = await BadResult.tryAsync(asyncErrorFn);
-			expect(errorResult).toBeInstanceOf(Error);
-			expect(errorResult.message).toBe("async error thrown");
+			const errorResult = await Result_try_async(asyncErrorFn);
+			expect(errorResult._nay?.message).toBe("async error thrown");
 
-			const badResultError = await BadResult.tryAsync(asyncBadResultFn);
-			expect(badResultError).toBeInstanceOf(BadResult);
-			expect(badResultError.message).toBe("async bad result thrown");
+			const badResultError = await Result_try_async(asyncNayResultFn);
+			expect(badResultError._nay?.message).toBe("async bad result thrown");
 		});
 
-		test("BadResult.tryPromise captures errors from promises directly", async () => {
-			const successPromise = Promise.resolve("promise success");
-			const errorPromise = Promise.reject(new Error("promise error"));
-			const badResultPromise = Promise.reject(new BadResult("promise bad result"));
-			const badResultAbortPromise = Promise.reject(new BadResultAbort("promise aborted"));
+		test("Result_try_promise captures errors from promises directly", async () => {
+			expect((await Result_try_promise(Promise.resolve("promise success")))._yay).toBe("promise success");
 
-			expect(await BadResult.tryPromise(successPromise)).toBe("promise success");
+			const errorResult = await Result_try_promise(Promise.reject(new Error("promise error")));
+			expect(errorResult._nay?.message).toBe("promise error");
 
-			const errorResult = await BadResult.tryPromise(errorPromise);
-			expect(errorResult).toBeInstanceOf(Error);
-			expect(errorResult.message).toBe("promise error");
-
-			const badResultError = await BadResult.tryPromise(badResultPromise);
-			expect(badResultError).toBeInstanceOf(BadResult);
-			expect(badResultError.message).toBe("promise bad result");
-
-			const badResultAbortError = await BadResult.tryPromise(badResultAbortPromise);
-			expect(badResultAbortError).toBeInstanceOf(BadResultAbort);
-			expect(badResultAbortError.message).toBe("promise aborted");
+			const nayResult = await Result_try_promise(
+				Promise.reject(Result({ _nay: { message: "promise nay result" } }) as any),
+			);
+			expect(nayResult._nay?.message).toBe("promise nay result");
 		});
 
-		test("BadResult.getStack builds a stack trace with causes", () => {
-			const innerError = new Error("inner error");
-			const middleError = new BadResult("middle error", { cause: innerError });
-			const outerError = new BadResult("outer error", { cause: middleError });
+		// test("BadResult.getStack builds a stack trace with causes", () => {
+		// 	const innerError = new Error("inner error");
+		// 	const middleError = new BadResult("middle error", { cause: innerError });
+		// 	const outerError = new BadResult("outer error", { cause: middleError });
 
-			const stack = BadResult.getStack(outerError);
+		// 	const stack = BadResult.getStack(outerError);
 
-			expect(stack).toContain("outer error");
-			expect(stack).toContain("middle error");
-			expect(stack).toContain("inner error");
-		});
-	});
-});
-
-describe("BadResultAbort", () => {
-	test("creates BadResultAbort with message", () => {
-		const abort = new BadResultAbort("operation aborted");
-
-		expect(abort.message).toBe("operation aborted");
-		expect(abort.name).toBe("BadResultAbort");
-		expect(abort.cause).toBeUndefined();
-		expect(abort.meta).toBeUndefined();
+		// 	expect(stack).toContain("outer error");
+		// 	expect(stack).toContain("middle error");
+		// 	expect(stack).toContain("inner error");
+		// });
 	});
 
-	test("creates BadResultAbort with message and meta", () => {
-		const meta = { signal: new AbortController().signal };
-		const abort = new BadResultAbort("operation aborted", { meta });
+	test("creates Result with _yay", () => {
+		const result = Result({ _yay: "success" });
 
-		expect(abort.message).toBe("operation aborted");
-		expect(abort.meta).toBe(meta);
+		expect(result._yay).toBe("success");
+		expect(result._nay).toBeUndefined();
 	});
 
-	test("BadResult.is identifies BadResultAbort as a BadResult", () => {
-		const abort = new BadResultAbort("operation aborted");
-		expect(BadResult.is(abort)).toBe(true);
+	test("discriminated union pattern works", () => {
+		function processResult(result: Result<{ _yay: string }> | Result<{ _nay: { message: string } }>) {
+			if (result._nay) {
+				return `Error: ${result._nay.message}`;
+			} else {
+				return `Success: ${result._yay}`;
+			}
+		}
+
+		const successResult = Result({ _yay: "it worked" });
+		const failureResult = Result({ _nay: { message: "it failed" } });
+
+		expect(processResult(successResult)).toBe("Success: it worked");
+		expect(processResult(failureResult)).toBe("Error: it failed");
 	});
 });
 
@@ -226,141 +163,92 @@ describe("AbortReason", () => {
 	});
 });
 
-describe("Result", () => {
-	test("creates Result with ok value", () => {
-		const result = new Result({ ok: "success" });
-
-		expect(result.ok).toBe("success");
-		expect(result.bad).toBeUndefined();
-	});
-
-	test("creates Result with bad value", () => {
-		const badResult = new BadResult("failure");
-		const result = new Result({ bad: badResult });
-
-		expect(result.bad).toBe(badResult);
-		expect(result.ok).toBeUndefined();
-	});
-
-	test("discriminated union pattern works", () => {
-		function processResult(result: Result<{ ok: string }> | Result<{ bad: BadResult_Any }>) {
-			if (result.bad) {
-				return `Error: ${result.bad.message}`;
+describe("Workflows", () => {
+	test("Function that returns _yay", () => {
+		function doSomethingYay(flag: boolean) {
+			if (flag) {
+				return Result({ _yay: "success" });
 			} else {
-				return `Success: ${result.ok}`;
+				return Result({ _nay: { message: "failure" as const } });
 			}
 		}
 
-		const successResult = new Result({ ok: "it worked" });
-		const failureResult = new Result({ bad: new BadResult("it failed") });
+		const result = doSomethingYay(true);
+		if (result._nay) {
+			throw new Error("Did error");
+		}
 
-		expect(processResult(successResult)).toBe("Success: it worked");
-		expect(processResult(failureResult)).toBe("Error: it failed");
+		expect(result._yay).toBe("success");
 	});
 
-	test("Result.try (sync)", () => {
-		// Test successful synchronous function
-		const successFn = () => "success";
-		const successResult = Result.try(successFn);
-		expect(successResult.ok).toBe("success");
-		expect(successResult.bad).toBeUndefined();
+	test("Function that returns _nay", () => {
+		function doSomethingNay(flag: boolean) {
+			if (flag) {
+				return Result({ _nay: { message: "failure" } });
+			} else {
+				return Result({ _yay: "success" });
+			}
+		}
 
-		// Test Error thrown from synchronous function
-		const errorFn = () => {
-			throw new Error("sync error");
-		};
-		const errorResult = Result.try(errorFn);
-		expect(errorResult.ok).toBeUndefined();
-		expect(errorResult.bad).toBeInstanceOf(Error);
-		expect(errorResult.bad?.message).toBe("sync error");
+		const result = doSomethingNay(true);
+		if (result._nay) {
+			expect(result._nay.message).toBe("failure");
+			return;
+		}
 
-		// Test BadResult thrown from function
-		const badResultFn = () => {
-			throw new BadResult("bad result error");
-		};
-		const badResultResult = Result.try(badResultFn);
-		expect(badResultResult.ok).toBeUndefined();
-		expect(badResultResult.bad).toBeInstanceOf(BadResult);
-		expect(badResultResult.bad?.message).toBe("bad result error");
-
-		// Test BadResultAbort thrown from function
-		const badResultAbortFn = () => {
-			throw new BadResultAbort("operation aborted");
-		};
-		const badResultAbortResult = Result.try(badResultAbortFn);
-		expect(badResultAbortResult.ok).toBeUndefined();
-		expect(BadResult.is(badResultAbortResult.bad)).toBe(true);
-		expect(badResultAbortResult.bad?.message).toBe("operation aborted");
+		throw new Error("Should error");
 	});
 
-	test("Result.tryAsync (async)", async () => {
-		// Test successful asynchronous function
-		const asyncSuccessFn = async () => "async success";
-		const asyncSuccessResult = await Result.tryAsync(asyncSuccessFn);
-		expect(asyncSuccessResult.ok).toBe("async success");
-		expect(asyncSuccessResult.bad).toBeUndefined();
+	test("Function that returns _nay with data and union", () => {
+		function doSomethingNay(num: number) {
+			if (num === 0) {
+				return Result({ _yay: "success" });
+			} else if (num === 1) {
+				return Result({ _nay: { message: "failure" as const } });
+			} else {
+				return Result({ _nay: { message: "failure with data" as const, data: { foo: "bar" } } });
+			}
+		}
 
-		// Test Error thrown from asynchronous function
-		const asyncErrorFn = async () => {
-			throw new Error("async error");
-		};
-		const asyncErrorResult = await Result.tryAsync(asyncErrorFn);
-		expect(asyncErrorResult.ok).toBeUndefined();
-		expect(asyncErrorResult.bad).toBeInstanceOf(Error);
-		expect(asyncErrorResult.bad?.message).toBe("async error");
+		const result = doSomethingNay(2);
+		if (result._nay) {
+			if (result._nay.message === "failure with data") {
+				expect(result._nay.data.foo).toBe("bar");
+			}
 
-		// Test BadResult thrown from async function
-		const asyncBadResultFn = async () => {
-			throw new BadResult("async bad result error");
-		};
-		const asyncBadResultResult = await Result.tryAsync(asyncBadResultFn);
-		expect(asyncBadResultResult.ok).toBeUndefined();
-		expect(asyncBadResultResult.bad).toBeInstanceOf(BadResult);
-		expect(asyncBadResultResult.bad?.message).toBe("async bad result error");
+			return;
+		}
 
-		// Test BadResultAbort thrown from async function
-		const asyncBadResultAbortFn = async () => {
-			throw new BadResultAbort("async operation aborted");
-		};
-		const asyncBadResultAbortResult = await Result.tryAsync(asyncBadResultAbortFn);
-		expect(asyncBadResultAbortResult.ok).toBeUndefined();
-		expect(BadResult.is(asyncBadResultAbortResult.bad)).toBe(true);
-		expect(asyncBadResultAbortResult.bad?.message).toBe("async operation aborted");
+		throw new Error("Should error");
 	});
 
-	test("Result.tryPromise (promise)", async () => {
-		// Test successful promise
-		const successPromise = Promise.resolve("promise success");
-		const successResult = await Result.tryPromise(successPromise);
-		expect(successResult.ok).toBe("promise success");
-		expect(successResult.bad).toBeUndefined();
+	test("Abort task", () => {
+		const controller = new AbortController();
+		controller.abort(new AbortReason("abort reason"));
 
-		// Test Error rejection from promise
-		const errorPromise = Promise.reject(new Error("promise error"));
-		const errorResult = await Result.tryPromise(errorPromise);
-		expect(errorResult.ok).toBeUndefined();
-		expect(errorResult.bad).toBeInstanceOf(Error);
-		expect(errorResult.bad?.message).toBe("promise error");
+		function doSomething(signal: AbortSignal) {
+			try {
+				if (signal.aborted) {
+					throw AbortReason.of(signal);
+				}
 
-		// Test BadResult rejection from promise
-		const badResultPromise = Promise.reject(new BadResult("promise bad result"));
-		const badResultResult = await Result.tryPromise(badResultPromise);
-		expect(badResultResult.ok).toBeUndefined();
-		expect(badResultResult.bad).toBeInstanceOf(BadResult);
-		expect(badResultResult.bad?.message).toBe("promise bad result");
+				return Result({ _yay: "success" });
+			} catch (error) {
+				if (error instanceof Error && error.name === "AbortError") {
+					const abortReasonAsNay = Result_nay_from(error);
+					return Result({ _nay: { ...abortReasonAsNay, name: "nay_abort", cause: error } });
+				}
 
-		// Test BadResultAbort rejection from promise
-		const badResultAbortPromise = Promise.reject(new BadResultAbort("promise operation aborted"));
-		const badResultAbortResult = await Result.tryPromise(badResultAbortPromise);
-		expect(badResultAbortResult.ok).toBeUndefined();
-		expect(BadResult.is(badResultAbortResult.bad)).toBe(true);
-		expect(badResultAbortResult.bad?.message).toBe("promise operation aborted");
-	});
+				return Result({ _nay: { message: "unknown error" } });
+			}
+		}
 
-	test("Result.throwIfBad", () => {
-		const badResult = new Result({ bad: new BadResult("failure") });
-		const goodResult = new Result({ ok: "success" });
-		expect(() => Result.throwIfBad(badResult)).toThrow();
-		expect(() => Result.throwIfBad(goodResult)).not.toThrow();
+		const result = doSomething(controller.signal);
+		if (result._nay && result._nay.name === "nay_abort") {
+			expect(result._nay.message).not.toBeUndefined();
+			return;
+		}
+
+		throw new Error("Should error");
 	});
 });

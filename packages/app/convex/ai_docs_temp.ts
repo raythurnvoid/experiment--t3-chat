@@ -25,7 +25,7 @@ import {
 import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
-import { Result } from "../src/lib/errors-as-values-utils.ts";
+import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
 import { v } from "convex/values";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
@@ -41,15 +41,15 @@ if (!LIVEBLOCKS_WEBHOOK_SECRET) {
 export const contextual_prompt = httpAction(async (ctx, request) => {
 	try {
 		// Parse request body - expecting format: { prompt, option, command }
-		const bodyResult = await Result.tryPromise(request.json());
-		if (bodyResult.bad) {
+		const bodyResult = await Result_try_promise(request.json());
+		if (bodyResult._nay) {
 			return new Response("Failed to parse request body", {
 				status: 400,
 				headers: server_convex_headers_cors(),
 			});
 		}
 
-		const { prompt, option, command } = bodyResult.ok;
+		const { prompt, option, command } = bodyResult._yay;
 
 		if (!prompt || typeof prompt !== "string") {
 			return new Response("Invalid prompt", {
@@ -143,8 +143,8 @@ export const contextual_prompt = httpAction(async (ctx, request) => {
 
 export const liveblocks_auth = httpAction(async (ctx, request) => {
 	// Parse request body to get room parameter
-	const requestBodyResult = await Result.tryPromise(request.json());
-	if (requestBodyResult.bad) {
+	const requestBodyResult = await Result_try_promise(request.json());
+	if (requestBodyResult._nay) {
 		return new Response(JSON.stringify({ message: "Failed to parse request body" }), {
 			status: 400,
 			headers: server_convex_headers_cors(),
@@ -158,7 +158,7 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 	const userResult = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 	// Create a session for access token authentication
-	const sessionResult = Result.try(() =>
+	const sessionResult = Result_try(() =>
 		liveblocks.prepareSession(userResult.id, {
 			userInfo: {
 				avatar: userResult.avatar,
@@ -168,8 +168,8 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 		}),
 	);
 
-	if (sessionResult.bad) {
-		console.error("Failed to create session:", sessionResult.bad);
+	if (sessionResult._nay) {
+		console.error("Failed to create session:", sessionResult._nay);
 		return new Response(
 			JSON.stringify({
 				message: "Failed to create session",
@@ -184,10 +184,10 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 	// Set up room access using naming pattern: <workspace_id>:<project_id>:<document_id>
 	// For now, grant access to all documents in the hardcoded workspace/project
 	const workspacePattern = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:*`;
-	sessionResult.ok.allow(workspacePattern, sessionResult.ok.FULL_ACCESS);
-	const accessTokenResult = await Result.tryPromise(sessionResult.ok.authorize());
-	if (accessTokenResult.bad) {
-		console.error("Authorization failed:", accessTokenResult.bad);
+	sessionResult._yay.allow(workspacePattern, sessionResult._yay.FULL_ACCESS);
+	const accessTokenResult = await Result_try_promise(sessionResult._yay.authorize());
+	if (accessTokenResult._nay) {
+		console.error("Authorization failed:", accessTokenResult._nay);
 		return new Response(
 			JSON.stringify({
 				message: "Authorization failed",
@@ -199,16 +199,16 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 		);
 	}
 
-	if (accessTokenResult.ok.error) {
-		console.error("Authorization returned an error:", accessTokenResult.ok.error);
+	if (accessTokenResult._yay.error) {
+		console.error("Authorization returned an error:", accessTokenResult._yay.error);
 		return new Response(JSON.stringify({ message: "Authorization returned an error" }), {
 			status: 500,
 			headers: server_convex_headers_cors(),
 		});
 	}
 
-	return new Response(accessTokenResult.ok.body, {
-		status: accessTokenResult.ok.status,
+	return new Response(accessTokenResult._yay.body, {
+		status: accessTokenResult._yay.status,
 		headers: server_convex_headers_cors(),
 	});
 });

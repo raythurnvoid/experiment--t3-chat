@@ -60,13 +60,19 @@ export default tseslint.config(
 			"@typescript-eslint/no-unused-expressions": "off",
 			"@typescript-eslint/no-unused-vars": "off",
 			"@typescript-eslint/prefer-as-const": "off",
+			"@typescript-eslint/prefer-promise-reject-errors": [
+				"error",
+				{
+					allowThrowingAny: true,
+					allowThrowingUnknown: false,
+				},
+			],
 			"@typescript-eslint/require-await": "off",
 			"@typescript-eslint/only-throw-error": [
 				"error",
 				{
-					allowThrowingAny: false,
+					allowThrowingAny: true,
 					allowThrowingUnknown: false,
-					allow: ["BadResult", "BadResultAbort", "BadResult_Any"],
 				},
 			],
 

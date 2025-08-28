@@ -1,282 +1,4 @@
-import type { UnknownRecord } from "type-fest";
-
-/**
- * Similar to `Error` should be regularly returned instead of throwed.
- *
- * This will allow to write code that handles error are retularly returned values.
- *
- * The advantages of returning a `BadResult` over throwing an `Error` are:
- * - The caller is forced to take care of errors.
- * - The types of the errors are explicit.
- * - The types can be inferred automatically by checking the message string.
- * - Better performance when the function may throw many times, creating the stack trace is expensive.
- *
- * From the type-level standpoint, `BadResult` is a superset of `Error`.
- *
- * This means that you can use `BadResult` everywhere you would use an `Error` and it will be compatible.
- *
- * To distinguish between `BadResult` and `Error` you can use the `BadResult.is` or `Error.isError`/`e instanceof Error` methods.
- *
- * @example
- * ```ts
- * function fetchData() {
- *   try {
- *     const response = await fetch(url);
- *
- *     if (!response.ok) {
- *       return new Result({ bad: new BadResult('The server returned an error', { meta: { response } }) });
- *     }
- *
- *     return new Result({ ok: response });
- *   } catch (error) {
- *     return new Result({ bad: new BadResult('Failed to fetch data', { cause: error }) });
- *   }
- * }
- *
- * const result = await fetchData();
- * if (BadResult.is(result)) {
- *   // Handle the error
- * } else {
- *   // Handle the result
- * }
- * ```
- */
-export class BadResult<
-	Message extends string = string,
-	Args extends {
-		cause?: Error | BadResult;
-		meta?: {};
-	} = object,
-> {
-	readonly name = "BadResult";
-
-	readonly message: Message = undefined as any;
-	readonly cause: _BadResult_Cause<Args["cause"]> = undefined as any;
-	readonly meta: _BadResult_Meta<Args["meta"]> = undefined as any;
-	readonly stack?: string | undefined;
-
-	constructor(
-		message: Message,
-		// @ts-expect-error
-		args: Args = {
-			cause: undefined,
-			meta: undefined,
-		},
-	) {
-		this.message = message;
-		Object.assign(this, args);
-
-		// Define stack as enumerable getter, by default `get` accessors are not enumerable
-		Reflect.defineProperty(this, "stack", {
-			get: () => BadResult.getStack(this),
-			enumerable: true,
-			configurable: false,
-		});
-	}
-
-	/** Mostly used by sentry to format the console message */
-	toString() {
-		return `[BadResult: ${this.message}]`;
-	}
-
-	/**
-	 * Mostly used by sentry to properly access non-enumerable
-	 * properties of nested Errors like `cause`
-	 **/
-	toJSON() {
-		const json = {
-			name: this.name,
-			message: this.message as string,
-			cause: this.cause as unknown,
-			meta: this.meta as unknown,
-			stack: this.stack,
-		};
-
-		if ("toJSON" in (json.cause as any) && typeof (json.cause as any).toJSON === "function") {
-			json.cause = (json.cause as any).toJSON();
-		} else if (json.cause instanceof Error) {
-			json.cause = Error_serializeToJSON(json.cause);
-		}
-
-		return json;
-	}
-
-	static is(value: unknown): value is BadResult_Any {
-		return value instanceof BadResult || value instanceof BadResultAbort;
-	}
-
-	static isError(value: unknown): value is Error {
-		return value instanceof Error;
-	}
-
-	static isBadResultOrError<T>(value: T): value is Extract<T, BadResult_Any | Error> {
-		return BadResult.is(value) || BadResult.isError(value);
-	}
-
-	static isNot<T>(value: T | BadResult): value is Exclude<T, BadResult_Any> {
-		return !BadResult.is(value);
-	}
-
-	static throwIfBadResultOrError<T>(
-		value: T | BadResult_Any | Error,
-	): asserts value is Exclude<T, BadResult_Any | Error> {
-		if (BadResult.isBadResultOrError(value)) {
-			// eslint-disable-next-line @typescript-eslint/only-throw-error
-			throw value;
-		}
-	}
-
-	/**
-	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
-	 * For asynchronous functions, use `BadResult.tryAsync` instead.
-	 */
-	static try<T>(fn: () => T): T | BadResult_Any | Error {
-		try {
-			return fn();
-		} catch (error) {
-			return error as any;
-		}
-	}
-
-	/**
-	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
-	 * For synchronous functions, use `BadResult.try` instead.
-	 */
-	static async tryAsync<T>(fn: () => Promise<T>): Promise<T | BadResult_Any | Error> {
-		try {
-			return await fn();
-		} catch (error) {
-			return error as any;
-		}
-	}
-
-	/**
-	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
-	 * For cases where you have a function that returns a promise, use `BadResult.tryAsync` instead.
-	 */
-	static async tryPromise<T>(promise: Promise<T>): Promise<T | BadResult_Any | Error> {
-		try {
-			return await promise;
-		} catch (error) {
-			return error as any;
-		}
-	}
-
-	static getStack(error: BadResult_Any | Error): string {
-		let message = "";
-
-		let size = 0;
-		let pointer: null | undefined | BadResult_Any | Error | string = error;
-		while (pointer) {
-			if (pointer instanceof Error) {
-				if (message) message += "\nCaused by: ";
-				message += pointer.stack;
-				pointer = pointer.cause as any;
-			} else if (BadResult.is(pointer)) {
-				if (message) message += "\nCaused by: ";
-				message += `BadResult: ${pointer.message}`;
-				pointer = pointer.cause as any;
-			} else if (typeof pointer !== "object") {
-				if (message) message += "\nCaused by: ";
-				message += `Thrown: ${pointer}`;
-				pointer = null;
-			} else {
-				pointer = null;
-			}
-
-			size++;
-			if (size > 10) {
-				break;
-			}
-		}
-
-		return message;
-	}
-
-	static typeAssertNotBadResult<T>(value: T | BadResult<string>): asserts value is T {}
-
-	static typeAssertMayBeBadResultOrError<T>(value: any): asserts value is BadResult_Any | Error {}
-}
-
-/**
- * `BadResult` specifically designed to be used for long abortable tasks.
- *
- * It can be used along side an `AbortSignal` and returned when the signal is marked as aborted.
- *
- * @example
- * ```ts
- * function longOperation(signal: AbortSignal) {
- *   if (signal.aborted) {
- *     // Passing the signal is not mandatory, any additional data can be passed through `meta`.
- *     return new BadResultAbort(signal.reason, { meta: { signal } });
- *   }
- * }
- * ```
- */
-export class BadResultAbort<
-	Message extends string = string,
-	Args extends {
-		cause?: Error | BadResult;
-		meta?: UnknownRecord;
-	} = object,
-> {
-	// Composition over inheritance to prevent inheriting from `BadResult` all static methods.
-
-	readonly name = "BadResultAbort";
-
-	private readonly badResult: BadResult<Message, Args>;
-
-	readonly message: Message = undefined as any;
-	readonly cause: _BadResult_Cause<Args["cause"]> = undefined as any;
-	readonly meta: _BadResult_Meta<Args["meta"]> = undefined as any;
-	readonly stack?: string | undefined;
-
-	constructor(message: Message, args: Args = {} as Args) {
-		this.badResult = new BadResult(message, args);
-
-		// Define message, cause, meta and stack as enumerable getters, by default `get` accessors are not enumerable
-		Reflect.defineProperty(this, "message", {
-			get: () => this.badResult.message,
-			enumerable: true,
-			configurable: false,
-		});
-		Reflect.defineProperty(this, "cause", {
-			get: () => this.badResult.cause,
-			enumerable: true,
-			configurable: false,
-		});
-		Reflect.defineProperty(this, "meta", {
-			get: () => this.badResult.meta,
-			enumerable: true,
-			configurable: false,
-		});
-		Reflect.defineProperty(this, "stack", {
-			get: () => this.badResult.stack,
-			enumerable: true,
-			configurable: false,
-		});
-	}
-
-	toString() {
-		return `[BadResultAbort: ${this.message}]`;
-	}
-
-	/**
-	 * Mostly used by sentry to properly access non-enumerable
-	 * properties of nested Errors like `cause`
-	 **/
-	toJSON() {
-		const json = this.badResult.toJSON();
-		json.name = this.name;
-		return json;
-	}
-
-	static fromReason(abortReason: AbortReason): BadResultAbort {
-		return new BadResultAbort(abortReason.message, {
-			cause: abortReason.cause as any,
-		});
-	}
-}
+import type { IsUnknown, LiteralUnion } from "type-fest";
 
 /**
  * By default when calling `AbortController.abort` the reason is an instance of `DOMException` with a name `AbortError`.
@@ -333,7 +55,7 @@ export class AbortReason extends Error {
 	readonly name = "AbortError";
 
 	readonly message: string = undefined as any;
-	readonly cause: Error | BadResult | undefined = undefined;
+	readonly cause: Error | Result_nay | undefined = undefined;
 
 	constructor(message: string, options?: ErrorOptions & { cause?: AbortReason["cause"] }) {
 		super(message, options);
@@ -370,110 +92,183 @@ export class AbortReason extends Error {
 }
 
 /**
- * Result class that will help handle errors as regular values.
- *
- * @example
- * ```ts
- * function mayReturnBadResult() {
- *   if (Math.random() > 0.5) {
- *     return new Result({ bad: new BadResult('bad') });
- *   } else {
- *     return new Result({ ok: 'ok' });
- *   }
- * }
- *
- * const result = await mayReturnBadResult();
- * if (result.bad) {
- *   // Handle the error
- * } else {
- *   // Do something
- * }
- * ```
+ * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+ * For asynchronous functions, use `Result.tryAsync` instead.
  */
-export class Result<
-	T extends
-		| {
-				ok: unknown;
-				bad?: never;
-		  }
-		| {
-				bad: BadResult_Any | Error;
-				ok?: never;
-		  } = { ok: undefined },
-> {
-	readonly name = "Result";
-
-	// @ts-expect-error
-	isOk: T extends { ok: unknown } ? true : false = false;
-	// @ts-expect-error
-	isBad: T extends { bad: unknown } ? true : false = false;
-	// @ts-expect-error
-	ok: T extends { ok: unknown } ? T["ok"] : undefined = undefined;
-	// @ts-expect-error
-	bad: T extends { bad: unknown } ? T["bad"] : undefined = undefined;
-
-	constructor(result?: T) {
-		if (result && "bad" in result) {
-			// @ts-expect-error
-			this.bad = "bad" in result ? result.bad : undefined;
-			// @ts-expect-error
-			this.isBad = true;
-		} else {
-			// @ts-expect-error
-			this.ok = result.ok;
-			// @ts-expect-error
-			this.isOk = true;
-		}
-	}
-
-	/** Mostly used by sentry to format the console message */
-	toString() {
-		return `[Result.${this.isOk ? "ok" : "bad"}${this.bad ? `: ${this.bad.message}` : ""}]`;
-	}
-
-	static throwIfBad<T extends { ok: any; bad: any }>(result: T): asserts result is Exclude<T, Result<{ bad: any }>> {
-		if (result.bad) {
-			// eslint-disable-next-line @typescript-eslint/only-throw-error
-			throw result.bad;
-		}
-	}
-
-	/**
-	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
-	 * For asynchronous functions, use `Result.tryAsync` instead.
-	 */
-	static try<T>(fn: () => T): Result<{ ok: T }> | Result<{ bad: BadResult_Any | Error }> {
-		try {
-			return new Result({ ok: fn() });
-		} catch (error) {
-			return new Result({ bad: error as BadResult_Any | Error });
-		}
-	}
-
-	/**
-	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
-	 * For synchronous functions, use `Result.try` instead.
-	 */
-	static async tryAsync<T>(fn: () => Promise<T>): Promise<Result<{ ok: T }> | Result<{ bad: BadResult_Any | Error }>> {
-		try {
-			return new Result({ ok: await fn() });
-		} catch (error) {
-			return new Result({ bad: error as BadResult_Any | Error });
-		}
-	}
-
-	/**
-	 * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
-	 * For cases where you have a function that returns a promise, use `Result.tryAsync` instead.
-	 */
-	static async tryPromise<T>(promise: Promise<T>): Promise<Result<{ ok: T }> | Result<{ bad: BadResult_Any | Error }>> {
-		try {
-			return new Result({ ok: await promise });
-		} catch (error) {
-			return new Result({ bad: error as BadResult_Any | Error });
-		}
+export function Result_try<T>(fn: () => T): Result<{ _yay: T } | { _nay: Result_nay }> {
+	try {
+		return Result({ _yay: fn() });
+	} catch (error: any) {
+		return Result({ _nay: "_nay" in error ? error._nay : Result_nay_from(error) });
 	}
 }
+
+/**
+ * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+ * For synchronous functions, use `Result.try` instead.
+ */
+export function Result_try_async<T>(fn: () => Promise<T>) {
+	return fn()
+		.then((value) => {
+			return Result({ _yay: value });
+		})
+		.catch((error) => {
+			return Result({ _nay: "_nay" in error ? error._nay : Result_nay_from(error) });
+		});
+}
+
+/**
+ * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
+ * For cases where you have a function that returns a promise, use `Result.tryAsync` instead.
+ */
+export function Result_try_promise<T>(promise: Promise<T>): Promise<Result<{ _yay: T } | { _nay: Result_nay }>> {
+	return promise
+		.then((value) => {
+			return Result({ _yay: value });
+		})
+		.catch((error) => {
+			return Result({ _nay: "_nay" in error ? error._nay : Result_nay_from(error) });
+		});
+}
+
+export function Result_nay_from(error_or_nay: unknown) {
+	console.log("error_or_nay", error_or_nay);
+	if (error_or_nay == null) {
+		return Result_nay({
+			message: error_or_nay === null ? "null" : "undefined",
+		});
+	} else if (
+		typeof error_or_nay === "object" &&
+		"message" in error_or_nay &&
+		typeof error_or_nay.message === "string" &&
+		"name" in error_or_nay &&
+		typeof error_or_nay.name === "string"
+	) {
+		return Result_nay(error_or_nay as Result_nay);
+	} else if (
+		typeof error_or_nay === "object" &&
+		"message" in error_or_nay &&
+		typeof error_or_nay.message === "string"
+	) {
+		return Result_nay({
+			message: error_or_nay.message,
+		});
+	} else if (typeof error_or_nay === "string") {
+		return Result_nay({
+			message: error_or_nay,
+		});
+	} else {
+		return Result_nay({
+			message: "unknown",
+		});
+	}
+}
+
+export function Result_nay<
+	T extends {
+		name?: Result_nay_name;
+		message?: string;
+		cause?: unknown;
+		data?: unknown;
+	},
+>(
+	error_or_nay: T,
+): Result_nay<{
+	name: T["name"] extends Result_nay_name ? T["name"] : "nay";
+	message: T["message"] extends string ? T["message"] : string;
+	cause: IsUnknown<T["cause"]> extends true ? never : T["cause"];
+	data: IsUnknown<T["data"]> extends true ? never : T["data"];
+}> {
+	return {
+		// @ts-expect-error
+		name: error_or_nay.name ?? "nay",
+		message: error_or_nay.message ?? "",
+		// @ts-expect-error
+		cause: error_or_nay.cause,
+		// @ts-expect-error
+		data: "data" in error_or_nay ? error_or_nay.data : undefined,
+	};
+}
+
+export function Result<
+	T extends
+		| { _yay: unknown }
+		| {
+				_nay: {
+					name?: Result_nay_name;
+					message?: string;
+					cause?: unknown;
+					data?: unknown;
+				};
+		  },
+>(
+	args: T,
+): T extends { _yay: unknown }
+	? Result<{ _yay: T["_yay"] }>
+	: Result<{
+			_nay: Result_nay<{
+				// @ts-expect-error
+				name: T["_nay"]["name"] extends Result_nay_name
+					? // @ts-expect-error
+						T["_nay"]["name"]
+					: "nay";
+				// @ts-expect-error
+				message: T["_nay"]["message"] extends string ? T["_nay"]["message"] : string;
+				// @ts-expect-error
+				cause: IsUnknown<T["_nay"]["cause"]> extends true ? never : T["_nay"]["cause"];
+				// @ts-expect-error
+				data: IsUnknown<T["_nay"]["data"]> extends true ? never : T["_nay"]["data"];
+			}>;
+		}> {
+	return "_nay" in args
+		? ({
+				_nay: Result_nay(args._nay),
+			} as any)
+		: ({
+				_yay: args._yay,
+			} as any);
+}
+
+type Result_nay_name = LiteralUnion<"nay" | "nay_abort", string>;
+
+export type Result_nay<
+	T extends {
+		name?: Result_nay_name;
+		message: string;
+		cause?: unknown;
+		data?: unknown;
+	} = {
+		name?: Result_nay_name;
+		message: string;
+		cause?: unknown;
+		data?: unknown;
+	},
+> = {
+	name: T["name"] extends Result_nay_name ? T["name"] : "nay";
+	message: T["message"];
+	cause?: T["cause"];
+	data: T["data"];
+};
+
+export type Result<
+	T extends {
+		_yay?: unknown;
+		_nay?: {
+			name?: Result_nay_name;
+			message: string;
+			cause?: unknown;
+			data?: unknown;
+		};
+	},
+> = T extends { _yay: unknown }
+	? {
+			_yay: T["_yay"];
+			_nay?: never;
+		}
+	: {
+			_nay: Result_nay<NonNullable<T["_nay"]>>;
+			_yay?: never;
+		};
 
 /**
  * Same as Sentry depth, we should not need more for now
@@ -486,7 +281,7 @@ const ERROR_SERIALIZATION_TO_JSON_MAX_DEPTH = 10;
  * Used for Sentry to serialized `Error` objects nested in other objects
  * and allow sentry to expose the `cause` property in the UI
  */
-export function Error_serializeToJSON(error: Error): {
+export function Error_serializeToJSON(error: Error | Result_nay): {
 	name: string;
 	message: string;
 	cause: unknown;
@@ -496,7 +291,7 @@ export function Error_serializeToJSON(error: Error): {
 		name: error.name,
 		message: error.message,
 		cause: error.cause,
-		stack: error.stack,
+		stack: "stack" in error ? error.stack : `${error.name}: ${error.message}`,
 	};
 
 	// Recursively serialize `cause`
@@ -524,25 +319,3 @@ export function Error_serializeToJSON(error: Error): {
 
 	return json;
 }
-
-export type BadResult_Any = {
-	name: string;
-	message: string;
-	cause?: BadResult_Any | Error | undefined;
-	meta?: UnknownRecord | undefined;
-	stack?: string | undefined;
-	toString(): string;
-	toJSON(): object;
-};
-
-export type BadResult_Extract<T> = Extract<T, BadResult_Any> extends never ? never : Extract<T, BadResult_Any>;
-
-export type BadResult_Exclude<T> = BadResult_Extract<T> extends never ? T : Exclude<T, BadResult_Any>;
-
-export type Result_PickBad<T> = T extends { bad: infer U } ? Exclude<U, undefined> : never;
-
-export type Result_PickOk<T> = T extends { ok: infer U } ? Exclude<U, undefined> : never;
-
-// Private utilities to set the proper types in the BadResult class.
-type _BadResult_Cause<T> = T extends Error ? T : T extends BadResult ? T : undefined;
-type _BadResult_Meta<T> = T extends UnknownRecord ? T : undefined;

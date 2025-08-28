@@ -1,8 +1,8 @@
 import type { api_schemas_MainPaths, api_schemas_Main } from "./api-schemas.ts";
 import type { LiteralUnion } from "type-fest";
 import { auth_get_token } from "./auth.ts";
-import { BadResult, BadResultAbort, Result } from "./errors-as-values-utils.ts";
 import { delay, should_never_happen } from "./utils.ts";
+import { Result, Result_nay_from } from "./errors-as-values-utils.ts";
 
 const convex_http_url = import.meta.env
 	? (import.meta.env.VITE_CONVEX_HTTP_URL as string)
@@ -137,8 +137,10 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 		if (token) {
 			headers.set("Authorization", `Bearer ${token}`);
 		} else {
-			return new Result({
-				bad: new BadResult("No token"),
+			return Result({
+				_nay: {
+					message: "No token",
+				},
 			});
 		}
 	}
@@ -164,16 +166,21 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 			});
 
 			if (!response.ok) {
-				return new Result({
-					bad: new BadResult("The API responded with an error", { meta: response }),
+				return Result({
+					_nay: {
+						message: "The API responded with an error",
+						data: response,
+					},
 				});
 			}
 
 			const reader = response.clone().body?.getReader();
 
 			if (!reader) {
-				return new Result({
-					bad: new BadResult("Response body is not a stream"),
+				return Result({
+					_nay: {
+						message: "Response body is not a stream",
+					},
 				});
 			}
 
@@ -183,9 +190,9 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 				signal: args.signal,
 			});
 
-			return new Result({
-				ok: {
-					response: response,
+			return Result({
+				_yay: {
+					response,
 					payload: stream_iterator_factory,
 				},
 			});
@@ -193,12 +200,22 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 			const error = e as Error;
 			// Handle errors as values
 			if (error.name === "AbortError") {
-				result = new Result({ bad: new BadResultAbort("Request aborted", { cause: error }) });
+				result = Result({
+					_nay: {
+						message: "Request aborted",
+						cause: error,
+					},
+				});
 				break;
 			} else {
 				// Client connection error, it makes sense to retry
 
-				result = new Result({ bad: new BadResult("Failed to fetch", { cause: error }) });
+				result = Result({
+					_nay: {
+						message: "Failed to fetch",
+						cause: error,
+					},
+				});
 
 				// Only retry on "Failed to fetch" errors if we have more attempts left
 				if (attempt < maxAttempts) {
@@ -211,7 +228,11 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 
 	if (!result) {
 		should_never_happen("`result` is always valorized");
-		return new Result({ bad: new BadResult("Failed to fetch") });
+		return Result({
+			_nay: {
+				message: "Failed to fetch",
+			},
+		});
 	}
 
 	return result;
@@ -241,8 +262,10 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 		if (token) {
 			headers.set("Authorization", `Bearer ${token}`);
 		} else {
-			return new Result({
-				bad: new BadResult("No token"),
+			return Result({
+				_nay: {
+					message: "No token",
+				},
 			});
 		}
 	}
@@ -268,16 +291,21 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 			});
 
 			if (!response.ok) {
-				return new Result({
-					bad: new BadResult("The API responded with an error", { meta: response }),
+				return Result({
+					_nay: {
+						message: "The API responded with an error",
+						data: response,
+					},
 				});
 			}
 
 			const reader = response.clone().body?.getReader();
 
 			if (!reader) {
-				return new Result({
-					bad: new BadResult("Response body is not a stream"),
+				return Result({
+					_nay: {
+						message: "Response body is not a stream",
+					},
 				});
 			}
 
@@ -286,13 +314,16 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 				response_json = await response.json();
 			} catch (e) {
 				const error = e as Error;
-				return new Result({
-					bad: new BadResult("Failed to parse response as JSON", { cause: error }),
+				return Result({
+					_nay: {
+						message: "Failed to parse response as JSON",
+						cause: error,
+					},
 				});
 			}
 
-			return new Result({
-				ok: {
+			return Result({
+				_yay: {
 					response,
 					payload: response_json as Response,
 				},
@@ -301,12 +332,23 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 			const error = e as Error;
 			// Handle errors as values
 			if (error.name === "AbortError") {
-				result = new Result({ bad: new BadResultAbort("Request aborted", { cause: error }) });
+				result = Result({
+					_nay: {
+						name: "nay_abort",
+						message: "Request aborted",
+						cause: error,
+					},
+				});
 				break;
 			} else {
 				// Client connection error, it makes sense to retry
 
-				result = new Result({ bad: new BadResult("Failed to fetch", { cause: error }) });
+				result = Result({
+					_nay: {
+						message: "Failed to fetch",
+						cause: error,
+					},
+				});
 
 				// Only retry on "Failed to fetch" errors if we have more attempts left
 				if (attempt < maxAttempts) {
@@ -319,7 +361,11 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 
 	if (!result) {
 		should_never_happen("`result` is always valorized");
-		return new Result({ bad: new BadResult("Failed to fetch") });
+		return Result({
+			_nay: {
+				message: "Failed to fetch",
+			},
+		});
 	}
 
 	return result;
@@ -438,7 +484,11 @@ class StreamIteratorFactory {
 		const generator = async function* (this: StreamIteratorFactory) {
 			if (!this.response.body) {
 				should_never_happen("`response.body` must be always valorized");
-				return new Result({ bad: new BadResult("Failed to read the response stream") });
+				return Result({
+					_nay: {
+						message: "Failed to read the response stream",
+					},
+				});
 			}
 
 			const reader = this.first_reader ?? this.response.body.getReader();
@@ -464,24 +514,44 @@ class StreamIteratorFactory {
 						const chunk = decoder.decode(result.value, { stream: true });
 						buffer += chunk;
 
-						yield new Result({ ok: chunk });
+						yield Result({
+							_yay: {
+								chunk,
+							},
+						});
 					}
 				}
 			} catch (e) {
 				const error = e as Error;
 				if (error.name === "AbortError") {
 					if (this.signal?.aborted) {
-						yield new Result({
-							bad: BadResultAbort.fromReason(this.signal.reason),
+						const abortReason = Result_nay_from(this.signal.reason);
+						yield Result({
+							_nay: {
+								name: "nay_abort",
+								message: abortReason.message,
+								cause: abortReason,
+							},
 						});
 						return;
 					} else {
-						yield new Result({ bad: new BadResultAbort(error.message, { cause: error }) });
+						yield Result({
+							_nay: {
+								name: "nay_abort",
+								message: error.message,
+								cause: error,
+							},
+						});
 						return;
 					}
 				}
 
-				yield new Result({ bad: new BadResult(error.message, { cause: error }) });
+				yield Result({
+					_nay: {
+						message: error.message,
+						cause: error,
+					},
+				});
 				return;
 			} finally {
 				reader.releaseLock();
