@@ -5,6 +5,8 @@ import { global_event_ai_chat_open_canvas, useGlobalEvent } from "../../lib/glob
 
 export const Canvas = memo(() => {
 	const [editorPageId, setEditorPageId] = useState<string | null>(null);
+	const [editorMode, setEditorMode] = useState<"diff" | "editor" | undefined>(undefined);
+	const [modifiedSeed, setModifiedSeed] = useState<string | undefined>(undefined);
 
 	const openCanvasGlobalEventDebounceTimeoutId = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -13,13 +15,15 @@ export const Canvas = memo(() => {
 		clearTimeout(openCanvasGlobalEventDebounceTimeoutId.current);
 		openCanvasGlobalEventDebounceTimeoutId.current = setTimeout(() => {
 			setEditorPageId(payload.pageId);
+			setEditorMode(payload.mode);
+			setModifiedSeed(payload.modifiedSeed);
 		});
 	});
 
 	if (editorPageId) {
 		return (
 			<div className="Canvas h-full">
-				<PageRichTextEditor pageId={editorPageId} />
+				<PageRichTextEditor pageId={editorPageId} mode={editorMode} modifiedSeed={modifiedSeed} />
 			</div>
 		);
 	}

@@ -12,6 +12,8 @@ import { cn } from "../../lib/utils.ts";
 
 export interface PageRichTextEditor_Props {
 	pageId: string | null | undefined;
+	mode?: "diff" | "editor";
+	modifiedSeed?: string;
 }
 
 function ai_docs_create_liveblocks_room_id(orgId: string, projectId: string, docId: string) {
@@ -40,10 +42,10 @@ function LoadingEditor() {
 }
 
 export function PageRichTextEditor(props: PageRichTextEditor_Props) {
-	const { pageId } = props;
+	const { pageId, mode, modifiedSeed } = props;
 	const auth = useAuth();
 	const [editorMode, setEditorMode] = useState<"rich" | "markdown">("rich");
-	const [diffMode, setDiffMode] = useState(false);
+	const [diffMode, setDiffMode] = useState(mode === "diff");
 
 	const handleDiffExit = useCallback(() => {
 		setDiffMode(false);
@@ -63,11 +65,11 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 					auth: auth.isAuthenticated,
 				});
 
-				if (result.ok) {
-					return result.ok.payload;
-				} else {
-					throw new Error(`Failed to authenticate: ${result.bad.message}`);
+				if (result._nay) {
+					throw new Error(`Failed to authenticate: ${result._nay.message}`);
 				}
+
+				return result._yay.payload;
 			}}
 		>
 			<RoomProvider id={roomId}>
@@ -104,7 +106,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 							{editorMode === "rich" ? (
 								<RichTextDocEditor doc_id={pageId} />
 							) : diffMode ? (
-								<MonacoMarkdownDiffEditor docId={pageId} onExit={handleDiffExit} />
+								<MonacoMarkdownDiffEditor docId={pageId} onExit={handleDiffExit} modifiedInitialValue={modifiedSeed} />
 							) : (
 								<MonacoMarkdownEditor docId={pageId} />
 							)}

@@ -115,11 +115,12 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 export interface MonacoMarkdownDiffEditor_Props {
 	className?: string;
 	docId: string;
+	modifiedInitialValue?: string;
 	onExit: () => void;
 }
 
 export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) {
-	const { className, docId, onExit } = props;
+	const { className, docId, modifiedInitialValue, onExit } = props;
 	const convex = useConvex();
 	const applyPatchToPageAndBroadcast = useMutation(api.ai_docs_temp.apply_patch_to_page_and_broadcast);
 
@@ -361,17 +362,17 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		if (!baseModel || !modifiedModel) return;
 		const seed = typeof initialValue === "string" ? initialValue : "";
 		baseModel.setValue(seed);
-		modifiedModel.setValue(seed);
+		modifiedModel.setValue(modifiedInitialValue ?? seed);
 		// Force consistent EOL across both models
 		baseModel.setEOL(monaco.editor.EndOfLineSequence.LF);
 		modifiedModel.setEOL(monaco.editor.EndOfLineSequence.LF);
 		// Seed local value for modified copy
-		modifiedContentRef.current = seed;
+		modifiedContentRef.current = modifiedInitialValue ?? seed;
 		// Preserve the original content for later patch creation
 		originalSeedRef.current = seed;
 		// Unsubscribe the text watcher now that we seeded once
 		textContentWatchRef.current?.unsubscribe();
-	}, [diffEditor, initialValue]);
+	}, [diffEditor, initialValue, modifiedInitialValue]);
 
 	// Track modified editor content and listen for diff updates
 	useEffect(

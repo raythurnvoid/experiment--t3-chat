@@ -56,12 +56,22 @@ export function useGlobalEvent<Handler extends HandlerFn>(listenFn: (handler: Ha
 }
 // #endregion Core
 
+// Extended payload supports opening in diff mode with an optional modified seed
+type global_event_ai_chat_open_canvas_Payload = {
+	pageId: string;
+	mode?: "diff" | "editor";
+	modifiedSeed?: string;
+};
+
 export namespace global_event_ai_chat_open_canvas {
-	export function listen(handler: (payload: { pageId: string }) => void, options?: GlobalEventOptions) {
+	export function listen(
+		handler: (payload: global_event_ai_chat_open_canvas_Payload) => void,
+		options?: GlobalEventOptions,
+	) {
 		return global_event.listen("ai_chat::open_canvas", handler, options);
 	}
 
-	export function dispatch(payload: { pageId: string }) {
+	export function dispatch(payload: global_event_ai_chat_open_canvas_Payload) {
 		return global_event.dispatch("ai_chat::open_canvas", payload);
 	}
 }

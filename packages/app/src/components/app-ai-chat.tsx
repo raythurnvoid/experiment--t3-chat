@@ -397,8 +397,13 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 		if (!result) return;
 
 		const pageId = result.metadata.page_id;
-		if (pageId) {
-			// Broadcast the final content to editors via Convex, keeping server tool pure for HITL workflows
+		if (!pageId) {
+			console.warn("write_page: page id missing in tool result for path", args.path);
+			return;
+		}
+
+		if (result.metadata.applied === true) {
+			// Newly created file: write & broadcast like before, then open canvas
 			try {
 				await updateAndBroadcast({
 					workspace_id: ai_chat_HARDCODED_ORG_ID,
@@ -407,12 +412,14 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 					text_content: args.content,
 				});
 			} catch (e) {
-				console.error("Failed to broadcast page update:", e);
-				return;
+				console.error("Failed to broadcast page creation/update:", e);
 			}
-
 			global_event_ai_chat_open_canvas.dispatch({ pageId });
+			return;
 		}
+
+		// Existing page preview: open diff mode, seed modified with proposed content
+		global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedSeed: args.content });
 	});
 
 	useEffect(() => {

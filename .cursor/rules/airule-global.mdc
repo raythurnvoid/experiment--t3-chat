@@ -230,116 +230,6 @@ Object.assign(
 );
 ```
 
-# Application Architecture
-
-This app is an AI chatbot that allows users to chat with AI, call tools, and produce documents in a canvas panel.
-
-## Backend Architecture
-
-The backend uses Convex as the primary backend platform, located in [packages/app/convex/](mdc:packages/app/convex):
-
-- [ai_chat.ts](mdc:packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming, tool calling, and artifact creation
-- [schema.ts](mdc:packages/app/convex/schema.ts) - Database schema for threads and messages
-- [auth.ts](mdc:packages/app/convex/auth.ts) - Authentication with Clerk integration
-- [http.ts](mdc:packages/app/convex/http.ts) - HTTP routing for API endpoints
-
-The Convex backend handles:
-
-- AI chat streaming with OpenAI integration
-- Thread and message management
-- Tool calling (weather, artifact creation)
-- Authentication token generation
-- CORS handling
-
-## Frontend Architecture
-
-The frontend is a React 19 application located in [packages/app/src/](mdc:packages/app/src):
-
-- [main.tsx](mdc:packages/app/src/main.tsx) - Application entry point with providers
-- [routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
-  - [\_\_root.tsx](mdc:packages/app/src/routes/__root.tsx) - Root layout with auth setup
-  - [index.tsx](mdc:packages/app/src/routes/index.tsx) - Home page
-  - [chat.tsx](mdc:packages/app/src/routes/chat.tsx) - Main chat interface with canvas
-- [components/](mdc:packages/app/src/components) - React components organized by feature
-  - [assistant-ui/](mdc:packages/app/src/components/assistant-ui) - Chat interface components
-  - [canvas/](mdc:packages/app/src/components/canvas) - Canvas/artifact editing components
-  - [ui/](mdc:packages/app/src/components/ui) - Shared UI components
-
-## Key Technologies
-
-- Convex - Backend platform with real-time database
-- Clerk - Authentication provider
-- Assistant UI - Chat interface components (submodule)
-- Liveblocks - Real-time collaboration (submodule)
-- BlockNote - Rich text editor for canvas/artifacts
-- TanStack Router - File-based routing
-- Tailwind 4 - Utility-first CSS framework
-- React 19 - Frontend framework
-- shadcn/ui - Component library with Tailwind styling
-- React Complex Tree - Tree component for file/folder navigation
-- AI SDK - AI integration and streaming utilities
-
-## Technology Stack
-
-This project uses the latest versions of core technologies:
-
-- React 19
-- Tailwind 4
-
-### Tailwind Configuration
-
-IMPORTANT: This project uses CSS-based Tailwind V4 configuration instead of `tailwind.config.js`:
-
-- [packages/app/src/app.css](mdc:packages/app/src/app.css) - Main CSS file containing Tailwind configuration
-- Tailwind is configured using CSS `@config` directive and CSS custom properties
-- All theme customization, plugins, and configuration are handled in the CSS file
-
-### Component Styling
-
-- shadcn/ui components provide pre-styled, accessible components
-- Components follow Tailwind utility patterns with CSS custom properties
-- Design system tokens are defined in [packages/app/src/app.css](mdc:packages/app/src/app.css)
-
-### Documentation Requirements
-
-- Always reference React 19 documentation for React-specific features
-- Always reference Tailwind 4 documentation for CSS utilities/config
-- If encountering unfamiliar patterns or errors, prefer the latest docs
-
-## Application Structure
-
-The app runs at http://localhost:5173/ during development.
-
-The app has two main views:
-
-1. Home page (`/`) - Basic landing page with navigation
-2. Chat page (`/chat`) - Split-panel interface with:
-   - Left sidebar: Thread list and navigation
-   - Center panel: Chat interface with AI conversation
-   - Right panel: Canvas for editing artifacts and documents
-
-## Data Flow
-
-1. User interactions in the frontend trigger TanStack Router navigation
-2. Chat messages are sent to Convex HTTP actions via Assistant UI runtime
-3. Convex processes messages, calls OpenAI API, and streams responses
-4. Tool calls can create artifacts that appear in the canvas panel
-5. Thread and message data is persisted in Convex database
-6. Authentication is handled by Clerk with Convex integration
-
-# Convex Environment Variables
-
-## Two URLs for Different Purposes
-
-- VITE_CONVEX_URL - WebSocket/real-time (queries, mutations, subscriptions)
-- VITE_CONVEX_HTTP_URL - HTTP actions (API endpoints, authentication)
-
-## HTTP Request Configuration
-
-Use centralized fetch utilities from [packages/app/src/lib/fetch.ts](mdc:packages/app/src/lib/fetch.ts) for internal HTTP requests.
-
-For third-party integrations, construct URLs manually using `VITE_CONVEX_HTTP_URL`.
-
 ## Casing
 
 Use snake_case only for symbols defined at the root of a module (except components and hooks). Everything else uses camelCase.
@@ -405,6 +295,80 @@ export function useAiChat_grouped_threads() {
 ```
 
 ### Third-Party and Native JavaScript Functions
+
+# Application Architecture
+
+This app is an AI chatbot that allows users to chat with AI, call tools, and produce documents in a canvas panel.
+
+## Backend Architecture
+
+The backend uses Convex as the primary backend platform, located in [packages/app/convex/](mdc:packages/app/convex):
+
+- [ai_chat.ts](mdc:packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming, tool calling, and artifact creation
+- [schema.ts](mdc:packages/app/convex/schema.ts) - Database schema for threads and messages
+- [auth.ts](mdc:packages/app/convex/auth.ts) - Authentication with Clerk integration
+- [http.ts](mdc:packages/app/convex/http.ts) - HTTP routing for API endpoints
+
+The Convex backend handles:
+
+- AI chat streaming with OpenAI integration
+- Thread and message management
+- Tool calling (weather, artifact creation)
+- Authentication token generation
+- CORS handling
+
+## Frontend Architecture
+
+The frontend is a React 19 application located in [packages/app/src/](mdc:packages/app/src):
+
+- [main.tsx](mdc:packages/app/src/main.tsx) - Application entry point with providers
+- [routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
+  - [\_\_root.tsx](mdc:packages/app/src/routes/__root.tsx) - Root layout with auth setup
+  - [index.tsx](mdc:packages/app/src/routes/index.tsx) - Home page
+  - [chat.tsx](mdc:packages/app/src/routes/chat.tsx) - Main chat interface with canvas
+- [components/](mdc:packages/app/src/components) - React components organized by feature
+  - [assistant-ui/](mdc:packages/app/src/components/assistant-ui) - Chat interface components
+  - [canvas/](mdc:packages/app/src/components/canvas) - Canvas/artifact editing components
+  - [ui/](mdc:packages/app/src/components/ui) - Shared UI components
+
+## Key Technologies
+
+- Convex - Real-time backend, HTTP actions, persistence
+- Clerk - Authentication
+- Assistant UI (submodule) - Chat/runtime UI
+- Liveblocks + Yjs - Real-time collaborative editing
+- BlockNote - Rich text/Markdown editor
+- Monaco Editor - Code and Diff editor
+- TanStack Router - File-based routing
+- Zustand - State management
+- Tailwind 4 + shadcn/ui - Styling and components
+- React 19 - Frontend framework
+- React Complex Tree - Docs/file explorer
+- Vite - Dev/build tool
+- Playwright - UI verification
+- AI SDK + OpenAI - AI integration and streaming
+
+## Application Structure
+
+The app runs at http://localhost:5173/ during development.
+
+- Chat: The center panel uses Assistant UI runtime to send messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool calls can create or update artifacts which appear in the right-hand canvas.
+- Agent file access: Server-side tools in `packages/app/server/server-ai-tools.ts` let the agent read, write, and diff files in the workspace (search, edits, filesystem ops). These run in Node, not the browser, and are invoked through tool calls from the chat flow.
+- Docs: The docs experience combines a file/tree explorer and an editor surface. Content supports rich text Markdown via BlockNote and code/diff via Monaco Diff Editor. The canvas can switch between these modes depending on the artifact type.
+- Collaboration: Liveblocks + Yjs provide real-time presence and editing. Convex acts as a secondary source of truth: we persist Yjs snapshots and metadata (`packages/app/convex/ai_docs_temp.ts`) and hydrate rooms from Convex when joining, ensuring recovery and consistency if Yjs state is unavailable. Webhooks/mutations upsert snapshots so new clients can catch up quickly.
+
+# Convex Environment Variables
+
+## Two URLs for Different Purposes
+
+- VITE_CONVEX_URL - WebSocket/real-time (queries, mutations, subscriptions)
+- VITE_CONVEX_HTTP_URL - HTTP actions (API endpoints, authentication)
+
+## HTTP Request Configuration
+
+Use centralized fetch utilities from [packages/app/src/lib/fetch.ts](mdc:packages/app/src/lib/fetch.ts) for internal HTTP requests.
+
+For third-party integrations, construct URLs manually using `VITE_CONVEX_HTTP_URL`.
 
 If a function is imported as camelCase, keep it as-is:
 
