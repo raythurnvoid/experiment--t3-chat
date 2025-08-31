@@ -38,7 +38,7 @@ test("Result with _nay value has correct type structure", () => {
 	type NayResultType = Result<{ _yay: string }> | Result<{ _nay: { message: string } }>;
 	const result = {} as NayResultType;
 
-	// Verify that result.bad is accessible and has the correct type
+	// Verify that result._nay is accessible and has the correct type
 	if (result._nay) {
 		expectTypeOf(result._nay.message).toBeString();
 	}

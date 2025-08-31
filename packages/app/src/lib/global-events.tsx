@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
 
 // #region Core
-type Key = "ai_chat::open_canvas";
+type Key = "ai_chat::open_canvas" | "ai_chat::open_canvas_by_path";
 
 type CleanupFn = () => void;
 
@@ -73,5 +73,23 @@ export namespace global_event_ai_chat_open_canvas {
 
 	export function dispatch(payload: global_event_ai_chat_open_canvas_Payload) {
 		return global_event.dispatch("ai_chat::open_canvas", payload);
+	}
+}
+
+// Open canvas by path. Canvas will resolve the pageId from Convex and open the editor.
+type global_event_ai_chat_open_canvas_by_path_Payload = {
+	path: string;
+};
+
+export namespace global_event_ai_chat_open_canvas_by_path {
+	export function listen(
+		handler: (payload: global_event_ai_chat_open_canvas_by_path_Payload) => void,
+		options?: GlobalEventOptions,
+	) {
+		return global_event.listen("ai_chat::open_canvas_by_path", handler, options);
+	}
+
+	export function dispatch(payload: global_event_ai_chat_open_canvas_by_path_Payload) {
+		return global_event.dispatch("ai_chat::open_canvas_by_path", payload);
 	}
 }

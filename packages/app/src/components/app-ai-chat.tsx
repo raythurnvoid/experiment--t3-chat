@@ -9,8 +9,8 @@ import { Actions, Action } from "./ai-elements/actions.tsx";
 import { CodeBlock } from "./ai-elements/code-block.tsx";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
 import { Thread } from "@/components/assistant-ui/thread.tsx";
-import { useEffect } from "react";
-import { global_event_ai_chat_open_canvas } from "../lib/global-events.tsx";
+import { useEffect, useRef } from "react";
+import { global_event_ai_chat_open_canvas, global_event_ai_chat_open_canvas_by_path } from "../lib/global-events.tsx";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api.js";
@@ -393,6 +393,8 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 	const partRuntime = useMessagePartRuntime();
 	const updateAndBroadcast = useMutation(api.ai_docs_temp.update_page_and_broadcast);
 
+	const toolCompleteDebounce = useRef<ReturnType<typeof globalThis.setTimeout>>(undefined);
+
 	const handleToolComplete = useLiveRef(async () => {
 		if (!result) return;
 
@@ -426,12 +428,19 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 		const cleanup = partRuntime.subscribe(async () => {
 			const state = partRuntime.getState();
 			if (state.type === "tool-call" && state.status.type === "complete") {
-				await handleToolComplete.current();
+				window.clearTimeout(toolCompleteDebounce.current);
+				toolCompleteDebounce.current = globalThis.setTimeout(async () => {
+					await handleToolComplete.current();
+				}, 1000);
 			}
 		});
 
 		return cleanup;
 	}, [partRuntime, handleToolComplete]);
+
+	const handleOpenCanvas = () => {
+		global_event_ai_chat_open_canvas_by_path.dispatch({ path: args.path });
+	};
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-write-page-tool">
@@ -442,6 +451,9 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 					<Actions className="AppAiChat-tool-actions">
 						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
 							<CopyIcon className="size-4" />
+						</Action>
+						<Action tooltip="Open canvas" label="Open canvas" onClick={handleOpenCanvas}>
+							<FileText className="size-4" />
 						</Action>
 					</Actions>
 				</div>

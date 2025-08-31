@@ -6,155 +6,95 @@ alwaysApply: false
 
 React Components Guidelines
 
-# Component Function Signature Pattern
+# Component Declaration Rules
 
-## MANDATORY: Props Parameter Pattern
+## Props Parameter Pattern
 
-**CRITICAL**: All React components MUST use a single `props` parameter instead of destructuring in the function signature, followed by destructuring on the first line of the component.
-
-### ✅ Correct Pattern:
-
-```tsx
-interface ComponentName_Props {
-	title: string;
-	isActive: boolean;
-	onClick: () => void;
-	className?: string;
-}
-
-function ComponentName(props: ComponentName_Props) {
-	const { title, isActive, onClick, className, ...rest } = props;
-	// Component logic here
-
-	return (
-		<div className={cn("ComponentName", className)} {...rest}>
-			{title}
-		</div>
-	);
-}
-```
-
-### ❌ Avoid: Destructuring in Function Signature
-
-```tsx
-// ❌ DON'T DO THIS
-function ComponentName({ title, isActive, onClick, className }: ComponentName_Props) {
-	// Component logic
-}
-```
-
-### Benefits of This Pattern:
-
-1. **Props object access**: Full `props` object remains available for debugging and conditional logic
-2. **Rest parameters**: Easy access to `...rest` for spreading unused props
-3. **Flexibility**: Can conditionally destructure props or pass entire props object to children
-4. **Debugging**: Can log entire `props` object when troubleshooting
-5. **Prop forwarding**: Easier to forward all props to child components when needed
-
-### Examples with Rest Parameters:
-
-```tsx
-function Button(props: Button_Props) {
-	const { variant, size, className, children, ...rest } = props;
-
-	return (
-		<button
-			className={cn("Button", VARIANTS[variant], SIZES[size], className)}
-			{...rest} // Forward all other DOM props
-		>
-			{children}
-		</button>
-	);
-}
-
-function CustomInput(props: CustomInput_Props) {
-	const { label, error, className, ...inputProps } = props;
-
-	return (
-		<div className={cn("CustomInput-wrapper", className)}>
-			<label>{label}</label>
-			<input
-				className={cn("CustomInput-field", error && "CustomInput-field-error")}
-				{...inputProps} // Forward all input-specific props
-			/>
-			{error && <span className="CustomInput-error">{error}</span>}
-		</div>
-	);
-}
-```
-
-## Component Declaration Rules (Project Standard)
+Use a single `props` parameter and destructure on the first line; keep `...rest` last to forward DOM-compatible props. This preserves access to the full `props` object for debugging/conditional logic, enables flexible prop forwarding, and allows conditional destructuring or passing the entire props object when needed.
 
 The following rules are mandatory across this codebase:
 
-### BAN: React.FC
+## Do
 
-Do not use `React.FC` (or `FC`) for component typing. Type the props on the function parameter instead.
+- Use named function declarations for components.
+- Accept a single `props` parameter; destructure on the first line inside the function body.
+- Keep `...rest` last and forward DOM-compatible props as needed.
+- Prefix all CSS classes with the component name.
+- Use camelCase for props and all local symbols.
+- Use React 19 ref patterns: accept `ref` as a regular prop; use `useImperativeHandle` to expose imperative handles, including multiple internal elements through a single `ref`.
+
+## Don't
+
+- Use `React.FC` or `FC`.
+- Wrap components with `React.memo`.
+- Destructure props in the function signature.
+- Export anonymous arrow component expressions for top-level components.
+
+## Prop Ordering
+
+When destructuring component props, follow this exact order for named props, then place `...rest` last:
+
+1. `ref` (if present)
+2. `refs` (if present; can be aliased, e.g., `refs`)
+3. `id`
+4. `className`
+5. Other props (domain-specific configuration flags, values, etc.)
+6. Events (e.g., `onClick`, `onChange`, `onKeyDown`)
+7. Named slots (ReactNode-like props such as `labelSlot`)
+8. `children`
+
+`...rest` must always be the final destructured item.
+
+### Also applies to `_Props` type declarations
+
+Use the same ordering when declaring fields in your `ComponentName_Props` interface. This applies to custom fields you declare; inherited DOM props from `extends React.ComponentProps<...>` are not re-ordered. Always put `children` last.
+
+The comments should not be included in your generated code, they are only for documentation purposes.
 
 ```tsx
-// ❌ Do not use
-const Button: React.FC<Button_Props> = (props) => {
-	const { children } = props;
-	return <button>{children}</button>;
+export type Example_Props = React.ComponentProps<"div"> & {
+	ref?: React.RefObject<HTMLDivElement>;
+	id?: string;
+	className?: string;
+	// Other props
+	variant?: "default" | "compact";
+	// Events
+	onClick?: React.MouseEventHandler<HTMLDivElement>;
+	// Named slots
+	headerSlot?: React.ReactNode;
+	// Children last
+	children?: React.ReactNode;
+};
+```
+
+### Example
+
+```tsx
+export type Toolbar_Props = React.ComponentProps<"div"> & {
+	ref?: React.RefObject<HTMLDivElement>;
+	id?: string;
+	className?: string;
+	variant?: "default" | "compact"; // other prop
+	onClick?: React.MouseEventHandler<HTMLDivElement>; // event
+	labelSlot?: React.ReactNode; // named slot
+	children?: React.ReactNode;
 };
 
-// ✅ Use regular function with typed props
-function Button(props: Button_Props) {
-	const { children, ...rest } = props;
-	return <button {...rest}>{children}</button>;
-}
-```
+export function Toolbar(props: Toolbar_Props) {
+	const { ref, id, className, variant = "default", onClick, labelSlot, children, ...rest } = props;
 
-### BAN: React.memo
-
-Do not wrap components with `React.memo`. Components must be declared as regular functions without memoization wrappers.
-
-```tsx
-// ❌ Do not use
-const Toolbar = React.memo(function Toolbar(props: Toolbar_Props) {
-	const { className } = props;
-	return <div className={className} />;
-});
-
-// ✅ Use regular function
-function Toolbar(props: Toolbar_Props) {
-	const { className } = props;
-	return <div className={className} />;
-}
-```
-
-### REQUIRED: Regular Function Declarations
-
-Prefer named function declarations for all components. This improves DevTools names, stack traces, and aligns with React 19 best practices.
-
-```tsx
-// ❌ Avoid anonymous arrow component expressions for top-level components
-export const Card = (props: Card_Props) => {
-	const { children } = props;
-	return <section>{children}</section>;
-};
-
-// ✅ Prefer named function declarations
-export function Card(props: Card_Props) {
-	const { children } = props;
-	return <section>{children}</section>;
-}
-```
-
-### REQUIRED: Props Parameter Pattern (First-line Destructuring)
-
-All components must accept a single `props` parameter and destructure on the first line inside the function body.
-
-```tsx
-// ❌ Do not destructure in the signature
-function Input({ value, onChange, className }: Input_Props) {
-	return <input value={value} onChange={onChange} className={className} />;
-}
-
-// ✅ Destructure on the first line
-function Input(props: Input_Props) {
-	const { value, onChange, className, ...rest } = props;
-	return <input value={value} onChange={onChange} className={className} {...rest} />;
+	return (
+		<div
+			id={id}
+			ref={ref}
+			className={cn("Toolbar", `Toolbar-variant-${variant}`, className)}
+			onClick={onClick}
+			{...rest}
+		>
+			{labelSlot}
+			{children}
+		</div>
+	);
 }
 ```
 
@@ -213,9 +153,7 @@ function Input(props: Input_Props) {
 4. **Test with specific margin/padding overrides** before custom solutions
 5. **Document the solution** for future reference
 
-# File Organization
-
-## No Barrel Exports - Index Files Are Banned
+# No Barrel Exports - Index Files Are Banned
 
 **IMPORTANT**: Barrel exports via index files (`index.ts`, `index.tsx`, `index.js`, etc.) are banned in this repository.
 
@@ -253,14 +191,14 @@ function Input(props: Input_Props) {
 
 ```tsx
 // ✅ CORRECT: Props that can be spread onto DOM elements
-interface Button_Props extends React.ComponentProps<"button"> {
+type Button_Props = React.ComponentProps<"button"> & {
 	variant?: "default" | "destructive" | "outline";
 	size?: "default" | "sm" | "lg";
 	className?: string;
 	onClick?: () => void;
 	disabled?: boolean;
 	children?: React.ReactNode;
-}
+};
 
 function Button(props: Button_Props) {
 	const { className, variant = "default", size = "default", ...rest } = props;
@@ -280,12 +218,12 @@ For props that are specific to your component and will NOT be spread onto DOM el
 
 ```tsx
 // ✅ CORRECT: Custom component props (not spread onto DOM)
-interface SearchFilter_Props {
+type SearchFilter_Props = {
 	searchQuery: string; // Custom prop - camelCase
 	onSearchChange: (query: string) => void; // Custom prop - camelCase
 	showArchived: boolean; // Custom prop - camelCase
 	className?: string; // Will be manually assigned - camelCase
-}
+};
 
 function SearchFilter(props: SearchFilter_Props) {
 	const { searchQuery, onSearchChange, showArchived, className } = props;
@@ -306,10 +244,10 @@ function SearchFilter(props: SearchFilter_Props) {
 When destructuring props that extend DOM element props, separate the custom props from the spreadable props:
 
 ```tsx
-interface CustomButton_Props extends React.ComponentProps<"button"> {
+type CustomButton_Props = React.ComponentProps<"button"> & {
 	customBehavior?: boolean; // Custom prop - camelCase
 	specialMode?: "normal" | "enhanced"; // Custom prop - camelCase
-}
+};
 
 function CustomButton(props: CustomButton_Props) {
 	const { customBehavior, specialMode, className, ...rest } = props;
@@ -379,9 +317,9 @@ function UserProfile(props: UserProfile_Props) {
 	}, [firstName, lastName]);
 ```
 
-## Component Interface Naming
+## Component Props Type Naming
 
-When defining Props interfaces for React components, use the following naming format:
+When defining Props types for React components, use the following naming format:
 
 **Format**: `ComponentName_Props`
 
@@ -389,18 +327,18 @@ When defining Props interfaces for React components, use the following naming fo
 
 ```tsx
 // For a component named ThemeProvider
-export interface ThemeProvider_Props {
+export type ThemeProvider_Props = {
 	children: ReactNode;
 	className?: string; // camelCase for DOM compatibility
 	custom_theme?: string; // snake_case for custom prop
-}
+};
 
 // For a component named MessageComposer
-export interface MessageComposer_Props extends React.ComponentProps<"div"> {
+export type MessageComposer_Props = React.ComponentProps<"div"> & {
 	onSubmit: (message: string) => void; // camelCase - could be spread
 	placeholder?: string; // camelCase - standard DOM attribute
 	custom_validation?: boolean; // snake_case - custom prop
-}
+};
 ```
 
 # React 19 Context Patterns
@@ -462,16 +400,16 @@ function SearchContextProvider(props: { children: ReactNode }) {
 
 ```tsx
 // ✅ CORRECT: MutableRefObject is still the standard type in React 19
-interface TreeItemComponent_Props {
+type TreeItemComponent_Props = {
 	treeRef: React.MutableRefObject<TreeRef | null>;
-}
+};
 
 const treeRef = useRef<TreeRef | null>(null); // Returns MutableRefObject<TreeRef | null>
 ```
 
 ## What Actually Changed in React 19
 
-### 1. forwardRef is Now Optional
+### 1. Ref as a regular prop (React 19)
 
 **NEW in React 19**: You can pass `ref` as a regular prop without `forwardRef`:
 
@@ -491,35 +429,20 @@ function Button(props: ButtonProps) {
 		</button>
 	);
 }
-
-// ✅ Still supported: forwardRef (traditional way)
-const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(props, ref) {
-	const { children, ...rest } = props;
-
-	return (
-		<button ref={ref} {...rest}>
-			{children}
-		</button>
-	);
-});
 ```
-
-### React 19 Component Definition Best Practices
-
-**PREFERRED in React 19**: Use regular function declarations and avoid unnecessary complexity:
 
 #### ✅ Preferred: Regular Function Declaration
 
 ```tsx
 // ✅ PREFERRED: Regular function declaration with ref as prop
 export type IconButton_Props = React.ComponentProps<typeof Button> & {
+	ref?: React.RefObject<HTMLButtonElement>;
 	tooltip?: string;
 	side?: "top" | "bottom" | "left" | "right";
-	ref?: React.RefObject<HTMLButtonElement>;
 };
 
 export function IconButton(props: IconButton_Props) {
-	const { children, tooltip, side = "bottom", className, ref, ...rest } = props;
+	const { ref, className, tooltip, side = "bottom", children, ...rest } = props;
 
 	return (
 		<Button ref={ref} className={cn("IconButton", className)} {...rest}>
@@ -537,38 +460,9 @@ export function IconButton(props: IconButton_Props) {
 - ✅ **Better debugging**: Clear function names in stack traces
 - ✅ **Future-proof**: Aligned with React 19 patterns
 
-#### ❌ Avoid: Unnecessary Complexity
-
-```tsx
-// ❌ AVOID: forwardRef when not needed (React 19)
-export const IconButton = forwardRef<HTMLButtonElement, IconButton_Props>((props, ref) => {
-	const { children, tooltip, side = "bottom", className, ...rest } = props;
-	// Component logic
-});
-
-// ❌ AVOID: Manual displayName when using function declarations
-IconButton.displayName = "IconButton"; // Unnecessary with function declarations
-```
-
-#### When to Still Use forwardRef
-
-Only use `forwardRef` in React 19 when:
-
-- Working with libraries that expect the forwardRef pattern
-- Need to maintain backward compatibility
-- Component name would be unclear without explicit naming
-
-```tsx
-// ✅ Acceptable: When library integration requires it
-const CustomInput = forwardRef<HTMLInputElement, CustomInputProps>(function CustomInput(props, ref) {
-	const { ...inputProps } = props;
-	return <SomeLibraryInput {...inputProps} ref={ref} />;
-});
-```
-
 ### 2. Callback Refs with Cleanup Functions
 
-**NEW in React 19**: Callback refs can return cleanup functions:
+Callback refs can return cleanup functions:
 
 ```tsx
 // ✅ React 19: Callback refs with cleanup
@@ -598,7 +492,7 @@ function ResizeObserverComponent(props: ResizeObserverComponent_Props) {
 
 ### 3. Modern Ref Combination Patterns
 
-**RECOMMENDED**: Use `useCombinedRef` for handling multiple refs efficiently:
+Use `useCombinedRef` for handling multiple refs efficiently:
 
 ```tsx
 // ✅ Modern pattern: Combined refs
@@ -621,13 +515,15 @@ function useCombinedRef<T>(...refs: RefItem<T>[]) {
 }
 
 // Usage
-const Input = forwardRef<HTMLInputElement, InputProps>(function Input(props, ref) {
-	const { ...inputProps } = props;
+type Input_Props = { ref?: React.RefObject<HTMLInputElement> } & InputProps;
+
+function Input(props: Input_Props) {
+	const { ref, ...inputProps } = props;
 	const localRef = useRef<HTMLInputElement>(null);
 	const combinedRef = useCombinedRef(ref, localRef);
 
 	return <input {...inputProps} ref={combinedRef} />;
-});
+}
 ```
 
 ## When to Use Each Ref Pattern
@@ -896,11 +792,11 @@ When using shadcn/ui form components, integrate them with the appropriate naming
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
-interface ShowArchivedCheckbox_Props {
+type ShowArchivedCheckbox_Props = {
 	checked: boolean;
 	onCheckedChange: (checked: boolean) => void; // camelCase - matches Checkbox API
 	className?: string; // camelCase - for DOM compatibility
-}
+};
 
 function ShowArchivedCheckbox(props: ShowArchivedCheckbox_Props) {
 	const { checked, onCheckedChange, className } = props;
@@ -1020,3 +916,123 @@ const handleToggle = useCallback(async (newValue: boolean) => {
 - **Future-proof**: Compatible with React Compiler and modern React development
 - **Consistent naming**: Root-level exports use snake_case for namespacing, local variables use camelCase for consistency with modern JavaScript conventions
 - **Props accessibility**: Full props object available for debugging, conditional logic, and flexible prop forwarding
+
+# Exposing Imperative Values and Elements with \_Ref and useImperativeHandle
+
+When a parent needs controlled access to a child's internal DOM elements or imperative methods, expose a typed imperative handle.
+
+## Standard ref pattern with `ComponentName_Ref`
+
+Use a `ref` prop together with `useImperativeHandle` to expose a curated API. Define a `ComponentName_Ref` interface with nullable DOM elements and typed methods.
+
+```tsx
+import React, { useImperativeHandle, useRef, useState } from "react";
+
+export interface MyWidget_Ref {
+	rootElement: HTMLDivElement | null;
+	focusInput: () => void;
+	getValue: () => string;
+}
+
+export type MyWidget_Props = React.ComponentProps<"div"> & {
+	ref?: React.RefObject<MyWidget_Ref>;
+	initialValue?: string;
+};
+
+export function MyWidget(props: MyWidget_Props) {
+	const { ref, initialValue = "", className, ...rest } = props;
+
+	const rootRef = useRef<HTMLDivElement>(null);
+	const inputRef = useRef<HTMLInputElement>(null);
+	const [value, setValue] = useState(initialValue);
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			rootElement: rootRef.current,
+			focusInput: () => inputRef.current?.focus(),
+			getValue: () => value,
+		}),
+		[value], // Include dependencies used by the handle
+	);
+
+	return (
+		<div ref={rootRef} className={cn("MyWidget", className)} {...rest}>
+			<input ref={inputRef} value={value} onChange={(e) => setValue(e.target.value)} className={cn("MyWidget-input")} />
+		</div>
+	);
+}
+
+// Consuming component
+function Parent() {
+	const myWidgetRef = React.useRef<MyWidget_Ref>(null);
+
+	return (
+		<>
+			<MyWidget ref={myWidgetRef} />
+			<button onClick={() => myWidgetRef.current?.focusInput()}>Focus</button>
+		</>
+	);
+}
+```
+
+Guidelines:
+
+- Accept `ref` as a regular prop and use `useImperativeHandle` to expose the handle.
+- DOM elements in `*_Ref` must be nullable.
+- Include all referenced state/props in `useImperativeHandle`'s dependency array.
+- Prefer exposing a minimal, stable API instead of leaking many internals.
+
+## Exposing multiple internal elements via a single `ref` handle
+
+If a parent needs access to several distinct internal nodes, expose them through a single imperative handle returned by `useImperativeHandle(ref, () => ({ ... }))`. Do not add a separate `refs` prop.
+
+```tsx
+import React, { useImperativeHandle, useRef } from "react";
+
+export interface Drawer_Ref {
+	root: HTMLDivElement | null;
+	header: HTMLElement | null;
+	scrollContainer: HTMLDivElement | null;
+}
+
+export type Drawer_Props = React.ComponentProps<"div"> & {
+	ref?: React.RefObject<Drawer_Ref>;
+};
+
+export function Drawer(props: Drawer_Props) {
+	const { ref, className, ...rest } = props;
+	const rootRef = useRef<HTMLDivElement>(null);
+	const headerRef = useRef<HTMLElement>(null);
+	const scrollRef = useRef<HTMLDivElement>(null);
+
+	// Expose multiple structural elements via a single imperative handle
+	useImperativeHandle(
+		ref,
+		() => ({
+			root: rootRef.current,
+			header: headerRef.current,
+			scrollContainer: scrollRef.current,
+		}),
+		[],
+	);
+
+	return (
+		<div ref={rootRef} className={cn("Drawer", className)} {...rest}>
+			<header ref={headerRef} className={cn("Drawer-header")} />
+			<div ref={scrollRef} className={cn("Drawer-scroll-container")} />
+		</div>
+	);
+}
+
+// Consuming component
+function DrawerParent() {
+	const drawerRef = React.useRef<Drawer_Ref>(null);
+	return <Drawer ref={drawerRef} />;
+}
+```
+
+Notes:
+
+- Keep elements in the returned handle nullable and stable; dependency array is usually empty.
+- If you only need the primary element, expose only that element in the handle rather than a larger object.

@@ -448,8 +448,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 					// Remove widgets for changes that no longer exist
 					for (const [key, widget] of Array.from(existing.entries())) {
 						if (!seen.has(key)) {
-							(modifiedEditor as any).removeContentWidget(widget);
-							if ((widget as any).dispose) (widget as any).dispose();
+							modifiedEditor.removeContentWidget(widget);
 							existing.delete(key);
 						}
 					}
@@ -475,7 +474,6 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			if (!modifiedEditor) return;
 			for (const [, widget] of mapRef) {
 				modifiedEditor.removeContentWidget(widget);
-				if ((widget as any).dispose) (widget as any).dispose();
 			}
 			mapRef.clear();
 		};

@@ -14,17 +14,21 @@ interface AuthTokenManager {
 let auth_token_manager = init_auth_token_manager();
 
 function init_auth_token_manager() {
-	const obj = Object.assign(Promise.withResolvers<AuthTokenManager>(), {
+	const auth_token_manager = Object.assign(Promise.withResolvers<AuthTokenManager>(), {
 		// Track if the token manager is set
 		resolved: false,
 	});
 
-	obj.promise.then((result) => {
-		obj.resolved = true;
-		return result;
-	});
+	auth_token_manager.promise
+		.then((manager) => {
+			auth_token_manager.resolved = true;
+			return manager;
+		})
+		.catch((error) => {
+			auth_token_manager.reject(error);
+		});
 
-	return obj;
+	return auth_token_manager;
 }
 
 export function auth_get_token() {

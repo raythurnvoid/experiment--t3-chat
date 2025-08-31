@@ -80,10 +80,10 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 					signal,
 				});
 
-				if (result.ok) {
-					return result.ok.payload;
+				if (result._yay) {
+					return result._yay.payload;
 				} else {
-					throw new Error(`Failed to resolve contextual prompt: ${result.bad.message}`);
+					throw new Error(`Failed to resolve contextual prompt: ${result._nay.message}`);
 				}
 			},
 		},
