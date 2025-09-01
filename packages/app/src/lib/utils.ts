@@ -82,3 +82,22 @@ type ExtractTypeByPropertyAndAssertNotUndefined<O extends object, P extends Keys
 export function ui_create_auto_complete_off_value(): string {
 	return `off=${Date.now()}`;
 }
+
+/**
+ * To be removed once `Promise.withResolvers` is widely available.
+ *
+ * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/withResolvers
+ */
+export function create_promise_with_resolvers<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T | PromiseLike<T>) => void | PromiseLike<void>;
+	reject: (reason?: unknown) => void | PromiseLike<void>;
+} {
+	let resolve: (value: T) => void;
+	let reject: (reason: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve: resolve! as any, reject: reject! };
+}

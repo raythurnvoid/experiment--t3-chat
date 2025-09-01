@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import { QuickStart } from "./quick-start.tsx";
 import { PageRichTextEditor, type PageRichTextEditor_Ref } from "../page-rich-text-editor/page-rich-text-editor.tsx";
 import {
@@ -9,24 +9,43 @@ import {
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
+import { useLiveState, useRenderPromise } from "../../hooks/utils-hooks.ts";
 
 export function Canvas() {
-	const [editorPageId, setEditorPageId] = useState<string | null>(null);
-	const editorRef = useRef<PageRichTextEditor_Ref | null>(null);
-	const nextDiffRef = useRef<{ modified: string } | null>(null);
+	const [editorPageId, setEditorPageId] = useLiveState<string | null>(null);
+	const editor = useRef<PageRichTextEditor_Ref | null>(null);
 	const convex = useConvex();
 
 	const openCanvasGlobalEventDebounce = useRef<ReturnType<typeof globalThis.setTimeout>>(undefined);
 
+	const renderPromise = useRenderPromise();
+
 	useGlobalEvent(global_event_ai_chat_open_canvas.listen, (payload) => {
 		// Debounce the event handling to prevent concurrent calls to create issues.
 		clearTimeout(openCanvasGlobalEventDebounce.current);
-		openCanvasGlobalEventDebounce.current = globalThis.setTimeout(() => {
+
+		openCanvasGlobalEventDebounce.current = globalThis.setTimeout(async () => {
+			/*
+			Don't open the new diff if a page is already opened.
+			It's useful when the AI writes in multiple pages at once.
+			*/
+			if (editorPageId.current && editorPageId.current !== payload.pageId && payload.mode === "diff") {
+				return;
+			}
+
 			setEditorPageId(payload.pageId);
-			if (payload.mode === "diff" || typeof payload.modifiedSeed === "string") {
-				nextDiffRef.current = { modified: payload.modifiedSeed ?? "" };
-			} else {
-				nextDiffRef.current = null;
+			await renderPromise();
+
+			if (!editor.current) {
+				console.warn("Canvas: open requested but editor not initialized");
+				return;
+			}
+
+			if (payload.mode === "diff" && payload.modifiedSeed) {
+				editor.current.requestOpenDiff({
+					pageId: payload.pageId,
+					modifiedEditorValue: payload.modifiedSeed,
+				});
 			}
 		});
 	});
@@ -42,7 +61,6 @@ export function Canvas() {
 				});
 				if (page && page.page_id) {
 					setEditorPageId(page.page_id);
-					nextDiffRef.current = null;
 				}
 			} catch (e) {
 				console.error("Failed to resolve page by path:", e);
@@ -50,19 +68,10 @@ export function Canvas() {
 		});
 	});
 
-	useEffect(() => {
-		if (!editorPageId) return;
-		if (nextDiffRef.current && editorRef.current) {
-			const modifiedValue = nextDiffRef.current.modified;
-			nextDiffRef.current = null;
-			editorRef.current.requestOpenDiff({ pageId: editorPageId, modifiedEditorValue: modifiedValue });
-		}
-	}, [editorPageId]);
-
-	if (editorPageId) {
+	if (editorPageId.current) {
 		return (
 			<div className="Canvas h-full">
-				<PageRichTextEditor ref={editorRef} pageId={editorPageId} />
+				<PageRichTextEditor ref={editor} pageId={editorPageId.current} />
 			</div>
 		);
 	}

@@ -32,6 +32,8 @@ export default tseslint.config(
 		plugins: {},
 		rules: {
 			...reactHooks.configs.recommended.rules,
+			"react-hooks/react-compiler": "error",
+
 			...reactRefresh.configs.vite.rules,
 			"react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
 
