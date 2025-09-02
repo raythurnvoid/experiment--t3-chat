@@ -13,13 +13,13 @@ import {
 	SidebarMenuItem,
 	SidebarProvider,
 	SidebarTrigger,
-} from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
-import { useThemeContext } from "@/components/theme-provider";
+} from "@/components/ui/sidebar.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { useThemeContext } from "@/components/theme-provider.tsx";
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link } from "@tanstack/react-router";
-import { cn } from "@/lib/utils";
-import { Logo } from "@/components/logo";
+import { cn } from "@/lib/utils.ts";
+import { Logo } from "@/components/logo.tsx";
 import { dark } from "@clerk/themes";
 
 function ThemeToggleMenuItem() {

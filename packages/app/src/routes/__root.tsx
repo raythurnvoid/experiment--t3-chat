@@ -2,7 +2,7 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { auth_set_token_manager, useAuth } from "../lib/auth.ts";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
-import { MainAppSidebar } from "@/components/main-app-sidebar";
+import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { cn } from "../lib/utils.ts";
 
 function Layout() {

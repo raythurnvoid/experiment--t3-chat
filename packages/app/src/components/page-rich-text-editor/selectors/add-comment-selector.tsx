@@ -1,5 +1,5 @@
-import { Button } from "../../ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "../../ui/button.tsx";
+import { cn } from "@/lib/utils.ts";
 import { MessageSquarePlus } from "lucide-react";
 import { useEditor } from "novel";
 

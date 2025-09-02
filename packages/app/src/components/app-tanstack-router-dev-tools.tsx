@@ -1,5 +1,5 @@
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
-import { cn } from "@/lib/utils";
+import { cn } from "@/lib/utils.ts";
 
 export function AppTanStackRouterDevTools() {
 	return (

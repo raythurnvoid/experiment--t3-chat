@@ -11,8 +11,8 @@ import {
 	type FieldValues,
 } from "react-hook-form";
 
-import { cn } from "@/lib/utils";
-import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils.ts";
+import { Label } from "@/components/ui/label.tsx";
 
 const Form = FormProvider;
 
@@ -133,4 +133,5 @@ function FormMessage({ className, ...props }: React.ComponentProps<"p">) {
 	);
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { useFormField, Form, FormItem, FormLabel, FormControl, FormDescription, FormMessage, FormField };

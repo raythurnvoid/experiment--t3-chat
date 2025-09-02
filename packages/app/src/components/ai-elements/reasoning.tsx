@@ -1,12 +1,12 @@
 "use client";
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { cn } from "@/lib/utils";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsx";
+import { cn } from "@/lib/utils.ts";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { createContext, memo, useContext, useEffect, useState } from "react";
-import { Response } from "./response";
+import { Response } from "./response.tsx";
 
 type ReasoningContextValue = {
 	isStreaming: boolean;
@@ -41,6 +41,7 @@ export const Reasoning = memo(
 		isStreaming = false,
 		open,
 		defaultOpen = false,
+		// eslint-disable-next-line @typescript-eslint/unbound-method
 		onOpenChange,
 		duration: durationProp,
 		children,

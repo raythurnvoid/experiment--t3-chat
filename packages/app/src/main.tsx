@@ -1,14 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
-import { app_convex } from "./lib/app-convex-client";
+import { app_convex } from "./lib/app-convex-client.ts";
 import { ClerkProvider, useAuth } from "@clerk/clerk-react";
 import { ConvexProviderWithClerk } from "convex/react-clerk";
-import { ThemeProvider } from "./components/theme-provider";
+import { ThemeProvider } from "./components/theme-provider.tsx";
 import "./app.css";
 
 // Import the generated route tree
-import { routeTree } from "./routeTree.gen";
+import { routeTree } from "./routeTree.gen.ts";
 
 // Create a new router instance
 const router = createRouter({ routeTree });

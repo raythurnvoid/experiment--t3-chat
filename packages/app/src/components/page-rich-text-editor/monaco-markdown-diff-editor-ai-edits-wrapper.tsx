@@ -38,8 +38,8 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 	useEffect(() => {
 		if (!threadId) return;
 		const watcher = convex.watchQuery(api.ai_chat.get_ai_pending_edit, {
-			page_id: pageId,
-			thread_id: threadId,
+			pageId: pageId,
+			threadId: threadId,
 		});
 		const unsubs = watcher.onUpdate(() => {
 			const res = watcher.localQueryResult();

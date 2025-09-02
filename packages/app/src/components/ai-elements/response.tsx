@@ -1,13 +1,13 @@
 "use client";
 
-import { cn } from "@/lib/utils";
+import { cn } from "@/lib/utils.ts";
 import type { ComponentProps, HTMLAttributes } from "react";
 import { isValidElement, memo } from "react";
 import ReactMarkdown, { type Options } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { CodeBlock, CodeBlockCopyButton } from "./code-block";
+import { CodeBlock, CodeBlockCopyButton } from "./code-block.tsx";
 import "katex/dist/katex.min.css";
 import hardenReactMarkdown from "harden-react-markdown";
 
@@ -107,9 +107,9 @@ function parseIncompleteMarkdown(text: string): string {
 	const inlineCodeMatch = result.match(inlineCodePattern);
 	if (inlineCodeMatch) {
 		// Check if we're dealing with a code block (triple backticks)
-		const hasCodeBlockStart = result.includes("```");
-		const codeBlockPattern = /```[\s\S]*?```/g;
-		const completeCodeBlocks = (result.match(codeBlockPattern) || []).length;
+		// const hasCodeBlockStart = result.includes("```");
+		// const codeBlockPattern = /```[\s\S]*?```/g;
+		// const completeCodeBlocks = (result.match(codeBlockPattern) || []).length;
 		const allTripleBackticks = (result.match(/```/g) || []).length;
 
 		// If we have an odd number of ``` sequences, we're inside an incomplete code block
@@ -281,8 +281,8 @@ const components: Options["components"] = {
 
 		// Extract code content from children safely
 		let code = "";
-		if (isValidElement(children) && children.props && typeof children.props.children === "string") {
-			code = children.props.children;
+		if (isValidElement(children) && children.props && typeof (children.props as any).children === "string") {
+			code = (children.props as any).children;
 		} else if (typeof children === "string") {
 			code = children;
 		}

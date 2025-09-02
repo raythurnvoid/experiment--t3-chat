@@ -1,16 +1,16 @@
 "use client";
 
-import { Command, CommandInput } from "../../ui/command";
+import { Command, CommandInput } from "../../ui/command.tsx";
 import { useCompletion } from "@ai-sdk/react";
 import { ArrowUp, Loader, Sparkles } from "lucide-react";
 import { useEditor, addAIHighlight } from "novel";
 import { useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
-import { Button } from "../../ui/button";
-import AICompletionCommands from "./ai-completion-command";
-import AISelectorCommands from "./ai-selector-commands";
-import { app_fetch_main_api_url } from "../../../lib/fetch";
+import { Button } from "../../ui/button.tsx";
+import AICompletionCommands from "./ai-completion-command.tsx";
+import AISelectorCommands from "./ai-selector-commands.tsx";
+import { app_fetch_main_api_url } from "../../../lib/fetch.ts";
 //TODO: I think it makes more sense to create a custom Tiptap extension for this functionality https://tiptap.dev/docs/editor/ai/introduction
 
 interface AISelectorProps {
@@ -93,7 +93,11 @@ export function AISelector({ onOpenChange }: AISelectorProps) {
 
 								complete(text, {
 									body: { option: "zap", command: inputValue },
-								}).then(() => setInputValue(""));
+								})
+									.then(() => setInputValue(""))
+									.catch((e) => {
+										toast.error(e.message);
+									});
 							}}
 						>
 							<ArrowUp className="h-4 w-4" />

@@ -299,7 +299,7 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string;
 
 async function resolve_page_id_from_path_fn(
 	ctx: QueryCtx,
-	args: { workspace_id: string; project_id: string; path: string },
+	args: { workspaceId: string; projectId: string; path: string },
 ) {
 	const segments = server_path_extract_segments_from(args.path);
 
@@ -311,8 +311,8 @@ async function resolve_page_id_from_path_fn(
 			.query("pages")
 			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
 				q
-					.eq("workspace_id", args.workspace_id)
-					.eq("project_id", args.project_id)
+					.eq("workspace_id", args.workspaceId)
+					.eq("project_id", args.projectId)
 					.eq("parent_id", currentNode)
 					.eq("name", segment),
 			)
@@ -326,14 +326,14 @@ async function resolve_page_id_from_path_fn(
 }
 
 export const resolve_page_id_from_path = internalQuery({
-	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: (ctx, args) => resolve_page_id_from_path_fn(ctx, args),
 });
 
 async function resolve_tree_node_id_from_path_fn(
 	ctx: QueryCtx,
-	args: { workspace_id: string; project_id: string; path: string },
+	args: { workspaceId: string; projectId: string; path: string },
 ) {
 	if (args.path === "/") return "root";
 	const segments = server_path_extract_segments_from(args.path);
@@ -345,8 +345,8 @@ async function resolve_tree_node_id_from_path_fn(
 			.query("pages")
 			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
 				q
-					.eq("workspace_id", args.workspace_id)
-					.eq("project_id", args.project_id)
+					.eq("workspace_id", args.workspaceId)
+					.eq("project_id", args.projectId)
 					.eq("parent_id", currentNode)
 					.eq("name", segment),
 			)
@@ -359,7 +359,7 @@ async function resolve_tree_node_id_from_path_fn(
 }
 
 export const resolve_tree_node_id_from_path = internalQuery({
-	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: (ctx, args) => resolve_tree_node_id_from_path_fn(ctx, args),
 });
@@ -390,8 +390,8 @@ async function resolve_path_from_page_id(
 
 export const get_tree = query({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 	},
 	returns: v.record(
 		v.string(),
@@ -406,9 +406,7 @@ export const get_tree = query({
 	handler: async (ctx, args) => {
 		const pages = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id),
-			)
+			.withIndex("by_workspace_project", (q) => q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId))
 			.collect();
 
 		// Build tree data in React Complex Tree format
@@ -509,18 +507,18 @@ async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs): 
 
 export const create_page = mutation({
 	args: {
-		page_id: v.string(),
-		parent_id: v.string(),
+		pageId: v.string(),
+		parentId: v.string(),
 		name: v.string(),
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 	},
 	handler: async (ctx, args) => {
 		await create_page_in_db(ctx, {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
-			page_id: args.page_id,
-			parent_id: args.parent_id,
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+			parent_id: args.parentId,
 			name: args.name,
 			text_content: "",
 		});
@@ -529,18 +527,18 @@ export const create_page = mutation({
 
 export const create_page_quick = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 	},
 	returns: v.object({ page_id: v.string() }),
 	handler: async (ctx, args) => {
-		const { workspace_id, project_id } = args;
+		const { workspaceId, projectId } = args;
 
 		// Ensure ".tmp" under root exists
 		const tmp = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
-				q.eq("workspace_id", workspace_id).eq("project_id", project_id).eq("parent_id", "root").eq("name", ".tmp"),
+				q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("parent_id", "root").eq("name", ".tmp"),
 			)
 			.first();
 
@@ -549,8 +547,8 @@ export const create_page_quick = mutation({
 		if (!tmp) {
 			tmp_page_id = `.tmp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 			await create_page_in_db(ctx, {
-				workspace_id,
-				project_id,
+				workspace_id: workspaceId,
+				project_id: projectId,
 				page_id: tmp_page_id,
 				parent_id: "root",
 				name: ".tmp",
@@ -566,8 +564,8 @@ export const create_page_quick = mutation({
 		const title = `Quick page created at ${new Date().toLocaleString("en-GB", { hour12: false })}`;
 
 		await create_page_in_db(ctx, {
-			workspace_id,
-			project_id,
+			workspace_id: workspaceId,
+			project_id: projectId,
 			page_id,
 			parent_id: tmp_page_id,
 			name: title,
@@ -580,9 +578,9 @@ export const create_page_quick = mutation({
 
 export const rename_page = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
 		name: v.string(),
 	},
 	handler: async (ctx, args) => {
@@ -591,7 +589,7 @@ export const rename_page = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
@@ -607,25 +605,25 @@ export const rename_page = mutation({
 
 export const move_pages = mutation({
 	args: {
-		item_ids: v.array(v.string()),
-		target_parent_id: v.string(),
-		workspace_id: v.string(),
-		project_id: v.string(),
+		itemIds: v.array(v.string()),
+		targetParentId: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 	},
 	handler: async (ctx, args) => {
-		for (const item_id of args.item_ids) {
+		for (const item_id of args.itemIds) {
 			const page = await ctx.db
 				.query("pages")
 				.withIndex("by_workspace_project_and_page_id", (q) =>
-					q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", item_id),
+					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", item_id),
 				)
 				.first();
 
 			if (page) {
 				await ctx.db.patch(page._id, {
-					workspace_id: args.workspace_id,
-					project_id: args.project_id,
-					parent_id: args.target_parent_id,
+					workspace_id: args.workspaceId,
+					project_id: args.projectId,
+					parent_id: args.targetParentId,
 					updated_at: Date.now(),
 				});
 			}
@@ -635,9 +633,9 @@ export const move_pages = mutation({
 
 export const archive_pages = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -645,7 +643,7 @@ export const archive_pages = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
@@ -661,9 +659,9 @@ export const archive_pages = mutation({
 
 export const unarchive_pages = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -671,7 +669,7 @@ export const unarchive_pages = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
@@ -687,10 +685,10 @@ export const unarchive_pages = mutation({
 
 export const update_page_and_broadcast = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
-		text_content: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		textContent: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -699,13 +697,13 @@ export const update_page_and_broadcast = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
 		if (page) {
 			await ctx.db.patch(page._id, {
-				text_content: args.text_content,
+				text_content: args.textContent,
 				updated_by: user.name,
 				updated_at: Date.now(),
 			});
@@ -714,29 +712,29 @@ export const update_page_and_broadcast = mutation({
 		// Insert broadcast rows for both editors; consumers will use _creationTime ordering
 		await Promise.all([
 			ctx.db.insert("page_updates_richtext_broadcast", {
-				workspace_id: args.workspace_id,
-				project_id: args.project_id,
-				page_id: args.page_id,
-				text_content: args.text_content,
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: args.pageId,
+				text_content: args.textContent,
 			}),
 			ctx.db.insert("page_updates_markdown_broadcast", {
-				workspace_id: args.workspace_id,
-				project_id: args.project_id,
-				page_id: args.page_id,
-				text_content: args.text_content,
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: args.pageId,
+				text_content: args.textContent,
 			}),
 		]);
 	},
 });
 
 export const get_page_updates_richtext_broadcast_latest = query({
-	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
 	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
 	handler: async (ctx, args) => {
 		const rows = await ctx.db
 			.query("page_updates_richtext_broadcast")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
 			.take(1);
@@ -748,13 +746,13 @@ export const get_page_updates_richtext_broadcast_latest = query({
 });
 
 export const get_page_updates_markdown_broadcast_latest = query({
-	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
 	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
 	handler: async (ctx, args) => {
 		const rows = await ctx.db
 			.query("page_updates_markdown_broadcast")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
 			.take(1);
@@ -767,10 +765,10 @@ export const get_page_updates_markdown_broadcast_latest = query({
 
 export const update_page_and_broadcast_richtext = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
-		text_content: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		textContent: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -779,23 +777,23 @@ export const update_page_and_broadcast_richtext = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
 		if (page) {
 			await ctx.db.patch(page._id, {
-				text_content: args.text_content,
+				text_content: args.textContent,
 				updated_by: user.name,
 				updated_at: Date.now(),
 			});
 		}
 
 		await ctx.db.insert("page_updates_richtext_broadcast", {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
-			page_id: args.page_id,
-			text_content: args.text_content,
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+			text_content: args.textContent,
 		});
 
 		return null;
@@ -804,10 +802,10 @@ export const update_page_and_broadcast_richtext = mutation({
 
 export const update_page_and_broadcast_markdown = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
-		text_content: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		textContent: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -816,23 +814,23 @@ export const update_page_and_broadcast_markdown = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
 		if (page) {
 			await ctx.db.patch(page._id, {
-				text_content: args.text_content,
+				text_content: args.textContent,
 				updated_by: user.name,
 				updated_at: Date.now(),
 			});
 		}
 
 		await ctx.db.insert("page_updates_markdown_broadcast", {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
-			page_id: args.page_id,
-			text_content: args.text_content,
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+			text_content: args.textContent,
 		});
 
 		return null;
@@ -841,11 +839,11 @@ export const update_page_and_broadcast_markdown = mutation({
 
 export const apply_patch_to_page_and_broadcast = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
 		patch: v.string(),
-		thread_id: v.optional(v.string()),
+		threadId: v.optional(v.string()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -854,7 +852,7 @@ export const apply_patch_to_page_and_broadcast = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
@@ -876,14 +874,14 @@ export const apply_patch_to_page_and_broadcast = mutation({
 			updated_at: Date.now(),
 		});
 
-		const threadId = args.thread_id;
+		const threadId = args.threadId;
 
 		// If provided, clear the pending edit for this user/thread so future reads use the actual content
 		if (threadId) {
 			const existing = await ctx.db
 				.query("ai_chat_pending_edits")
 				.withIndex("by_user_thread_page", (q) =>
-					q.eq("user_id", user.id).eq("thread_id", threadId).eq("page_id", args.page_id),
+					q.eq("user_id", user.id).eq("thread_id", threadId).eq("page_id", args.pageId),
 				)
 				.first();
 
@@ -894,15 +892,15 @@ export const apply_patch_to_page_and_broadcast = mutation({
 
 		await Promise.all([
 			ctx.db.insert("page_updates_richtext_broadcast", {
-				workspace_id: args.workspace_id,
-				project_id: args.project_id,
-				page_id: args.page_id,
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: args.pageId,
 				text_content: newText,
 			}),
 			ctx.db.insert("page_updates_markdown_broadcast", {
-				workspace_id: args.workspace_id,
-				project_id: args.project_id,
-				page_id: args.page_id,
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: args.pageId,
 				text_content: newText,
 			}),
 		]);
@@ -912,7 +910,7 @@ export const apply_patch_to_page_and_broadcast = mutation({
 });
 
 export const get_page_by_path = query({
-	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(
 		v.object({
 			workspace_id: v.union(v.string(), v.null()),
@@ -925,8 +923,8 @@ export const get_page_by_path = query({
 	),
 	handler: async (ctx, args) => {
 		const docId = await resolve_id_from_path(ctx, {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
 			path: args.path,
 		});
 
@@ -951,15 +949,15 @@ export const get_page_by_path = query({
 
 export const read_dir = internalQuery({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 		path: v.string(),
 	},
 	returns: v.array(v.string()),
 	handler: async (ctx, args) => {
 		const nodeId = await resolve_tree_node_id_from_path_fn(ctx, {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
 			path: args.path,
 		});
 		if (!nodeId) return [];
@@ -976,13 +974,13 @@ export const read_dir = internalQuery({
 
 export const get_page_info_for_list_dir_pagination = internalQuery({
 	args: {
-		parent_id: v.string(),
+		parentId: v.string(),
 		cursor: paginationOptsValidator.fields.cursor,
 	},
 	handler: async (ctx, args) => {
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("by_parent_id", (q) => q.eq("parent_id", args.parent_id))
+			.withIndex("by_parent_id", (q) => q.eq("parent_id", args.parentId))
 			.paginate({
 				cursor: args.cursor,
 				numItems: 1,
@@ -1000,12 +998,12 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 });
 
 export const page_exists_by_path = internalQuery({
-	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const pageId = await resolve_page_id_from_path_fn(ctx, {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
 			path: args.path,
 		});
 		if (!pageId) return false;
@@ -1013,29 +1011,29 @@ export const page_exists_by_path = internalQuery({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", pageId),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", pageId),
 			)
 			.first();
 
 		if (!page) return false;
-		if (page.workspace_id !== args.workspace_id || page.project_id !== args.project_id) return false;
+		if (page.workspace_id !== args.workspaceId || page.project_id !== args.projectId) return false;
 		return true;
 	},
 });
 
 export const get_page_text_content_by_path = internalQuery({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 		path: v.string(),
-		user_id: v.string(),
-		thread_id: v.string(),
+		userId: v.string(),
+		threadId: v.string(),
 	},
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
 		const docId = await resolve_id_from_path(ctx, {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
 			path: args.path,
 		});
 
@@ -1053,8 +1051,8 @@ export const get_page_text_content_by_path = internalQuery({
 				.query("ai_chat_pending_edits")
 				.withIndex("by_user_thread_page", (q) =>
 					q
-						.eq("user_id", args.user_id as string)
-						.eq("thread_id", args.thread_id as string)
+						.eq("user_id", args.userId as string)
+						.eq("thread_id", args.threadId as string)
 						.eq("page_id", page.page_id),
 				)
 				.first();
@@ -1066,13 +1064,13 @@ export const get_page_text_content_by_path = internalQuery({
 });
 
 export const get_page_text_content_by_page_id = query({
-	args: { workspace_id: v.string(), project_id: v.string(), page_id: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
@@ -1083,12 +1081,12 @@ export const get_page_text_content_by_page_id = query({
 
 export const text_search_pages = internalQuery({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 		query: v.string(),
 		limit: v.number(),
-		user_id: v.string(),
-		thread_id: v.string(),
+		userId: v.string(),
+		threadId: v.string(),
 	},
 	returns: v.object({
 		items: v.array(
@@ -1102,21 +1100,21 @@ export const text_search_pages = internalQuery({
 		const matches = await ctx.db
 			.query("pages")
 			.withSearchIndex("search_text_content", (q) =>
-				q.search("text_content", args.query).eq("workspace_id", args.workspace_id).eq("project_id", args.project_id),
+				q.search("text_content", args.query).eq("workspace_id", args.workspaceId).eq("project_id", args.projectId),
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
 
 		const items: Array<{ path: string; preview: string }> = await Promise.all(
 			matches.map(async (page): Promise<{ path: string; preview: string }> => {
 				const path: string = await resolve_path_from_page_id(ctx, {
-					workspace_id: args.workspace_id,
-					project_id: args.project_id,
+					workspace_id: args.workspaceId,
+					project_id: args.projectId,
 					page_id: page.page_id,
 				});
 				const pending = await ctx.db
 					.query("ai_chat_pending_edits")
 					.withIndex("by_user_thread_page", (q) =>
-						q.eq("user_id", args.user_id).eq("thread_id", args.thread_id).eq("page_id", page.page_id),
+						q.eq("user_id", args.userId).eq("thread_id", args.threadId).eq("page_id", page.page_id),
 					)
 					.first();
 				const preview = (pending?.modified_content ?? page.text_content).slice(0, 160);
@@ -1130,10 +1128,10 @@ export const text_search_pages = internalQuery({
 
 export const update_page_text_content = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
-		text_content: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		textContent: v.string(),
 	},
 	returns: v.union(v.null(), v.object({ bad: v.object({ message: v.string() }) })),
 	handler: async (ctx, args) => {
@@ -1143,7 +1141,7 @@ export const update_page_text_content = mutation({
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspace_id).eq("project_id", args.project_id).eq("page_id", args.page_id),
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.first();
 
@@ -1154,7 +1152,7 @@ export const update_page_text_content = mutation({
 		}
 
 		await ctx.db.patch(page._id, {
-			text_content: args.text_content,
+			text_content: args.textContent,
 			updated_by: user.name,
 			updated_at: Date.now(),
 		});
@@ -1165,15 +1163,15 @@ export const update_page_text_content = mutation({
 
 export const create_page_by_path = internalMutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
+		workspaceId: v.string(),
+		projectId: v.string(),
 		path: v.string(),
-		user_id: v.string(),
-		thread_id: v.string(),
+		userId: v.string(),
+		threadId: v.string(),
 	},
 	returns: v.object({ page_id: v.string() }),
 	handler: async (ctx, args) => {
-		const { workspace_id, project_id } = args;
+		const { workspaceId, projectId } = args;
 		const segments = server_path_extract_segments_from(args.path);
 		let currentParent = "root";
 		let lastPageId = "root";
@@ -1185,11 +1183,7 @@ export const create_page_by_path = internalMutation({
 			const existing = await ctx.db
 				.query("pages")
 				.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
-					q
-						.eq("workspace_id", workspace_id)
-						.eq("project_id", project_id)
-						.eq("parent_id", currentParent)
-						.eq("name", name),
+					q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("parent_id", currentParent).eq("name", name),
 				)
 				.unique();
 
@@ -1197,8 +1191,8 @@ export const create_page_by_path = internalMutation({
 				// Create missing segment
 				const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 				await create_page_in_db(ctx, {
-					workspace_id,
-					project_id,
+					workspace_id: workspaceId,
+					project_id: projectId,
 					page_id,
 					parent_id: currentParent,
 					name: name,

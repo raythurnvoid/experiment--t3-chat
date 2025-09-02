@@ -6,8 +6,8 @@ import {
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
+} from "@/components/ui/dropdown-menu.tsx";
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar.tsx";
 
 export function VersionSwitcher({ versions, defaultVersion }: { versions: string[]; defaultVersion: string }) {
 	const [selectedVersion, setSelectedVersion] = React.useState(defaultVersion);

@@ -111,35 +111,31 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	 */
 	const isApplyingBroadcastRef = useRef(false);
 
-	useEffect(
-		() => {
-			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: props.doc_id,
-			});
+	useEffect(() => {
+		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: props.doc_id,
+		});
 
-			const unsubscribe = watcher.onUpdate(() => {
-				if (pageTextContentQueryWatch.current) {
-					pageTextContentQueryWatch.current.value = watcher.localQueryResult();
-				}
-			});
+		const unsubscribe = watcher.onUpdate(() => {
+			if (pageTextContentQueryWatch.current) {
+				pageTextContentQueryWatch.current.value = watcher.localQueryResult();
+			}
+		});
 
-			pageTextContentQueryWatch.current = {
-				value: watcher.localQueryResult(),
-				unsubscribe: () => {
-					unsubscribe();
-					pageTextContentQueryWatch.current = null;
-				},
-			};
+		pageTextContentQueryWatch.current = {
+			value: watcher.localQueryResult(),
+			unsubscribe: () => {
+				unsubscribe();
+				pageTextContentQueryWatch.current = null;
+			},
+		};
 
-			return () => {
-				pageTextContentQueryWatch.current?.unsubscribe();
-			};
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[props.doc_id],
-	);
+		return () => {
+			pageTextContentQueryWatch.current?.unsubscribe();
+		};
+	}, [props.doc_id]);
 
 	// Set content from Convex when editor is ready
 	useEffect(() => {
@@ -168,42 +164,38 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	}, [editor, isEditorReady, props.doc_id, props.initialContent, contentLoaded, convex, pageTextContentQueryWatch]);
 
 	// Subscribe to page updates broadcast and apply incoming content
-	useEffect(
-		() => {
-			if (!editor || !isEditorReady || !props.doc_id) return;
+	useEffect(() => {
+		if (!editor || !isEditorReady || !props.doc_id) return;
 
+		pageBroadcastWatch.current?.unsubscribe?.();
+
+		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: props.doc_id,
+		});
+
+		const unsubscribe = watcher.onUpdate(() => {
+			const update = watcher.localQueryResult();
+			if (!editor || !update) return;
+			/* Apply update without triggering our own save; guard using ref */
+			isApplyingBroadcastRef.current = true;
+			editor.commands.setContent(update.text_content, false);
+			queueMicrotask(() => {
+				isApplyingBroadcastRef.current = false;
+			});
+		});
+
+		pageBroadcastWatch.current = {
+			unsubscribe,
+			lastAppliedCreationTime: 0,
+		};
+
+		return () => {
 			pageBroadcastWatch.current?.unsubscribe?.();
-
-			const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: props.doc_id,
-			});
-
-			const unsubscribe = watcher.onUpdate(() => {
-				const update = watcher.localQueryResult();
-				if (!editor || !update) return;
-				/* Apply update without triggering our own save; guard using ref */
-				isApplyingBroadcastRef.current = true;
-				editor.commands.setContent(update.text_content, false);
-				queueMicrotask(() => {
-					isApplyingBroadcastRef.current = false;
-				});
-			});
-
-			pageBroadcastWatch.current = {
-				unsubscribe,
-				lastAppliedCreationTime: 0,
-			};
-
-			return () => {
-				pageBroadcastWatch.current?.unsubscribe?.();
-				pageBroadcastWatch.current = null;
-			};
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[editor, isEditorReady, props.doc_id],
-	);
+			pageBroadcastWatch.current = null;
+		};
+	}, [editor, isEditorReady, props.doc_id]);
 
 	// Cleanup timeout on unmount
 	useEffect(() => {
@@ -215,16 +207,11 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	}, []);
 
 	// Detect if the sync status changed
-	useEffect(
-		() => {
-			if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
-				setSyncChanged(true);
-			}
-		},
-
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[syncStatus],
-	);
+	useEffect(() => {
+		if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
+			setSyncChanged(true);
+		}
+	}, [syncStatus]);
 
 	const handleCreate = ({ editor }: { editor: Editor }) => {
 		setEditor(editor);
@@ -246,10 +233,10 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 				try {
 					const textContent = editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
 					await updateAndBroadcastMarkdown({
-						workspace_id: ai_chat_HARDCODED_ORG_ID,
-						project_id: ai_chat_HARDCODED_PROJECT_ID,
-						page_id: props.doc_id!,
-						text_content: textContent,
+						workspaceId: ai_chat_HARDCODED_ORG_ID,
+						projectId: ai_chat_HARDCODED_PROJECT_ID,
+						pageId: props.doc_id!,
+						textContent: textContent,
 					});
 				} catch (error) {
 					console.error("Failed to save text content:", error);

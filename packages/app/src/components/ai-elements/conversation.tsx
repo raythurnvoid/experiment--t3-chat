@@ -1,7 +1,7 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button.tsx";
+import { cn } from "@/lib/utils.ts";
 import { ArrowDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { useCallback } from "react";
@@ -30,8 +30,12 @@ export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 export const ConversationScrollButton = ({ className, ...props }: ConversationScrollButtonProps) => {
 	const { isAtBottom, scrollToBottom } = useStickToBottomContext();
 
-	const handleScrollToBottom = useCallback(() => {
-		scrollToBottom();
+	const handleScrollToBottom = useCallback(async () => {
+		try {
+			await scrollToBottom();
+		} catch (error) {
+			console.error(error);
+		}
 	}, [scrollToBottom]);
 
 	return (

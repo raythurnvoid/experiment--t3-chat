@@ -1,10 +1,10 @@
-import { useCanvasStore } from "../../stores/canvas-store";
+import { useCanvasStore } from "../../stores/canvas-store.ts";
 import { useThread } from "@assistant-ui/react";
-import { TextRenderer } from "./text-renderer";
+import { TextRenderer } from "./text-renderer.tsx";
 import { useState } from "react";
-import { Button } from "../ui/button";
+import { Button } from "../ui/button.tsx";
 import { ChevronLeft, ChevronRight, Edit3, Save, X } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { cn } from "../../lib/utils.ts";
 
 export function ArtifactRenderer() {
 	const { getCurrentArtifact, getCurrentArtifactContent, isEditing, setIsEditing, currentArtifactId } =

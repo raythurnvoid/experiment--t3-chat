@@ -6,7 +6,7 @@ import {
 import { InboxNotification, InboxNotificationList } from "@liveblocks/react-ui";
 import * as Popover from "@radix-ui/react-popover";
 import { Suspense } from "react";
-import Loading from "./loading";
+import Loading from "./loading.tsx";
 
 export default function NotificationsPopover() {
 	return (

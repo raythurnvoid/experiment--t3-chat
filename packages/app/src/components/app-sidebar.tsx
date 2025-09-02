@@ -1,7 +1,6 @@
 import * as React from "react";
 import { MessageSquare, Plus, Search, X } from "lucide-react";
-import { SearchForm } from "@/components/search-form";
-import { VersionSwitcher } from "@/components/version-switcher";
+import { VersionSwitcher } from "@/components/version-switcher.tsx";
 import {
 	Sidebar,
 	SidebarContent,
@@ -13,16 +12,15 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 	SidebarRail,
-	SidebarTrigger,
-} from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
+} from "@/components/ui/sidebar.tsx";
+import { Button } from "@/components/ui/button.tsx";
 import { useAssistantRuntime } from "@assistant-ui/react";
-import type { ai_chat_Thread } from "@/lib/ai_chat";
+import type { ai_chat_Thread } from "@/lib/ai-chat";
 import { useMemo } from "react";
 import { useQuery } from "convex/react";
-import { api } from "../../convex/_generated/api";
-import { app_convex_adapt_convex_to_app_thread } from "@/lib/app-convex-client";
-import { cn } from "@/lib/utils";
+import { api } from "../../convex/_generated/api.ts";
+import { app_convex_adapt_convex_to_app_thread } from "@/lib/app-convex-client.ts";
+import { cn } from "@/lib/utils.ts";
 
 // This is sample data.
 const data = {
@@ -170,14 +168,14 @@ export interface ai_chat_GroupedThreads {
 	older: ai_chat_Thread[];
 }
 
-export const useGroupedThreads = (): ai_chat_GroupedThreads => {
+function useGroupedThreads(): ai_chat_GroupedThreads {
 	// Fetch threads directly from Convex
 	const threads_result = useQuery(api.ai_chat.threads_list, {
-		pagination_opts: {
+		paginationOpts: {
 			numItems: 1000, // Get up to 1000 threads
 			cursor: null,
 		},
-		include_archived: false,
+		includeArchived: false,
 	});
 
 	return useMemo(() => {
@@ -231,4 +229,4 @@ export const useGroupedThreads = (): ai_chat_GroupedThreads => {
 
 		return grouped;
 	}, [threads_result]);
-};
+}

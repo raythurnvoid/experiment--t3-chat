@@ -1,4 +1,4 @@
-import { useRef, useMemo, useCallback, useState, useEffect } from "react";
+import { useRef, useMemo, useState, useEffect } from "react";
 import { create_promise_with_resolvers, tuple } from "../lib/utils.ts";
 
 /**
@@ -9,6 +9,7 @@ import { create_promise_with_resolvers, tuple } from "../lib/utils.ts";
  */
 export function useLiveRef<T>(value: T) {
 	const ref = useRef<T>(value);
+	// eslint-disable-next-line react-hooks/refs
 	ref.current = value;
 	return ref;
 }
@@ -27,6 +28,7 @@ export function useLiveState<T>(initialValue: T) {
 
 	return useMemo(
 		() =>
+			// eslint-disable-next-line react-hooks/refs
 			tuple(ref, (value: T) => {
 				if (ref.current === value) return;
 				const newValue = typeof value === "function" ? value(ref.current) : value;
@@ -60,11 +62,10 @@ export function useRenderPromise() {
 	const [, setDummyState] = useState({});
 
 	// Create a ref to hold our promise
-	const promiseWithResolversRef = useRef<PromiseWithResolvers<void> | null>(null);
+	const promiseWithResolversRef = useRef<PromiseWithResolvers<void>>(null);
 	const promiseRef = useRef<Promise<void>>(Promise.resolve()) as React.RefObject<Promise<void>>;
 
-	// eslint-disable-next-line @typescript-eslint/no-misused-promises
-	if (!promiseRef.current) {
+	if (promiseRef.current === null) {
 		promiseRef.current = Promise.resolve();
 	}
 
@@ -78,8 +79,8 @@ export function useRenderPromise() {
 		promiseRef.current = promiseWithResolvers.promise;
 	});
 
-	return useCallback(() => {
+	return function () {
 		setDummyState({});
 		return promiseRef.current;
-	}, []);
+	};
 }

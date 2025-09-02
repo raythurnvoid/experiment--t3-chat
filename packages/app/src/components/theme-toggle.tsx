@@ -1,7 +1,7 @@
 import { Moon, Sun, Monitor } from "lucide-react";
-import { Button } from "./ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
-import { useThemeContext } from "./theme-provider";
+import { Button } from "./ui/button.tsx";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
+import { useThemeContext } from "./theme-provider.tsx";
 
 /**
  * Theme toggle component that allows users to manually switch themes

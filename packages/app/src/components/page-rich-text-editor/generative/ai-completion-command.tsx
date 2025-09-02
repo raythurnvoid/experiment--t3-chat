@@ -1,4 +1,4 @@
-import { CommandGroup, CommandItem, CommandSeparator } from "../../ui/command";
+import { CommandGroup, CommandItem, CommandSeparator } from "../../ui/command.tsx";
 import { useEditor } from "novel";
 import { Check, TextQuote, TrashIcon } from "lucide-react";
 

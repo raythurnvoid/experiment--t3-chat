@@ -4,38 +4,42 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 import reactRefresh from "eslint-plugin-react-refresh";
 import importPlugin from "eslint-plugin-import";
+import { defineConfig } from "eslint/config";
 
-export default tseslint.config(
+export default defineConfig(
 	{ ignores: ["dist"] },
+	reactRefresh.configs.vite,
+	{
+		plugins: {
+			js: js,
+			"@typescript-eslint": tseslint.plugin,
+			"react-hooks": reactHooks,
+		},
+	},
 	{
 		files: ["src/**/*.{ts,tsx}"],
 		extends: [
 			js.configs.recommended,
 			tseslint.configs.recommendedTypeChecked,
-			{
-				languageOptions: {
-					parserOptions: {
-						projectService: true,
-						tsconfigRootDir: import.meta.dirname,
-					},
-				},
-			},
 			importPlugin.flatConfigs.recommended,
 			importPlugin.flatConfigs.typescript,
 			reactHooks.configs["recommended-latest"],
-			reactRefresh.configs.vite,
 		],
 		languageOptions: {
 			ecmaVersion: 2025,
 			globals: globals.browser,
+			parserOptions: {
+				projectService: true,
+				tsconfigRootDir: import.meta.dirname,
+			},
 		},
-		plugins: {},
 		rules: {
-			...reactHooks.configs.recommended.rules,
-			"react-hooks/react-compiler": "error",
+			"no-useless-escape": "off",
 
-			...reactRefresh.configs.vite.rules,
-			"react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
+
+			"react-hooks/exhaustive-deps": "off",
+			"react-hooks/set-state-in-effect": "off",
 
 			"@typescript-eslint/ban-ts-comment": "off",
 			"@typescript-eslint/no-array-constructor": "off",

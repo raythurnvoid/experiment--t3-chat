@@ -1,9 +1,9 @@
-import { Button } from "../ui/button";
+import { Button } from "../ui/button.tsx";
 import { FileText, Sparkles } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { cn } from "../../lib/utils.ts";
 import { useMutation } from "convex/react";
-import { app_convex_api } from "@/lib/app-convex-client";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 
 export interface QuickStart_Props {
 	onOpenEditor: (pageId: string) => void;
@@ -16,8 +16,8 @@ export function QuickStart(props: QuickStart_Props) {
 	const handleCreatePage = async () => {
 		try {
 			const { page_id } = await createPageQuick({
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
 			});
 			onOpenEditor(page_id);
 		} catch (error) {

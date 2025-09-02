@@ -49,8 +49,6 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 		} catch (error) {
 			console.error("❌ Error updating canvas store:", error);
 		}
-
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [result, args, status.type]);
 
 	const handleViewArtifact = () => {

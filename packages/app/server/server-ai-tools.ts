@@ -29,8 +29,8 @@ async function list_dir(
 ): Promise<{ items: Array<{ path: string; updated_at: number }>; metadata: { count: number; truncated: boolean } }> {
 	// Resolve the starting node id for the provided path
 	const startNodeId = await ctx.runQuery(internal.ai_docs_temp.resolve_tree_node_id_from_path, {
-		workspace_id: args.workspace_id,
-		project_id: args.project_id,
+		workspaceId: args.workspace_id,
+		projectId: args.project_id,
 		path: args.path,
 	});
 	if (!startNodeId) return { items: [], metadata: { count: 0, truncated: false } };
@@ -55,7 +55,7 @@ async function list_dir(
 		if (!frame) continue;
 
 		const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.get_page_info_for_list_dir_pagination, {
-			parent_id: frame.parentId,
+			parentId: frame.parentId,
 			cursor: frame.cursor,
 		});
 
@@ -138,8 +138,8 @@ export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { t
 
 			const pageExists = await ctx.runQuery(internal.ai_docs_temp.page_exists_by_path, {
 				path: normalizedPath,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
 			});
 
 			if (!pageExists) {
@@ -148,8 +148,8 @@ export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { t
 				if (parentPath) {
 					const siblingPaths = await ctx.runQuery(internal.ai_docs_temp.read_dir, {
 						path: parentPath,
-						workspace_id: ai_chat_HARDCODED_ORG_ID,
-						project_id: ai_chat_HARDCODED_PROJECT_ID,
+						workspaceId: ai_chat_HARDCODED_ORG_ID,
+						projectId: ai_chat_HARDCODED_PROJECT_ID,
 					});
 
 					const pageName = server_path_name_of(normalizedPath);
@@ -174,10 +174,10 @@ export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { t
 
 			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
 				path: normalizedPath,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				user_id: user.id,
-				thread_id: tool_execution_ctx.thread_id,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				userId: user.id,
+				threadId: tool_execution_ctx.thread_id,
 			});
 
 			if (!textContent) {
@@ -441,10 +441,10 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 				// Read page content
 				const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
 					path: item.path,
-					workspace_id: ai_chat_HARDCODED_ORG_ID,
-					project_id: ai_chat_HARDCODED_PROJECT_ID,
-					user_id: user.id,
-					thread_id: tool_execution_ctx.thread_id,
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					userId: user.id,
+					threadId: tool_execution_ctx.thread_id,
 				});
 
 				const pageName = server_path_name_of(item.path);
@@ -521,12 +521,12 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_
 		execute: async (args) => {
 			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const res = await ctx.runQuery(internal.ai_docs_temp.text_search_pages, {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				query: args.query,
 				limit: args.limit ?? 20,
-				user_id: user.id,
-				thread_id: tool_execution_ctx.thread_id,
+				userId: user.id,
+				threadId: tool_execution_ctx.thread_id,
 			});
 
 			if (!res.items.length) {
@@ -590,8 +590,8 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 
 			let pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
 				path,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
 			});
 
 			let exists = !!pageId;
@@ -599,10 +599,10 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 			const oldText = pageId
 				? ((await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
 						path,
-						workspace_id: ai_chat_HARDCODED_ORG_ID,
-						project_id: ai_chat_HARDCODED_PROJECT_ID,
-						user_id: user.id,
-						thread_id: tool_execution_ctx.thread_id,
+						workspaceId: ai_chat_HARDCODED_ORG_ID,
+						projectId: ai_chat_HARDCODED_PROJECT_ID,
+						userId: user.id,
+						threadId: tool_execution_ctx.thread_id,
 					})) ?? "")
 				: "";
 
@@ -611,11 +611,11 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 
 			if (!pageId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
-					workspace_id: ai_chat_HARDCODED_ORG_ID,
-					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					path,
-					user_id: user.id,
-					thread_id: tool_execution_ctx.thread_id,
+					userId: user.id,
+					threadId: tool_execution_ctx.thread_id,
 				});
 				exists = false;
 				pageId = created.page_id;
@@ -626,12 +626,12 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 			}
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				thread_id: tool_execution_ctx.thread_id,
-				page_id: pageId,
-				base_content: oldText,
-				modified_content: newText,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				threadId: tool_execution_ctx.thread_id,
+				pageId: pageId,
+				baseContent: oldText,
+				modifiedContent: newText,
 			});
 
 			return {

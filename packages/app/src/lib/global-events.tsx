@@ -42,17 +42,13 @@ export namespace global_event {
 export function useGlobalEvent<Handler extends HandlerFn>(listenFn: (handler: Handler) => CleanupFn, handler: Handler) {
 	const handlerRef = useLiveRef(handler);
 
-	useEffect(
-		() => {
-			const cleanup = listenFn(((...args) => {
-				handlerRef.current(...args);
-			}) as Handler);
+	useEffect(() => {
+		const cleanup = listenFn(((...args) => {
+			handlerRef.current(...args);
+		}) as Handler);
 
-			return cleanup;
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[],
-	);
+		return cleanup;
+	}, []);
 }
 // #endregion Core
 

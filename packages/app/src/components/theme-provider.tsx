@@ -75,6 +75,7 @@ export const ThemeProvider = ({ children }: ThemeProvider_Props) => {
  * Hook to access theme configuration from context
  * Must be used within a ai_chat_ThemeProvider
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export const useThemeContext = (): ThemeConfig => {
 	const context = useContext(ThemeContext);
 

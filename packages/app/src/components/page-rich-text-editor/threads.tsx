@@ -4,8 +4,6 @@ import { useThreads } from "@liveblocks/react/suspense";
 import { AnchoredThreads, FloatingThreads, FloatingComposer } from "@liveblocks/react-tiptap";
 
 export function Threads() {
-	"use no memo";
-
 	const { editor } = useEditor();
 	const isMobile = useIsMobile();
 	const { threads } = useThreads({ query: { resolved: false } });
@@ -26,6 +24,7 @@ export function Threads() {
 	);
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useIsMobile() {
 	return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

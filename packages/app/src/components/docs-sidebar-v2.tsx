@@ -137,10 +137,10 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			if (this.convex) {
 				this.convex
 					.mutation(app_convex_api.ai_docs_temp.move_pages, {
-						item_ids: newChildren.map((id) => id.toString()),
-						target_parent_id: itemId.toString(),
-						workspace_id: this.workspaceId,
-						project_id: this.projectId,
+						itemIds: newChildren.map((id) => id.toString()),
+						targetParentId: itemId.toString(),
+						workspaceId: this.workspaceId,
+						projectId: this.projectId,
 					})
 					.catch(console.error);
 			}
@@ -182,9 +182,9 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		if (this.convex) {
 			try {
 				await this.convex.mutation(app_convex_api.ai_docs_temp.rename_page, {
-					workspace_id: this.workspaceId,
-					project_id: this.projectId,
-					page_id: item.index.toString(),
+					workspaceId: this.workspaceId,
+					projectId: this.projectId,
+					pageId: item.index.toString(),
 					name: name,
 				});
 			} catch (error) {
@@ -248,11 +248,11 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		if (this.convex) {
 			this.convex
 				.mutation(app_convex_api.ai_docs_temp.create_page, {
-					page_id: docId,
-					parent_id: parentId,
+					pageId: docId,
+					parentId: parentId,
 					name: title,
-					workspace_id: this.workspaceId,
-					project_id: this.projectId,
+					workspaceId: this.workspaceId,
+					projectId: this.projectId,
 				})
 				.then(() => {
 					console.log("Document created in Convex");
@@ -347,8 +347,8 @@ function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
 	const convex = useConvex();
 
 	const treeData = useQuery(app_convex_api.ai_docs_temp.get_tree, {
-		workspace_id: ai_chat_HARDCODED_ORG_ID,
-		project_id: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});
 
 	const dataProvider = useMemo(() => {
@@ -732,29 +732,25 @@ function TreeArea(props: TreeArea_Props) {
 	const convex = useConvex();
 
 	// Get expanded items for view state
-	const expandedItems = useMemo(
-		() => {
-			if (!dataProvider) return [];
-			const allData = treeItems;
-			const expanded: string[] = [];
+	const expandedItems = useMemo(() => {
+		if (!dataProvider) return [];
+		const allData = treeItems;
+		const expanded: string[] = [];
 
-			// Get the root item to find its direct children
-			const rootItem = allData[ROOT_TREE_ID];
-			if (rootItem && rootItem.children) {
-				// Only expand direct children of root that are folders with children
-				rootItem.children.forEach((childId) => {
-					const childItem = allData[childId];
-					if (childItem && childItem.isFolder && childItem.children && childItem.children.length > 0) {
-						expanded.push(childId.toString());
-					}
-				});
-			}
+		// Get the root item to find its direct children
+		const rootItem = allData[ROOT_TREE_ID];
+		if (rootItem && rootItem.children) {
+			// Only expand direct children of root that are folders with children
+			rootItem.children.forEach((childId) => {
+				const childItem = allData[childId];
+				if (childItem && childItem.isFolder && childItem.children && childItem.children.length > 0) {
+					expanded.push(childId.toString());
+				}
+			});
+		}
 
-			return expanded;
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[dataProvider, searchQuery, treeItems],
-	);
+		return expanded;
+	}, [dataProvider, searchQuery, treeItems]);
 
 	const rootElement = useRef<HTMLDivElement>(null);
 
@@ -782,9 +778,9 @@ function TreeArea(props: TreeArea_Props) {
 		// Sync to Convex
 		if (convex) {
 			archiveDocument({
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: itemId,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: itemId,
 			}).catch(console.error);
 		}
 
@@ -802,9 +798,9 @@ function TreeArea(props: TreeArea_Props) {
 		// Sync to Convex
 		if (convex) {
 			unarchiveDocument({
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: itemId,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: itemId,
 			}).catch(console.error);
 		}
 	};

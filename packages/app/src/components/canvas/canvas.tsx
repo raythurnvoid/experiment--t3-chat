@@ -57,8 +57,8 @@ export function Canvas() {
 		openCanvasGlobalEventDebounce.current = globalThis.setTimeout(async () => {
 			try {
 				const page = await convex.query(api.ai_docs_temp.get_page_by_path, {
-					workspace_id: ai_chat_HARDCODED_ORG_ID,
-					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					path: payload.path,
 				});
 				if (page && page.page_id) {

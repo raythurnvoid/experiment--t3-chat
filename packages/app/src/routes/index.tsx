@@ -1,7 +1,7 @@
 import { useState } from "react";
 import reactLogo from "../assets/react.svg";
 import viteLogo from "/vite.svg";
-import { cn } from "@/lib/utils";
+import { cn } from "@/lib/utils.ts";
 
 export const Route = createFileRoute({
 	component: Index,

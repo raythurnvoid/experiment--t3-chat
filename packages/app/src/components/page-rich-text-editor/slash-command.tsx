@@ -4,7 +4,6 @@ import {
 	Heading1,
 	Heading2,
 	Heading3,
-	ImageIcon,
 	List,
 	ListOrdered,
 	Text,
@@ -13,7 +12,6 @@ import {
 	Youtube,
 } from "lucide-react";
 import { createSuggestionItems, Command, renderItems } from "novel";
-import { uploadFn } from "./image-upload";
 
 export const suggestionItems = createSuggestionItems([
 	{

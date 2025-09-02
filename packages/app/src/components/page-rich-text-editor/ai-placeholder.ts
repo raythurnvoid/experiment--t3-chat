@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { Node } from "@tiptap/pm/model";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { AI_NAME } from "./constants";
+import { AI_NAME } from "./constants.ts";
 
 function isEmptyTextNode(node: Node) {
 	return node.isTextblock && node.childCount === 0;

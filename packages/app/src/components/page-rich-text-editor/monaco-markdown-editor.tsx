@@ -75,9 +75,9 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 	// Listen for updates once
 	useEffect(() => {
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: pageId,
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -104,9 +104,9 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		if (!editor || initialValue !== undefined) return;
 		void (async () => {
 			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: pageId,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: pageId,
 			});
 
 			// Set the initial value if it's not already set
@@ -114,7 +114,6 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 				setInitialValue((currentValue) => currentValue ?? fetchedValue);
 			}
 		})();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [convex, pageId]);
 
 	// Apply initialValue once editor is mounted, then unsubscribe the watch
@@ -135,9 +134,9 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 	useEffect(() => {
 		if (!editor) return;
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_markdown_broadcast_latest, {
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: pageId,
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -167,10 +166,10 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 			if (isApplyingBroadcastRef.current) return;
 			const value = editor.getValue();
 			await updateAndBroadcastRichtext({
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: pageId,
-				text_content: value,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: pageId,
+				textContent: value,
 			});
 		});
 		return () => {

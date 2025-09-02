@@ -137,7 +137,7 @@ function StarToggle(props: StarToggle_Props) {
 	const { className, thread_id } = props;
 
 	const thread = useQuery(app_convex_api.ai_chat.thread_get, {
-		thread_id: thread_id,
+		threadId: thread_id,
 	});
 	const thread_update_mutation = useMutation(app_convex_api.ai_chat.thread_update);
 
@@ -146,7 +146,7 @@ function StarToggle(props: StarToggle_Props) {
 
 		try {
 			await thread_update_mutation({
-				thread_id: thread._id,
+				threadId: thread._id,
 				starred: !thread.starred,
 			});
 		} catch (error) {

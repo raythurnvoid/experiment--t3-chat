@@ -346,9 +346,9 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 	// Listen for updates once and also fetch latest as a fallback
 	useEffect(() => {
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: pageId,
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -365,9 +365,9 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 
 		void (async () => {
 			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: pageId,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: pageId,
 			});
 			if (typeof fetchedValue === "string") {
 				setInitialValue((currentValue) => currentValue ?? fetchedValue);
@@ -407,95 +407,91 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 	}, [diffEditor, initialValue]);
 
 	// Track modified editor content and listen for diff updates
-	useEffect(
-		() => {
-			if (!diffEditor) return;
+	useEffect(() => {
+		if (!diffEditor) return;
 
-			const modifiedEditor = diffEditor.getModifiedEditor();
+		const modifiedEditor = diffEditor.getModifiedEditor();
 
-			if (!modifiedEditor) return;
+		if (!modifiedEditor) return;
 
-			const listeners = [
-				modifiedEditor.onDidChangeModelContent(() => {
-					const v = modifiedEditor.getValue();
-					modifiedContentRef.current = v;
-					// Immediately realign widgets based on their anchor decorations
-					const modelNow = modifiedEditor.getModel();
-					if (!modelNow) return;
+		const listeners = [
+			modifiedEditor.onDidChangeModelContent(() => {
+				const v = modifiedEditor.getValue();
+				modifiedContentRef.current = v;
+				// Immediately realign widgets based on their anchor decorations
+				const modelNow = modifiedEditor.getModel();
+				if (!modelNow) return;
 
-					for (const [, w] of contentWidgetsRef.current) {
-						const anyWidget = w as unknown as {
-							anchorDecorationId?: string | null;
-							updateLine: (ln: number) => void;
-						};
+				for (const [, w] of contentWidgetsRef.current) {
+					const anyWidget = w as unknown as {
+						anchorDecorationId?: string | null;
+						updateLine: (ln: number) => void;
+					};
 
-						const decoId = anyWidget.anchorDecorationId;
-						if (decoId) {
-							const range = modelNow.getDecorationRange(decoId);
-							if (range) {
-								anyWidget.updateLine(range.startLineNumber);
-								continue;
-							}
-						}
-					}
-				}),
-
-				diffEditor.onDidUpdateDiff(() => {
-					const changes = diffEditor.getLineChanges();
-					if (!changes) return;
-					lineChangesRef.current = changes;
-					// Create/update floating content widgets at the top-left of content
-					const modifiedEditor = diffEditor.getModifiedEditor();
-					const model = modifiedEditor.getModel();
-					if (!modifiedEditor || !model) return;
-
-					const existing = contentWidgetsRef.current;
-					const seen = new Set<number>();
-
-					for (let i = 0; i < changes.length; i++) {
-						const change = changes[i]!;
-						const line = change.modifiedStartLineNumber || change.originalStartLineNumber || 1;
-						seen.add(i);
-						const key = i;
-						const existingWidget = existing.get(key) as AcceptDiscardContentWidget | undefined;
-						if (existingWidget) {
-							existingWidget.updateLine(line);
+					const decoId = anyWidget.anchorDecorationId;
+					if (decoId) {
+						const range = modelNow.getDecorationRange(decoId);
+						if (range) {
+							anyWidget.updateLine(range.startLineNumber);
 							continue;
 						}
-						const widget = new AcceptDiscardContentWidget(
-							modifiedEditor,
-							key,
-							line,
-							(index) => {
-								acceptChangeAtIndex(index);
-							},
-							(index) => {
-								discardChangeAtIndex(index);
-							},
-						);
-						modifiedEditor.addContentWidget(widget);
-						existing.set(key, widget);
 					}
-
-					// Remove widgets for changes that no longer exist
-					for (const [key, widget] of Array.from(existing.entries())) {
-						if (!seen.has(key)) {
-							modifiedEditor.removeContentWidget(widget);
-							existing.delete(key);
-						}
-					}
-				}),
-			];
-
-			return () => {
-				for (const listener of listeners) {
-					listener.dispose();
 				}
-			};
-		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[diffEditor],
-	);
+			}),
+
+			diffEditor.onDidUpdateDiff(() => {
+				const changes = diffEditor.getLineChanges();
+				if (!changes) return;
+				lineChangesRef.current = changes;
+				// Create/update floating content widgets at the top-left of content
+				const modifiedEditor = diffEditor.getModifiedEditor();
+				const model = modifiedEditor.getModel();
+				if (!modifiedEditor || !model) return;
+
+				const existing = contentWidgetsRef.current;
+				const seen = new Set<number>();
+
+				for (let i = 0; i < changes.length; i++) {
+					const change = changes[i]!;
+					const line = change.modifiedStartLineNumber || change.originalStartLineNumber || 1;
+					seen.add(i);
+					const key = i;
+					const existingWidget = existing.get(key) as AcceptDiscardContentWidget | undefined;
+					if (existingWidget) {
+						existingWidget.updateLine(line);
+						continue;
+					}
+					const widget = new AcceptDiscardContentWidget(
+						modifiedEditor,
+						key,
+						line,
+						(index) => {
+							acceptChangeAtIndex(index);
+						},
+						(index) => {
+							discardChangeAtIndex(index);
+						},
+					);
+					modifiedEditor.addContentWidget(widget);
+					existing.set(key, widget);
+				}
+
+				// Remove widgets for changes that no longer exist
+				for (const [key, widget] of Array.from(existing.entries())) {
+					if (!seen.has(key)) {
+						modifiedEditor.removeContentWidget(widget);
+						existing.delete(key);
+					}
+				}
+			}),
+		];
+
+		return () => {
+			for (const listener of listeners) {
+				listener.dispose();
+			}
+		};
+	}, [diffEditor]);
 
 	// Cleanup content widgets on unmount/editor dispose
 	useEffect(() => {
@@ -592,11 +588,11 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			const patches = makePatches(before, after, { margin: 100 });
 			const patchText = stringifyPatches(patches);
 			await applyPatchToPageAndBroadcast({
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: pageId,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: pageId,
 				patch: patchText,
-				thread_id: threadId,
+				threadId: threadId,
 			});
 			onExit();
 		} catch (err) {

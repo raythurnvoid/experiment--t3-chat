@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { useCanvasStore } from "../../stores/canvas-store";
+import { useCanvasStore } from "../../stores/canvas-store.ts";
 import { useThread } from "@assistant-ui/react";
 import type { ArtifactTextContent } from "../../types/canvas";
 import "@blocknote/core/fonts/inter.css";
@@ -8,12 +8,12 @@ import { getDefaultReactSlashMenuItems, SuggestionMenuController, useCreateBlock
 import PQueue from "p-queue";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
-import { cn } from "../../lib/utils";
-import { Button } from "../ui/button";
+import { cn } from "../../lib/utils.ts";
+import { Button } from "../ui/button.tsx";
 import { Eye, EyeOff, Copy } from "lucide-react";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip.tsx";
 import { MantineProvider } from "@mantine/core";
-import { useThemeContext } from "../theme-provider";
+import { useThemeContext } from "../theme-provider.tsx";
 
 const cleanText = (text: string) => {
 	return text.replace(/\\\n/g, "\n");
@@ -260,11 +260,12 @@ export function TextRenderer({ isHovering }: TextRendererProps) {
 							formattingToolbar={false}
 							slashMenu={false}
 							onChange={onChange}
+							// TODO: fix react-hooks/refs
+							// eslint-disable-next-line react-hooks/refs
 							editable={!isStreaming || !manuallyUpdatingRef.current}
 							editor={editor}
 						>
 							<SuggestionMenuController
-								// eslint-disable-next-line @typescript-eslint/require-await
 								getItems={async () => getDefaultReactSlashMenuItems(editor).filter((item) => item.group !== "Media")}
 								triggerCharacter={"/"}
 							/>

@@ -192,6 +192,3 @@ export interface api_schemas_Main {
 export type api_schemas_MainPaths = keyof api_schemas_Main;
 
 // #endregion Main Schema
-
-// @ts-expect-error Make ts happy
-type _ = PrepareSendMessagesRequest | AssistantChatTransport | typeof toAISDKTools;

@@ -1,11 +1,9 @@
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button.tsx";
+import { cn } from "@/lib/utils.ts";
 import { Redo, Undo } from "lucide-react";
 import { EditorBubbleItem, useEditor } from "novel";
 
 export const HistoryButtons = () => {
-	"use no memo";
-
 	const { editor } = useEditor();
 	if (!editor) return null;
 
