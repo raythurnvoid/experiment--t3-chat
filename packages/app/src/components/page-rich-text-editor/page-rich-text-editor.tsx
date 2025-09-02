@@ -4,11 +4,12 @@ import { useAuth } from "../../lib/auth.ts";
 import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { RichTextDocEditor } from "./editor.tsx";
-import { useState, useCallback, useImperativeHandle, type Ref } from "react";
+import { useState, useImperativeHandle, type Ref } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
-import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
+import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
 import { cn } from "../../lib/utils.ts";
+import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
 
 function ai_docs_create_liveblocks_room_id(orgId: string, projectId: string, docId: string) {
 	return `${orgId}:${projectId}:${docId}`;
@@ -40,21 +41,21 @@ export type PageRichTextEditor_Ref = {
 };
 
 export type PageRichTextEditor_Props = {
-	pageId: string | null | undefined;
 	ref?: Ref<PageRichTextEditor_Ref>;
+	pageId: string | null | undefined;
+	threadId?: string;
 };
 
 export function PageRichTextEditor(props: PageRichTextEditor_Props) {
-	const { pageId, ref: refProp } = props;
+	const { ref: refProp, pageId, threadId } = props;
 
 	const auth = useAuth();
 	const [editorMode, setEditorMode] = useState<"rich" | "markdown">("rich");
 	const [diffMode, setDiffMode] = useState(false);
-	const [diffModifiedEditorInitialValue, setDiffModifiedEditorInitialValue] = useState<string>("");
 
-	const handleDiffExit = useCallback(() => {
+	const handleDiffExit = () => {
 		setDiffMode(false);
-	}, []);
+	};
 
 	useImperativeHandle(
 		refProp,
@@ -62,7 +63,6 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 			requestOpenDiff: (_args: { pageId: string; modifiedEditorValue: string }) => {
 				setEditorMode("markdown");
 				setDiffMode(true);
-				setDiffModifiedEditorInitialValue(_args.modifiedEditorValue ?? "");
 			},
 		}),
 		[],
@@ -122,13 +122,13 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 							{editorMode === "rich" ? (
 								<RichTextDocEditor doc_id={pageId} />
 							) : diffMode ? (
-								<MonacoMarkdownDiffEditor
-									docId={pageId}
-									modifiedInitialValue={diffModifiedEditorInitialValue}
-									onExit={handleDiffExit}
-								/>
+								threadId ? (
+									<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
+								) : (
+									<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
+								)
 							) : (
-								<MonacoMarkdownEditor docId={pageId} />
+								<MonacoMarkdownEditor pageId={pageId} />
 							)}
 						</div>
 					</div>

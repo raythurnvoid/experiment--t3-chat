@@ -1,5 +1,5 @@
 import "./app-ai-chat.css";
-import { makeAssistantToolUI, useMessage, useMessagePartRuntime } from "@assistant-ui/react";
+import { makeAssistantToolUI, useMessage, useMessagePartRuntime, useThreadListItem } from "@assistant-ui/react";
 import type { ToolCallContentPartProps } from "@assistant-ui/react";
 import { CopyIcon, FileText, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -12,9 +12,6 @@ import { Thread } from "@/components/assistant-ui/thread.tsx";
 import { useEffect, useRef } from "react";
 import { global_event_ai_chat_open_canvas, global_event_ai_chat_open_canvas_by_path } from "../lib/global-events.tsx";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
-import { useMutation } from "convex/react";
-import { api } from "../../convex/_generated/api.js";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../lib/ai-chat.ts";
 
 function mapStatusToToolState(status: {
 	type: string;
@@ -370,33 +367,29 @@ const TextSearchPagesToolUi = makeAssistantToolUI<TextSearchToolUi_Args, TextSea
 type WritePageToolUi_Args = {
 	path: string;
 	content: string;
-	overwrite?: boolean;
-	confirm?: boolean;
 };
 
 type WritePageToolUi_Result = {
-	title: string;
 	output: string;
 	metadata: {
 		exists: boolean;
-		applied: boolean;
-		preview?: string;
-		diff?: string;
 		page_id: string;
+		path: string;
+		diff: string;
 	};
 };
 
 function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolUi_Args, WritePageToolUi_Result>) {
 	const { args, result, status } = props;
-
-	const toolState = mapStatusToToolState(status);
+	const threadRemoteId = useThreadListItem((t) => t.remoteId);
 	const partRuntime = useMessagePartRuntime();
-	const updateAndBroadcast = useMutation(api.ai_docs_temp.update_page_and_broadcast);
 
 	const toolCompleteDebounce = useRef<ReturnType<typeof globalThis.setTimeout>>(undefined);
 
 	const handleToolComplete = useLiveRef(async () => {
 		if (!result) return;
+		const threadId = threadRemoteId;
+		if (!threadId) return;
 
 		const pageId = result.metadata.page_id;
 		if (!pageId) {
@@ -404,24 +397,8 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 			return;
 		}
 
-		if (result.metadata.applied === true) {
-			// Newly created file: write & broadcast like before, then open canvas
-			try {
-				await updateAndBroadcast({
-					workspace_id: ai_chat_HARDCODED_ORG_ID,
-					project_id: ai_chat_HARDCODED_PROJECT_ID,
-					page_id: pageId,
-					text_content: args.content,
-				});
-			} catch (e) {
-				console.error("Failed to broadcast page creation/update:", e);
-			}
-			global_event_ai_chat_open_canvas.dispatch({ pageId });
-			return;
-		}
-
 		// Existing page preview: open diff mode, seed modified with proposed content
-		global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedSeed: args.content });
+		global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedSeed: args.content, threadId });
 	});
 
 	useEffect(() => {
@@ -444,7 +421,7 @@ function WritePageToolUiComponent(props: ToolCallContentPartProps<WritePageToolU
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-write-page-tool">
-			<ToolHeader type="tool-write_page" state={toolState} />
+			<ToolHeader type="tool-write_page" state={mapStatusToToolState(status)} />
 			<ToolContent>
 				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
 					<ToolMetaHeader metadata={result?.metadata || {}} />

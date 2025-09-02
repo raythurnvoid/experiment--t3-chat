@@ -1,6 +1,6 @@
 import { ai_chat_HARDCODED_PROJECT_ID, ai_chat_HARDCODED_ORG_ID } from "../src/lib/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction } from "./_generated/server";
+import { query, mutation, httpAction, internalMutation } from "./_generated/server";
 import { api } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
@@ -35,6 +35,7 @@ import {
 	ai_tool_create_write_page,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
+import { Result } from "../src/lib/errors-as-values-utils.ts";
 
 /**
  * This function exists only becase is not possible to define a type specific enough to make ts happy when using
@@ -332,7 +333,13 @@ export const chat = httpAction(async (ctx, request) => {
 						.concat(...body.messages),
 				);
 			} else {
-				messages = convertToModelMessages(body.messages);
+				return new Response(JSON.stringify(Result({ _nay: { message: "Thread ID is required" } })), {
+					status: 400,
+					headers: {
+						...server_convex_headers_cors(),
+						"Content-Type": "application/json",
+					},
+				});
 			}
 		} while (false);
 
@@ -383,12 +390,12 @@ export const chat = httpAction(async (ctx, request) => {
 								return { requested: true };
 							},
 						}),
-						read_page: ai_tool_create_read_page(ctx),
+						read_page: ai_tool_create_read_page(ctx, { thread_id: threadId ?? "" }),
 						list_pages: ai_tool_create_list_pages(ctx),
 						glob_pages: ai_tool_create_glob_pages(ctx),
-						grep_pages: ai_tool_create_grep_pages(ctx),
-						text_search_pages: ai_tool_create_text_search_pages(ctx),
-						write_page: ai_tool_create_write_page(ctx),
+						grep_pages: ai_tool_create_grep_pages(ctx, { thread_id: threadId ?? "" }),
+						text_search_pages: ai_tool_create_text_search_pages(ctx, { thread_id: threadId ?? "" }),
+						write_page: ai_tool_create_write_page(ctx, { thread_id: threadId ?? "" }),
 					},
 					experimental_transform: smoothStream({
 						delayInMs: 100,
@@ -601,4 +608,68 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			status: 500,
 		});
 	}
+});
+
+export const upsert_ai_pending_edit = internalMutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		thread_id: v.string(),
+		page_id: v.string(),
+		base_content: v.string(),
+		modified_content: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const now = Date.now();
+		const existing = await ctx.db
+			.query("ai_chat_pending_edits")
+			.withIndex("by_user_thread_page", (q) =>
+				q.eq("user_id", user.id).eq("thread_id", args.thread_id).eq("page_id", args.page_id),
+			)
+			.first();
+
+		if (!existing) {
+			await ctx.db.insert("ai_chat_pending_edits", {
+				workspace_id: args.workspace_id,
+				project_id: args.project_id,
+				user_id: user.id,
+				thread_id: args.thread_id,
+				page_id: args.page_id,
+				base_content: args.base_content,
+				modified_content: args.modified_content,
+				updated_at: now,
+			});
+		} else {
+			await ctx.db.patch(existing._id, {
+				modified_content: args.modified_content,
+				updated_at: now,
+			});
+		}
+		return null;
+	},
+});
+
+export const get_ai_pending_edit = query({
+	args: {
+		page_id: v.string(),
+		thread_id: v.string(),
+	},
+	returns: v.union(v.object({ page_id: v.string(), base_content: v.string(), modified_content: v.string() }), v.null()),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const pending = await ctx.db
+			.query("ai_chat_pending_edits")
+			.withIndex("by_user_thread_page", (q) =>
+				q.eq("user_id", user.id).eq("thread_id", args.thread_id).eq("page_id", args.page_id),
+			)
+			.first();
+		if (!pending) return null;
+		return {
+			page_id: pending.page_id,
+			base_content: pending.base_content,
+			modified_content: pending.modified_content,
+		};
+	},
 });

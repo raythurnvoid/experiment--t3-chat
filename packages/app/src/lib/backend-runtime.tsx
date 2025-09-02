@@ -81,8 +81,14 @@ export const useBackendRuntime = () => {
 				// This will prevent TS to break because of self-referencing `runtime`
 				const runtime_local = runtime as AssistantRuntime;
 
-				const threadId = runtime_local.threads.mainItem.getState().remoteId;
-				const messages = threadId ? runtime_local.threads.main.getState().messages : [];
+				// Ensure the thread exists before sending so we always have a threadId
+				let threadId = runtime_local.threads.mainItem.getState().remoteId;
+				if (!threadId) {
+					const init = await runtime_local.threads.mainItem.initialize();
+					threadId = init.remoteId;
+				}
+
+				const messages = runtime_local.threads.main.getState().messages;
 
 				const lastMessage = messages
 					// Ignore the last 2 items because they are the user message and an optimistic assistant response

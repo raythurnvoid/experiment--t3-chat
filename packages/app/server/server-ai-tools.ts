@@ -12,6 +12,7 @@ import {
 } from "./server-utils.ts";
 import { minimatch } from "minimatch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "./server-utils.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 
 // TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
@@ -108,7 +109,7 @@ async function list_dir(
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
  */
-export function ai_tool_create_read_page(ctx: ActionCtx) {
+export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Reads a page from the DB. You can access any page directly by using this tool.
@@ -132,6 +133,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
 
 			const pageExists = await ctx.runQuery(internal.ai_docs_temp.page_exists_by_path, {
@@ -174,6 +176,8 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 				path: normalizedPath,
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				user_id: user.id,
+				thread_id: tool_execution_ctx.thread_id,
 			});
 
 			if (!textContent) {
@@ -227,7 +231,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx) {
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
-export function ai_tool_create_list_pages(ctx: ActionCtx) {
+export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Lists descendants pages in a given path. \
@@ -376,7 +380,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
  *
  * Search pages by applying a regex pattern against page name + text_content
  */
-export function ai_tool_create_grep_pages(ctx: ActionCtx) {
+export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
       Fast content search over pages using regular expressions.\
@@ -409,6 +413,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const searchPath = server_path_normalize(args.path || "/");
 
 			// Compile regex
@@ -438,6 +443,8 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx) {
 					path: item.path,
 					workspace_id: ai_chat_HARDCODED_ORG_ID,
 					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					user_id: user.id,
+					thread_id: tool_execution_ctx.thread_id,
 				});
 
 				const pageName = server_path_name_of(item.path);
@@ -494,7 +501,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx) {
 	});
 }
 
-export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
+export function ai_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Ultra-fast text search over page content using the database search index.\
@@ -512,11 +519,14 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const res = await ctx.runQuery(internal.ai_docs_temp.text_search_pages, {
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
 				query: args.query,
 				limit: args.limit ?? 20,
+				user_id: user.id,
+				thread_id: tool_execution_ctx.thread_id,
 			});
 
 			if (!res.items.length) {
@@ -542,29 +552,12 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx) {
 	});
 }
 
-export type server_ai_tools_write_page_args = {
-	path: string;
-	content: string;
-};
-
-export type server_ai_tools_write_page_result = {
-	title: string;
-	output: string;
-	metadata: {
-		exists: boolean;
-		applied: boolean;
-		preview: string;
-		diff?: string;
-		page_id?: string;
-	};
-};
-
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`
  *
  * Tool for proposing page content with preview diff (no direct apply)
  */
-export function ai_tool_create_write_page(ctx: ActionCtx) {
+export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Writes a page in the system.
@@ -588,7 +581,8 @@ export function ai_tool_create_write_page(ctx: ActionCtx) {
 			content: z.string().describe("The GitHub Flavored Markdown content to write to the page"),
 		}),
 
-		execute: async (args: server_ai_tools_write_page_args): Promise<server_ai_tools_write_page_result> => {
+		execute: async (args) => {
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const path = server_path_normalize(args.path);
 			if (!path.startsWith("/") || path === "/") {
 				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
@@ -607,33 +601,42 @@ export function ai_tool_create_write_page(ctx: ActionCtx) {
 						path,
 						workspace_id: ai_chat_HARDCODED_ORG_ID,
 						project_id: ai_chat_HARDCODED_PROJECT_ID,
+						user_id: user.id,
+						thread_id: tool_execution_ctx.thread_id,
 					})) ?? "")
 				: "";
 
 			const newText = args.content;
 			const diff = createTwoFilesPatch(path, path, oldText, newText);
-			const preview = newText.slice(0, 160);
-
-			let applied = false;
-			let output = "Preview overwrite";
 
 			if (!pageId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
 					workspace_id: ai_chat_HARDCODED_ORG_ID,
 					project_id: ai_chat_HARDCODED_PROJECT_ID,
 					path,
-					text_content: newText,
+					user_id: user.id,
+					thread_id: tool_execution_ctx.thread_id,
 				});
-				exists = false; // reflect that it did not exist prior to this operation
+				exists = false;
 				pageId = created.page_id;
-				applied = true;
-				output = "Created page";
 			}
 
+			if (!pageId) {
+				throw new Error("Internal error: pageId not resolved after page creation");
+			}
+
+			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				thread_id: tool_execution_ctx.thread_id,
+				page_id: pageId,
+				base_content: oldText,
+				modified_content: newText,
+			});
+
 			return {
-				title: path,
-				output,
-				metadata: { exists, preview, diff, page_id: pageId, applied },
+				output: exists ? "Page overwritten" : "New page created",
+				metadata: { page_id: pageId, exists, path, diff },
 			};
 		},
 	});

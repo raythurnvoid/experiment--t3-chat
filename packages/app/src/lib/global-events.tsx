@@ -59,8 +59,9 @@ export function useGlobalEvent<Handler extends HandlerFn>(listenFn: (handler: Ha
 // Extended payload supports opening in diff mode with an optional modified seed
 type global_event_ai_chat_open_canvas_Payload = {
 	pageId: string;
-	mode?: "diff" | "editor";
+	mode: "diff" | "editor";
 	modifiedSeed?: string;
+	threadId: string;
 };
 
 export namespace global_event_ai_chat_open_canvas {

@@ -13,6 +13,7 @@ import { useLiveState, useRenderPromise } from "../../hooks/utils-hooks.ts";
 
 export function Canvas() {
 	const [editorPageId, setEditorPageId] = useLiveState<string | null>(null);
+	const [threadId, setThreadId] = useLiveState<string | undefined>(undefined);
 	const editor = useRef<PageRichTextEditor_Ref | null>(null);
 	const convex = useConvex();
 
@@ -34,6 +35,7 @@ export function Canvas() {
 			}
 
 			setEditorPageId(payload.pageId);
+			setThreadId(payload.threadId);
 			await renderPromise();
 
 			if (!editor.current) {
@@ -71,7 +73,7 @@ export function Canvas() {
 	if (editorPageId.current) {
 		return (
 			<div className="Canvas h-full">
-				<PageRichTextEditor ref={editor} pageId={editorPageId.current} />
+				<PageRichTextEditor ref={editor} pageId={editorPageId.current} threadId={threadId.current} />
 			</div>
 		);
 	}

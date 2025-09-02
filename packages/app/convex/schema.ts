@@ -230,6 +230,23 @@ const app_convex_schema = defineSchema({
 			filterFields: ["workspace_id", "project_id"],
 		}),
 
+	/**
+	 * Pending edits overlay used to stage AI-written content until user saves.
+	 * Keys by user/thread/page to allow parallel staging across chat threads.
+	 */
+	ai_chat_pending_edits: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		user_id: v.string(),
+		thread_id: v.string(),
+		page_id: v.string(),
+		base_content: v.string(),
+		modified_content: v.string(),
+		updated_at: v.number(),
+	})
+		.index("by_user_thread_page", ["user_id", "thread_id", "page_id"])
+		.index("by_page", ["page_id"]),
+
 	page_updates_richtext_broadcast: defineTable({
 		/** Workspace ID extracted from roomId */
 		workspace_id: v.string(),

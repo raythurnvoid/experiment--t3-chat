@@ -1,6 +1,7 @@
 import "./monaco-markdown-diff-editor.css";
 import "../../lib/app-monaco-config.ts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useImperativeHandle } from "react";
+import type { RefObject } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { editor as M } from "monaco-editor";
@@ -112,15 +113,21 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 	}
 }
 
+export interface MonacoMarkdownDiffEditor_Ref {
+	setModifiedContent: (value: string) => void;
+}
+
 export interface MonacoMarkdownDiffEditor_Props {
+	ref?: RefObject<MonacoMarkdownDiffEditor_Ref | undefined>;
 	className?: string;
-	docId: string;
+	pageId: string;
+	threadId?: string;
 	modifiedInitialValue?: string;
 	onExit: () => void;
 }
 
 export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) {
-	const { className, docId, modifiedInitialValue, onExit } = props;
+	const { ref, className, pageId, threadId, modifiedInitialValue, onExit } = props;
 	const convex = useConvex();
 	const applyPatchToPageAndBroadcast = useMutation(api.ai_docs_temp.apply_patch_to_page_and_broadcast);
 
@@ -139,6 +146,26 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 
 	// Content widgets for per-change actions (accept/discard) keyed by change index
 	const contentWidgetsRef = useRef<Map<number, monaco.editor.IContentWidget>>(new Map());
+
+	// Expose imperative handle to update only the modified editor content
+	useImperativeHandle(
+		ref,
+		() => ({
+			setModifiedContent: (value: string) => {
+				if (!diffEditor) return;
+				const modifiedEditor = diffEditor.getModifiedEditor();
+				const modifiedModel = modifiedEditor.getModel();
+				if (!modifiedModel) return;
+				modifiedEditor.pushUndoStop();
+				modifiedEditor.executeEdits("MonacoMarkdownDiffEditor.setModified", [
+					{ range: modifiedModel.getFullModelRange(), text: value, forceMoveMarkers: false },
+				]);
+				modifiedEditor.pushUndoStop();
+				modifiedContentRef.current = value;
+			},
+		}),
+		[diffEditor],
+	);
 
 	// Class moved to module scope above
 
@@ -321,7 +348,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
 			workspace_id: ai_chat_HARDCODED_ORG_ID,
 			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: docId,
+			page_id: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -340,7 +367,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: docId,
+				page_id: pageId,
 			});
 			if (typeof fetchedValue === "string") {
 				setInitialValue((currentValue) => currentValue ?? fetchedValue);
@@ -350,7 +377,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		return () => {
 			textContentWatchRef.current?.unsubscribe();
 		};
-	}, [convex, docId]);
+	}, [convex, pageId]);
 
 	// Apply initialValue once editor is mounted, then unsubscribe the watch
 	useEffect(() => {
@@ -360,19 +387,24 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 		const baseModel = baseEditor?.getModel();
 		const modifiedModel = modifiedEditor?.getModel();
 		if (!baseModel || !modifiedModel) return;
-		const seed = typeof initialValue === "string" ? initialValue : "";
-		baseModel.setValue(seed);
-		modifiedModel.setValue(modifiedInitialValue ?? seed);
+
 		// Force consistent EOL across both models
 		baseModel.setEOL(monaco.editor.EndOfLineSequence.LF);
 		modifiedModel.setEOL(monaco.editor.EndOfLineSequence.LF);
-		// Seed local value for modified copy
-		modifiedContentRef.current = modifiedInitialValue ?? seed;
+
+		const seed = typeof initialValue === "string" ? initialValue : "";
+
 		// Preserve the original content for later patch creation
 		originalSeedRef.current = seed;
+		baseModel.setValue(seed);
+
+		// Seed local value for modified copy
+		modifiedContentRef.current = modifiedInitialValue ?? seed;
+		modifiedModel.setValue(modifiedContentRef.current);
+
 		// Unsubscribe the text watcher now that we seeded once
 		textContentWatchRef.current?.unsubscribe();
-	}, [diffEditor, initialValue, modifiedInitialValue]);
+	}, [diffEditor, initialValue]);
 
 	// Track modified editor content and listen for diff updates
 	useEffect(
@@ -562,8 +594,9 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			await applyPatchToPageAndBroadcast({
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: docId,
+				page_id: pageId,
 				patch: patchText,
+				thread_id: threadId,
 			});
 			onExit();
 		} catch (err) {

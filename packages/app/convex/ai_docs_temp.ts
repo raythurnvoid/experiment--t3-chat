@@ -845,6 +845,7 @@ export const apply_patch_to_page_and_broadcast = mutation({
 		project_id: v.string(),
 		page_id: v.string(),
 		patch: v.string(),
+		thread_id: v.optional(v.string()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -874,6 +875,22 @@ export const apply_patch_to_page_and_broadcast = mutation({
 			updated_by: user.name,
 			updated_at: Date.now(),
 		});
+
+		const threadId = args.thread_id;
+
+		// If provided, clear the pending edit for this user/thread so future reads use the actual content
+		if (threadId) {
+			const existing = await ctx.db
+				.query("ai_chat_pending_edits")
+				.withIndex("by_user_thread_page", (q) =>
+					q.eq("user_id", user.id).eq("thread_id", threadId).eq("page_id", args.page_id),
+				)
+				.first();
+
+			if (existing) {
+				await ctx.db.delete(existing._id);
+			}
+		}
 
 		await Promise.all([
 			ctx.db.insert("page_updates_richtext_broadcast", {
@@ -1007,7 +1024,13 @@ export const page_exists_by_path = internalQuery({
 });
 
 export const get_page_text_content_by_path = internalQuery({
-	args: { workspace_id: v.string(), project_id: v.string(), path: v.string() },
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		path: v.string(),
+		user_id: v.string(),
+		thread_id: v.string(),
+	},
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
 		const docId = await resolve_id_from_path(ctx, {
@@ -1024,6 +1047,19 @@ export const get_page_text_content_by_path = internalQuery({
 			.first();
 
 		if (!page) return null;
+
+		{
+			const overlay = await ctx.db
+				.query("ai_chat_pending_edits")
+				.withIndex("by_user_thread_page", (q) =>
+					q
+						.eq("user_id", args.user_id as string)
+						.eq("thread_id", args.thread_id as string)
+						.eq("page_id", page.page_id),
+				)
+				.first();
+			if (overlay) return overlay.modified_content;
+		}
 
 		return page.text_content ?? null;
 	},
@@ -1051,6 +1087,8 @@ export const text_search_pages = internalQuery({
 		project_id: v.string(),
 		query: v.string(),
 		limit: v.number(),
+		user_id: v.string(),
+		thread_id: v.string(),
 	},
 	returns: v.object({
 		items: v.array(
@@ -1075,7 +1113,13 @@ export const text_search_pages = internalQuery({
 					project_id: args.project_id,
 					page_id: page.page_id,
 				});
-				const preview = page.text_content.slice(0, 160);
+				const pending = await ctx.db
+					.query("ai_chat_pending_edits")
+					.withIndex("by_user_thread_page", (q) =>
+						q.eq("user_id", args.user_id).eq("thread_id", args.thread_id).eq("page_id", page.page_id),
+					)
+					.first();
+				const preview = (pending?.modified_content ?? page.text_content).slice(0, 160);
 				return { path, preview };
 			}),
 		);
@@ -1124,7 +1168,8 @@ export const create_page_by_path = internalMutation({
 		workspace_id: v.string(),
 		project_id: v.string(),
 		path: v.string(),
-		text_content: v.string(),
+		user_id: v.string(),
+		thread_id: v.string(),
 	},
 	returns: v.object({ page_id: v.string() }),
 	handler: async (ctx, args) => {
@@ -1150,7 +1195,6 @@ export const create_page_by_path = internalMutation({
 
 			if (!existing) {
 				// Create missing segment
-				const isLeaf = i === segments.length - 1;
 				const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 				await create_page_in_db(ctx, {
 					workspace_id,
@@ -1158,7 +1202,7 @@ export const create_page_by_path = internalMutation({
 					page_id,
 					parent_id: currentParent,
 					name: name,
-					text_content: isLeaf ? args.text_content : "",
+					text_content: "",
 				});
 				currentParent = page_id;
 				lastPageId = page_id;

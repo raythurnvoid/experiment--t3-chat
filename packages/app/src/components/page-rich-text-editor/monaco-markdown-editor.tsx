@@ -14,7 +14,7 @@ import type { Awareness } from "y-protocols/awareness";
 import { useSelf, useOthers } from "@liveblocks/react/suspense";
 
 export interface MonacoMarkdownEditor_Props {
-	docId: string;
+	pageId: string;
 	className?: string;
 }
 
@@ -22,7 +22,7 @@ export interface MonacoMarkdownEditor_Props {
  * This component is inspired from Liveblocks example: liveblocks/examples/nextjs-yjs-monaco/src/components/CollaborativeEditor.tsx
  */
 export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
-	const { docId, className } = props;
+	const { pageId, className } = props;
 	const room = useRoom();
 	const convex = useConvex();
 	const selfUser = useSelf();
@@ -57,7 +57,7 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		console.log("editor");
 
 		const yDoc = yProvider.getYDoc();
-		const yText = yDoc.getText(`markdown:${docId}`);
+		const yText = yDoc.getText(`markdown:${pageId}`);
 
 		const model = editor.getModel();
 		const awareness = yProvider.awareness as unknown as Awareness;
@@ -70,14 +70,14 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		return () => {
 			binding?.destroy();
 		};
-	}, [editor, yProvider, docId]);
+	}, [editor, yProvider, pageId]);
 
 	// Listen for updates once
 	useEffect(() => {
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
 			workspace_id: ai_chat_HARDCODED_ORG_ID,
 			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: docId,
+			page_id: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -97,7 +97,7 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		return () => {
 			textContentWatchRef.current?.unsubscribe();
 		};
-	}, [convex, docId, initialValue]);
+	}, [convex, pageId, initialValue]);
 
 	// After editor mounts, fetch latest value once and set initialValue if still undefined
 	useEffect(() => {
@@ -106,7 +106,7 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: docId,
+				page_id: pageId,
 			});
 
 			// Set the initial value if it's not already set
@@ -115,7 +115,7 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 			}
 		})();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [convex, docId]);
+	}, [convex, pageId]);
 
 	// Apply initialValue once editor is mounted, then unsubscribe the watch
 	useEffect(() => {
@@ -123,13 +123,13 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		const yDoc = yProvider.getYDoc();
 		const seed = typeof initialValue === "string" ? initialValue : "";
 		if (seed.length > 0) {
-			const yText = yDoc.getText(`markdown:${docId}`);
+			const yText = yDoc.getText(`markdown:${pageId}`);
 			yText.delete(0, yText.length);
 			yText.insert(0, seed);
 		}
 		// Unsubscribe the text watcher now that we seeded once
 		textContentWatchRef.current?.unsubscribe();
-	}, [editor, isYjsReady, initialValue, yProvider, docId]);
+	}, [editor, isYjsReady, initialValue, yProvider, pageId]);
 
 	// Listen for Convex markdown broadcasts
 	useEffect(() => {
@@ -137,7 +137,7 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_markdown_broadcast_latest, {
 			workspace_id: ai_chat_HARDCODED_ORG_ID,
 			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_id: docId,
+			page_id: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
@@ -158,7 +158,7 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		return () => {
 			unsubscribe();
 		};
-	}, [convex, editor, docId]);
+	}, [convex, editor, pageId]);
 
 	// On Monaco content changes, update Convex and broadcast to richtext
 	useEffect(() => {
@@ -169,14 +169,14 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 			await updateAndBroadcastRichtext({
 				workspace_id: ai_chat_HARDCODED_ORG_ID,
 				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: docId,
+				page_id: pageId,
 				text_content: value,
 			});
 		});
 		return () => {
 			disposable.dispose();
 		};
-	}, [editor, updateAndBroadcastRichtext, docId]);
+	}, [editor, updateAndBroadcastRichtext, pageId]);
 
 	const handleOnMount = useCallback((e: M.IStandaloneCodeEditor) => {
 		setEditor(e);

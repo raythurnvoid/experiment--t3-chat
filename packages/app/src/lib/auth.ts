@@ -36,7 +36,7 @@ export function auth_get_token() {
 }
 
 export function auth_get_is_authenticated() {
-	return auth_token_manager.promise.then((manager) => manager.is_authenticated);
+	return auth_token_manager.promise.then((manager) => manager.is_authenticated());
 }
 
 export function auth_set_token_manager(retriever: AuthTokenManager) {

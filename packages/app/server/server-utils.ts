@@ -48,7 +48,8 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 			color: randomColor, // Random color for now
 		};
 	} else {
-		const randomId = crypto.randomUUID();
+		// TODO: this should be randomized once per session
+		const randomId = "randomId";
 
 		return {
 			isAnonymous: true,
