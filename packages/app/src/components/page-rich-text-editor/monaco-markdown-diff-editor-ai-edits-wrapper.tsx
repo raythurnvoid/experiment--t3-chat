@@ -1,13 +1,12 @@
-import { useEffect, useRef, useImperativeHandle } from "react";
+import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { MonacoMarkdownDiffEditor, type MonacoMarkdownDiffEditor_Ref } from "./monaco-markdown-diff-editor.tsx";
-import type { RefObject } from "react";
 import { cn } from "../../lib/utils.ts";
 import { useLiveState } from "../../hooks/utils-hooks.ts";
 
 export interface MonacoMarkdownDiffEditorAiEditsWrapper_Props {
-	ref?: RefObject<MonacoMarkdownDiffEditor_Ref | undefined>;
+	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
 	id?: string;
 	className?: string;
 	pageId: string;
@@ -19,20 +18,10 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 	const { ref, id, className, pageId, threadId, onExit } = props;
 	const convex = useConvex();
 
-	const diffRef = useRef<MonacoMarkdownDiffEditor_Ref | undefined>(undefined);
-
-	// Forward imperative handle to parent via useImperativeHandle
-	useImperativeHandle(
-		ref,
-		() => ({
-			setModifiedContent: (value: string) => {
-				diffRef.current?.setModifiedContent(value);
-			},
-		}),
-		[],
-	);
-
 	const [initialModified, setInitialModified] = useLiveState<string | undefined>(undefined);
+
+	const diffEditorRef = useRef<MonacoMarkdownDiffEditor_Ref>(null);
+	useImperativeHandle(ref, () => diffEditorRef.current!, []);
 
 	// Watch pending edits only if we have a threadId
 	useEffect(() => {
@@ -48,7 +37,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 
 				// If the modified content was already set, update it in the editor
 				if (initialModified.current) {
-					diffRef.current?.setModifiedContent(modified_content ?? "");
+					diffEditorRef.current?.setModifiedContent(modified_content ?? "");
 				} else {
 					setInitialModified(modified_content);
 				}
@@ -63,7 +52,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 		<div id={id} className={cn("MonacoMarkdownDiffEditorAiEditsWrapper h-full w-full", className)}>
 			{initialModified.current && (
 				<MonacoMarkdownDiffEditor
-					ref={diffRef}
+					ref={diffEditorRef}
 					className={className}
 					pageId={pageId}
 					threadId={threadId}

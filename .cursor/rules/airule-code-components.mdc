@@ -6,7 +6,7 @@ alwaysApply: false
 
 React Components Guidelines
 
-# Component Declaration Rules
+# Component Declaration
 
 ## Props Parameter Pattern
 
@@ -45,6 +45,11 @@ When destructuring component props, follow this exact order for named props, the
 
 `...rest` must always be the final destructured item.
 
+## Props Argument and Spread
+
+- The component function must accept a single argument named `props`.
+- Destructure at the top of the function; keep `...rest` last and spread it to the root DOM element when appropriate.
+
 ### Also applies to `_Props` type declarations
 
 Use the same ordering when declaring fields in your `ComponentName_Props` interface. This applies to custom fields you declare; inherited DOM props from `extends React.ComponentProps<...>` are not re-ordered. Always put `children` last.
@@ -53,7 +58,7 @@ The comments should not be included in your generated code, they are only for do
 
 ```tsx
 export type Example_Props = React.ComponentProps<"div"> & {
-	ref?: React.RefObject<HTMLDivElement>;
+	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
 	// Other props
@@ -71,7 +76,7 @@ export type Example_Props = React.ComponentProps<"div"> & {
 
 ```tsx
 export type Toolbar_Props = React.ComponentProps<"div"> & {
-	ref?: React.RefObject<HTMLDivElement>;
+	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
 	variant?: "default" | "compact"; // other prop
@@ -98,248 +103,64 @@ export function Toolbar(props: Toolbar_Props) {
 }
 ```
 
-# Understanding Component Styles First
+## No Barrel Exports
 
-## Critical: Read Component Styles Before Custom Solutions
+- Do not create index.\* barrel files (index.ts, index.tsx, index.js).
+- Always import from concrete files and export from the component file directly.
+- Example: import from "./components/ui/button.tsx" or export from "./button.tsx"; do not add a directory-level index.
+- Barrel files are bad for intellisense and code completion.
 
-**MANDATORY**: When working with component libraries (especially shadcn/ui), always understand the existing component styles before implementing custom solutions.
+# Component Styles
 
-### Process for Styling Issues:
+- Define all classes in a `CLASS_NAMES` constant. Classes are prefixed with the main component name and use kebab-case for words. Always create a root class `CLASS_NAMES.root` whose value equals the component name (even if no styles are needed) so the component is identifiable in HTML.
 
-1. **Inspect the component's default CSS** - Understand what margins, padding, positioning the component uses by default
-2. **Identify specific style properties** that need adjustment
-3. **Override specific properties** using className props rather than creating custom solutions
-4. **Only resort to custom positioning/styling** if working with existing styles doesn't achieve the desired result
-
-### ✅ Correct Approach: Work with Existing Styles
-
-```tsx
-// Example: Fixing sidebar indentation issues
-// Instead of custom absolute positioning, override the component's default margins/padding
-<SidebarMenuSub className="mx-0 ml-3.5 px-0 pl-2.5">
-	{/* This works with the component's existing structure */}
-</SidebarMenuSub>
+```ts
+const CLASS_NAMES = {
+	root: "Thread",
+	header: "Thread-header",
+	actions: "Thread-actions",
+} as const;
 ```
 
-### ❌ Avoid: Custom Solutions First
+- Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer class names from `CLASS_NAMES` and follow the CSS rules in [airule-code-css.mdc](mdc:.cursor/rules/airule-code-css.mdc).
 
-```tsx
-// Instead of immediately jumping to custom absolute positioning:
-<SidebarMenuSubItem className="relative">
-  <button className="absolute right-1 top-1/2 -translate-y-1/2">
-    {/* Custom positioning that fights against component defaults */}
-  </button>
-</SidebarMenuSubItem>
+- For multiple states like variants and sizes, define string constants that map to prefixed classes, and compose them with Tailwind via `cn()`.
 
-// First try working with the component's existing styles:
-<SidebarMenuSub className="mx-0 ml-3.5 px-0 pl-2.5">
-  {/* Much cleaner and more maintainable */}
-</SidebarMenuSub>
-```
+```ts
+const BUTTON_VARIANTS = {
+	default: "Button-variant-default",
+	destructive: "Button-variant-destructive",
+	outline: "Button-variant-outline",
+	ghost: "Button-variant-ghost",
+} as const;
 
-### Why This Matters:
+const BUTTON_SIZES = {
+	default: "Button-size-default",
+	sm: "Button-size-sm",
+	lg: "Button-size-lg",
+	icon: "Button-size-icon",
+} as const;
 
-- **Maintainability**: Working with component defaults is more future-proof
-- **Consistency**: Maintains the design system's intended behavior
-- **Performance**: Avoids complex CSS that fights against existing styles
-- **Debugging**: Easier to understand and modify later
-- **Component Updates**: Less likely to break when components are updated
+type Variant = keyof typeof BUTTON_VARIANTS | null; // allow null to opt-out
+type Size = keyof typeof BUTTON_SIZES;
 
-### Investigation Steps:
-
-1. **Use browser DevTools** to inspect the component's applied styles
-2. **Check the component's source code** to understand its structure
-3. **Look for existing className props** that allow style customization
-4. **Test with specific margin/padding overrides** before custom solutions
-5. **Document the solution** for future reference
-
-# No Barrel Exports - Index Files Are Banned
-
-**IMPORTANT**: Barrel exports via index files (`index.ts`, `index.tsx`, `index.js`, etc.) are banned in this repository.
-
-### ❌ Do Not Create:
-
-- `src/components/ui/index.ts`
-- `src/hooks/index.ts`
-- `src/utils/index.ts`
-- Any `index.*` files in component directories
-
-### ✅ Instead:
-
-- Import directly from specific files: `import { Button } from "./components/ui/button"`
-- Export components from their own files: `export { Button } from "./button"`
-- Use explicit file paths in imports
-
-### Why Barrel Exports Are Banned:
-
-- Makes imports less explicit and harder to trace
-- Creates unnecessary abstraction layers
-- Can lead to circular dependency issues
-- Makes refactoring and moving files more difficult
-- Obscures the actual file structure
-- Prevents effective tree-shaking in bundlers
-
-# Naming Conventions
-
-## Props Naming - Critical Distinction
-
-**CRITICAL**: Props naming depends on whether they will be spread onto DOM elements or not.
-
-### Props for DOM Elements (camelCase Required)
-
-**MANDATORY**: Props that will be spread onto DOM elements (`{...props}`) MUST use camelCase to match React/DOM conventions.
-
-```tsx
-// ✅ CORRECT: Props that can be spread onto DOM elements
-type Button_Props = React.ComponentProps<"button"> & {
-	variant?: "default" | "destructive" | "outline";
-	size?: "default" | "sm" | "lg";
-	className?: string;
-	onClick?: () => void;
-	disabled?: boolean;
-	children?: React.ReactNode;
-};
-
-function Button(props: Button_Props) {
+function Button(props: { className?: string; variant?: Variant; size?: Size } & React.ComponentProps<"button">) {
 	const { className, variant = "default", size = "default", ...rest } = props;
-
 	return (
 		<button
-			className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)}
-			{...rest} // ✅ Works because props use camelCase
+			className={cn(
+				CLASS_NAMES.root,
+				variant && BUTTON_VARIANTS[variant],
+				BUTTON_SIZES[size],
+				className,
+			)}
+			{...rest}
 		/>
 	);
 }
 ```
 
-### Custom Component Props (camelCase Required)
-
-For props that are specific to your component and will NOT be spread onto DOM elements, use camelCase for consistency:
-
-```tsx
-// ✅ CORRECT: Custom component props (not spread onto DOM)
-type SearchFilter_Props = {
-	searchQuery: string; // Custom prop - camelCase
-	onSearchChange: (query: string) => void; // Custom prop - camelCase
-	showArchived: boolean; // Custom prop - camelCase
-	className?: string; // Will be manually assigned - camelCase
-};
-
-function SearchFilter(props: SearchFilter_Props) {
-	const { searchQuery, onSearchChange, showArchived, className } = props;
-
-	return (
-		<div className={cn("SearchFilter", className)}>
-			<input
-				value={searchQuery}
-				onChange={(e) => onSearchChange(e.target.value)} // Used manually, not spread
-			/>
-		</div>
-	);
-}
-```
-
-### Props Destructuring Pattern
-
-When destructuring props that extend DOM element props, separate the custom props from the spreadable props:
-
-```tsx
-type CustomButton_Props = React.ComponentProps<"button"> & {
-	customBehavior?: boolean; // Custom prop - camelCase
-	specialMode?: "normal" | "enhanced"; // Custom prop - camelCase
-};
-
-function CustomButton(props: CustomButton_Props) {
-	const { customBehavior, specialMode, className, ...rest } = props;
-
-	// Local variables use camelCase
-	const enhancedClass = specialMode === "enhanced" ? "CustomButton-enhanced" : "";
-
-	return (
-		<button
-			className={cn("CustomButton", enhancedClass, className)}
-			{...rest} // ✅ Safe to spread DOM props
-		/>
-	);
-}
-```
-
-## CamelCase for Local Symbols
-
-**MANDATORY**: Use camelCase for ALL local symbols within React components, including:
-
-- State variables and their setters
-- Local functions and variables
-- Hook parameters and return values
-- Internal component identifiers
-- Object properties and method parameters
-
-### ✅ Correct Local Symbol Usage:
-
-```tsx
-function SearchComponent(props: SearchComponent_Props) {
-	const { initialQuery } = props;
-	const [searchQuery, setSearchQuery] = useState(initialQuery || "");
-	const [isLoading, setIsLoading] = useState(false);
-
-	const handleSearchChange = useCallback((value: string) => {
-		setSearchQuery(value);
-	}, []);
-
-	const filteredResults = useMemo(() => {
-		return results.filter((item) => item.title.toLowerCase().includes(searchQuery.toLowerCase()));
-	}, [results, searchQuery]);
-
-	return (
-		<div className="SearchComponent">
-			<input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-		</div>
-	);
-}
-```
-
-### External API Consistency:
-
-When interfacing with external APIs or libraries that use camelCase, keep their naming as-is and use camelCase for your local transformations:
-
-```tsx
-function UserProfile(props: UserProfile_Props) {
-	const { userId } = props;
-	// External API uses camelCase - keep as-is
-	const { firstName, lastName } = useUser(userId);
-
-	// Local transformations use camelCase
-	const [displayName, setDisplayName] = useState("");
-	const [isEditing, setIsEditing] = useState(false);
-
-	const updateDisplayName = useCallback(() => {
-		setDisplayName(`${firstName} ${lastName}`);
-	}, [firstName, lastName]);
-```
-
-## Component Props Type Naming
-
-When defining Props types for React components, use the following naming format:
-
-**Format**: `ComponentName_Props`
-
-### ✅ Correct Usage:
-
-```tsx
-// For a component named ThemeProvider
-export type ThemeProvider_Props = {
-	children: ReactNode;
-	className?: string; // camelCase for DOM compatibility
-	custom_theme?: string; // snake_case for custom prop
-};
-
-// For a component named MessageComposer
-export type MessageComposer_Props = React.ComponentProps<"div"> & {
-	onSubmit: (message: string) => void; // camelCase - could be spread
-	placeholder?: string; // camelCase - standard DOM attribute
-	custom_validation?: boolean; // snake_case - custom prop
-};
-```
+- Prefer overriding specific properties via `className` over custom positioning. Fall back to custom CSS only when necessary.
 
 # React 19 Context Patterns
 
@@ -392,31 +213,16 @@ function SearchContextProvider(props: { children: ReactNode }) {
 }
 ```
 
-# React 19 Ref Patterns and Modern Ref Handling
+# Refs and useImperativeHandle
 
-## Ref Types in React 19 - No Breaking Changes
+## Ref as a regular prop
 
-**IMPORTANT**: `React.MutableRefObject<T>` is **NOT deprecated** in React 19. This type is still the standard return type for `useRef` and remains fully supported.
-
-```tsx
-// ✅ CORRECT: MutableRefObject is still the standard type in React 19
-type TreeItemComponent_Props = {
-	treeRef: React.MutableRefObject<TreeRef | null>;
-};
-
-const treeRef = useRef<TreeRef | null>(null); // Returns MutableRefObject<TreeRef | null>
-```
-
-## What Actually Changed in React 19
-
-### 1. Ref as a regular prop (React 19)
-
-**NEW in React 19**: You can pass `ref` as a regular prop without `forwardRef`:
+You must pass `ref` as a regular prop without `forwardRef`:
 
 ```tsx
 // ✅ React 19: ref as regular prop (new way)
 interface ButtonProps {
-	ref?: React.RefObject<HTMLButtonElement>;
+	ref?: Ref<HTMLButtonElement>;
 	children: React.ReactNode;
 }
 
@@ -431,36 +237,7 @@ function Button(props: ButtonProps) {
 }
 ```
 
-#### ✅ Preferred: Regular Function Declaration
-
-```tsx
-// ✅ PREFERRED: Regular function declaration with ref as prop
-export type IconButton_Props = React.ComponentProps<typeof Button> & {
-	ref?: React.RefObject<HTMLButtonElement>;
-	tooltip?: string;
-	side?: "top" | "bottom" | "left" | "right";
-};
-
-export function IconButton(props: IconButton_Props) {
-	const { ref, className, tooltip, side = "bottom", children, ...rest } = props;
-
-	return (
-		<Button ref={ref} className={cn("IconButton", className)} {...rest}>
-			{children}
-		</Button>
-	);
-}
-```
-
-**Benefits:**
-
-- ✅ **Automatic naming**: Function name automatically becomes component name in DevTools
-- ✅ **No displayName needed**: Eliminates boilerplate
-- ✅ **Simpler syntax**: No forwardRef wrapper complexity
-- ✅ **Better debugging**: Clear function names in stack traces
-- ✅ **Future-proof**: Aligned with React 19 patterns
-
-### 2. Callback Refs with Cleanup Functions
+## Callback Refs with Cleanup Functions
 
 Callback refs can return cleanup functions:
 
@@ -490,443 +267,10 @@ function ResizeObserverComponent(props: ResizeObserverComponent_Props) {
 }
 ```
 
-### 3. Modern Ref Combination Patterns
-
-Use `useCombinedRef` for handling multiple refs efficiently:
+## Imperative handle pattern
 
 ```tsx
-// ✅ Modern pattern: Combined refs
-type RefItem<T> = ((element: T | null) => void) | React.MutableRefObject<T | null> | null | undefined;
-
-function useCombinedRef<T>(...refs: RefItem<T>[]) {
-	return useCallback(
-		(element: T | null) => {
-			refs.forEach((ref) => {
-				if (!ref) return;
-				if (typeof ref === "function") {
-					ref(element);
-				} else {
-					ref.current = element;
-				}
-			});
-		},
-		[refs],
-	);
-}
-
-// Usage
-type Input_Props = { ref?: React.RefObject<HTMLInputElement> } & InputProps;
-
-function Input(props: Input_Props) {
-	const { ref, ...inputProps } = props;
-	const localRef = useRef<HTMLInputElement>(null);
-	const combinedRef = useCombinedRef(ref, localRef);
-
-	return <input {...inputProps} ref={combinedRef} />;
-}
-```
-
-## When to Use Each Ref Pattern
-
-### Use `useRef` (Object Refs) When:
-
-- Simple element access
-- Non-reactive values that don't trigger re-renders
-- Storing timers, intervals, or other imperative handles
-
-```tsx
-// ✅ Object ref for simple access
-const inputRef = useRef<HTMLInputElement>(null);
-
-const focusInput = () => {
-	inputRef.current?.focus();
-};
-```
-
-### Use Callback Refs When:
-
-- Need to react to mount/unmount
-- Dynamic elements that change type
-- Need cleanup logic (React 19+)
-- Working with external libraries requiring setup/teardown
-
-```tsx
-// ✅ Callback ref for lifecycle control
-const callbackRef = useCallback((node: HTMLElement | null) => {
-	if (node) {
-		// Setup logic
-		const cleanup = setupExternalLibrary(node);
-
-		// React 19: Return cleanup function
-		return cleanup;
-	}
-}, []);
-```
-
-### Avoid `useCallback` for Stable Refs
-
-**IMPORTANT**: Don't use `useCallback` just to "stabilize" ref functions. Extract to component-level functions instead:
-
-```tsx
-// ❌ AVOID: Using useCallback for ref stabilization
-const measuredRef = useCallback((node: HTMLElement | null) => {
-	if (node) {
-		node.scrollIntoView({ behavior: "smooth" });
-	}
-}, []); // This creates a dependency on useCallback working
-
-// ✅ PREFER: Extract to stable function
-function scrollIntoView(node: HTMLElement | null) {
-	if (node) {
-		node.scrollIntoView({ behavior: "smooth" });
-	}
-}
-
-function Component(props: Component_Props) {
-	const { children } = props;
-	return <div ref={scrollIntoView}>{children}</div>;
-}
-```
-
-## React Compiler Compatibility
-
-**FUTURE-PROOFING**: Avoid `useCallback` for ref functions that your code depends on. The React Compiler may optimize away memoization, breaking functionality:
-
-```tsx
-// ❌ RISKY: Depending on useCallback for correctness
-const handleRef = useCallback((node) => {
-	// If this MUST run only once, useCallback is risky
-	if (node) setupOnce(node);
-}, []);
-
-// ✅ SAFE: Make the function naturally stable
-function handleRef(node: HTMLElement | null) {
-	if (node) {
-		// Use patterns that work regardless of call frequency
-		if (!node.dataset.initialized) {
-			setupOnce(node);
-			node.dataset.initialized = "true";
-		}
-	}
-}
-```
-
-## Ref Type Patterns
-
-### Standard Ref Types
-
-```tsx
-// DOM element refs
-const buttonRef = useRef<HTMLButtonElement>(null);
-const divRef = useRef<HTMLDivElement>(null);
-const inputRef = useRef<HTMLInputElement>(null);
-
-// Component instance refs (when using forwardRef)
-const customComponentRef = useRef<CustomComponent_Ref>(null);
-
-// Value refs (non-DOM)
-const timerRef = useRef<NodeJS.Timeout | null>(null);
-const callbackRef = useRef<(() => void) | null>(null);
-```
-
-### Modern Combined Ref Types
-
-```tsx
-// Union type for flexible ref handling
-type FlexibleRef<T> = React.MutableRefObject<T | null> | ((instance: T | null) => void) | null;
-
-interface ComponentProps {
-	ref?: FlexibleRef<HTMLDivElement>;
-}
-```
-
-# Component Class Name Requirements
-
-## Critical Rule: ALL Classes Must Be Prefixed
-
-**MANDATORY**: ALL CSS classes within a React component MUST be prefixed with the component name. This applies to every single class, not just semantic ones.
-
-### Class Name Format Requirements
-
-#### Root Element
-
-- Use the component name in PascalCase: `ComponentName`
-- Example: `Thread`, `MessageComposer`, `UserActionBar`
-
-#### Child Elements
-
-- Format: `ComponentName-description-of-element-and-modifiers`
-- Use kebab-case for the description part
-- Include relevant state modifiers when applicable
-
-### Implementation Guidelines
-
-1. **ALL classes must be prefixed** - no exceptions for utility or state classes
-2. **Use kebab-case for multi-word descriptions** in class names
-3. **Combine with Tailwind classes** using the `cn()` utility:
-
-```tsx
-<div className={cn("Thread", "bg-background box-border flex h-full")}>
-```
-
-4. **State-aware classes must also be prefixed**:
-
-```tsx
-<button className={cn(
-  "ComposerAction-send-button",
-  isLoading && "ComposerAction-send-button-loading",
-  "my-2.5 size-8 p-2"
-)}>
-```
-
-5. **Nested components** maintain their own prefixing:
-
-```tsx
-// In Thread component - use Thread prefix
-<div className={cn("Thread-composer", "sticky bottom-0")}>
-  <Composer />
-</div>
-
-// In Composer component - use Composer prefix
-<div className={cn("Composer", "focus-within:border-ring/20")}>
-  <input className={cn("Composer-input", "placeholder:text-muted-foreground")} />
-</div>
-```
-
-### Adding Custom Classes
-
-When adding custom classes, use the prefixed naming pattern directly:
-
-**Pattern**: `<ComponentName>-<sub-component-name>-<element-identifier>`
-
-```tsx
-// Custom class example
-<div
-	ref={userButtonRef}
-	className={cn(
-		"MainAppSidebar-clerk-wrapper", // New custom class with proper prefix
-		"absolute sr-only right-[-30px] bottom-0 h-0 w-0"
-	)}
->
-```
-
-## ❌ Incorrect vs ✅ Correct Class Usage
-
-```tsx
-// ❌ WRONG: Mixing prefixed and non-prefixed classes
-<div className={cn("Thread", "viewport", "bg-background")}>
-  <div className={cn("messages_container", "Thread_header")}>
-
-// ✅ CORRECT: All classes properly prefixed with kebab-case
-<div className={cn("Thread", "Thread-viewport", "bg-background")}>
-  <div className={cn("Thread-messages-container", "Thread-header")}>
-```
-
-# Component Variant and Size Handling
-
-## Direct String Constants Pattern
-
-For components with multiple variants, sizes, or states, define string constants for each variation:
-
-```tsx
-// Define variant constants
-const BUTTON_VARIANTS = {
-	default: "Button-variant-default",
-	destructive: "Button-variant-destructive",
-	outline: "Button-variant-outline",
-	ghost: "Button-variant-ghost",
-} as const;
-
-const BUTTON_SIZES = {
-	default: "Button-size-default",
-	sm: "Button-size-sm",
-	lg: "Button-size-lg",
-	icon: "Button-size-icon",
-} as const;
-
-type Variant = keyof typeof BUTTON_VARIANTS;
-type Size = keyof typeof BUTTON_SIZES;
-
-type Button_Props = React.ComponentProps<"button"> & {
-	variant?: Variant;
-	size?: Size;
-};
-
-function Button(props: Button_Props) {
-	const { className, variant = "default", size = "default", ...rest } = props;
-
-	return <button className={cn("Button", BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className)} {...rest} />;
-}
-```
-
-### Null Values for Opt-Out Styling
-
-Allow `null` as a valid value to opt out of variant styling entirely:
-
-```tsx
-type Variant = keyof typeof BUTTON_VARIANTS | null;
-
-// Usage in JSX with null check
-function Button(props: Button_Props) {
-	const { className, variant = "default", size = "default", ...rest } = props;
-
-	return (
-		<button
-			className={cn(
-				"Button",
-				variant && BUTTON_VARIANTS[variant], // Only applies if variant is not null
-				size && BUTTON_SIZES[size],
-				className,
-			)}
-			{...rest}
-		/>
-	);
-}
-```
-
-# Form Component Integration
-
-When using shadcn/ui form components, integrate them with the appropriate naming patterns:
-
-```tsx
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
-
-type ShowArchivedCheckbox_Props = {
-	checked: boolean;
-	onCheckedChange: (checked: boolean) => void; // camelCase - matches Checkbox API
-	className?: string; // camelCase - for DOM compatibility
-};
-
-function ShowArchivedCheckbox(props: ShowArchivedCheckbox_Props) {
-	const { checked, onCheckedChange, className } = props;
-	const checkboxId = React.useId(); // Local variable - camelCase
-
-	return (
-		<div className={cn("mb-4 flex items-center space-x-2", className)}>
-			<Checkbox
-				id={checkboxId}
-				checked={checked}
-				onCheckedChange={(checked) => onCheckedChange(checked === true)}
-				className={cn("ShowArchivedCheckbox-checkbox")}
-			/>
-			<Label htmlFor={checkboxId} className={cn("ShowArchivedCheckbox-label", "cursor-pointer")}>
-				Show archived
-			</Label>
-		</div>
-	);
-}
-```
-
-# React Hook Usage Guidelines
-
-## Avoid useEffect When Possible
-
-Minimize the use of `useEffect` to prevent infinite loops, dependency issues, and performance problems. Instead:
-
-1. **Use event handlers** for user interactions and state changes
-2. **Use useMemo** for synchronous data transformations
-3. **Use useMemo with promises** for async data transformations that depend on other state
-
-## Use Refs for Non-Reactive State
-
-Use `useRef` instead of `useState` for values that don't need to trigger re-renders:
-
-### ❌ Avoid: useState for non-reactive values
-
-```tsx
-const [isProcessing, setIsProcessing] = useState(false);
-// These state changes cause unnecessary re-renders
-```
-
-### ✅ Prefer: useRef for non-reactive values
-
-```tsx
-const isProcessingRef = useRef(false);
-const cacheRef = useRef(new Map());
-
-// No re-renders triggered
-const handleProcess = async () => {
-	isProcessingRef.current = true; // No re-render
-	await processData();
-	isProcessingRef.current = false; // No re-render
-};
-```
-
-### When to Use Refs vs State
-
-**Use `useRef` when:**
-
-- Value is used for internal component logic only
-- Value doesn't affect UI rendering
-- Value is used to prevent operations (like blocking duplicate API calls)
-- Value is used for caching or memoization
-
-**Use `useState` when:**
-
-- Value affects what's rendered in the UI
-- Value is used in JSX conditionals or expressions
-- Value needs to trigger re-renders when changed
-
-## Preferred Patterns
-
-### ✅ Prefer: useMemo for sync transformations
-
-```tsx
-const [data, setData] = useState(null);
-
-const transformedData = useMemo(() => {
-	return data ? processData(data) : null;
-}, [data]);
-```
-
-### ✅ Prefer: Event handlers for user interactions
-
-```tsx
-const handleToggle = useCallback(async (newValue: boolean) => {
-	if (newValue) {
-		const result = await processToggle();
-		setProcessedResult(result);
-	}
-	setToggleState(newValue);
-}, []);
-
-<button onClick={() => handleToggle(!toggleState)}>Toggle</button>;
-```
-
-## Guidelines Summary
-
-- **Event handlers**: Use for user interactions, form submissions, button clicks
-- **useMemo**: Use for synchronous data transformations and computations
-- **useMemo + promises**: Use for async operations that depend on state changes
-- **useRef**: Use for non-reactive values that don't affect UI rendering
-- **useState**: Use only for values that need to trigger re-renders
-- **useEffect**: Only use when you genuinely need to sync with external systems (DOM, timers, subscriptions)
-
-## Benefits
-
-- **Easy debugging**: Quickly identify components in browser DevTools
-- **Better testing**: Reliable selectors for test automation
-- **Component tracking**: Understand component hierarchy in production
-- **Design system consistency**: Clear component boundaries and relationships
-- **Performance**: Avoid unnecessary re-renders and infinite loops from useEffect
-- **Maintainability**: Clearer data flow and fewer side effects
-- **Optimization**: Use refs to prevent unnecessary re-renders for internal state
-- **Modern React patterns**: Leverage React 19 features like the `use` hook and new ref patterns
-- **Future-proof**: Compatible with React Compiler and modern React development
-- **Consistent naming**: Root-level exports use snake_case for namespacing, local variables use camelCase for consistency with modern JavaScript conventions
-- **Props accessibility**: Full props object available for debugging, conditional logic, and flexible prop forwarding
-
-# Exposing Imperative Values and Elements with \_Ref and useImperativeHandle
-
-When a parent needs controlled access to a child's internal DOM elements or imperative methods, expose a typed imperative handle.
-
-## Standard ref pattern with `ComponentName_Ref`
-
-Use a `ref` prop together with `useImperativeHandle` to expose a curated API. Define a `ComponentName_Ref` interface with nullable DOM elements and typed methods.
-
-```tsx
-import React, { useImperativeHandle, useRef, useState } from "react";
+import React, { useImperativeHandle, useRef, useState, Ref } from "react";
 
 export interface MyWidget_Ref {
 	rootElement: HTMLDivElement | null;
@@ -935,13 +279,12 @@ export interface MyWidget_Ref {
 }
 
 export type MyWidget_Props = React.ComponentProps<"div"> & {
-	ref?: React.RefObject<MyWidget_Ref>;
+	ref?: Ref<MyWidget_Ref>;
 	initialValue?: string;
 };
 
 export function MyWidget(props: MyWidget_Props) {
 	const { ref, initialValue = "", className, ...rest } = props;
-
 	const rootRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [value, setValue] = useState(initialValue);
@@ -953,8 +296,11 @@ export function MyWidget(props: MyWidget_Props) {
 			focusInput: () => inputRef.current?.focus(),
 			getValue: () => value,
 		}),
-		[value], // Include dependencies used by the handle
+		[value],
 	);
+
+	// When forwarding a child ref directly:
+	// useImperativeHandle(ref, () => childRef.current!, []);
 
 	return (
 		<div ref={rootRef} className={cn("MyWidget", className)} {...rest}>
@@ -962,33 +308,12 @@ export function MyWidget(props: MyWidget_Props) {
 		</div>
 	);
 }
-
-// Consuming component
-function Parent() {
-	const myWidgetRef = React.useRef<MyWidget_Ref>(null);
-
-	return (
-		<>
-			<MyWidget ref={myWidgetRef} />
-			<button onClick={() => myWidgetRef.current?.focusInput()}>Focus</button>
-		</>
-	);
-}
 ```
 
-Guidelines:
-
-- Accept `ref` as a regular prop and use `useImperativeHandle` to expose the handle.
-- DOM elements in `*_Ref` must be nullable.
-- Include all referenced state/props in `useImperativeHandle`'s dependency array.
-- Prefer exposing a minimal, stable API instead of leaking many internals.
-
-## Exposing multiple internal elements via a single `ref` handle
-
-If a parent needs access to several distinct internal nodes, expose them through a single imperative handle returned by `useImperativeHandle(ref, () => ({ ... }))`. Do not add a separate `refs` prop.
+## Exposing multiple elements via a single ref
 
 ```tsx
-import React, { useImperativeHandle, useRef } from "react";
+import React, { useImperativeHandle, useRef, Ref } from "react";
 
 export interface Drawer_Ref {
 	root: HTMLDivElement | null;
@@ -997,7 +322,7 @@ export interface Drawer_Ref {
 }
 
 export type Drawer_Props = React.ComponentProps<"div"> & {
-	ref?: React.RefObject<Drawer_Ref>;
+	ref?: Ref<Drawer_Ref>;
 };
 
 export function Drawer(props: Drawer_Props) {
@@ -1006,7 +331,6 @@ export function Drawer(props: Drawer_Props) {
 	const headerRef = useRef<HTMLElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 
-	// Expose multiple structural elements via a single imperative handle
 	useImperativeHandle(
 		ref,
 		() => ({
@@ -1024,15 +348,19 @@ export function Drawer(props: Drawer_Props) {
 		</div>
 	);
 }
-
-// Consuming component
-function DrawerParent() {
-	const drawerRef = React.useRef<Drawer_Ref>(null);
-	return <Drawer ref={drawerRef} />;
-}
 ```
 
-Notes:
+## Use `useRef` When:
 
-- Keep elements in the returned handle nullable and stable; dependency array is usually empty.
-- If you only need the primary element, expose only that element in the handle rather than a larger object.
+- Simple element access
+- Non-reactive values that don't trigger re-renders
+- Storing timers, intervals, or other imperative handles
+
+```tsx
+// ✅ Object ref for simple access
+const inputRef = useRef<HTMLInputElement>(null);
+
+const focusInput = () => {
+	inputRef.current?.focus();
+};
+```

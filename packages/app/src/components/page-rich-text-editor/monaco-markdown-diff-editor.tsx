@@ -1,7 +1,6 @@
 import "./monaco-markdown-diff-editor.css";
 import "../../lib/app-monaco-config.ts";
-import { useEffect, useRef, useState, useImperativeHandle } from "react";
-import type { RefObject } from "react";
+import { useEffect, useRef, useState, useImperativeHandle, type Ref } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { editor as M } from "monaco-editor";
@@ -118,7 +117,7 @@ export interface MonacoMarkdownDiffEditor_Ref {
 }
 
 export interface MonacoMarkdownDiffEditor_Props {
-	ref?: RefObject<MonacoMarkdownDiffEditor_Ref | undefined>;
+	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
 	className?: string;
 	pageId: string;
 	threadId?: string;
