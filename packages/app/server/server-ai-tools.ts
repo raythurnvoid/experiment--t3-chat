@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type InferToolInput, type InferToolOutput } from "ai";
 import z from "zod";
 import dedent from "dedent";
 import { createTwoFilesPatch } from "diff";
@@ -228,6 +228,10 @@ export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { t
 	});
 }
 
+type ai_tool_create_read_page_Tool = ReturnType<typeof ai_tool_create_read_page>;
+export type ai_tool_create_read_page_ToolInput = InferToolInput<ai_tool_create_read_page_Tool>;
+export type ai_tool_create_read_page_ToolOutput = InferToolOutput<ai_tool_create_read_page_Tool>;
+
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
@@ -312,6 +316,10 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 	});
 }
 
+type ai_tool_create_list_pages_Tool = ReturnType<typeof ai_tool_create_list_pages>;
+export type ai_tool_create_list_pages_ToolInput = InferToolInput<ai_tool_create_list_pages_Tool>;
+export type ai_tool_create_list_pages_ToolOutput = InferToolOutput<ai_tool_create_list_pages_Tool>;
+
 /**
  * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
  */
@@ -374,6 +382,10 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 		},
 	});
 }
+
+type ai_tool_create_glob_pages_Tool = ReturnType<typeof ai_tool_create_glob_pages>;
+export type ai_tool_create_glob_pages_ToolInput = InferToolInput<ai_tool_create_glob_pages_Tool>;
+export type ai_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_tool_create_glob_pages_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/grep.ts`
@@ -501,6 +513,10 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 	});
 }
 
+type ai_tool_create_grep_pages_Tool = ReturnType<typeof ai_tool_create_grep_pages>;
+export type ai_tool_create_grep_pages_ToolInput = InferToolInput<ai_tool_create_grep_pages_Tool>;
+export type ai_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_tool_create_grep_pages_Tool>;
+
 export function ai_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
@@ -551,6 +567,10 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_
 		},
 	});
 }
+
+type ai_tool_create_text_search_pages_Tool = ReturnType<typeof ai_tool_create_text_search_pages>;
+export type ai_tool_create_text_search_pages_ToolInput = InferToolInput<ai_tool_create_text_search_pages_Tool>;
+export type ai_tool_create_text_search_pages_ToolOutput = InferToolOutput<ai_tool_create_text_search_pages_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`
@@ -641,3 +661,7 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 		},
 	});
 }
+
+type ai_tool_create_write_page_Tool = ReturnType<typeof ai_tool_create_write_page>;
+export type ai_tool_create_write_page_ToolInput = InferToolInput<ai_tool_create_write_page_Tool>;
+export type ai_tool_create_write_page_ToolOutput = InferToolOutput<ai_tool_create_write_page_Tool>;
