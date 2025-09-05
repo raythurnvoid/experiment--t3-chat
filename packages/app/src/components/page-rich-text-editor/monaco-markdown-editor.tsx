@@ -1,8 +1,9 @@
 import "./monaco-markdown-editor.css";
 import "../../lib/app-monaco-config.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Editor } from "@monaco-editor/react";
 import type { editor as M } from "monaco-editor";
+import { CatchBoundary } from "@tanstack/react-router";
 import { useRoom } from "@liveblocks/react/suspense";
 import { getYjsProviderForRoom } from "@liveblocks/yjs";
 import { MonacoBinding } from "y-monaco";
@@ -21,7 +22,7 @@ export interface MonacoMarkdownEditor_Props {
 /**
  * This component is inspired from Liveblocks example: liveblocks/examples/nextjs-yjs-monaco/src/components/CollaborativeEditor.tsx
  */
-export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
+function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 	const { pageId, className } = props;
 	const room = useRoom();
 	const convex = useConvex();
@@ -177,9 +178,9 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 		};
 	}, [editor, updateAndBroadcastRichtext, pageId]);
 
-	const handleOnMount = useCallback((e: M.IStandaloneCodeEditor) => {
+	const handleOnMount = (e: M.IStandaloneCodeEditor) => {
 		setEditor(e);
-	}, []);
+	};
 
 	return (
 		<div className={cn("MonacoMarkdownEditor flex h-full w-full flex-col", className)}>
@@ -238,13 +239,42 @@ export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
 				<Editor
 					height="100%"
 					language="markdown"
-					onMount={handleOnMount}
 					options={{
 						wordWrap: "on",
 					}}
+					onMount={handleOnMount}
 				/>
 			</div>
 		</div>
+	);
+}
+
+function MonacoMarkdownEditor_Error(props: { error: unknown; reset: () => void }) {
+	return (
+		<div className="MonacoMarkdownEditor-error flex h-full items-center justify-center p-4 text-sm">
+			<div className="flex flex-col items-center gap-2">
+				<div>Editor failed to load.</div>
+				<button onClick={props.reset} className="rounded border px-2 py-1">
+					Try again
+				</button>
+			</div>
+		</div>
+	);
+}
+
+export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
+	return (
+		<CatchBoundary
+			getResetKey={() => 0}
+			errorComponent={MonacoMarkdownEditor_Error}
+			onCatch={(err) => {
+				if (typeof window !== "undefined") {
+					console.error("MonacoMarkdownEditor error:", err);
+				}
+			}}
+		>
+			<MonacoMarkdownEditor_Impl {...props} />
+		</CatchBoundary>
 	);
 }
 

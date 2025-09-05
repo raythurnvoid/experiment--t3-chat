@@ -38,6 +38,7 @@ function LoadingEditor() {
 
 export type PageRichTextEditor_Ref = {
 	requestOpenDiff: (args: { pageId: string; modifiedEditorValue: string }) => void;
+	getMode: () => PageRichTextEditor_Mode;
 };
 
 export type PageRichTextEditor_Props = {
@@ -50,22 +51,21 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 	const { ref: refProp, pageId, threadId } = props;
 
 	const auth = useAuth();
-	const [editorMode, setEditorMode] = useState<"rich" | "markdown">("rich");
-	const [diffMode, setDiffMode] = useState(false);
+	const [editorMode, setEditorMode] = useState<PageRichTextEditor_Mode>("rich");
 
 	const handleDiffExit = () => {
-		setDiffMode(false);
+		setEditorMode("rich");
 	};
 
 	useImperativeHandle(
 		refProp,
 		() => ({
 			requestOpenDiff: (_args: { pageId: string; modifiedEditorValue: string }) => {
-				setEditorMode("markdown");
-				setDiffMode(true);
+				setEditorMode("diff");
 			},
+			getMode: () => editorMode,
 		}),
-		[],
+		[editorMode],
 	);
 
 	if (!pageId) {
@@ -101,7 +101,10 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 								)}
 							>
 								<span className="text-xs text-muted-foreground/80">Diff</span>
-								<Switch checked={diffMode} onCheckedChange={(checked: boolean) => setDiffMode(checked)} />
+								<Switch
+									checked={editorMode === "diff"}
+									onCheckedChange={(checked: boolean) => setEditorMode(checked ? "diff" : "markdown")}
+								/>
 							</div>
 							{/* Right: Rich/Markdown switch */}
 							<div className="flex items-center gap-3">
@@ -121,7 +124,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 						<div className="PageRichTextEditor-editor-container h-[calc(100%-48px)]">
 							{editorMode === "rich" ? (
 								<RichTextDocEditor doc_id={pageId} />
-							) : diffMode ? (
+							) : editorMode === "diff" ? (
 								threadId ? (
 									<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
 								) : (
@@ -137,3 +140,5 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 		</LiveblocksProvider>
 	);
 }
+
+export type PageRichTextEditor_Mode = "rich" | "markdown" | "diff";

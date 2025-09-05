@@ -964,9 +964,10 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_parent_id", (q) => q.eq("parent_id", nodeId))
+			.withIndex("by_parent_id_and_is_archived", (q) => q.eq("parent_id", nodeId).eq("is_archived", false))
 			.collect();
 
+		// TODO: do not collect
 		const names = children.map((page) => page.name);
 		return names;
 	},
@@ -978,9 +979,10 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 		cursor: paginationOptsValidator.fields.cursor,
 	},
 	handler: async (ctx, args) => {
+		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("by_parent_id", (q) => q.eq("parent_id", args.parentId))
+			.withIndex("by_parent_id_and_is_archived", (q) => q.eq("parent_id", args.parentId).eq("is_archived", false))
 			.paginate({
 				cursor: args.cursor,
 				numItems: 1,
@@ -1045,6 +1047,7 @@ export const get_page_text_content_by_path = internalQuery({
 			.first();
 
 		if (!page) return null;
+		if (page.is_archived) return null;
 
 		{
 			const overlay = await ctx.db
@@ -1104,8 +1107,10 @@ export const text_search_pages = internalQuery({
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
 
+		const visibleMatches = matches.filter((page) => !page.is_archived);
+
 		const items: Array<{ path: string; preview: string }> = await Promise.all(
-			matches.map(async (page): Promise<{ path: string; preview: string }> => {
+			visibleMatches.map(async (page): Promise<{ path: string; preview: string }> => {
 				const path: string = await resolve_path_from_page_id(ctx, {
 					workspace_id: args.workspaceId,
 					project_id: args.projectId,

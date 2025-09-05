@@ -343,6 +343,11 @@ export const chat = httpAction(async (ctx, request) => {
 			}
 		} while (false);
 
+		console.log("messages", {
+			messages: messages,
+			threadId,
+		});
+
 		const stream = createUIMessageStream({
 			generateId: createIdGenerator({
 				prefix: threadId,

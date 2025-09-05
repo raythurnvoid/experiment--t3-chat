@@ -1,5 +1,12 @@
 import "./app-ai-chat.css";
-import { makeAssistantToolUI, useMessage, useMessagePartRuntime, useThreadListItem } from "@assistant-ui/react";
+import {
+	makeAssistantToolUI,
+	useMessage,
+	useMessagePart,
+	useMessagePartRuntime,
+	useThreadListItem,
+	useThreadListItemRuntime,
+} from "@assistant-ui/react";
 import type { ToolCallContentPartProps } from "@assistant-ui/react";
 import { CopyIcon, FileText, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -318,39 +325,41 @@ function WritePageToolUiComponent(
 	props: ToolCallContentPartProps<ai_tool_create_write_page_ToolInput, ai_tool_create_write_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
-	const threadRemoteId = useThreadListItem((t) => t.remoteId);
+	const threadListItemRuntime = useThreadListItemRuntime();
 	const partRuntime = useMessagePartRuntime();
 
-	const toolCompleteDebounce = useRef<ReturnType<typeof globalThis.setTimeout>>(undefined);
-
-	const handleToolComplete = useLiveRef(async () => {
-		if (!result) return;
-		const threadId = threadRemoteId;
-		if (!threadId) return;
-
-		const pageId = result.metadata.page_id;
-		if (!pageId) {
-			console.warn("write_page: page id missing in tool result for path", args.path);
-			return;
-		}
-
-		// Existing page preview: open diff mode, seed modified with proposed content
-		global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedSeed: args.content, threadId });
-	});
-
+	// Handle tool complete
 	useEffect(() => {
-		const cleanup = partRuntime.subscribe(async () => {
-			const state = partRuntime.getState();
-			if (state.type === "tool-call" && state.status.type === "complete") {
-				window.clearTimeout(toolCompleteDebounce.current);
-				toolCompleteDebounce.current = globalThis.setTimeout(async () => {
-					await handleToolComplete.current();
-				}, 1000);
-			}
-		});
+		let handled = false;
 
-		return cleanup;
-	}, [partRuntime, handleToolComplete]);
+		if (status.type !== "complete") {
+			const cleanup = partRuntime.subscribe(() => {
+				if (handled) return;
+				const state = partRuntime.getState();
+				if (state.type === "tool-call" && state.status.type === "complete") {
+					handled = true;
+
+					if (!state.result) return;
+					const threadId = threadListItemRuntime.getState().remoteId;
+					if (!threadId) return;
+
+					const result = state.result as ai_tool_create_write_page_ToolOutput;
+					const args = state.args as ai_tool_create_write_page_ToolInput;
+
+					const pageId = result.metadata.page_id;
+					if (!pageId) {
+						console.warn("write_page: page id missing in tool result for path", args.path);
+						return;
+					}
+
+					// Existing page preview: open diff mode, seed modified with proposed content
+					global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedSeed: args.content, threadId });
+				}
+			});
+
+			return cleanup;
+		}
+	}, [status]);
 
 	const handleOpenCanvas = () => {
 		global_event_ai_chat_open_canvas_by_path.dispatch({ path: args.path });

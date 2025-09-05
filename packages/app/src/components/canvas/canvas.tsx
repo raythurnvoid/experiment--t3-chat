@@ -26,11 +26,16 @@ export function Canvas() {
 		clearTimeout(openCanvasGlobalEventDebounce.current);
 
 		openCanvasGlobalEventDebounce.current = globalThis.setTimeout(async () => {
-			/*
-			Don't open the new diff if a page is already opened.
-			It's useful when the AI writes in multiple pages at once.
-			*/
-			if (editorPageId.current && editorPageId.current !== payload.pageId && payload.mode === "diff") {
+			// Don't open the new diff if a page is already opened
+			// AND the editor is currently in diff mode.
+			// It's useful when the AI writes in multiple pages at once,
+			// but still allows switching when user is in normal mode.
+			if (
+				editorPageId.current &&
+				editorPageId.current !== payload.pageId &&
+				payload.mode === "diff" &&
+				editor.current?.getMode?.() === "diff"
+			) {
 				return;
 			}
 
