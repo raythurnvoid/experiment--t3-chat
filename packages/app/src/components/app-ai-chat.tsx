@@ -159,6 +159,10 @@ function ReadPageToolUiComponent(
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
+	const handleOpenCanvas = () => {
+		global_event_ai_chat_open_canvas_by_path.dispatch({ path: args.path });
+	};
+
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-read-page-tool">
 			<ToolHeader type="tool-read_page" state={toolState} />
@@ -168,6 +172,9 @@ function ReadPageToolUiComponent(
 					<Actions className="AppAiChat-tool-actions">
 						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
 							<CopyIcon className="size-4" />
+						</Action>
+						<Action tooltip="Open canvas" label="Open canvas" onClick={handleOpenCanvas}>
+							<FileText className="size-4" />
 						</Action>
 					</Actions>
 				</div>

@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
-import type { KeysOfUnion, Primitive } from "type-fest";
+import type { KeysOfUnion, Primitive, UnknownRecord } from "type-fest";
 
 export * from "../../shared/shared-utils.ts";
 
@@ -100,4 +100,41 @@ export function create_promise_with_resolvers<T>(): {
 		reject = rej;
 	});
 	return { promise, resolve: resolve! as any, reject: reject! };
+}
+
+/**
+ * Useful to create an object/value of a specific type while being sure that all properties are compliant with the type.
+ *
+ * Unlike `as` this will show an error if you only pass some properties of the object.
+ *
+ * Unlike `satisfies` this will set the type of the result to the desired type.
+ */
+export function make<T>(value: T): T {
+	return value;
+}
+
+/**
+ * Log a message with the values that are `undefined` or `null`.
+ * @example
+ * ```ts
+ * if (!someValue || !someOtherValue) {
+ *   log_missing_values("someIdentifier", { someValue, someOtherValue });
+ * }
+ * ```
+ */
+export function msg_with_nullish_values(name: string, deps: Record<string, any>) {
+	const missingValues = Object.entries(deps).reduce((acc, [_, value]) => {
+		if (value === undefined || value === null) {
+			acc.push(_);
+		}
+		return acc;
+	}, [] as string[]);
+	if (missingValues.length > 0) {
+		if (import.meta.env.DEV) {
+			// eslint-disable-next-line no-debugger
+			debugger;
+		}
+		return `[log_nullish_values] [${name}] is missing the following values: [${missingValues.toString()}]`;
+	}
+	return undefined;
 }

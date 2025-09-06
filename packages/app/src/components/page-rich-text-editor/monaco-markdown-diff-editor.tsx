@@ -1,50 +1,141 @@
 import "./monaco-markdown-diff-editor.css";
 import "../../lib/app-monaco-config.ts";
 import { useEffect, useRef, useState, useImperativeHandle, type Ref } from "react";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor, type DiffEditorProps } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { editor as M } from "monaco-editor";
 import { useConvex, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
-import { cn } from "../../lib/utils.ts";
+import { cn, make, msg_with_nullish_values as msg_with_nullish_values_get } from "../../lib/utils.ts";
 import { makePatches, stringifyPatches } from "@sanity/diff-match-patch";
 import { Button } from "../ui/button.tsx";
+
+const CLASS_NAMES = {
+	root: "MonacoMarkdownDiffEditor",
+	widget: "MonacoMarkdownDiffEditor-widget",
+	widgetAccept: "MonacoMarkdownDiffEditor-widget-accept",
+	widgetDiscard: "MonacoMarkdownDiffEditor-widget-discard",
+	anchor: "MonacoMarkdownDiffEditor-anchor",
+	header: "MonacoMarkdownDiffEditor-header",
+	headerAccept: "MonacoMarkdownDiffEditor-header-accept",
+	headerDiscard: "MonacoMarkdownDiffEditor-header-discard",
+	headerSave: "MonacoMarkdownDiffEditor-header-save",
+	headerTitle: "MonacoMarkdownDiffEditor-header-title",
+	headerActions: "MonacoMarkdownDiffEditor-header-actions",
+};
+
+export type MonacoMarkdownDiffEditor_Ref = {
+	setModifiedContent: (value: string) => void;
+};
+
+export type MonacoMarkdownDiffEditor_Props = {
+	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
+	className?: string;
+	pageId: string;
+	threadId?: string;
+	modifiedInitialValue?: string;
+	onExit: () => void;
+};
+
+export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) {
+	const { pageId } = props;
+
+	const convex = useConvex();
+
+	const [initialValue, setInitialValue] = useState<string>();
+
+	const currentContentWatchUnsubscribe = useRef<() => void>(null);
+
+	// Listen for updates once and also fetch latest as a fallback
+	useEffect(() => {
+		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: pageId,
+		});
+
+		currentContentWatchUnsubscribe.current = watcher.onUpdate(() => {
+			const value = watcher.localQueryResult();
+			setInitialValue((currentValue) => currentValue ?? (typeof value === "string" ? value : ""));
+		});
+
+		(async (/* iife */) => {
+			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId: pageId,
+			});
+			if (typeof fetchedValue === "string") {
+				setInitialValue((currentValue) => currentValue ?? fetchedValue);
+			}
+		})().catch(console.error);
+
+		return () => {
+			if (currentContentWatchUnsubscribe.current) {
+				currentContentWatchUnsubscribe.current();
+			}
+		};
+	}, [convex, pageId]);
+
+	const handleOnEditorMount: MonacoMarkdownDiffEditor_Impl_Props["onEditorMount"] = () => {
+		currentContentWatchUnsubscribe.current = null;
+	};
+
+	return (
+		<>
+			{initialValue != null && (
+				<MonacoMarkdownDiffEditor_Impl
+					key={pageId}
+					{...props}
+					initialValue={initialValue}
+					onEditorMount={handleOnEditorMount}
+				></MonacoMarkdownDiffEditor_Impl>
+			)}
+		</>
+	);
+}
 
 class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 	private readonly id: string;
 	private readonly node: HTMLDivElement;
 	private lineNumber: number;
-	public readonly allowEditorOverflow = true;
-	private anchorDecorationId: string | null = null;
+	readonly allowEditorOverflow = true;
+	anchorDecorationId: string | null = null;
+	readonly editor: M.IStandaloneCodeEditor;
+	private readonly onAcceptClick: (index: number) => void;
+	private readonly onDiscardClick: (index: number) => void;
 
-	constructor(
-		private readonly editor: M.IStandaloneCodeEditor,
-		changeIndex: number,
-		lineNumber: number,
-		private readonly onAcceptClick: (index: number) => void,
-		private readonly onDiscardClick: (index: number) => void,
-	) {
-		this.id = `MonacoMarkdownDiffEditor-widget-${changeIndex}`;
-		this.lineNumber = lineNumber;
+	private constructor(args: {
+		editor: M.IStandaloneCodeEditor;
+		diffIndex: number;
+		lineNumber: number;
+		onAcceptClick: (index: number) => void;
+		onDiscardClick: (index: number) => void;
+	}) {
+		this.editor = args.editor;
+		this.onAcceptClick = args.onAcceptClick;
+		this.onDiscardClick = args.onDiscardClick;
+		this.lineNumber = args.lineNumber;
+		this.id = `MonacoMarkdownDiffEditor-widget-${args.diffIndex}`;
 		this.node = document.createElement("div");
-		this.node.className = "MonacoMarkdownDiffEditor-widget";
+		this.node.className = CLASS_NAMES.widget;
 		this.node.style.pointerEvents = "auto";
 		const acceptBtn = document.createElement("button");
-		acceptBtn.className = "MonacoMarkdownDiffEditor-widget-accept";
+		acceptBtn.className = CLASS_NAMES.widgetAccept;
 		acceptBtn.setAttribute("aria-label", "Accept change");
 		acceptBtn.addEventListener("click", (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			this.onAcceptClick(changeIndex);
+			this.onAcceptClick(args.diffIndex);
 		});
 		const discardBtn = document.createElement("button");
-		discardBtn.className = "MonacoMarkdownDiffEditor-widget-discard";
+		discardBtn.className = CLASS_NAMES.widgetDiscard;
 		discardBtn.setAttribute("aria-label", "Discard change");
 		discardBtn.addEventListener("click", (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			this.onDiscardClick(changeIndex);
+			this.onDiscardClick(args.diffIndex);
 		});
 		this.node.appendChild(acceptBtn);
 		this.node.appendChild(discardBtn);
@@ -77,151 +168,82 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 	private updateDecorations(lineNumber: number) {
 		const model = this.editor.getModel();
 		if (!model) return;
-		const newDecos: monaco.editor.IModelDeltaDecoration[] = [
+		const newDecos = make<monaco.editor.IModelDeltaDecoration[]>([
 			{
 				range: new monaco.Range(lineNumber, 1, lineNumber, 1),
-				options: {
+				options: make<monaco.editor.IModelDecorationOptions>({
 					stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
 					isWholeLine: false,
-					className: "MonacoMarkdownDiffEditor-anchor",
-					description: "anchor-decoration-for-content-widget",
-				} as monaco.editor.IModelDecorationOptions,
+					className: CLASS_NAMES.anchor,
+				}),
 			},
-		];
+		]);
 		const oldIds: string[] = [];
 		if (this.anchorDecorationId) oldIds.push(this.anchorDecorationId);
 		const result = model.deltaDecorations(oldIds, newDecos);
 		this.anchorDecorationId = result[0] ?? null;
 	}
 
-	afterRender(position: monaco.editor.ContentWidgetPositionPreference | null) {
+	afterRender() {
 		// Force non-fixed layout and shift the widget left of the text by its width + gap
 		this.node.style.position = "absolute";
 		this.node.style.transform = `translate3d(calc(-100% - 5px), -2px, 0)`;
 		this.node.style.display = "flex";
 	}
 
-	public dispose() {
-		const model = this.editor.getModel();
-		if (model) {
-			const removeIds: string[] = [];
-			if (this.anchorDecorationId) removeIds.push(this.anchorDecorationId);
-			if (removeIds.length) model.deltaDecorations(removeIds, []);
-			this.anchorDecorationId = null;
-		}
+	dispose() {
+		// const model = this.editor.getModel();
+		// if (model) {
+		// 	const removeIds: string[] = [];
+		// 	if (this.anchorDecorationId) removeIds.push(this.anchorDecorationId);
+		// 	if (removeIds.length) model.deltaDecorations(removeIds, []);
+		// 	this.anchorDecorationId = null;
+		// }
+		this.editor.removeContentWidget(this);
+	}
+
+	static addToEditor(args: {
+		editor: M.IStandaloneCodeEditor;
+		diffIndex: number;
+		lineNumber: number;
+		onAcceptClick: (index: number) => void;
+		onDiscardClick: (index: number) => void;
+	}) {
+		const widget = new AcceptDiscardContentWidget(args);
+		args.editor.addContentWidget(widget);
+		return widget;
 	}
 }
 
-export interface MonacoMarkdownDiffEditor_Ref {
-	setModifiedContent: (value: string) => void;
-}
+type MonacoMarkdownDiffEditor_Impl_Props = MonacoMarkdownDiffEditor_Props & {
+	initialValue: string;
+	onEditorMount: () => void;
+};
 
-export interface MonacoMarkdownDiffEditor_Props {
-	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
-	className?: string;
-	pageId: string;
-	threadId?: string;
-	modifiedInitialValue?: string;
-	onExit: () => void;
-}
-
-export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) {
-	const { ref, className, pageId, threadId, modifiedInitialValue, onExit } = props;
-	const convex = useConvex();
+function MonacoMarkdownDiffEditor_Impl(props: MonacoMarkdownDiffEditor_Impl_Props) {
+	const { ref, className, pageId, threadId, modifiedInitialValue, initialValue, onExit } = props;
 	const applyPatchToPageAndBroadcast = useMutation(api.ai_docs_temp.apply_patch_to_page_and_broadcast);
 
-	const [diffEditor, setDiffEditor] = useState<M.IStandaloneDiffEditor | null>(null);
-	const textContentWatchRef = useRef<{ unsubscribe: () => void } | null>(null);
-	const [initialValue, setInitialValue] = useState<string | null | undefined>(undefined);
+	const diffEditor = useRef<M.IStandaloneDiffEditor | null>(null);
 
-	// Local copy of modified content for quick access without re-renders
-	const modifiedContentRef = useRef<string>("");
+	const modifiedContent = useRef<string>("");
+	const originalContent = useRef<string>("");
+	const lineChanges = useRef<M.ILineChange[] | null>(null);
 
-	// Keep the original seeded content to build patches on Save & Exit
-	const originalSeedRef = useRef<string>("");
+	/** Content widgets for per-change actions (accept/discard) */
+	const contentWidgets = useRef<AcceptDiscardContentWidget[]>([]);
 
-	// Latest line changes without triggering React re-renders
-	const lineChangesRef = useRef<M.ILineChange[] | null>(null);
+	const diffEditorListenersDisposable = useRef<monaco.IDisposable[]>([]);
 
-	// Content widgets for per-change actions (accept/discard) keyed by change index
-	const contentWidgetsRef = useRef<Map<number, monaco.editor.IContentWidget>>(new Map());
-
-	// Expose imperative handle to update only the modified editor content
-	useImperativeHandle(
-		ref,
-		() => ({
-			setModifiedContent: (value: string) => {
-				if (!diffEditor) return;
-				const modifiedEditor = diffEditor.getModifiedEditor();
-				const modifiedModel = modifiedEditor.getModel();
-				if (!modifiedModel) return;
-				modifiedEditor.pushUndoStop();
-				modifiedEditor.executeEdits("MonacoMarkdownDiffEditor.setModified", [
-					{ range: modifiedModel.getFullModelRange(), text: value, forceMoveMarkers: false },
-				]);
-				modifiedEditor.pushUndoStop();
-				modifiedContentRef.current = value;
-			},
-		}),
-		[diffEditor],
-	);
-
-	// Class moved to module scope above
-
-	// (legacy helper kept for reference) toExclusiveLineRange no longer used
-
-	// retained helper previously used for minimal edits; no longer used in applyLineChanges path
-	// function getLines(model: M.ITextModel, startLine: number, endLine: number) {
-	// 	if (startLine <= 0 || endLine <= 0 || endLine < startLine) return "";
-	// 	const range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
-	// 	return model.getValueInRange(range);
-	// }
-
-	// VS Code accurate algorithm: applyLineChanges(original, modified, diffs) → string
-	function applyLineChanges_like_vscode(
-		originalText: string,
-		modifiedText: string,
+	/**
+	 * Port from VS Code: `applyLineChanges(original, modified, diffs): string`
+	 * from `vscode/extensions/git/src/staging.ts`
+	 **/
+	const applyDiffs = (
+		originalEditorModel: M.ITextModel,
+		modifiedEditorModel: M.ITextModel,
 		diffs: ReadonlyArray<M.ILineChange>,
-	): string {
-		function computeLineIndex(text: string) {
-			const lineStarts: number[] = [0];
-			const lineContentEnds: number[] = [];
-			for (let i = 0; i < text.length; i++) {
-				const ch = text.charCodeAt(i);
-				if (ch === 10 /* \n */) {
-					const prevIdx = i - 1;
-					const prevWasCR = prevIdx >= 0 && text.charCodeAt(prevIdx) === 13; /* \r */
-					lineContentEnds.push(prevWasCR ? i - 1 : i);
-					lineStarts.push(i + 1);
-				}
-			}
-			// Last line (may have no trailing EOL)
-			lineContentEnds.push(text.length);
-			return { lineStarts, lineContentEnds, lineCount: lineStarts.length };
-		}
-
-		function getTextRange(
-			text: string,
-			index: { lineStarts: number[]; lineContentEnds: number[]; lineCount: number },
-			startLineZero: number,
-			startChar: number,
-			endLineZeroExclusive: number,
-			endChar: number,
-		): string {
-			// Clamp line indices to valid bounds to avoid out-of-range indexing when accepting EOF insertions
-			const startLineClamped = Math.max(0, Math.min(index.lineCount, startLineZero));
-			const endLineClamped = Math.max(0, Math.min(index.lineCount, endLineZeroExclusive));
-			const startOffset =
-				startLineClamped >= index.lineCount ? text.length : index.lineStarts[startLineClamped]! + startChar;
-			const endOffset = endLineClamped >= index.lineCount ? text.length : index.lineStarts[endLineClamped]! + endChar;
-			const from = Math.max(0, Math.min(startOffset, text.length));
-			const to = Math.max(from, Math.min(endOffset, text.length));
-			return text.substring(from, to);
-		}
-
-		const original = computeLineIndex(originalText);
-		const modified = computeLineIndex(modifiedText);
-
+	): string => {
 		const resultParts: string[] = [];
 		let currentLine = 0; // zero-based
 
@@ -229,360 +251,338 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			const isInsertion = diff.originalEndLineNumber === 0;
 			const isDeletion = diff.modifiedEndLineNumber === 0;
 
-			let endLine = isInsertion ? diff.originalStartLineNumber : diff.originalStartLineNumber - 1; // zero-based
-			let endCharacter = 0;
+			let endLine =
+				(isInsertion ? diff.originalStartLineNumber : diff.originalStartLineNumber - 1) +
+				1; /* +1 because monaco APIs are 1 based */
+			let endCharacter = 1; /* monaco APIs are 1 based */
 
-			// deletion at end of document: account for trailing EOL of the last kept line
-			if (isDeletion && diff.originalEndLineNumber === original.lineCount) {
+			// if this is a deletion at the very end of the document,then we need to account
+			// for a newline at the end of the last line which may have been deleted
+			// https://github.com/microsoft/vscode/issues/59670
+			if (isDeletion && diff.originalEndLineNumber === originalEditorModel.getLineCount()) {
 				endLine -= 1;
-				const contentEndOffset = original.lineContentEnds[endLine]!;
-				endCharacter = contentEndOffset - original.lineStarts[endLine]!;
+				endCharacter = originalEditorModel.getLineContent(endLine).length;
 			}
 
-			// keep original chunk up to start of this diff
-			if (endLine >= currentLine) {
-				const kept = getTextRange(originalText, original, currentLine, 0, endLine, endCharacter);
-				resultParts.push(kept);
-			}
+			resultParts.push(originalEditorModel.getValueInRange(new monaco.Range(currentLine, 1, endLine, endCharacter)));
 
 			if (!isDeletion) {
-				let fromLine = diff.modifiedStartLineNumber - 1; // zero-based
-				let fromCharacter = 0;
-				// insertion at or after end of original: take correct EOL of the last existing line
-				if (isInsertion && diff.originalStartLineNumber >= original.lineCount) {
+				let fromLine = diff.modifiedStartLineNumber - 1 + 1; /* +1 because monaco APIs are 1 based */
+				let fromCharacter = 1; /* monaco APIs are 1 based */
+
+				// if this is an insertion at the very end of the document,
+				// then we must start the next range after the last character of the
+				// previous line, in order to take the correct eol
+				if (isInsertion && diff.originalStartLineNumber === originalEditorModel.getLineCount()) {
 					fromLine -= 1;
-					const contentEndOffset = modified.lineContentEnds[fromLine]!;
-					fromCharacter = contentEndOffset - modified.lineStarts[fromLine]!;
+					fromCharacter = modifiedEditorModel.getLineContent(fromLine).length;
 				}
-				resultParts.push(getTextRange(modifiedText, modified, fromLine, fromCharacter, diff.modifiedEndLineNumber, 0));
+
+				resultParts.push(
+					modifiedEditorModel.getValueInRange(
+						new monaco.Range(
+							fromLine,
+							fromCharacter,
+							diff.modifiedEndLineNumber + 1 /* +1 because monaco APIs are 1 based */,
+							1,
+						),
+					),
+				);
 			}
 
-			// Move currentLine to the next segment in original. Guard against EOF insertions using clamping.
-			const nextCurrentLineOneBased = isInsertion ? diff.originalStartLineNumber : diff.originalEndLineNumber;
-			// Convert to zero-based exclusive start for the remainder copy
-			currentLine = Math.max(0, Math.min(original.lineCount, nextCurrentLineOneBased));
+			currentLine =
+				(isInsertion ? diff.originalStartLineNumber : diff.originalEndLineNumber) +
+				1; /* +1 because monaco APIs are 1 based */
 		}
 
-		// append the remainder of the original text
-		resultParts.push(getTextRange(originalText, original, currentLine, 0, original.lineCount, 0));
+		resultParts.push(
+			originalEditorModel.getValueInRange(new monaco.Range(currentLine, 1, originalEditorModel.getLineCount(), 1)),
+		);
+
 		return resultParts.join("");
-	}
+	};
 
-	const test = useRef(false);
-
-	function acceptChangeAtIndex(changeIndex: number) {
-		if (!diffEditor) return;
-
-		test.current = true;
-
-		const baseEditor = diffEditor.getOriginalEditor();
-		const modifiedEditor = diffEditor.getModifiedEditor();
-		const baseModel = baseEditor.getModel();
-		const modifiedModel = modifiedEditor.getModel();
-		const diffs = diffEditor.getLineChanges() ?? [];
-		if (!baseModel || !modifiedModel || changeIndex < 0 || changeIndex >= diffs.length) return;
-
-		// Preserve selections and visible ranges (VS Code-like behavior)
-		const selectionsBefore = baseEditor.getSelections();
-		const visibleRangesBefore = baseEditor.getVisibleRanges();
-
-		const originalText = baseModel.getValue();
-		const modifiedText = modifiedModel.getValue();
-		const selected = [diffs[changeIndex]!];
-		const result = applyLineChanges_like_vscode(originalText, modifiedText, selected);
-
-		baseEditor.pushUndoStop();
-		baseEditor.executeEdits("MonacoMarkdownDiffEditor.accept.vscode", [
-			{ range: baseModel.getFullModelRange(), text: result, forceMoveMarkers: false },
+	const applyReversibleContentUpdate = (
+		editor: M.IStandaloneCodeEditor,
+		editorModel: M.ITextModel,
+		newText: string,
+	) => {
+		editor.pushUndoStop();
+		editor.executeEdits("MonacoMarkdownDiffEditor.accept.vscode", [
+			{ range: editorModel.getFullModelRange(), text: newText },
 		]);
-		baseEditor.pushUndoStop();
+		editor.pushUndoStop();
+	};
 
-		// Restore selections and reveal previous viewport
-		if (selectionsBefore) {
-			baseEditor.setSelections(selectionsBefore);
+	const getMsgIfEmptyDiffsOrInvalidChangeIndex = (name: string, diffs: M.ILineChange[], diffIndex: number) => {
+		if (diffs.length === 0) {
+			return `${name}: diffs array is empty`;
 		}
-		const vr = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
-		if (vr) {
-			baseEditor.revealRange(vr, monaco.editor.ScrollType.Smooth);
+		if (diffIndex < 0 || diffIndex >= diffs.length) {
+			return `${name}: diffIndex is invalid: \`${diffIndex}\``;
 		}
-	}
+		return null;
+	};
 
-	function discardChangeAtIndex(changeIndex: number) {
-		if (!diffEditor) return;
-		const baseEditor = diffEditor.getOriginalEditor();
-		const modifiedEditor = diffEditor.getModifiedEditor();
-		const baseModel = baseEditor.getModel();
-		const modifiedModel = modifiedEditor.getModel();
-		const diffs = diffEditor.getLineChanges() ?? [];
-		if (!baseModel || !modifiedModel || changeIndex < 0 || changeIndex >= diffs.length) return;
-
-		// Preserve selections and visible ranges (VS Code-like behavior)
-		const selectionsBefore = modifiedEditor.getSelections();
-		const visibleRangesBefore = modifiedEditor.getVisibleRanges();
-
-		const originalText = baseModel.getValue();
-		const modifiedText = modifiedModel.getValue();
-		const keep = diffs.filter((_, i) => i !== changeIndex);
-		const result = applyLineChanges_like_vscode(originalText, modifiedText, keep);
-
-		modifiedEditor.pushUndoStop();
-		modifiedEditor.executeEdits("MonacoMarkdownDiffEditor.discard.vscode", [
-			{ range: modifiedModel.getFullModelRange(), text: result, forceMoveMarkers: false },
-		]);
-		modifiedEditor.pushUndoStop();
-		modifiedContentRef.current = result;
-
-		// Restore selections and reveal previous viewport
-		if (selectionsBefore) {
-			modifiedEditor.setSelections(selectionsBefore);
-		}
-		const vr = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
-		if (vr) {
-			modifiedEditor.revealRange(vr, monaco.editor.ScrollType.Smooth);
-		}
-	}
-
-	// Listen for updates once and also fetch latest as a fallback
-	useEffect(() => {
-		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pageId,
-		});
-
-		const unsubscribe = watcher.onUpdate(() => {
-			const v = watcher.localQueryResult();
-			setInitialValue((currentValue) => currentValue ?? (typeof v === "string" ? v : ""));
-		});
-
-		textContentWatchRef.current = {
-			unsubscribe: () => {
-				unsubscribe();
-				textContentWatchRef.current = null;
-			},
-		};
-
-		void (async () => {
-			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: pageId,
+	const acceptChangeAtIndex = (diffIndex: number) => {
+		const originalEditor = diffEditor.current?.getOriginalEditor();
+		const modifiedEditor = diffEditor.current?.getModifiedEditor();
+		const originalEditorModel = originalEditor?.getModel();
+		const modifiedEditorModel = modifiedEditor?.getModel();
+		const diffs = diffEditor.current?.getLineChanges();
+		if (
+			!diffEditor.current ||
+			!originalEditor ||
+			!modifiedEditor ||
+			!originalEditorModel ||
+			!modifiedEditorModel ||
+			!diffs
+		) {
+			const msg = msg_with_nullish_values_get("acceptChangeAtIndex", {
+				diffEditor: diffEditor.current,
+				originalEditor,
+				modifiedEditor,
+				originalEditorModel,
+				modifiedEditorModel,
+				diffs,
 			});
-			if (typeof fetchedValue === "string") {
-				setInitialValue((currentValue) => currentValue ?? fetchedValue);
-			}
-		})();
+			msg && console.error(msg);
+			return;
+		}
 
-		return () => {
-			textContentWatchRef.current?.unsubscribe();
-		};
-	}, [convex, pageId]);
+		const msgIfEmptyDiffsOrInvalidChangeIndex = getMsgIfEmptyDiffsOrInvalidChangeIndex(
+			"acceptChangeAtIndex",
+			diffs,
+			diffIndex,
+		);
+		if (msgIfEmptyDiffsOrInvalidChangeIndex) {
+			console.error(msgIfEmptyDiffsOrInvalidChangeIndex);
+			return;
+		}
 
-	// Apply initialValue once editor is mounted, then unsubscribe the watch
-	useEffect(() => {
-		if (!diffEditor || initialValue === undefined) return;
-		const baseEditor = diffEditor.getOriginalEditor();
-		const modifiedEditor = diffEditor.getModifiedEditor();
-		const baseModel = baseEditor?.getModel();
-		const modifiedModel = modifiedEditor?.getModel();
-		if (!baseModel || !modifiedModel) return;
+		const diffsToApply = [diffs[diffIndex]];
+		const newEditorContent = applyDiffs(originalEditorModel, modifiedEditorModel, diffsToApply);
+		applyReversibleContentUpdate(originalEditor, originalEditorModel, newEditorContent);
+		diffEditor.current.focus();
+	};
+
+	const discardChangeAtIndex = (diffIndex: number) => {
+		const originalEditor = diffEditor.current?.getOriginalEditor();
+		const modifiedEditor = diffEditor.current?.getModifiedEditor();
+		const originalEditorModel = originalEditor?.getModel();
+		const modifiedEditorModel = modifiedEditor?.getModel();
+		const diffs = diffEditor.current?.getLineChanges();
+		if (
+			!diffEditor.current ||
+			!originalEditor ||
+			!modifiedEditor ||
+			!originalEditorModel ||
+			!modifiedEditorModel ||
+			!diffs
+		) {
+			const msg = msg_with_nullish_values_get("discardChangeAtIndex", {
+				diffEditor: diffEditor.current,
+				originalEditor,
+				modifiedEditor,
+				originalEditorModel,
+				modifiedEditorModel,
+				diffs,
+			});
+			msg && console.error(msg);
+			return;
+		}
+
+		const msgIfEmptyDiffsOrInvalidChangeIndex = getMsgIfEmptyDiffsOrInvalidChangeIndex(
+			"discardChangeAtIndex",
+			diffs,
+			diffIndex,
+		);
+		if (msgIfEmptyDiffsOrInvalidChangeIndex) {
+			console.error(msgIfEmptyDiffsOrInvalidChangeIndex);
+			return;
+		}
+
+		const diffsToKeep = diffs.filter((_, i) => i !== diffIndex);
+		const newEditorContent = applyDiffs(originalEditorModel, modifiedEditorModel, diffsToKeep);
+		applyReversibleContentUpdate(modifiedEditor, modifiedEditorModel, newEditorContent);
+		modifiedContent.current = newEditorContent;
+		diffEditor.current.focus();
+	};
+
+	const handleOnMount: DiffEditorProps["onMount"] = (e) => {
+		diffEditor.current = e;
+
+		// Apply initialValue once editor is mounted, then unsubscribe the watch
+		if (!diffEditor.current || initialValue === undefined) return;
+
+		const originalEditor = diffEditor.current.getOriginalEditor();
+		const modifiedEditor = diffEditor.current.getModifiedEditor();
+		const originalEditorModel = originalEditor?.getModel();
+		const modifiedEditorModel = modifiedEditor?.getModel();
+		if (!originalEditorModel || !modifiedEditorModel) return;
 
 		// Force consistent EOL across both models
-		baseModel.setEOL(monaco.editor.EndOfLineSequence.LF);
-		modifiedModel.setEOL(monaco.editor.EndOfLineSequence.LF);
-
-		const seed = typeof initialValue === "string" ? initialValue : "";
+		originalEditorModel.setEOL(monaco.editor.EndOfLineSequence.LF);
+		modifiedEditorModel.setEOL(monaco.editor.EndOfLineSequence.LF);
 
 		// Preserve the original content for later patch creation
-		originalSeedRef.current = seed;
-		baseModel.setValue(seed);
+		originalContent.current = initialValue;
+		originalEditorModel.setValue(initialValue);
 
 		// Seed local value for modified copy
-		modifiedContentRef.current = modifiedInitialValue ?? seed;
-		modifiedModel.setValue(modifiedContentRef.current);
+		modifiedContent.current = modifiedInitialValue ?? initialValue;
+		modifiedEditorModel.setValue(modifiedContent.current);
 
-		// Unsubscribe the text watcher now that we seeded once
-		textContentWatchRef.current?.unsubscribe();
-	}, [diffEditor, initialValue]);
-
-	// Track modified editor content and listen for diff updates
-	useEffect(() => {
-		if (!diffEditor) return;
-
-		const modifiedEditor = diffEditor.getModifiedEditor();
-
-		if (!modifiedEditor) return;
-
-		const listeners = [
+		// Listen for modified editor content and diff updates
+		diffEditorListenersDisposable.current = [
 			modifiedEditor.onDidChangeModelContent(() => {
-				const v = modifiedEditor.getValue();
-				modifiedContentRef.current = v;
-				// Immediately realign widgets based on their anchor decorations
-				const modelNow = modifiedEditor.getModel();
-				if (!modelNow) return;
+				modifiedContent.current = modifiedEditor.getValue();
 
-				for (const [, w] of contentWidgetsRef.current) {
-					const anyWidget = w as unknown as {
-						anchorDecorationId?: string | null;
-						updateLine: (ln: number) => void;
-					};
+				const modifiedEditorModel = modifiedEditor.getModel();
+				if (!modifiedEditorModel) return;
 
-					const decoId = anyWidget.anchorDecorationId;
+				// Immediately realign widgets on content change
+				// because the onDifUpdateDiff event will take more
+				// time to fire.
+				for (const widget of contentWidgets.current) {
+					const decoId = widget.anchorDecorationId;
 					if (decoId) {
-						const range = modelNow.getDecorationRange(decoId);
+						const range = modifiedEditorModel.getDecorationRange(decoId);
 						if (range) {
-							anyWidget.updateLine(range.startLineNumber);
+							widget.updateLine(range.startLineNumber);
 							continue;
 						}
 					}
 				}
 			}),
 
-			diffEditor.onDidUpdateDiff(() => {
-				const changes = diffEditor.getLineChanges();
+			diffEditor.current.onDidUpdateDiff(() => {
+				if (!diffEditor.current) return;
+
+				const changes = diffEditor.current.getLineChanges();
 				if (!changes) return;
-				lineChangesRef.current = changes;
-				// Create/update floating content widgets at the top-left of content
-				const modifiedEditor = diffEditor.getModifiedEditor();
+				lineChanges.current = changes;
+				const modifiedEditor = diffEditor.current.getModifiedEditor();
+				const originalEditor = diffEditor.current.getOriginalEditor();
 				const model = modifiedEditor.getModel();
-				if (!modifiedEditor || !model) return;
-
-				const existing = contentWidgetsRef.current;
-				const seen = new Set<number>();
-
-				for (let i = 0; i < changes.length; i++) {
-					const change = changes[i]!;
-					const line = change.modifiedStartLineNumber || change.originalStartLineNumber || 1;
-					seen.add(i);
-					const key = i;
-					const existingWidget = existing.get(key) as AcceptDiscardContentWidget | undefined;
-					if (existingWidget) {
-						existingWidget.updateLine(line);
-						continue;
-					}
-					const widget = new AcceptDiscardContentWidget(
-						modifiedEditor,
-						key,
-						line,
-						(index) => {
-							acceptChangeAtIndex(index);
-						},
-						(index) => {
-							discardChangeAtIndex(index);
-						},
-					);
-					modifiedEditor.addContentWidget(widget);
-					existing.set(key, widget);
-				}
+				if (!originalEditor || !modifiedEditor || !model) return;
 
 				// Remove widgets for changes that no longer exist
-				for (const [key, widget] of Array.from(existing.entries())) {
-					if (!seen.has(key)) {
-						modifiedEditor.removeContentWidget(widget);
-						existing.delete(key);
+				for (const widget of contentWidgets.current.splice(changes.length)) {
+					widget.dispose();
+				}
+
+				// Create/update widgets
+				for (let i = 0; i < changes.length; i++) {
+					const change = changes[i];
+
+					const line = change.modifiedEndLineNumber
+						? change.modifiedStartLineNumber
+						: change.originalStartLineNumber || 1;
+
+					// Select the editor based on the changed lines to check
+					// if we are inserting or deleting text to make sure the widget is
+					// correctly aligned with the diff.
+					const isDeletion = change.modifiedEndLineNumber === 0;
+					const targetEditor = isDeletion ? originalEditor : modifiedEditor;
+
+					const existingWidget = contentWidgets.current.at(i);
+
+					// If the widget exists and its editor matches
+					// the expected target editor, update the line,
+					if (existingWidget) {
+						if (existingWidget.editor === targetEditor) {
+							existingWidget.updateLine(line);
+							continue;
+						}
+						// if the editor does not match, dispose the widget.
+						else {
+							existingWidget.dispose();
+							contentWidgets.current.splice(i, 1);
+						}
 					}
+
+					// If the widget does not exist or the target editor did not match,
+					// create a new one.
+					contentWidgets.current.push(
+						AcceptDiscardContentWidget.addToEditor({
+							editor: targetEditor,
+							diffIndex: i,
+							lineNumber: line,
+							onAcceptClick: (index) => {
+								acceptChangeAtIndex(index);
+							},
+							onDiscardClick: (index) => {
+								discardChangeAtIndex(index);
+							},
+						}),
+					);
 				}
 			}),
 		];
+	};
 
-		return () => {
-			for (const listener of listeners) {
-				listener.dispose();
-			}
-		};
-	}, [diffEditor]);
-
-	// Cleanup content widgets on unmount/editor dispose
-	useEffect(() => {
-		const mapRef = contentWidgetsRef.current;
-		return () => {
-			if (!diffEditor) return;
-			const modifiedEditor = diffEditor.getModifiedEditor();
-			if (!modifiedEditor) return;
-			for (const [, widget] of mapRef) {
-				modifiedEditor.removeContentWidget(widget);
-			}
-			mapRef.clear();
-		};
-	}, [diffEditor]);
-
-	// Gutter click handler removed; actions handled via content widget buttons
-
-	function handleOnMount(e: M.IStandaloneDiffEditor) {
-		setDiffEditor(e);
-	}
-
-	function handleDiscardAll() {
-		if (!diffEditor) return;
-		const baseEditor = diffEditor.getOriginalEditor();
-		const modifiedEditor = diffEditor.getModifiedEditor();
-		const baseModel = baseEditor.getModel();
-		const modifiedModel = modifiedEditor.getModel();
-		if (!baseModel || !modifiedModel) return;
-		const originalText = baseModel.getValue();
-		const modifiedText = modifiedModel.getValue();
-		// VS Code: applyLineChanges(original, modified, []) -> original text
-		const result = applyLineChanges_like_vscode(originalText, modifiedText, []);
-
-		// Preserve selections and visible ranges (VS Code-like behavior)
-		const selectionsBefore = modifiedEditor.getSelections();
-		const visibleRangesBefore = modifiedEditor.getVisibleRanges();
-		modifiedEditor.pushUndoStop();
-		modifiedEditor.executeEdits("MonacoMarkdownDiffEditor.discardAll.vscode", [
-			{ range: modifiedModel.getFullModelRange(), text: result, forceMoveMarkers: false },
-		]);
-		modifiedEditor.pushUndoStop();
-		modifiedContentRef.current = result;
-
-		// Restore selections and reveal previous viewport
-		if (selectionsBefore) {
-			modifiedEditor.setSelections(selectionsBefore);
+	const handleDiscardAll = () => {
+		const originalEditor = diffEditor.current?.getOriginalEditor();
+		const modifiedEditor = diffEditor.current?.getModifiedEditor();
+		const originalEditorModel = originalEditor?.getModel();
+		const modifiedEditorModel = modifiedEditor?.getModel();
+		if (!diffEditor.current || !originalEditor || !modifiedEditor || !originalEditorModel || !modifiedEditorModel) {
+			const msg = msg_with_nullish_values_get("handleDiscardAll", {
+				diffEditor: diffEditor.current,
+				originalEditor,
+				modifiedEditor,
+				originalEditorModel,
+				modifiedEditorModel,
+			});
+			msg && console.error(msg);
+			return;
 		}
-		const vrDiscardAll = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
-		if (vrDiscardAll) {
-			modifiedEditor.revealRange(vrDiscardAll, monaco.editor.ScrollType.Smooth);
+
+		const result = applyDiffs(originalEditorModel, modifiedEditorModel, []);
+		applyReversibleContentUpdate(modifiedEditor, modifiedEditorModel, result);
+		modifiedContent.current = result;
+		diffEditor.current.focus();
+	};
+
+	const handleAcceptAll = () => {
+		const originalEditor = diffEditor.current?.getOriginalEditor();
+		const modifiedEditor = diffEditor.current?.getModifiedEditor();
+		const originalEditorModel = originalEditor?.getModel();
+		const modifiedEditorModel = modifiedEditor?.getModel();
+		if (!diffEditor.current || !originalEditor || !modifiedEditor || !originalEditorModel || !modifiedEditorModel) {
+			const msg = msg_with_nullish_values_get("handleAcceptAll", {
+				diffEditor: diffEditor.current,
+				originalEditor,
+				modifiedEditor,
+				originalEditorModel,
+				modifiedEditorModel,
+			});
+			msg && console.error(msg);
+			return;
 		}
-	}
 
-	function handleAcceptAll() {
-		if (!diffEditor) return;
-		const baseEditor = diffEditor.getOriginalEditor();
-		const modifiedEditor = diffEditor.getModifiedEditor();
-		const baseModel = baseEditor.getModel();
-		const modifiedModel = modifiedEditor.getModel();
-		if (!baseModel || !modifiedModel) return;
-		const originalText = baseModel.getValue();
-		const modifiedText = modifiedModel.getValue();
-		const diffs = diffEditor.getLineChanges() ?? [];
-		const result = applyLineChanges_like_vscode(originalText, modifiedText, diffs);
+		const diffs = diffEditor.current.getLineChanges() ?? [];
+		const result = applyDiffs(originalEditorModel, modifiedEditorModel, diffs);
+		applyReversibleContentUpdate(originalEditor, originalEditorModel, result);
+		diffEditor.current.focus();
+	};
 
-		// Preserve selections and visible ranges (VS Code-like behavior)
-		const selectionsBefore = baseEditor.getSelections();
-		const visibleRangesBefore = baseEditor.getVisibleRanges();
-
-		baseEditor.pushUndoStop();
-		baseEditor.executeEdits("MonacoMarkdownDiffEditor.acceptAll.vscode", [
-			{ range: baseModel.getFullModelRange(), text: result, forceMoveMarkers: false },
-		]);
-		baseEditor.pushUndoStop();
-
-		// Restore selections and reveal previous viewport
-		if (selectionsBefore) {
-			baseEditor.setSelections(selectionsBefore);
+	const handleSaveAndExit = async () => {
+		const originalEditor = diffEditor.current?.getOriginalEditor();
+		const originalEditorModel = originalEditor?.getModel();
+		if (!diffEditor.current || !originalEditor || !originalEditorModel) {
+			const msg = msg_with_nullish_values_get("handleSaveAndExit", {
+				diffEditor: diffEditor.current,
+				baseEditor: originalEditor,
+				baseModel: originalEditorModel,
+			});
+			msg && console.error(msg);
+			return;
 		}
-		const vrAcceptAll = visibleRangesBefore && visibleRangesBefore.length ? visibleRangesBefore[0] : undefined;
-		if (vrAcceptAll) {
-			baseEditor.revealRange(vrAcceptAll, monaco.editor.ScrollType.Smooth);
-		}
-	}
 
-	async function handleSaveAndExit() {
-		if (!diffEditor) return;
-		const baseEditor = diffEditor.getOriginalEditor();
-		const baseModel = baseEditor.getModel();
-		if (!baseModel) return;
-		const before = (originalSeedRef.current ?? "").replace(/\r\n?/g, "\n");
-		const after = baseModel.getValue().replace(/\r\n?/g, "\n");
+		const before = originalContent.current.replace(/\r\n?/g, "\n");
+		const after = originalEditorModel.getValue().replace(/\r\n?/g, "\n");
 		try {
 			const patches = makePatches(before, after, { margin: 100 });
 			const patchText = stringifyPatches(patches);
@@ -595,33 +595,68 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			});
 			onExit();
 		} catch (err) {
-			console.error("MonacoMarkdownDiffEditor save-and-exit: patch generation/apply failed", err);
+			console.error("handleSaveAndExit failed", err);
 		}
-	}
+	};
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			setModifiedContent: (value: string) => {
+				const modifiedEditor = diffEditor.current?.getModifiedEditor();
+				const modifiedEditorModel = modifiedEditor?.getModel();
+				if (!diffEditor.current || !modifiedEditor || !modifiedEditorModel) {
+					const msg = msg_with_nullish_values_get("useImperativeHandle.setModifiedContent", {
+						diffEditor: diffEditor.current,
+						modifiedEditor,
+						modifiedModel: modifiedEditorModel,
+					});
+					msg && console.error(msg);
+					return;
+				}
+
+				applyReversibleContentUpdate(modifiedEditor, modifiedEditorModel, value);
+				modifiedContent.current = value;
+			},
+		}),
+		[diffEditor],
+	);
+
+	useEffect(() => {
+		return () => {
+			// Dispose editor event listeners
+			for (const disposable of diffEditorListenersDisposable.current) {
+				disposable.dispose();
+			}
+
+			// Dispose widgets
+			if (!diffEditor.current) return;
+			const modifiedEditor = diffEditor.current.getModifiedEditor();
+			if (!modifiedEditor) return;
+			for (const widget of contentWidgets.current.splice(0)) {
+				widget.dispose();
+			}
+		};
+	}, []);
 
 	return (
-		<div className={cn("MonacoMarkdownDiffEditor flex h-full w-full flex-col", className)}>
+		<div className={cn(CLASS_NAMES.root, "flex h-full w-full flex-col", className)}>
 			{/* Header similar to regular editor avatars bar, with actions on the right */}
-			<div className="MonacoMarkdownDiffEditor-header flex items-center gap-2 border-b border-border/80 bg-background/50 p-2">
-				<div className="MonacoMarkdownDiffEditor-header-title text-sm text-muted-foreground">Review changes</div>
-				<div className="MonacoMarkdownDiffEditor-header-actions ml-auto flex items-center gap-2">
-					<Button
-						variant="destructive"
-						size="sm"
-						className="MonacoMarkdownDiffEditor-header-discard"
-						onClick={handleDiscardAll}
-					>
+			<div className={cn(CLASS_NAMES.header, "flex items-center gap-2 border-b border-border/80 bg-background/50 p-2")}>
+				<div className={cn(CLASS_NAMES.headerTitle, "text-sm text-muted-foreground")}>Review changes</div>
+				<div className={cn(CLASS_NAMES.headerActions, "ml-auto flex items-center gap-2")}>
+					<Button variant="destructive" size="sm" className={cn(CLASS_NAMES.headerDiscard)} onClick={handleDiscardAll}>
 						Discard All
 					</Button>
 					<Button
 						size="sm"
-						className="MonacoMarkdownDiffEditor-header-accept text-white"
+						className={cn(CLASS_NAMES.headerAccept, "text-white")}
 						style={{ background: "hsl(var(--success, 142 76% 36%))" }}
 						onClick={handleAcceptAll}
 					>
 						Accept All
 					</Button>
-					<Button size="sm" className="MonacoMarkdownDiffEditor-header-save" onClick={handleSaveAndExit}>
+					<Button size="sm" className={cn(CLASS_NAMES.headerSave)} onClick={handleSaveAndExit}>
 						Save and exit
 					</Button>
 				</div>
@@ -642,7 +677,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 					fixedOverflowWidgets: false,
 
 					lineNumbers: "on",
-					renderLineHighlight: "all", // or "gutter" if you only want the gutter
+					renderLineHighlight: "all",
 					renderLineHighlightOnlyWhenFocus: true,
 				}}
 			/>

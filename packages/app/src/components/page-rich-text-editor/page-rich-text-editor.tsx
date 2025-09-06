@@ -97,7 +97,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 							<div
 								className={cn(
 									"PageRichTextEditor-diff-switch flex items-center gap-2",
-									editorMode !== "markdown" && "invisible",
+									editorMode === "rich" && "invisible",
 								)}
 							>
 								<span className="text-xs text-muted-foreground/80">Diff</span>
@@ -114,7 +114,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 								<div className="PageRichTextEditor-switch-container flex items-center gap-2">
 									<span className="text-xs text-muted-foreground/80">Rich</span>
 									<Switch
-										checked={editorMode === "markdown"}
+										checked={editorMode !== "rich"}
 										onCheckedChange={(checked: boolean) => setEditorMode(checked ? "markdown" : "rich")}
 									/>
 									<span className="text-xs text-muted-foreground/80">Markdown</span>
