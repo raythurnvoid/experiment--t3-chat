@@ -11,3 +11,6 @@
 [submodule "packages/app/ai"]
 	path = packages/app/vendor/ai
 	url = https://github.com/vercel/ai.git
+[submodule "packages/app/vendor/presence"]
+	path = packages/app/vendor/presence
+	url = https://github.com/get-convex/presence

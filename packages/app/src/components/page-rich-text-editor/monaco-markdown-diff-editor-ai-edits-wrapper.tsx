@@ -30,6 +30,9 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 			pageId: pageId,
 			threadId: threadId,
 		});
+
+		console.log("watcher", initialModified.current);
+
 		const unsubs = watcher.onUpdate(() => {
 			const res = watcher.localQueryResult();
 			if (res && typeof res === "object") {

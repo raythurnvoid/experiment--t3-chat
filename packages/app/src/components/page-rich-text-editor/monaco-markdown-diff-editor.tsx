@@ -156,6 +156,7 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 		return {
 			position: { lineNumber: this.lineNumber, column: 1 },
 			preference: [monaco.editor.ContentWidgetPositionPreference.EXACT],
+			positionAffinity: monaco.editor.PositionAffinity.Right,
 		};
 	}
 
@@ -187,7 +188,9 @@ class AcceptDiscardContentWidget implements monaco.editor.IContentWidget {
 	afterRender() {
 		// Force non-fixed layout and shift the widget left of the text by its width + gap
 		this.node.style.position = "absolute";
-		this.node.style.transform = `translate3d(calc(-100% - 5px), -2px, 0)`;
+		const layoutInfo = this.editor.getOption(monaco.editor.EditorOption.layoutInfo);
+		const layoutBaselineLeft = layoutInfo?.contentLeft ?? 0;
+		this.node.style.transform = `translate3d(calc(-100% - 5px + ${layoutBaselineLeft}px), -2px, 0)`;
 		this.node.style.display = "flex";
 	}
 

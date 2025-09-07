@@ -2,3 +2,4 @@ packages:
   - "packages/*"
   - "packages/app/vendor/assistant-ui/packages/*"
   - "packages/app/vendor/opencode"
+  - "packages/app/vendor/presence"

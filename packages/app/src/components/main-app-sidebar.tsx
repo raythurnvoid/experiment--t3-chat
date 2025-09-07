@@ -21,6 +21,7 @@ import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils.ts";
 import { Logo } from "@/components/logo.tsx";
 import { dark } from "@clerk/themes";
+import { OnlinePresenceIndicator } from "@/components/online-presence-indicator.tsx";
 
 function ThemeToggleMenuItem() {
 	const { mode, resolved_theme, set_mode } = useThemeContext();
@@ -188,6 +189,9 @@ export function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 			<Sidebar collapsible="icon" {...rest}>
 				<SidebarHeader>
 					<SidebarTrigger />
+					<div className="ml-auto pr-2">
+						<OnlinePresenceIndicator className="text-xs opacity-80" />
+					</div>
 				</SidebarHeader>
 
 				{/* App Name */}

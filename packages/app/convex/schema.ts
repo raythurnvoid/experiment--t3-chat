@@ -255,6 +255,16 @@ const app_convex_schema = defineSchema({
 		.index("by_user_thread_page", ["user_id", "thread_id", "page_id"])
 		.index("by_page", ["page_id"]),
 
+	/**
+	 * Tracks scheduled cleanup tasks to remove a user's pending edits.
+	 * One task per user; canceled on heartbeat, executed if user remains offline.
+	 */
+	ai_chat_pending_edits_cleanup_tasks: defineTable({
+		user_id: v.string(),
+		scheduled_function_id: v.id("_scheduled_functions"),
+		created_at: v.number(),
+	}).index("by_user_id", ["user_id"]),
+
 	page_updates_richtext_broadcast: defineTable({
 		/** Workspace ID extracted from roomId */
 		workspace_id: v.string(),

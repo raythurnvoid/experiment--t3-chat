@@ -1,7 +1,7 @@
 import { tool, type InferToolInput, type InferToolOutput } from "ai";
 import z from "zod";
 import dedent from "dedent";
-import { createTwoFilesPatch } from "diff";
+import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import { internal } from "../convex/_generated/api";
 import {
@@ -627,7 +627,7 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 				: "";
 
 			const newText = args.content;
-			const diff = createTwoFilesPatch(path, path, oldText, newText);
+			const diff = createPatch(path, oldText, newText);
 
 			if (!pageId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {

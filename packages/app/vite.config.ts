@@ -58,6 +58,7 @@ export default defineConfig({
 			"@assistant-ui/react-markdown",
 			"assistant-cloud",
 			"@assistant-ui/react-edge",
+			"@convex-dev/presence",
 		],
 	},
 });

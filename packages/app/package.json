@@ -30,6 +30,7 @@
 		"@clerk/backend": "^2.4.0",
 		"@clerk/clerk-react": "^5.32.4",
 		"@clerk/themes": "^2.3.2",
+		"@convex-dev/presence": "workspace:*",
 		"@hono/node-server": "^1.14.4",
 		"@hookform/resolvers": "^5.1.1",
 		"@icons-pack/react-simple-icons": "^13.7.0",
