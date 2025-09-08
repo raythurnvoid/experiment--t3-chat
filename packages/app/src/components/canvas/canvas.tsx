@@ -48,10 +48,10 @@ export function Canvas() {
 				return;
 			}
 
-			if (payload.mode === "diff" && payload.modifiedSeed) {
+			if (payload.mode === "diff" && payload.modifiedContent) {
 				editor.current.requestOpenDiff({
 					pageId: payload.pageId,
-					modifiedEditorValue: payload.modifiedSeed,
+					modifiedEditorValue: payload.modifiedContent ?? "",
 				});
 			}
 		});

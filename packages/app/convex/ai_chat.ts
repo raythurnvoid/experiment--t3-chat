@@ -33,6 +33,7 @@ import {
 	ai_tool_create_grep_pages,
 	ai_tool_create_text_search_pages,
 	ai_tool_create_write_page,
+	ai_tool_create_edit_page,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
@@ -401,6 +402,7 @@ export const chat = httpAction(async (ctx, request) => {
 						grep_pages: ai_tool_create_grep_pages(ctx, { thread_id: threadId ?? "" }),
 						text_search_pages: ai_tool_create_text_search_pages(ctx, { thread_id: threadId ?? "" }),
 						write_page: ai_tool_create_write_page(ctx, { thread_id: threadId ?? "" }),
+						edit_page: ai_tool_create_edit_page(ctx, { thread_id: threadId ?? "" }),
 					},
 					experimental_transform: smoothStream({
 						delayInMs: 100,

@@ -1,12 +1,5 @@
 import "./app-ai-chat.css";
-import {
-	makeAssistantToolUI,
-	useMessage,
-	useMessagePart,
-	useMessagePartRuntime,
-	useThreadListItem,
-	useThreadListItemRuntime,
-} from "@assistant-ui/react";
+import { makeAssistantToolUI, useMessage, useMessagePartRuntime, useThreadListItemRuntime } from "@assistant-ui/react";
 import type { ToolCallContentPartProps } from "@assistant-ui/react";
 import { CopyIcon, FileText, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -16,9 +9,8 @@ import { Actions, Action } from "./ai-elements/actions.tsx";
 import { CodeBlock } from "./ai-elements/code-block.tsx";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
 import { Thread } from "@/components/assistant-ui/thread.tsx";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { global_event_ai_chat_open_canvas, global_event_ai_chat_open_canvas_by_path } from "../lib/global-events.tsx";
-import { useLiveRef } from "../hooks/utils-hooks.ts";
 import type {
 	ai_tool_create_read_page_ToolInput,
 	ai_tool_create_read_page_ToolOutput,
@@ -32,6 +24,8 @@ import type {
 	ai_tool_create_text_search_pages_ToolOutput,
 	ai_tool_create_write_page_ToolInput,
 	ai_tool_create_write_page_ToolOutput,
+	ai_tool_create_edit_page_ToolInput,
+	ai_tool_create_edit_page_ToolOutput,
 } from "../lib/ai-chat.ts";
 
 function mapStatusToToolState(status: {
@@ -181,7 +175,7 @@ function ReadPageToolUiComponent(
 				<ToolInput input={args} />
 				<ToolOutput
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
-					errorText={(result as any)?.errorText}
+					errorText={(result as any)?.error}
 				/>
 			</ToolContent>
 		</Tool>
@@ -214,7 +208,7 @@ function ListPagesToolUiComponent(
 				<ToolInput input={args} />
 				<ToolOutput
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
-					errorText={(result as any)?.errorText}
+					errorText={(result as any)?.error}
 				/>
 			</ToolContent>
 		</Tool>
@@ -247,7 +241,7 @@ function GlobPagesToolUiComponent(
 				<ToolInput input={args} />
 				<ToolOutput
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
-					errorText={(result as any)?.errorText}
+					errorText={(result as any)?.error}
 				/>
 			</ToolContent>
 		</Tool>
@@ -280,7 +274,7 @@ function GrepPagesToolUiComponent(
 				<ToolInput input={args} />
 				<ToolOutput
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
-					errorText={(result as any)?.errorText}
+					errorText={(result as any)?.error}
 				/>
 			</ToolContent>
 		</Tool>
@@ -316,7 +310,7 @@ function TextSearchPagesToolUiComponent(
 				<ToolInput input={args} />
 				<ToolOutput
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
-					errorText={(result as any)?.errorText}
+					errorText={(result as any)?.error}
 				/>
 			</ToolContent>
 		</Tool>
@@ -343,7 +337,7 @@ function WritePageToolUiComponent(
 			const cleanup = partRuntime.subscribe(() => {
 				if (handled) return;
 				const state = partRuntime.getState();
-				if (state.type === "tool-call" && state.status.type === "complete") {
+				if (state.type === "tool-call" && state.status.type === "complete" && !(state.result as any)?.error) {
 					handled = true;
 
 					if (!state.result) return;
@@ -353,14 +347,14 @@ function WritePageToolUiComponent(
 					const result = state.result as ai_tool_create_write_page_ToolOutput;
 					const args = state.args as ai_tool_create_write_page_ToolInput;
 
-					const pageId = result.metadata.page_id;
+					const pageId = result.metadata.pageId;
 					if (!pageId) {
 						console.warn("write_page: page id missing in tool result for path", args.path);
 						return;
 					}
 
 					// Existing page preview: open diff mode, seed modified with proposed content
-					global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedSeed: args.content, threadId });
+					global_event_ai_chat_open_canvas.dispatch({ pageId, mode: "diff", modifiedContent: args.content, threadId });
 				}
 			});
 
@@ -396,7 +390,7 @@ function WritePageToolUiComponent(
 							<CodeBlock code={result.output} language="text" />
 						) : null
 					}
-					errorText={(result as any)?.errorText}
+					errorText={(result as any)?.error}
 				/>
 			</ToolContent>
 		</Tool>
@@ -406,6 +400,79 @@ function WritePageToolUiComponent(
 const WritePageToolUi = makeAssistantToolUI({
 	toolName: "write_page",
 	render: WritePageToolUiComponent,
+});
+
+function EditPageToolUiComponent(
+	props: ToolCallContentPartProps<ai_tool_create_edit_page_ToolInput, ai_tool_create_edit_page_ToolOutput>,
+) {
+	const { args, result, status } = props;
+	const threadListItemRuntime = useThreadListItemRuntime();
+	const partRuntime = useMessagePartRuntime();
+
+	useEffect(() => {
+		let handled = false;
+		if (status.type !== "complete") {
+			const cleanup = partRuntime.subscribe(() => {
+				if (handled) return;
+				const state = partRuntime.getState();
+				if (state.type === "tool-call" && state.status.type === "complete" && !(state.result as any)?.error) {
+					handled = true;
+					if (!state.result) return;
+					const threadId = threadListItemRuntime.getState().remoteId;
+					if (!threadId) return;
+					const result = state.result as ai_tool_create_edit_page_ToolOutput;
+					const pageId = result.metadata.pageId;
+					if (!pageId) return;
+					global_event_ai_chat_open_canvas.dispatch({
+						pageId,
+						mode: "diff",
+						threadId,
+						modifiedContent: result.metadata.modifiedContent,
+					});
+				}
+			});
+			return cleanup;
+		}
+	}, [status]);
+
+	const handleOpenCanvas = () => {
+		global_event_ai_chat_open_canvas_by_path.dispatch({ path: args.path });
+	};
+
+	return (
+		<Tool defaultOpen={false} className="AppAiChat-edit-page-tool">
+			<ToolHeader type="tool-edit_page" state={mapStatusToToolState(status)} />
+			<ToolContent>
+				<div className="AppAiChat-tool-meta-row flex items-center justify-between px-4 pt-3">
+					<ToolMetaHeader metadata={result?.metadata || {}} />
+					<Actions className="AppAiChat-tool-actions">
+						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
+							<CopyIcon className="size-4" />
+						</Action>
+						<Action tooltip="Open canvas" label="Open canvas" onClick={handleOpenCanvas}>
+							<FileText className="size-4" />
+						</Action>
+					</Actions>
+				</div>
+				<ToolInput input={args} />
+				<ToolOutput
+					output={
+						result?.metadata?.diff ? (
+							<CodeBlock code={result.metadata.diff} language="diff" />
+						) : result?.output ? (
+							<CodeBlock code={result.output} language="text" />
+						) : null
+					}
+					errorText={(result as any)?.error}
+				/>
+			</ToolContent>
+		</Tool>
+	);
+}
+
+const EditPageToolUi = makeAssistantToolUI({
+	toolName: "edit_page",
+	render: EditPageToolUiComponent,
 });
 
 export interface AppAiChat_Props {
@@ -425,6 +492,7 @@ export function AppAiChat(props: AppAiChat_Props) {
 			<GrepPagesToolUi />
 			<TextSearchPagesToolUi />
 			<WritePageToolUi />
+			<EditPageToolUi />
 		</div>
 	);
 }

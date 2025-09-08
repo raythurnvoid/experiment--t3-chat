@@ -19,18 +19,18 @@ import { math_clamp } from "../shared/shared-utils.ts";
 async function list_dir(
 	ctx: ActionCtx,
 	args: {
-		workspace_id: string;
-		project_id: string;
+		workspaceId: string;
+		projectId: string;
 		path: string;
-		max_depth?: number;
+		maxDepth?: number;
 		limit?: number;
 		include?: string;
 	},
-): Promise<{ items: Array<{ path: string; updated_at: number }>; metadata: { count: number; truncated: boolean } }> {
+): Promise<{ items: Array<{ path: string; updatedAt: number }>; metadata: { count: number; truncated: boolean } }> {
 	// Resolve the starting node id for the provided path
 	const startNodeId = await ctx.runQuery(internal.ai_docs_temp.resolve_tree_node_id_from_path, {
-		workspaceId: args.workspace_id,
-		projectId: args.project_id,
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
 		path: args.path,
 	});
 	if (!startNodeId) return { items: [], metadata: { count: 0, truncated: false } };
@@ -38,10 +38,10 @@ async function list_dir(
 	// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
 	const basePath = server_path_normalize(args.path);
 
-	const maxDepth = args.max_depth ? math_clamp(args.max_depth, 0, 10) : 5;
+	const maxDepth = args.maxDepth ? math_clamp(args.maxDepth, 0, 10) : 5;
 	const limit = args.limit ? math_clamp(args.limit, 1, 100) : 100;
 
-	const resultPaths: Array<{ path: string; updated_at: number }> = [];
+	const resultPaths: Array<{ path: string; updatedAt: number }> = [];
 	let truncated = false;
 
 	// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
@@ -70,7 +70,7 @@ async function list_dir(
 		// If include pattern is provided, only add items that match the glob
 		const matchesInclude = args.include ? minimatch(childPath, args.include) : true;
 		if (matchesInclude) {
-			resultPaths.push({ path: childPath, updated_at: child.updated_at });
+			resultPaths.push({ path: childPath, updatedAt: child.updated_at });
 
 			// Respect limit if provided (only counts included items)
 			if (resultPaths.length >= limit) {
@@ -104,6 +104,384 @@ async function list_dir(
 			truncated,
 		},
 	};
+}
+
+/**
+ * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
+ *
+ * Notes:
+ * - We require oldString to be non-empty (unlike OpenCode's special-case overwrite).
+ * - The pipeline order and algorithms match OpenCode's active modes.
+ */
+type Replacer = (content: string, find: string) => Generator<string, void, unknown>;
+
+const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0;
+const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3;
+
+/**
+ * Calculate the similarity between two strings.
+ *
+ * @returns A number between 0 and 1, an higher number means the strings are more similar.
+ */
+function levenshtein(a: string, b: string): number {
+	if (a === "" || b === "") return Math.max(a.length, b.length);
+	const matrix: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+		Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+	);
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+		}
+	}
+	return matrix[a.length][b.length];
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (SimpleReplacer)
+ *
+ * This replacer matches the exact literal oldString as-is,
+ * ensuring byte-for-byte precision and highly predictable diffs in the simplest case.
+ *
+ * Order: 1
+ * Pros:
+ * - Exact and fast
+ * - Lowest risk, predictable diffs
+ * Cons:
+ * - Brittle to whitespace/escaping/indentation changes
+ */
+function* ai_tool_edit_page_replacer_simple(_content: string, find: string): Generator<string, void, unknown> {
+	yield find;
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (LineTrimmedReplacer)
+ *
+ * This replacer compares multi-line content by trimming each line before matching,
+ * making it resilient to incidental leading/trailing spaces while preserving the original block.
+ *
+ * Order: 2
+ * Pros:
+ * - Ignores leading/trailing whitespace per line
+ * - Good for multi-line blocks
+ * Cons:
+ * - Can collide when multiple blocks are equal after per-line trim
+ */
+function* ai_tool_edit_page_replacer_line_trimmed(content: string, find: string): Generator<string, void, unknown> {
+	const originalLines = content.split("\n");
+	const searchLines = find.split("\n");
+	if (searchLines[searchLines.length - 1] === "") searchLines.pop();
+	for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
+		let matches = true;
+		for (let j = 0; j < searchLines.length; j++) {
+			const originalTrimmed = originalLines[i + j].trim();
+			const searchTrimmed = searchLines[j].trim();
+			if (originalTrimmed !== searchTrimmed) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches) {
+			let matchStartIndex = 0;
+			for (let k = 0; k < i; k++) matchStartIndex += originalLines[k].length + 1;
+			let matchEndIndex = matchStartIndex;
+			for (let k = 0; k < searchLines.length; k++) matchEndIndex += originalLines[i + k].length + 1;
+			yield content.substring(matchStartIndex, matchEndIndex);
+		}
+	}
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (BlockAnchorReplacer)
+ *
+ * This replacer anchors on the first and last trimmed lines of the block,
+ * then checks middle-line similarity, allowing matches even when the interior has drifted.
+ *
+ * Order: 3
+ * Pros:
+ * - Robust to middle-line drift using first/last anchors
+ * - Can find moved blocks
+ * Cons:
+ * - Heuristic thresholds; slower on large files
+ * - Possible false positives
+ */
+function* ai_tool_edit_page_replacer_block_anchor(content: string, find: string): Generator<string, void, unknown> {
+	const originalLines = content.split("\n");
+	const searchLines = find.split("\n");
+	if (searchLines.length < 3) return;
+	if (searchLines[searchLines.length - 1] === "") searchLines.pop();
+	const firstLineSearch = searchLines[0].trim();
+	const lastLineSearch = searchLines[searchLines.length - 1].trim();
+	const searchBlockSize = searchLines.length;
+	const candidates: Array<{ startLine: number; endLine: number }> = [];
+	for (let i = 0; i < originalLines.length; i++) {
+		if (originalLines[i].trim() !== firstLineSearch) continue;
+		for (let j = i + 2; j < originalLines.length; j++) {
+			if (originalLines[j].trim() === lastLineSearch) {
+				candidates.push({ startLine: i, endLine: j });
+				break;
+			}
+		}
+	}
+	if (candidates.length === 0) return;
+	if (candidates.length === 1) {
+		const { startLine, endLine } = candidates[0]!;
+		const actualBlockSize = endLine - startLine + 1;
+		let similarity = 0;
+		const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+		if (linesToCheck > 0) {
+			for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+				const originalLine = originalLines[startLine + j].trim();
+				const searchLine = searchLines[j].trim();
+				const maxLen = Math.max(originalLine.length, searchLine.length);
+				if (maxLen === 0) continue;
+				const distance = levenshtein(originalLine, searchLine);
+				similarity += (1 - distance / maxLen) / linesToCheck;
+				if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) break;
+			}
+		} else {
+			similarity = 1.0;
+		}
+		if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
+			let matchStartIndex = 0;
+			for (let k = 0; k < startLine; k++) matchStartIndex += originalLines[k].length + 1;
+			let matchEndIndex = matchStartIndex;
+			for (let k = startLine; k <= endLine; k++) {
+				matchEndIndex += originalLines[k].length;
+				if (k < endLine) matchEndIndex += 1;
+			}
+			yield content.substring(matchStartIndex, matchEndIndex);
+		}
+		return;
+	}
+	let bestMatch: { startLine: number; endLine: number } | null = null;
+	let maxSimilarity = -1;
+	for (const candidate of candidates) {
+		const { startLine, endLine } = candidate;
+		const actualBlockSize = endLine - startLine + 1;
+		let similarity = 0;
+		const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+		if (linesToCheck > 0) {
+			for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+				const originalLine = originalLines[startLine + j].trim();
+				const searchLine = searchLines[j].trim();
+				const maxLen = Math.max(originalLine.length, searchLine.length);
+				if (maxLen === 0) continue;
+				const distance = levenshtein(originalLine, searchLine);
+				similarity += 1 - distance / maxLen;
+			}
+			similarity /= linesToCheck || 1;
+		} else {
+			similarity = 1.0;
+		}
+		if (similarity > maxSimilarity) {
+			maxSimilarity = similarity;
+			bestMatch = candidate;
+		}
+	}
+	if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
+		const { startLine, endLine } = bestMatch;
+		let matchStartIndex = 0;
+		for (let k = 0; k < startLine; k++) matchStartIndex += originalLines[k].length + 1;
+		let matchEndIndex = matchStartIndex;
+		for (let k = startLine; k <= endLine; k++) {
+			matchEndIndex += originalLines[k].length;
+			if (k < endLine) matchEndIndex += 1;
+		}
+		yield content.substring(matchStartIndex, matchEndIndex);
+	}
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (WhitespaceNormalizedReplacer)
+ *
+ * This replacer collapses whitespace for comparison so that spacing differences
+ * do not prevent a match, while still yielding the original text for replacement.
+ *
+ * Order: 4
+ * Pros:
+ * - Collapses whitespace; tolerant to spacing variations
+ * - Works for inline and multi-line matches
+ * Cons:
+ * - Risky when whitespace is semantically meaningful (tables, YAML, code)
+ */
+function* ai_tool_edit_page_replacer_whitespace_normalized(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
+	const normalizeWhitespace = (text: string) => text.replace(/\s+/g, " ").trim();
+	const normalizedFind = normalizeWhitespace(find);
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (normalizeWhitespace(line) === normalizedFind) {
+			yield line;
+		} else {
+			const normalizedLine = normalizeWhitespace(line);
+			if (normalizedLine.includes(normalizedFind)) {
+				const words = find.trim().split(/\s+/);
+				if (words.length > 0) {
+					const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+					try {
+						const regex = new RegExp(pattern);
+						const match = line.match(regex);
+						if (match) yield match[0]!;
+					} catch {}
+				}
+			}
+		}
+	}
+	const findLines = find.split("\n");
+	if (findLines.length > 1) {
+		for (let i = 0; i <= lines.length - findLines.length; i++) {
+			const block = lines.slice(i, i + findLines.length);
+			if (normalizeWhitespace(block.join("\n")) === normalizedFind) {
+				yield block.join("\n");
+			}
+		}
+	}
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (IndentationFlexibleReplacer)
+ *
+ * This replacer removes common indentation before comparison to handle blocks
+ * that have been re-indented, matching the original block regardless of leading spaces.
+ *
+ * Order: 5
+ * Pros:
+ * - Matches blocks regardless of common leading indentation
+ * - Good for re-indented code/docs
+ * Cons:
+ * - Can over-match the same block at multiple indents
+ */
+function* ai_tool_edit_page_replacer_indentation_flexible(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
+	const removeIndentation = (text: string) => {
+		const lines = text.split("\n");
+		const nonEmpty = lines.filter((l) => l.trim().length > 0);
+		if (nonEmpty.length === 0) return text;
+		const minIndent = Math.min(
+			...nonEmpty.map((line) => {
+				const m = line.match(/^(\s*)/);
+				return m ? m[1]!.length : 0;
+			}),
+		);
+		return lines.map((line) => (line.trim().length === 0 ? line : line.slice(minIndent))).join("\n");
+	};
+	const normalizedFind = removeIndentation(find);
+	const contentLines = content.split("\n");
+	const findLines = find.split("\n");
+	for (let i = 0; i <= contentLines.length - findLines.length; i++) {
+		const block = contentLines.slice(i, i + findLines.length).join("\n");
+		if (removeIndentation(block) === normalizedFind) yield block;
+	}
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (EscapeNormalizedReplacer)
+ *
+ * This replacer unescapes sequences like \n and \t when matching,
+ * making it possible to locate content embedded inside string literals or escaped contexts.
+ *
+ * Order: 6
+ * Pros:
+ * - Unescapes sequences (\n, \t, \' , \" , \`, \\) to match embedded strings
+ * Cons:
+ * - May over-match in files with many similar string literals
+ */
+function* ai_tool_edit_page_replacer_escape_normalized(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
+	const unescapeString = (str: string): string =>
+		str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (match, captured) => {
+			switch (captured) {
+				case "n":
+					return "\n";
+				case "t":
+					return "\t";
+				case "r":
+					return "\r";
+				case "'":
+					return "'";
+				case '"':
+					return '"';
+				case "`":
+					return "`";
+				case "\\":
+					return "\\";
+				case "\n":
+					return "\n";
+				case "$":
+					return "$";
+				default:
+					return match;
+			}
+		});
+	const unescapedFind = unescapeString(find);
+	if (content.includes(unescapedFind)) yield unescapedFind;
+	const lines = content.split("\n");
+	const findLines = unescapedFind.split("\n");
+	for (let i = 0; i <= lines.length - findLines.length; i++) {
+		const block = lines.slice(i, i + findLines.length).join("\n");
+		const unescapedBlock = unescapeString(block);
+		if (unescapedBlock === unescapedFind) yield block;
+	}
+}
+
+function replace_once_or_all(
+	content: string,
+	oldString: string,
+	newString: string,
+	opts?: { replaceAll?: boolean; mode?: "auto" | "exact" },
+): { content: string; matches: number } {
+	if (oldString.length === 0) throw new Error("oldString must not be empty");
+	if (oldString === newString) throw new Error("oldString and newString must be different");
+
+	const replaceAll = !!opts?.replaceAll;
+	const activePipeline: Replacer[] = [
+		ai_tool_edit_page_replacer_simple,
+		ai_tool_edit_page_replacer_line_trimmed,
+		ai_tool_edit_page_replacer_block_anchor,
+		ai_tool_edit_page_replacer_whitespace_normalized,
+		ai_tool_edit_page_replacer_indentation_flexible,
+		ai_tool_edit_page_replacer_escape_normalized,
+		// Optional (disabled) replacers:
+		// - ai_tool_edit_page_replacer_trimmed_boundary
+		//   Source: OpenCode TrimmedBoundaryReplacer (packages/app/vendor/opencode/packages/opencode/src/tool/edit.ts)
+		//   Pros: tolerant when only outer whitespace differs
+		//   Cons: high collision risk; enable only as last fallback
+		// - ai_tool_edit_page_replacer_context_aware
+		//   Source: OpenCode ContextAwareReplacer
+		//   Pros: first/last anchors + middle-line equality ratio
+		//   Cons: heuristic, slower; keep last if enabled
+		// - ai_tool_edit_page_replacer_multi_occurrence
+		//   Source: OpenCode MultiOccurrenceReplacer
+		//   Pros: enumerate all exact hits for custom global replace flows
+		//   Cons: redundant with replaceAll; usually unnecessary here
+	];
+
+	for (const replacer of activePipeline) {
+		for (const search of replacer(content, oldString)) {
+			const firstIndex = content.indexOf(search);
+			if (firstIndex === -1) continue;
+			if (replaceAll) {
+				const occurrences = search.length === 0 ? 0 : content.split(search).length - 1;
+				if (occurrences === 0) continue;
+				return { content: content.split(search).join(newString), matches: occurrences };
+			} else {
+				const lastIndex = content.lastIndexOf(search);
+				if (firstIndex !== lastIndex) continue;
+				const updated = content.substring(0, firstIndex) + newString + content.substring(firstIndex + search.length);
+				return { content: updated, matches: 1 };
+			}
+		}
+	}
+
+	throw new Error("oldString not found in content or was found multiple times");
 }
 
 /**
@@ -264,9 +642,9 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 
 			const list = await list_dir(ctx, {
 				path: normalizedPath,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				max_depth: args.maxDepth,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				maxDepth: args.maxDepth,
 				limit: args.limit,
 			});
 
@@ -350,15 +728,15 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 			// Get all pages under the search path
 			const listResult = await list_dir(ctx, {
 				path: searchPath,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				max_depth: 10,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				maxDepth: 10,
 				limit: args.limit,
 				include: args.pattern,
 			});
 
 			// Sort by modification time (newest first)
-			listResult.items.sort((a, b) => b.updated_at - a.updated_at);
+			listResult.items.sort((a, b) => b.updatedAt - a.updatedAt);
 
 			const output: string[] = [];
 			if (listResult.items.length === 0) {
@@ -439,14 +817,14 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 			// Discover candidate pages using the same traversal logic as list_pages
 			const list = await list_dir(ctx, {
 				path: searchPath,
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				max_depth: args.maxDepth,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				maxDepth: args.maxDepth,
 				limit: args.limit,
 				include: args.include,
 			});
 
-			type Match = { path: string; updated_at: number; lineNum: number; lineText: string };
+			type Match = { path: string; updatedAt: number; lineNum: number; lineText: string };
 			const matches: Match[] = [];
 
 			for (const item of list.items) {
@@ -469,7 +847,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 					if (regex.test(line)) {
 						matches.push({
 							path: item.path,
-							updated_at: item.updated_at,
+							updatedAt: item.updatedAt,
 							lineNum: i + 1,
 							lineText: line,
 						});
@@ -478,7 +856,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 			}
 
 			// Sort by update time (newest first) to mirror opencode behavior
-			matches.sort((a, b) => b.updated_at - a.updated_at);
+			matches.sort((a, b) => b.updatedAt - a.updatedAt);
 
 			if (matches.length === 0) {
 				return {
@@ -656,7 +1034,7 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 
 			return {
 				output: exists ? "Page overwritten" : "New page created",
-				metadata: { page_id: pageId, exists, path, diff },
+				metadata: { pageId: pageId, exists, path, diff, modifiedContent: newText },
 			};
 		},
 	});
@@ -665,3 +1043,88 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 type ai_tool_create_write_page_Tool = ReturnType<typeof ai_tool_create_write_page>;
 export type ai_tool_create_write_page_ToolInput = InferToolInput<ai_tool_create_write_page_Tool>;
 export type ai_tool_create_write_page_ToolOutput = InferToolOutput<ai_tool_create_write_page_Tool>;
+
+/**
+ * Inspired by `opencode/packages/opencode/src/tool/edit.ts`
+ *
+ * Tool for proposing a search-and-replace edit on a page (no direct apply).
+ * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on DB pages,
+ * and stores a pending edit for human-in-the-loop review.
+ */
+export function ai_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+	return tool({
+		description: dedent`\
+			Edits an existing page by replacing text and returns a preview diff.
+
+			Usage:
+			- The path must refer to an existing page (absolute, starting with "/").
+			- By default, replaces a single unique occurrence of oldString; fails if not found or ambiguous.
+			- Set replaceAll=true to replace every occurrence.
+			- If copying from read_page output, do NOT include the line-number prefix (e.g., "00001| ").
+			- The text must be valid GitHub Flavored Markdown; ensure replacements preserve valid Markdown structure (headings, code fences, lists).
+			- This tool does not apply changes directly; it saves a pending edit for human review.`,
+
+		inputSchema: z.object({
+			path: z
+				.string()
+				.describe(
+					'Absolute path to the page (must start with "/"; do not include a file extension unless explicitly provided).',
+				),
+			oldString: z.string().describe("The GitHub Flavored Markdown text to replace"),
+			newString: z.string().describe("The replacement GitHub Flavored Markdown text"),
+			replaceAll: z.boolean().optional().default(false),
+		}),
+
+		execute: async (args) => {
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+			const normalizedPath = server_path_normalize(args.path);
+			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
+				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
+			}
+
+			const pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
+				path: normalizedPath,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			});
+			if (!pageId) {
+				throw new Error(`Page not found: ${normalizedPath}`);
+			}
+
+			const baseText =
+				(await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+					path: normalizedPath,
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					userId: user.id,
+					threadId: tool_execution_ctx.thread_id,
+				})) ?? "";
+
+			const { content: modifiedText, matches } = replace_once_or_all(baseText, args.oldString, args.newString, {
+				replaceAll: args.replaceAll,
+				mode: "auto",
+			});
+
+			const diff = createPatch(normalizedPath, baseText, modifiedText);
+
+			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				threadId: tool_execution_ctx.thread_id,
+				pageId,
+				baseContent: baseText,
+				modifiedContent: modifiedText,
+			});
+
+			return {
+				title: normalizedPath,
+				metadata: { pageId: pageId, path: normalizedPath, matches, diff, modifiedContent: modifiedText },
+				output: args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence",
+			};
+		},
+	});
+}
+
+type ai_tool_create_edit_page_Tool = ReturnType<typeof ai_tool_create_edit_page>;
+export type ai_tool_create_edit_page_ToolInput = InferToolInput<ai_tool_create_edit_page_Tool>;
+export type ai_tool_create_edit_page_ToolOutput = InferToolOutput<ai_tool_create_edit_page_Tool>;

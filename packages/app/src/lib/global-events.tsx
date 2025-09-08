@@ -56,7 +56,7 @@ export function useGlobalEvent<Handler extends HandlerFn>(listenFn: (handler: Ha
 type global_event_ai_chat_open_canvas_Payload = {
 	pageId: string;
 	mode: "diff" | "editor";
-	modifiedSeed?: string;
+	modifiedContent?: string;
 	threadId: string;
 };
 

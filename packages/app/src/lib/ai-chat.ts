@@ -188,4 +188,6 @@ export type {
 	ai_tool_create_text_search_pages_ToolOutput,
 	ai_tool_create_write_page_ToolInput,
 	ai_tool_create_write_page_ToolOutput,
+	ai_tool_create_edit_page_ToolInput,
+	ai_tool_create_edit_page_ToolOutput,
 } from "../../server/server-ai-tools.ts";
