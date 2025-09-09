@@ -7,7 +7,7 @@
 		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"lint": "pnpm lint:tsc && pnpm lint:eslint",
-		"lint:tsc": "tsc-silent --project tsconfig.app.json --suppress @assistant-ui @node_modules",
+		"lint:tsc": "tsc-silent --project tsconfig.app.json --suppress @vendor @node_modules",
 		"lint:eslint": "eslint --cache src",
 		"preview": "vite preview",
 		"format": "prettier --write .",

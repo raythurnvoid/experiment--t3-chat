@@ -7,7 +7,7 @@ import importPlugin from "eslint-plugin-import";
 import { defineConfig } from "eslint/config";
 
 export default defineConfig(
-	{ ignores: ["dist"] },
+	{ ignores: ["dist", "vendor"] },
 	reactRefresh.configs.vite,
 	{
 		plugins: {
