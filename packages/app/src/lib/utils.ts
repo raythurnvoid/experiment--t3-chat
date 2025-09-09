@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
-import type { KeysOfUnion, Primitive, UnknownRecord } from "type-fest";
+import type { KeysOfUnion, Primitive } from "type-fest";
 
 export * from "../../shared/shared-utils.ts";
 

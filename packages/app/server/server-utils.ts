@@ -1,7 +1,7 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { auth_ANONYMOUS_USER_ID } from "../shared/shared-auth-constants.ts";
-import type { UnknownRecord } from "type-fest";
-import { Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
+import { Result, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
+import type z from "zod";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
 if (!ALLOWED_ORIGINS) {
@@ -76,10 +76,9 @@ function headers_append_error_response_headers(headers: Headers) {
 }
 
 export function server_convex_response_error(args: {
-	message: string;
-	meta?: UnknownRecord;
+	body: Result<{ _nay: any }>["_nay"];
 	status?: number;
-	headers?: Record<string, string>;
+	headers?: Record<string, string> | Headers;
 }) {
 	const headers = server_convex_headers_error_response();
 	if (args?.headers) {
@@ -88,9 +87,33 @@ export function server_convex_response_error(args: {
 		}
 	}
 
-	return new Response(JSON.stringify({ message: args?.message, meta: args?.meta }), {
+	return new Response(JSON.stringify(args.body), {
 		headers,
 		status: args?.status ?? 500,
+	});
+}
+
+export function server_convex_response_error_server(args: {
+	body: Result<{ _nay: any }>["_nay"];
+	headers?: Record<string, string> | Headers;
+}) {
+	return server_convex_response_error({ body: args.body, status: 500 });
+}
+
+export function server_convex_response_error_client(args: {
+	body: Result<{ _nay: any }>["_nay"];
+	headers?: Record<string, string> | Headers;
+}) {
+	return server_convex_response_error({ body: args.body, status: 400 });
+}
+
+export function server_convex_response_success_json(args: {
+	body: Result<{ _yay: any }>["_yay"];
+	headers?: Record<string, string> | Headers;
+}) {
+	return new Response(JSON.stringify(args.body), {
+		headers: args.headers,
+		status: 200,
 	});
 }
 
@@ -112,4 +135,42 @@ export function server_path_parent_of(path: string): string {
 
 export function server_path_name_of(path: string): string {
 	return server_path_extract_segments_from(path).at(-1) ?? "";
+}
+
+export function server_json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>) {
+	try {
+		const value = JSON.parse(json);
+		return Result({ _yay: schema.parse(value) });
+	} catch (error) {
+		return Result({
+			_nay: {
+				message: "Failed to parse JSON string",
+				cause: error as Error,
+			},
+		});
+	}
+}
+
+export async function server_request_json_parse_and_validate<T>(request: Request, schema: z.ZodSchema<T>) {
+	try {
+		const json = await request.json();
+		const parseResult = schema.safeParse(json);
+		if (parseResult.error) {
+			return Result({
+				_nay: {
+					message: "Request body validation failed",
+					cause: parseResult.error,
+				},
+			});
+		}
+
+		return Result({ _yay: schema.parse(json) });
+	} catch (error) {
+		return Result({
+			_nay: {
+				message: "Failed to parse request body as JSON",
+				cause: error as Error,
+			},
+		});
+	}
 }

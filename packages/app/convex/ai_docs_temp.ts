@@ -21,12 +21,16 @@ import {
 	server_path_extract_segments_from,
 	server_convex_get_user_fallback_to_anonymous,
 	server_convex_headers_cors,
+	server_request_json_parse_and_validate,
+	server_convex_response_error_client,
+	server_convex_response_error_server,
 } from "../server/server-utils.ts";
 import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
 import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
 import { v } from "convex/values";
+import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
 if (!LIVEBLOCKS_SECRET_KEY) {
@@ -40,11 +44,13 @@ if (!LIVEBLOCKS_WEBHOOK_SECRET) {
 
 export const contextual_prompt = httpAction(async (ctx, request) => {
 	try {
-		// Parse request body - expecting format: { prompt, option, command }
-		const bodyResult = await Result_try_promise(request.json());
+		const bodyResult = await server_request_json_parse_and_validate(
+			request,
+			api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema,
+		);
 		if (bodyResult._nay) {
-			return new Response("Failed to parse request body", {
-				status: 400,
+			return server_convex_response_error_client({
+				body: bodyResult._nay,
 				headers: server_convex_headers_cors(),
 			});
 		}
@@ -52,8 +58,10 @@ export const contextual_prompt = httpAction(async (ctx, request) => {
 		const { prompt, option, command } = bodyResult._yay;
 
 		if (!prompt || typeof prompt !== "string") {
-			return new Response("Invalid prompt", {
-				status: 400,
+			return server_convex_response_error_client({
+				body: {
+					message: "Invalid prompt",
+				},
 				headers: server_convex_headers_cors(),
 			});
 		}
@@ -134,8 +142,10 @@ export const contextual_prompt = httpAction(async (ctx, request) => {
 		});
 	} catch (error: unknown) {
 		console.error("AI generation error:", error);
-		return new Response(error instanceof Error ? error.message : "Internal server error", {
-			status: 500,
+		return server_convex_response_error_server({
+			body: {
+				message: error instanceof Error ? error.message : "Internal server error",
+			},
 			headers: server_convex_headers_cors(),
 		});
 	}
@@ -145,8 +155,8 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 	// Parse request body to get room parameter
 	const requestBodyResult = await Result_try_promise(request.json());
 	if (requestBodyResult._nay) {
-		return new Response(JSON.stringify({ message: "Failed to parse request body" }), {
-			status: 400,
+		return server_convex_response_error_client({
+			body: requestBodyResult._nay,
 			headers: server_convex_headers_cors(),
 		});
 	}
@@ -170,15 +180,12 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 
 	if (sessionResult._nay) {
 		console.error("Failed to create session:", sessionResult._nay);
-		return new Response(
-			JSON.stringify({
+		return server_convex_response_error_server({
+			body: {
 				message: "Failed to create session",
-			}),
-			{
-				status: 500,
-				headers: server_convex_headers_cors(),
 			},
-		);
+			headers: server_convex_headers_cors(),
+		});
 	}
 
 	// Set up room access using naming pattern: <workspace_id>:<project_id>:<document_id>
@@ -188,21 +195,20 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 	const accessTokenResult = await Result_try_promise(sessionResult._yay.authorize());
 	if (accessTokenResult._nay) {
 		console.error("Authorization failed:", accessTokenResult._nay);
-		return new Response(
-			JSON.stringify({
+		return server_convex_response_error_client({
+			body: {
 				message: "Authorization failed",
-			}),
-			{
-				status: 500,
-				headers: server_convex_headers_cors(),
 			},
-		);
+			headers: server_convex_headers_cors(),
+		});
 	}
 
 	if (accessTokenResult._yay.error) {
 		console.error("Authorization returned an error:", accessTokenResult._yay.error);
-		return new Response(JSON.stringify({ message: "Authorization returned an error" }), {
-			status: 500,
+		return server_convex_response_error_client({
+			body: {
+				message: "Authorization returned an error",
+			},
 			headers: server_convex_headers_cors(),
 		});
 	}

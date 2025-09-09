@@ -19,11 +19,13 @@ import {
 } from "ai";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
-import type { api_schemas_Main } from "../src/lib/api-schemas.ts";
+import { type api_schemas_Main, api_schemas_Main_api_chat_body_schema } from "../shared/api-schemas.ts";
 import {
 	server_convex_headers_cors,
 	server_convex_get_user_fallback_to_anonymous,
-	server_convex_response_error,
+	server_request_json_parse_and_validate,
+	server_convex_response_error_client,
+	server_convex_response_error_server,
 } from "../server/server-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
@@ -36,7 +38,6 @@ import {
 	ai_tool_create_edit_page,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
-import { Result } from "../src/lib/errors-as-values-utils.ts";
 
 /**
  * This function exists only becase is not possible to define a type specific enough to make ts happy when using
@@ -280,13 +281,24 @@ export const thread_messages_add = mutation({
  */
 export const chat = httpAction(async (ctx, request) => {
 	try {
-		const body = (await request.json()) as api_schemas_Main["/api/chat"]["get"]["body"];
+		const requestParseResult = await server_request_json_parse_and_validate(
+			request,
+			api_schemas_Main_api_chat_body_schema,
+		);
+		if (requestParseResult._nay) {
+			return server_convex_response_error_client({
+				body: requestParseResult._nay,
+			});
+		}
+
+		const body = requestParseResult._yay as api_schemas_Main["/api/chat"]["get"]["body"];
 
 		// Validate messages from request
 		if (!Array.isArray(body.messages)) {
-			return server_convex_response_error({
-				message: "Invalid messages format",
-				status: 400,
+			return server_convex_response_error_client({
+				body: {
+					message: "Invalid messages format",
+				},
 			});
 		}
 
@@ -334,15 +346,14 @@ export const chat = httpAction(async (ctx, request) => {
 						.concat(...body.messages),
 				);
 			} else {
-				return new Response(JSON.stringify(Result({ _nay: { message: "Thread ID is required" } })), {
-					status: 400,
-					headers: {
-						...server_convex_headers_cors(),
-						"Content-Type": "application/json",
+				return server_convex_response_error_client({
+					body: {
+						message: "Thread ID is required",
 					},
+					headers: server_convex_headers_cors(),
 				});
 			}
-		} while (false);
+		} while (0);
 
 		console.log("messages", {
 			messages: messages,
@@ -520,15 +531,17 @@ export const chat = httpAction(async (ctx, request) => {
 		console.error("AI chat stream error:", error);
 
 		if (error instanceof Error) {
-			return server_convex_response_error({
-				message: error.message,
-				status: 500,
+			return server_convex_response_error_server({
+				body: {
+					message: error.message,
+				},
 			});
 		}
 
-		return server_convex_response_error({
-			message: "Internal server error",
-			status: 500,
+		return server_convex_response_error_server({
+			body: {
+				message: "Internal server error",
+			},
 		});
 	}
 });
@@ -541,9 +554,10 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 		const body = await request.json();
 
 		if (body.assistant_id !== "system/thread_title") {
-			return server_convex_response_error({
-				message: "Invalid stream ID",
-				status: 400,
+			return server_convex_response_error_client({
+				body: {
+					message: "Invalid stream ID",
+				},
 			});
 		}
 
@@ -610,9 +624,10 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 	} catch (error: unknown) {
 		console.error("Title generation error:", error);
 
-		return server_convex_response_error({
-			message: error instanceof Error ? error.message : "Unknown error",
-			status: 500,
+		return server_convex_response_error_server({
+			body: {
+				message: error instanceof Error ? error.message : "Unknown error",
+			},
 		});
 	}
 });

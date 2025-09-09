@@ -1,4 +1,4 @@
-import type { IsUnknown, LiteralUnion } from "type-fest";
+import type { IsAny, IsUnknown, LiteralUnion } from "type-fest";
 
 /**
  * By default when calling `AbortController.abort` the reason is an instance of `DOMException` with a name `AbortError`.
@@ -55,7 +55,7 @@ export class AbortReason extends Error {
 	readonly name = "AbortError";
 
 	readonly message: string = undefined as any;
-	readonly cause: Error | Result_nay | undefined = undefined;
+	readonly cause: Error | Result<{ _nay: any }>["_nay"] | undefined = undefined;
 
 	constructor(message: string, options?: ErrorOptions & { cause?: AbortReason["cause"] }) {
 		super(message, options);
@@ -95,7 +95,7 @@ export class AbortReason extends Error {
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For asynchronous functions, use `Result.tryAsync` instead.
  */
-export function Result_try<T>(fn: () => T): Result<{ _yay: T } | { _nay: Result_nay }> {
+export function Result_try<T>(fn: () => T): Result<{ _yay: T } | { _nay: any }> {
 	try {
 		return Result({ _yay: fn() });
 	} catch (error: any) {
@@ -121,7 +121,7 @@ export function Result_try_async<T>(fn: () => Promise<T>) {
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For cases where you have a function that returns a promise, use `Result.tryAsync` instead.
  */
-export function Result_try_promise<T>(promise: Promise<T>): Promise<Result<{ _yay: T } | { _nay: Result_nay }>> {
+export function Result_try_promise<T>(promise: Promise<T>): Promise<Result<{ _yay: T } | { _nay: any }>> {
 	return promise
 		.then((value) => {
 			return Result({ _yay: value });
@@ -144,7 +144,11 @@ export function Result_nay_from(error_or_nay: unknown) {
 		"name" in error_or_nay &&
 		typeof error_or_nay.name === "string"
 	) {
-		return Result_nay(error_or_nay as Result_nay);
+		return Result_nay(
+			error_or_nay as Result<{
+				_nay: any;
+			}>["_nay"],
+		);
 	} else if (
 		typeof error_or_nay === "object" &&
 		"message" in error_or_nay &&
@@ -173,12 +177,14 @@ export function Result_nay<
 	},
 >(
 	error_or_nay: T,
-): Result_nay<{
-	name: T["name"] extends Result_nay_name ? T["name"] : "nay";
-	message: T["message"] extends string ? T["message"] : string;
-	cause: IsUnknown<T["cause"]> extends true ? never : T["cause"];
-	data: IsUnknown<T["data"]> extends true ? never : T["data"];
-}> {
+): Result<{
+	_nay: {
+		name: T["name"] extends Result_nay_name ? T["name"] : "nay";
+		message: T["message"] extends string ? T["message"] : string;
+		cause: IsUnknown<T["cause"]> extends true ? never : T["cause"];
+		data: IsUnknown<T["data"]> extends true ? never : T["data"];
+	};
+}>["_nay"] {
 	return {
 		// @ts-expect-error
 		name: error_or_nay.name ?? "nay",
@@ -206,7 +212,7 @@ export function Result<
 ): T extends { _yay: unknown }
 	? Result<{ _yay: T["_yay"] }>
 	: Result<{
-			_nay: Result_nay<{
+			_nay: {
 				// @ts-expect-error
 				name: T["_nay"]["name"] extends Result_nay_name
 					? // @ts-expect-error
@@ -218,7 +224,7 @@ export function Result<
 				cause: IsUnknown<T["_nay"]["cause"]> extends true ? never : T["_nay"]["cause"];
 				// @ts-expect-error
 				data: IsUnknown<T["_nay"]["data"]> extends true ? never : T["_nay"]["data"];
-			}>;
+			};
 		}> {
 	return "_nay" in args
 		? ({
@@ -231,42 +237,39 @@ export function Result<
 
 type Result_nay_name = LiteralUnion<"nay" | "nay_abort", string>;
 
-export type Result_nay<
-	T extends {
-		name?: Result_nay_name;
-		message: string;
-		cause?: unknown;
-		data?: unknown;
-	} = {
-		name?: Result_nay_name;
-		message: string;
-		cause?: unknown;
-		data?: unknown;
-	},
-> = {
-	name: T["name"] extends Result_nay_name ? T["name"] : "nay";
-	message: T["message"];
-	cause?: T["cause"];
-	data: T["data"];
-};
-
 export type Result<
 	T extends {
 		_yay?: unknown;
 		_nay?: {
 			name?: Result_nay_name;
-			message: string;
+			message?: string;
 			cause?: unknown;
 			data?: unknown;
 		};
 	},
 > = T extends { _yay: unknown }
 	? {
-			_yay: T["_yay"];
+			_yay: IsAny<T["_yay"]> extends true ? unknown : T["_yay"];
 			_nay?: never;
 		}
 	: {
-			_nay: Result_nay<NonNullable<T["_nay"]>>;
+			_nay: IsAny<T["_nay"]> extends true
+				? {
+						name?: Result_nay_name;
+						message: string;
+						cause?: unknown;
+						data?: unknown;
+					}
+				: {
+						// @ts-expect-error
+						name: T["_nay"]["name"] extends Result_nay_name ? T["_nay"]["name"] : "nay";
+						// @ts-expect-error
+						message: T["_nay"]["message"] extends string ? T["_nay"]["message"] : string;
+						// @ts-expect-error
+						cause: T["_nay"]["cause"];
+						// @ts-expect-error
+						data: T["_nay"]["data"];
+					};
 			_yay?: never;
 		};
 
@@ -281,7 +284,7 @@ const ERROR_SERIALIZATION_TO_JSON_MAX_DEPTH = 10;
  * Used for Sentry to serialized `Error` objects nested in other objects
  * and allow sentry to expose the `cause` property in the UI
  */
-export function Error_serializeToJSON(error: Error | Result_nay): {
+export function Error_serializeToJSON(error: Error | Result<{ _nay: any }>["_nay"]): {
 	name: string;
 	message: string;
 	cause: unknown;
@@ -317,5 +320,6 @@ export function Error_serializeToJSON(error: Error | Result_nay): {
 		}
 	}
 
+	// @ts-expect-error
 	return json;
 }
