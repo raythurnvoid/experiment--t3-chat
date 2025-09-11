@@ -60,7 +60,6 @@ export const disconnect = mutation({
 		await ctx.db.insert("ai_chat_pending_edits_cleanup_tasks", {
 			user_id: userId,
 			scheduled_function_id: scheduledId,
-			created_at: Date.now(),
 		});
 
 		return result;

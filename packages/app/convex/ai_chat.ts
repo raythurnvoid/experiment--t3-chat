@@ -254,7 +254,6 @@ export const thread_messages_add = mutation({
 			thread_id: args.threadId,
 			created_by: created_by.name,
 			updated_by: created_by.name,
-			created_at: now,
 			updated_at: now,
 			format: args.format,
 			height: 1,

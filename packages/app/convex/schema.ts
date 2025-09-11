@@ -32,8 +32,6 @@ const app_convex_schema = defineSchema({
 		parent_id: v.union(v.id("messages"), v.null()),
 		thread_id: v.id("threads"),
 		created_by: v.string(),
-		/** timestamp in milliseconds */
-		created_at: v.number(),
 		updated_by: v.string(),
 		/** timestamp in milliseconds */
 		updated_at: v.number(),
@@ -198,7 +196,7 @@ const app_convex_schema = defineSchema({
 		workspace_id: v.string(),
 		/** Project ID extracted from roomId */
 		project_id: v.string(),
-		/** Document ID generated client side (renamed from doc_id) */
+		/** Document ID generated client side */
 		page_id: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
@@ -214,8 +212,6 @@ const app_convex_schema = defineSchema({
 		created_by: v.string(),
 		/** Updated by user ID */
 		updated_by: v.string(),
-		/** timestamp in milliseconds when document was created */
-		created_at: v.number(),
 		/** timestamp in milliseconds when document was last updated */
 		updated_at: v.number(),
 	})
@@ -262,7 +258,6 @@ const app_convex_schema = defineSchema({
 	ai_chat_pending_edits_cleanup_tasks: defineTable({
 		user_id: v.string(),
 		scheduled_function_id: v.id("_scheduled_functions"),
-		created_at: v.number(),
 	}).index("by_user_id", ["user_id"]),
 
 	page_updates_richtext_broadcast: defineTable({

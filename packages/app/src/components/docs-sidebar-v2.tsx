@@ -34,6 +34,7 @@ import { useConvex, useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { generate_timestamp_uuid } from "@/lib/utils.ts";
 import { app_convex_api } from "../lib/app-convex-client.ts";
+import { pages_ROOT_ID } from "../../shared/pages.ts";
 
 // Types for document structure - react-complex-tree format
 interface DocData {
@@ -93,8 +94,8 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					isArchived: item.isArchived || false,
 				},
 				isFolder: true,
-				canMove: !isPlaceholder && key !== "root",
-				canRename: !isPlaceholder && key !== "root",
+				canMove: !isPlaceholder && key !== pages_ROOT_ID,
+				canRename: !isPlaceholder && key !== pages_ROOT_ID,
 			};
 		}
 
@@ -354,7 +355,7 @@ function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
 	const dataProvider = useMemo(() => {
 		const emptyData: Record<string, any> = {
 			root: {
-				index: "root",
+				index: pages_ROOT_ID,
 				children: [],
 				data: {
 					title: "Documents",
@@ -712,7 +713,6 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 }
 
 const TREE_ID = "docs-tree";
-const ROOT_TREE_ID = "root";
 
 type TreeArea_Props = {
 	ref: React.RefObject<TreeRef | null>;
@@ -738,7 +738,7 @@ function TreeArea(props: TreeArea_Props) {
 		const expanded: string[] = [];
 
 		// Get the root item to find its direct children
-		const rootItem = allData[ROOT_TREE_ID];
+		const rootItem = allData[pages_ROOT_ID];
 		if (rootItem && rootItem.children) {
 			// Only expand direct children of root that are folders with children
 			rootItem.children.forEach((childId) => {
@@ -894,7 +894,7 @@ function TreeArea(props: TreeArea_Props) {
 					}
 
 					// Only remove if not already at root (same check as internal drop)
-					if (parent.index !== ROOT_TREE_ID) {
+					if (parent.index !== pages_ROOT_ID) {
 						promises.push(
 							provider.onChangeItemChildren(
 								parent.index,
@@ -906,8 +906,8 @@ function TreeArea(props: TreeArea_Props) {
 
 				// Step 2: Add items to root (same logic as internal drop for targetType === 'root')
 				promises.push(
-					provider.onChangeItemChildren(ROOT_TREE_ID, [
-						...(currentItems[ROOT_TREE_ID]?.children ?? []).filter((i: any) => !itemIds.includes(i)),
+					provider.onChangeItemChildren(pages_ROOT_ID, [
+						...(currentItems[pages_ROOT_ID]?.children ?? []).filter((i: any) => !itemIds.includes(i)),
 						...itemIds,
 					]),
 				);
@@ -993,7 +993,7 @@ function TreeArea(props: TreeArea_Props) {
 					);
 				}}
 			>
-				<Tree ref={ref} treeId={TREE_ID} rootItem={ROOT_TREE_ID} treeLabel="Documentation Tree" />
+				<Tree ref={ref} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Documentation Tree" />
 			</UncontrolledTreeEnvironment>
 		</div>
 	);
@@ -1031,9 +1031,9 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 		// For now, this would need to be connected to handleAddChild in TreeContainer
 		// or use treeRef.current?.navigateToDocument() for external navigation
 		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(ROOT_TREE_ID, "New Document");
+			const newItemId = dataProvider.createNewItem(pages_ROOT_ID, "New Document");
 			console.log("Created new document from header button:", newItemId);
-			onAddChild(ROOT_TREE_ID, newItemId);
+			onAddChild(pages_ROOT_ID, newItemId);
 		}
 	};
 
@@ -1144,7 +1144,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 				{/* Archived Toggle */}
 				{(() => {
 					const archivedCount = Object.values(treeItems).filter(
-						(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== "root",
+						(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== pages_ROOT_ID,
 					).length;
 					return (
 						archivedCount > 0 && (
