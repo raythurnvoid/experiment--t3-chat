@@ -17,7 +17,7 @@ export default defineConfig(
 		},
 	},
 	{
-		files: ["src/**/*.{ts,tsx}"],
+		files: ["src/**/*.{ts,tsx}", "convex/**/*.ts", "server/**/*.ts", "shared/**/*.ts"],
 		extends: [
 			js.configs.recommended,
 			tseslint.configs.recommendedTypeChecked,
@@ -35,6 +35,8 @@ export default defineConfig(
 		},
 		rules: {
 			"no-useless-escape": "off",
+			"no-empty": ["error", { allowEmptyCatch: true }],
+			"no-unexpected-multiline": "off",
 
 			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
 

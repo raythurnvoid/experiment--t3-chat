@@ -37,10 +37,5 @@
 	"include": [
 		"src",
 		"convex",
-		"server/server-ai-tools.ts",
-		"server/server-utils.ts"
-	],
-	"exclude": [
-		"convex/lib"
 	]
 }

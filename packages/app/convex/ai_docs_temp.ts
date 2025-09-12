@@ -13,7 +13,7 @@ import {
 	type QueryCtx,
 	type MutationCtx,
 	internalMutation,
-} from "./_generated/server";
+} from "./_generated/server.js";
 import { paginationOptsValidator } from "convex/server";
 import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -31,7 +31,9 @@ import { Liveblocks } from "@liveblocks/node";
 import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
 import { v } from "convex/values";
 import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
-import { pages_ROOT_ID } from "../shared/pages.ts";
+import { pages_FIRST_VERSION, pages_ROOT_ID } from "../shared/pages.ts";
+import { minimatch } from "minimatch";
+import type { Doc } from "./_generated/dataModel";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
 if (!LIVEBLOCKS_SECRET_KEY) {
@@ -500,7 +502,7 @@ async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs): 
 		page_id: args.page_id,
 		parent_id: args.parent_id,
 		text_content: args.text_content,
-		version: 1,
+		version: pages_FIRST_VERSION,
 		name: args.name,
 		is_archived: false,
 		created_by: user.name,
@@ -1002,6 +1004,97 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 				updated_at: page.updated_at,
 			})),
 		};
+	},
+});
+
+export const list_pages = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		maxDepth: v.number(),
+		limit: v.number(),
+		include: v.optional(v.string()),
+	},
+	returns: v.object({
+		items: v.array(v.object({ path: v.string(), updatedAt: v.number() })),
+		truncated: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		// TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
+		const startNodeId = await resolve_tree_node_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+		if (!startNodeId) return { items: [], truncated: false };
+
+		// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
+		const basePath = args.path;
+		const maxDepth = Math.max(0, Math.min(10, args.maxDepth));
+		const limit = Math.max(1, Math.min(100, args.limit));
+		const include = args.include;
+
+		const matchesInclude = (absPath: string) => (include ? minimatch(absPath, include) : true);
+
+		const results: Array<{ path: string; updatedAt: number }> = [];
+		let truncated = false;
+
+		// Depth-first traversal using an explicit stack.
+		// We iterate children via an indexed query (async iterable) and dive deeper first.
+		type Frame = { parentId: string; absPath: string; depth: number; iterator: AsyncIterator<Doc<"pages">> | null };
+		const stack: Array<Frame> = [{ parentId: startNodeId, absPath: basePath, depth: 0, iterator: null }];
+
+		try {
+			while (stack.length && results.length < limit) {
+				const frame = stack.at(-1)!;
+
+				// Lazily fetch children by parentId via index; avoid .collect()
+				const iterator =
+					frame.iterator ??
+					ctx.db
+						.query("pages")
+						.withIndex("by_parent_id_and_is_archived", (q) =>
+							q.eq("parent_id", frame.parentId).eq("is_archived", false),
+						)
+						[Symbol.asyncIterator]();
+
+				const iteratorItem = await iterator.next();
+
+				// No more children at this frame or page is empty
+				if (iteratorItem.done) {
+					stack.pop();
+					// Clean up the iterator
+					await iterator.return?.();
+					continue;
+				}
+
+				const child = iteratorItem.value;
+				const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
+
+				// If include pattern is provided, only add items that match the glob
+				if (matchesInclude(childPath)) {
+					results.push({ path: childPath, updatedAt: child.updated_at });
+					// Respect limit if provided (only counts included items)
+					if (results.length >= limit) {
+						truncated = true;
+						break;
+					}
+				}
+
+				// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
+				if (frame.depth + 1 < maxDepth) {
+					// Set frame on parent frame to resume iteration
+					frame.iterator = iterator;
+					stack.push({ parentId: child.page_id, absPath: childPath, depth: frame.depth + 1, iterator: null });
+				}
+			}
+		} finally {
+			// Clean up the iterators
+			await Promise.all(stack.map((frame) => frame.iterator?.return?.()));
+		}
+
+		return { items: results, truncated };
 	},
 });
 

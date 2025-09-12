@@ -54,27 +54,32 @@ export const test_mocks_hardcoded = ((/* iife */) => {
 	} as const;
 
 	const page_root_1 = {
-		page_id: "page_root_1",
+		page_id: "page_root_1_id",
+		name: "page_root_1_name",
 		parent_id: pages_ROOT_ID,
 	} as const;
 
 	const page_root_2 = {
-		page_id: "page_root_2",
+		page_id: "page_root_2_id",
+		name: "page_root_2_name",
 		parent_id: pages_ROOT_ID,
 	} as const;
 
 	const page_root_1_child_1 = {
-		page_id: "page_root_1_child_1",
+		page_id: "page_root_1_child_1_id",
+		name: "page_root_1_child_1_name",
 		parent_id: page_root_1.page_id,
 	} as const;
 
 	const page_root_1_child_2 = {
-		page_id: "page_root_1_child_2",
+		page_id: "page_root_1_child_2_id",
+		name: "page_root_1_child_2_name",
 		parent_id: page_root_1.page_id,
 	} as const;
 
 	const page_root_1_child_1_deep_1 = {
 		page_id: "page_root_1_child_1_deep_1",
+		name: "page_root_1_child_1_deep_1_name",
 		parent_id: page_root_1_child_1.page_id,
 	} as const;
 
@@ -135,45 +140,55 @@ export const test_mocks_fill_db_with = {
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1.page_id,
+				name: test_mocks_hardcoded.page.page_root_1.name,
 				parent_id: test_mocks_hardcoded.page.page_root_1.parent_id,
 			}),
 		);
+		if (!page_root_1) throw new Error("page_root_1 not found");
 
 		/** /root_1/child_1 */
 		const page_root_1_child_1 = await ctx.db.get(
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1_child_1.page_id,
+				name: test_mocks_hardcoded.page.page_root_1_child_1.name,
 				parent_id: test_mocks_hardcoded.page.page_root_1_child_1.parent_id,
 			}),
 		);
+		if (!page_root_1_child_1) throw new Error("page_root_1_child_1 not found");
 
 		/** /root_1/child_1/deep_1 */
 		const page_root_1_child_1_deep_1 = await ctx.db.get(
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.page_id,
+				name: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name,
 				parent_id: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.parent_id,
 			}),
 		);
+		if (!page_root_1_child_1_deep_1) throw new Error("page_root_1_child_1_deep_1 not found");
 
 		/** /root_1/child_2 */
 		const page_root_1_child_2 = await ctx.db.get(
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1_child_2.page_id,
+				name: test_mocks_hardcoded.page.page_root_1_child_2.name,
 				parent_id: test_mocks_hardcoded.page.page_root_1_child_2.parent_id,
 			}),
 		);
+		if (!page_root_1_child_2) throw new Error("page_root_1_child_2 not found");
 
 		/** /root_2 */
 		const page_root_2 = await ctx.db.get(
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_2.page_id,
+				name: test_mocks_hardcoded.page.page_root_2.name,
 				parent_id: test_mocks_hardcoded.page.page_root_2.parent_id,
 			}),
 		);
+		if (!page_root_2) throw new Error("page_root_2 not found");
 
 		return {
 			pages: {

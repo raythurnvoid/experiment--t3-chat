@@ -3,7 +3,7 @@ import z from "zod";
 import dedent from "dedent";
 import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
-import { internal } from "../convex/_generated/api";
+import { internal } from "../convex/_generated/api.js";
 import {
 	server_path_extract_segments_from,
 	server_path_name_of,
