@@ -132,7 +132,6 @@ export function Result_try_promise<T>(promise: Promise<T>): Promise<Result<{ _ya
 }
 
 export function Result_nay_from(error_or_nay: unknown) {
-	console.log("error_or_nay", error_or_nay);
 	if (error_or_nay == null) {
 		return Result_nay({
 			message: error_or_nay === null ? "null" : "undefined",
