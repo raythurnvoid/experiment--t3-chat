@@ -13,98 +13,6 @@ import {
 import { minimatch } from "minimatch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "./server-utils.ts";
-import { math_clamp } from "../shared/shared-utils.ts";
-
-// TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
-async function list_dir(
-	ctx: ActionCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		path: string;
-		maxDepth?: number;
-		limit?: number;
-		include?: string;
-	},
-): Promise<{ items: Array<{ path: string; updatedAt: number }>; metadata: { count: number; truncated: boolean } }> {
-	// Resolve the starting node id for the provided path
-	const startNodeId = await ctx.runQuery(internal.ai_docs_temp.resolve_tree_node_id_from_path, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		path: args.path,
-	});
-	if (!startNodeId) return { items: [], metadata: { count: 0, truncated: false } };
-
-	// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
-	const basePath = server_path_normalize(args.path);
-
-	const maxDepth = args.maxDepth ? math_clamp(args.maxDepth, 0, 10) : 5;
-	const limit = args.limit ? math_clamp(args.limit, 1, 100) : 100;
-
-	const resultPaths: Array<{ path: string; updatedAt: number }> = [];
-	let truncated = false;
-
-	// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
-	// so we fetch one child at a time for the current parent, then dive deeper first.
-	const stack: Array<{ parentId: string; absPath: string; cursor: string | null; depth: number }> = [
-		{ parentId: startNodeId, absPath: basePath, cursor: null, depth: 0 },
-	];
-
-	while (stack.length > 0) {
-		const frame = stack.pop();
-		if (!frame) continue;
-
-		const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.get_page_info_for_list_dir_pagination, {
-			parentId: frame.parentId,
-			cursor: frame.cursor,
-		});
-
-		// No more children at this cursor for this parent or page is empty
-		if (paginatedResult.isDone) continue;
-
-		const child = paginatedResult.page.at(0);
-		if (!child) continue; // just for type safety
-
-		const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
-
-		// If include pattern is provided, only add items that match the glob
-		const matchesInclude = args.include ? minimatch(childPath, args.include) : true;
-		if (matchesInclude) {
-			resultPaths.push({ path: childPath, updatedAt: child.updated_at });
-
-			// Respect limit if provided (only counts included items)
-			if (resultPaths.length >= limit) {
-				truncated = true;
-				break;
-			}
-		}
-
-		// First, if there are more siblings for the current parent, push the parent back with updated cursor
-		// so we'll process siblings after we finish the deep dive into this child.
-		if (!paginatedResult.isDone) {
-			stack.push({
-				parentId: frame.parentId,
-				absPath: frame.absPath,
-				cursor: paginatedResult.continueCursor,
-				depth: frame.depth,
-			});
-		}
-
-		// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
-		const nextDepth = frame.depth + 1;
-		if (nextDepth < maxDepth) {
-			stack.push({ parentId: child.page_id, absPath: childPath, cursor: null, depth: nextDepth });
-		}
-	}
-
-	return {
-		items: resultPaths,
-		metadata: {
-			count: resultPaths.length,
-			truncated,
-		},
-	};
-}
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -640,7 +548,7 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 
 			const normalizedPath = server_path_normalize(args.path ?? "/");
 
-			const list = await list_dir(ctx, {
+			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: normalizedPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -726,7 +634,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 			const searchPath = server_path_normalize(args.path || "/");
 
 			// Get all pages under the search path
-			const listResult = await list_dir(ctx, {
+			const listResult = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: searchPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -815,7 +723,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 			}
 
 			// Discover candidate pages using the same traversal logic as list_pages
-			const list = await list_dir(ctx, {
+			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: searchPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -877,7 +785,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 				outputLines.push(`  Line ${m.lineNum}: ${m.lineText}`);
 			}
 
-			if (list.metadata.truncated) {
+			if (list.truncated) {
 				outputLines.push("");
 				outputLines.push("(Results may be truncated due to traversal limits. Consider adjusting maxDepth or limit.)");
 			}

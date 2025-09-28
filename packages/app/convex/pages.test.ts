@@ -72,15 +72,18 @@ test("list_pages_new", async () => {
 		expect(result_root.items[0], "The first result must be the first page at the root").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}`,
 			updatedAt: db.pages.page_root_1.updated_at,
+			depthTruncated: false,
 		});
 
 		expect(result_root.items[1], "The list must be depth-first").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
 			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			depthTruncated: false,
 		});
 		expect(result_root.items[2], "The list must be depth-first").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
 			updatedAt: db.pages.page_root_1_child_1_deep_1.updated_at,
+			depthTruncated: false,
 		});
 
 		expect(result_root.truncated).toBe(false);
@@ -100,6 +103,22 @@ test("list_pages_new", async () => {
 		expect(result_under_root1.items[0], "The first result must be the first child of the root").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
 			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			depthTruncated: false,
+		});
+
+		// Depth truncation flagging: with maxDepth 1, the first child with deeper matches should be marked
+		const result_depth1 = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
+			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+			projectId: test_mocks_hardcoded.project_id.project_1,
+			path: "/",
+			maxDepth: 1,
+			limit: 100,
+		});
+
+		expect(result_depth1.items[1]).toStrictEqual({
+			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
+			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			depthTruncated: true,
 		});
 	});
 });

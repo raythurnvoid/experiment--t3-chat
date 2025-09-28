@@ -291,5 +291,6 @@ export default app_convex_schema;
 
 export { app_convex_schema };
 
-// @ts-expect-error Make ts happy
-type _ = MessageStorageEntry | UIMessage;
+// @ts-expect-error unused type
+type _ = //
+	MessageStorageEntry<any> | UIMessage;

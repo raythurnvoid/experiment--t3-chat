@@ -1017,7 +1017,7 @@ export const list_pages = internalQuery({
 		include: v.optional(v.string()),
 	},
 	returns: v.object({
-		items: v.array(v.object({ path: v.string(), updatedAt: v.number() })),
+		items: v.array(v.object({ path: v.string(), updatedAt: v.number(), depthTruncated: v.boolean() })),
 		truncated: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
@@ -1037,16 +1037,21 @@ export const list_pages = internalQuery({
 
 		const matchesInclude = (absPath: string) => (include ? minimatch(absPath, include) : true);
 
-		const results: Array<{ path: string; updatedAt: number }> = [];
+		const results: Array<{ path: string; updatedAt: number; depthTruncated: boolean }> = [];
 		let truncated = false;
 
 		// Depth-first traversal using an explicit stack.
 		// We iterate children via an indexed query (async iterable) and dive deeper first.
-		type Frame = { parentId: string; absPath: string; depth: number; iterator: AsyncIterator<Doc<"pages">> | null };
-		const stack: Array<Frame> = [{ parentId: startNodeId, absPath: basePath, depth: 0, iterator: null }];
+		const stack: Array<{
+			parentId: string;
+			absPath: string;
+			depth: number;
+			iterator: AsyncIterator<Doc<"pages">> | null;
+		}> = [{ parentId: startNodeId, absPath: basePath, depth: 0, iterator: null }];
 
 		try {
-			while (stack.length && results.length < limit) {
+			// Iterate 1 extra time (less or equal `limit`) to flag the truncation
+			while (stack.length && results.length <= limit) {
 				const frame = stack.at(-1)!;
 
 				// Lazily fetch children by parentId via index; avoid .collect()
@@ -1061,11 +1066,12 @@ export const list_pages = internalQuery({
 
 				const iteratorItem = await iterator.next();
 
-				// No more children at this frame or page is empty
+				// No more children at this frame or page is empty or `maxDepth` is reached
 				if (iteratorItem.done) {
 					stack.pop();
 					// Clean up the iterator
 					await iterator.return?.();
+
 					continue;
 				}
 
@@ -1074,19 +1080,41 @@ export const list_pages = internalQuery({
 
 				// If include pattern is provided, only add items that match the glob
 				if (matchesInclude(childPath)) {
-					results.push({ path: childPath, updatedAt: child.updated_at });
-					// Respect limit if provided (only counts included items)
-					if (results.length >= limit) {
+					if (results.length < limit && frame.depth <= maxDepth) {
+						results.push({ path: childPath, updatedAt: child.updated_at, depthTruncated: false });
+					}
+					// Respect the `maxDepth` and mark the depth truncation
+					else if (frame.depth > maxDepth) {
+						stack.pop();
+						// Clean up the iterator
+						await iterator.return?.();
+
+						const lastResult = results.at(-1);
+						if (lastResult) {
+							lastResult.depthTruncated = true;
+						}
+
+						continue;
+					}
+					// Respect `limit` and mark the truncation
+					else {
 						truncated = true;
 						break;
 					}
 				}
 
 				// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
-				if (frame.depth + 1 < maxDepth) {
+				const nextDepth = frame.depth + 1;
+				// less or equal `maxDepth` to allow the extra depth iteration
+				if (nextDepth <= maxDepth + 1) {
 					// Set frame on parent frame to resume iteration
 					frame.iterator = iterator;
-					stack.push({ parentId: child.page_id, absPath: childPath, depth: frame.depth + 1, iterator: null });
+					stack.push({
+						parentId: child.page_id,
+						absPath: childPath,
+						depth: nextDepth,
+						iterator: null,
+					});
 				}
 			}
 		} finally {
