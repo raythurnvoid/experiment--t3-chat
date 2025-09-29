@@ -118,9 +118,11 @@ export function server_convex_response_success_json(args: {
 }
 
 export function server_path_extract_segments_from(path: string): string[] {
-	const normalizedPath = path.replaceAll("\\", "/").trim();
+	const normalizedPath = path.trim();
 	if (normalizedPath === "" || normalizedPath === "/") return [];
-	return normalizedPath.split("/").filter(Boolean);
+	return normalizedPath
+		.split(/(?<!\\)\//) // split on / not preceeded by \
+		.filter(Boolean);
 }
 
 export function server_path_normalize(path: string): string {
@@ -173,4 +175,12 @@ export async function server_request_json_parse_and_validate<T>(request: Request
 			},
 		});
 	}
+}
+
+export function encode_path_segment(segment: string) {
+	return segment.replaceAll("/", "\\/");
+}
+
+export function decode_path_segment(segment: string) {
+	return segment.replaceAll("\\/", "/");
 }

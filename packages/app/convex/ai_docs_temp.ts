@@ -24,6 +24,7 @@ import {
 	server_request_json_parse_and_validate,
 	server_convex_response_error_client,
 	server_convex_response_error_server,
+	encode_path_segment,
 } from "../server/server-utils.ts";
 import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
@@ -1076,7 +1077,10 @@ export const list_pages = internalQuery({
 				}
 
 				const child = iteratorItem.value;
-				const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
+				const childPath =
+					frame.absPath === "/"
+						? `/${encode_path_segment(child.name)}`
+						: `${frame.absPath}/${encode_path_segment(child.name)}`;
 
 				// If include pattern is provided, only add items that match the glob
 				if (matchesInclude(childPath)) {

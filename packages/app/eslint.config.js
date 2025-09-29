@@ -37,6 +37,7 @@ export default defineConfig(
 			"no-useless-escape": "off",
 			"no-empty": ["error", { allowEmptyCatch: true }],
 			"no-unexpected-multiline": "off",
+			"no-constant-condition": "off",
 
 			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
 

@@ -1,7 +1,7 @@
 import { ai_chat_HARDCODED_PROJECT_ID, ai_chat_HARDCODED_ORG_ID } from "../src/lib/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, internalMutation } from "./_generated/server";
-import { api } from "./_generated/api";
+import { query, mutation, httpAction, internalMutation } from "./_generated/server.js";
+import { api } from "./_generated/api.js";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
@@ -18,7 +18,7 @@ import {
 	type ModelMessage,
 } from "ai";
 import { z } from "zod";
-import { createArtifactArgsSchema } from "../src/types/artifact-schemas";
+import { createArtifactArgsSchema } from "../src/types/artifact-schemas.ts";
 import { type api_schemas_Main, api_schemas_Main_api_chat_body_schema } from "../shared/api-schemas.ts";
 import {
 	server_convex_headers_cors,
@@ -316,7 +316,7 @@ export const chat = httpAction(async (ctx, request) => {
 					break;
 				}
 
-				let messagesMap = new Map<string, app_convex_Doc<"messages">>(
+				const messagesMap = new Map<string, app_convex_Doc<"messages">>(
 					threadMessagesResult.messages.map((msg) => [msg._id, msg]),
 				);
 
@@ -593,8 +593,6 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 			}),
 		});
 
-		result.pipeTextStreamToResponse;
-
 		// Transform the AI stream to properly encode text chunks
 		let title = "";
 
@@ -615,7 +613,7 @@ export const thread_generate_title = httpAction(async (ctx, request) => {
 		// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createTextStreamResponse`
 		const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
 
-		result.consumeStream();
+		void result.consumeStream();
 
 		return new Response(stream, {
 			headers: server_convex_headers_cors(),

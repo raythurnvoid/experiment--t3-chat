@@ -5,6 +5,7 @@ import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import { internal } from "../convex/_generated/api.js";
 import {
+	decode_path_segment,
 	server_path_extract_segments_from,
 	server_path_name_of,
 	server_path_normalize,
@@ -546,10 +547,11 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 				return ignores.some((pattern) => minimatch(path, pattern));
 			};
 
-			const normalizedPath = server_path_normalize(args.path ?? "/");
+			// const normalizedPath = server_path_normalize(args.path ?? "/");
+			const path = args.path;
 
 			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
-				path: normalizedPath,
+				path: path,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				maxDepth: args.maxDepth,
@@ -561,9 +563,14 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 
 			// Build directory structure (directories only)
 			const dirs = new Set<string>();
+			const depthTruncatedPaths = new Set<string>();
 
 			for (const visiblePath of visiblePaths) {
 				const segments = server_path_extract_segments_from(visiblePath.path);
+
+				if (visiblePath.depthTruncated) {
+					depthTruncatedPaths.add(visiblePath.path);
+				}
 
 				// Add all parent directories including the path itself
 				for (let i = 0; i <= segments.length; i++) {
@@ -572,10 +579,10 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 				}
 			}
 
-			// Render tree starting at normalizedPath
+			// Render tree starting at `path`
 			function renderDir(dirPath: string, depth: number): string {
 				const indent = "  ".repeat(depth);
-				let output = depth === 0 ? `${dirPath}/\n` : `${indent}${server_path_name_of(dirPath)}/\n`;
+				let output = depth === 0 ? `/\n` : `${indent}${decode_path_segment(server_path_name_of(dirPath))}/\n`;
 
 				const subdirs = Array.from(dirs)
 					.filter((d) => server_path_parent_of(d) === dirPath && d !== dirPath)
@@ -585,16 +592,20 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 					output += renderDir(child, depth + 1);
 				}
 
+				if (depthTruncatedPaths.has(dirPath)) {
+					output += `${indent}  ... (children truncated due to \`maxDepth\`)\n`;
+				}
+
 				return output;
 			}
 
-			const output = renderDir(normalizedPath, 0);
+			const output = renderDir(path, 0);
 
 			return {
-				title: normalizedPath,
+				title: path,
 				metadata: {
 					count: visiblePaths.length,
-					truncated: list.metadata.truncated,
+					truncated: list.truncated,
 				},
 				output,
 			};
@@ -651,7 +662,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 				output.push("No pages found");
 			} else {
 				output.push(...listResult.items.map((f) => f.path));
-				if (listResult.metadata.truncated) {
+				if (listResult.truncated) {
 					output.push("");
 					output.push("(Results are truncated. Consider using a more specific path or pattern.)");
 				}
@@ -661,7 +672,7 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 				title: searchPath,
 				metadata: {
 					count: listResult.items.length,
-					truncated: listResult.metadata.truncated,
+					truncated: listResult.truncated,
 				},
 				output: output.join("\n"),
 			};
@@ -769,7 +780,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 			if (matches.length === 0) {
 				return {
 					title: args.pattern,
-					metadata: { matches: 0, truncated: list.metadata.truncated },
+					metadata: { matches: 0, truncated: list.truncated },
 					output: "No files found",
 				};
 			}
@@ -792,7 +803,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 
 			return {
 				title: args.pattern,
-				metadata: { matches: matches.length, truncated: list.metadata.truncated },
+				metadata: { matches: matches.length, truncated: list.truncated },
 				output: outputLines.join("\n"),
 			};
 		},
