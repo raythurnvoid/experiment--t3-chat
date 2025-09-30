@@ -1,4 +1,4 @@
-// Original file at: 263f9e51
+// Original file at: cedff867
 
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react";
