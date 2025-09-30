@@ -11,8 +11,10 @@ import {
 	ChevronDown,
 	ChevronsDown,
 	ChevronsUp,
+	Menu,
 } from "lucide-react";
-import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar.tsx";
+import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar.tsx";
+import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { cn, sx } from "@/lib/utils.ts";
@@ -1012,6 +1014,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 
 	const { searchQuery, setSearchQuery, showArchived, setShowArchived } = useDocsSearchContext();
 	const { dataProvider, items: treeItems } = useDocsTree();
+	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const treeRef = useRef<TreeRef | null>(null);
 
@@ -1053,9 +1056,23 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	return (
 		<div className={cn("DocsSidebarContent", "flex h-full flex-col")}>
 			<SidebarHeader className="border-b">
-				{/* Close button only if onClose is provided */}
+				{/* Top row with hamburger and close button */}
 				<div className="mb-4 flex items-center justify-between">
-					<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Documentation</h2>
+					<div className={cn("DocsSidebarContent-top-row-left", "flex items-center gap-2")}>
+						{/* Hamburger Menu - mobile only */}
+						<IconButton
+							variant="ghost"
+							size="icon"
+							onClick={toggleSidebar}
+							tooltip="Main Menu"
+							className={cn("DocsSidebarContent-hamburger-button", "h-8 w-8 lg:hidden")}
+						>
+							<Menu />
+						</IconButton>
+
+						<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Documentation</h2>
+					</div>
+
 					<IconButton
 						variant="ghost"
 						size="icon"
@@ -1194,29 +1211,27 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 	const { className, selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction, ...rest } = props;
 
 	return (
-		<SidebarProvider className={cn("DocsSidebar", "flex h-full w-full")}>
-			<DocsSearchContextProvider>
-				<DocsTreeProvider>
-					<div className={cn("DocsSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
-						<Sidebar
-							side="left"
-							variant="sidebar"
-							collapsible="none"
-							className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
-							style={{ borderRight: "none !important", width: "320px" }}
-							{...rest}
-						>
-							<DocsSidebarContent
-								onClose={onClose}
-								selectedDocId={selectedDocId}
-								onAddChild={onAddChild}
-								onArchive={onArchive}
-								onPrimaryAction={onPrimaryAction}
-							/>
-						</Sidebar>
-					</div>
-				</DocsTreeProvider>
-			</DocsSearchContextProvider>
-		</SidebarProvider>
+		<DocsSearchContextProvider>
+			<DocsTreeProvider>
+				<div className={cn("DocsSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
+					<Sidebar
+						side="left"
+						variant="sidebar"
+						collapsible="none"
+						className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
+						style={{ borderRight: "none !important", width: "320px" }}
+						{...rest}
+					>
+						<DocsSidebarContent
+							onClose={onClose}
+							selectedDocId={selectedDocId}
+							onAddChild={onAddChild}
+							onArchive={onArchive}
+							onPrimaryAction={onPrimaryAction}
+						/>
+					</Sidebar>
+				</div>
+			</DocsTreeProvider>
+		</DocsSearchContextProvider>
 	);
 }

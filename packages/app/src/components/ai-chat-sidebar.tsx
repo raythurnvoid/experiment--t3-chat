@@ -1,7 +1,8 @@
 import * as React from "react";
-import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star } from "lucide-react";
+import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star, Menu } from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
+import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { ThreadListPrimitive, ThreadListItemPrimitive, useThreadListItem } from "@assistant-ui/react";
 import { useState, createContext, use } from "react";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
@@ -218,23 +219,37 @@ interface AiChatSidebarContent_Props {
 function AiChatSidebarContent({ onClose }: AiChatSidebarContent_Props) {
 	const { search_query, set_search_query } = useSearchContext();
 	const [show_archived, set_show_archived] = useState(false);
+	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	return (
 		<ThreadListPrimitive.Root className={cn("AiChatSidebarContent", "flex h-full flex-col")}>
 			<SidebarHeader className="border-b">
-				{/* Close button only if onClose is provided */}
-				{onClose && (
-					<div className="mb-4 flex items-center justify-between">
+				{/* Top row with hamburger and close button */}
+				<div className="mb-4 flex items-center justify-between">
+					<div className={cn("AiChatSidebarContent-top-row-left", "flex items-center gap-2")}>
+						{/* Hamburger Menu - mobile only */}
 						<Button
 							variant="ghost"
 							size="icon"
-							onClick={onClose}
-							className={cn("AiChatSidebarContent-close-button", "h-8 w-8")}
+							onClick={toggleSidebar}
+							className={cn("AiChatSidebarContent-hamburger-button", "h-8 w-8 lg:hidden")}
 						>
-							<X className="h-4 w-4" />
+							<Menu className="h-4 w-4" />
 						</Button>
+
+						{/* Close button */}
+						{onClose && (
+							<Button
+								variant="ghost"
+								size="icon"
+								onClick={onClose}
+								className={cn("AiChatSidebarContent-close-button", "h-8 w-8")}
+							>
+								<X className="h-4 w-4" />
+							</Button>
+						)}
 					</div>
-				)}
+				</div>
 
 				{/* Search Form */}
 				<div className={cn("AiChatSidebarContent-search-container", "relative mb-4")}>

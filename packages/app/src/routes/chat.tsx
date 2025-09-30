@@ -4,10 +4,11 @@ import { AppAiChat } from "../components/app-ai-chat.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, Menu } from "lucide-react";
 import { cn } from "../lib/utils.ts";
 import { useBackendRuntime } from "@/lib/backend-runtime.tsx";
 import { AiChatSidebar } from "@/components/ai-chat-sidebar.tsx";
+import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 
 export const Route = createFileRoute({
 	component: Chat,
@@ -15,6 +16,8 @@ export const Route = createFileRoute({
 
 function ChatContent() {
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
+	const { toggleSidebar } = MainAppSidebar.useSidebar();
+
 	useThreadListItem((list_item) => {
 		window.rt0_chat_current_thread_id = list_item.remoteId;
 	});
@@ -44,7 +47,18 @@ function ChatContent() {
 							)}
 						>
 							{!aiChatSidebarOpen && (
-								<div className={cn("Chat-thread-panel-controls", "absolute top-4 left-4 z-10")}>
+								<div className={cn("Chat-thread-panel-controls", "absolute top-4 left-4 z-10 flex items-center gap-2")}>
+									{/* Hamburger Menu - mobile only */}
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={toggleSidebar}
+										className={cn("Chat-thread-panel-hamburger-button", "h-8 w-8 p-0 lg:hidden")}
+									>
+										<Menu className="h-4 w-4" />
+									</Button>
+
+									{/* Open AI Chat Sidebar button */}
 									<Button
 										variant="outline"
 										size="sm"

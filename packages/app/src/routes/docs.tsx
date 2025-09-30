@@ -3,10 +3,11 @@ import { DocsSidebar } from "../components/docs-sidebar-v2.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, Menu } from "lucide-react";
 import { cn } from "../lib/utils.ts";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
+import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 
 export const Route = createFileRoute({
 	component: Docs,
@@ -42,6 +43,7 @@ function DocsContent() {
 function Docs() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
+	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const [docsSidebarOpen, setDocsSidebarOpen] = useState(true);
 
@@ -102,7 +104,18 @@ function Docs() {
 					<Panel defaultSize={100} minSize={50}>
 						<div className={cn("Docs-editor-panel", "relative flex h-full flex-col overflow-hidden bg-background")}>
 							{!docsSidebarOpen && (
-								<div className={cn("Docs-editor-panel-controls", "absolute top-4 left-4 z-10")}>
+								<div className={cn("Docs-editor-panel-controls", "absolute top-4 left-4 z-10 flex items-center gap-2")}>
+									{/* Hamburger Menu - mobile only */}
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={toggleSidebar}
+										className={cn("Docs-editor-panel-hamburger-button", "h-8 w-8 p-0 lg:hidden")}
+									>
+										<Menu className="h-4 w-4" />
+									</Button>
+
+									{/* Open Docs Sidebar button */}
 									<Button
 										variant="outline"
 										size="sm"
