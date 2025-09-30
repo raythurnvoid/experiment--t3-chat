@@ -211,6 +211,11 @@ export const thread_messages_list = query({
 	args: {
 		threadId: v.id("threads"),
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+		query: v.optional(
+			v.object({
+				format: v.optional(v.string()),
+			}),
+		),
 	},
 	handler: async (ctx, args) => {
 		const thread_id_normalized = ctx.db.normalizeId("threads", args.threadId);
