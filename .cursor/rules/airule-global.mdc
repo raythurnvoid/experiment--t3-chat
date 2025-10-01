@@ -48,10 +48,9 @@ This is a monorepo project with the following essential structure that you must 
   - [vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
 
 - [+personal/](mdc:+personal) - DOCUMENTATION & RESEARCH FOLDER
-  - Contains files useful for answering questions and resolving complex problems
-  - Includes 3rd party codebases and documentation for research purposes
-  - Examples: React Complex Tree, AI SDK, BlockNote, shadcn, TanStack Router sources
   - [+personal/+ai/](mdc:+personal/+ai) - Only writable subfolder for AI-generated content
+  - [+personal/sources/](mdc:+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes
+  - [+personal/sources/README.md](mdc:+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the [+personal/sources/](mdc:+personal/sources) folder to have an idea of what the packages are
   - DO NOT MODIFY other files in +personal/ - they are reference material only
 
 ## Submodules (Special Import Handling)
@@ -104,7 +103,7 @@ When users ask about 3rd party libraries or request implementations using extern
 
 Documentation Sources
 
-- [+personal/sources/README.md](mdc:+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the `+personal/sources/` folder to have an idea of what the packages are
+- [+personal/sources](mdc:+personal/sources) - read [+personal/sources/README.md](mdc:+personal/sources/README.md) when reading inside the folder
 - Submodules - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks), [packages/app/vendor/ai/](mdc:packages/app/vendor/ai), and [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) have full repos for reference
 - Web search - For external documentation when not available locally
 

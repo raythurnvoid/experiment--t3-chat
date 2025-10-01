@@ -1070,7 +1070,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 							<Menu />
 						</IconButton>
 
-						<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Documentation</h2>
+						<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Pages</h2>
 					</div>
 
 					<IconButton
@@ -1113,9 +1113,6 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 
 				{/* Search Form */}
 				<div className={cn("DocsSidebarContent-search-container", "relative mb-4")}>
-					<div className={cn("DocsSidebarContent-search-label", "mb-2 text-xs font-medium text-muted-foreground")}>
-						Search docs
-					</div>
 					<input
 						placeholder="Search documentation..."
 						value={searchQuery}
@@ -1132,7 +1129,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 					<Search
 						className={cn(
 							"DocsSidebarContent-search-icon",
-							"pointer-events-none absolute top-8 left-2 h-4 w-4 text-muted-foreground",
+							"pointer-events-none absolute top-2 left-2 h-4 w-4 text-muted-foreground",
 						)}
 					/>
 				</div>
@@ -1150,7 +1147,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 
 					<Button
 						className={cn("DocsSidebarContent-new-doc-button", "flex-1 justify-start gap-2")}
-						variant="outline"
+						variant="secondary"
 						onClick={handleNewDoc}
 					>
 						<Plus className="h-4 w-4" />

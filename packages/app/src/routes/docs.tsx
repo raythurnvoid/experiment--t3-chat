@@ -1,13 +1,16 @@
 import React from "react";
 import { DocsSidebar } from "../components/docs-sidebar-v2.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { PanelLeft, Menu } from "lucide-react";
 import { cn } from "../lib/utils.ts";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
+import { useMutation } from "convex/react";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 
 export const Route = createFileRoute({
 	component: Docs,
@@ -24,17 +27,21 @@ const PageRichTextEditor = React.lazy(() =>
 	})),
 );
 
-function DocsContent() {
-	const searchParams = Route.useSearch();
+type DocsContent_Props = {
+	pageId: string | null | undefined;
+};
 
-	if (!searchParams.docId) {
-		return <div>No document selected</div>;
+function DocsContent(props: DocsContent_Props) {
+	const { pageId } = props;
+
+	if (!pageId) {
+		return <div className="p-4 text-sm text-muted-foreground">Loading homepage…</div>;
 	}
 
 	return (
 		<React.Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Loading editor…</div>}>
 			<div className="h-full w-full">
-				<PageRichTextEditor pageId={searchParams.docId} />
+				<PageRichTextEditor pageId={pageId} />
 			</div>
 		</React.Suspense>
 	);
@@ -46,6 +53,23 @@ function Docs() {
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const [docsSidebarOpen, setDocsSidebarOpen] = useState(true);
+
+	// Ensure homepage exists and get its ID
+	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
+	const [homepageId, setHomepageId] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (!searchParams.docId && homepageId === null) {
+			ensureHomepage({
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			})
+				.then((result) => setHomepageId(result.page_id))
+				.catch(console.error);
+		}
+	}, []);
+
+	const effectivePageId = searchParams.docId ?? homepageId ?? undefined;
 
 	// Navigation function to update URL with selected document
 	const navigateToDocument = (docId: string | null) => {
@@ -62,14 +86,14 @@ function Docs() {
 
 	const handleArchive = (itemId: string) => {
 		// When a document is archived, clear selection if it was the selected one
-		if (searchParams.docId === itemId) {
+		if (effectivePageId === itemId) {
 			navigateToDocument(null);
 		}
 	};
 
 	const handlePrimaryAction = (itemId: string, itemType: string) => {
 		// Only navigate if it's not already selected
-		if (searchParams.docId !== itemId) {
+		if (effectivePageId !== itemId) {
 			navigateToDocument(itemId);
 		}
 	};
@@ -89,7 +113,7 @@ function Docs() {
 				)}
 			>
 				<DocsSidebar
-					selectedDocId={searchParams.docId}
+					selectedDocId={effectivePageId}
 					onClose={handleClose}
 					onAddChild={handleAddChild}
 					onArchive={handleArchive}
@@ -127,7 +151,7 @@ function Docs() {
 								</div>
 							)}
 							<div className={cn("Docs-editor-content", "flex min-h-0 flex-1 overflow-hidden")}>
-								<DocsContent />
+								<DocsContent pageId={effectivePageId} />
 							</div>
 						</div>
 					</Panel>

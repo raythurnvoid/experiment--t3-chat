@@ -430,9 +430,11 @@ export const get_tree = query({
 			},
 		};
 
-		// Add all documents to tree using page_id as index
+		// Add all pages to tree using page_id as index
 		for (const page of pages) {
-			if (!page.page_id) continue; // Skip documents without page_id
+			// Skip pages without page_id or name,
+			// pages without name are homepages.
+			if (!page.page_id || page.name === "") continue;
 
 			treeData[page.page_id] = {
 				index: page.page_id,
@@ -595,6 +597,18 @@ export const rename_page = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		// Check if this is the homepage (path "/") and ignore if so
+		const path = await resolve_path_from_page_id(ctx, {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+		});
+
+		if (path === "/") {
+			// Ignore rename requests for homepage
+			return;
+		}
+
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
@@ -621,6 +635,18 @@ export const move_pages = mutation({
 	},
 	handler: async (ctx, args) => {
 		for (const item_id of args.itemIds) {
+			// Check if this is the homepage (path "/") and skip if so
+			const path = await resolve_path_from_page_id(ctx, {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: item_id,
+			});
+
+			if (path === "/") {
+				// Skip move requests for homepage
+				continue;
+			}
+
 			const page = await ctx.db
 				.query("pages")
 				.withIndex("by_workspace_project_and_page_id", (q) =>
@@ -649,6 +675,18 @@ export const archive_pages = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		// Check if this is the homepage (path "/") and ignore if so
+		const path = await resolve_path_from_page_id(ctx, {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+		});
+
+		if (path === "/") {
+			// Ignore archive requests for homepage
+			return;
+		}
+
 		const page = await ctx.db
 			.query("pages")
 			.withIndex("by_workspace_project_and_page_id", (q) =>
@@ -674,6 +712,18 @@ export const unarchive_pages = mutation({
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		// Check if this is the homepage (path "/") and ignore if so
+		const path = await resolve_path_from_page_id(ctx, {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+		});
+
+		if (path === "/") {
+			// Ignore unarchive requests for homepage
+			return;
+		}
 
 		const page = await ctx.db
 			.query("pages")
@@ -1348,5 +1398,43 @@ export const create_page_by_path = internalMutation({
 			}
 		}
 		return { page_id: lastPageId };
+	},
+});
+
+export const ensure_home_page = mutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+	},
+	returns: v.object({ page_id: v.string() }),
+	handler: async (ctx, args): Promise<{ page_id: string }> => {
+		// Find homepage (empty name under root)
+		const homepage = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+				q
+					.eq("workspace_id", args.workspaceId)
+					.eq("project_id", args.projectId)
+					.eq("parent_id", pages_ROOT_ID)
+					.eq("name", ""),
+			)
+			.first();
+
+		if (homepage) {
+			return { page_id: homepage.page_id };
+		}
+
+		// Create homepage with empty name
+		const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+		await create_page_in_db(ctx, {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id,
+			parent_id: pages_ROOT_ID,
+			name: "",
+			text_content: "",
+		});
+
+		return { page_id };
 	},
 });
