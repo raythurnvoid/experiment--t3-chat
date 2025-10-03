@@ -1,0 +1,71 @@
+@layer components {
+	.Pages-content-area {
+		display: flex;
+		height: 100%;
+		width: 100%;
+	}
+
+	.Pages-main-content {
+		display: flex;
+		height: 100%;
+		min-width: 0;
+		flex: 1 1 0%;
+		flex-direction: column;
+	}
+
+	.Pages-editor-panel {
+		position: relative;
+		display: flex;
+		height: 100%;
+		flex-direction: column;
+		overflow: hidden;
+		background-color: hsl(var(--background));
+
+		.Pages-editor-panel-controls {
+			position: absolute;
+			top: 1rem;
+			left: 1rem;
+			z-index: 10;
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+
+			.Pages-editor-panel-hamburger-button {
+				height: 2rem;
+				width: 2rem;
+				padding: 0;
+
+				@media (min-width: 1024px) {
+					display: none;
+				}
+			}
+
+			.Pages-editor-panel-expand-button {
+				height: 2rem;
+				width: 2rem;
+				padding: 0;
+			}
+		}
+
+		.Pages-editor-content {
+			display: flex;
+			min-height: 0;
+			flex: 1 1 0%;
+			overflow: hidden;
+		}
+	}
+
+	/* Loading states */
+	.Pages-loading-text {
+		padding: 1rem;
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	/* Editor content wrapper */
+	.Pages-editor-wrapper {
+		height: 100%;
+		width: 100%;
+	}
+}

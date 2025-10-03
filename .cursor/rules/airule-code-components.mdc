@@ -141,10 +141,7 @@ const BUTTON_SIZES = {
 	icon: "Button-size-icon",
 } as const;
 
-type Variant = keyof typeof BUTTON_VARIANTS | null; // allow null to opt-out
-type Size = keyof typeof BUTTON_SIZES;
-
-function Button(props: { className?: string; variant?: Variant; size?: Size } & React.ComponentProps<"button">) {
+function Button(props: { className?: string; variant?: keyof typeof BUTTON_VARIANTS | null; size?: keyof typeof BUTTON_SIZES } & React.ComponentProps<"button">) {
 	const { className, variant = "default", size = "default", ...rest } = props;
 	return (
 		<button
@@ -161,6 +158,32 @@ function Button(props: { className?: string; variant?: Variant; size?: Size } & 
 ```
 
 - Prefer overriding specific properties via `className` over custom positioning. Fall back to custom CSS only when necessary.
+
+## Component Static Values via Object.assign (preferred)
+
+Attach static values (e.g., `classNames`) to a named component function using `Object.assign`. Keep the inner component as a named function for Fast Refresh and clear DevTools display names.
+
+```tsx
+const CLASS_NAMES = { root: "MyComp" } as const;
+
+const MyComp = Object.assign(
+	function MyComp(props: React.ComponentProps<"div">) {
+		const { className, ...rest } = props;
+		return <div className={cn(CLASS_NAMES.root, className)} {...rest} />;
+	},
+	{ classNames: CLASS_NAMES },
+);
+```
+
+Do:
+
+- Keep the function named (not anonymous).
+- Attach only static, serializable data (e.g., `classNames`).
+
+Don’t:
+
+- Don’t attach dynamic functions or environment objects.
+- Don’t convert to anonymous functions.
 
 # React 19 Context Patterns
 

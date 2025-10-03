@@ -359,6 +359,26 @@ When converting from Tailwind utility classes to CSS:
 }
 ```
 
+# Container Performance & Clipping
+
+Prefer `contain: content` for container components (e.g., sidebars) instead of `overflow: hidden` to limit layout/paint scope without clipping descendants. This plays well with animated size changes.
+
+```css
+/* Example */
+.MySidebar {
+	contain: content;
+	transition: width 200ms linear;
+}
+
+/* Class-based state (instead of attributes) */
+.MySidebar-state-collapsed {
+	width: 47px;
+}
+.MySidebar-state-closed {
+	display: none;
+}
+```
+
 # Example Complete Component
 
 ```css

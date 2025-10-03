@@ -253,7 +253,7 @@ export const MainAppSidebar = Object.assign(
 									{/* Docs Navigation */}
 									<SidebarMenuItem>
 										<SidebarMenuButton asChild>
-											<Link to="/docs" className={cn("main-app-sidebar-nav-docs", "flex items-center gap-2")}>
+											<Link to="/pages" className={cn("main-app-sidebar-nav-docs", "flex items-center gap-2")}>
 												<FileText className="h-4 w-4" />
 												<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
 											</Link>

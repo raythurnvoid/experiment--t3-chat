@@ -1,0 +1,362 @@
+@layer common_components {
+	.MySidebar {
+		box-sizing: border-box;
+		position: relative;
+
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		height: 100%;
+		width: var(--my-sidebar-width);
+		flex-shrink: 0;
+		contain: content;
+
+		background: hsl(var(--sidebar));
+		color: hsl(var(--sidebar-foreground));
+		border-right: 1px solid hsl(var(--border));
+
+		transition: width 0.2s ease-in-out allow-discrete;
+	}
+
+	.MySidebar-state-collapsed {
+		width: var(--my-sidebar-width-collapsed);
+	}
+
+	.MySidebar-state-closed {
+		width: 0;
+	}
+
+	.MySidebar-state-expanded {
+		width: var(--my-sidebar-width);
+
+		.MySidebar-mounted :is(.MySidebar-state-expanded, .MySidebar-state-collapsed) {
+			@starting-style {
+				width: 0;
+			}
+		}
+	}
+
+	.MySidebar-inner {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		width: var(--my-sidebar-width);
+		transition: none;
+	}
+
+	.MySidebar-state-collapsed .MySidebar-inner {
+		width: var(--my-sidebar-width-collapsed);
+	}
+
+	.MySidebar-state-closed .MySidebar-inner {
+		width: 0;
+	}
+
+	.MySidebar-state-expanded .MySidebar-inner {
+		width: var(--my-sidebar-width);
+	}
+
+	.MySidebar-header,
+	.MySidebar-footer {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.5rem;
+	}
+
+	.MySidebar-content {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		gap: 0.5rem;
+		overflow: auto;
+		padding: 0.5rem;
+	}
+
+	.MySidebar-separator {
+		width: calc(100% - 1rem);
+		margin: 0.25rem auto;
+		background: hsl(var(--sidebar-border));
+		height: 1px;
+	}
+
+	.MySidebar-group {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.5rem;
+	}
+
+	.MySidebar-group-label {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		height: 2rem;
+		padding: 0 0.5rem;
+		border-radius: 0.5rem;
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: hsl(var(--sidebar-foreground) / 0.7);
+	}
+
+	.MySidebar-group-action {
+		position: absolute;
+		top: 0.75rem;
+		right: 0.75rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.25rem;
+		height: 1.25rem;
+		border-radius: 0.375rem;
+		background: transparent;
+		color: inherit;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		transition:
+			background 150ms ease,
+			color 150ms ease,
+			transform 150ms ease;
+	}
+
+	.MySidebar-group-action:hover,
+	.MySidebar-group-action:focus-visible {
+		background: hsl(var(--sidebar-accent));
+		color: hsl(var(--sidebar-accent-foreground));
+		outline: none;
+	}
+
+	.MySidebar-group-content {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.MySidebar-menu {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		list-style: none;
+		padding: 0;
+		margin: 0;
+	}
+
+	.MySidebar-menu-item,
+	.MySidebar-menu-sub-item {
+		position: relative;
+		list-style: none;
+	}
+
+	.MySidebar-menu-button,
+	.MySidebar-menu-sub-button {
+		box-sizing: border-box;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		border: none;
+		border-radius: 0.5rem;
+		background: transparent;
+		color: inherit;
+		padding: 0 0.5rem;
+		text-align: left;
+		cursor: pointer;
+		transition:
+			background 150ms ease,
+			color 150ms ease,
+			box-shadow 150ms ease;
+		font: inherit;
+	}
+
+	.MySidebar-menu-button {
+		min-height: 2.5rem;
+		font-size: 0.875rem;
+	}
+
+	.MySidebar-menu-button:hover,
+	.MySidebar-menu-button:focus-visible,
+	.MySidebar-menu-sub-button:hover,
+	.MySidebar-menu-sub-button:focus-visible {
+		background: hsl(var(--sidebar-accent));
+		color: hsl(var(--sidebar-accent-foreground));
+		outline: none;
+		box-shadow: 0 0 0 2px hsl(var(--sidebar-ring));
+	}
+
+	.MySidebar-menu-button[data-active="true"],
+	.MySidebar-menu-sub-button[data-active="true"] {
+		background: hsl(var(--sidebar-accent));
+		color: hsl(var(--sidebar-accent-foreground));
+		font-weight: 600;
+	}
+
+	.MySidebar-menu-button[data-state="open"] {
+		background: hsl(var(--sidebar-accent) / 0.6);
+	}
+
+	.MySidebar-menu-button-variant-outline {
+		background: hsl(var(--background));
+		box-shadow: inset 0 0 0 1px hsl(var(--sidebar-border));
+	}
+
+	.MySidebar-menu-button-variant-outline:hover,
+	.MySidebar-menu-button-variant-outline:focus-visible {
+		box-shadow: inset 0 0 0 1px hsl(var(--sidebar-accent));
+	}
+
+	.MySidebar-menu-button-size-sm {
+		min-height: 1.75rem;
+		font-size: 0.75rem;
+	}
+
+	.MySidebar-menu-button-size-lg {
+		min-height: 3rem;
+		font-size: 0.875rem;
+		padding: 0 0.75rem;
+	}
+
+	.MySidebar-menu-action {
+		position: absolute;
+		top: 0.375rem;
+		right: 0.375rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.25rem;
+		height: 1.25rem;
+		border-radius: 0.375rem;
+		border: none;
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+		padding: 0;
+		transition:
+			background 150ms ease,
+			color 150ms ease,
+			opacity 150ms ease;
+	}
+
+	.MySidebar-menu-action:hover,
+	.MySidebar-menu-action:focus-visible {
+		background: hsl(var(--sidebar-accent));
+		color: hsl(var(--sidebar-accent-foreground));
+		outline: none;
+	}
+
+	.MySidebar-menu-action-show-on-hover {
+		opacity: 0;
+		transition: opacity 150ms ease;
+	}
+
+	.MySidebar-menu-item:hover .MySidebar-menu-action-show-on-hover,
+	.MySidebar-menu-item:focus-within .MySidebar-menu-action-show-on-hover,
+	.MySidebar-menu-item [data-active="true"] ~ .MySidebar-menu-action-show-on-hover {
+		opacity: 1;
+	}
+
+	.MySidebar-menu-badge {
+		position: absolute;
+		right: 0.375rem;
+		top: 0.375rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.25rem;
+		height: 1.25rem;
+		padding: 0 0.25rem;
+		border-radius: 0.375rem;
+		font-size: 0.75rem;
+		font-weight: 600;
+		pointer-events: none;
+		background: hsl(var(--sidebar-accent));
+		color: hsl(var(--sidebar-accent-foreground));
+	}
+
+	.MySidebar-menu-skeleton {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0 0.5rem;
+		min-height: 2.5rem;
+	}
+
+	.MySidebar-menu-skeleton-icon {
+		width: 1rem;
+		height: 1rem;
+		border-radius: 0.25rem;
+	}
+
+	.MySidebar-menu-skeleton-text {
+		height: 1rem;
+		border-radius: 0.25rem;
+		flex: 1;
+		max-width: var(--skeleton-width, 60%);
+	}
+
+	.MySidebar-menu-sub {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding: 0.25rem 0 0.25rem 1.5rem;
+		margin: 0;
+		border-left: 1px solid hsl(var(--sidebar-border));
+	}
+
+	.MySidebar-menu-sub-button {
+		min-height: 1.75rem;
+		font-size: 0.8125rem;
+	}
+
+	.MySidebar-menu-sub-button[data-size="sm"] {
+		font-size: 0.75rem;
+		min-height: 1.5rem;
+	}
+
+	.MySidebar-trigger {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		border-radius: 0.5rem;
+		border: none;
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+		transition: background 150ms ease;
+	}
+
+	.MySidebar-trigger:hover,
+	.MySidebar-trigger:focus-visible {
+		background: hsl(var(--sidebar-accent));
+		color: hsl(var(--sidebar-accent-foreground));
+		outline: none;
+	}
+
+	.MySidebar-rail {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		right: -0.5rem;
+		width: 1rem;
+		border: none;
+		background: transparent;
+		cursor: col-resize;
+		padding: 0;
+	}
+
+	.MySidebar-inset {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		background: hsl(var(--background));
+	}
+
+	.MySidebar-input {
+		height: 2rem;
+	}
+}

@@ -11,13 +11,13 @@
 import type { CreateFileRoute, FileRoutesByPath } from '@tanstack/react-router'
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as DocsRouteImport } from './routes/docs'
+import { Route as PagesRouteImport } from './routes/pages'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
 
-const DocsRoute = DocsRouteImport.update({
-  id: '/docs',
-  path: '/docs',
+const PagesRoute = PagesRouteImport.update({
+  id: '/pages',
+  path: '/pages',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -34,31 +34,31 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/docs': typeof DocsRoute
+  '/pages': typeof PagesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/docs': typeof DocsRoute
+  '/pages': typeof PagesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
-  '/docs': typeof DocsRoute
+  '/pages': typeof PagesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/chat' | '/docs'
+  fullPaths: '/' | '/chat' | '/pages'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/chat' | '/docs'
-  id: '__root__' | '/' | '/chat' | '/docs'
+  to: '/' | '/chat' | '/pages'
+  id: '__root__' | '/' | '/chat' | '/pages'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ChatRoute: typeof ChatRoute
-  DocsRoute: typeof DocsRoute
+  PagesRoute: typeof PagesRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -77,11 +77,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/docs': {
-      id: '/docs'
-      path: '/docs'
-      fullPath: '/docs'
-      preLoaderRoute: typeof DocsRouteImport
+    '/pages': {
+      id: '/pages'
+      path: '/pages'
+      fullPath: '/pages'
+      preLoaderRoute: typeof PagesRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -105,20 +105,20 @@ declare module './routes/chat' {
     FileRoutesByPath['/chat']['fullPath']
   >
 }
-declare module './routes/docs' {
+declare module './routes/pages' {
   const createFileRoute: CreateFileRoute<
-    '/docs',
-    FileRoutesByPath['/docs']['parentRoute'],
-    FileRoutesByPath['/docs']['id'],
-    FileRoutesByPath['/docs']['path'],
-    FileRoutesByPath['/docs']['fullPath']
+    '/pages',
+    FileRoutesByPath['/pages']['parentRoute'],
+    FileRoutesByPath['/pages']['id'],
+    FileRoutesByPath['/pages']['path'],
+    FileRoutesByPath['/pages']['fullPath']
   >
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ChatRoute: ChatRoute,
-  DocsRoute: DocsRoute,
+  PagesRoute: PagesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

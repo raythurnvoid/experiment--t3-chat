@@ -14,6 +14,7 @@ import {
 	Menu,
 } from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar.tsx";
+import { MySidebar } from "@/components/my-sidebar.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
@@ -1216,7 +1217,7 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 						variant="sidebar"
 						collapsible="none"
 						className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
-						style={{ borderRight: "none !important", width: "320px" }}
+						style={{ width: "320px" }}
 						{...rest}
 					>
 						<DocsSidebarContent
@@ -1228,6 +1229,39 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 						/>
 					</Sidebar>
 				</div>
+			</DocsTreeProvider>
+		</DocsSearchContextProvider>
+	);
+}
+
+export type DocsSidebarV2_Props = Omit<DocsSidebar_Props, "collapsible" | "variant" | "side"> & {
+	state?: "closed" | "collapsed" | "expanded";
+};
+
+export function DocsSidebarV2(props: DocsSidebarV2_Props) {
+	const {
+		className,
+		selectedDocId,
+		onClose,
+		onAddChild,
+		onArchive,
+		onPrimaryAction,
+		state = "expanded",
+		...rest
+	} = props;
+
+	return (
+		<DocsSearchContextProvider>
+			<DocsTreeProvider>
+				<MySidebar state={state} className={className} {...rest}>
+					<DocsSidebarContent
+						onClose={onClose}
+						selectedDocId={selectedDocId}
+						onAddChild={onAddChild}
+						onArchive={onArchive}
+						onPrimaryAction={onPrimaryAction}
+					/>
+				</MySidebar>
 			</DocsTreeProvider>
 		</DocsSearchContextProvider>
 	);
