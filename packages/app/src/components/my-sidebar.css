@@ -42,6 +42,8 @@
 		height: 100%;
 		width: var(--my-sidebar-width);
 		transition: none;
+
+		transition: width 0s 0.2s ease-in-out;
 	}
 
 	.MySidebar-state-collapsed .MySidebar-inner {
@@ -54,17 +56,19 @@
 
 	.MySidebar-state-expanded .MySidebar-inner {
 		width: var(--my-sidebar-width);
+
+		transition: none;
 	}
 
-	.MySidebar-header,
-	.MySidebar-footer {
+	.MySidebarHeader,
+	.MySidebarFooter {
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
 		padding: 0.5rem;
 	}
 
-	.MySidebar-content {
+	.MySidebarContent {
 		display: flex;
 		flex-direction: column;
 		flex: 1;
@@ -74,14 +78,14 @@
 		padding: 0.5rem;
 	}
 
-	.MySidebar-separator {
+	.MySidebarSeparator {
 		width: calc(100% - 1rem);
 		margin: 0.25rem auto;
 		background: hsl(var(--sidebar-border));
 		height: 1px;
 	}
 
-	.MySidebar-group {
+	.MySidebarGroup {
 		position: relative;
 		display: flex;
 		flex-direction: column;
@@ -89,7 +93,7 @@
 		padding: 0.5rem;
 	}
 
-	.MySidebar-group-label {
+	.MySidebarGroupLabel {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -101,7 +105,7 @@
 		color: hsl(var(--sidebar-foreground) / 0.7);
 	}
 
-	.MySidebar-group-action {
+	.MySidebarGroupAction {
 		position: absolute;
 		top: 0.75rem;
 		right: 0.75rem;
@@ -122,20 +126,20 @@
 			transform 150ms ease;
 	}
 
-	.MySidebar-group-action:hover,
-	.MySidebar-group-action:focus-visible {
+	.MySidebarGroupAction:hover,
+	.MySidebarGroupAction:focus-visible {
 		background: hsl(var(--sidebar-accent));
 		color: hsl(var(--sidebar-accent-foreground));
 		outline: none;
 	}
 
-	.MySidebar-group-content {
+	.MySidebarGroupContent {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
 	}
 
-	.MySidebar-menu {
+	.MySidebarMenu {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
@@ -144,14 +148,14 @@
 		margin: 0;
 	}
 
-	.MySidebar-menu-item,
-	.MySidebar-menu-sub-item {
+	.MySidebarMenuItem,
+	.MySidebarMenuSubItem {
 		position: relative;
 		list-style: none;
 	}
 
-	.MySidebar-menu-button,
-	.MySidebar-menu-sub-button {
+	.MySidebarMenuButton,
+	.MySidebarMenuSubButton {
 		box-sizing: border-box;
 		display: inline-flex;
 		align-items: center;
@@ -171,54 +175,54 @@
 		font: inherit;
 	}
 
-	.MySidebar-menu-button {
+	.MySidebarMenuButton {
 		min-height: 2.5rem;
 		font-size: 0.875rem;
 	}
 
-	.MySidebar-menu-button:hover,
-	.MySidebar-menu-button:focus-visible,
-	.MySidebar-menu-sub-button:hover,
-	.MySidebar-menu-sub-button:focus-visible {
+	.MySidebarMenuButton:hover,
+	.MySidebarMenuButton:focus-visible,
+	.MySidebarMenuSubButton:hover,
+	.MySidebarMenuSubButton:focus-visible {
 		background: hsl(var(--sidebar-accent));
 		color: hsl(var(--sidebar-accent-foreground));
 		outline: none;
 		box-shadow: 0 0 0 2px hsl(var(--sidebar-ring));
 	}
 
-	.MySidebar-menu-button[data-active="true"],
-	.MySidebar-menu-sub-button[data-active="true"] {
+	.MySidebarMenuButton[data-active="true"],
+	.MySidebarMenuSubButton[data-active="true"] {
 		background: hsl(var(--sidebar-accent));
 		color: hsl(var(--sidebar-accent-foreground));
 		font-weight: 600;
 	}
 
-	.MySidebar-menu-button[data-state="open"] {
+	.MySidebarMenuButton[data-state="open"] {
 		background: hsl(var(--sidebar-accent) / 0.6);
 	}
 
-	.MySidebar-menu-button-variant-outline {
+	.MySidebarMenuButton-variant-outline {
 		background: hsl(var(--background));
 		box-shadow: inset 0 0 0 1px hsl(var(--sidebar-border));
 	}
 
-	.MySidebar-menu-button-variant-outline:hover,
-	.MySidebar-menu-button-variant-outline:focus-visible {
+	.MySidebarMenuButton-variant-outline:hover,
+	.MySidebarMenuButton-variant-outline:focus-visible {
 		box-shadow: inset 0 0 0 1px hsl(var(--sidebar-accent));
 	}
 
-	.MySidebar-menu-button-size-sm {
+	.MySidebarMenuButton-size-sm {
 		min-height: 1.75rem;
 		font-size: 0.75rem;
 	}
 
-	.MySidebar-menu-button-size-lg {
+	.MySidebarMenuButton-size-lg {
 		min-height: 3rem;
 		font-size: 0.875rem;
 		padding: 0 0.75rem;
 	}
 
-	.MySidebar-menu-action {
+	.MySidebarMenuAction {
 		position: absolute;
 		top: 0.375rem;
 		right: 0.375rem;
@@ -239,25 +243,25 @@
 			opacity 150ms ease;
 	}
 
-	.MySidebar-menu-action:hover,
-	.MySidebar-menu-action:focus-visible {
+	.MySidebarMenuAction:hover,
+	.MySidebarMenuAction:focus-visible {
 		background: hsl(var(--sidebar-accent));
 		color: hsl(var(--sidebar-accent-foreground));
 		outline: none;
 	}
 
-	.MySidebar-menu-action-show-on-hover {
+	.MySidebarMenuAction-show-on-hover {
 		opacity: 0;
 		transition: opacity 150ms ease;
 	}
 
-	.MySidebar-menu-item:hover .MySidebar-menu-action-show-on-hover,
-	.MySidebar-menu-item:focus-within .MySidebar-menu-action-show-on-hover,
-	.MySidebar-menu-item [data-active="true"] ~ .MySidebar-menu-action-show-on-hover {
+	.MySidebarMenuItem:hover .MySidebarMenuAction-show-on-hover,
+	.MySidebarMenuItem:focus-within .MySidebarMenuAction-show-on-hover,
+	.MySidebarMenuItem [data-active="true"] ~ .MySidebarMenuAction-show-on-hover {
 		opacity: 1;
 	}
 
-	.MySidebar-menu-badge {
+	.MySidebarMenuBadge {
 		position: absolute;
 		right: 0.375rem;
 		top: 0.375rem;
@@ -275,7 +279,7 @@
 		color: hsl(var(--sidebar-accent-foreground));
 	}
 
-	.MySidebar-menu-skeleton {
+	.MySidebarMenuSkeleton {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -283,20 +287,20 @@
 		min-height: 2.5rem;
 	}
 
-	.MySidebar-menu-skeleton-icon {
+	.MySidebarMenuSkeleton-icon {
 		width: 1rem;
 		height: 1rem;
 		border-radius: 0.25rem;
 	}
 
-	.MySidebar-menu-skeleton-text {
+	.MySidebarMenuSkeleton-text {
 		height: 1rem;
 		border-radius: 0.25rem;
 		flex: 1;
 		max-width: var(--skeleton-width, 60%);
 	}
 
-	.MySidebar-menu-sub {
+	.MySidebarMenuSub {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
@@ -305,17 +309,17 @@
 		border-left: 1px solid hsl(var(--sidebar-border));
 	}
 
-	.MySidebar-menu-sub-button {
+	.MySidebarMenuSubButton {
 		min-height: 1.75rem;
 		font-size: 0.8125rem;
 	}
 
-	.MySidebar-menu-sub-button[data-size="sm"] {
+	.MySidebarMenuSubButton[data-size="sm"] {
 		font-size: 0.75rem;
 		min-height: 1.5rem;
 	}
 
-	.MySidebar-trigger {
+	.MySidebarTrigger {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -329,14 +333,14 @@
 		transition: background 150ms ease;
 	}
 
-	.MySidebar-trigger:hover,
-	.MySidebar-trigger:focus-visible {
+	.MySidebarTrigger:hover,
+	.MySidebarTrigger:focus-visible {
 		background: hsl(var(--sidebar-accent));
 		color: hsl(var(--sidebar-accent-foreground));
 		outline: none;
 	}
 
-	.MySidebar-rail {
+	.MySidebarRail {
 		position: absolute;
 		top: 0;
 		bottom: 0;
@@ -348,7 +352,7 @@
 		padding: 0;
 	}
 
-	.MySidebar-inset {
+	.MySidebarInset {
 		display: flex;
 		flex-direction: column;
 		flex: 1;
@@ -356,7 +360,7 @@
 		background: hsl(var(--background));
 	}
 
-	.MySidebar-input {
+	.MySidebarInput {
 		height: 2rem;
 	}
 }

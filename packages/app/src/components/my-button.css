@@ -1,0 +1,207 @@
+@layer common_components {
+	.MyButton {
+		box-sizing: border-box;
+		position: relative;
+
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--my-button-gap);
+		white-space: nowrap;
+		flex-shrink: 0;
+
+		height: var(--my-button-height);
+		padding: var(--my-button-padding-y) var(--my-button-padding-x);
+		border-radius: var(--my-button-radius);
+		border: 1px solid transparent;
+
+		font-size: 0.875rem; /* text-sm */
+		font-weight: 500; /* font-medium */
+
+		transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+		outline: none;
+
+		/* Disabled */
+		&:disabled {
+			pointer-events: none;
+			opacity: 0.5;
+		}
+
+		/* Focus ring */
+		&:focus-visible {
+			border-color: hsl(var(--ring));
+			box-shadow: 0 0 0 var(--my-button-focus-ring-width) hsl(var(--ring) / 0.5);
+		}
+
+		/* Invalid state ring */
+		&[aria-invalid="true"] {
+			border-color: hsl(var(--destructive));
+			box-shadow: 0 0 0 var(--my-button-focus-ring-width) hsl(var(--destructive) / 0.2);
+		}
+
+		@media (prefers-color-scheme: dark) {
+			&[aria-invalid="true"] {
+				box-shadow: 0 0 0 var(--my-button-focus-ring-width) hsl(var(--destructive) / 0.4);
+			}
+		}
+
+		/* SVG children behavior */
+		& svg {
+			pointer-events: none;
+			flex-shrink: 0;
+		}
+
+		& svg:not([class*="size-"]) {
+			width: 1rem;
+			height: 1rem;
+		}
+
+		/* Adjust padding when an immediate SVG icon is present */
+		&:has(> svg) {
+			padding-left: var(--my-button-padding-x-with-icon);
+			padding-right: var(--my-button-padding-x-with-icon);
+		}
+	}
+
+	/* Variants */
+	.MyButton-variant-default {
+		background: hsl(var(--primary));
+		color: hsl(var(--primary-foreground));
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		&:hover {
+			background: hsl(var(--primary) / 0.9);
+		}
+	}
+
+	.MyButton-variant-destructive {
+		background: hsl(var(--destructive));
+		color: white;
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		@media (prefers-color-scheme: dark) {
+			background: hsl(var(--destructive) / 0.6);
+		}
+
+		&:hover {
+			background: hsl(var(--destructive) / 0.9);
+		}
+
+		&:focus-visible {
+			box-shadow: 0 0 0 var(--my-button-focus-ring-width) hsl(var(--destructive) / 0.2);
+		}
+
+		@media (prefers-color-scheme: dark) {
+			&:focus-visible {
+				box-shadow: 0 0 0 var(--my-button-focus-ring-width) hsl(var(--destructive) / 0.4);
+			}
+		}
+	}
+
+	.MyButton-variant-outline {
+		background: hsl(var(--background));
+		border-color: hsl(var(--border));
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		&:hover {
+			background: hsl(var(--accent));
+			color: hsl(var(--accent-foreground));
+		}
+
+		@media (prefers-color-scheme: dark) {
+			background: hsl(var(--input) / 0.3);
+			border-color: hsl(var(--input));
+
+			&:hover {
+				background: hsl(var(--input) / 0.5);
+			}
+		}
+	}
+
+	.MyButton-variant-secondary {
+		background: hsl(var(--secondary));
+		color: hsl(var(--secondary-foreground));
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		&:hover {
+			background: hsl(var(--secondary) / 0.8);
+		}
+	}
+
+	.MyButton-variant-ghost {
+		background: transparent;
+
+		&:hover,
+		&:focus-visible {
+			background: hsl(var(--accent));
+			color: hsl(var(--accent-foreground));
+		}
+
+		@media (prefers-color-scheme: dark) {
+			&:hover,
+			&:focus-visible {
+				background: hsl(var(--accent) / 0.5);
+			}
+		}
+	}
+
+	.MyButton-variant-ghost-secondary {
+		background: transparent;
+		color: hsl(var(--muted-foreground));
+
+		&:hover,
+		&:focus-visible {
+			background: hsl(var(--accent));
+			color: hsl(var(--accent-foreground));
+		}
+
+		@media (prefers-color-scheme: dark) {
+			&:hover,
+			&:focus-visible {
+				background: hsl(var(--accent) / 0.5);
+			}
+		}
+	}
+
+	.MyButton-variant-link {
+		background: transparent;
+		color: hsl(var(--primary));
+		text-underline-offset: 4px;
+
+		&:hover {
+			text-decoration: underline;
+		}
+	}
+
+	/* Sizes (implemented by changing CSS custom properties) */
+	.MyButton-size-default {
+		--my-button-height: 2.25rem; /* h-9 */
+		--my-button-padding-x: 1rem; /* px-4 */
+		--my-button-padding-y: 0.5rem; /* py-2 */
+		--my-button-gap: 0.5rem; /* gap-2 */
+		--my-button-padding-x-with-icon: 0.75rem; /* px-3 when has leading icon */
+	}
+
+	.MyButton-size-sm {
+		--my-button-height: 2rem; /* h-8 */
+		--my-button-padding-x: 0.75rem; /* px-3 */
+		--my-button-padding-y: 0.5rem; /* keep vertical */
+		--my-button-gap: 0.375rem; /* gap-1.5 */
+		--my-button-padding-x-with-icon: 0.625rem; /* px-2.5 when has icon */
+	}
+
+	.MyButton-size-lg {
+		--my-button-height: 2.5rem; /* h-10 */
+		--my-button-padding-x: 1.5rem; /* px-6 */
+		--my-button-padding-y: 0.5rem; /* keep vertical */
+		--my-button-gap: 0.5rem;
+		--my-button-padding-x-with-icon: 1rem; /* px-4 when has icon */
+	}
+
+	.MyButton-size-icon {
+		--my-button-height: 2.25rem; /* size-9 */
+		width: var(--my-button-height);
+		padding-left: 0;
+		padding-right: 0;
+	}
+}

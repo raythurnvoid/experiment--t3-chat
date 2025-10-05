@@ -112,43 +112,57 @@ export function Toolbar(props: Toolbar_Props) {
 
 # Component Styles
 
-- Define all classes in a `CLASS_NAMES` constant. Classes are prefixed with the main component name and use kebab-case for words. Always create a root class `CLASS_NAMES.root` whose value equals the component name (even if no styles are needed) so the component is identifiable in HTML.
+- Declare a `_ClassNames` union type enumerating all CSS class strings. Class values are prefixed with the main component name and use kebab-case for words. Always include a root class whose value equals the component name (even if no styles are needed) so the component is identifiable in HTML.
 
 ```ts
-const CLASS_NAMES = {
-	root: "Thread",
-	header: "Thread-header",
-	actions: "Thread-actions",
-} as const;
+type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 ```
 
-- Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer class names from `CLASS_NAMES` and follow the CSS rules in [airule-code-css.mdc](mdc:.cursor/rules/airule-code-css.mdc).
-
-- For multiple states like variants and sizes, define string constants that map to prefixed classes, and compose them with Tailwind via `cn()`.
+- Use TypeScript's `satisfies` operator to validate class string literals at call sites:
 
 ```ts
-const BUTTON_VARIANTS = {
-	default: "Button-variant-default",
-	destructive: "Button-variant-destructive",
-	outline: "Button-variant-outline",
-	ghost: "Button-variant-ghost",
-} as const;
+<div className={cn("Thread" satisfies Thread_ClassNames)} />
+```
 
-const BUTTON_SIZES = {
-	default: "Button-size-default",
-	sm: "Button-size-sm",
-	lg: "Button-size-lg",
-	icon: "Button-size-icon",
-} as const;
+## Subcomponents in \_ClassNames
 
-function Button(props: { className?: string; variant?: keyof typeof BUTTON_VARIANTS | null; size?: keyof typeof BUTTON_SIZES } & React.ComponentProps<"button">) {
-	const { className, variant = "default", size = "default", ...rest } = props;
+Model subcomponents as additional class strings within the same `<ComponentName>_ClassNames` union. Use PascalCase for subcomponent root classes (e.g., `ThreadHeader`) and dash-suffixed modifiers for states, variants, and sizes on those subcomponents.
+
+```ts
+type Thread_ClassNames =
+	| "Thread"
+	| "Thread-inner"
+	| "ThreadHeader"
+	| "ThreadFooter"
+	| "ThreadContent"
+	| "ThreadHeader-title"
+	| "ThreadMenu"
+	| "ThreadMenuItem"
+	| "ThreadMenuButton"
+	| "ThreadMenuButton-variant-outline"
+	| "ThreadMenuButton-variant-ghost"
+	| "ThreadMenuButton-size-sm"
+	| "ThreadMenuButton-size-lg";
+```
+
+```tsx
+function ThreadHeader(props: React.ComponentProps<"div">) {
+	const { className, ...rest } = props;
+	return <div className={cn("ThreadHeader" satisfies Thread_ClassNames, className)} {...rest} />;
+}
+
+function ThreadMenuButton(
+	props: { variant?: "outline" | "ghost"; size?: "sm" | "lg" } & React.ComponentProps<"button">,
+) {
+	const { className, variant = "outline", size = "sm", ...rest } = props;
 	return (
 		<button
 			className={cn(
-				CLASS_NAMES.root,
-				variant && BUTTON_VARIANTS[variant],
-				BUTTON_SIZES[size],
+				"ThreadMenuButton" satisfies Thread_ClassNames,
+				variant === "outline" && ("ThreadMenuButton-variant-outline" satisfies Thread_ClassNames),
+				variant === "ghost" && ("ThreadMenuButton-variant-ghost" satisfies Thread_ClassNames),
+				size === "sm" && ("ThreadMenuButton-size-sm" satisfies Thread_ClassNames),
+				size === "lg" && ("ThreadMenuButton-size-lg" satisfies Thread_ClassNames),
 				className,
 			)}
 			{...rest}
@@ -157,33 +171,83 @@ function Button(props: { className?: string; variant?: keyof typeof BUTTON_VARIA
 }
 ```
 
-- Prefer overriding specific properties via `className` over custom positioning. Fall back to custom CSS only when necessary.
+- Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer component-prefixed classes validated by the `_ClassNames` type and follow the CSS rules in [airule-code-css.mdc](mdc:.cursor/rules/airule-code-css.mdc).
 
-## Component Static Values via Object.assign (preferred)
+- Variants and sizes must be represented directly in the component's `_ClassNames` union. Use conditional adds with `satisfies` for validation.
 
-Attach static values (e.g., `classNames`) to a named component function using `Object.assign`. Keep the inner component as a named function for Fast Refresh and clear DevTools display names.
+```ts
+type Button_ClassNames =
+	| "Button"
+	| "Button-variant-default"
+	| "Button-variant-destructive"
+	| "Button-variant-outline"
+	| "Button-variant-ghost"
+	| "Button-size-default"
+	| "Button-size-sm"
+	| "Button-size-lg"
+	| "Button-size-icon";
 
-```tsx
-const CLASS_NAMES = { root: "MyComp" } as const;
-
-const MyComp = Object.assign(
-	function MyComp(props: React.ComponentProps<"div">) {
-		const { className, ...rest } = props;
-		return <div className={cn(CLASS_NAMES.root, className)} {...rest} />;
-	},
-	{ classNames: CLASS_NAMES },
-);
+function Button(
+	props: {
+		className?: string;
+		variant?: "default" | "destructive" | "outline" | "ghost" | null;
+		size?: "default" | "sm" | "lg" | "icon";
+	} & React.ComponentProps<"button">,
+) {
+	const { className, variant = "default", size = "default", ...rest } = props;
+	return (
+		<button
+			className={cn(
+				"Button" satisfies Button_ClassNames,
+				variant === "default" && ("Button-variant-default" satisfies Button_ClassNames),
+				variant === "destructive" && ("Button-variant-destructive" satisfies Button_ClassNames),
+				variant === "outline" && ("Button-variant-outline" satisfies Button_ClassNames),
+				variant === "ghost" && ("Button-variant-ghost" satisfies Button_ClassNames),
+				size === "default" && ("Button-size-default" satisfies Button_ClassNames),
+				size === "sm" && ("Button-size-sm" satisfies Button_ClassNames),
+				size === "lg" && ("Button-size-lg" satisfies Button_ClassNames),
+				size === "icon" && ("Button-size-icon" satisfies Button_ClassNames),
+				className,
+			)}
+			{...rest}
+		/>
+	);
+}
 ```
 
-Do:
+## Component CSS Variables (\_CssVars)
 
-- Keep the function named (not anonymous).
-- Attach only static, serializable data (e.g., `classNames`).
+Use a `<ComponentName>_CssVars` type to model component-scoped CSS custom properties and provide defaults merged into the `style` prop. Spread defaults first, then user `style` so the user can override defaults.
 
-Don’t:
+```tsx
+type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 
-- Don’t attach dynamic functions or environment objects.
-- Don’t convert to anonymous functions.
+type Thread_CssVars = {
+	"--thread-width": string;
+	"--thread-width-collapsed": string;
+};
+
+const THREAD_CSS_DEFAULTS: Partial<Thread_CssVars> = {
+	"--thread-width": "320px",
+	"--thread-width-collapsed": "48px",
+} as const;
+
+function Thread(props: React.ComponentProps<"aside">) {
+	const { className, style, ...rest } = props;
+	return (
+		<aside
+			className={cn("Thread" satisfies Thread_ClassNames, className)}
+			style={{
+				...THREAD_CSS_DEFAULTS,
+				...style,
+			}}
+			{...rest}
+		/>
+	);
+}
+```
+
+- Prefer overriding specific properties via `className` over custom positioning. Fall back to custom CSS only when necessary.
 
 # React 19 Context Patterns
 

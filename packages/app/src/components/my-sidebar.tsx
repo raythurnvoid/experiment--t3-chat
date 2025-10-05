@@ -10,56 +10,49 @@ import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { cn } from "@/lib/utils.ts";
 
-const CLASS_NAMES = {
-	root: "MySidebar",
-	state: {
-		expanded: "MySidebar-state-expanded",
-		collapsed: "MySidebar-state-collapsed",
-		closed: "MySidebar-state-closed",
-	},
-	mounted: "MySidebar-mounted",
+type MySidebar_ClassNames =
+	| "MySidebar"
+	| "MySidebar-state-expanded"
+	| "MySidebar-state-collapsed"
+	| "MySidebar-state-closed"
+	| "MySidebar-mounted"
+	| "MySidebar-inner"
+	| "MySidebarHeader"
+	| "MySidebarFooter"
+	| "MySidebarContent"
+	| "MySidebarSeparator"
+	| "MySidebarGroup"
+	| "MySidebarGroupLabel"
+	| "MySidebarGroupAction"
+	| "MySidebarGroupContent"
+	| "MySidebarMenu"
+	| "MySidebarMenuItem"
+	| "MySidebarMenuButton"
+	| "MySidebarMenuButton-variant-outline"
+	| "MySidebarMenuButton-size-sm"
+	| "MySidebarMenuButton-size-lg"
+	| "MySidebarMenuAction"
+	| "MySidebarMenuAction-show-on-hover"
+	| "MySidebarMenuBadge"
+	| "MySidebarMenuSkeleton"
+	| "MySidebarMenuSkeleton-icon"
+	| "MySidebarMenuSkeleton-text"
+	| "MySidebarMenuSub"
+	| "MySidebarMenuSubItem"
+	| "MySidebarMenuSubButton"
+	| "MySidebarTrigger"
+	| "MySidebarRail"
+	| "MySidebarInset"
+	| "MySidebarInput";
 
-	inner: "MySidebar-inner",
-	header: "MySidebar-header",
-	footer: "MySidebar-footer",
-	content: "MySidebar-content",
-	separator: "MySidebar-separator",
+type MySidebar_CssVars = {
+	"--my-sidebar-width": string;
+	"--my-sidebar-width-collapsed": string;
+};
 
-	group: "MySidebar-group",
-	groupLabel: "MySidebar-group-label",
-	groupAction: "MySidebar-group-action",
-	groupContent: "MySidebar-group-content",
-
-	menu: "MySidebar-menu",
-	menuItem: "MySidebar-menu-item",
-	menuButton: "MySidebar-menu-button",
-	menuButtonOutline: "MySidebar-menu-button-variant-outline",
-	menuButtonSizeSm: "MySidebar-menu-button-size-sm",
-	menuButtonSizeLg: "MySidebar-menu-button-size-lg",
-	menuAction: "MySidebar-menu-action",
-	menuActionShowOnHover: "MySidebar-menu-action-show-on-hover",
-	menuBadge: "MySidebar-menu-badge",
-	menuSkeleton: "MySidebar-menu-skeleton",
-	menuSkeletonIcon: "MySidebar-menu-skeleton-icon",
-	menuSkeletonText: "MySidebar-menu-skeleton-text",
-	menuSub: "MySidebar-menu-sub",
-	menuSubItem: "MySidebar-menu-sub-item",
-	menuSubButton: "MySidebar-menu-sub-button",
-
-	trigger: "MySidebar-trigger",
-	rail: "MySidebar-rail",
-	inset: "MySidebar-inset",
-	input: "MySidebar-input",
-} as const;
-
-const CSS_VARIABLES = {
-	width: "--my-sidebar-width",
-	collapsedWidth: "--my-sidebar-width-collapsed",
-} as const;
-
-const CSS_VARIABLE_DEFAULTS = {
-	[CSS_VARIABLES.width]: "320px",
-	[CSS_VARIABLES.collapsedWidth]: "47px",
+const CSS_VARIABLE_DEFAULTS: Partial<MySidebar_CssVars> = {
+	"--my-sidebar-width": "320px",
+	"--my-sidebar-width-collapsed": "47px",
 };
 
 type MySidebarState = "closed" | "collapsed" | "expanded";
@@ -68,36 +61,41 @@ export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
 	state: MySidebarState;
 };
 
-export const MySidebar = Object.assign(
-	function MySidebar(props: MySidebar_Props) {
-		const { ref, id, className, state, children, style, ...rest } = props;
-		const [isMounted, setIsMounted] = useState(false);
+export function MySidebar(props: MySidebar_Props) {
+	const { ref, id, className, state, children, style, ...rest } = props;
+	const [isMounted, setIsMounted] = useState(false);
 
-		useEffect(() => {
-			setIsMounted(true);
-		}, []);
-		const stateClassName = CLASS_NAMES.state[state];
+	useEffect(() => {
+		setIsMounted(true);
+	}, []);
 
-		return (
-			<aside
-				ref={ref}
-				id={id}
-				className={cn(CLASS_NAMES.root, stateClassName, isMounted && CLASS_NAMES.mounted, className)}
-				style={{
-					...CSS_VARIABLE_DEFAULTS,
-					...style,
-				}}
-				{...rest}
-			>
-				<div className={CLASS_NAMES.inner}>{children}</div>
-			</aside>
-		);
-	},
-	{
-		classNames: CLASS_NAMES,
-		cssVars: CSS_VARIABLES,
-	},
-);
+	const stateClassName =
+		state === "expanded"
+			? ("MySidebar-state-expanded" satisfies MySidebar_ClassNames)
+			: state === "collapsed"
+				? ("MySidebar-state-collapsed" satisfies MySidebar_ClassNames)
+				: ("MySidebar-state-closed" satisfies MySidebar_ClassNames);
+
+	return (
+		<aside
+			ref={ref}
+			id={id}
+			className={cn(
+				"MySidebar" satisfies MySidebar_ClassNames,
+				stateClassName,
+				isMounted && ("MySidebar-mounted" satisfies MySidebar_ClassNames),
+				className,
+			)}
+			style={{
+				...CSS_VARIABLE_DEFAULTS,
+				...style,
+			}}
+			{...rest}
+		>
+			<div className={cn("MySidebar-inner" satisfies MySidebar_ClassNames)}>{children}</div>
+		</aside>
+	);
+}
 
 export type MySidebarHeader_Props = ComponentPropsWithRef<"div">;
 
@@ -105,7 +103,7 @@ export function MySidebarHeader(props: MySidebarHeader_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.header, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("MySidebarHeader" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
@@ -117,7 +115,7 @@ export function MySidebarFooter(props: MySidebarFooter_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.footer, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("MySidebarFooter" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
@@ -129,7 +127,7 @@ export function MySidebarContent(props: MySidebarContent_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.content, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("MySidebarContent" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
@@ -140,7 +138,14 @@ export type MySidebarSeparator_Props = ComponentPropsWithRef<typeof Separator>;
 export function MySidebarSeparator(props: MySidebarSeparator_Props) {
 	const { ref, id, className, ...rest } = props;
 
-	return <Separator ref={ref} id={id} className={cn(CLASS_NAMES.separator, className)} {...rest} />;
+	return (
+		<Separator
+			ref={ref}
+			id={id}
+			className={cn("MySidebarSeparator" satisfies MySidebar_ClassNames, className)}
+			{...rest}
+		/>
+	);
 }
 
 export type MySidebarGroup_Props = ComponentPropsWithRef<"div">;
@@ -149,7 +154,7 @@ export function MySidebarGroup(props: MySidebarGroup_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.group, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("MySidebarGroup" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
@@ -164,7 +169,7 @@ export function MySidebarGroupLabel(props: MySidebarGroupLabel_Props) {
 	const Comp = asChild ? Slot : "div";
 
 	return (
-		<Comp ref={ref} id={id} className={cn(CLASS_NAMES.groupLabel, className)} {...rest}>
+		<Comp ref={ref} id={id} className={cn("MySidebarGroupLabel" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</Comp>
 	);
@@ -183,7 +188,7 @@ export function MySidebarGroupAction(props: MySidebarGroupAction_Props) {
 			ref={ref}
 			id={id}
 			type={asChild ? undefined : "button"}
-			className={cn(CLASS_NAMES.groupAction, className)}
+			className={cn("MySidebarGroupAction" satisfies MySidebar_ClassNames, className)}
 			{...rest}
 		>
 			{children}
@@ -197,7 +202,7 @@ export function MySidebarGroupContent(props: MySidebarGroupContent_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.groupContent, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("MySidebarGroupContent" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
@@ -209,7 +214,7 @@ export function MySidebarMenu(props: MySidebarMenu_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<ul ref={ref} id={id} className={cn(CLASS_NAMES.menu, className)} {...rest}>
+		<ul ref={ref} id={id} className={cn("MySidebarMenu" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</ul>
 	);
@@ -221,7 +226,7 @@ export function MySidebarMenuItem(props: MySidebarMenuItem_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<li ref={ref} id={id} className={cn(CLASS_NAMES.menuItem, className)} {...rest}>
+		<li ref={ref} id={id} className={cn("MySidebarMenuItem" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</li>
 	);
@@ -253,10 +258,10 @@ export function MySidebarMenuButton(props: MySidebarMenuButton_Props) {
 	const Comp = asChild ? Slot : "button";
 
 	const buttonClasses = cn(
-		CLASS_NAMES.menuButton,
-		variant === "outline" ? CLASS_NAMES.menuButtonOutline : null,
-		size === "sm" ? CLASS_NAMES.menuButtonSizeSm : null,
-		size === "lg" ? CLASS_NAMES.menuButtonSizeLg : null,
+		"MySidebarMenuButton" satisfies MySidebar_ClassNames,
+		variant === "outline" && ("MySidebarMenuButton-variant-outline" satisfies MySidebar_ClassNames),
+		size === "sm" && ("MySidebarMenuButton-size-sm" satisfies MySidebar_ClassNames),
+		size === "lg" && ("MySidebarMenuButton-size-lg" satisfies MySidebar_ClassNames),
 		className,
 	);
 
@@ -303,7 +308,11 @@ export function MySidebarMenuAction(props: MySidebarMenuAction_Props) {
 			ref={ref}
 			id={id}
 			type={asChild ? undefined : "button"}
-			className={cn(CLASS_NAMES.menuAction, showOnHover ? CLASS_NAMES.menuActionShowOnHover : null, className)}
+			className={cn(
+				"MySidebarMenuAction" satisfies MySidebar_ClassNames,
+				showOnHover && ("MySidebarMenuAction-show-on-hover" satisfies MySidebar_ClassNames),
+				className,
+			)}
 			{...rest}
 		>
 			{children}
@@ -317,7 +326,7 @@ export function MySidebarMenuBadge(props: MySidebarMenuBadge_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.menuBadge, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("MySidebarMenuBadge" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
@@ -332,9 +341,12 @@ export function MySidebarMenuSkeleton(props: MySidebarMenuSkeleton_Props) {
 	const width = "60%";
 
 	return (
-		<div ref={ref} id={id} className={cn(CLASS_NAMES.menuSkeleton, className)} {...rest}>
-			{showIcon ? <Skeleton className={CLASS_NAMES.menuSkeletonIcon} /> : null}
-			<Skeleton className={CLASS_NAMES.menuSkeletonText} style={{ "--skeleton-width": width } as CSSProperties} />
+		<div ref={ref} id={id} className={cn("MySidebarMenuSkeleton" satisfies MySidebar_ClassNames, className)} {...rest}>
+			{showIcon ? <Skeleton className={cn("MySidebarMenuSkeleton-icon" satisfies MySidebar_ClassNames)} /> : null}
+			<Skeleton
+				className={cn("MySidebarMenuSkeleton-text" satisfies MySidebar_ClassNames)}
+				style={{ "--skeleton-width": width } as CSSProperties}
+			/>
 		</div>
 	);
 }
@@ -345,7 +357,7 @@ export function MySidebarMenuSub(props: MySidebarMenuSub_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<ul ref={ref} id={id} className={cn(CLASS_NAMES.menuSub, className)} {...rest}>
+		<ul ref={ref} id={id} className={cn("MySidebarMenuSub" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</ul>
 	);
@@ -357,7 +369,7 @@ export function MySidebarMenuSubItem(props: MySidebarMenuSubItem_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<li ref={ref} id={id} className={cn(CLASS_NAMES.menuSubItem, className)} {...rest}>
+		<li ref={ref} id={id} className={cn("MySidebarMenuSubItem" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</li>
 	);
@@ -379,7 +391,7 @@ export function MySidebarMenuSubButton(props: MySidebarMenuSubButton_Props) {
 			id={id}
 			data-size={size}
 			data-active={isActive}
-			className={cn(CLASS_NAMES.menuSubButton, className)}
+			className={cn("MySidebarMenuSubButton" satisfies MySidebar_ClassNames, className)}
 			{...rest}
 		>
 			{children}
@@ -393,7 +405,13 @@ export function MySidebarTrigger(props: MySidebarTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<button ref={ref} id={id} type="button" className={cn(CLASS_NAMES.trigger, className)} {...rest}>
+		<button
+			ref={ref}
+			id={id}
+			type="button"
+			className={cn("MySidebarTrigger" satisfies MySidebar_ClassNames, className)}
+			{...rest}
+		>
 			{children ?? <PanelLeftIcon size={16} />}
 		</button>
 	);
@@ -405,7 +423,13 @@ export function MySidebarRail(props: MySidebarRail_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<button ref={ref} id={id} type="button" className={cn(CLASS_NAMES.rail, className)} {...rest}>
+		<button
+			ref={ref}
+			id={id}
+			type="button"
+			className={cn("MySidebarRail" satisfies MySidebar_ClassNames, className)}
+			{...rest}
+		>
 			{children}
 		</button>
 	);
@@ -417,7 +441,7 @@ export function MySidebarInset(props: MySidebarInset_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<main ref={ref} id={id} className={cn(CLASS_NAMES.inset, className)} {...rest}>
+		<main ref={ref} id={id} className={cn("MySidebarInset" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</main>
 	);
@@ -428,5 +452,7 @@ export type MySidebarInput_Props = ComponentPropsWithRef<typeof Input>;
 export function MySidebarInput(props: MySidebarInput_Props) {
 	const { ref, id, className, ...rest } = props;
 
-	return <Input ref={ref} id={id} className={cn(CLASS_NAMES.input, className)} {...rest} />;
+	return (
+		<Input ref={ref} id={id} className={cn("MySidebarInput" satisfies MySidebar_ClassNames, className)} {...rest} />
+	);
 }

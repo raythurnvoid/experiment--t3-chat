@@ -1,11 +1,11 @@
 @layer components {
-	.Pages-content-area {
+	.RoutePages-content-area {
 		display: flex;
 		height: 100%;
 		width: 100%;
 	}
 
-	.Pages-main-content {
+	.RoutePages-main-content {
 		display: flex;
 		height: 100%;
 		min-width: 0;
@@ -13,7 +13,7 @@
 		flex-direction: column;
 	}
 
-	.Pages-editor-panel {
+	.RoutePages-editor-panel {
 		position: relative;
 		display: flex;
 		height: 100%;
@@ -21,7 +21,7 @@
 		overflow: hidden;
 		background-color: hsl(var(--background));
 
-		.Pages-editor-panel-controls {
+		.RoutePages-editor-panel-controls {
 			position: absolute;
 			top: 1rem;
 			left: 1rem;
@@ -30,7 +30,7 @@
 			align-items: center;
 			gap: 0.5rem;
 
-			.Pages-editor-panel-hamburger-button {
+			.RoutePages-editor-panel-hamburger-button {
 				height: 2rem;
 				width: 2rem;
 				padding: 0;
@@ -40,14 +40,14 @@
 				}
 			}
 
-			.Pages-editor-panel-expand-button {
+			.RoutePages-editor-panel-expand-button {
 				height: 2rem;
 				width: 2rem;
 				padding: 0;
 			}
 		}
 
-		.Pages-editor-content {
+		.RoutePages-editor-content {
 			display: flex;
 			min-height: 0;
 			flex: 1 1 0%;
@@ -56,7 +56,7 @@
 	}
 
 	/* Loading states */
-	.Pages-loading-text {
+	.RoutePages-loading-text {
 		padding: 1rem;
 		font-size: 0.875rem;
 		line-height: 1.25rem;
@@ -64,7 +64,7 @@
 	}
 
 	/* Editor content wrapper */
-	.Pages-editor-wrapper {
+	.RoutePages-editor-wrapper {
 		height: 100%;
 		width: 100%;
 	}

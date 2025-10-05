@@ -1,0 +1,179 @@
+@reference "@/app.css";
+
+@layer components {
+	.PagesSidebarContent {
+		height: 100%;
+
+		display: flex;
+		flex-direction: column;
+	}
+
+	.MySidebar-state-closed .PagesSidebarContent {
+		filter: opacity(0);
+
+		transition: filter 0.1s ease-in-out;
+	}
+
+	.MySidebar-state-expanded .PagesSidebarContent {
+		filter: opacity(1);
+
+		transition: filter 0.1s 0.1s ease-in-out;
+	}
+
+	.PagesSidebar-tree-area {
+		min-height: 100%;
+		padding: 14px 6px;
+		border: 2px dashed transparent;
+	}
+
+	.PagesSidebar-tree-area-drag-over {
+		border-color: var(--color-sidebar-accent-foreground);
+		background-color: var(--color-sidebar-accent);
+	}
+
+	.PagesSidebarTreeItemContent {
+		height: 44px;
+		border-radius: 0.375rem;
+		border: 1px solid transparent;
+
+		&:not(:has(> .PagesSidebarTreeItemContent-arrow)) {
+			padding-left: calc((var(--PagesSidebarTreeItem-content-depth) + 1) * 16px);
+		}
+
+		&:has(> .PagesSidebarTreeItemArrow) {
+			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 16px) - 20px);
+		}
+
+		&:not(.PagesSidebarTreeItemContentPlaceholder) {
+			display: grid;
+			grid-template:
+				"arrow 		primary-action	primary-action" auto
+				". 				.								actions" auto
+				/ auto 1fr;
+
+			margin-block: 6px;
+		}
+
+		&.PagesSidebarTreeItemContentPlaceholder {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		&:hover {
+			background-color: hsl(240 4.8% 96%);
+
+			@media (prefers-color-scheme: dark) {
+				background-color: hsl(240 3.7% 14%);
+			}
+		}
+
+		&.PagesSidebarTreeItemContent-selected {
+			background-color: hsl(240 4.8% 92%);
+			border-color: hsl(240 5.9% 92%);
+
+			&:hover {
+				background-color: hsl(240 4.8% 86%);
+			}
+
+			@media (prefers-color-scheme: dark) {
+				background-color: hsl(240 3.7% 20%);
+				border-color: hsl(240 5.9% 20%);
+
+				&:hover {
+					background-color: hsl(240 3.7% 26%);
+				}
+			}
+		}
+
+		&.PagesSidebarTreeItemContent-navigated {
+			font-weight: 500;
+			border-color: hsl(240 5.9% 50%);
+
+			@media (prefers-color-scheme: dark) {
+				border-color: hsl(240 5.9% 50%);
+			}
+		}
+
+		.PagesSidebar-tree-container:focus-within &.PagesSidebarTreeItemContent-focused {
+			border-color: hsl(240 5.9% 10%);
+
+			@media (prefers-color-scheme: dark) {
+				border-color: hsl(240 5.9% 90%);
+			}
+		}
+
+		&.PagesSidebarTreeItemContent-dragging-over {
+			border-style: dashed;
+			border-color: hsl(var(--primary) / 0.4);
+			box-shadow:
+				0 10px 15px -3px hsl(var(--primary) / 0.2),
+				0 4px 6px -2px hsl(var(--primary) / 0.2);
+			background: linear-gradient(
+				to bottom right,
+				hsl(var(--primary) / 0.1),
+				hsl(var(--primary) / 0.2),
+				hsl(var(--primary) / 0.1)
+			);
+		}
+
+		&.PagesSidebarTreeItemContent-archived {
+			text-decoration: line-through;
+			opacity: 0.6;
+		}
+	}
+
+	.PagesSidebarTreeItemMainRow {
+		grid-area: arrow / arrow / primary-action / primary-action;
+		/* grid-area: 1 / 1 / -1 / -1; */
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
+	}
+
+	.PagesSidebarTreeItemArrow {
+		grid-area: arrow;
+	}
+
+	.PagesSidebarTreeItemPrimaryActionContent {
+		grid-area: primary-action;
+
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.PagesSidebarTreeItemPrimaryActionInteractiveArea {
+		grid-area: 1 / 1 / -1 / -1;
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
+
+		outline: none;
+	}
+
+	.PagesSidebarTreeItemActions {
+		grid-area: actions;
+
+		display: flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: flex-end;
+
+		padding-inline: 4px;
+
+		height: 20px;
+	}
+
+	.PagesSidebarTreeItemActionIconButton {
+		width: 20px;
+		height: 20px;
+		padding: 0;
+	}
+
+	.PagesSidebar-selection-counter {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+}

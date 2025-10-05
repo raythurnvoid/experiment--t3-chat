@@ -1,8 +1,10 @@
+import "./index.css";
+
 import React from "react";
-import { DocsSidebarV2, type DocsSidebarV2_Props } from "../components/docs-sidebar-v2.tsx";
+import { PagesSidebarV2, type PagesSidebarV2_Props } from "./components/pages-sidebar.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState, useEffect } from "react";
-import { Button } from "../components/ui/button.tsx";
+import { Button } from "../../components/ui/button.tsx";
 import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
@@ -10,10 +12,9 @@ import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
-import "./pages.css";
 
 export const Route = createFileRoute({
-	component: Pages,
+	component: RoutePages,
 	validateSearch: zodValidator(
 		z.object({
 			pageId: z.string().optional().catch(undefined),
@@ -21,38 +22,51 @@ export const Route = createFileRoute({
 	),
 });
 
+type RoutePages_ClassNames =
+	| "RoutePages-content-area"
+	| "RoutePages-main-content"
+	| "RoutePages-editor-panel"
+	| "RoutePages-editor-panel-controls"
+	| "RoutePages-editor-panel-hamburger-button"
+	| "RoutePages-editor-panel-expand-button"
+	| "RoutePages-editor-content"
+	| "RoutePages-loading-text"
+	| "RoutePages-editor-wrapper";
+
 const PageRichTextEditor = React.lazy(() =>
-	import("../components/page-rich-text-editor/page-rich-text-editor.tsx").then((module) => ({
+	import("../../components/page-rich-text-editor/page-rich-text-editor.tsx").then((module) => ({
 		default: module.PageRichTextEditor,
 	})),
 );
 
-type PagesContent_Props = {
+type RoutePagesContent_Props = {
 	pageId: string | null | undefined;
 };
 
-function PagesContent(props: PagesContent_Props) {
+function RoutePagesContent(props: RoutePagesContent_Props) {
 	const { pageId } = props;
 
 	if (!pageId) {
-		return <div className="Pages-loading-text">Loading homepage…</div>;
+		return <div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading homepage…</div>;
 	}
 
 	return (
-		<React.Suspense fallback={<div className="Pages-loading-text">Loading editor…</div>}>
-			<div className="Pages-editor-wrapper">
+		<React.Suspense
+			fallback={<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading editor…</div>}
+		>
+			<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
 				<PageRichTextEditor pageId={pageId} />
 			</div>
 		</React.Suspense>
 	);
 }
 
-function Pages() {
+function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
-	const [pagesSidebarState, setPagesSidebarState] = useState<DocsSidebarV2_Props["state"]>("expanded");
+	const [pagesSidebarState, setPagesSidebarState] = useState<PagesSidebarV2_Props["state"]>("expanded");
 
 	// Ensure homepage exists and get its ID
 	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
@@ -107,9 +121,9 @@ function Pages() {
 	};
 
 	return (
-		<div className="Pages-content-area">
+		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
 			{/* Pages Sidebar - positioned between main sidebar and content with animation */}
-			<DocsSidebarV2
+			<PagesSidebarV2
 				selectedDocId={effectivePageId}
 				onClose={handleCloseSidebar}
 				onAddChild={handleAddChild}
@@ -119,19 +133,19 @@ function Pages() {
 			/>
 
 			{/* Main Content Area - takes remaining space */}
-			<div className="Pages-main-content">
+			<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
 				<PanelGroup direction="horizontal" className="h-full">
 					{/* Pages Editor Panel */}
 					<Panel defaultSize={100} minSize={50}>
-						<div className="Pages-editor-panel">
+						<div className={"RoutePages-editor-panel" satisfies RoutePages_ClassNames}>
 							{pagesSidebarState === "closed" && (
-								<div className="Pages-editor-panel-controls">
+								<div className={"RoutePages-editor-panel-controls" satisfies RoutePages_ClassNames}>
 									{/* Hamburger Menu - mobile only */}
 									<Button
 										variant="outline"
 										size="sm"
 										onClick={toggleSidebar}
-										className="Pages-editor-panel-hamburger-button"
+										className={"RoutePages-editor-panel-hamburger-button" satisfies RoutePages_ClassNames}
 									>
 										<Menu className="h-4 w-4" />
 									</Button>
@@ -141,14 +155,14 @@ function Pages() {
 										variant="outline"
 										size="sm"
 										onClick={handleOpenSidebar}
-										className="Pages-editor-panel-expand-button"
+										className={"RoutePages-editor-panel-expand-button" satisfies RoutePages_ClassNames}
 									>
 										<PanelLeft className="h-4 w-4" />
 									</Button>
 								</div>
 							)}
-							<div className="Pages-editor-content">
-								<PagesContent pageId={effectivePageId} />
+							<div className={"RoutePages-editor-content" satisfies RoutePages_ClassNames}>
+								<RoutePagesContent pageId={effectivePageId} />
 							</div>
 						</div>
 					</Panel>

@@ -1,4 +1,4 @@
-import "./docs-sidebar-v2.css";
+import "./pages-sidebar.css";
 import React, { useState, createContext, use, useMemo, useRef, useEffect } from "react";
 import {
 	FileText,
@@ -14,7 +14,7 @@ import {
 	Menu,
 } from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar.tsx";
-import { MySidebar } from "@/components/my-sidebar.tsx";
+import { MySidebar, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
@@ -36,8 +36,9 @@ import type { ConvexReactClient } from "convex/react";
 import { useConvex, useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { generate_timestamp_uuid } from "@/lib/utils.ts";
-import { app_convex_api } from "../lib/app-convex-client.ts";
-import { pages_ROOT_ID } from "../../shared/pages.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { pages_ROOT_ID } from "@/lib/pages.ts";
 
 // Types for document structure - react-complex-tree format
 interface DocData {
@@ -308,46 +309,53 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 
 type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<DocData>;
 
-type DocsSidebar_ClassNames =
-	| "DocsSidebar-tree-area"
-	| "DocsSidebar-tree-area-drag-over"
-	| "DocsSidebar-tree-container"
-	| "DocsSidebar-tree-container-focused"
-	| "DocsSidebar-tree-item"
-	| "DocsSidebar-tree-item-content"
-	| "DocsSidebar-tree-item-content-placeholder"
-	| "DocsSidebar-tree-item-main-row"
-	| "DocsSidebar-tree-item-arrow"
-	| "DocsSidebar-tree-item-file-icon"
-	| "DocsSidebar-tree-item-primary-action-content"
-	| "DocsSidebar-tree-item-primary-action-interactive-area"
-	| "DocsSidebar-tree-item-actions"
-	| "DocsSidebar-selection-counter";
+type PagesSidebar_ClassNames =
+	| "PagesSidebar-tree-area"
+	| "PagesSidebar-tree-area-drag-over"
+	| "PagesSidebar-tree-container"
+	| "PagesSidebar-tree-container-focused"
+	| "PagesSidebarTreeItem"
+	| "PagesSidebarTreeItemContent"
+	| "PagesSidebarTreeItemContentPlaceholder"
+	| "PagesSidebarTreeItemContent-navigated"
+	| "PagesSidebarTreeItemContent-selected"
+	| "PagesSidebarTreeItemContent-focused"
+	| "PagesSidebarTreeItemContent-selected-focused"
+	| "PagesSidebarTreeItemContent-dragging-over"
+	| "PagesSidebarTreeItemContent-archived"
+	| "PagesSidebarTreeItemMainRow"
+	| "PagesSidebarTreeItemArrow"
+	| "PagesSidebarTreeItemFileIcon"
+	| "PagesSidebarTreeItemPrimaryActionContent"
+	| "PagesSidebarTreeItemPrimaryActionInteractiveArea"
+	| "PagesSidebarTreeItemActions"
+	| "PagesSidebarTreeItemActionIconButton"
+	| "PagesSidebar-selection-counter";
 
-type DocsSidebar_CssVars = {
-	"--DocsSidebar-tree-item-content-depth": number;
+type PagesSidebar_CssVars = {
+	"--PagesSidebarTreeItem-content-depth": number;
 };
 
-type DocsTreeContext = {
+type PagesTreeContext = {
 	dataProvider: NotionLikeDataProvider;
 	items: Record<TreeItemIndex, TreeItem<DocData>>;
 };
 
-const DocsTreeContext = createContext<DocsTreeContext | null>(null);
+const PagesTreeContext = createContext<PagesTreeContext | null>(null);
 
-function useDocsTree() {
-	const context = use(DocsTreeContext);
+function usePagesTree() {
+	const context = use(PagesTreeContext);
 	if (!context) {
-		throw new Error(`${useDocsTree.name} must be used within ${DocsTreeProvider.name}`);
+		throw new Error(`${usePagesTree.name} must be used within ${PagesTreeProvider.name}`);
 	}
 	return context;
 }
 
-type DocsTreeProvider_Props = {
+type PagesTreeProvider_Props = {
 	children: React.ReactNode;
 };
 
-function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
+function PagesTreeProvider({ children }: PagesTreeProvider_Props) {
 	const convex = useConvex();
 
 	const treeData = useQuery(app_convex_api.ai_docs_temp.get_tree, {
@@ -419,45 +427,45 @@ function DocsTreeProvider({ children }: DocsTreeProvider_Props) {
 	}, [dataProvider]);
 
 	return (
-		<DocsTreeContext.Provider
+		<PagesTreeContext.Provider
 			value={{
 				dataProvider,
 				items,
 			}}
 		>
 			{children}
-		</DocsTreeContext.Provider>
+		</PagesTreeContext.Provider>
 	);
 }
 
 // Search Context
-type DocsSearchContext = {
+type PagesSearchContext = {
 	searchQuery: string;
 	showArchived: boolean;
 	setSearchQuery: (query: string) => void;
 	setShowArchived: (show: boolean) => void;
 };
 
-const DocsSearchContext = createContext<DocsSearchContext | null>(null);
+const PagesSearchContext = createContext<PagesSearchContext | null>(null);
 
-const useDocsSearchContext = () => {
-	const context = use(DocsSearchContext);
+const usePagesSearchContext = () => {
+	const context = use(PagesSearchContext);
 	if (!context) {
-		throw new Error("useDocsSearchContext must be used within DocsSearchContextProvider");
+		throw new Error("usePagesSearchContext must be used within PagesSearchContextProvider");
 	}
 	return context;
 };
 
-type DocsSearchContextProvider_Props = {
+type PagesSearchContextProvider_Props = {
 	children: React.ReactNode;
 };
 
-function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props) {
+function PagesSearchContextProvider({ children }: PagesSearchContextProvider_Props) {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
 
 	return (
-		<DocsSearchContext.Provider
+		<PagesSearchContext.Provider
 			value={{
 				searchQuery,
 				setSearchQuery,
@@ -466,17 +474,17 @@ function DocsSearchContextProvider({ children }: DocsSearchContextProvider_Props
 			}}
 		>
 			{children}
-		</DocsSearchContext.Provider>
+		</PagesSearchContext.Provider>
 	);
 }
 
-interface TreeItemArrow_Props {
+interface PagesSidebarTreeItemArrow_Props {
 	item: TreeItem<DocData>;
 	context: TreeItemRenderContext;
 	info: TreeInformation;
 }
 
-function TreeItemArrow(props: TreeItemArrow_Props) {
+function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 	const { item, context } = props;
 
 	// Only render arrow for folders
@@ -490,7 +498,7 @@ function TreeItemArrow(props: TreeItemArrow_Props) {
 			variant="ghost"
 			size="icon"
 			className={cn(
-				"DocsSidebar-TreeItemArrow",
+				"PagesSidebar-TreeItemArrow",
 				"flex h-5 w-5 items-center justify-center p-0 text-muted-foreground hover:text-foreground",
 			)}
 		>
@@ -499,11 +507,11 @@ function TreeItemArrow(props: TreeItemArrow_Props) {
 	);
 }
 
-function TreeItemFileIcon() {
+function PagesSidebarTreeItemFileIcon() {
 	return (
 		<span
 			className={cn(
-				"DocsSidebar-tree-item-file-icon" satisfies DocsSidebar_ClassNames,
+				"PagesSidebarTreeItemFileIcon" satisfies PagesSidebar_ClassNames,
 				"inline-flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm",
 			)}
 		>
@@ -512,76 +520,76 @@ function TreeItemFileIcon() {
 	);
 }
 
-type TreeItemPrimaryActionContent_Props = {
+type PagesSidebarTreeItemPrimaryActionContent_Props = {
 	title: React.ReactNode;
 };
 
-function TreeItemPrimaryActionContent(props: TreeItemPrimaryActionContent_Props) {
+function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPrimaryActionContent_Props) {
 	const { title } = props;
 
 	return (
 		<div
 			className={cn(
-				"DocsSidebar-tree-item-primary-action-content" satisfies DocsSidebar_ClassNames,
+				"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebar_ClassNames,
 				"text-sm outline-none",
 			)}
 		>
-			<TreeItemFileIcon />
-			<div className={cn("flex-1 truncate text-left")}>{title}</div>
+			<PagesSidebarTreeItemFileIcon />
+			<div className="flex-1 truncate text-left">{title}</div>
 		</div>
 	);
 }
 
-type TreeItemNoChildrenPlaceholder_Props = {
+type PagesSidebarTreeItemNoChildrenPlaceholder_Props = {
 	children: React.ReactNode;
 	title: React.ReactNode;
 	context: TreeItemRenderContext;
 	depth: number;
 };
 
-function TreeItemNoChildrenPlaceholder(props: TreeItemNoChildrenPlaceholder_Props) {
+function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNoChildrenPlaceholder_Props) {
 	const { children, title, context, depth } = props;
 
 	return (
 		<li {...context.itemContainerWithChildrenProps} className="group relative">
 			<div
 				{...context.itemContainerWithoutChildrenProps}
-				style={sx({ "--DocsSidebar-tree-item-content-depth": depth } satisfies Partial<DocsSidebar_CssVars>)}
+				style={sx({ "--PagesSidebarTreeItem-content-depth": depth } satisfies Partial<PagesSidebar_CssVars>)}
 				className={cn(
-					"DocsSidebar-tree-item-content" satisfies DocsSidebar_ClassNames,
-					"DocsSidebar-tree-item-content-placeholder" satisfies DocsSidebar_ClassNames,
+					"PagesSidebarTreeItemContent" satisfies PagesSidebar_ClassNames,
+					"PagesSidebarTreeItemContentPlaceholder" satisfies PagesSidebar_ClassNames,
 					"border-2 border-transparent text-muted-foreground italic",
 				)}
 			>
-				<TreeItemPrimaryActionContent title={title} />
+				<PagesSidebarTreeItemPrimaryActionContent title={title} />
 			</div>
 			{children}
 		</li>
 	);
 }
 
-type TreeItemActionIconButton_Props = {
+type PagesSidebarTreeItemActionIconButton_Props = {
 	tooltip: string;
 	onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
 	children: React.ReactNode;
 };
 
-function TreeItemActionIconButton(props: TreeItemActionIconButton_Props) {
+function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionIconButton_Props) {
 	const { tooltip, onClick, children } = props;
 
 	return (
-		<IconButton
-			className="h-5 w-5 text-muted-foreground hover:text-sidebar-accent-foreground"
-			variant="ghost"
+		<MyIconButton
+			className={"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebar_ClassNames}
+			variant="ghost-secondary"
 			tooltip={tooltip}
 			onClick={onClick}
 		>
 			{children}
-		</IconButton>
+		</MyIconButton>
 	);
 }
 
-type TreeItem_Props = {
+type PagesSidebarTreeItem_Props = {
 	item: TreeItem<DocData>;
 	depth: number;
 	children: React.ReactNode;
@@ -596,7 +604,7 @@ type TreeItem_Props = {
 	onUnarchive: (itemId: string) => void;
 };
 
-function TreeItem(props: TreeItem_Props) {
+function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const { item, depth, children, title, context, arrow, selectedDocId, showArchived, onAdd, onArchive, onUnarchive } =
 		props;
 
@@ -615,63 +623,62 @@ function TreeItem(props: TreeItem_Props) {
 
 	// Placeholder items
 	if (isPlaceholder) {
-		return <TreeItemNoChildrenPlaceholder children={children} title={title} context={context} depth={depth} />;
+		return (
+			<PagesSidebarTreeItemNoChildrenPlaceholder children={children} title={title} context={context} depth={depth} />
+		);
 	}
 
 	// Regular items
 	return (
 		<li
 			{...context.itemContainerWithChildrenProps}
-			className={cn("DocsSidebar-tree-item" satisfies DocsSidebar_ClassNames, "group relative")}
+			className={cn("PagesSidebarTreeItem" satisfies PagesSidebar_ClassNames, "group relative")}
 		>
 			{/* Primary action */}
 			<div
 				{...context.itemContainerWithoutChildrenProps}
-				style={sx({ "--DocsSidebar-tree-item-content-depth": depth } satisfies Partial<DocsSidebar_CssVars>)}
+				style={sx({ "--PagesSidebarTreeItem-content-depth": depth } satisfies Partial<PagesSidebar_CssVars>)}
 				className={cn(
-					"DocsSidebar-tree-item-content" satisfies DocsSidebar_ClassNames,
-					"rounded-md border-2 border-transparent ring-ring ring-offset-2 ring-offset-background hover:bg-sidebar-accent",
-
-					isNavigated && "font-medium ring-1",
-					context.isSelected && !isRenaming && "ring-2",
-					context.isFocused &&
+					"PagesSidebarTreeItemContent" satisfies PagesSidebar_ClassNames,
+					isNavigated && ("PagesSidebarTreeItemContent-navigated" satisfies PagesSidebar_ClassNames),
+					context.isSelected &&
 						!isRenaming &&
-						"group-[.DocsSidebar-tree-container-focused]/DocsSidebar-tree-container:outline-2",
-					context.isSelected && context.isFocused && !isRenaming && "ring-3 outline-0",
-					context.isDraggingOver && [
-						"border-dashed border-primary/40",
-						"shadow-lg shadow-primary/20",
-						"bg-gradient-to-br from-primary/10 via-primary/20 to-primary/10",
-					],
-					isArchived && "line-through opacity-60",
+						("PagesSidebarTreeItemContent-selected" satisfies PagesSidebar_ClassNames),
+					context.isFocused && !isRenaming && ("PagesSidebarTreeItemContent-focused" satisfies PagesSidebar_ClassNames),
+					context.isSelected &&
+						context.isFocused &&
+						!isRenaming &&
+						("PagesSidebarTreeItemContent-selected-focused" satisfies PagesSidebar_ClassNames),
+					context.isDraggingOver && ("PagesSidebarTreeItemContent-dragging-over" satisfies PagesSidebar_ClassNames),
+					isArchived && ("PagesSidebarTreeItemContent-archived" satisfies PagesSidebar_ClassNames),
 				)}
 			>
 				{context.isRenaming ? (
-					<TreeItemPrimaryActionContent title={title} />
+					<PagesSidebarTreeItemPrimaryActionContent title={title} />
 				) : (
 					<button
 						{...context.interactiveElementProps}
 						type="button"
-						className={cn("DocsSidebar-tree-item-primary-action-interactive-area" satisfies DocsSidebar_ClassNames)}
+						className={"PagesSidebarTreeItemPrimaryActionInteractiveArea" satisfies PagesSidebar_ClassNames}
 					>
-						<TreeItemPrimaryActionContent title={title} />
+						<PagesSidebarTreeItemPrimaryActionContent title={title} />
 					</button>
 				)}
 
 				{/* Expand/collapse arrow */}
-				<div className={cn("DocsSidebar-tree-item-arrow" satisfies DocsSidebar_ClassNames)}>{arrow}</div>
+				<div className={"PagesSidebarTreeItemArrow"}>{arrow}</div>
 
 				{/* Second row - action buttons */}
-				<div className={cn("DocsSidebar-tree-item-actions" satisfies DocsSidebar_ClassNames)}>
-					<TreeItemActionIconButton tooltip="Add child" onClick={() => onAdd(item.index.toString())}>
+				<div className={"PagesSidebarTreeItemActions"}>
+					<PagesSidebarTreeItemActionIconButton tooltip="Add child" onClick={() => onAdd(item.index.toString())}>
 						<Plus />
-					</TreeItemActionIconButton>
+					</PagesSidebarTreeItemActionIconButton>
 
-					<TreeItemActionIconButton tooltip="Rename" onClick={() => context.startRenamingItem()}>
+					<PagesSidebarTreeItemActionIconButton tooltip="Rename" onClick={() => context.startRenamingItem()}>
 						<Edit2 />
-					</TreeItemActionIconButton>
+					</PagesSidebarTreeItemActionIconButton>
 
-					<TreeItemActionIconButton
+					<PagesSidebarTreeItemActionIconButton
 						tooltip={isArchived ? "Unarchive" : "Archive"}
 						onClick={() => {
 							if (isArchived) {
@@ -682,7 +689,7 @@ function TreeItem(props: TreeItem_Props) {
 						}}
 					>
 						<Archive className={cn(isArchived && "fill-current")} />
-					</TreeItemActionIconButton>
+					</PagesSidebarTreeItemActionIconButton>
 				</div>
 			</div>
 
@@ -729,8 +736,8 @@ type TreeArea_Props = {
 function TreeArea(props: TreeArea_Props) {
 	const { ref, selectedDocId, onSelectItems, onAddChild, onArchive, onPrimaryAction } = props;
 
-	const { searchQuery, showArchived } = useDocsSearchContext();
-	const { dataProvider, items: treeItems } = useDocsTree();
+	const { searchQuery, showArchived } = usePagesSearchContext();
+	const { dataProvider, items: treeItems } = usePagesTree();
 
 	const convex = useConvex();
 
@@ -862,6 +869,18 @@ function TreeArea(props: TreeArea_Props) {
 		}
 	};
 
+	const handleDragLeaveRootArea = (e: React.DragEvent<HTMLDivElement>) => {
+		// Only reset if we're leaving the root element itself
+		if (e.target === rootElement.current) {
+			setIsDraggingOverRootArea(false);
+		}
+	};
+
+	const handleDragEndRootArea = () => {
+		// Always reset when drag ends (including when cancelled with Escape)
+		setIsDraggingOverRootArea(false);
+	};
+
 	const handleDropOnRootArea = async (e: React.DragEvent<HTMLDivElement>) => {
 		setIsDraggingOverRootArea(false);
 
@@ -923,14 +942,37 @@ function TreeArea(props: TreeArea_Props) {
 		}
 	};
 
+	const handleEmptyAreaClick = (e: React.MouseEvent<HTMLDivElement>) => {
+		// Only clear selection if clicking on the container itself (not on child elements)
+		if (e.target === e.currentTarget) {
+			ref.current?.selectItems([]);
+
+			// Move focus back to the navigated item if any, otherwise remove focus from all items
+			if (selectedDocId) {
+				ref.current?.focusItem(selectedDocId);
+			} else {
+				// Focus the first item to establish focus, then blur the tree container
+				const firstItem = Object.keys(treeItems).find((key) => key !== pages_ROOT_ID);
+				if (firstItem) {
+					ref.current?.focusItem(firstItem, false); // Don't set DOM focus
+					// Blur the tree container to remove visual focus
+					rootElement.current?.blur();
+				}
+			}
+		}
+	};
+
 	return (
 		<div
 			ref={rootElement}
 			className={cn(
-				"DocsSidebar-tree-area" satisfies DocsSidebar_ClassNames,
-				isDraggingOverRootArea && ("DocsSidebar-tree-area-drag-over" satisfies DocsSidebar_ClassNames),
+				"PagesSidebar-tree-area" satisfies PagesSidebar_ClassNames,
+				isDraggingOverRootArea && ("PagesSidebar-tree-area-drag-over" satisfies PagesSidebar_ClassNames),
 			)}
+			onClick={handleEmptyAreaClick}
 			onDragOver={handleDragOverRootArea}
+			onDragLeave={handleDragLeaveRootArea}
+			onDragEnd={handleDragEndRootArea}
 			onDrop={handleDropOnRootArea}
 		>
 			<UncontrolledTreeEnvironment
@@ -959,7 +1001,7 @@ function TreeArea(props: TreeArea_Props) {
 						<div
 							{...props.lineProps}
 							className={cn(
-								"DocsSidebar-tree-drag-between-line",
+								"PagesSidebar-tree-drag-between-line",
 								"h-2 border-2 border-solid border-red-500 bg-red-500",
 							)}
 						/>
@@ -968,10 +1010,10 @@ function TreeArea(props: TreeArea_Props) {
 				renderRenameInput={(props) => {
 					return <TreeRenameInputComponent {...props} />;
 				}}
-				renderItemArrow={(props) => <TreeItemArrow {...props} />}
+				renderItemArrow={(props) => <PagesSidebarTreeItemArrow {...props} />}
 				renderItem={(props) => {
 					return (
-						<TreeItem
+						<PagesSidebarTreeItem
 							{...props}
 							selectedDocId={selectedDocId}
 							showArchived={showArchived}
@@ -986,9 +1028,9 @@ function TreeArea(props: TreeArea_Props) {
 						<div
 							{...props.containerProps}
 							className={cn(
-								"DocsSidebar-tree-container" satisfies DocsSidebar_ClassNames,
-								props.info.isFocused && ("DocsSidebar-tree-container-focused" satisfies DocsSidebar_ClassNames),
-								"group/DocsSidebar-tree-container",
+								"PagesSidebar-tree-container" satisfies PagesSidebar_ClassNames,
+								props.info.isFocused && ("PagesSidebar-tree-container-focused" satisfies PagesSidebar_ClassNames),
+								"group/PagesSidebar-tree-container",
 							)}
 						>
 							{props.children}
@@ -1002,7 +1044,7 @@ function TreeArea(props: TreeArea_Props) {
 	);
 }
 
-type DocsSidebarContent_Props = {
+type PagesSidebarContent_Props = {
 	selectedDocId?: string;
 	onClose: () => void;
 	onAddChild: (parentId: string, newItemId: string) => void;
@@ -1010,11 +1052,11 @@ type DocsSidebarContent_Props = {
 	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
-function DocsSidebarContent(props: DocsSidebarContent_Props) {
+function PagesSidebarContent(props: PagesSidebarContent_Props) {
 	const { selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction } = props;
 
-	const { searchQuery, setSearchQuery, showArchived, setShowArchived } = useDocsSearchContext();
-	const { dataProvider, items: treeItems } = useDocsTree();
+	const { searchQuery, showArchived, setSearchQuery, setShowArchived } = usePagesSearchContext();
+	const { dataProvider, items: treeItems } = usePagesTree();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const treeRef = useRef<TreeRef | null>(null);
@@ -1055,23 +1097,23 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	};
 
 	return (
-		<div className={cn("DocsSidebarContent", "flex h-full flex-col")}>
+		<div className="PagesSidebarContent">
 			<SidebarHeader className="border-b">
 				{/* Top row with hamburger and close button */}
 				<div className="mb-4 flex items-center justify-between">
-					<div className={cn("DocsSidebarContent-top-row-left", "flex items-center gap-2")}>
+					<div className={cn("PagesSidebarContent-top-row-left", "flex items-center gap-2")}>
 						{/* Hamburger Menu - mobile only */}
 						<IconButton
 							variant="ghost"
 							size="icon"
 							onClick={toggleSidebar}
 							tooltip="Main Menu"
-							className={cn("DocsSidebarContent-hamburger-button", "h-8 w-8 lg:hidden")}
+							className={cn("PagesSidebarContent-hamburger-button", "h-8 w-8 lg:hidden")}
 						>
 							<Menu />
 						</IconButton>
 
-						<h2 className={cn("DocsSidebarContent-title", "text-lg font-semibold")}>Pages</h2>
+						<h2 className={cn("PagesSidebarContent-title", "text-lg font-semibold")}>Pages</h2>
 					</div>
 
 					<IconButton
@@ -1079,7 +1121,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 						size="icon"
 						onClick={onClose}
 						tooltip="Close"
-						className={cn("DocsSidebarContent-close-button", "h-8 w-8")}
+						className={cn("PagesSidebarContent-close-button", "h-8 w-8")}
 					>
 						<X />
 					</IconButton>
@@ -1087,7 +1129,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 
 				{/* Multi-selection counter */}
 				{multiSelectionCount > 1 && (
-					<div className={cn("DocsSidebar-selection-counter" satisfies DocsSidebar_ClassNames, "mb-4")}>
+					<div className={cn("PagesSidebar-selection-counter" satisfies PagesSidebar_ClassNames, "mb-4")}>
 						<span className="font-medium">{multiSelectionCount} items selected</span>
 						<div className="flex gap-1">
 							<IconButton
@@ -1113,7 +1155,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 				)}
 
 				{/* Search Form */}
-				<div className={cn("DocsSidebarContent-search-container", "relative mb-4")}>
+				<div className={cn("PagesSidebarContent-search-container", "relative mb-4")}>
 					<input
 						placeholder="Search documentation..."
 						value={searchQuery}
@@ -1123,13 +1165,13 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 							// Filtering is now handled by shouldRenderChildren prop
 						}}
 						className={cn(
-							"DocsSidebarContent-search-input",
+							"PagesSidebarContent-search-input",
 							"h-8 w-full rounded-md border border-input bg-background px-3 py-1 pl-8 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",
 						)}
 					/>
 					<Search
 						className={cn(
-							"DocsSidebarContent-search-icon",
+							"PagesSidebarContent-search-icon",
 							"pointer-events-none absolute top-2 left-2 h-4 w-4 text-muted-foreground",
 						)}
 					/>
@@ -1147,7 +1189,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 					</div>
 
 					<Button
-						className={cn("DocsSidebarContent-new-doc-button", "flex-1 justify-start gap-2")}
+						className={cn("PagesSidebarContent-new-doc-button", "flex-1 justify-start gap-2")}
 						variant="secondary"
 						onClick={handleNewDoc}
 					>
@@ -1197,7 +1239,7 @@ function DocsSidebarContent(props: DocsSidebarContent_Props) {
 	);
 }
 
-export type DocsSidebar_Props = React.ComponentProps<typeof Sidebar> & {
+export type PagesSidebar_Props = React.ComponentProps<typeof Sidebar> & {
 	selectedDocId?: string;
 	onClose: () => void;
 	onAddChild: (parentId: string, newItemId: string) => void;
@@ -1205,40 +1247,16 @@ export type DocsSidebar_Props = React.ComponentProps<typeof Sidebar> & {
 	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
-export function DocsSidebar(props: DocsSidebar_Props) {
-	const { className, selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction, ...rest } = props;
+export type PagesSidebarV2_Props = {
+	state?: MySidebar_Props["state"];
+	selectedDocId?: string;
+	onClose: () => void;
+	onAddChild: (parentId: string, newItemId: string) => void;
+	onArchive: (itemId: string) => void;
+	onPrimaryAction: (itemId: string, itemType: string) => void;
+} & React.ComponentProps<typeof Sidebar>;
 
-	return (
-		<DocsSearchContextProvider>
-			<DocsTreeProvider>
-				<div className={cn("DocsSidebarContent-wrapper", "relative h-full w-full overflow-hidden", className)}>
-					<Sidebar
-						side="left"
-						variant="sidebar"
-						collapsible="none"
-						className={cn("DocsSidebarContent-wrapper-sidebar", "h-full !border-r-0 [&>*]:!border-r-0")}
-						style={{ width: "320px" }}
-						{...rest}
-					>
-						<DocsSidebarContent
-							onClose={onClose}
-							selectedDocId={selectedDocId}
-							onAddChild={onAddChild}
-							onArchive={onArchive}
-							onPrimaryAction={onPrimaryAction}
-						/>
-					</Sidebar>
-				</div>
-			</DocsTreeProvider>
-		</DocsSearchContextProvider>
-	);
-}
-
-export type DocsSidebarV2_Props = Omit<DocsSidebar_Props, "collapsible" | "variant" | "side"> & {
-	state?: "closed" | "collapsed" | "expanded";
-};
-
-export function DocsSidebarV2(props: DocsSidebarV2_Props) {
+export function PagesSidebarV2(props: PagesSidebarV2_Props) {
 	const {
 		className,
 		selectedDocId,
@@ -1251,10 +1269,10 @@ export function DocsSidebarV2(props: DocsSidebarV2_Props) {
 	} = props;
 
 	return (
-		<DocsSearchContextProvider>
-			<DocsTreeProvider>
+		<PagesSearchContextProvider>
+			<PagesTreeProvider>
 				<MySidebar state={state} className={className} {...rest}>
-					<DocsSidebarContent
+					<PagesSidebarContent
 						onClose={onClose}
 						selectedDocId={selectedDocId}
 						onAddChild={onAddChild}
@@ -1262,7 +1280,7 @@ export function DocsSidebarV2(props: DocsSidebarV2_Props) {
 						onPrimaryAction={onPrimaryAction}
 					/>
 				</MySidebar>
-			</DocsTreeProvider>
-		</DocsSearchContextProvider>
+			</PagesTreeProvider>
+		</PagesSearchContextProvider>
 	);
 }
