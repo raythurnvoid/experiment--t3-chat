@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useState, createContext, use, useMemo, useRef, useEffect } from "react";
+import React, { useState, createContext, use, useMemo, useRef, useEffect, useImperativeHandle } from "react";
 import {
 	FileText,
 	Plus,
@@ -97,7 +97,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					content: item.content,
 					isArchived: item.isArchived || false,
 				},
-				isFolder: true,
+				isFolder: isPlaceholder ? false : true,
 				canMove: !isPlaceholder && key !== pages_ROOT_ID,
 				canRename: !isPlaceholder && key !== pages_ROOT_ID,
 			};
@@ -314,6 +314,7 @@ type PagesSidebar_ClassNames =
 	| "PagesSidebar-tree-area-drag-over"
 	| "PagesSidebar-tree-container"
 	| "PagesSidebar-tree-container-focused"
+	| "PagesSidebar-tree-container-dragging"
 	| "PagesSidebarTreeItem"
 	| "PagesSidebarTreeItemContent"
 	| "PagesSidebarTreeItemContentPlaceholder"
@@ -725,7 +726,7 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 const TREE_ID = "docs-tree";
 
 type TreeArea_Props = {
-	ref: React.RefObject<TreeRef | null>;
+	ref: React.Ref<TreeRef>;
 	selectedDocId?: string;
 	onSelectItems: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
 	onAddChild: (parentId: string, newItemId: string) => void;
@@ -740,6 +741,10 @@ function TreeArea(props: TreeArea_Props) {
 	const { dataProvider, items: treeItems } = usePagesTree();
 
 	const convex = useConvex();
+
+	const treeRef = useRef<TreeRef | null>(null);
+
+	useImperativeHandle(ref, () => treeRef.current!, []);
 
 	// Get expanded items for view state
 	const expandedItems = useMemo(() => {
@@ -888,7 +893,7 @@ function TreeArea(props: TreeArea_Props) {
 			e.preventDefault();
 
 			// Get the currently dragged items from react-complex-tree
-			const draggingItems = ref.current?.dragAndDropContext.draggingItems;
+			const draggingItems = treeRef.current?.dragAndDropContext.draggingItems;
 
 			if (!draggingItems || draggingItems.length === 0 || !dataProvider) {
 				console.log("No dragging items found or no data provider");
@@ -900,7 +905,7 @@ function TreeArea(props: TreeArea_Props) {
 				const itemIds = draggingItems.map((item: any) => item.index as string);
 
 				// ✅ Use currentItems (tree's live state) as source of truth - EXACTLY like internal drop
-				const currentItems = ref.current?.treeEnvironmentContext.items || {};
+				const currentItems = treeRef.current?.treeEnvironmentContext.items || {};
 
 				// ✅ Follow EXACT same pattern as UncontrolledTreeEnvironment's onDrop
 				const promises: Promise<void>[] = [];
@@ -945,20 +950,7 @@ function TreeArea(props: TreeArea_Props) {
 	const handleEmptyAreaClick = (e: React.MouseEvent<HTMLDivElement>) => {
 		// Only clear selection if clicking on the container itself (not on child elements)
 		if (e.target === e.currentTarget) {
-			ref.current?.selectItems([]);
-
-			// Move focus back to the navigated item if any, otherwise remove focus from all items
-			if (selectedDocId) {
-				ref.current?.focusItem(selectedDocId);
-			} else {
-				// Focus the first item to establish focus, then blur the tree container
-				const firstItem = Object.keys(treeItems).find((key) => key !== pages_ROOT_ID);
-				if (firstItem) {
-					ref.current?.focusItem(firstItem, false); // Don't set DOM focus
-					// Blur the tree container to remove visual focus
-					rootElement.current?.blur();
-				}
-			}
+			treeRef.current?.selectItems([]);
 		}
 	};
 
@@ -989,7 +981,7 @@ function TreeArea(props: TreeArea_Props) {
 				canReorderItems={true}
 				canDragAndDrop={true}
 				canDropOnFolder={true}
-				canDropOnNonFolder={true}
+				canDropOnNonFolder={false}
 				canDropBelowOpenFolders={false}
 				defaultInteractionMode={InteractionMode.ClickArrowToExpand}
 				canInvokePrimaryActionOnItemContainer={true}
@@ -1024,12 +1016,15 @@ function TreeArea(props: TreeArea_Props) {
 					);
 				}}
 				renderTreeContainer={(props) => {
+					const isDragging = !!treeRef.current?.dragAndDropContext.draggingItems;
+
 					return (
 						<div
 							{...props.containerProps}
 							className={cn(
 								"PagesSidebar-tree-container" satisfies PagesSidebar_ClassNames,
 								props.info.isFocused && ("PagesSidebar-tree-container-focused" satisfies PagesSidebar_ClassNames),
+								isDragging && ("PagesSidebar-tree-container-dragging" satisfies PagesSidebar_ClassNames),
 								"group/PagesSidebar-tree-container",
 							)}
 						>
@@ -1038,7 +1033,7 @@ function TreeArea(props: TreeArea_Props) {
 					);
 				}}
 			>
-				<Tree ref={ref} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Documentation Tree" />
+				<Tree ref={treeRef} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Documentation Tree" />
 			</UncontrolledTreeEnvironment>
 		</div>
 	);
