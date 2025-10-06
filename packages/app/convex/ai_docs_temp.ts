@@ -411,6 +411,8 @@ export const get_tree = query({
 			title: v.string(),
 			content: v.string(),
 			isArchived: v.boolean(),
+			updatedAt: v.number(),
+			updatedBy: v.string(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -427,6 +429,8 @@ export const get_tree = query({
 				title: "Documents",
 				content: "",
 				isArchived: false,
+				updatedAt: Date.now(),
+				updatedBy: "system",
 			},
 		};
 
@@ -442,6 +446,8 @@ export const get_tree = query({
 				title: page.name || "Untitled",
 				content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
 				isArchived: page.is_archived || false,
+				updatedAt: page.updated_at,
+				updatedBy: page.updated_by,
 			};
 		}
 
@@ -476,6 +482,8 @@ export const get_tree = query({
 					title: "No files inside",
 					content: "",
 					isArchived: false,
+					updatedAt: 0,
+					updatedBy: "",
 				};
 				item.children = [placeholderId];
 			}

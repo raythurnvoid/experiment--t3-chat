@@ -47,9 +47,9 @@
 		&:not(.PagesSidebarTreeItemContentPlaceholder) {
 			display: grid;
 			grid-template:
-				"arrow 		primary-action	primary-action" auto
-				". 				.								actions" auto
-				/ auto 1fr;
+				"arrow 			primary-action	primary-action" 22px
+				"meta-label meta-label			actions				" 22px
+				/ auto 1fr auto;
 
 			margin-block: 6px;
 		}
@@ -152,6 +152,28 @@
 		outline: none;
 	}
 
+	.PagesSidebarTreeItemMetaLabel {
+		grid-area: meta-label;
+
+		display: flex;
+		align-items: center;
+		padding-inline: 4px;
+
+		height: 100%;
+		min-width: 0; /* Allow shrinking */
+
+		pointer-events: none;
+	}
+
+	.PagesSidebarTreeItemMetaLabel-text {
+		font-size: 0.75rem;
+		line-height: 1rem;
+		color: hsl(var(--muted-foreground));
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.PagesSidebarTreeItemActions {
 		grid-area: actions;
 
@@ -175,5 +197,17 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+	}
+
+	.PagesSidebarContent-title {
+		font-size: 1.125rem;
+		font-weight: 600;
+
+		padding: 4px;
+	}
+
+	.PagesSidebarContent-close-button {
+		height: 32px;
+		width: 32px;
 	}
 }

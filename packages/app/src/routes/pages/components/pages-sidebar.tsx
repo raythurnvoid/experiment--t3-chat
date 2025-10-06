@@ -38,7 +38,10 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai
 import { generate_timestamp_uuid } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyLinkSurface } from "@/components/my-link-surface.tsx";
 import { pages_ROOT_ID } from "@/lib/pages.ts";
+import { formatRelativeTime } from "@/lib/date.ts";
+import { Link } from "@tanstack/react-router";
 
 // Types for document structure - react-complex-tree format
 interface DocData {
@@ -46,6 +49,8 @@ interface DocData {
 	type: "document" | "placeholder";
 	content: string; // HTML content for the rich text editor - all documents have content
 	isArchived: boolean;
+	updatedAt: number;
+	updatedBy: string;
 }
 
 // New simplified tree item structure from Convex
@@ -55,6 +60,8 @@ interface ConvexTreeItem {
 	title: string;
 	content: string;
 	isArchived: boolean;
+	updatedAt: number;
+	updatedBy: string;
 }
 
 // Custom TreeDataProvider for dynamic operations
@@ -96,6 +103,8 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					type: isPlaceholder ? "placeholder" : "document",
 					content: item.content,
 					isArchived: item.isArchived || false,
+					updatedAt: item.updatedAt,
+					updatedBy: item.updatedBy,
 				},
 				isFolder: isPlaceholder ? false : true,
 				canMove: !isPlaceholder && key !== pages_ROOT_ID,
@@ -213,6 +222,8 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					type: "document",
 					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 					isArchived: false,
+					updatedAt: Date.now(),
+					updatedBy: "user",
 				},
 				canMove: true,
 				canRename: true,
@@ -329,6 +340,8 @@ type PagesSidebar_ClassNames =
 	| "PagesSidebarTreeItemFileIcon"
 	| "PagesSidebarTreeItemPrimaryActionContent"
 	| "PagesSidebarTreeItemPrimaryActionInteractiveArea"
+	| "PagesSidebarTreeItemMetaLabel"
+	| "PagesSidebarTreeItemMetaLabel-text"
 	| "PagesSidebarTreeItemActions"
 	| "PagesSidebarTreeItemActionIconButton"
 	| "PagesSidebar-selection-counter";
@@ -536,7 +549,9 @@ function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPri
 			)}
 		>
 			<PagesSidebarTreeItemFileIcon />
-			<div className="flex-1 truncate text-left">{title}</div>
+			<div className="flex-1 truncate text-left">
+				<div className="truncate">{title}</div>
+			</div>
 		</div>
 	);
 }
@@ -571,12 +586,13 @@ function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNo
 
 type PagesSidebarTreeItemActionIconButton_Props = {
 	tooltip: string;
-	onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
 	children: React.ReactNode;
+	isActive: boolean;
+	onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
 };
 
 function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionIconButton_Props) {
-	const { tooltip, onClick, children } = props;
+	const { tooltip, onClick, children, isActive } = props;
 
 	return (
 		<MyIconButton
@@ -584,6 +600,7 @@ function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionI
 			variant="ghost-secondary"
 			tooltip={tooltip}
 			onClick={onClick}
+			tabIndex={isActive ? 0 : -1}
 		>
 			{children}
 		</MyIconButton>
@@ -616,6 +633,9 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const isPlaceholder = data.type === "placeholder";
 	const isArchived = item.data.isArchived;
 	const isRenaming = context.isRenaming;
+
+	// Meta text for non-placeholder items
+	const metaText = !isPlaceholder ? `${formatRelativeTime(data.updatedAt)} ${data.updatedBy || "Unknown"}` : undefined;
 
 	// Hide archived items when showArchived is false
 	if (isArchived && !showArchived) {
@@ -669,18 +689,34 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 				{/* Expand/collapse arrow */}
 				<div className={"PagesSidebarTreeItemArrow"}>{arrow}</div>
 
+				{/* Meta label */}
+				{metaText ? (
+					<div className={"PagesSidebarTreeItemMetaLabel" satisfies PagesSidebar_ClassNames}>
+						<div className={"PagesSidebarTreeItemMetaLabel-text" satisfies PagesSidebar_ClassNames}>{metaText}</div>
+					</div>
+				) : null}
+
 				{/* Second row - action buttons */}
 				<div className={"PagesSidebarTreeItemActions"}>
-					<PagesSidebarTreeItemActionIconButton tooltip="Add child" onClick={() => onAdd(item.index.toString())}>
+					<PagesSidebarTreeItemActionIconButton
+						tooltip="Add child"
+						isActive={context.isFocused ?? false}
+						onClick={() => onAdd(item.index.toString())}
+					>
 						<Plus />
 					</PagesSidebarTreeItemActionIconButton>
 
-					<PagesSidebarTreeItemActionIconButton tooltip="Rename" onClick={() => context.startRenamingItem()}>
+					<PagesSidebarTreeItemActionIconButton
+						tooltip="Rename"
+						isActive={context.isFocused ?? false}
+						onClick={() => context.startRenamingItem()}
+					>
 						<Edit2 />
 					</PagesSidebarTreeItemActionIconButton>
 
 					<PagesSidebarTreeItemActionIconButton
 						tooltip={isArchived ? "Unarchive" : "Archive"}
+						isActive={context.isFocused ?? false}
 						onClick={() => {
 							if (isArchived) {
 								onUnarchive(item.index.toString());
@@ -773,6 +809,20 @@ function TreeArea(props: TreeArea_Props) {
 
 	const archiveDocument = useMutation(app_convex_api.ai_docs_temp.archive_pages);
 	const unarchiveDocument = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
+
+	// Set active item when tree items and navigated item are available
+	useEffect(() => {
+		if (treeRef.current && selectedDocId && treeItems[selectedDocId] && !treeRef.current.isFocused) {
+			const navigatedItem = treeItems[selectedDocId];
+			if (
+				navigatedItem &&
+				navigatedItem.data.type !== "placeholder" &&
+				(!navigatedItem.data.isArchived || showArchived)
+			) {
+				treeRef.current.focusItem(selectedDocId, false);
+			}
+		}
+	}, [selectedDocId, treeItems, showArchived]);
 
 	const handleAddChild = (parentId: string) => {
 		if (dataProvider) {
@@ -954,6 +1004,57 @@ function TreeArea(props: TreeArea_Props) {
 		}
 	};
 
+	const handleBlur = (e: React.FocusEvent) => {
+		const treeContainer = e.currentTarget;
+		const relatedTarget = e.relatedTarget as HTMLElement | null;
+
+		// Check if focus moved outside the tree
+		if (!relatedTarget || !treeContainer.contains(relatedTarget)) {
+			// Priority 1: Focus navigated item
+			if (selectedDocId) {
+				const navigatedItem = treeItems[selectedDocId];
+				if (
+					navigatedItem &&
+					navigatedItem.data.type !== "placeholder" &&
+					(!navigatedItem.data.isArchived || showArchived)
+				) {
+					treeRef.current?.focusItem(selectedDocId, false);
+					return;
+				}
+			}
+
+			// Priority 2: Focus first visible item
+			{
+				const rootItem = treeItems[pages_ROOT_ID];
+				if (!rootItem?.children) return;
+
+				// Get linear order of items by traversing the tree structure
+				const linearItems: Array<{ item: TreeItemIndex; depth: number }> = [];
+				const traverseItems = (itemIds: TreeItemIndex[], depth = 0) => {
+					for (const itemId of itemIds) {
+						const item = treeItems[itemId];
+						if (item) {
+							linearItems.push({ item: itemId, depth });
+							if (item.isFolder && item.children && expandedItems.includes(itemId as string)) {
+								traverseItems(item.children, depth + 1);
+							}
+						}
+					}
+				};
+				traverseItems(rootItem.children);
+
+				// Find first non-archived, non-placeholder item
+				for (const { item: itemId } of linearItems) {
+					const item = treeItems[itemId];
+					if (item && item.data.type !== "placeholder" && (!item.data.isArchived || showArchived)) {
+						treeRef.current?.focusItem(itemId, false);
+						return;
+					}
+				}
+			}
+		}
+	};
+
 	return (
 		<div
 			ref={rootElement}
@@ -1021,6 +1122,7 @@ function TreeArea(props: TreeArea_Props) {
 					return (
 						<div
 							{...props.containerProps}
+							onBlur={handleBlur}
 							className={cn(
 								"PagesSidebar-tree-container" satisfies PagesSidebar_ClassNames,
 								props.info.isFocused && ("PagesSidebar-tree-container-focused" satisfies PagesSidebar_ClassNames),
@@ -1108,7 +1210,13 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 							<Menu />
 						</IconButton>
 
-						<h2 className={cn("PagesSidebarContent-title", "text-lg font-semibold")}>Pages</h2>
+						<Link to="/pages" search={{}}>
+							<MyLinkSurface variant="button-tertiary" className="PagesSidebarContent-title">
+								<span>
+									<span className="align-text-top">Pages</span>
+								</span>
+							</MyLinkSurface>
+						</Link>
 					</div>
 
 					<IconButton
@@ -1116,7 +1224,7 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 						size="icon"
 						onClick={onClose}
 						tooltip="Close"
-						className={cn("PagesSidebarContent-close-button", "h-8 w-8")}
+						className="PagesSidebarContent-close-button"
 					>
 						<X />
 					</IconButton>

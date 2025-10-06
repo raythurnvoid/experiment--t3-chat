@@ -1,0 +1,110 @@
+@layer common_components {
+	.MyLinkSurface {
+		box-sizing: border-box;
+		position: relative;
+
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+
+		border-radius: 6px;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1.25rem;
+		white-space: nowrap;
+
+		background: transparent;
+
+		transition: background-color 0.15s ease-in-out;
+
+		&:focus-visible {
+			outline: none;
+			box-shadow: 0 0 0 1px hsl(var(--ring));
+		}
+
+		&:disabled {
+			pointer-events: none;
+			opacity: 0.5;
+		}
+	}
+
+	.MyLinkSurface-variant-default {
+		color: hsl(var(--primary));
+		text-underline-offset: 4px;
+
+		&:hover {
+			text-decoration: underline;
+		}
+	}
+
+	.MyLinkSurface-variant-button-tertiary {
+		background: transparent;
+
+		&:hover,
+		&:focus-visible {
+			background: hsl(var(--sidebar-accent));
+			color: hsl(var(--sidebar-accent-foreground));
+		}
+
+		&:active {
+			background: hsl(var(--sidebar-accent));
+			color: hsl(var(--sidebar-accent-foreground));
+		}
+	}
+
+	.MyLinkSurface-variant-button-ghost {
+		&:hover,
+		&:focus-visible {
+			background: hsl(var(--accent));
+			color: hsl(var(--accent-foreground));
+		}
+
+		@media (prefers-color-scheme: dark) {
+			&:hover,
+			&:focus-visible {
+				background: hsl(var(--accent) / 0.5);
+			}
+		}
+	}
+
+	.MyLinkSurface-variant-button-ghost-secondary {
+		color: hsl(var(--muted-foreground));
+
+		&:hover,
+		&:focus-visible {
+			background: hsl(var(--accent));
+			color: hsl(var(--accent-foreground));
+		}
+
+		@media (prefers-color-scheme: dark) {
+			&:hover,
+			&:focus-visible {
+				background: hsl(var(--accent) / 0.5);
+			}
+		}
+	}
+
+	.MyLinkSurface-size-default {
+		height: 36px;
+		padding: 8px 16px;
+	}
+
+	.MyLinkSurface-size-sm {
+		height: 32px;
+		padding: 8px 12px;
+		font-size: 0.75rem;
+	}
+
+	.MyLinkSurface-size-lg {
+		height: 40px;
+		padding: 8px 32px;
+	}
+
+	.MyLinkSurface-size-icon {
+		height: 36px;
+		width: 36px;
+		padding: 0;
+	}
+}
