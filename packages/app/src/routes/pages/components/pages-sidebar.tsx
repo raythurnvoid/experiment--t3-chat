@@ -807,33 +807,43 @@ function TreeArea(props: TreeArea_Props) {
 
 	useImperativeHandle(ref, () => treeRef.current!, []);
 
-	// Get expanded items for view state
-	const expandedItems = useMemo(() => {
-		if (!dataProvider) return [];
-		const allData = treeItems;
-		const expanded: string[] = [];
-
-		// Get the root item to find its direct children
-		const rootItem = allData[pages_ROOT_ID];
-		if (rootItem && rootItem.children) {
-			// Only expand direct children of root that are folders with children
-			rootItem.children.forEach((childId) => {
-				const childItem = allData[childId];
-				if (childItem && childItem.isFolder && childItem.children && childItem.children.length > 0) {
-					expanded.push(childId.toString());
-				}
-			});
-		}
-
-		return expanded;
-	}, [dataProvider, searchQuery, treeItems]);
-
 	const rootElement = useRef<HTMLDivElement>(null);
 
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
 	const archiveDocument = useMutation(app_convex_api.ai_docs_temp.archive_pages);
 	const unarchiveDocument = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
+
+	// Compute visible items when search is active
+	let visibleIds: Set<string> | null = null;
+	const searchActive = searchQuery.trim().length > 0;
+	if (searchActive) {
+		visibleIds = new Set<string>();
+		const lowerCaseQuery = searchQuery.toLowerCase();
+
+		const isVisible = (id: string): boolean => {
+			const node = treeItems[id];
+			if (!node) return false;
+			if (node.data.type === "placeholder") return false;
+			const isArchived = !!node.data.isArchived;
+			if (isArchived && !showArchived) return false;
+
+			const selfMatch = node.data.title.toLowerCase().includes(lowerCaseQuery);
+
+			let anyChildVisible = false;
+			const children = node.children ?? [];
+			for (const cid of children) {
+				if (isVisible(cid as string)) {
+					anyChildVisible = true;
+				}
+			}
+
+			const visible = selfMatch || anyChildVisible;
+			if (visible) visibleIds!.add(id);
+			return visible;
+		};
+		isVisible(pages_ROOT_ID); // seeds traversal
+	}
 
 	// Set active item when tree items and navigated item are available
 	useEffect(() => {
@@ -919,22 +929,6 @@ function TreeArea(props: TreeArea_Props) {
 		// For placeholder items, always render if expanded
 		if (item.data.type === "placeholder") {
 			return true;
-		}
-
-		// Filter children based on search query
-		if (item.children && item.children.length > 0 && searchQuery.trim()) {
-			const hasVisibleChildren = item.children.some((childId) => {
-				// Check if child matches search query
-				const childItem = treeItems[childId];
-				if (childItem) {
-					const titleMatches = childItem.data.title.toLowerCase().includes(searchQuery.toLowerCase());
-					// For now, just check title match. Could add recursive search here if needed
-					return titleMatches;
-				}
-				return false;
-			});
-
-			return hasVisibleChildren;
 		}
 
 		return defaultShouldRender;
@@ -1046,26 +1040,8 @@ function TreeArea(props: TreeArea_Props) {
 
 			// Priority 2: Focus first visible item
 			{
-				const rootItem = treeItems[pages_ROOT_ID];
-				if (!rootItem?.children) return;
-
-				// Get linear order of items by traversing the tree structure
-				const linearItems: Array<{ item: TreeItemIndex; depth: number }> = [];
-				const traverseItems = (itemIds: TreeItemIndex[], depth = 0) => {
-					for (const itemId of itemIds) {
-						const item = treeItems[itemId];
-						if (item) {
-							linearItems.push({ item: itemId, depth });
-							if (item.isFolder && item.children && expandedItems.includes(itemId as string)) {
-								traverseItems(item.children, depth + 1);
-							}
-						}
-					}
-				};
-				traverseItems(rootItem.children);
-
-				// Find first non-archived, non-placeholder item
-				for (const { item: itemId } of linearItems) {
+				const linear = treeRef.current?.treeEnvironmentContext.linearItems?.[TREE_ID] ?? [];
+				for (const { item: itemId } of linear) {
 					const item = treeItems[itemId];
 					if (item && item.data.type !== "placeholder" && (!item.data.isArchived || showArchived)) {
 						treeRef.current?.focusItem(itemId, false);
@@ -1089,11 +1065,7 @@ function TreeArea(props: TreeArea_Props) {
 			onDrop={handleDropOnRootArea}
 		>
 			<UncontrolledTreeEnvironment
-				viewState={{
-					[TREE_ID]: {
-						expandedItems,
-					},
-				}}
+				viewState={{}}
 				dataProvider={dataProvider}
 				getItemTitle={(item) => item.data.title}
 				canDropAt={(items, target) => {
@@ -1125,6 +1097,10 @@ function TreeArea(props: TreeArea_Props) {
 				}}
 				renderItemArrow={(props) => <PagesSidebarTreeItemArrow {...props} />}
 				renderItem={(props) => {
+					if (searchActive && visibleIds && props.item.index !== pages_ROOT_ID) {
+						if (!visibleIds.has(props.item.index as string)) return null;
+					}
+
 					return (
 						<PagesSidebarTreeItem
 							{...props}
