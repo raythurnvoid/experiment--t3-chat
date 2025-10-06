@@ -18,6 +18,30 @@ export function sx(style: CSSPropertiesX) {
 
 export type CSSPropertiesX = CSSProperties & Record<string, string | number | undefined | null>;
 
+export function forward_ref(refValue: any, ...targetRefs: React.Ref<any>[]) {
+	const cleanedUpFns: (() => void)[] = [];
+	if (targetRefs) {
+		for (const targetRef of targetRefs) {
+			if (targetRef) {
+				if (typeof targetRef === "function") {
+					const cleanedUpFn = targetRef(refValue);
+					if (cleanedUpFn) {
+						cleanedUpFns.push(cleanedUpFn);
+					}
+				} else {
+					targetRef.current = refValue;
+				}
+			}
+		}
+	}
+
+	return () => {
+		for (const cleanedUpFn of cleanedUpFns) {
+			cleanedUpFn();
+		}
+	};
+}
+
 /**
  * Delay for a given number of milliseconds.
  *

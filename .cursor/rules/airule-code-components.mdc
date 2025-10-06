@@ -21,7 +21,7 @@ The following rules are mandatory across this codebase:
 - Keep `...rest` last and forward DOM-compatible props as needed.
 - Prefix all CSS classes with the component name.
 - Use camelCase for props and all local symbols.
-- Use React 19 ref patterns: accept `ref` as a regular prop; use `useImperativeHandle` to expose imperative handles, including multiple internal elements through a single `ref`.
+- Use React 19 ref patterns: accept `ref` as a regular prop; prefer a callback ref with `forward_ref` to forward refs to children or multiple targets; use `useImperativeHandle` only to expose a custom imperative API.
 
 ## Don't
 
@@ -329,7 +329,6 @@ function Button(props: ButtonProps) {
 Callback refs can return cleanup functions:
 
 ```tsx
-// ✅ React 19: Callback refs with cleanup
 function ResizeObserverComponent(props: ResizeObserverComponent_Props) {
 	const { onResize } = props;
 	const [height, setHeight] = useState(0);
@@ -344,13 +343,34 @@ function ResizeObserverComponent(props: ResizeObserverComponent_Props) {
 
 		observer.observe(node);
 
-		// ✅ NEW: Return cleanup function
+		// Return cleanup function
 		return () => {
 			observer.disconnect();
 		};
 	};
 
 	return <div ref={measuredRef}>Height: {Math.round(height)}px</div>;
+}
+```
+
+## Forwarding refs to children
+
+Use a callback ref with the `forward_ref` helper to forward the instance to the parent `ref` and any internal refs.
+
+```tsx
+import { forward_ref } from "@/lib/utils.ts";
+
+function Parent(props: { ref?: React.Ref<any> }) {
+	const { ref } = props;
+	const childRef = useRef<any>(null);
+
+	return (
+		<Child
+			ref={(inst) => {
+				return forward_ref(inst, ref, childRef);
+			}}
+		/>
+	);
 }
 ```
 
@@ -385,9 +405,6 @@ export function MyWidget(props: MyWidget_Props) {
 		}),
 		[value],
 	);
-
-	// When forwarding a child ref directly:
-	// useImperativeHandle(ref, () => childRef.current!, []);
 
 	return (
 		<div ref={rootRef} className={cn("MyWidget", className)} {...rest}>

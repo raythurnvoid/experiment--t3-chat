@@ -18,7 +18,7 @@ import { MySidebar, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { cn, sx } from "@/lib/utils.ts";
+import { cn, forward_ref, sx } from "@/lib/utils.ts";
 import { IconButton } from "@/components/icon-button.tsx";
 import {
 	UncontrolledTreeEnvironment,
@@ -212,8 +212,6 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		const docId = generate_timestamp_uuid("doc");
 		const parentItem = this.data[parentId];
 
-		console.log("createNewItem called:", { parentId, doc_id: docId, parentChildren: parentItem?.children });
-
 		if (parentItem) {
 			const newItem: TreeItem<DocData> = {
 				index: docId,
@@ -242,11 +240,9 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				// Replace placeholder with new item
 				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? docId : id)) || [docId];
 				delete this.data[placeholderId];
-				console.log("Replaced placeholder with new item");
 			} else {
 				// Just add the new item to existing children
 				updatedChildren = [...(parentItem.children || []), docId];
-				console.log("Added new item to existing children");
 			}
 
 			// Update parent with new children array
@@ -270,9 +266,6 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 					name: title,
 					workspaceId: this.workspaceId,
 					projectId: this.projectId,
-				})
-				.then(() => {
-					console.log("Document created in Convex");
 				})
 				.catch(console.error);
 		}
@@ -805,14 +798,12 @@ function TreeArea(props: TreeArea_Props) {
 
 	const treeRef = useRef<TreeRef | null>(null);
 
-	useImperativeHandle(ref, () => treeRef.current!, []);
-
 	const rootElement = useRef<HTMLDivElement>(null);
 
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 
 	const archiveDocument = useMutation(app_convex_api.ai_docs_temp.archive_pages);
-	const unarchiveDocument = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
+	const unarchivePage = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
 
 	// Compute visible items when search is active
 	let visibleIds: Set<string> | null = null;
@@ -861,15 +852,12 @@ function TreeArea(props: TreeArea_Props) {
 
 	const handleAddChild = (parentId: string) => {
 		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(parentId, "New Document");
-			console.log("Created new document:", newItemId);
+			const newItemId = dataProvider.createNewItem(parentId, "New Page");
 			onAddChild(parentId, newItemId);
 		}
 	};
 
 	const handleArchive = (itemId: string) => {
-		console.log("Archived item:", itemId);
-
 		// Update local data immediately for better UX
 		if (dataProvider) {
 			dataProvider.updateArchiveStatus(itemId, true);
@@ -888,8 +876,6 @@ function TreeArea(props: TreeArea_Props) {
 	};
 
 	const handleUnarchive = (itemId: string) => {
-		console.log("Unarchived item:", itemId);
-
 		// Update local data immediately for better UX
 		if (dataProvider) {
 			dataProvider.updateArchiveStatus(itemId, false);
@@ -897,7 +883,7 @@ function TreeArea(props: TreeArea_Props) {
 
 		// Sync to Convex
 		if (convex) {
-			unarchiveDocument({
+			unarchivePage({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId: itemId,
@@ -965,7 +951,6 @@ function TreeArea(props: TreeArea_Props) {
 			const draggingItems = treeRef.current?.dragAndDropContext.draggingItems;
 
 			if (!draggingItems || draggingItems.length === 0 || !dataProvider) {
-				console.log("No dragging items found or no data provider");
 				return;
 			}
 
@@ -1131,7 +1116,14 @@ function TreeArea(props: TreeArea_Props) {
 					);
 				}}
 			>
-				<Tree ref={treeRef} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Documentation Tree" />
+				<Tree
+					ref={(inst) => {
+						return forward_ref(inst, ref, treeRef);
+					}}
+					treeId={TREE_ID}
+					rootItem={pages_ROOT_ID}
+					treeLabel="Documentation Tree"
+				/>
 			</UncontrolledTreeEnvironment>
 		</div>
 	);
@@ -1165,13 +1157,12 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 		treeRef.current?.expandAll();
 	};
 
-	const handleNewDoc = () => {
+	const handleNewPage = () => {
 		// Add to root by default - could access treeRef.current for programmatic control
 		// For now, this would need to be connected to handleAddChild in TreeContainer
 		// or use treeRef.current?.navigateToDocument() for external navigation
 		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(pages_ROOT_ID, "New Document");
-			console.log("Created new document from header button:", newItemId);
+			const newItemId = dataProvider.createNewItem(pages_ROOT_ID, "New Page");
 			onAddChild(pages_ROOT_ID, newItemId);
 		}
 	};
@@ -1290,10 +1281,10 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 					<Button
 						className={cn("PagesSidebarContent-new-doc-button", "flex-1 justify-start gap-2")}
 						variant="secondary"
-						onClick={handleNewDoc}
+						onClick={handleNewPage}
 					>
 						<Plus className="h-4 w-4" />
-						New Document
+						New Page
 					</Button>
 				</div>
 
