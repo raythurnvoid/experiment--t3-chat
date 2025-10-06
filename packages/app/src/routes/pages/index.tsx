@@ -46,17 +46,15 @@ type RoutePagesContent_Props = {
 function RoutePagesContent(props: RoutePagesContent_Props) {
 	const { pageId } = props;
 
-	if (!pageId) {
-		return <div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading homepage…</div>;
-	}
-
 	return (
 		<React.Suspense
 			fallback={<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading editor…</div>}
 		>
-			<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
-				<PageRichTextEditor pageId={pageId} />
-			</div>
+			{pageId && (
+				<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
+					<PageRichTextEditor pageId={pageId} />
+				</div>
+			)}
 		</React.Suspense>
 	);
 }
@@ -81,7 +79,7 @@ function RoutePages() {
 				.then((result) => setHomepageId(result.page_id))
 				.catch(console.error);
 		}
-	}, []);
+	}, [searchParams.pageId]);
 
 	const effectivePageId = searchParams.pageId ?? homepageId ?? undefined;
 

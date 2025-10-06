@@ -59,3 +59,59 @@ export function formatRelativeTime(updatedAt: number): string {
 	// Format: day month year (e.g., "15 Dec 2023")
 	return `${day} ${monthNames[month]} ${year}`;
 }
+
+/**
+ * Determines if the relative time format should include "(ago)" suffix
+ * @param updatedAt - Timestamp in milliseconds
+ * @returns true if "(ago)" should be shown, false otherwise
+ */
+export function shouldShowAgoSuffix(updatedAt: number): boolean {
+	const now = Date.now();
+	const diff = now - updatedAt;
+
+	// Handle invalid or future timestamps
+	if (diff < 0 || !Number.isFinite(updatedAt)) {
+		return false;
+	}
+
+	// Less than 1 minute - "Just now" doesn't need "(ago)"
+	if (diff < 60 * 1000) {
+		return false;
+	}
+
+	// Less than 7 days - relative formats like "2h", "3d", "Yesterday" need "(ago)"
+	if (diff < 7 * 24 * 60 * 60 * 1000) {
+		return true;
+	}
+
+	// More than 7 days - absolute dates like "15 Dec" or "15 Dec 2023" don't need "(ago)"
+	return false;
+}
+
+/**
+ * Determines if the relative time format should include "(at)" prefix
+ * @param updatedAt - Timestamp in milliseconds
+ * @returns true if "(at)" should be shown, false otherwise
+ */
+export function shouldShowAtPrefix(updatedAt: number): boolean {
+	const now = Date.now();
+	const diff = now - updatedAt;
+
+	// Handle invalid or future timestamps
+	if (diff < 0 || !Number.isFinite(updatedAt)) {
+		return false;
+	}
+
+	// Less than 1 minute - "Just now" doesn't need "(at)"
+	if (diff < 60 * 1000) {
+		return false;
+	}
+
+	// Less than 7 days - relative formats like "2h", "3d", "Yesterday" don't need "(at)"
+	if (diff < 7 * 24 * 60 * 60 * 1000) {
+		return false;
+	}
+
+	// More than 7 days - absolute dates like "15 Dec" or "15 Dec 2023" need "(at)"
+	return true;
+}

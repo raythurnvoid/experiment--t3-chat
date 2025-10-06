@@ -40,8 +40,9 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { MyLinkSurface } from "@/components/my-link-surface.tsx";
 import { pages_ROOT_ID } from "@/lib/pages.ts";
-import { formatRelativeTime } from "@/lib/date.ts";
+import { formatRelativeTime, shouldShowAgoSuffix, shouldShowAtPrefix } from "@/lib/date.ts";
 import { Link } from "@tanstack/react-router";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 
 // Types for document structure - react-complex-tree format
 interface DocData {
@@ -637,6 +638,16 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	// Meta text for non-placeholder items
 	const metaText = !isPlaceholder ? `${formatRelativeTime(data.updatedAt)} ${data.updatedBy || "Unknown"}` : undefined;
 
+	// Tooltip content for non-placeholder items
+	const tooltipContent = !isPlaceholder
+		? (() => {
+				const relativeTime = formatRelativeTime(data.updatedAt);
+				const showAt = shouldShowAtPrefix(data.updatedAt);
+				const showAgo = shouldShowAgoSuffix(data.updatedAt);
+				return `Updated${showAt ? " at" : ""} ${relativeTime}${showAgo ? " ago" : ""} by ${data.updatedBy || "Unknown"}`;
+			})()
+		: undefined;
+
 	// Hide archived items when showArchived is false
 	if (isArchived && !showArchived) {
 		return null;
@@ -650,7 +661,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	}
 
 	// Regular items
-	return (
+	const treeItemContent = (
 		<li
 			{...context.itemContainerWithChildrenProps}
 			className={cn("PagesSidebarTreeItem" satisfies PagesSidebar_ClassNames, "group relative")}
@@ -733,6 +744,20 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 			{children}
 		</li>
 	);
+
+	// Wrap with tooltip if content exists
+	if (tooltipContent) {
+		return (
+			<Tooltip delayDuration={2000}>
+				<TooltipTrigger asChild>{treeItemContent}</TooltipTrigger>
+				<TooltipContent side="bottom" align="center">
+					{tooltipContent}
+				</TooltipContent>
+			</Tooltip>
+		);
+	}
+
+	return treeItemContent;
 }
 
 type TreeRenameInputComponent_Props = {
@@ -997,19 +1022,15 @@ function TreeArea(props: TreeArea_Props) {
 		}
 	};
 
-	const handleEmptyAreaClick = (e: React.MouseEvent<HTMLDivElement>) => {
-		// Only clear selection if clicking on the container itself (not on child elements)
-		if (e.target === e.currentTarget) {
-			treeRef.current?.selectItems([]);
-		}
-	};
-
 	const handleBlur = (e: React.FocusEvent) => {
 		const treeContainer = e.currentTarget;
 		const relatedTarget = e.relatedTarget as HTMLElement | null;
 
 		// Check if focus moved outside the tree
 		if (!relatedTarget || !treeContainer.contains(relatedTarget)) {
+			// Clear selection when tree loses focus
+			treeRef.current?.selectItems([]);
+
 			// Priority 1: Focus navigated item
 			if (selectedDocId) {
 				const navigatedItem = treeItems[selectedDocId];
@@ -1062,7 +1083,6 @@ function TreeArea(props: TreeArea_Props) {
 				"PagesSidebar-tree-area" satisfies PagesSidebar_ClassNames,
 				isDraggingOverRootArea && ("PagesSidebar-tree-area-drag-over" satisfies PagesSidebar_ClassNames),
 			)}
-			onClick={handleEmptyAreaClick}
 			onDragOver={handleDragOverRootArea}
 			onDragLeave={handleDragLeaveRootArea}
 			onDragEnd={handleDragEndRootArea}
