@@ -4,7 +4,6 @@ import { Slot } from "@radix-ui/react-slot";
 import { PanelLeftIcon } from "lucide-react";
 import { useEffect, useState, type CSSProperties, type ComponentPropsWithRef } from "react";
 
-import { Input } from "@/components/ui/input.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
@@ -42,23 +41,20 @@ type MySidebar_ClassNames =
 	| "MySidebarMenuSubButton"
 	| "MySidebarTrigger"
 	| "MySidebarRail"
-	| "MySidebarInset"
-	| "MySidebarInput";
+	| "MySidebarInset";
 
 type MySidebar_CssVars = {
 	"--my-sidebar-width": string;
 	"--my-sidebar-width-collapsed": string;
 };
 
-const CSS_VARIABLE_DEFAULTS: Partial<MySidebar_CssVars> = {
+const MySidebar_CSS_VARS_DEFAULTS: Partial<MySidebar_CssVars> = {
 	"--my-sidebar-width": "320px",
 	"--my-sidebar-width-collapsed": "47px",
 };
 
-type MySidebarState = "closed" | "collapsed" | "expanded";
-
 export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
-	state: MySidebarState;
+	state: "closed" | "collapsed" | "expanded";
 };
 
 export function MySidebar(props: MySidebar_Props) {
@@ -87,7 +83,7 @@ export function MySidebar(props: MySidebar_Props) {
 				className,
 			)}
 			style={{
-				...CSS_VARIABLE_DEFAULTS,
+				...MySidebar_CSS_VARS_DEFAULTS,
 				...style,
 			}}
 			{...rest}
@@ -444,15 +440,5 @@ export function MySidebarInset(props: MySidebarInset_Props) {
 		<main ref={ref} id={id} className={cn("MySidebarInset" satisfies MySidebar_ClassNames, className)} {...rest}>
 			{children}
 		</main>
-	);
-}
-
-export type MySidebarInput_Props = ComponentPropsWithRef<typeof Input>;
-
-export function MySidebarInput(props: MySidebarInput_Props) {
-	const { ref, id, className, ...rest } = props;
-
-	return (
-		<Input ref={ref} id={id} className={cn("MySidebarInput" satisfies MySidebar_ClassNames, className)} {...rest} />
 	);
 }

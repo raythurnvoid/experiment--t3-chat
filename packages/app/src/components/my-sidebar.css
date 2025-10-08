@@ -359,8 +359,4 @@
 		min-height: 0;
 		background: hsl(var(--background));
 	}
-
-	.MySidebarInput {
-		height: 2rem;
-	}
 }

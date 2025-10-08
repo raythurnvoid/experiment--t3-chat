@@ -210,4 +210,8 @@
 		height: 32px;
 		width: 32px;
 	}
+
+	.PagesSidebarContent-archive-toggle {
+		align-self: start;
+	}
 }

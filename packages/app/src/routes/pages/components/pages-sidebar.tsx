@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useState, createContext, use, useMemo, useRef, useEffect, useImperativeHandle } from "react";
+import React, { useState, createContext, use, useMemo, useRef, useEffect } from "react";
 import {
 	FileText,
 	Plus,
@@ -15,8 +15,10 @@ import {
 } from "lucide-react";
 import { Sidebar, SidebarContent, SidebarHeader } from "@/components/ui/sidebar.tsx";
 import { MySidebar, type MySidebar_Props } from "@/components/my-sidebar.tsx";
+import { MyInput, MyInputBox, MyInputArea, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
+import { MyButton } from "@/components/my-button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { cn, forward_ref, sx } from "@/lib/utils.ts";
 import { IconButton } from "@/components/icon-button.tsx";
@@ -446,46 +448,6 @@ function PagesTreeProvider({ children }: PagesTreeProvider_Props) {
 	);
 }
 
-// Search Context
-type PagesSearchContext = {
-	searchQuery: string;
-	showArchived: boolean;
-	setSearchQuery: (query: string) => void;
-	setShowArchived: (show: boolean) => void;
-};
-
-const PagesSearchContext = createContext<PagesSearchContext | null>(null);
-
-const usePagesSearchContext = () => {
-	const context = use(PagesSearchContext);
-	if (!context) {
-		throw new Error("usePagesSearchContext must be used within PagesSearchContextProvider");
-	}
-	return context;
-};
-
-type PagesSearchContextProvider_Props = {
-	children: React.ReactNode;
-};
-
-function PagesSearchContextProvider({ children }: PagesSearchContextProvider_Props) {
-	const [searchQuery, setSearchQuery] = useState("");
-	const [showArchived, setShowArchived] = useState(false);
-
-	return (
-		<PagesSearchContext.Provider
-			value={{
-				searchQuery,
-				setSearchQuery,
-				showArchived,
-				setShowArchived,
-			}}
-		>
-			{children}
-		</PagesSearchContext.Provider>
-	);
-}
-
 interface PagesSidebarTreeItemArrow_Props {
 	item: TreeItem<DocData>;
 	context: TreeItemRenderContext;
@@ -782,6 +744,8 @@ const TREE_ID = "docs-tree";
 type TreeArea_Props = {
 	ref: React.Ref<TreeRef>;
 	selectedDocId?: string;
+	searchQuery: string;
+	showArchived: boolean;
 	onSelectItems: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
 	onAddChild: (parentId: string, newItemId: string) => void;
 	onArchive: (itemId: string) => void;
@@ -789,9 +753,8 @@ type TreeArea_Props = {
 };
 
 function TreeArea(props: TreeArea_Props) {
-	const { ref, selectedDocId, onSelectItems, onAddChild, onArchive, onPrimaryAction } = props;
-
-	const { searchQuery, showArchived } = usePagesSearchContext();
+	const { ref, selectedDocId, searchQuery, showArchived, onSelectItems, onAddChild, onArchive, onPrimaryAction } =
+		props;
 	const { dataProvider, items: treeItems } = usePagesTree();
 
 	const convex = useConvex();
@@ -1131,6 +1094,10 @@ function TreeArea(props: TreeArea_Props) {
 
 type PagesSidebarContent_Props = {
 	selectedDocId?: string;
+	searchQuery: string;
+	showArchived: boolean;
+	onSearchChange: (value: string) => void;
+	onToggleArchive: () => void;
 	onClose: () => void;
 	onAddChild: (parentId: string, newItemId: string) => void;
 	onArchive: (itemId: string) => void;
@@ -1138,15 +1105,27 @@ type PagesSidebarContent_Props = {
 };
 
 function PagesSidebarContent(props: PagesSidebarContent_Props) {
-	const { selectedDocId, onClose, onAddChild, onArchive, onPrimaryAction } = props;
-
-	const { searchQuery, showArchived, setSearchQuery, setShowArchived } = usePagesSearchContext();
+	const {
+		selectedDocId,
+		searchQuery,
+		showArchived,
+		onSearchChange,
+		onToggleArchive,
+		onClose,
+		onAddChild,
+		onArchive,
+		onPrimaryAction,
+	} = props;
 	const { dataProvider, items: treeItems } = usePagesTree();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const treeRef = useRef<TreeRef | null>(null);
 
 	const [multiSelectionCount, setMultiSelectionCount] = useState(0);
+
+	const archivedCount = Object.values(treeItems).filter(
+		(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== pages_ROOT_ID,
+	).length;
 
 	// Handler functions for tree actions
 	const handleFold = () => {
@@ -1178,6 +1157,10 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 
 	const handleSelectItems: TreeArea_Props["onSelectItems"] = (items, treeId) => {
 		setMultiSelectionCount(items.length);
+	};
+
+	const handleToggleArchive = () => {
+		onToggleArchive();
 	};
 
 	return (
@@ -1244,28 +1227,22 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 					</div>
 				)}
 
-				{/* Search Form */}
-				<div className={cn("PagesSidebarContent-search-container", "relative mb-4")}>
-					<input
-						placeholder="Search documentation..."
-						value={searchQuery}
-						onChange={(e) => {
-							const newQuery = e.target.value;
-							setSearchQuery(newQuery);
-							// Filtering is now handled by shouldRenderChildren prop
-						}}
-						className={cn(
-							"PagesSidebarContent-search-input",
-							"h-8 w-full rounded-md border border-input bg-background px-3 py-1 pl-8 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none",
-						)}
-					/>
-					<Search
-						className={cn(
-							"PagesSidebarContent-search-icon",
-							"pointer-events-none absolute top-2 left-2 h-4 w-4 text-muted-foreground",
-						)}
-					/>
-				</div>
+				<MyInput className="PagesSidebarContent-search" variant="surface">
+					<MyInputArea>
+						<MyInputBox />
+						<MyInputIcon>
+							<Search />
+						</MyInputIcon>
+						<MyInputControl
+							placeholder="Search pages"
+							value={searchQuery}
+							onChange={(e) => {
+								const newQuery = e.target.value;
+								onSearchChange(newQuery);
+							}}
+						/>
+					</MyInputArea>
+				</MyInput>
 
 				<div className="mb-2 flex items-center gap-2">
 					<div className="flex gap-1">
@@ -1288,38 +1265,25 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 					</Button>
 				</div>
 
-				{/* Archived Toggle */}
-				{(() => {
-					const archivedCount = Object.values(treeItems).filter(
-						(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== pages_ROOT_ID,
-					).length;
-					return (
-						archivedCount > 0 && (
-							<div className="flex items-center justify-between">
-								<span className="text-sm text-muted-foreground">Show archived ({archivedCount})</span>
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => {
-										const newShowArchived = !showArchived;
-										setShowArchived(newShowArchived);
-										// Filtering is now handled by shouldRenderChildren prop
-									}}
-									className={cn("text-xs", showArchived && "bg-sidebar-accent")}
-								>
-									{showArchived ? "Hide" : "Show"}
-								</Button>
-							</div>
-						)
-					);
-				})()}
+				{archivedCount > 0 && (
+					<MyButton
+						className="PagesSidebarContent-archive-toggle"
+						variant="ghost"
+						size="sm"
+						onClick={handleToggleArchive}
+					>
+						{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
+					</MyButton>
+				)}
 			</SidebarHeader>
 
 			<SidebarContent className="flex-1 overflow-auto">
 				<TreeArea
 					ref={treeRef}
-					onSelectItems={handleSelectItems}
 					selectedDocId={selectedDocId}
+					searchQuery={searchQuery}
+					showArchived={showArchived}
+					onSelectItems={handleSelectItems}
 					onAddChild={onAddChild}
 					onArchive={onArchive}
 					onPrimaryAction={onPrimaryAction}
@@ -1358,19 +1322,24 @@ export function PagesSidebarV2(props: PagesSidebarV2_Props) {
 		...rest
 	} = props;
 
+	const [searchQuery, setSearchQuery] = useState("");
+	const [showArchived, setShowArchived] = useState(false);
+
 	return (
-		<PagesSearchContextProvider>
-			<PagesTreeProvider>
-				<MySidebar state={state} className={className} {...rest}>
-					<PagesSidebarContent
-						onClose={onClose}
-						selectedDocId={selectedDocId}
-						onAddChild={onAddChild}
-						onArchive={onArchive}
-						onPrimaryAction={onPrimaryAction}
-					/>
-				</MySidebar>
-			</PagesTreeProvider>
-		</PagesSearchContextProvider>
+		<PagesTreeProvider>
+			<MySidebar state={state} className={className} {...rest}>
+				<PagesSidebarContent
+					selectedDocId={selectedDocId}
+					searchQuery={searchQuery}
+					showArchived={showArchived}
+					onSearchChange={setSearchQuery}
+					onToggleArchive={() => setShowArchived((oldValue) => !oldValue)}
+					onClose={onClose}
+					onAddChild={onAddChild}
+					onArchive={onArchive}
+					onPrimaryAction={onPrimaryAction}
+				/>
+			</MySidebar>
+		</PagesTreeProvider>
 	);
 }

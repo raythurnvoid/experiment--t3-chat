@@ -28,7 +28,7 @@ export type MyButton_CssVars = {
 	"--my-button-focus-ring-width": string;
 };
 
-const MY_BUTTON_CSS_DEFAULTS: Partial<MyButton_CssVars> = {
+const MyButton_CSS_VARS_DEFAULTS: Partial<MyButton_CssVars> = {
 	"--my-button-height": "36px",
 	"--my-button-padding-x": "16px",
 	"--my-button-padding-y": "8px",
@@ -70,7 +70,7 @@ export function MyButton(props: MyButton_Props) {
 				className,
 			)}
 			style={{
-				...MY_BUTTON_CSS_DEFAULTS,
+				...MyButton_CSS_VARS_DEFAULTS,
 				...style,
 			}}
 			{...rest}
