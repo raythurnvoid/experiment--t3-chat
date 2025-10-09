@@ -2,6 +2,7 @@ import "./my-button.css";
 import type { ComponentPropsWithRef, Ref } from "react";
 
 import { cn } from "@/lib/utils.ts";
+import { MyIcon } from "@/components/my-icon.tsx";
 
 export type MyButton_ClassNames =
 	| "MyButton"
@@ -12,42 +13,17 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-ghost"
 	| "MyButton-variant-ghost-secondary"
 	| "MyButton-variant-tertiary"
-	| "MyButton-variant-link"
-	| "MyButton-size-default"
-	| "MyButton-size-sm"
-	| "MyButton-size-lg"
-	| "MyButton-size-icon";
-
-export type MyButton_CssVars = {
-	"--my-button-height": string;
-	"--my-button-padding-x": string;
-	"--my-button-padding-y": string;
-	"--my-button-gap": string;
-	"--my-button-padding-x-with-icon": string;
-	"--my-button-radius": string;
-	"--my-button-focus-ring-width": string;
-};
-
-const MyButton_CSS_VARS_DEFAULTS: Partial<MyButton_CssVars> = {
-	"--my-button-height": "36px",
-	"--my-button-padding-x": "16px",
-	"--my-button-padding-y": "8px",
-	"--my-button-gap": "8px",
-	"--my-button-padding-x-with-icon": "12px",
-	"--my-button-radius": "0.375rem",
-	"--my-button-focus-ring-width": "3px",
-};
+	| "MyButton-variant-link";
 
 export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	ref?: Ref<HTMLButtonElement>;
 	id?: string;
 	className?: string;
 	variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "ghost-secondary" | "tertiary" | "link";
-	size?: "default" | "sm" | "lg" | "icon";
 };
 
 export function MyButton(props: MyButton_Props) {
-	const { ref, id, className, variant = "default", size = "default", style, children, ...rest } = props;
+	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
 		<button
@@ -63,19 +39,37 @@ export function MyButton(props: MyButton_Props) {
 				variant === "ghost-secondary" && ("MyButton-variant-ghost-secondary" satisfies MyButton_ClassNames),
 				variant === "tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),
 				variant === "link" && ("MyButton-variant-link" satisfies MyButton_ClassNames),
-				size === "default" && ("MyButton-size-default" satisfies MyButton_ClassNames),
-				size === "sm" && ("MyButton-size-sm" satisfies MyButton_ClassNames),
-				size === "lg" && ("MyButton-size-lg" satisfies MyButton_ClassNames),
-				size === "icon" && ("MyButton-size-icon" satisfies MyButton_ClassNames),
 				className,
 			)}
-			style={{
-				...MyButton_CSS_VARS_DEFAULTS,
-				...style,
-			}}
 			{...rest}
 		>
 			{children}
 		</button>
+	);
+}
+
+type MyButtonIcon_ClassNames = "MyButtonIcon";
+
+export type MyButtonIcon_Props = ComponentPropsWithRef<"span"> & {
+	ref?: Ref<HTMLSpanElement>;
+	id?: string;
+	className?: string;
+	innerHtml?: string;
+	children?: React.ReactNode;
+};
+
+export function MyButtonIcon(props: MyButtonIcon_Props) {
+	const { ref, id, className, innerHtml, children, ...rest } = props;
+
+	return (
+		<MyIcon
+			ref={ref}
+			id={id}
+			className={cn("MyButtonIcon" satisfies MyButtonIcon_ClassNames, className)}
+			innerHtml={innerHtml}
+			{...rest}
+		>
+			{children}
+		</MyIcon>
 	);
 }

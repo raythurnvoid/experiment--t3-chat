@@ -13,7 +13,7 @@ type MyLinkSurface_ClassNames =
 	| "MyLinkSurface-size-lg"
 	| "MyLinkSurface-size-icon";
 
-type MyLinkSurface_Props = React.ComponentProps<"span"> & {
+export type MyLinkSurface_Props = React.ComponentProps<"span"> & {
 	variant?: "default" | "button-tertiary" | "button-ghost" | "button-ghost-secondary";
 	size?: "default" | "sm" | "lg" | "icon";
 };

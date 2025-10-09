@@ -124,45 +124,65 @@ type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 <div className={cn("Thread" satisfies Thread_ClassNames)} />
 ```
 
-## Subcomponents in \_ClassNames
+## Grouped \_ClassNames by Compound Component
 
-Model subcomponents as additional class strings within the same `<ComponentName>_ClassNames` union. Use PascalCase for subcomponent root classes (e.g., `ThreadHeader`) and dash-suffixed modifiers for states, variants, and sizes on those subcomponents.
+Instead of a single `<ComponentName>_ClassNames` union, group class names by compound component. Each subcomponent gets its own `_ClassNames` type. Use PascalCase for subcomponent root classes and dash-suffixed modifiers for states, variants, and sizes.
 
-```ts
-type Thread_ClassNames =
-	| "Thread"
-	| "Thread-inner"
-	| "ThreadHeader"
-	| "ThreadFooter"
-	| "ThreadContent"
-	| "ThreadHeader-title"
-	| "ThreadMenu"
-	| "ThreadMenuItem"
+**Type Placement**: Each `_ClassNames` type must be placed directly above its corresponding component definition, before any `_Props` or `_Ref` types.
+
+```tsx
+type Thread_ClassNames = "Thread";
+
+type Thread_Props = React.ComponentProps<"div"> & {
+	children?: React.ReactNode;
+};
+
+function Thread(props: Thread_Props) {
+	const { className, children, ...rest } = props;
+	return (
+		<div className={cn("Thread" satisfies Thread_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+}
+
+type ThreadHeader_ClassNames = "ThreadHeader" | "ThreadHeader-title";
+
+type ThreadHeader_Props = React.ComponentProps<"div"> & {
+	title?: string;
+};
+
+function ThreadHeader(props: ThreadHeader_Props) {
+	const { className, title, ...rest } = props;
+	return (
+		<div className={cn("ThreadHeader" satisfies ThreadHeader_ClassNames, className)} {...rest}>
+			{title && <h2 className={cn("ThreadHeader-title" satisfies ThreadHeader_ClassNames)}>{title}</h2>}
+		</div>
+	);
+}
+
+type ThreadMenuButton_ClassNames =
 	| "ThreadMenuButton"
 	| "ThreadMenuButton-variant-outline"
 	| "ThreadMenuButton-variant-ghost"
 	| "ThreadMenuButton-size-sm"
 	| "ThreadMenuButton-size-lg";
-```
 
-```tsx
-function ThreadHeader(props: React.ComponentProps<"div">) {
-	const { className, ...rest } = props;
-	return <div className={cn("ThreadHeader" satisfies Thread_ClassNames, className)} {...rest} />;
-}
+type ThreadMenuButton_Props = React.ComponentProps<"button"> & {
+	variant?: "outline" | "ghost";
+	size?: "sm" | "lg";
+};
 
-function ThreadMenuButton(
-	props: { variant?: "outline" | "ghost"; size?: "sm" | "lg" } & React.ComponentProps<"button">,
-) {
+function ThreadMenuButton(props: ThreadMenuButton_Props) {
 	const { className, variant = "outline", size = "sm", ...rest } = props;
 	return (
 		<button
 			className={cn(
-				"ThreadMenuButton" satisfies Thread_ClassNames,
-				variant === "outline" && ("ThreadMenuButton-variant-outline" satisfies Thread_ClassNames),
-				variant === "ghost" && ("ThreadMenuButton-variant-ghost" satisfies Thread_ClassNames),
-				size === "sm" && ("ThreadMenuButton-size-sm" satisfies Thread_ClassNames),
-				size === "lg" && ("ThreadMenuButton-size-lg" satisfies Thread_ClassNames),
+				"ThreadMenuButton" satisfies ThreadMenuButton_ClassNames,
+				variant === "outline" && ("ThreadMenuButton-variant-outline" satisfies ThreadMenuButton_ClassNames),
+				variant === "ghost" && ("ThreadMenuButton-variant-ghost" satisfies ThreadMenuButton_ClassNames),
+				size === "sm" && ("ThreadMenuButton-size-sm" satisfies ThreadMenuButton_ClassNames),
+				size === "lg" && ("ThreadMenuButton-size-lg" satisfies ThreadMenuButton_ClassNames),
 				className,
 			)}
 			{...rest}
@@ -173,7 +193,7 @@ function ThreadMenuButton(
 
 - Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer component-prefixed classes validated by the `_ClassNames` type and follow the CSS rules in [airule-code-css.mdc](mdc:.cursor/rules/airule-code-css.mdc).
 
-- Variants and sizes must be represented directly in the component's `_ClassNames` union. Use conditional adds with `satisfies` for validation.
+- Variants and sizes must be represented directly in each component's `_ClassNames` type. Use conditional adds with `satisfies` for validation.
 
 ```ts
 type Button_ClassNames =

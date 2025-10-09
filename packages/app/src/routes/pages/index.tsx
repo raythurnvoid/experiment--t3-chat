@@ -14,7 +14,7 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 
 export const Route = createFileRoute({
-	component: RoutePages,
+	component: RoutePagesComponent,
 	validateSearch: zodValidator(
 		z.object({
 			pageId: z.string().optional().catch(undefined),
@@ -59,7 +59,7 @@ function RoutePagesContent(props: RoutePagesContent_Props) {
 	);
 }
 
-function RoutePages() {
+function RoutePagesComponent() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
@@ -81,7 +81,7 @@ function RoutePages() {
 		}
 	}, [searchParams.pageId]);
 
-	const effectivePageId = searchParams.pageId ?? homepageId ?? undefined;
+	const effectivePageId = searchParams.pageId ?? homepageId ?? null;
 
 	// Navigation function to update URL with selected page
 	const navigateToPage = (pageId: string | null) => {
@@ -89,11 +89,6 @@ function RoutePages() {
 			to: "/pages",
 			search: { pageId },
 		}).catch(console.error);
-	};
-
-	const handleAddChild = (parentId: string, newItemId: string) => {
-		// When a new page is created, open it
-		navigateToPage(newItemId);
 	};
 
 	const handleArchive = (itemId: string) => {
@@ -122,9 +117,8 @@ function RoutePages() {
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
 			{/* Pages Sidebar - positioned between main sidebar and content with animation */}
 			<PagesSidebarV2
-				selectedDocId={effectivePageId}
+				selectedPageId={effectivePageId}
 				onClose={handleCloseSidebar}
-				onAddChild={handleAddChild}
 				onArchive={handleArchive}
 				onPrimaryAction={handlePrimaryAction}
 				state={pagesSidebarState}

@@ -3,17 +3,7 @@ import type { ComponentPropsWithRef } from "react";
 import { createContext, use, useId } from "react";
 
 import { cn } from "@/lib/utils.ts";
-
-export type MyInput_ClassNames =
-	| "MyInput"
-	| "MyInput-variant-surface"
-	| "MyInputLabel"
-	| "MyInputHelperText"
-	| "MyInputIcon"
-	| "MyInputBox"
-	| "MyInputArea"
-	| "MyInputControl"
-	| "MyInputTextAreaControl";
+import { MyIcon } from "./my-icon.tsx";
 
 /**
  * Context for MyInput to share IDs between components
@@ -29,6 +19,8 @@ interface MyInputContext {
  * Context used to share the input field IDs with child components.
  */
 const MyInputContext = createContext<MyInputContext | null>(null);
+
+type MyInput_ClassNames = "MyInput" | "MyInput-variant-surface";
 
 export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 	variant?: "default" | "surface";
@@ -67,6 +59,8 @@ export function MyInput(props: MyInput_Props) {
 	);
 }
 
+type MyInputLabel_ClassNames = "MyInputLabel";
+
 export type MyInputLabel_Props = Omit<ComponentPropsWithRef<"label">, "id">;
 
 export function MyInputLabel(props: MyInputLabel_Props) {
@@ -82,13 +76,15 @@ export function MyInputLabel(props: MyInputLabel_Props) {
 			ref={ref}
 			id={context.labelId}
 			htmlFor={context.inputId}
-			className={cn("MyInputLabel" satisfies MyInput_ClassNames, className)}
+			className={cn("MyInputLabel" satisfies MyInputLabel_ClassNames, className)}
 			{...rest}
 		>
 			{children}
 		</label>
 	);
 }
+
+type MyInputHelperText_ClassNames = "MyInputHelperText";
 
 export type MyInputHelperText_Props = Omit<ComponentPropsWithRef<"div">, "id">;
 
@@ -104,7 +100,7 @@ export function MyInputHelperText(props: MyInputHelperText_Props) {
 		<div
 			ref={ref}
 			id={context.helperTextId}
-			className={cn("MyInputHelperText" satisfies MyInput_ClassNames, className)}
+			className={cn("MyInputHelperText" satisfies MyInputHelperText_ClassNames, className)}
 			{...rest}
 		>
 			{children}
@@ -112,17 +108,17 @@ export function MyInputHelperText(props: MyInputHelperText_Props) {
 	);
 }
 
-export type MyInputIcon_Props = ComponentPropsWithRef<"div">;
+type MyInputIcon_ClassNames = "MyInputIcon";
+
+export type MyInputIcon_Props = ComponentPropsWithRef<typeof MyIcon>;
 
 export function MyInputIcon(props: MyInputIcon_Props) {
-	const { ref, className, children, ...rest } = props;
+	const { className, ...rest } = props;
 
-	return (
-		<span ref={ref} className={cn("MyInputIcon" satisfies MyInput_ClassNames, className)} {...rest}>
-			{children}
-		</span>
-	);
+	return <MyIcon className={cn("MyInputIcon" satisfies MyInputIcon_ClassNames, className)} {...rest} />;
 }
+
+type MyInputBox_ClassNames = "MyInputBox";
 
 export type MyInputBox_Props = ComponentPropsWithRef<"div">;
 
@@ -130,11 +126,13 @@ export function MyInputBox(props: MyInputBox_Props) {
 	const { ref, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} className={cn("MyInputBox" satisfies MyInput_ClassNames, className)} {...rest}>
+		<div ref={ref} className={cn("MyInputBox" satisfies MyInputBox_ClassNames, className)} {...rest}>
 			{children}
 		</div>
 	);
 }
+
+type MyInputArea_ClassNames = "MyInputArea";
 
 export type MyInputArea_Props = ComponentPropsWithRef<"div"> & {
 	/**
@@ -177,7 +175,7 @@ export function MyInputArea(props: MyInputArea_Props) {
 	return (
 		<div
 			ref={ref}
-			className={cn("MyInputArea" satisfies MyInput_ClassNames, className)}
+			className={cn("MyInputArea" satisfies MyInputArea_ClassNames, className)}
 			style={style}
 			onPointerDown={handlePointerDown}
 			{...rest}
@@ -186,6 +184,8 @@ export function MyInputArea(props: MyInputArea_Props) {
 		</div>
 	);
 }
+
+type MyInputControl_ClassNames = "MyInputControl";
 
 export type MyInputControl_Props = Omit<ComponentPropsWithRef<"input">, "size" | "id">;
 
@@ -201,11 +201,13 @@ export function MyInputControl(props: MyInputControl_Props) {
 		<input
 			ref={ref}
 			id={context.inputId}
-			className={cn("MyInputControl" satisfies MyInput_ClassNames, className)}
+			className={cn("MyInputControl" satisfies MyInputControl_ClassNames, className)}
 			{...rest}
 		/>
 	);
 }
+
+type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 
 export type MyInputTextAreaControl_Props = Omit<ComponentPropsWithRef<"textarea">, "size" | "id">;
 
@@ -221,7 +223,7 @@ export function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
 		<textarea
 			ref={ref}
 			id={context.inputId}
-			className={cn("MyInputTextAreaControl" satisfies MyInput_ClassNames, className)}
+			className={cn("MyInputTextAreaControl" satisfies MyInputTextAreaControl_ClassNames, className)}
 			{...rest}
 		/>
 	);

@@ -4,4 +4,9 @@
 		align-items: center;
 		justify-content: center;
 	}
+
+	.MyIconButtonIcon {
+		width: 16px;
+		height: 16px;
+	}
 }

@@ -1,0 +1,20 @@
+@layer common_components {
+	:where(.MyIcon) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+
+		color: inherit;
+
+		pointer-events: none;
+
+		width: 1em;
+		height: 1em;
+
+		:where(& > *) {
+			width: inherit;
+			height: inherit;
+		}
+	}
+}

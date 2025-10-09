@@ -4,6 +4,7 @@ import type { ComponentPropsWithRef, Ref } from "react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
 
 type MyIconButton_ClassNames = "MyIconButton";
@@ -38,5 +39,31 @@ export function MyIconButton(props: MyIconButton_Props) {
 			<TooltipTrigger asChild>{buttonElement}</TooltipTrigger>
 			<TooltipContent side={side}>{tooltip}</TooltipContent>
 		</Tooltip>
+	);
+}
+
+type MyIconButtonIcon_ClassNames = "MyIconButtonIcon";
+
+export type MyIconButtonIcon_Props = ComponentPropsWithRef<"span"> & {
+	ref?: Ref<HTMLSpanElement>;
+	id?: string;
+	className?: string;
+	innerHtml?: string;
+	children?: React.ReactNode;
+};
+
+export function MyIconButtonIcon(props: MyIconButtonIcon_Props) {
+	const { ref, id, className, innerHtml, children, ...rest } = props;
+
+	return (
+		<MyIcon
+			ref={ref}
+			id={id}
+			className={cn("MyIconButtonIcon" satisfies MyIconButtonIcon_ClassNames, className)}
+			innerHtml={innerHtml}
+			{...rest}
+		>
+			{children}
+		</MyIcon>
 	);
 }
