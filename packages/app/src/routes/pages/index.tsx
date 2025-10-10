@@ -1,7 +1,7 @@
 import "./index.css";
 
 import React from "react";
-import { PagesSidebarV2, type PagesSidebarV2_Props } from "./components/pages-sidebar.tsx";
+import { PagesSidebar, type PagesSidebar_Props } from "./components/pages-sidebar.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState, useEffect } from "react";
 import { Button } from "../../components/ui/button.tsx";
@@ -64,7 +64,7 @@ function RoutePagesComponent() {
 	const searchParams = Route.useSearch();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
-	const [pagesSidebarState, setPagesSidebarState] = useState<PagesSidebarV2_Props["state"]>("expanded");
+	const [pagesSidebarState, setPagesSidebarState] = useState<PagesSidebar_Props["state"]>("expanded");
 
 	// Ensure homepage exists and get its ID
 	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
@@ -116,7 +116,7 @@ function RoutePagesComponent() {
 	return (
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
 			{/* Pages Sidebar - positioned between main sidebar and content with animation */}
-			<PagesSidebarV2
+			<PagesSidebar
 				selectedPageId={effectivePageId}
 				onClose={handleCloseSidebar}
 				onArchive={handleArchive}

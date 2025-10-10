@@ -1,23 +1,93 @@
 @reference "@/app.css";
 
 @layer components {
-	.PagesSidebarContent {
+	.PagesSidebar {
 		height: 100%;
 
 		display: flex;
 		flex-direction: column;
+
+		&.MySidebar-state-closed .PagesSidebar {
+			filter: opacity(0);
+
+			transition: filter 0.1s ease-in-out;
+		}
+
+		&.MySidebar-state-expanded .PagesSidebar {
+			filter: opacity(1);
+
+			transition: filter 0.1s 0.15s ease-in-out;
+		}
 	}
 
-	.MySidebar-state-closed .PagesSidebarContent {
-		filter: opacity(0);
-
-		transition: filter 0.1s ease-in-out;
+	.PagesSidebar-header {
+		border-bottom: 1px solid hsl(var(--border));
 	}
 
-	.MySidebar-state-expanded .PagesSidebarContent {
-		filter: opacity(1);
+	.PagesSidebar-actions {
+		margin-bottom: 8px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		height: 36px;
+	}
 
-		transition: filter 0.1s 0.1s ease-in-out;
+	.PagesSidebar-actions-group {
+		display: flex;
+		gap: 4px;
+	}
+
+	.PagesSidebar-actions-icon-button {
+		width: 36px;
+		height: 36px;
+	}
+
+	.PagesSidebar-action-new-page {
+		flex: 1;
+		justify-content: center;
+		gap: 8px;
+	}
+
+	.PagesSidebar-title {
+		font-size: 1.125rem;
+		font-weight: 600;
+
+		padding: 4px;
+	}
+
+	.PagesSidebar-close-button {
+		height: 32px;
+		width: 32px;
+	}
+
+	.PagesSidebar-archive-toggle {
+		align-self: start;
+	}
+
+	.PagesSidebar-hamburger-button {
+		height: 32px;
+		width: 32px;
+
+		@media (min-width: 1024px) {
+			display: none;
+		}
+	}
+
+	.PagesSidebar-top-section {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.PagesSidebar-top-section-left {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.PagesSidebar-content {
+		flex: 1;
+		overflow: auto;
 	}
 
 	.PagesSidebarTreeArea {
@@ -185,7 +255,7 @@
 		padding: 0;
 	}
 
-	.PagesSidebarContent-multi-selection-counter {
+	.PagesSidebar-multi-selection-counter {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
@@ -194,73 +264,8 @@
 		flex: 1;
 	}
 
-	.PagesSidebarContent-multi-selection-counter-label {
+	.PagesSidebar-multi-selection-counter-label {
 		font-weight: 500;
 		font-size: 14px;
-	}
-
-	.PagesSidebarContent-actions {
-		margin-bottom: 8px;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		height: 36px;
-	}
-
-	.PagesSidebarContent-actions-group {
-		display: flex;
-		gap: 4px;
-	}
-
-	.PagesSidebarContent-actions-icon-button {
-		width: 36px;
-		height: 36px;
-	}
-
-	.PagesSidebarContent-action-new-page {
-		flex: 1;
-		justify-content: center;
-		gap: 8px;
-	}
-
-	.PagesSidebarContent-title {
-		font-size: 1.125rem;
-		font-weight: 600;
-
-		padding: 4px;
-	}
-
-	.PagesSidebarContent-close-button {
-		height: 32px;
-		width: 32px;
-	}
-
-	.PagesSidebarContent-archive-toggle {
-		align-self: start;
-	}
-
-	.PagesSidebarContent-hamburger-button {
-		height: 32px;
-		width: 32px;
-
-		@media (min-width: 1024px) {
-			display: none;
-		}
-	}
-
-	.PagesSidebarContent-header {
-		border-bottom: 1px solid hsl(var(--border));
-	}
-
-	.PagesSidebarContent-top-section {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.PagesSidebarContent-top-section-left {
-		display: flex;
-		align-items: center;
-		gap: 8px;
 	}
 }

@@ -13,8 +13,7 @@ import {
 	ChevronsUp,
 	Menu,
 } from "lucide-react";
-import { SidebarContent } from "@/components/ui/sidebar.tsx";
-import { MySidebar, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
+import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MyInput, MyInputBox, MyInputArea, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
@@ -45,15 +44,22 @@ import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "../../../components/my-link.tsx";
 
-// Types for document structure - react-complex-tree format
+/**
+ * `react-complex-tree` item
+ */
 interface DocData {
 	title: string;
-	type: "document" | "placeholder";
+	type: "page" | "placeholder";
 	content: string; // HTML content for the rich text editor - all documents have content
 	isArchived: boolean;
 	updatedAt: number;
 	updatedBy: string;
 }
+
+/**
+ * `react-complex-tree` flat data record object
+ */
+type PagesSidebarTreeDataObject = Record<TreeItemIndex, TreeItem<DocData>>;
 
 // New simplified tree item structure from Convex
 interface ConvexTreeItem {
@@ -68,7 +74,7 @@ interface ConvexTreeItem {
 
 // Custom TreeDataProvider for dynamic operations
 class NotionLikeDataProvider implements TreeDataProvider<DocData> {
-	private data: Record<TreeItemIndex, TreeItem<DocData>>;
+	private data: PagesSidebarTreeDataObject;
 	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
 	// NEW: Convex integration
@@ -77,7 +83,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 	private projectId: string;
 
 	constructor(
-		initialData: Record<TreeItemIndex, TreeItem<DocData>>,
+		initialData: PagesSidebarTreeDataObject,
 		convex?: ConvexReactClient,
 		workspaceId?: string,
 		projectId?: string,
@@ -102,7 +108,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				children: item.children,
 				data: {
 					title: item.title,
-					type: isPlaceholder ? "placeholder" : "document",
+					type: isPlaceholder ? "placeholder" : "page",
 					content: item.content,
 					isArchived: item.isArchived || false,
 					updatedAt: item.updatedAt,
@@ -219,7 +225,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				children: [],
 				data: {
 					title,
-					type: "document",
+					type: "page",
 					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 					isArchived: false,
 					updatedAt: Date.now(),
@@ -319,107 +325,12 @@ type PagesSidebar_CssVars = {
 	"--PagesSidebarTreeItem-content-depth": number;
 };
 
-type PagesTreeContext = {
+type PagesSidebarTreeContext = {
 	dataProvider: NotionLikeDataProvider;
-	items: Record<TreeItemIndex, TreeItem<DocData>>;
+	treeItems: Record<TreeItemIndex, TreeItem<DocData>>;
 };
 
-const PagesTreeContext = createContext<PagesTreeContext | null>(null);
-
-function usePagesTree() {
-	const context = use(PagesTreeContext);
-	if (!context) {
-		throw new Error(`${usePagesTree.name} must be used within ${PagesTreeProvider.name}`);
-	}
-	return context;
-}
-
-type PagesTreeProvider_Props = {
-	children: React.ReactNode;
-};
-
-function PagesTreeProvider({ children }: PagesTreeProvider_Props) {
-	const convex = useConvex();
-
-	const treeData = useQuery(app_convex_api.ai_docs_temp.get_tree, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
-	});
-
-	const dataProvider = useMemo(() => {
-		const emptyData: Record<string, any> = {
-			root: {
-				index: pages_ROOT_ID,
-				children: [],
-				data: {
-					title: "Documents",
-					type: "document",
-					content: "",
-				},
-				isFolder: true,
-				canMove: false,
-				canRename: false,
-			},
-		};
-
-		const provider = new NotionLikeDataProvider(
-			emptyData,
-			convex,
-			ai_chat_HARDCODED_ORG_ID,
-			ai_chat_HARDCODED_PROJECT_ID,
-		);
-		return provider;
-	}, [convex]);
-
-	// Update data provider when tree data changes
-	useEffect(() => {
-		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
-			dataProvider.updateTreeData(treeData);
-		}
-	}, [treeData, dataProvider]);
-
-	// Cleanup on unmount
-	useEffect(() => {
-		return () => {
-			if (dataProvider) {
-				dataProvider.destroy();
-			}
-		};
-	}, [dataProvider]);
-
-	// Reactive items state that updates when tree data changes
-	const [items, setItems] = useState<Record<TreeItemIndex, TreeItem<DocData>>>(() => {
-		return dataProvider?.getAllData() || {};
-	});
-
-	useEffect(() => {
-		if (!dataProvider) {
-			setItems({});
-			return;
-		}
-
-		setItems(dataProvider.getAllData());
-
-		const disposable = dataProvider.onDidChangeTreeData(() => {
-			setItems(dataProvider.getAllData());
-		});
-
-		return () => {
-			disposable.dispose();
-		};
-	}, [dataProvider]);
-
-	return (
-		<PagesTreeContext.Provider
-			value={{
-				dataProvider,
-				items,
-			}}
-		>
-			{children}
-		</PagesTreeContext.Provider>
-	);
-}
+const PagesTreeContext = createContext<PagesSidebarTreeContext | null>(null);
 
 type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
 
@@ -775,7 +686,14 @@ type PagesSidebarTreeArea_Props = {
 
 function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	const { ref, selectedDocId, searchQuery, showArchived, onSelectItems, onArchive, onPrimaryAction } = props;
-	const { dataProvider, items: treeItems } = usePagesTree();
+
+	const context = use(PagesTreeContext);
+	if (!context) {
+		throw new Error(`${PagesSidebarTreeArea.name} must be used within ${PagesTreeContext.name}`);
+	}
+
+	const { dataProvider, treeItems } = context;
+
 	const navigate = useNavigate();
 
 	const convex = useConvex();
@@ -883,7 +801,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		item: TreeItem<DocData>,
 		treeId: string,
 	) => {
-		if (item.data.type === "document") {
+		if (item.data.type === "page") {
 			onPrimaryAction(item.index.toString(), item.data.type);
 		}
 	};
@@ -1118,57 +1036,112 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	);
 }
 
-type PagesSidebarContent_ClassNames =
-	| "PagesSidebarContent"
-	| "PagesSidebarContent-header"
-	| "PagesSidebarContent-top-section"
-	| "PagesSidebarContent-top-section-left"
-	| "PagesSidebarContent-hamburger-button"
-	| "PagesSidebarContent-title"
-	| "PagesSidebarContent-close-button"
-	| "PagesSidebarContent-search"
-	| "PagesSidebarContent-actions"
-	| "PagesSidebarContent-actions-group"
-	| "PagesSidebarContent-actions-icon-button"
-	| "PagesSidebarContent-action-new-page"
-	| "PagesSidebarContent-archive-toggle"
-	| "PagesSidebarContent-multi-selection-counter"
-	| "PagesSidebarContent-multi-selection-counter-label";
+type PagesSidebar_ClassNames =
+	| "PagesSidebar"
+	| "PagesSidebar-header"
+	| "PagesSidebar-top-section"
+	| "PagesSidebar-top-section-left"
+	| "PagesSidebar-hamburger-button"
+	| "PagesSidebar-title"
+	| "PagesSidebar-close-button"
+	| "PagesSidebar-search"
+	| "PagesSidebar-actions"
+	| "PagesSidebar-actions-group"
+	| "PagesSidebar-actions-icon-button"
+	| "PagesSidebar-action-new-page"
+	| "PagesSidebar-archive-toggle"
+	| "PagesSidebar-multi-selection-counter"
+	| "PagesSidebar-multi-selection-counter-label"
+	| "PagesSidebar-content";
 
-type PagesSidebarContent_Props = {
-	selectedDocId: string | null;
-	searchQuery: string;
-	showArchived: boolean;
-	onSearchChange: (value: string) => void;
-	onToggleArchive: () => void;
+export type PagesSidebar_Props = {
+	state: MySidebar_Props["state"];
+	selectedPageId: string | null;
 	onClose: () => void;
 	onArchive: (itemId: string) => void;
 	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
-function PagesSidebarContent(props: PagesSidebarContent_Props) {
-	const {
-		selectedDocId,
-		searchQuery,
-		showArchived,
-		onSearchChange,
-		onToggleArchive,
-		onClose,
-		onArchive,
-		onPrimaryAction,
-	} = props;
-	const navigate = useNavigate();
+export function PagesSidebar(props: PagesSidebar_Props) {
+	const { selectedPageId, state = "expanded", onClose, onArchive, onPrimaryAction } = props;
 
-	const { dataProvider, items: treeItems } = usePagesTree();
+	const convex = useConvex();
+	const navigate = useNavigate();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
-	const treeRef = useRef<TreeRef | null>(null);
+	const treeData = useQuery(app_convex_api.ai_docs_temp.get_tree, {
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+	});
+
+	const dataProvider = useMemo(() => {
+		const provider = new NotionLikeDataProvider(
+			// Initial data
+			{
+				root: {
+					index: pages_ROOT_ID,
+					children: [],
+					data: {
+						title: "Pages",
+						type: "page",
+						content: "",
+						isArchived: false,
+						updatedAt: 0,
+						updatedBy: "",
+					},
+					isFolder: true,
+					canMove: false,
+					canRename: false,
+				},
+			},
+			convex,
+			ai_chat_HARDCODED_ORG_ID,
+			ai_chat_HARDCODED_PROJECT_ID,
+		);
+
+		return provider;
+	}, [convex]);
+
+	// Reactive items state that updates when tree data changes
+	const [treeItems, setTreeItems] = useState(() => {
+		return dataProvider?.getAllData() || {};
+	});
+
+	const [searchQuery, setSearchQuery] = useState("");
+	const [showArchived, setShowArchived] = useState(false);
 
 	const [multiSelectionCount, setMultiSelectionCount] = useState(0);
 
 	const archivedCount = Object.values(treeItems).filter(
 		(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== pages_ROOT_ID,
 	).length;
+
+	const treeRef = useRef<TreeRef | null>(null);
+
+	// Update local tree data when remote tree data changes
+	useEffect(() => {
+		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
+			dataProvider.updateTreeData(treeData);
+		}
+	}, [treeData, dataProvider]);
+
+	useEffect(() => {
+		if (!dataProvider) {
+			setTreeItems({});
+			return;
+		}
+
+		setTreeItems(dataProvider.getAllData());
+
+		const disposable = dataProvider.onDidChangeTreeData(() => {
+			setTreeItems(dataProvider.getAllData());
+		});
+
+		return () => {
+			disposable.dispose();
+			dataProvider.destroy();
+		};
+	}, [dataProvider]);
 
 	const handleFold = () => {
 		treeRef.current?.collapseAll();
@@ -1179,13 +1152,11 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 	};
 
 	const handleNewPage = () => {
-		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(pages_ROOT_ID, "New Page");
-			navigate({
-				to: "/pages",
-				search: { pageId: newItemId },
-			}).catch(console.error);
-		}
+		const newItemId = dataProvider.createNewItem(pages_ROOT_ID, "New Page");
+		navigate({
+			to: "/pages",
+			search: { pageId: newItemId },
+		}).catch(console.error);
 	};
 
 	const handleClearSelection = () => {
@@ -1202,189 +1173,157 @@ function PagesSidebarContent(props: PagesSidebarContent_Props) {
 	};
 
 	const handleToggleArchive = () => {
-		onToggleArchive();
+		setShowArchived((oldValue) => !oldValue);
 	};
 
 	const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-		onSearchChange(e.target.value);
+		setSearchQuery(e.target.value);
 	};
 
 	return (
-		<div className={cn("PagesSidebarContent" satisfies PagesSidebarContent_ClassNames)}>
-			<MySidebarHeader className={cn("PagesSidebarContent-header" satisfies PagesSidebarContent_ClassNames)}>
-				<div className={cn("PagesSidebarContent-top-section" satisfies PagesSidebarContent_ClassNames)}>
-					<div className={cn("PagesSidebarContent-top-section-left" satisfies PagesSidebarContent_ClassNames)}>
-						{/* Hamburger Menu, mobile only */}
-						<MyIconButton
-							className={"PagesSidebarContent-hamburger-button" satisfies PagesSidebarContent_ClassNames}
-							variant="ghost"
-							tooltip="Main Menu"
-							onClick={toggleSidebar}
-						>
-							<Menu />
-						</MyIconButton>
-
-						<MyLink
-							className={cn("PagesSidebarContent-title" satisfies PagesSidebarContent_ClassNames)}
-							variant="button-tertiary"
-							to="/pages"
-						>
-							Pages
-						</MyLink>
-					</div>
-
-					<MyIconButton
-						variant="ghost"
-						onClick={onClose}
-						tooltip="Close"
-						className={cn("PagesSidebarContent-close-button" satisfies PagesSidebarContent_ClassNames)}
-					>
-						<MyIcon>
-							<X />
-						</MyIcon>
-					</MyIconButton>
-				</div>
-
-				<MyInput
-					className={cn("PagesSidebarContent-search" satisfies PagesSidebarContent_ClassNames)}
-					variant="surface"
-				>
-					<MyInputArea>
-						<MyInputBox />
-						<MyInputIcon>
-							<Search />
-						</MyInputIcon>
-						<MyInputControl placeholder="Search pages" value={searchQuery} onChange={handleSearchChange} />
-					</MyInputArea>
-				</MyInput>
-
-				<div className={cn("PagesSidebarContent-actions" satisfies PagesSidebarContent_ClassNames)}>
-					<div className={cn("PagesSidebarContent-actions-group" satisfies PagesSidebarContent_ClassNames)}>
-						<MyIconButton
-							className={cn("PagesSidebarContent-actions-icon-button" satisfies PagesSidebarContent_ClassNames)}
-							variant="secondary"
-							tooltip="Unfold"
-							onClick={handleUnfold}
-						>
-							<MyIconButtonIcon>
-								<ChevronsDown />
-							</MyIconButtonIcon>
-						</MyIconButton>
-
-						<MyIconButton
-							className={cn("PagesSidebarContent-actions-icon-button" satisfies PagesSidebarContent_ClassNames)}
-							variant="secondary"
-							tooltip="Fold"
-							onClick={handleFold}
-						>
-							<MyIconButtonIcon>
-								<ChevronsUp />
-							</MyIconButtonIcon>
-						</MyIconButton>
-					</div>
-
-					{multiSelectionCount > 1 ? (
-						<div className={cn("PagesSidebarContent-multi-selection-counter" satisfies PagesSidebarContent_ClassNames)}>
-							<span
-								className={cn(
-									"PagesSidebarContent-multi-selection-counter-label" satisfies PagesSidebarContent_ClassNames,
-								)}
-							>
-								{multiSelectionCount} items selected
-							</span>
-							<div className={cn("PagesSidebarContent-actions-group" satisfies PagesSidebarContent_ClassNames)}>
+		<PagesTreeContext.Provider
+			value={{
+				dataProvider,
+				treeItems,
+			}}
+		>
+			<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
+				<div className={cn("PagesSidebar" satisfies PagesSidebar_ClassNames)}>
+					<MySidebarHeader className={cn("PagesSidebar-header" satisfies PagesSidebar_ClassNames)}>
+						<div className={cn("PagesSidebar-top-section" satisfies PagesSidebar_ClassNames)}>
+							<div className={cn("PagesSidebar-top-section-left" satisfies PagesSidebar_ClassNames)}>
+								{/* Hamburger Menu, mobile only */}
 								<MyIconButton
-									className={cn("PagesSidebarContent-actions-icon-button" satisfies PagesSidebarContent_ClassNames)}
-									variant="secondary"
-									tooltip="Archive all"
-									onClick={handleArchiveAll}
+									className={"PagesSidebar-hamburger-button" satisfies PagesSidebar_ClassNames}
+									variant="ghost"
+									tooltip="Main Menu"
+									onClick={toggleSidebar}
+								>
+									<Menu />
+								</MyIconButton>
+
+								<MyLink
+									className={cn("PagesSidebar-title" satisfies PagesSidebar_ClassNames)}
+									variant="button-tertiary"
+									to="/pages"
+								>
+									Pages
+								</MyLink>
+							</div>
+
+							<MyIconButton
+								variant="ghost"
+								onClick={onClose}
+								tooltip="Close"
+								className={cn("PagesSidebar-close-button" satisfies PagesSidebar_ClassNames)}
+							>
+								<MyIcon>
+									<X />
+								</MyIcon>
+							</MyIconButton>
+						</div>
+
+						<MyInput className={cn("PagesSidebar-search" satisfies PagesSidebar_ClassNames)} variant="surface">
+							<MyInputArea>
+								<MyInputBox />
+								<MyInputIcon>
+									<Search />
+								</MyInputIcon>
+								<MyInputControl placeholder="Search pages" value={searchQuery} onChange={handleSearchChange} />
+							</MyInputArea>
+						</MyInput>
+
+						<div className={cn("PagesSidebar-actions" satisfies PagesSidebar_ClassNames)}>
+							<div className={cn("PagesSidebar-actions-group" satisfies PagesSidebar_ClassNames)}>
+								<MyIconButton
+									className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
+									variant="secondary-subtle"
+									tooltip="Unfold"
+									onClick={handleUnfold}
 								>
 									<MyIconButtonIcon>
-										<Archive />
+										<ChevronsDown />
 									</MyIconButtonIcon>
 								</MyIconButton>
+
 								<MyIconButton
-									className={cn("PagesSidebarContent-actions-icon-button" satisfies PagesSidebarContent_ClassNames)}
-									variant="secondary"
-									tooltip="Clear"
-									onClick={handleClearSelection}
+									className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
+									variant="secondary-subtle"
+									tooltip="Fold"
+									onClick={handleFold}
 								>
 									<MyIconButtonIcon>
-										<X />
+										<ChevronsUp />
 									</MyIconButtonIcon>
 								</MyIconButton>
 							</div>
+
+							{multiSelectionCount > 1 ? (
+								<div className={cn("PagesSidebar-multi-selection-counter" satisfies PagesSidebar_ClassNames)}>
+									<span className={cn("PagesSidebar-multi-selection-counter-label" satisfies PagesSidebar_ClassNames)}>
+										{multiSelectionCount} items selected
+									</span>
+									<div className={cn("PagesSidebar-actions-group" satisfies PagesSidebar_ClassNames)}>
+										<MyIconButton
+											className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
+											variant="secondary"
+											tooltip="Archive all"
+											onClick={handleArchiveAll}
+										>
+											<MyIconButtonIcon>
+												<Archive />
+											</MyIconButtonIcon>
+										</MyIconButton>
+										<MyIconButton
+											className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
+											variant="secondary"
+											tooltip="Clear"
+											onClick={handleClearSelection}
+										>
+											<MyIconButtonIcon>
+												<X />
+											</MyIconButtonIcon>
+										</MyIconButton>
+									</div>
+								</div>
+							) : (
+								<MyButton
+									className={cn("PagesSidebar-action-new-page" satisfies PagesSidebar_ClassNames)}
+									variant="secondary"
+									onClick={handleNewPage}
+								>
+									<MyButtonIcon>
+										<Plus />
+									</MyButtonIcon>
+									New Page
+								</MyButton>
+							)}
 						</div>
-					) : (
-						<MyButton
-							className={cn("PagesSidebarContent-action-new-page" satisfies PagesSidebarContent_ClassNames)}
-							variant="secondary"
-							onClick={handleNewPage}
-						>
-							<MyButtonIcon>
-								<Plus />
-							</MyButtonIcon>
-							New Page
-						</MyButton>
-					)}
+
+						{archivedCount > 0 && (
+							<MyButton
+								className={cn("PagesSidebar-archive-toggle" satisfies PagesSidebar_ClassNames)}
+								variant="ghost"
+								onClick={handleToggleArchive}
+							>
+								{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
+							</MyButton>
+						)}
+					</MySidebarHeader>
+
+					<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
+						<PagesSidebarTreeArea
+							ref={treeRef}
+							selectedDocId={selectedPageId}
+							searchQuery={searchQuery}
+							showArchived={showArchived}
+							onSelectItems={handleSelectItems}
+							onArchive={onArchive}
+							onPrimaryAction={onPrimaryAction}
+						/>
+					</MySidebarContent>
 				</div>
-
-				{archivedCount > 0 && (
-					<MyButton
-						className={cn("PagesSidebarContent-archive-toggle" satisfies PagesSidebarContent_ClassNames)}
-						variant="ghost"
-						onClick={handleToggleArchive}
-					>
-						{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
-					</MyButton>
-				)}
-			</MySidebarHeader>
-
-			<SidebarContent className="flex-1 overflow-auto">
-				<PagesSidebarTreeArea
-					ref={treeRef}
-					selectedDocId={selectedDocId}
-					searchQuery={searchQuery}
-					showArchived={showArchived}
-					onSelectItems={handleSelectItems}
-					onArchive={onArchive}
-					onPrimaryAction={onPrimaryAction}
-				/>
-			</SidebarContent>
-		</div>
-	);
-}
-
-type PagesSidebarV2_ClassNames = "PagesSidebarV2";
-
-export type PagesSidebarV2_Props = {
-	state: MySidebar_Props["state"];
-	selectedPageId: string | null;
-	onClose: () => void;
-	onArchive: (itemId: string) => void;
-	onPrimaryAction: (itemId: string, itemType: string) => void;
-};
-
-export function PagesSidebarV2(props: PagesSidebarV2_Props) {
-	const { selectedPageId, state = "expanded", onClose, onArchive, onPrimaryAction } = props;
-
-	const [searchQuery, setSearchQuery] = useState("");
-	const [showArchived, setShowArchived] = useState(false);
-
-	return (
-		<PagesTreeProvider>
-			<MySidebar state={state} className={"PagesSidebarV2" satisfies PagesSidebarV2_ClassNames}>
-				<PagesSidebarContent
-					selectedDocId={selectedPageId}
-					searchQuery={searchQuery}
-					showArchived={showArchived}
-					onSearchChange={setSearchQuery}
-					onToggleArchive={() => setShowArchived((oldValue) => !oldValue)}
-					onClose={onClose}
-					onArchive={onArchive}
-					onPrimaryAction={onPrimaryAction}
-				/>
 			</MySidebar>
-		</PagesTreeProvider>
+		</PagesTreeContext.Provider>
 	);
 }
