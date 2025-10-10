@@ -11,34 +11,34 @@
 
 		background: transparent;
 
-		border: 2px solid hsl(var(--input));
+		border: 2px solid var(--input);
 		border-radius: 6px;
 
 		@media (prefers-color-scheme: dark) {
-			background: color-mix(in oklab, hsl(var(--input)) 30%, transparent);
+			background: color-mix(in oklab, var(--input) 30%, transparent);
 		}
 	}
 
 	/* Focus ring */
 	.MyInput:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) .MyInputBox {
-		border-color: hsl(var(--ring));
+		border-color: var(--ring);
 	}
 
 	/* Invalid state ring */
 	.MyInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
-		border-color: hsl(var(--destructive));
-		box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.2);
+		border-color: var(--destructive);
+		box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
 	}
 
 	/* Dark mode invalid state */
 	@media (prefers-color-scheme: dark) {
 		.MyInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
-			box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.4);
+			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
 		}
 	}
 
 	.MyInput-variant-surface .MyInputBox {
-		background: hsl(var(--background));
+		background: var(--background);
 		box-shadow: none;
 	}
 
@@ -89,13 +89,13 @@
 
 		/* Placeholder */
 		&::placeholder {
-			color: hsl(var(--muted-foreground));
+			color: var(--muted-foreground);
 		}
 
 		/* Selection */
 		&::selection {
-			background: hsl(var(--primary));
-			color: hsl(var(--primary-foreground));
+			background: var(--primary);
+			color: var(--primary-foreground);
 		}
 
 		/* File button */
@@ -133,18 +133,18 @@
 		display: block;
 		font-size: 0.875rem;
 		font-weight: 500;
-		color: hsl(var(--foreground));
+		color: var(--foreground);
 		margin-bottom: 12px;
 	}
 
 	.MyInputHelperText {
 		display: block;
 		font-size: 0.75rem;
-		color: hsl(var(--muted-foreground));
+		color: var(--muted-foreground);
 		margin-top: 12px;
 	}
 
 	.MyInputIcon {
-		color: hsl(var(--muted-foreground));
+		color: var(--muted-foreground);
 	}
 }

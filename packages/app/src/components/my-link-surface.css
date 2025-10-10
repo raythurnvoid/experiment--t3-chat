@@ -21,7 +21,7 @@
 
 		&:focus-visible {
 			outline: none;
-			box-shadow: 0 0 0 1px hsl(var(--ring));
+			box-shadow: 0 0 0 1px var(--ring);
 		}
 
 		&:disabled {
@@ -31,7 +31,7 @@
 	}
 
 	.MyLinkSurface-variant-default {
-		color: hsl(var(--primary));
+		color: var(--primary);
 		text-underline-offset: 4px;
 
 		&:hover {
@@ -44,44 +44,44 @@
 
 		&:hover,
 		&:focus-visible {
-			background: hsl(var(--sidebar-accent));
-			color: hsl(var(--sidebar-accent-foreground));
+			background: var(--sidebar-accent);
+			color: var(--sidebar-accent-foreground);
 		}
 
 		&:active {
-			background: hsl(var(--sidebar-accent));
-			color: hsl(var(--sidebar-accent-foreground));
+			background: var(--sidebar-accent);
+			color: var(--sidebar-accent-foreground);
 		}
 	}
 
 	.MyLinkSurface-variant-button-ghost {
 		&:hover,
 		&:focus-visible {
-			background: hsl(var(--accent));
-			color: hsl(var(--accent-foreground));
+			background: var(--accent);
+			color: var(--accent-foreground);
 		}
 
 		@media (prefers-color-scheme: dark) {
 			&:hover,
 			&:focus-visible {
-				background: hsl(var(--accent) / 0.5);
+				background: oklch(from var(--accent) l c h / 0.5);
 			}
 		}
 	}
 
 	.MyLinkSurface-variant-button-ghost-secondary {
-		color: hsl(var(--muted-foreground));
+		color: var(--muted-foreground);
 
 		&:hover,
 		&:focus-visible {
-			background: hsl(var(--accent));
-			color: hsl(var(--accent-foreground));
+			background: var(--accent);
+			color: var(--accent-foreground);
 		}
 
 		@media (prefers-color-scheme: dark) {
 			&:hover,
 			&:focus-visible {
-				background: hsl(var(--accent) / 0.5);
+				background: oklch(from var(--accent) l c h / 0.5);
 			}
 		}
 	}

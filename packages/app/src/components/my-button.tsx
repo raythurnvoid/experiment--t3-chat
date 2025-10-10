@@ -10,6 +10,7 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-destructive"
 	| "MyButton-variant-outline"
 	| "MyButton-variant-secondary"
+	| "MyButton-variant-secondary-subtle"
 	| "MyButton-variant-ghost"
 	| "MyButton-variant-ghost-secondary"
 	| "MyButton-variant-tertiary"
@@ -19,7 +20,16 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	ref?: Ref<HTMLButtonElement>;
 	id?: string;
 	className?: string;
-	variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "ghost-secondary" | "tertiary" | "link";
+	variant?:
+		| "default"
+		| "destructive"
+		| "outline"
+		| "secondary"
+		| "secondary-subtle"
+		| "ghost"
+		| "ghost-secondary"
+		| "tertiary"
+		| "link";
 };
 
 export function MyButton(props: MyButton_Props) {
@@ -35,6 +45,7 @@ export function MyButton(props: MyButton_Props) {
 				variant === "destructive" && ("MyButton-variant-destructive" satisfies MyButton_ClassNames),
 				variant === "outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
 				variant === "secondary" && ("MyButton-variant-secondary" satisfies MyButton_ClassNames),
+				variant === "secondary-subtle" && ("MyButton-variant-secondary-subtle" satisfies MyButton_ClassNames),
 				variant === "ghost" && ("MyButton-variant-ghost" satisfies MyButton_ClassNames),
 				variant === "ghost-secondary" && ("MyButton-variant-ghost-secondary" satisfies MyButton_ClassNames),
 				variant === "tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),

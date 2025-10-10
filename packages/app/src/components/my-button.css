@@ -29,85 +29,96 @@
 
 		/* Focus ring */
 		&:focus-visible {
-			border-color: hsl(var(--ring));
-			box-shadow: 0 0 0 3px hsl(var(--ring) / 0.5);
+			border-color: var(--ring);
+			box-shadow: 0 0 0 3px oklch(from var(--ring) l c h / 0.5);
 		}
 
 		/* Invalid state ring */
 		&[aria-invalid="true"] {
-			border-color: hsl(var(--destructive));
-			box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.2);
+			border-color: var(--destructive);
+			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
 		}
 
 		@media (prefers-color-scheme: dark) {
 			&[aria-invalid="true"] {
-				box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.4);
+				box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
 			}
 		}
 	}
 
 	/* Variants */
 	.MyButton-variant-default {
-		background: hsl(var(--primary));
-		color: hsl(var(--primary-foreground));
+		background: var(--primary);
+		color: var(--primary-foreground);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
 		&:hover {
-			background: hsl(var(--primary) / 0.9);
+			background: oklch(from var(--primary) l c h / 0.9);
 		}
 	}
 
 	.MyButton-variant-destructive {
-		background: hsl(var(--destructive));
+		background: var(--destructive);
 		color: white;
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
 		@media (prefers-color-scheme: dark) {
-			background: hsl(var(--destructive) / 0.6);
+			background: oklch(from var(--destructive) l c h / 0.6);
 		}
 
 		&:hover {
-			background: hsl(var(--destructive) / 0.9);
+			background: oklch(from var(--destructive) l c h / 0.9);
 		}
 
 		&:focus-visible {
-			box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.2);
+			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
 		}
 
 		@media (prefers-color-scheme: dark) {
 			&:focus-visible {
-				box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.4);
+				box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
 			}
 		}
 	}
 
 	.MyButton-variant-outline {
-		background: hsl(var(--background));
-		border-color: hsl(var(--border));
+		background: var(--background);
+		border-color: var(--border);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
 		&:hover {
-			background: hsl(var(--accent));
-			color: hsl(var(--accent-foreground));
+			background: var(--accent);
+			color: var(--accent-foreground);
 		}
 
 		@media (prefers-color-scheme: dark) {
-			background: hsl(var(--input) / 0.3);
-			border-color: hsl(var(--input));
+			background: oklch(from var(--input) l c h / 0.3);
+			border-color: var(--input);
 
 			&:hover {
-				background: hsl(var(--input) / 0.5);
+				background: oklch(from var(--input) l c h / 0.5);
 			}
 		}
 	}
 
 	.MyButton-variant-secondary {
-		background: hsl(var(--secondary));
-		color: hsl(var(--secondary-foreground));
+		background: var(--secondary);
+		color: var(--secondary-foreground);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
 		&:hover {
-			background: hsl(var(--secondary) / 0.8);
+			background: oklch(from var(--secondary) l c h / 0.8);
+		}
+	}
+
+	.MyButton-variant-secondary-subtle {
+		background: var(--secondary);
+		color: var(--muted-foreground);
+
+		&:hover,
+		&:focus-visible {
+			background: var(--secondary);
+			color: var(--primary);
 		}
 	}
 
@@ -116,32 +127,32 @@
 
 		&:hover,
 		&:focus-visible {
-			background: hsl(var(--accent));
-			color: hsl(var(--accent-foreground));
+			background: var(--accent);
+			color: var(--accent-foreground);
 		}
 
 		@media (prefers-color-scheme: dark) {
 			&:hover,
 			&:focus-visible {
-				background: hsl(var(--accent) / 0.5);
+				background: oklch(from var(--accent) l c h / 0.5);
 			}
 		}
 	}
 
 	.MyButton-variant-ghost-secondary {
 		background: transparent;
-		color: hsl(var(--muted-foreground));
+		color: var(--muted-foreground);
 
 		&:hover,
 		&:focus-visible {
-			background: hsl(var(--accent));
-			color: hsl(var(--accent-foreground));
+			background: var(--accent);
+			color: var(--accent-foreground);
 		}
 
 		@media (prefers-color-scheme: dark) {
 			&:hover,
 			&:focus-visible {
-				background: hsl(var(--accent) / 0.5);
+				background: oklch(from var(--accent) l c h / 0.5);
 			}
 		}
 	}
@@ -151,19 +162,19 @@
 
 		&:hover,
 		&:focus-visible {
-			background: hsl(var(--sidebar-accent));
-			color: hsl(var(--sidebar-accent-foreground));
+			background: var(--sidebar-accent);
+			color: var(--sidebar-accent-foreground);
 		}
 
 		&:active {
-			background: hsl(var(--sidebar-accent));
-			color: hsl(var(--sidebar-accent-foreground));
+			background: var(--sidebar-accent);
+			color: var(--sidebar-accent-foreground);
 		}
 	}
 
 	.MyButton-variant-link {
 		background: transparent;
-		color: hsl(var(--primary));
+		color: var(--primary);
 		text-underline-offset: 4px;
 
 		&:hover {
