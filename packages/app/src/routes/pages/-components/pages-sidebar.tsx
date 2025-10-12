@@ -477,14 +477,27 @@ type PagesSidebarTreeItem_Props = {
 	info: TreeInformation;
 	selectedDocId: string | null;
 	showArchived: boolean;
+	isDragging: boolean;
 	onAdd: (parentId: string) => void;
 	onArchive: (itemId: string) => void;
 	onUnarchive: (itemId: string) => void;
 };
 
 function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
-	const { item, depth, children, title, context, arrow, selectedDocId, showArchived, onAdd, onArchive, onUnarchive } =
-		props;
+	const {
+		item,
+		depth,
+		children,
+		title,
+		context,
+		arrow,
+		selectedDocId,
+		showArchived,
+		isDragging,
+		onAdd,
+		onArchive,
+		onUnarchive,
+	} = props;
 
 	const data = item.data as pages_TreeItem;
 
@@ -614,9 +627,11 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		return (
 			<Tooltip delayDuration={2000}>
 				<TooltipTrigger asChild>{treeItemContent}</TooltipTrigger>
-				<TooltipContent side="bottom" align="center">
-					{tooltipContent}
-				</TooltipContent>
+				{!isDragging && (
+					<TooltipContent side="bottom" align="center">
+						{tooltipContent}
+					</TooltipContent>
+				)}
 			</Tooltip>
 		);
 	}
@@ -664,7 +679,7 @@ type PagesSidebarTreeArea_ClassNames =
 	| "PagesSidebar-tree-drag-between-line";
 
 type PagesSidebarTreeArea_Props = {
-	ref: React.Ref<TreeRef>;
+	ref: React.Ref<TreeRef | null>;
 	selectedDocId: string | null;
 	searchQuery: string;
 	showArchived: boolean;
@@ -972,11 +987,16 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 						if (!visibleIds.has(props.item.index as string)) return null;
 					}
 
+					const isDragging = !!treeRef.current?.dragAndDropContext.draggingItems?.some(
+						(draggingItem: any) => draggingItem.index === props.item.index,
+					);
+
 					return (
 						<PagesSidebarTreeItem
 							{...props}
 							selectedDocId={selectedDocId}
 							showArchived={showArchived}
+							isDragging={isDragging}
 							onAdd={handleAddChild}
 							onArchive={handleArchive}
 							onUnarchive={handleUnarchive}
