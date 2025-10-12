@@ -31,14 +31,18 @@ import {
 	type TreeDataProvider,
 	type UncontrolledTreeEnvironmentProps,
 } from "react-complex-tree";
-import type { ConvexReactClient } from "convex/react";
-import { useConvex, useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { generate_timestamp_uuid } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { pages_create_tree_root, pages_ROOT_ID, type pages_TreeItem } from "@/lib/pages.ts";
+import {
+	pages_create_tree_root,
+	pages_create_tree_placeholder_child,
+	pages_ROOT_ID,
+	type pages_TreeItem,
+} from "@/lib/pages.ts";
 import { formatRelativeTime, shouldShowAgoSuffix, shouldShowAtPrefix } from "@/lib/date.ts";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
@@ -47,29 +51,40 @@ import { MyLink } from "../../../components/my-link.tsx";
 /**
  * `react-complex-tree` flat data record object
  */
-type PagesSidebarTreeDataObject = Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
+type PagesSidebarTreeCollection = Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
 
-// Custom TreeDataProvider for dynamic operations
+type NotionLikeDataProvider_Args = {
+	initialData: PagesSidebarTreeCollection;
+	workspaceId: string;
+	projectId: string;
+	movePages: (params: {
+		itemIds: string[];
+		targetParentId: string;
+		workspaceId: string;
+		projectId: string;
+	}) => Promise<void>;
+	renamePage: (params: { workspaceId: string; projectId: string; pageId: string; name: string }) => Promise<void>;
+	createPage: (params: {
+		pageId: string;
+		parentId: string;
+		name: string;
+		workspaceId: string;
+		projectId: string;
+	}) => Promise<void>;
+};
+
+/**
+ * Custom TreeDataProvider
+ */
 class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
-	private data: PagesSidebarTreeDataObject;
-	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
+	data: PagesSidebarTreeCollection;
+	treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
-	// NEW: Convex integration
-	private convex: ConvexReactClient | null = null;
-	private workspaceId: string;
-	private projectId: string;
+	args: NotionLikeDataProvider_Args;
 
-	constructor(
-		initialData: PagesSidebarTreeDataObject,
-		convex?: ConvexReactClient,
-		workspaceId?: string,
-		projectId?: string,
-	) {
-		// ✅ Store the already-sorted data
-		this.data = { ...initialData };
-		this.convex = convex || null;
-		this.workspaceId = workspaceId || ai_chat_HARDCODED_ORG_ID;
-		this.projectId = projectId || ai_chat_HARDCODED_PROJECT_ID;
+	constructor(args: NotionLikeDataProvider_Args) {
+		this.args = args;
+		this.data = { ...args.initialData };
 	}
 
 	/**
@@ -108,6 +123,27 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			}
 		}
 
+		// Find all items with empty children and add placeholder items
+		for (const item of treeItemsList) {
+			if (item.isArchived && !options.showArchived) continue;
+
+			const treeItem = this.data[item.index];
+			if (treeItem && treeItem.children && treeItem.children.length === 0 && treeItem.isFolder) {
+				const placeholderData = pages_create_tree_placeholder_child(item.index);
+				const placeholderItem: TreeItem<pages_TreeItem> = {
+					index: placeholderData.index,
+					children: [],
+					data: placeholderData,
+					canMove: false,
+					canRename: false,
+					isFolder: false,
+				};
+
+				this.data[placeholderData.index] = placeholderItem;
+				treeItem.children.push(placeholderData.index);
+			}
+		}
+
 		const visibleItemsIds = Object.keys(this.data);
 		this.notifyTreeChange(visibleItemsIds);
 	}
@@ -136,17 +172,14 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			};
 			this.notifyTreeChange([itemId]);
 
-			// Sync to Convex using doc_ids
-			if (this.convex) {
-				this.convex
-					.mutation(app_convex_api.ai_docs_temp.move_pages, {
-						itemIds: newChildren.map((id) => id.toString()),
-						targetParentId: itemId.toString(),
-						workspaceId: this.workspaceId,
-						projectId: this.projectId,
-					})
-					.catch(console.error);
-			}
+			this.args
+				.movePages({
+					itemIds: newChildren.map((id) => id.toString()),
+					targetParentId: itemId.toString(),
+					workspaceId: this.args.workspaceId,
+					projectId: this.args.projectId,
+				})
+				.catch(console.error);
 		}
 	}
 
@@ -181,19 +214,14 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			this.notifyTreeChange([parentItem.index]);
 		}
 
-		// Sync to Convex using doc_id
-		if (this.convex) {
-			try {
-				await this.convex.mutation(app_convex_api.ai_docs_temp.rename_page, {
-					workspaceId: this.workspaceId,
-					projectId: this.projectId,
-					pageId: item.index.toString(),
-					name: name,
-				});
-			} catch (error) {
-				console.error("Failed to rename in Convex:", error);
-			}
-		}
+		this.args
+			.renamePage({
+				workspaceId: this.args.workspaceId,
+				projectId: this.args.projectId,
+				pageId: item.index.toString(),
+				name: name,
+			})
+			.catch(console.error);
 	}
 
 	createNewItem(parentId: string, title: string = "Untitled"): string {
@@ -247,18 +275,15 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			this.notifyTreeChange([parentId, pageId]);
 		}
 
-		// Sync to Convex
-		if (this.convex) {
-			this.convex
-				.mutation(app_convex_api.ai_docs_temp.create_page, {
-					pageId: pageId,
-					parentId: parentId,
-					name: title,
-					workspaceId: this.workspaceId,
-					projectId: this.projectId,
-				})
-				.catch(console.error);
-		}
+		this.args
+			.createPage({
+				pageId: pageId,
+				parentId: parentId,
+				name: title,
+				workspaceId: this.args.workspaceId,
+				projectId: this.args.projectId,
+			})
+			.catch(console.error);
 
 		return pageId;
 	}
@@ -338,14 +363,10 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 	return (
 		<MyIconButton
 			{...(context.arrowProps as any)}
+			className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
 			tooltip={context.isExpanded ? "Collapse page" : "Expand page"}
 			side="bottom"
-			variant="ghost"
-			size="icon"
-			className={cn(
-				"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames,
-				"flex h-5 w-5 items-center justify-center p-0 text-muted-foreground hover:text-foreground",
-			)}
+			variant="ghost-secondary"
 		>
 			<MyIcon>{context.isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIcon>
 		</MyIconButton>
@@ -699,7 +720,6 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	const { dataProvider, treeItems } = context;
 
 	const navigate = useNavigate();
-	const convex = useConvex();
 
 	const treeRef = useRef<TreeRef | null>(null);
 	const rootElement = useRef<HTMLDivElement>(null);
@@ -772,14 +792,11 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 			dataProvider.updateArchiveStatus(itemId, true);
 		}
 
-		// Sync to Convex
-		if (convex) {
-			archiveDocument({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: itemId,
-			}).catch(console.error);
-		}
+		archiveDocument({
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: itemId,
+		}).catch(console.error);
 
 		onArchive(itemId);
 	};
@@ -790,14 +807,11 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 			dataProvider.updateArchiveStatus(itemId, false);
 		}
 
-		// Sync to Convex
-		if (convex) {
-			unarchivePage({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: itemId,
-			}).catch(console.error);
-		}
+		unarchivePage({
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId: itemId,
+		}).catch(console.error);
 	};
 
 	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (
@@ -1065,7 +1079,6 @@ export type PagesSidebar_Props = {
 export function PagesSidebar(props: PagesSidebar_Props) {
 	const { selectedPageId, state = "expanded", onClose, onArchive, onPrimaryAction } = props;
 
-	const convex = useConvex();
 	const navigate = useNavigate();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
@@ -1074,27 +1087,34 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});
 
-	const dataProvider = useMemo(() => {
-		const root = pages_create_tree_root();
-		const provider = new NotionLikeDataProvider(
-			// Initial data
-			{
-				root: {
-					index: root.index,
-					children: [],
-					data: root,
-					isFolder: true,
-					canMove: false,
-					canRename: false,
-				},
-			},
-			convex,
-			ai_chat_HARDCODED_ORG_ID,
-			ai_chat_HARDCODED_PROJECT_ID,
-		);
+	const movePages = useMutation(app_convex_api.ai_docs_temp.move_pages);
+	const renamePage = useMutation(app_convex_api.ai_docs_temp.rename_page);
+	const createPage = useMutation(app_convex_api.ai_docs_temp.create_page);
 
-		return provider;
-	}, [convex]);
+	const root = pages_create_tree_root();
+	const dataProvider = new NotionLikeDataProvider({
+		initialData: {
+			[root.index]: {
+				index: root.index,
+				children: [],
+				data: root,
+				isFolder: true,
+				canMove: false,
+				canRename: false,
+			},
+		},
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		movePages: async (params) => {
+			movePages(params).catch((e) => console.error(`Error moving pages:`, e));
+		},
+		renamePage: async (params) => {
+			renamePage(params).catch((e) => console.error(`Error renaming page:`, e));
+		},
+		createPage: async (params) => {
+			createPage(params).catch((e) => console.error(`Error creating page:`, e));
+		},
+	});
 
 	// Reactive items state that updates when tree data changes
 	const [treeItems, setTreeItems] = useState(() => {
