@@ -230,8 +230,9 @@
 	.PagesSidebarTreeItem-meta-label-text {
 		font-size: 0.75rem;
 		line-height: 1rem;
-		color: hsl(var(--muted-foreground));
-		overflow: hidden;
+		color: var(--muted-foreground);
+
+		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}

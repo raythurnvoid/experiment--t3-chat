@@ -664,7 +664,7 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 	);
 }
 
-const TREE_ID = "docs-tree";
+const TREE_ID = "pages-tree";
 
 type PagesSidebarTreeArea_ClassNames =
 	| "PagesSidebarTreeArea"
@@ -695,11 +695,9 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	const { dataProvider, treeItems } = context;
 
 	const navigate = useNavigate();
-
 	const convex = useConvex();
 
 	const treeRef = useRef<TreeRef | null>(null);
-
 	const rootElement = useRef<HTMLDivElement>(null);
 
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
@@ -709,10 +707,11 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 
 	// Compute visible items when search is active
 	let visibleIds: Set<string> | null = null;
+	const searchQueryTrimmed = searchQuery.trim();
+	const searchQueryTrimmedLowerCase = searchQueryTrimmed.toLowerCase();
 	const searchActive = searchQuery.trim().length > 0;
 	if (searchActive) {
 		visibleIds = new Set<string>();
-		const lowerCaseQuery = searchQuery.toLowerCase();
 
 		const isVisible = (id: string): boolean => {
 			const node = treeItems[id];
@@ -721,7 +720,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 			const isArchived = !!node.data.isArchived;
 			if (isArchived && !showArchived) return false;
 
-			const selfMatch = node.data.title.toLowerCase().includes(lowerCaseQuery);
+			const selfMatch = node.data.title.toLowerCase().includes(searchQueryTrimmedLowerCase);
 
 			let anyChildVisible = false;
 			const children = node.children ?? [];
@@ -1029,7 +1028,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 					}}
 					treeId={TREE_ID}
 					rootItem={pages_ROOT_ID}
-					treeLabel="Documentation Tree"
+					treeLabel="Pages"
 				/>
 			</UncontrolledTreeEnvironment>
 		</div>

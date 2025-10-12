@@ -97,7 +97,7 @@
 
 	/* Sidebar specific variables */
 	--sidebar: var(--gray-700);
-	--sidebar-foreground: var(--gray-400);
+	--sidebar-foreground: var(--gray-100);
 	--sidebar-primary: var(--gray-050);
 	--sidebar-primary-foreground: var(--gray-700);
 	--sidebar-accent: var(--gray-800);
@@ -107,13 +107,20 @@
 
 	--gray-000: oklch(14.08% 0.0044 285.82);
 	--gray-050: oklch(21.03% 0.0059 285.89);
-	--gray-400: oklch(27.39% 0.0055 286.03);
-	--gray-500: oklch(37.03% 0.0119 285.81);
+	--gray-100: oklch(27.39% 0.0055 286.03);
+	--gray-200: oklch(30% 0.0119 285.81);
+	--gray-300: oklch(37.03% 0.0119 285.81);
+	--gray-400: oklch(40% 0.0119 285.81);
+	--gray-500: oklch(43.77% 0.0119 285.81);
 	--gray-600: oklch(71.18% 0.0129 286.07);
 	--gray-700: oklch(87.11% 0.0055 286.29);
 	--gray-800: oklch(96.74% 0.0013 286.37);
 	--gray-900: oklch(98.51% 0 0);
 	--gray-950: oklch(100% 0 0);
+
+	--red-300: oklch(35% 0.1331 25.72);
+	--red-400: oklch(39.58% 0.1331 25.72);
+	--red-500: oklch(45% 0.1331 25.72);
 
 	/* App-specific styles */
 	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
@@ -136,16 +143,16 @@
 	--popover-foreground: var(--gray-700);
 	--primary: var(--gray-700);
 	--primary-foreground: var(--gray-050);
-	--secondary: var(--gray-500);
+	--secondary: var(--gray-300);
 	--secondary-foreground: var(--gray-700);
-	--muted: var(--gray-500);
+	--muted: var(--gray-300);
 	--muted-foreground: var(--gray-600);
-	--accent: var(--gray-500);
+	--accent: var(--gray-300);
 	--accent-foreground: var(--gray-700);
-	--destructive: 0 62.8% 30.6%;
+	--destructive: var(--red-400);
 	--destructive-foreground: var(--gray-700);
-	--border: var(--gray-500);
-	--input: var(--gray-500);
+	--border: var(--gray-300);
+	--input: var(--gray-300);
 	--ring: var(--gray-700);
 	--chart-1: 220 70% 50%;
 	--chart-2: 160 60% 45%;
@@ -158,9 +165,9 @@
 	--sidebar-foreground: var(--gray-800);
 	--sidebar-primary: 224.3 76.3% 48%;
 	--sidebar-primary-foreground: 0 0% 100%;
-	--sidebar-accent: var(--gray-500);
+	--sidebar-accent: var(--gray-300);
 	--sidebar-accent-foreground: var(--gray-800);
-	--sidebar-border: var(--gray-500);
+	--sidebar-border: var(--gray-300);
 	--sidebar-ring: 217.2 91.2% 59.8%;
 }
 
