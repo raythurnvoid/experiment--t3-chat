@@ -219,7 +219,6 @@ const app_convex_schema = defineSchema({
 		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
 		.index("by_workspace_project_and_parent_id", ["workspace_id", "project_id", "parent_id"])
 		.index("by_workspace_project_and_parent_id_and_name", ["workspace_id", "project_id", "parent_id", "name"])
-		.index("by_parent_id_and_is_archived", ["parent_id", "is_archived"])
 		.index("by_workspace_project_and_parent_id_and_name_and_is_archived", [
 			"workspace_id",
 			"project_id",
@@ -227,6 +226,8 @@ const app_convex_schema = defineSchema({
 			"name",
 			"is_archived",
 		])
+		.index("by_workspace_project_and_name", ["workspace_id", "project_id", "name"])
+		.index("by_parent_id_and_is_archived", ["parent_id", "is_archived"])
 		.index("by_parent_id_and_name", ["parent_id", "name"])
 		.index("by_parent_id", ["parent_id"])
 		.searchIndex("search_text_content", {

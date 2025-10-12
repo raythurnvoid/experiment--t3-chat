@@ -38,42 +38,19 @@ import { generate_timestamp_uuid } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { pages_ROOT_ID } from "@/lib/pages.ts";
+import { pages_create_tree_root, pages_ROOT_ID, type pages_TreeItem } from "@/lib/pages.ts";
 import { formatRelativeTime, shouldShowAgoSuffix, shouldShowAtPrefix } from "@/lib/date.ts";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "../../../components/my-link.tsx";
 
 /**
- * `react-complex-tree` item
- */
-interface DocData {
-	title: string;
-	type: "page" | "placeholder";
-	content: string; // HTML content for the rich text editor - all documents have content
-	isArchived: boolean;
-	updatedAt: number;
-	updatedBy: string;
-}
-
-/**
  * `react-complex-tree` flat data record object
  */
-type PagesSidebarTreeDataObject = Record<TreeItemIndex, TreeItem<DocData>>;
-
-// New simplified tree item structure from Convex
-interface ConvexTreeItem {
-	index: string;
-	children: string[];
-	title: string;
-	content: string;
-	isArchived: boolean;
-	updatedAt: number;
-	updatedBy: string;
-}
+type PagesSidebarTreeDataObject = Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
 
 // Custom TreeDataProvider for dynamic operations
-class NotionLikeDataProvider implements TreeDataProvider<DocData> {
+class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	private data: PagesSidebarTreeDataObject;
 	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
@@ -95,47 +72,51 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		this.projectId = projectId || ai_chat_HARDCODED_PROJECT_ID;
 	}
 
-	// Method to update tree data from external source (like Convex query)
-	updateTreeData(convexData: Record<string, ConvexTreeItem>) {
-		// Convert Convex format to React Complex Tree format
-		const convertedData: Record<TreeItemIndex, TreeItem<DocData>> = {};
+	/**
+	 * Method to update tree collection from external source (like Convex query)
+	 **/
+	updateTreeData(treeItemsList: pages_TreeItem[], options: { showArchived: boolean }) {
+		this.data = {};
 
-		for (const [key, item] of Object.entries(convexData)) {
-			const isPlaceholder = item.title === "No files inside";
+		for (const item of treeItemsList) {
+			console.log("item", item.title);
 
-			convertedData[key] = {
+			if (item.isArchived && !options.showArchived) continue;
+
+			const isPlaceholder = item.type === "placeholder";
+
+			this.data[item.index] = {
 				index: item.index,
-				children: item.children,
-				data: {
-					title: item.title,
-					type: isPlaceholder ? "placeholder" : "page",
-					content: item.content,
-					isArchived: item.isArchived || false,
-					updatedAt: item.updatedAt,
-					updatedBy: item.updatedBy,
-				},
+				children: [],
+				data: item,
 				isFolder: isPlaceholder ? false : true,
-				canMove: !isPlaceholder && key !== pages_ROOT_ID,
-				canRename: !isPlaceholder && key !== pages_ROOT_ID,
+				canMove: !isPlaceholder && item.index !== pages_ROOT_ID,
+				canRename: !isPlaceholder && item.index !== pages_ROOT_ID,
 			};
 		}
 
-		this.data = convertedData;
-		const itemsKeys = Object.keys(convertedData);
-		itemsKeys.forEach((key) => {
-			const children = this.data[key].children;
-			if (children) {
-				this.data[key].children = this.sortChildren(children);
+		// Calculate `children` arrays based on `parentId`
+		for (const item of treeItemsList) {
+			if (item.isArchived && !options.showArchived) continue;
+
+			// Find the parent and add this item to its children
+			if (item.parentId && this.data[item.parentId]) {
+				const parent = this.data[item.parentId];
+				if (parent.children) {
+					parent.children.push(item.index);
+				}
 			}
-		});
-		this.notifyTreeChange(itemsKeys);
+		}
+
+		const visibleItemsIds = Object.keys(this.data);
+		this.notifyTreeChange(visibleItemsIds);
 	}
 
 	destroy() {
 		this.treeChangeListeners = [];
 	}
 
-	async getTreeItem(itemId: TreeItemIndex): Promise<TreeItem<DocData>> {
+	async getTreeItem(itemId: TreeItemIndex) {
 		const item = this.data[itemId];
 		if (!item) {
 			throw new Error(`Item ${itemId} not found`);
@@ -181,7 +162,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		};
 	}
 
-	async onRenameItem(item: TreeItem<DocData>, name: string): Promise<void> {
+	async onRenameItem(item: TreeItem<pages_TreeItem>, name: string): Promise<void> {
 		const updatedItem = {
 			...item,
 			data: { ...item.data, title: name },
@@ -216,16 +197,18 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 	}
 
 	createNewItem(parentId: string, title: string = "Untitled"): string {
-		const docId = generate_timestamp_uuid("doc");
+		const pageId = generate_timestamp_uuid("doc");
 		const parentItem = this.data[parentId];
 
 		if (parentItem) {
-			const newItem: TreeItem<DocData> = {
-				index: docId,
+			const newItem: TreeItem<pages_TreeItem> = {
+				index: pageId,
 				children: [],
 				data: {
-					title,
 					type: "page",
+					index: pageId,
+					parentId: parentId,
+					title,
 					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 					isArchived: false,
 					updatedAt: Date.now(),
@@ -236,7 +219,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				isFolder: true,
 			};
 
-			this.data[docId] = newItem;
+			this.data[pageId] = newItem;
 
 			// Check if parent has a placeholder that needs to be replaced
 			const placeholderId = `${parentId}-placeholder`;
@@ -245,11 +228,11 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 			let updatedChildren: TreeItemIndex[];
 			if (hasPlaceholder) {
 				// Replace placeholder with new item
-				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? docId : id)) || [docId];
+				updatedChildren = parentItem.children?.map((id) => (id === placeholderId ? pageId : id)) || [pageId];
 				delete this.data[placeholderId];
 			} else {
 				// Just add the new item to existing children
-				updatedChildren = [...(parentItem.children || []), docId];
+				updatedChildren = [...(parentItem.children || []), pageId];
 			}
 
 			// Update parent with new children array
@@ -261,14 +244,14 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 
 			this.data[parentId] = updatedParent;
 
-			this.notifyTreeChange([parentId, docId]);
+			this.notifyTreeChange([parentId, pageId]);
 		}
 
 		// Sync to Convex
 		if (this.convex) {
 			this.convex
 				.mutation(app_convex_api.ai_docs_temp.create_page, {
-					pageId: docId,
+					pageId: pageId,
 					parentId: parentId,
 					name: title,
 					workspaceId: this.workspaceId,
@@ -277,7 +260,7 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 				.catch(console.error);
 		}
 
-		return docId;
+		return pageId;
 	}
 
 	private sortChildren(children: TreeItemIndex[]): TreeItemIndex[] {
@@ -301,25 +284,31 @@ class NotionLikeDataProvider implements TreeDataProvider<DocData> {
 		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
 	}
 
-	updateArchiveStatus(itemId: TreeItemIndex, isArchived: boolean): void {
-		if (this.data[itemId]) {
-			this.data[itemId] = {
-				...this.data[itemId],
-				data: {
-					...this.data[itemId].data,
-					isArchived: isArchived,
-				},
-			};
-			this.notifyTreeChange([itemId]);
+	updateArchiveStatus(itemId: TreeItemIndex, newIsArchived: boolean): void {
+		if (!this.data[itemId]) {
+			throw new Error(`Item ${itemId} not found`);
 		}
+
+		const item = this.data[itemId];
+
+		// Update the item
+		this.data[itemId] = {
+			...item,
+			data: {
+				...item.data,
+				isArchived: newIsArchived,
+			},
+		};
+
+		this.notifyTreeChange([itemId]);
 	}
 
-	getAllData(): Record<TreeItemIndex, TreeItem<DocData>> {
+	getAllData(): Record<TreeItemIndex, TreeItem<pages_TreeItem>> {
 		return { ...this.data };
 	}
 }
 
-type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<DocData>;
+type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<pages_TreeItem>;
 
 type PagesSidebar_CssVars = {
 	"--PagesSidebarTreeItem-content-depth": number;
@@ -327,7 +316,7 @@ type PagesSidebar_CssVars = {
 
 type PagesSidebarTreeContext = {
 	dataProvider: NotionLikeDataProvider;
-	treeItems: Record<TreeItemIndex, TreeItem<DocData>>;
+	treeItems: Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
 };
 
 const PagesTreeContext = createContext<PagesSidebarTreeContext | null>(null);
@@ -335,7 +324,7 @@ const PagesTreeContext = createContext<PagesSidebarTreeContext | null>(null);
 type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
 
 interface PagesSidebarTreeItemArrow_Props {
-	item: TreeItem<DocData>;
+	item: TreeItem<pages_TreeItem>;
 	context: TreeItemRenderContext;
 	info: TreeInformation;
 }
@@ -479,7 +468,7 @@ type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem-actions";
 
 type PagesSidebarTreeItem_Props = {
-	item: TreeItem<DocData>;
+	item: TreeItem<pages_TreeItem>;
 	depth: number;
 	children: React.ReactNode;
 	title: React.ReactNode;
@@ -497,7 +486,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const { item, depth, children, title, context, arrow, selectedDocId, showArchived, onAdd, onArchive, onUnarchive } =
 		props;
 
-	const data = item.data as DocData;
+	const data = item.data as pages_TreeItem;
 
 	// Current selected document
 	const isNavigated = selectedDocId === item.index;
@@ -638,7 +627,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 type TreeRenameInputComponent_ClassNames = "TreeRenameInputComponent";
 
 type TreeRenameInputComponent_Props = {
-	item: TreeItem<DocData>;
+	item: TreeItem<pages_TreeItem>;
 	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
 	inputRef: React.Ref<HTMLInputElement>;
 	submitButtonProps: React.HTMLProps<any>;
@@ -797,7 +786,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	};
 
 	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (
-		item: TreeItem<DocData>,
+		item: TreeItem<pages_TreeItem>,
 		treeId: string,
 	) => {
 		if (item.data.type === "page") {
@@ -806,7 +795,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	};
 
 	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
-		item: TreeItem<DocData>,
+		item: TreeItem<pages_TreeItem>,
 		context: any,
 	) => {
 		// Default behavior for expanded state
@@ -1068,26 +1057,20 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const navigate = useNavigate();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
-	const treeData = useQuery(app_convex_api.ai_docs_temp.get_tree, {
+	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});
 
 	const dataProvider = useMemo(() => {
+		const root = pages_create_tree_root();
 		const provider = new NotionLikeDataProvider(
 			// Initial data
 			{
 				root: {
-					index: pages_ROOT_ID,
+					index: root.index,
 					children: [],
-					data: {
-						title: "Pages",
-						type: "page",
-						content: "",
-						isArchived: false,
-						updatedAt: 0,
-						updatedBy: "",
-					},
+					data: root,
 					isFolder: true,
 					canMove: false,
 					canRename: false,
@@ -1111,18 +1094,18 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	const [multiSelectionCount, setMultiSelectionCount] = useState(0);
 
-	const archivedCount = Object.values(treeItems).filter(
-		(item) => item.data.isArchived && item.data.type !== "placeholder" && item.index !== pages_ROOT_ID,
-	).length;
+	const archivedCount = treeItemsList ? treeItemsList.filter((item) => item.isArchived).length : -1;
 
 	const treeRef = useRef<TreeRef | null>(null);
 
 	// Update local tree data when remote tree data changes
 	useEffect(() => {
-		if (treeData && dataProvider && Object.keys(treeData).length > 0) {
-			dataProvider.updateTreeData(treeData);
+		if (treeItemsList && dataProvider) {
+			dataProvider.updateTreeData(treeItemsList, {
+				showArchived,
+			});
 		}
-	}, [treeData, dataProvider]);
+	}, [treeItemsList, dataProvider, showArchived]);
 
 	useEffect(() => {
 		if (!dataProvider) {

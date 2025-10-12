@@ -30,9 +30,9 @@ import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
 import { Liveblocks } from "@liveblocks/node";
 import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
-import { pages_FIRST_VERSION, pages_ROOT_ID } from "../shared/pages.ts";
+import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import { minimatch } from "minimatch";
 import type { Doc } from "./_generated/dataModel";
 
@@ -398,98 +398,62 @@ async function resolve_path_from_page_id(
 	return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
 
-export const get_tree = query({
+const get_tree_items_list_validator = v.array(
+	v.object({
+		type: v.union(v.literal("root"), v.literal("page"), v.literal("placeholder")),
+		index: v.string(),
+		parentId: v.string(),
+		title: v.string(),
+		content: v.string(),
+		isArchived: v.boolean(),
+		updatedAt: v.number(),
+		updatedBy: v.string(),
+	}),
+);
+
+export type pages_TreeItem = Infer<typeof get_tree_items_list_validator>[number];
+
+export const get_tree_items_list = query({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.record(
-		v.string(),
-		v.object({
-			index: v.string(),
-			children: v.array(v.string()),
-			title: v.string(),
-			content: v.string(),
-			isArchived: v.boolean(),
-			updatedAt: v.number(),
-			updatedBy: v.string(),
-		}),
-	),
+	returns: get_tree_items_list_validator,
 	handler: async (ctx, args) => {
 		const pages = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project", (q) => q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId))
+			.withIndex("by_workspace_project_and_name", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId),
+			)
+			.order("asc")
 			.collect();
 
-		// Build tree data in React Complex Tree format
-		const treeData: Record<string, any> = {
-			root: {
+		const treeItemsList: pages_TreeItem[] = [
+			{
+				type: "root",
 				index: pages_ROOT_ID,
-				children: [],
-				title: "Documents",
+				parentId: "",
+				title: "Pages",
 				content: "",
 				isArchived: false,
 				updatedAt: Date.now(),
 				updatedBy: "system",
 			},
-		};
+			...pages
+				.filter((page) => page.page_id && page.name !== "")
+				.map((page) => ({
+					type: "page" as const,
+					index: page.page_id,
+					parentId: page.parent_id,
+					title: page.name || "Untitled",
+					content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
+					isArchived: page.is_archived || false,
+					updatedAt: page.updated_at,
+					updatedBy: page.updated_by,
+				})),
+		];
 
-		// Add all pages to tree using page_id as index
-		for (const page of pages) {
-			// Skip pages without page_id or name,
-			// pages without name are homepages.
-			if (!page.page_id || page.name === "") continue;
-
-			treeData[page.page_id] = {
-				index: page.page_id,
-				children: [],
-				title: page.name || "Untitled",
-				content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
-				isArchived: page.is_archived || false,
-				updatedAt: page.updated_at,
-				updatedBy: page.updated_by,
-			};
-		}
-
-		// Build parent-child relationships using doc_ids
-		for (const page of pages) {
-			if (treeData[page.parent_id] && treeData[page.page_id]) {
-				treeData[page.parent_id].children.push(page.page_id);
-			}
-		}
-
-		// Sort all children alphabetically by title
-		for (const item of Object.values(treeData)) {
-			if (item.children?.length > 0) {
-				item.children.sort((a: string, b: string) => {
-					const titleA = treeData[a]?.data?.title || "";
-					const titleB = treeData[b]?.data?.title || "";
-					return titleA.localeCompare(titleB, undefined, {
-						numeric: true,
-						sensitivity: "base",
-					});
-				});
-			}
-		}
-
-		// Add placeholders for empty folders
-		for (const [itemId, item] of Object.entries(treeData)) {
-			if (!item.children || item.children.length === 0) {
-				const placeholderId = `${itemId}-placeholder`;
-				treeData[placeholderId] = {
-					index: placeholderId,
-					children: [],
-					title: "No files inside",
-					content: "",
-					isArchived: false,
-					updatedAt: 0,
-					updatedBy: "",
-				};
-				item.children = [placeholderId];
-			}
-		}
-
-		return treeData;
+		return treeItemsList;
 	},
 });
 

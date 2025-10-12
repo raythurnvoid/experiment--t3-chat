@@ -3,7 +3,7 @@ import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
 import type { Doc, TableNames } from "./_generated/dataModel.ts";
-import { pages_FIRST_VERSION, pages_ROOT_ID } from "../shared/pages.ts";
+import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { MutationCtx } from "./_generated/server.d.ts";
 
 // CORS origin used by server-utils headers helpers
