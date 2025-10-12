@@ -1,0 +1,33 @@
+@layer common_components {
+	.PageRichTextEditorBody {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageRichTextEditorBodyContent {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageRichTextEditorBodyContent-editor-container {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageRichTextEditorBodyContent-editor-content {
+		height: 100%;
+		padding-left: 64px;
+		padding-right: 64px;
+		padding-top: 16px;
+		padding-bottom: 16px;
+		font-family: var(--font-sans);
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+		font-weight: 400;
+		outline: none;
+
+		&:focus {
+			outline: none;
+		}
+	}
+}

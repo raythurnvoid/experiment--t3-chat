@@ -3,7 +3,7 @@ import { ClientSideSuspense } from "@liveblocks/react";
 import { useAuth } from "../../lib/auth.ts";
 import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
-import { RichTextDocEditor } from "./editor.tsx";
+import { PageRichTextEditorBody } from "./editor.tsx";
 import { useState, useImperativeHandle, type Ref } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
@@ -123,7 +123,7 @@ export function PageRichTextEditor(props: PageRichTextEditor_Props) {
 						</div>
 						<div className="PageRichTextEditor-editor-container h-[calc(100%-48px)]">
 							{editorMode === "rich" ? (
-								<RichTextDocEditor doc_id={pageId} />
+								<PageRichTextEditorBody pageId={pageId} />
 							) : editorMode === "diff" ? (
 								threadId ? (
 									<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />

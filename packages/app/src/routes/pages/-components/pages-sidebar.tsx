@@ -770,16 +770,18 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 
 	// Set active item when tree items and navigated item are available
 	useEffect(() => {
-		const treeInitialized = treeRef.current?.treeEnvironmentContext?.trees[TREE_ID];
-
-		if (treeRef.current && selectedDocId && treeItems[selectedDocId] && !treeRef.current.isFocused && treeInitialized) {
+		if (treeRef.current && selectedDocId && treeItems[selectedDocId] && !treeRef.current.isFocused) {
 			const navigatedItem = treeItems[selectedDocId];
 			if (
 				navigatedItem &&
 				navigatedItem.data.type !== "placeholder" &&
 				(!navigatedItem.data.isArchived || showArchived)
 			) {
-				treeRef.current.focusItem(selectedDocId, false);
+				try {
+					treeRef.current.focusItem(selectedDocId, false);
+				} catch (error) {
+					console.warn("Error focusing tree item:", error);
+				}
 			}
 		}
 	}, [selectedDocId, treeItems, showArchived]);

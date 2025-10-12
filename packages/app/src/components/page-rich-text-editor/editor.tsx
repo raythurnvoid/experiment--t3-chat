@@ -1,3 +1,5 @@
+import "./editor.css";
+
 import { useState, useEffect, useRef } from "react";
 import {
 	EditorCommand,
@@ -28,7 +30,7 @@ import { slashCommand, suggestionItems } from "./slash-command.tsx";
 import { Threads } from "./threads.tsx";
 import VersionsDialog from "./version-history-dialog.tsx";
 import { AI_NAME } from "./constants.ts";
-import { cn } from "../../lib/utils.ts";
+import { cn, create_promise_with_resolvers } from "../../lib/utils.ts";
 import { HistoryButtons } from "./selectors/history-buttons.tsx";
 import { app_fetch_ai_docs_contextual_prompt } from "../../lib/fetch.ts";
 import { useMutation, useConvex } from "convex/react";
@@ -36,26 +38,42 @@ import { api } from "../../../convex/_generated/api.js";
 import { ySyncPluginKey } from "y-prosemirror";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 
-interface RichTextDocEditor_Props {
-	doc_id: string;
-}
+type SyncStatus = ReturnType<typeof useSyncStatus>;
 
-export function RichTextDocEditor(props: RichTextDocEditor_Props) {
+const INITIAL_CONTENT = `
+<h1>Welcome</h1>
+<p>You can start editing your document here.</p>
+`;
+
+export type PageRichTextEditorBody_ClassNames = "PageRichTextEditorBody";
+
+export type PageRichTextEditorBody_Props = React.ComponentProps<"div"> & {
+	pageId: string;
+};
+
+export function PageRichTextEditorBody(props: PageRichTextEditorBody_Props) {
+	const { className, pageId, ...rest } = props;
 	return (
-		<div className={cn("TiptapEditor", "h-full w-full")}>
+		<div className={cn("PageRichTextEditorBody" satisfies PageRichTextEditorBody_ClassNames, className)} {...rest}>
 			<EditorRoot>
-				<TiptapEditorContent initialContent={initialContent} doc_id={props.doc_id} />
+				<PageRichTextEditorBodyContent initialContent={INITIAL_CONTENT} pageId={pageId} />
 			</EditorRoot>
 		</div>
 	);
 }
 
-interface TiptapEditorContent_Props {
-	initialContent?: string;
-	doc_id: string;
-}
+export type PageRichTextEditorBodyContent_ClassNames =
+	| "PageRichTextEditorBodyContent"
+	| "PageRichTextEditorBodyContent-editor-container"
+	| "PageRichTextEditorBodyContent-editor-content";
 
-function TiptapEditorContent(props: TiptapEditorContent_Props) {
+export type PageRichTextEditorBodyContent_Props = React.ComponentProps<"div"> & {
+	initialContent?: string;
+	pageId: string;
+};
+
+function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Props) {
+	const { initialContent, pageId } = props;
 	const [openAi, setOpenAi] = useState(false);
 	const [openNode, setOpenNode] = useState(false);
 	const [openColor, setOpenColor] = useState(false);
@@ -96,15 +114,22 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	const [syncChanged, setSyncChanged] = useState(false);
 	const isEditorReady = useIsEditorReady();
 
-	const pageTextContentQueryWatch = useRef<{
-		value: string | null | undefined;
-		unsubscribe: () => void;
-	} | null>(null);
-
-	const pageBroadcastWatch = useRef<{
-		unsubscribe: () => void;
-		lastAppliedCreationTime: number;
-	} | null>(null);
+	/**
+	 * Allow to pre-load the content from Convex
+	 * and set it once the editor is ready
+	 */
+	const pageContentQueryWatch = useRef<
+		PromiseWithResolvers<{
+			valueGetterPromise: Promise<() => string | null>;
+			unsubscribe: () => void;
+		}>
+	>(null);
+	if (pageContentQueryWatch.current === null) {
+		pageContentQueryWatch.current = create_promise_with_resolvers<{
+			valueGetterPromise: Promise<() => string | null>;
+			unsubscribe: () => void;
+		}>();
+	}
 
 	/**
 	 * Prevent feedback loops when applying remote broadcasts
@@ -112,73 +137,82 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	const isApplyingBroadcastRef = useRef(false);
 
 	useEffect(() => {
+		if (!pageContentQueryWatch.current) return;
+
+		let currentValue: string | null | undefined = undefined;
+		let valueGetterSet = false;
+		const valueGetterDeferred = create_promise_with_resolvers<() => string | null>();
+
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: props.doc_id,
+			pageId: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
-			if (pageTextContentQueryWatch.current) {
-				pageTextContentQueryWatch.current.value = watcher.localQueryResult();
+			currentValue = watcher.localQueryResult();
+			if (!valueGetterSet) {
+				valueGetterDeferred.resolve(() => currentValue ?? null);
+				valueGetterSet = true;
 			}
 		});
 
-		pageTextContentQueryWatch.current = {
-			value: watcher.localQueryResult(),
+		pageContentQueryWatch.current.resolve({
+			valueGetterPromise: valueGetterDeferred.promise,
 			unsubscribe: () => {
 				unsubscribe();
-				pageTextContentQueryWatch.current = null;
+				pageContentQueryWatch.current = null;
 			},
-		};
+		});
 
 		return () => {
-			pageTextContentQueryWatch.current?.unsubscribe();
+			pageContentQueryWatch.current?.promise.then((watch) => watch.unsubscribe()).catch(console.error);
 		};
-	}, [props.doc_id]);
+	}, []);
 
 	// Set content from Convex when editor is ready
 	useEffect(() => {
-		if (!editor || !isEditorReady || contentLoaded || !props.doc_id) {
+		if (!editor || !isEditorReady || contentLoaded || !pageId || !pageContentQueryWatch.current) {
 			return;
 		}
 
-		const ydoc = editor.storage.liveblocksExtension.doc;
-		const hasContentSet = ydoc.getMap("liveblocks_config").get("hasContentSet");
+		pageContentQueryWatch.current.promise
+			.then(async (watch) => {
+				const remoteContent = await watch.valueGetterPromise.then((valueGetter) => valueGetter());
 
-		if (!hasContentSet) {
-			ydoc.getMap("liveblocks_config").set("hasContentSet", true);
+				if (remoteContent) {
+					editor.commands.setContent(remoteContent, false);
+				}
 
-			if (props.initialContent) {
-				console.log("Setting fallback initial content:", props.initialContent);
-				editor.commands.setContent(props.initialContent);
-			}
-		} else if (pageTextContentQueryWatch.current?.value) {
-			const content = pageTextContentQueryWatch.current.value;
-			console.log("Setting content from Convex:", content);
-			editor.commands.setContent(content, false);
-		}
+				setContentLoaded(true);
 
-		pageTextContentQueryWatch.current?.unsubscribe();
-		setContentLoaded(true);
-	}, [editor, isEditorReady, props.doc_id, props.initialContent, contentLoaded, convex, pageTextContentQueryWatch]);
+				watch.unsubscribe();
+			})
+			.catch(console.error);
+	}, [editor, isEditorReady]);
 
 	// Subscribe to page updates broadcast and apply incoming content
 	useEffect(() => {
-		if (!editor || !isEditorReady || !props.doc_id) return;
+		if (!editor || !isEditorReady || contentLoaded || !pageId) return;
 
-		pageBroadcastWatch.current?.unsubscribe?.();
+		let initialized = false;
 
 		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: props.doc_id,
+			pageId: pageId,
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
 			const update = watcher.localQueryResult();
 			if (!editor || !update) return;
-			/* Apply update without triggering our own save; guard using ref */
+
+			if (!initialized) {
+				initialized = true;
+				return;
+			}
+
+			// Apply update without triggering our own save; guard using ref
 			isApplyingBroadcastRef.current = true;
 			editor.commands.setContent(update.text_content, false);
 			queueMicrotask(() => {
@@ -186,16 +220,10 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 			});
 		});
 
-		pageBroadcastWatch.current = {
-			unsubscribe,
-			lastAppliedCreationTime: 0,
-		};
-
 		return () => {
-			pageBroadcastWatch.current?.unsubscribe?.();
-			pageBroadcastWatch.current = null;
+			unsubscribe();
 		};
-	}, [editor, isEditorReady, props.doc_id]);
+	}, [editor, isEditorReady, contentLoaded]);
 
 	// Cleanup timeout on unmount
 	useEffect(() => {
@@ -235,7 +263,7 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 					await updateAndBroadcastMarkdown({
 						workspaceId: ai_chat_HARDCODED_ORG_ID,
 						projectId: ai_chat_HARDCODED_PROJECT_ID,
-						pageId: props.doc_id!,
+						pageId: pageId!,
 						textContent: textContent,
 					});
 				} catch (error) {
@@ -248,14 +276,17 @@ function TiptapEditorContent(props: TiptapEditorContent_Props) {
 	return (
 		isEditorReady && (
 			<EditorContent
-				className="h-full w-full"
+				className={cn("PageRichTextEditorBodyContent" satisfies PageRichTextEditorBodyContent_ClassNames)}
 				editorContainerProps={{
-					className: "h-full w-full ",
+					className: cn(
+						"PageRichTextEditorBodyContent-editor-container" satisfies PageRichTextEditorBodyContent_ClassNames,
+					),
 				}}
 				editorProps={{
 					attributes: {
-						class:
-							"prose dark:prose-invert prose-headings:font-title font-default px-16 py-4 h-full focus:outline-none",
+						class: cn(
+							"PageRichTextEditorBodyContent-editor-content" satisfies PageRichTextEditorBodyContent_ClassNames,
+						),
 					},
 					handleDOMEvents: {
 						keydown: (_view, event) => handleCommandNavigation(event),
@@ -361,7 +392,6 @@ function EditorToolbar(props: EditorToolbar_Props) {
 				editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
 				*/}
 				{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
-				{"" + syncChanged}{" "}
 			</div>
 			<div className={charsCount ? "rounded-lg bg-accent px-2 py-1 text-sm text-muted-foreground" : "hidden"}>
 				{charsCount} Words
@@ -371,10 +401,3 @@ function EditorToolbar(props: EditorToolbar_Props) {
 		</Toolbar>
 	);
 }
-
-type SyncStatus = ReturnType<typeof useSyncStatus>;
-
-const initialContent = `
-<h1>Welcome</h1>
-<p>You can start editing your document here.</p>
-`;
