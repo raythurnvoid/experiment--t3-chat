@@ -39,6 +39,7 @@ export default defineConfig(
 			"no-unexpected-multiline": "off",
 			"no-constant-condition": "off",
 			"no-case-declarations": "off",
+			"no-console": ["error", { allow: ["debug", "info", "error", "warn"] }],
 
 			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
 

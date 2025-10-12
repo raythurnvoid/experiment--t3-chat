@@ -130,46 +130,11 @@
 			align-items: center;
 		}
 
-		&:hover {
+		&:not(.PagesSidebarTreeItem-content-placeholder):hover {
 			background-color: var(--gray-900);
 
 			@media (prefers-color-scheme: dark) {
 				background-color: var(--gray-200);
-			}
-		}
-
-		&.PagesSidebarTreeItem-content-selected {
-			background-color: var(--gray-800);
-			border-color: var(--gray-700);
-
-			&:hover {
-				background-color: var(--gray-700);
-			}
-
-			@media (prefers-color-scheme: dark) {
-				background-color: var(--gray-300);
-				border-color: var(--gray-400);
-
-				&:hover {
-					background-color: var(--gray-400);
-				}
-			}
-		}
-
-		&.PagesSidebarTreeItem-content-navigated {
-			font-weight: 500;
-			border-color: var(--gray-600);
-
-			@media (prefers-color-scheme: dark) {
-				border-color: var(--gray-600);
-			}
-		}
-
-		.PagesSidebarTreeArea-container:focus-within &.PagesSidebarTreeItem-content-focused {
-			border-color: var(--gray-000);
-
-			@media (prefers-color-scheme: dark) {
-				border-color: var(--gray-700);
 			}
 		}
 
@@ -182,6 +147,66 @@
 		&.PagesSidebarTreeItem-content-archived {
 			text-decoration: line-through;
 			opacity: 0.6;
+		}
+	}
+
+	.PagesSidebarTreeArea-container:not(:has(.TreeRenameInputComponent-input:focus)) {
+		.PagesSidebarTreeItem-content {
+			&.PagesSidebarTreeItem-content-selected {
+				background-color: var(--gray-800);
+				border-color: var(--gray-700);
+
+				&:hover {
+					background-color: var(--gray-700);
+				}
+
+				@media (prefers-color-scheme: dark) {
+					background-color: var(--gray-300);
+					border-color: var(--gray-400);
+
+					&:hover {
+						background-color: var(--gray-400);
+					}
+				}
+			}
+
+			&.PagesSidebarTreeItem-content-navigated {
+				font-weight: 500;
+				border-color: var(--gray-500);
+
+				@media (prefers-color-scheme: dark) {
+					border-color: var(--gray-500);
+				}
+			}
+
+			&.PagesSidebarTreeItem-content-focused {
+				border-color: var(--gray-400);
+
+				@media (prefers-color-scheme: dark) {
+					border-color: var(--gray-600);
+				}
+			}
+		}
+
+		&:focus-within {
+			.PagesSidebarTreeItem-content {
+				&.PagesSidebarTreeItem-content-navigated {
+					font-weight: 500;
+					border-color: var(--gray-600);
+
+					@media (prefers-color-scheme: dark) {
+						border-color: var(--gray-600);
+					}
+				}
+
+				&.PagesSidebarTreeItem-content-focused {
+					border-color: var(--gray-300);
+
+					@media (prefers-color-scheme: dark) {
+						border-color: var(--gray-700);
+					}
+				}
+			}
 		}
 	}
 
@@ -202,6 +227,23 @@
 		display: flex;
 		gap: 4px;
 		align-items: center;
+
+		font-size: 0.875rem;
+		outline: none;
+	}
+
+	.PagesSidebarTreeItemPrimaryActionContent-title-container {
+		flex: 1;
+		min-width: 0;
+		contain: content;
+
+		text-align: left;
+	}
+
+	.PagesSidebarTreeItemPrimaryActionContent-title {
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.PagesSidebarTreeItem-primary-action-interactive-area {
@@ -275,5 +317,31 @@
 		width: calc(100% + 16px);
 		background-color: var(--gray-700);
 		transform: translate3d(-8px, -6px, 0);
+	}
+
+	.PagesSidebarTreeItemIcon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.PagesSidebarTreeItem-content-placeholder {
+		color: var(--gray-600);
+		font-style: italic;
+		cursor: default;
+		user-select: none;
+	}
+
+	.TreeRenameInputComponent {
+		display: flex;
+		width: 100%;
+	}
+
+	.TreeRenameInputComponent-input {
+		flex: 1;
+
+		&:focus {
+			border: 1px solid var(--gray-700);
+			padding: 2px;
+		}
 	}
 }

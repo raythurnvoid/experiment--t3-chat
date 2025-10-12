@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useState, createContext, use, useMemo, useRef, useEffect } from "react";
+import React, { useState, createContext, use, useRef, useEffect } from "react";
 import {
 	FileText,
 	Plus,
@@ -17,7 +17,6 @@ import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } fr
 import { MyInput, MyInputBox, MyInputArea, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { Input } from "@/components/ui/input.tsx";
 import { cn, forward_ref, sx } from "@/lib/utils.ts";
 import {
 	UncontrolledTreeEnvironment,
@@ -43,7 +42,7 @@ import {
 	pages_ROOT_ID,
 	type pages_TreeItem,
 } from "@/lib/pages.ts";
-import { formatRelativeTime, shouldShowAgoSuffix, shouldShowAtPrefix } from "@/lib/date.ts";
+import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "../../../components/my-link.tsx";
@@ -94,8 +93,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 		this.data = {};
 
 		for (const item of treeItemsList) {
-			console.log("item", item.title);
-
 			if (item.isArchived && !options.showArchived) continue;
 
 			const isPlaceholder = item.type === "placeholder";
@@ -196,9 +193,17 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	}
 
 	async onRenameItem(item: TreeItem<pages_TreeItem>, name: string): Promise<void> {
+		const trimmedName = name.trim();
+		const originalName = item.data.title?.trim();
+
+		// Don't rename if the name is empty or didn't change
+		if (!trimmedName || trimmedName === originalName) {
+			return;
+		}
+
 		const updatedItem = {
 			...item,
-			data: { ...item.data, title: name },
+			data: { ...item.data, title: trimmedName },
 		};
 		this.data[item.index] = updatedItem;
 		this.notifyTreeChange([item.index]);
@@ -219,7 +224,7 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 				workspaceId: this.args.workspaceId,
 				projectId: this.args.projectId,
 				pageId: item.index.toString(),
-				name: name,
+				name: trimmedName,
 			})
 			.catch(console.error);
 	}
@@ -373,18 +378,13 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 	);
 }
 
-type PagesSidebarTreeItemFileIcon_ClassNames = "PagesSidebarTreeItemFileIcon";
+type PagesSidebarTreeItemIcon_ClassNames = "PagesSidebarTreeItemIcon";
 
-function PagesSidebarTreeItemFileIcon() {
+function PagesSidebarTreeItemIcon() {
 	return (
-		<span
-			className={cn(
-				"PagesSidebarTreeItemFileIcon" satisfies PagesSidebarTreeItemFileIcon_ClassNames,
-				"inline-flex h-4 w-4 flex-shrink-0 items-center justify-center text-sm",
-			)}
-		>
-			<FileText className="h-4 w-4" />
-		</span>
+		<MyIcon className={"PagesSidebarTreeItemIcon" satisfies PagesSidebarTreeItemIcon_ClassNames}>
+			<FileText />
+		</MyIcon>
 	);
 }
 
@@ -399,14 +399,13 @@ function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPri
 
 	return (
 		<div
-			className={cn(
-				"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames,
-				"text-sm outline-none",
-			)}
+			className={
+				"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
+			}
 		>
-			<PagesSidebarTreeItemFileIcon />
-			<div className="flex-1 truncate text-left">
-				<div className="truncate">{title}</div>
+			<PagesSidebarTreeItemIcon />
+			<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
+				<div className="PagesSidebarTreeItemPrimaryActionContent-title">{title}</div>
 			</div>
 		</div>
 	);
@@ -427,10 +426,9 @@ function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNo
 	return (
 		<li
 			{...context.itemContainerWithChildrenProps}
-			className={cn(
-				"PagesSidebarTreeItemNoChildrenPlaceholder" satisfies PagesSidebarTreeItemNoChildrenPlaceholder_ClassNames,
-				"group relative",
-			)}
+			className={
+				"PagesSidebarTreeItemNoChildrenPlaceholder" satisfies PagesSidebarTreeItemNoChildrenPlaceholder_ClassNames
+			}
 		>
 			<div
 				{...context.itemContainerWithoutChildrenProps}
@@ -438,7 +436,6 @@ function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNo
 				className={cn(
 					"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
 					"PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames,
-					"border-2 border-transparent text-muted-foreground italic",
 				)}
 			>
 				<PagesSidebarTreeItemPrimaryActionContent title={title} />
@@ -529,14 +526,14 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const isRenaming = context.isRenaming;
 
 	// Meta text for non-placeholder items
-	const metaText = !isPlaceholder ? `${formatRelativeTime(data.updatedAt)} ${data.updatedBy || "Unknown"}` : undefined;
+	const metaText = `${format_relative_time(data.updatedAt)} ${data.updatedBy || "Unknown"}`;
 
 	// Tooltip content for non-placeholder items
 	const tooltipContent = !isPlaceholder
 		? (() => {
-				const relativeTime = formatRelativeTime(data.updatedAt);
-				const showAt = shouldShowAtPrefix(data.updatedAt);
-				const showAgo = shouldShowAgoSuffix(data.updatedAt);
+				const relativeTime = format_relative_time(data.updatedAt);
+				const showAt = should_show_at_prefix(data.updatedAt);
+				const showAgo = should_show_ago_suffix(data.updatedAt);
 				return `Updated${showAt ? " at" : ""} ${relativeTime}${showAgo ? " ago" : ""} by ${data.updatedBy || "Unknown"}`;
 			})()
 		: undefined;
@@ -554,113 +551,113 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	}
 
 	// Regular items
-	const treeItemContent = (
+	const contentDiv = (
+		<div
+			{...context.itemContainerWithoutChildrenProps}
+			style={sx({ "--PagesSidebarTreeItem-content-depth": depth } satisfies Partial<PagesSidebar_CssVars>)}
+			className={cn(
+				"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
+				isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
+				context.isSelected &&
+					!isRenaming &&
+					("PagesSidebarTreeItem-content-selected" satisfies PagesSidebarTreeItem_ClassNames),
+				context.isFocused &&
+					!isRenaming &&
+					("PagesSidebarTreeItem-content-focused" satisfies PagesSidebarTreeItem_ClassNames),
+				context.isSelected &&
+					context.isFocused &&
+					!isRenaming &&
+					("PagesSidebarTreeItem-content-selected-focused" satisfies PagesSidebarTreeItem_ClassNames),
+				context.isDraggingOver &&
+					("PagesSidebarTreeItem-content-dragging-over" satisfies PagesSidebarTreeItem_ClassNames),
+				isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
+			)}
+		>
+			{context.isRenaming ? (
+				<PagesSidebarTreeItemPrimaryActionContent title={title} />
+			) : (
+				<button
+					{...context.interactiveElementProps}
+					type="button"
+					className={"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames}
+				>
+					<PagesSidebarTreeItemPrimaryActionContent title={title} />
+				</button>
+			)}
+
+			{/* Expand/collapse arrow */}
+			<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>{arrow}</div>
+
+			{/* Meta label */}
+			{metaText ? (
+				<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
+					<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
+						{metaText}
+					</div>
+				</div>
+			) : null}
+
+			{/* Second row - action buttons */}
+			<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
+				<PagesSidebarTreeItemActionIconButton
+					tooltip="Add child"
+					isActive={context.isFocused ?? false}
+					onClick={() => onAdd(item.index.toString())}
+				>
+					<Plus />
+				</PagesSidebarTreeItemActionIconButton>
+
+				<PagesSidebarTreeItemActionIconButton
+					tooltip="Rename"
+					isActive={context.isFocused ?? false}
+					onClick={() => context.startRenamingItem()}
+				>
+					<Edit2 />
+				</PagesSidebarTreeItemActionIconButton>
+
+				<PagesSidebarTreeItemActionIconButton
+					tooltip={isArchived ? "Unarchive" : "Archive"}
+					isActive={context.isFocused ?? false}
+					onClick={() => {
+						if (isArchived) {
+							onUnarchive(item.index.toString());
+						} else {
+							onArchive(item.index.toString());
+						}
+					}}
+				>
+					<Archive className={cn(isArchived && "fill-current")} />
+				</PagesSidebarTreeItemActionIconButton>
+			</div>
+		</div>
+	);
+
+	// Wrap with tooltip if content exists
+	const wrappedContent = tooltipContent ? (
+		<Tooltip delayDuration={2000}>
+			<TooltipTrigger asChild>{contentDiv}</TooltipTrigger>
+			{!isDragging && (
+				<TooltipContent side="bottom" align="center">
+					{tooltipContent}
+				</TooltipContent>
+			)}
+		</Tooltip>
+	) : (
+		contentDiv
+	);
+
+	return (
 		<li
 			{...context.itemContainerWithChildrenProps}
 			className={cn("PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames, "group relative")}
 		>
-			{/* Primary action */}
-			<div
-				{...context.itemContainerWithoutChildrenProps}
-				style={sx({ "--PagesSidebarTreeItem-content-depth": depth } satisfies Partial<PagesSidebar_CssVars>)}
-				className={cn(
-					"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
-					isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
-					context.isSelected &&
-						!isRenaming &&
-						("PagesSidebarTreeItem-content-selected" satisfies PagesSidebarTreeItem_ClassNames),
-					context.isFocused &&
-						!isRenaming &&
-						("PagesSidebarTreeItem-content-focused" satisfies PagesSidebarTreeItem_ClassNames),
-					context.isSelected &&
-						context.isFocused &&
-						!isRenaming &&
-						("PagesSidebarTreeItem-content-selected-focused" satisfies PagesSidebarTreeItem_ClassNames),
-					context.isDraggingOver &&
-						("PagesSidebarTreeItem-content-dragging-over" satisfies PagesSidebarTreeItem_ClassNames),
-					isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
-				)}
-			>
-				{context.isRenaming ? (
-					<PagesSidebarTreeItemPrimaryActionContent title={title} />
-				) : (
-					<button
-						{...context.interactiveElementProps}
-						type="button"
-						className={"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames}
-					>
-						<PagesSidebarTreeItemPrimaryActionContent title={title} />
-					</button>
-				)}
-
-				{/* Expand/collapse arrow */}
-				<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>{arrow}</div>
-
-				{/* Meta label */}
-				{metaText ? (
-					<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
-						<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
-							{metaText}
-						</div>
-					</div>
-				) : null}
-
-				{/* Second row - action buttons */}
-				<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
-					<PagesSidebarTreeItemActionIconButton
-						tooltip="Add child"
-						isActive={context.isFocused ?? false}
-						onClick={() => onAdd(item.index.toString())}
-					>
-						<Plus />
-					</PagesSidebarTreeItemActionIconButton>
-
-					<PagesSidebarTreeItemActionIconButton
-						tooltip="Rename"
-						isActive={context.isFocused ?? false}
-						onClick={() => context.startRenamingItem()}
-					>
-						<Edit2 />
-					</PagesSidebarTreeItemActionIconButton>
-
-					<PagesSidebarTreeItemActionIconButton
-						tooltip={isArchived ? "Unarchive" : "Archive"}
-						isActive={context.isFocused ?? false}
-						onClick={() => {
-							if (isArchived) {
-								onUnarchive(item.index.toString());
-							} else {
-								onArchive(item.index.toString());
-							}
-						}}
-					>
-						<Archive className={cn(isArchived && "fill-current")} />
-					</PagesSidebarTreeItemActionIconButton>
-				</div>
-			</div>
-
+			{wrappedContent}
 			{children}
 		</li>
 	);
-
-	// Wrap with tooltip if content exists
-	if (tooltipContent) {
-		return (
-			<Tooltip delayDuration={2000}>
-				<TooltipTrigger asChild>{treeItemContent}</TooltipTrigger>
-				{!isDragging && (
-					<TooltipContent side="bottom" align="center">
-						{tooltipContent}
-					</TooltipContent>
-				)}
-			</Tooltip>
-		);
-	}
-
-	return treeItemContent;
 }
 
-type TreeRenameInputComponent_ClassNames = "TreeRenameInputComponent";
+type TreeRenameInputComponent_ClassNames = "TreeRenameInputComponent" | "TreeRenameInputComponent-input";
 
 type TreeRenameInputComponent_Props = {
 	item: TreeItem<pages_TreeItem>;
@@ -674,17 +671,22 @@ type TreeRenameInputComponent_Props = {
 function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 	const { inputProps, inputRef, formProps } = props;
 
-	// Override native blur behavior
 	const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
 		e.target.form?.requestSubmit();
 	};
 
 	return (
-		<form
-			{...formProps}
-			className={cn("TreeRenameInputComponent" satisfies TreeRenameInputComponent_ClassNames, "flex w-full")}
-		>
-			<Input {...inputProps} ref={inputRef} className="h-5 flex-1 px-0.5" autoFocus onBlur={handleBlur} />
+		<form {...formProps} className={"TreeRenameInputComponent" satisfies TreeRenameInputComponent_ClassNames}>
+			<MyInput>
+				<MyInputControl
+					{...inputProps}
+					ref={inputRef}
+					className={"TreeRenameInputComponent-input" satisfies TreeRenameInputComponent_ClassNames}
+					autoFocus
+					required
+					onBlur={handleBlur}
+				/>
+			</MyInput>
 		</form>
 	);
 }

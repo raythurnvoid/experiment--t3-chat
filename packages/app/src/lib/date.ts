@@ -1,14 +1,23 @@
 /**
+ * 1 second.
+ *
+ * Convex might returns dates in the future by more or less 1 second.
+ *
+ * This would prevent to show invalid dates in the UI.
+ */
+const PAST_TIME_TOLERANCE = 1000;
+
+/**
  * Format a timestamp as a relative time string
  * @param updatedAt - Timestamp in milliseconds
  * @returns Relative time string (e.g., "2h ago", "Yesterday", "15 Dec", "15 Dec 2023")
  */
-export function formatRelativeTime(updatedAt: number): string {
+export function format_relative_time(updatedAt: number): string {
 	const now = Date.now();
 	const diff = now - updatedAt;
 
 	// Handle invalid or future timestamps
-	if (diff < 0 || !Number.isFinite(updatedAt)) {
+	if (diff < 0 - PAST_TIME_TOLERANCE || !Number.isFinite(updatedAt)) {
 		return "Unknown";
 	}
 
@@ -65,7 +74,7 @@ export function formatRelativeTime(updatedAt: number): string {
  * @param updatedAt - Timestamp in milliseconds
  * @returns true if "(ago)" should be shown, false otherwise
  */
-export function shouldShowAgoSuffix(updatedAt: number): boolean {
+export function should_show_ago_suffix(updatedAt: number): boolean {
 	const now = Date.now();
 	const diff = now - updatedAt;
 
@@ -93,7 +102,7 @@ export function shouldShowAgoSuffix(updatedAt: number): boolean {
  * @param updatedAt - Timestamp in milliseconds
  * @returns true if "(at)" should be shown, false otherwise
  */
-export function shouldShowAtPrefix(updatedAt: number): boolean {
+export function should_show_at_prefix(updatedAt: number): boolean {
 	const now = Date.now();
 	const diff = now - updatedAt;
 
