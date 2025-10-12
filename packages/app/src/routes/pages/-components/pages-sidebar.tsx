@@ -5,13 +5,14 @@ import {
 	Plus,
 	Search,
 	X,
-	Archive,
+	ArchiveRestore,
 	Edit2,
 	ChevronRight,
 	ChevronDown,
 	ChevronsDown,
 	ChevronsUp,
 	Menu,
+	Archive,
 } from "lucide-react";
 import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MyInput, MyInputBox, MyInputArea, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
@@ -45,7 +46,7 @@ import {
 import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
-import { MyLink } from "../../../components/my-link.tsx";
+import { MyLink } from "@/components/my-link.tsx";
 
 /**
  * `react-complex-tree` flat data record object
@@ -448,6 +449,7 @@ function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNo
 type PagesSidebarTreeItemActionIconButton_ClassNames = "PagesSidebarTreeItemActionIconButton";
 
 type PagesSidebarTreeItemActionIconButton_Props = {
+	className?: string;
 	tooltip: string;
 	children: React.ReactNode;
 	isActive: boolean;
@@ -455,15 +457,18 @@ type PagesSidebarTreeItemActionIconButton_Props = {
 };
 
 function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionIconButton_Props) {
-	const { tooltip, onClick, children, isActive } = props;
+	const { className, tooltip, isActive, onClick, children } = props;
 
 	return (
 		<MyIconButton
-			className={"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames}
+			className={cn(
+				"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames,
+				className,
+			)}
 			variant="ghost-secondary"
 			tooltip={tooltip}
-			onClick={onClick}
 			tabIndex={isActive ? 0 : -1}
+			onClick={onClick}
 		>
 			<MyIconButtonIcon>{children}</MyIconButtonIcon>
 		</MyIconButton>
@@ -616,7 +621,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 				</PagesSidebarTreeItemActionIconButton>
 
 				<PagesSidebarTreeItemActionIconButton
-					tooltip={isArchived ? "Unarchive" : "Archive"}
+					tooltip={isArchived ? "Restore" : "Archive"}
 					isActive={context.isFocused ?? false}
 					onClick={() => {
 						if (isArchived) {
@@ -626,7 +631,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 						}
 					}}
 				>
-					<Archive className={cn(isArchived && "fill-current")} />
+					{isArchived ? <ArchiveRestore /> : <Archive />}
 				</PagesSidebarTreeItemActionIconButton>
 			</div>
 		</div>
@@ -649,7 +654,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	return (
 		<li
 			{...context.itemContainerWithChildrenProps}
-			className={cn("PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames, "group relative")}
+			className={cn("PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames)}
 		>
 			{wrappedContent}
 			{children}
@@ -1031,7 +1036,6 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 								props.info.isFocused &&
 									("PagesSidebarTreeArea-container-focused" satisfies PagesSidebarTreeArea_ClassNames),
 								isDragging && ("PagesSidebarTreeArea-container-dragging" satisfies PagesSidebarTreeArea_ClassNames),
-								"group/PagesSidebarTreeArea-container",
 							)}
 						>
 							{props.children}
@@ -1287,7 +1291,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 											onClick={handleArchiveAll}
 										>
 											<MyIconButtonIcon>
-												<Archive />
+												<ArchiveRestore />
 											</MyIconButtonIcon>
 										</MyIconButton>
 										<MyIconButton

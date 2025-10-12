@@ -131,13 +131,13 @@ Instead of a single `<ComponentName>_ClassNames` union, group class names by com
 **Type Placement**: Each `_ClassNames` type must be placed directly above its corresponding component definition, before any `_Props` or `_Ref` types.
 
 ```tsx
-type Thread_ClassNames = "Thread";
+export type Thread_ClassNames = "Thread";
 
-type Thread_Props = React.ComponentProps<"div"> & {
+export type Thread_Props = React.ComponentProps<"div"> & {
 	children?: React.ReactNode;
 };
 
-function Thread(props: Thread_Props) {
+export function Thread(props: Thread_Props) {
 	const { className, children, ...rest } = props;
 	return (
 		<div className={cn("Thread" satisfies Thread_ClassNames, className)} {...rest}>
@@ -146,13 +146,13 @@ function Thread(props: Thread_Props) {
 	);
 }
 
-type ThreadHeader_ClassNames = "ThreadHeader" | "ThreadHeader-title";
+export type ThreadHeader_ClassNames = "ThreadHeader" | "ThreadHeader-title";
 
-type ThreadHeader_Props = React.ComponentProps<"div"> & {
+export type ThreadHeader_Props = React.ComponentProps<"div"> & {
 	title?: string;
 };
 
-function ThreadHeader(props: ThreadHeader_Props) {
+export function ThreadHeader(props: ThreadHeader_Props) {
 	const { className, title, ...rest } = props;
 	return (
 		<div className={cn("ThreadHeader" satisfies ThreadHeader_ClassNames, className)} {...rest}>
@@ -161,19 +161,19 @@ function ThreadHeader(props: ThreadHeader_Props) {
 	);
 }
 
-type ThreadMenuButton_ClassNames =
+export type ThreadMenuButton_ClassNames =
 	| "ThreadMenuButton"
 	| "ThreadMenuButton-variant-outline"
 	| "ThreadMenuButton-variant-ghost"
 	| "ThreadMenuButton-size-sm"
 	| "ThreadMenuButton-size-lg";
 
-type ThreadMenuButton_Props = React.ComponentProps<"button"> & {
+export type ThreadMenuButton_Props = React.ComponentProps<"button"> & {
 	variant?: "outline" | "ghost";
 	size?: "sm" | "lg";
 };
 
-function ThreadMenuButton(props: ThreadMenuButton_Props) {
+export function ThreadMenuButton(props: ThreadMenuButton_Props) {
 	const { className, variant = "outline", size = "sm", ...rest } = props;
 	return (
 		<button
@@ -196,7 +196,7 @@ function ThreadMenuButton(props: ThreadMenuButton_Props) {
 - Variants and sizes must be represented directly in each component's `_ClassNames` type. Use conditional adds with `satisfies` for validation.
 
 ```ts
-type Button_ClassNames =
+export type Button_ClassNames =
 	| "Button"
 	| "Button-variant-default"
 	| "Button-variant-destructive"
@@ -207,7 +207,7 @@ type Button_ClassNames =
 	| "Button-size-lg"
 	| "Button-size-icon";
 
-function Button(
+export function Button(
 	props: {
 		className?: string;
 		variant?: "default" | "destructive" | "outline" | "ghost" | null;
@@ -240,9 +240,9 @@ function Button(
 Use a `<ComponentName>_CssVars` type to model component-scoped CSS custom properties and provide defaults merged into the `style` prop. Spread defaults first, then user `style` so the user can override defaults.
 
 ```tsx
-type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
+export type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 
-type Thread_CssVars = {
+export type Thread_CssVars = {
 	"--thread-width": string;
 	"--thread-width-collapsed": string;
 };
@@ -252,13 +252,21 @@ const Thread_CSS_VARS_DEFAULTS: Partial<Thread_CssVars> = {
 	"--thread-width-collapsed": "48px",
 } as const;
 
-function Thread(props: React.ComponentProps<"aside">) {
-	const { className, style, ...rest } = props;
+export type Thread_Props = React.ComponentProps<"aside"> & {
+	style?: React.CSSProperties & Partial<Thread_CssVars>;
+	width?: string;
+	widthCollapsed?: string;
+};
+
+export function Thread(props: React.ComponentProps<"aside">) {
+	const { className, style, width, widthCollapsed, ...rest } = props;
 	return (
 		<aside
 			className={cn("Thread" satisfies Thread_ClassNames, className)}
 			style={{
 				...Thread_CSS_VARS_DEFAULTS,
+				...(width && { ["--thread-width" satisfies keyof Thread_CssVars]: width }),
+				...(widthCollapsed && { ["--thread-width-collapsed" satisfies keyof Thread_CssVars]: widthCollapsed }),
 				...style,
 			}}
 			{...rest}
@@ -283,8 +291,8 @@ import { createContext, use, useState, ReactNode } from "react";
 // Context interface with camelCase for internal state
 interface SearchContextType {
 	searchQuery: string;
-	setSearchQuery: (query: string) => void;
 	isLoading: boolean;
+	setSearchQuery: (query: string) => void;
 	setIsLoading: (loading: boolean) => void;
 }
 
@@ -328,12 +336,12 @@ You must pass `ref` as a regular prop without `forwardRef`:
 
 ```tsx
 // ✅ React 19: ref as regular prop (new way)
-interface ButtonProps {
+export interface Button_Props {
 	ref?: Ref<HTMLButtonElement>;
 	children: React.ReactNode;
 }
 
-function Button(props: ButtonProps) {
+export function Button(props: Button_Props) {
 	const { ref, children, ...rest } = props;
 
 	return (
