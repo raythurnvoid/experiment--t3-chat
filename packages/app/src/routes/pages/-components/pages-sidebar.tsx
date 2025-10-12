@@ -770,7 +770,9 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 
 	// Set active item when tree items and navigated item are available
 	useEffect(() => {
-		if (treeRef.current && selectedDocId && treeItems[selectedDocId] && !treeRef.current.isFocused) {
+		const treeInitialized = treeRef.current?.treeEnvironmentContext?.trees[TREE_ID];
+
+		if (treeRef.current && selectedDocId && treeItems[selectedDocId] && !treeRef.current.isFocused && treeInitialized) {
 			const navigatedItem = treeItems[selectedDocId];
 			if (
 				navigatedItem &&
