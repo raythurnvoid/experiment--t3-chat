@@ -1,7 +1,7 @@
 import "./index.css";
 
 import React from "react";
-import { PagesSidebar, type PagesSidebar_Props } from "./components/pages-sidebar.tsx";
+import { PagesSidebar, type PagesSidebar_Props } from "./-components/pages-sidebar.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState, useEffect } from "react";
 import { Button } from "../../components/ui/button.tsx";

@@ -131,60 +131,52 @@
 		}
 
 		&:hover {
-			background-color: hsl(240 4.8% 96%);
+			background-color: var(--gray-900);
 
 			@media (prefers-color-scheme: dark) {
-				background-color: hsl(240 3.7% 14%);
+				background-color: var(--gray-200);
 			}
 		}
 
 		&.PagesSidebarTreeItem-content-selected {
-			background-color: hsl(240 4.8% 92%);
-			border-color: hsl(240 5.9% 92%);
+			background-color: var(--gray-800);
+			border-color: var(--gray-700);
 
 			&:hover {
-				background-color: hsl(240 4.8% 86%);
+				background-color: var(--gray-700);
 			}
 
 			@media (prefers-color-scheme: dark) {
-				background-color: hsl(240 3.7% 20%);
-				border-color: hsl(240 5.9% 20%);
+				background-color: var(--gray-300);
+				border-color: var(--gray-400);
 
 				&:hover {
-					background-color: hsl(240 3.7% 26%);
+					background-color: var(--gray-400);
 				}
 			}
 		}
 
 		&.PagesSidebarTreeItem-content-navigated {
 			font-weight: 500;
-			border-color: hsl(240 5.9% 50%);
+			border-color: var(--gray-600);
 
 			@media (prefers-color-scheme: dark) {
-				border-color: hsl(240 5.9% 50%);
+				border-color: var(--gray-600);
 			}
 		}
 
 		.PagesSidebarTreeArea-container:focus-within &.PagesSidebarTreeItem-content-focused {
-			border-color: hsl(240 5.9% 10%);
+			border-color: var(--gray-000);
 
 			@media (prefers-color-scheme: dark) {
-				border-color: hsl(240 5.9% 90%);
+				border-color: var(--gray-700);
 			}
 		}
 
 		&.PagesSidebarTreeItem-content-dragging-over {
 			border-style: dashed;
-			border-color: hsl(var(--primary) / 0.4);
-			box-shadow:
-				0 10px 15px -3px hsl(var(--primary) / 0.2),
-				0 4px 6px -2px hsl(var(--primary) / 0.2);
-			background: linear-gradient(
-				to bottom right,
-				hsl(var(--primary) / 0.1),
-				hsl(var(--primary) / 0.2),
-				hsl(var(--primary) / 0.1)
-			);
+			border-color: var(--gray-900);
+			background-color: var(--gray-300);
 		}
 
 		&.PagesSidebarTreeItem-content-archived {
@@ -268,5 +260,12 @@
 	.PagesSidebar-multi-selection-counter-label {
 		font-weight: 500;
 		font-size: 14px;
+	}
+
+	.PagesSidebar-tree-drag-between-line {
+		height: 4px;
+		width: calc(100% + 16px);
+		background-color: var(--gray-700);
+		transform: translate3d(-8px, -6px, 0);
 	}
 }

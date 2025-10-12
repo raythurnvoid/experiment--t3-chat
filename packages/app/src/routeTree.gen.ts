@@ -84,13 +84,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PagesIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/pages/components/pages-sidebar': {
-      id: '/pages/components/pages-sidebar'
-      path: ''
-      fullPath: '/pages/components/pages-sidebar'
-      preLoaderRoute: unknown
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -119,15 +112,6 @@ declare module './routes/pages/index' {
     FileRoutesByPath['/pages/']['id'],
     FileRoutesByPath['/pages/']['path'],
     FileRoutesByPath['/pages/']['fullPath']
-  >
-}
-declare module './routes/pages/components/pages-sidebar' {
-  const createFileRoute: CreateFileRoute<
-    '/pages/components/pages-sidebar',
-    FileRoutesByPath['/pages/components/pages-sidebar']['parentRoute'],
-    FileRoutesByPath['/pages/components/pages-sidebar']['id'],
-    FileRoutesByPath['/pages/components/pages-sidebar']['path'],
-    FileRoutesByPath['/pages/components/pages-sidebar']['fullPath']
   >
 }
 

@@ -961,15 +961,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 				onPrimaryAction={handlePrimaryAction}
 				onSelectItems={onSelectItems}
 				renderDragBetweenLine={(props) => {
-					return (
-						<div
-							{...props.lineProps}
-							className={cn(
-								"PagesSidebar-tree-drag-between-line",
-								"h-2 border-2 border-solid border-red-500 bg-red-500",
-							)}
-						/>
-					);
+					return <div {...props.lineProps} className="PagesSidebar-tree-drag-between-line" />;
 				}}
 				renderRenameInput={(props) => {
 					return <TreeRenameInputComponent {...props} />;

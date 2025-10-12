@@ -1,9 +1,9 @@
-import type { pages_TreeItem, pages_TreeItems } from "../convex/ai_docs_temp.ts";
+import type { pages_TreeItem } from "../convex/ai_docs_temp.ts";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
 
-export type { pages_TreeItem, pages_TreeItems };
+export type { pages_TreeItem };
 
 export function pages_create_tree_root(): pages_TreeItem {
 	return {
