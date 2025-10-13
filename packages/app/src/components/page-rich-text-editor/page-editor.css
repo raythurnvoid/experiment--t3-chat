@@ -1,0 +1,39 @@
+@layer components {
+	.PageEditor {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageEditor-switch-bar {
+		display: flex;
+		height: 48px;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		border-bottom: 1px solid hsl(var(--border) / 0.8);
+		background: hsl(var(--background));
+		padding-left: 16px;
+		padding-right: 16px;
+	}
+
+	.PageEditor-diff-switch {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.PageEditor-switch-label {
+		font-size: 0.875rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.PageEditor-switch-container {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.PageEditor-editor-container {
+		height: calc(100% - 48px);
+	}
+}

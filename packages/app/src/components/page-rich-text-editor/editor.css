@@ -1,4 +1,4 @@
-@layer common_components {
+@layer components {
 	.PageRichTextEditorBody {
 		height: 100%;
 		width: 100%;
@@ -29,5 +29,99 @@
 		&:focus {
 			outline: none;
 		}
+	}
+
+	.PageRichTextEditorBodyContent-status-bar {
+		display: flex;
+		gap: 8px;
+		padding-left: 32px;
+		padding-right: 32px;
+		padding-top: 32px;
+		padding-bottom: 8px;
+		outline: none;
+	}
+
+	.PageRichTextEditorBodyContent-threads-container {
+		position: absolute;
+		right: 0;
+		margin-right: 16px;
+	}
+
+	.PageRichTextEditorBodyContent-editor-command {
+		z-index: 50;
+		height: auto;
+		max-height: 330px;
+		overflow-y: auto;
+		border-radius: 6px;
+		border: 1px solid hsl(var(--muted));
+		background: hsl(var(--background));
+		padding-left: 4px;
+		padding-right: 4px;
+		padding-top: 8px;
+		padding-bottom: 8px;
+		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+		transition: all 150ms ease;
+	}
+
+	.PageRichTextEditorBodyContent-editor-command-empty {
+		padding-left: 8px;
+		padding-right: 8px;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.PageRichTextEditorBodyContent-editor-command-item {
+		display: flex;
+		width: 100%;
+		align-items: center;
+		gap: 8px;
+		border-radius: 6px;
+		padding-left: 8px;
+		padding-right: 8px;
+		padding-top: 4px;
+		padding-bottom: 4px;
+		text-align: left;
+		font-size: 0.875rem;
+
+		&:hover {
+			background: hsl(var(--accent));
+		}
+
+		&[aria-selected="true"] {
+			background: hsl(var(--accent));
+		}
+	}
+
+	.PageRichTextEditorBodyContent-editor-command-item-icon {
+		display: flex;
+		height: 40px;
+		width: 40px;
+		align-items: center;
+		justify-content: center;
+		border-radius: 6px;
+		border: 1px solid hsl(var(--muted));
+		background: hsl(var(--background));
+	}
+
+	.PageRichTextEditorBodyContent-editor-command-item-title {
+		font-weight: 500;
+	}
+
+	.PageRichTextEditorBodyContent-editor-command-item-description {
+		font-size: 0.75rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.PageRichTextEditor-toolbar {
+		width: 100%;
+	}
+
+	.PageRichTextEditorBodyContent-word-count-badge-hidden {
+		display: none;
+	}
+
+	.PageRichTextEditorBodyContent-status-badge,
+	.PageRichTextEditorBodyContent-word-count-badge {
+		padding: 4px 8px;
+		font-size: 0.9rem;
 	}
 }

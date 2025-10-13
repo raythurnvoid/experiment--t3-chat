@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { QuickStart } from "./quick-start.tsx";
-import { PageRichTextEditor, type PageRichTextEditor_Ref } from "../page-rich-text-editor/page-rich-text-editor.tsx";
+import { PageEditor, type PageEditor_Ref } from "../page-rich-text-editor/page-editor.tsx";
 import {
 	global_event_ai_chat_open_canvas,
 	global_event_ai_chat_open_canvas_by_path,
@@ -14,7 +14,7 @@ import { useLiveState, useRenderPromise } from "../../hooks/utils-hooks.ts";
 export function Canvas() {
 	const [editorPageId, setEditorPageId] = useLiveState<string | null>(null);
 	const [threadId, setThreadId] = useLiveState<string | undefined>(undefined);
-	const editor = useRef<PageRichTextEditor_Ref | null>(null);
+	const editor = useRef<PageEditor_Ref | null>(null);
 	const convex = useConvex();
 
 	const openCanvasGlobalEventDebounce = useRef<ReturnType<typeof globalThis.setTimeout>>(undefined);
@@ -78,7 +78,7 @@ export function Canvas() {
 	if (editorPageId.current) {
 		return (
 			<div className="Canvas h-full">
-				<PageRichTextEditor ref={editor} pageId={editorPageId.current} threadId={threadId.current} />
+				<PageEditor ref={editor} pageId={editorPageId.current} threadId={threadId.current} />
 			</div>
 		);
 	}

@@ -1,5 +1,4 @@
 import "./editor.css";
-
 import { useState, useEffect, useRef } from "react";
 import {
 	EditorCommand,
@@ -37,6 +36,7 @@ import { useMutation, useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ySyncPluginKey } from "y-prosemirror";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
+import { MyBadge } from "../my-badge.tsx";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -65,7 +65,21 @@ export function PageRichTextEditorBody(props: PageRichTextEditorBody_Props) {
 export type PageRichTextEditorBodyContent_ClassNames =
 	| "PageRichTextEditorBodyContent"
 	| "PageRichTextEditorBodyContent-editor-container"
-	| "PageRichTextEditorBodyContent-editor-content";
+	| "PageRichTextEditorBodyContent-editor-content"
+	| "PageRichTextEditorBodyContent-status-bar"
+	| "PageRichTextEditorBodyContent-threads-container"
+	| "PageRichTextEditorBodyContent-editor-command"
+	| "PageRichTextEditorBodyContent-editor-command-empty"
+	| "PageRichTextEditorBodyContent-editor-command-list"
+	| "PageRichTextEditorBodyContent-editor-command-item"
+	| "PageRichTextEditorBodyContent-editor-command-item-icon"
+	| "PageRichTextEditorBodyContent-editor-command-item-content"
+	| "PageRichTextEditorBodyContent-editor-command-item-title"
+	| "PageRichTextEditorBodyContent-editor-command-item-description"
+	| "PageRichTextEditorBodyContent-toolbar"
+	| "PageRichTextEditorBodyContent-status-badge"
+	| "PageRichTextEditorBodyContent-word-count-badge"
+	| "PageRichTextEditorBodyContent-word-count-badge-hidden";
 
 export type PageRichTextEditorBodyContent_Props = React.ComponentProps<"div"> & {
 	initialContent?: string;
@@ -73,7 +87,7 @@ export type PageRichTextEditorBodyContent_Props = React.ComponentProps<"div"> & 
 };
 
 function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Props) {
-	const { initialContent, pageId } = props;
+	const { pageId } = props;
 	const [openAi, setOpenAi] = useState(false);
 	const [openNode, setOpenNode] = useState(false);
 	const [openColor, setOpenColor] = useState(false);
@@ -300,19 +314,41 @@ function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Prop
 				onUpdate={handleUpdate}
 				slotBefore={
 					/* Status Bar */
-					<div className="flex gap-2 px-8 pt-8 pb-2 outline-none">
-						<EditorToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
+					<div
+						className={cn(
+							"PageRichTextEditorBodyContent-status-bar" satisfies PageRichTextEditorBodyContent_ClassNames,
+						)}
+					>
+						<PageRichTextEditorToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
 					</div>
 				}
 				slotAfter={<ImageResizer />}
 			>
-				<div className="absolute right-0 mr-4">
+				<div
+					className={cn(
+						"PageRichTextEditorBodyContent-threads-container" satisfies PageRichTextEditorBodyContent_ClassNames,
+					)}
+				>
 					<Threads />
 				</div>
 
-				<EditorCommand className="z-50 h-auto max-h-[330px] overflow-y-auto rounded-md border border-muted bg-background px-1 py-2 shadow-md transition-all">
-					<EditorCommandEmpty className="px-2 text-muted-foreground">No results</EditorCommandEmpty>
-					<EditorCommandList>
+				<EditorCommand
+					className={cn(
+						"PageRichTextEditorBodyContent-editor-command" satisfies PageRichTextEditorBodyContent_ClassNames,
+					)}
+				>
+					<EditorCommandEmpty
+						className={cn(
+							"PageRichTextEditorBodyContent-editor-command-empty" satisfies PageRichTextEditorBodyContent_ClassNames,
+						)}
+					>
+						No results
+					</EditorCommandEmpty>
+					<EditorCommandList
+						className={cn(
+							"PageRichTextEditorBodyContent-editor-command-list" satisfies PageRichTextEditorBodyContent_ClassNames,
+						)}
+					>
 						{suggestionItems.map((item) => (
 							<EditorCommandItem
 								value={item.title}
@@ -323,15 +359,37 @@ function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Prop
 
 									item.command(val);
 								}}
-								className="flex w-full items-center space-x-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent aria-selected:bg-accent"
+								className={cn(
+									"PageRichTextEditorBodyContent-editor-command-item" satisfies PageRichTextEditorBodyContent_ClassNames,
+								)}
 								key={item.title}
 							>
-								<div className="flex h-10 w-10 items-center justify-center rounded-md border border-muted bg-background">
+								<div
+									className={cn(
+										"PageRichTextEditorBodyContent-editor-command-item-icon" satisfies PageRichTextEditorBodyContent_ClassNames,
+									)}
+								>
 									{item.icon}
 								</div>
-								<div>
-									<p className="font-medium">{item.title}</p>
-									<p className="text-xs text-muted-foreground">{item.description}</p>
+								<div
+									className={cn(
+										"PageRichTextEditorBodyContent-editor-command-item-content" satisfies PageRichTextEditorBodyContent_ClassNames,
+									)}
+								>
+									<p
+										className={cn(
+											"PageRichTextEditorBodyContent-editor-command-item-title" satisfies PageRichTextEditorBodyContent_ClassNames,
+										)}
+									>
+										{item.title}
+									</p>
+									<p
+										className={cn(
+											"PageRichTextEditorBodyContent-editor-command-item-description" satisfies PageRichTextEditorBodyContent_ClassNames,
+										)}
+									>
+										{item.description}
+									</p>
 								</div>
 							</EditorCommandItem>
 						))}
@@ -357,13 +415,15 @@ function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Prop
 	);
 }
 
-type EditorToolbar_Props = {
+export type PageRichTextEditor_ClassNames = "PageRichTextEditor-toolbar";
+
+export type PageRichTextEditorToolbar_Props = {
 	charsCount: number;
 	syncStatus: SyncStatus;
 	syncChanged: boolean;
 };
 
-function EditorToolbar(props: EditorToolbar_Props) {
+function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 	const { charsCount, syncStatus, syncChanged } = props;
 
 	const { editor } = useEditor();
@@ -373,7 +433,7 @@ function EditorToolbar(props: EditorToolbar_Props) {
 	const [openLink, setOpenLink] = useState(false);
 
 	return (
-		<Toolbar editor={editor} className="w-full">
+		<Toolbar editor={editor} className={cn("PageRichTextEditor-toolbar" satisfies PageRichTextEditor_ClassNames)}>
 			<HistoryButtons />
 			<Separator orientation="vertical" />
 			<NodeSelector open={openNode} onOpenChange={setOpenNode} />
@@ -386,16 +446,26 @@ function EditorToolbar(props: EditorToolbar_Props) {
 			<Separator orientation="vertical" />
 			<ColorSelector open={openColor} onOpenChange={setOpenColor} />
 			<Separator orientation="vertical" />
-			<div className="rounded-lg bg-accent px-2 py-1 text-sm text-muted-foreground">
+			<MyBadge
+				variant="secondary"
+				className={cn("PageRichTextEditorBodyContent-status-badge" satisfies PageRichTextEditorBodyContent_ClassNames)}
+			>
 				{/*
 				If syncChanged it's false then force to show "Saved" because when the
 				editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
 				*/}
 				{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
-			</div>
-			<div className={charsCount ? "rounded-lg bg-accent px-2 py-1 text-sm text-muted-foreground" : "hidden"}>
+			</MyBadge>
+			<MyBadge
+				variant="secondary"
+				className={cn(
+					charsCount
+						? ("PageRichTextEditorBodyContent-word-count-badge" satisfies PageRichTextEditorBodyContent_ClassNames)
+						: ("PageRichTextEditorBodyContent-word-count-badge-hidden" satisfies PageRichTextEditorBodyContent_ClassNames),
+				)}
+			>
 				{charsCount} Words
-			</div>
+			</MyBadge>
 			<VersionsDialog />
 			<NotificationsPopover />
 		</Toolbar>

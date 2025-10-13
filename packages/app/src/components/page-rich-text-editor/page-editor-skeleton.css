@@ -1,0 +1,152 @@
+@layer components {
+	.PageEditorSkeleton {
+		position: relative;
+		display: flex;
+		height: 100%;
+		flex-direction: column;
+		background: var(--gray-950);
+
+		@media (prefers-color-scheme: dark) {
+			background: var(--gray-100);
+		}
+	}
+
+	.PageEditorSkeleton-header {
+		height: 60px;
+
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+
+		border-bottom: 1px solid var(--gray-400);
+		padding-inline: 24px;
+	}
+
+	.PageEditorSkeleton-toolbar {
+		height: 48px;
+
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		border-bottom: 1px solid var(--gray-400);
+		padding-inline: 24px;
+	}
+
+	.PageEditorSkeleton-content {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 64px 120px;
+		margin: auto;
+
+		width: 100%;
+	}
+
+	.PageEditorSkeleton-skeleton {
+		border-radius: 4px;
+		background: var(--gray-400);
+		animation: skeleton-pulse 2s ease-in infinite;
+
+		@media (prefers-color-scheme: dark) {
+			background: var(--gray-400);
+		}
+
+		.PageEditorSkeleton-header & {
+			height: 24px;
+
+			&:nth-child(1) {
+				width: 400px;
+			}
+
+			&:nth-child(2) {
+				width: 200px;
+			}
+		}
+
+		.PageEditorSkeleton-toolbar & {
+			height: 30px;
+
+			&:nth-child(1) {
+				width: 150px;
+			}
+
+			&:nth-child(2),
+			&:nth-child(3),
+			&:nth-child(4),
+			&:nth-child(5),
+			&:nth-child(6) {
+				width: 36px;
+			}
+
+			&:nth-child(7),
+			&:nth-child(8) {
+				width: 80px;
+			}
+		}
+
+		.PageEditorSkeleton-content & {
+			height: 20px;
+
+			&:nth-child(1) {
+				width: 40ch;
+			}
+
+			&:nth-child(2) {
+				width: 80%;
+			}
+
+			&:nth-child(3) {
+				width: 85%;
+			}
+
+			&:nth-child(4) {
+				width: 86%;
+			}
+
+			&:nth-child(5) {
+				width: 80%;
+			}
+
+			&:nth-child(6) {
+				width: 85%;
+			}
+
+			&:nth-child(7) {
+				width: 90%;
+			}
+
+			&:nth-child(8) {
+				width: 0%;
+			}
+
+			&:nth-child(9) {
+				width: 60%;
+			}
+
+			&:nth-child(10) {
+				width: 70%;
+			}
+
+			&:nth-child(11) {
+				width: 0%;
+			}
+
+			&:nth-child(12) {
+				width: 30ch;
+			}
+		}
+	}
+
+	@keyframes skeleton-pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.5;
+		}
+	}
+}

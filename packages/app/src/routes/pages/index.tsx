@@ -33,9 +33,9 @@ type RoutePages_ClassNames =
 	| "RoutePages-loading-text"
 	| "RoutePages-editor-wrapper";
 
-const PageRichTextEditor = React.lazy(() =>
-	import("../../components/page-rich-text-editor/page-rich-text-editor.tsx").then((module) => ({
-		default: module.PageRichTextEditor,
+const PageEditor = React.lazy(() =>
+	import("../../components/page-rich-text-editor/page-editor.tsx").then((module) => ({
+		default: module.PageEditor,
 	})),
 );
 
@@ -52,7 +52,7 @@ function RoutePagesContent(props: RoutePagesContent_Props) {
 		>
 			{pageId && (
 				<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
-					<PageRichTextEditor pageId={pageId} />
+					<PageEditor pageId={pageId} />
 				</div>
 			)}
 		</React.Suspense>
