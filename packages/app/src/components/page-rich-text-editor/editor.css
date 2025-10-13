@@ -1,20 +1,20 @@
 @layer components {
-	.PageRichTextEditorBody {
+	.PageRichTextEditor {
 		height: 100%;
 		width: 100%;
 	}
 
-	.PageRichTextEditorBodyContent {
+	.PageRichTextEditorInner {
 		height: 100%;
 		width: 100%;
 	}
 
-	.PageRichTextEditorBodyContent-editor-container {
+	.PageRichTextEditorInner-editor-container {
 		height: 100%;
 		width: 100%;
 	}
 
-	.PageRichTextEditorBodyContent-editor-content {
+	.PageRichTextEditorInner-editor-content {
 		height: 100%;
 		padding-left: 64px;
 		padding-right: 64px;
@@ -31,7 +31,7 @@
 		}
 	}
 
-	.PageRichTextEditorBodyContent-status-bar {
+	.PageRichTextEditorInner-status-bar {
 		display: flex;
 		gap: 8px;
 		padding-left: 32px;
@@ -41,13 +41,13 @@
 		outline: none;
 	}
 
-	.PageRichTextEditorBodyContent-threads-container {
+	.PageRichTextEditorInner-threads-container {
 		position: absolute;
 		right: 0;
 		margin-right: 16px;
 	}
 
-	.PageRichTextEditorBodyContent-editor-command {
+	.PageRichTextEditorInner-editor-command {
 		z-index: 50;
 		height: auto;
 		max-height: 330px;
@@ -63,13 +63,13 @@
 		transition: all 150ms ease;
 	}
 
-	.PageRichTextEditorBodyContent-editor-command-empty {
+	.PageRichTextEditorInner-editor-command-empty {
 		padding-left: 8px;
 		padding-right: 8px;
 		color: hsl(var(--muted-foreground));
 	}
 
-	.PageRichTextEditorBodyContent-editor-command-item {
+	.PageRichTextEditorInner-editor-command-item {
 		display: flex;
 		width: 100%;
 		align-items: center;
@@ -91,7 +91,7 @@
 		}
 	}
 
-	.PageRichTextEditorBodyContent-editor-command-item-icon {
+	.PageRichTextEditorInner-editor-command-item-icon {
 		display: flex;
 		height: 40px;
 		width: 40px;
@@ -102,25 +102,25 @@
 		background: hsl(var(--background));
 	}
 
-	.PageRichTextEditorBodyContent-editor-command-item-title {
+	.PageRichTextEditorInner-editor-command-item-title {
 		font-weight: 500;
 	}
 
-	.PageRichTextEditorBodyContent-editor-command-item-description {
+	.PageRichTextEditorInner-editor-command-item-description {
 		font-size: 0.75rem;
 		color: hsl(var(--muted-foreground));
 	}
 
-	.PageRichTextEditor-toolbar {
+	.PageRichTextEditorToolbar {
 		width: 100%;
 	}
 
-	.PageRichTextEditorBodyContent-word-count-badge-hidden {
+	.PageRichTextEditorInner-word-count-badge-hidden {
 		display: none;
 	}
 
-	.PageRichTextEditorBodyContent-status-badge,
-	.PageRichTextEditorBodyContent-word-count-badge {
+	.PageRichTextEditorInner-status-badge,
+	.PageRichTextEditorInner-word-count-badge {
 		padding: 4px 8px;
 		font-size: 0.9rem;
 	}

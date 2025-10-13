@@ -39,6 +39,40 @@
 		}
 	}
 
+	.MyLinkSurface-variant-button-tertiary,
+	.MyLinkSurface-variant-button-ghost,
+	.MyLinkSurface-variant-button-ghost-secondary {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		white-space: nowrap;
+		flex-shrink: 0;
+
+		height: 36px;
+		padding: 6px 10px;
+		border-radius: 6px;
+		border: 2px solid transparent;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1.25rem;
+
+		background: transparent;
+
+		transition: background-color 0.15s ease-in-out;
+		outline: none;
+
+		&:focus-visible {
+			border-color: var(--gray-700);
+		}
+
+		&:disabled {
+			pointer-events: none;
+			opacity: 0.5;
+		}
+	}
+
 	.MyLinkSurface-variant-button-tertiary {
 		background: transparent;
 
@@ -84,27 +118,5 @@
 				background: oklch(from var(--accent) l c h / 0.5);
 			}
 		}
-	}
-
-	.MyLinkSurface-size-default {
-		height: 36px;
-		padding: 8px 16px;
-	}
-
-	.MyLinkSurface-size-sm {
-		height: 32px;
-		padding: 8px 12px;
-		font-size: 0.75rem;
-	}
-
-	.MyLinkSurface-size-lg {
-		height: 40px;
-		padding: 8px 32px;
-	}
-
-	.MyLinkSurface-size-icon {
-		height: 36px;
-		width: 36px;
-		padding: 0;
 	}
 }

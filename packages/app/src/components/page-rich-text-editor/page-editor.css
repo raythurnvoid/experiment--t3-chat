@@ -4,7 +4,11 @@
 		width: 100%;
 	}
 
-	.PageEditor-switch-bar {
+	.PageEditor-editor-container {
+		height: calc(100% - 48px);
+	}
+
+	.PageEditorHeader {
 		display: flex;
 		height: 48px;
 		align-items: center;
@@ -16,24 +20,44 @@
 		padding-right: 16px;
 	}
 
-	.PageEditor-diff-switch {
+	.PageEditorHeader-diff-switch {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 	}
 
-	.PageEditor-switch-label {
+	.PageEditorHeader-breadcrumb {
+		display: flex;
+		align-items: center;
+		gap: 4px;
 		font-size: 0.875rem;
 		color: hsl(var(--muted-foreground));
 	}
 
-	.PageEditor-switch-container {
+	.PageEditorHeader-breadcrumb-home {
+		color: hsl(var(--muted-foreground));
+		cursor: pointer;
+	}
+
+	.PageEditorHeader-breadcrumb-separator {
+		color: hsl(var(--muted-foreground) / 0.6);
+	}
+
+	.PageEditorHeader-switch-group {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.PageEditorHeader-switch-container {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 	}
 
-	.PageEditor-editor-container {
-		height: calc(100% - 48px);
+	.PageEditorHeader-label-text,
+	.PageEditorHeader-switch-text {
+		font-size: 0.75rem;
+		color: hsl(var(--muted-foreground) / 0.8);
 	}
 }

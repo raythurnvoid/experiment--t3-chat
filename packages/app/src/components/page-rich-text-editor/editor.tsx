@@ -45,49 +45,56 @@ const INITIAL_CONTENT = `
 <p>You can start editing your document here.</p>
 `;
 
-export type PageRichTextEditorBody_ClassNames = "PageRichTextEditorBody";
+export type PageRichTextEditor_ClassNames = "PageRichTextEditor";
 
-export type PageRichTextEditorBody_Props = React.ComponentProps<"div"> & {
+export type PageRichTextEditor_Props = React.ComponentProps<"div"> & {
 	pageId: string;
+	headerSlot?: React.ReactNode;
 };
 
-export function PageRichTextEditorBody(props: PageRichTextEditorBody_Props) {
-	const { className, pageId, ...rest } = props;
+export function PageRichTextEditor(props: PageRichTextEditor_Props) {
+	const { className, pageId, headerSlot, ...rest } = props;
+
 	return (
-		<div className={cn("PageRichTextEditorBody" satisfies PageRichTextEditorBody_ClassNames, className)} {...rest}>
-			<EditorRoot>
-				<PageRichTextEditorBodyContent initialContent={INITIAL_CONTENT} pageId={pageId} />
-			</EditorRoot>
-		</div>
+		<EditorRoot>
+			<PageRichTextEditorInner
+				className={cn("PageRichTextEditor" satisfies PageRichTextEditor_ClassNames, className)}
+				initialContent={INITIAL_CONTENT}
+				pageId={pageId}
+				headerSlot={headerSlot}
+				{...rest}
+			/>
+		</EditorRoot>
 	);
 }
 
-export type PageRichTextEditorBodyContent_ClassNames =
-	| "PageRichTextEditorBodyContent"
-	| "PageRichTextEditorBodyContent-editor-container"
-	| "PageRichTextEditorBodyContent-editor-content"
-	| "PageRichTextEditorBodyContent-status-bar"
-	| "PageRichTextEditorBodyContent-threads-container"
-	| "PageRichTextEditorBodyContent-editor-command"
-	| "PageRichTextEditorBodyContent-editor-command-empty"
-	| "PageRichTextEditorBodyContent-editor-command-list"
-	| "PageRichTextEditorBodyContent-editor-command-item"
-	| "PageRichTextEditorBodyContent-editor-command-item-icon"
-	| "PageRichTextEditorBodyContent-editor-command-item-content"
-	| "PageRichTextEditorBodyContent-editor-command-item-title"
-	| "PageRichTextEditorBodyContent-editor-command-item-description"
-	| "PageRichTextEditorBodyContent-toolbar"
-	| "PageRichTextEditorBodyContent-status-badge"
-	| "PageRichTextEditorBodyContent-word-count-badge"
-	| "PageRichTextEditorBodyContent-word-count-badge-hidden";
+type PageRichTextEditorInner_ClassNames =
+	| "PageRichTextEditorInner"
+	| "PageRichTextEditorInner-editor-container"
+	| "PageRichTextEditorInner-editor-content"
+	| "PageRichTextEditorInner-status-bar"
+	| "PageRichTextEditorInner-threads-container"
+	| "PageRichTextEditorInner-editor-command"
+	| "PageRichTextEditorInner-editor-command-empty"
+	| "PageRichTextEditorInner-editor-command-list"
+	| "PageRichTextEditorInner-editor-command-item"
+	| "PageRichTextEditorInner-editor-command-item-icon"
+	| "PageRichTextEditorInner-editor-command-item-content"
+	| "PageRichTextEditorInner-editor-command-item-title"
+	| "PageRichTextEditorInner-editor-command-item-description"
+	| "PageRichTextEditorInner-toolbar"
+	| "PageRichTextEditorInner-status-badge"
+	| "PageRichTextEditorInner-word-count-badge"
+	| "PageRichTextEditorInner-word-count-badge-hidden";
 
-export type PageRichTextEditorBodyContent_Props = React.ComponentProps<"div"> & {
+type PageRichTextEditorInner_Props = React.ComponentProps<"div"> & {
 	initialContent?: string;
 	pageId: string;
+	headerSlot?: React.ReactNode;
 };
 
-function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Props) {
-	const { pageId } = props;
+function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
+	const { pageId, headerSlot } = props;
 	const [openAi, setOpenAi] = useState(false);
 	const [openNode, setOpenNode] = useState(false);
 	const [openColor, setOpenColor] = useState(false);
@@ -289,135 +296,122 @@ function PageRichTextEditorBodyContent(props: PageRichTextEditorBodyContent_Prop
 
 	return (
 		isEditorReady && (
-			<EditorContent
-				className={cn("PageRichTextEditorBodyContent" satisfies PageRichTextEditorBodyContent_ClassNames)}
-				editorContainerProps={{
-					className: cn(
-						"PageRichTextEditorBodyContent-editor-container" satisfies PageRichTextEditorBodyContent_ClassNames,
-					),
-				}}
-				editorProps={{
-					attributes: {
-						class: cn(
-							"PageRichTextEditorBodyContent-editor-content" satisfies PageRichTextEditorBodyContent_ClassNames,
-						),
-					},
-					handleDOMEvents: {
-						keydown: (_view, event) => handleCommandNavigation(event),
-					},
-					handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-					handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-				}}
-				extensions={extensions}
-				immediatelyRender={false}
-				onCreate={handleCreate}
-				onUpdate={handleUpdate}
-				slotBefore={
-					/* Status Bar */
-					<div
-						className={cn(
-							"PageRichTextEditorBodyContent-status-bar" satisfies PageRichTextEditorBodyContent_ClassNames,
-						)}
-					>
-						<PageRichTextEditorToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
+			<>
+				{headerSlot}
+				<EditorContent
+					className={cn("PageRichTextEditorInner" satisfies PageRichTextEditorInner_ClassNames)}
+					editorContainerProps={{
+						className: cn("PageRichTextEditorInner-editor-container" satisfies PageRichTextEditorInner_ClassNames),
+					}}
+					editorProps={{
+						attributes: {
+							class: cn("PageRichTextEditorInner-editor-content" satisfies PageRichTextEditorInner_ClassNames),
+						},
+						handleDOMEvents: {
+							keydown: (_view, event) => handleCommandNavigation(event),
+						},
+						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+					}}
+					extensions={extensions}
+					immediatelyRender={false}
+					onCreate={handleCreate}
+					onUpdate={handleUpdate}
+					slotBefore={
+						/* Status Bar */
+						<div className={cn("PageRichTextEditorInner-status-bar" satisfies PageRichTextEditorInner_ClassNames)}>
+							<PageRichTextEditorToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
+						</div>
+					}
+					slotAfter={<ImageResizer />}
+				>
+					<div className={cn("PageRichTextEditorInner-threads-container" satisfies PageRichTextEditorInner_ClassNames)}>
+						<Threads />
 					</div>
-				}
-				slotAfter={<ImageResizer />}
-			>
-				<div
-					className={cn(
-						"PageRichTextEditorBodyContent-threads-container" satisfies PageRichTextEditorBodyContent_ClassNames,
-					)}
-				>
-					<Threads />
-				</div>
 
-				<EditorCommand
-					className={cn(
-						"PageRichTextEditorBodyContent-editor-command" satisfies PageRichTextEditorBodyContent_ClassNames,
-					)}
-				>
-					<EditorCommandEmpty
-						className={cn(
-							"PageRichTextEditorBodyContent-editor-command-empty" satisfies PageRichTextEditorBodyContent_ClassNames,
-						)}
+					<EditorCommand
+						className={cn("PageRichTextEditorInner-editor-command" satisfies PageRichTextEditorInner_ClassNames)}
 					>
-						No results
-					</EditorCommandEmpty>
-					<EditorCommandList
-						className={cn(
-							"PageRichTextEditorBodyContent-editor-command-list" satisfies PageRichTextEditorBodyContent_ClassNames,
-						)}
-					>
-						{suggestionItems.map((item) => (
-							<EditorCommandItem
-								value={item.title}
-								onCommand={(val) => {
-									if (!item?.command) {
-										return;
-									}
+						<EditorCommandEmpty
+							className={cn(
+								"PageRichTextEditorInner-editor-command-empty" satisfies PageRichTextEditorInner_ClassNames,
+							)}
+						>
+							No results
+						</EditorCommandEmpty>
+						<EditorCommandList
+							className={cn("PageRichTextEditorInner-editor-command-list" satisfies PageRichTextEditorInner_ClassNames)}
+						>
+							{suggestionItems.map((item) => (
+								<EditorCommandItem
+									value={item.title}
+									onCommand={(val) => {
+										if (!item?.command) {
+											return;
+										}
 
-									item.command(val);
-								}}
-								className={cn(
-									"PageRichTextEditorBodyContent-editor-command-item" satisfies PageRichTextEditorBodyContent_ClassNames,
-								)}
-								key={item.title}
-							>
-								<div
+										item.command(val);
+									}}
 									className={cn(
-										"PageRichTextEditorBodyContent-editor-command-item-icon" satisfies PageRichTextEditorBodyContent_ClassNames,
+										"PageRichTextEditorInner-editor-command-item" satisfies PageRichTextEditorInner_ClassNames,
 									)}
+									key={item.title}
 								>
-									{item.icon}
-								</div>
-								<div
-									className={cn(
-										"PageRichTextEditorBodyContent-editor-command-item-content" satisfies PageRichTextEditorBodyContent_ClassNames,
-									)}
-								>
-									<p
+									<div
 										className={cn(
-											"PageRichTextEditorBodyContent-editor-command-item-title" satisfies PageRichTextEditorBodyContent_ClassNames,
+											"PageRichTextEditorInner-editor-command-item-icon" satisfies PageRichTextEditorInner_ClassNames,
 										)}
 									>
-										{item.title}
-									</p>
-									<p
+										{item.icon}
+									</div>
+									<div
 										className={cn(
-											"PageRichTextEditorBodyContent-editor-command-item-description" satisfies PageRichTextEditorBodyContent_ClassNames,
+											"PageRichTextEditorInner-editor-command-item-content" satisfies PageRichTextEditorInner_ClassNames,
 										)}
 									>
-										{item.description}
-									</p>
-								</div>
-							</EditorCommandItem>
-						))}
-					</EditorCommandList>
-				</EditorCommand>
+										<p
+											className={cn(
+												"PageRichTextEditorInner-editor-command-item-title" satisfies PageRichTextEditorInner_ClassNames,
+											)}
+										>
+											{item.title}
+										</p>
+										<p
+											className={cn(
+												"PageRichTextEditorInner-editor-command-item-description" satisfies PageRichTextEditorInner_ClassNames,
+											)}
+										>
+											{item.description}
+										</p>
+									</div>
+								</EditorCommandItem>
+							))}
+						</EditorCommandList>
+					</EditorCommand>
 
-				<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
-					<Separator orientation="vertical" />
-					<NodeSelector open={openNode} onOpenChange={setOpenNode} />
-					<Separator orientation="vertical" />
-					<LinkSelector open={openLink} onOpenChange={setOpenLink} />
-					<Separator orientation="vertical" />
-					<MathSelector />
-					<Separator orientation="vertical" />
-					<TextButtons />
-					<Separator orientation="vertical" />
-					<ColorSelector open={openColor} onOpenChange={setOpenColor} />
-					<Separator orientation="vertical" />
-					<AddCommentSelector />
-				</GenerativeMenuSwitch>
-			</EditorContent>
+					<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
+						<Separator orientation="vertical" />
+						<NodeSelector open={openNode} onOpenChange={setOpenNode} />
+						<Separator orientation="vertical" />
+						<LinkSelector open={openLink} onOpenChange={setOpenLink} />
+						<Separator orientation="vertical" />
+						<MathSelector />
+						<Separator orientation="vertical" />
+						<TextButtons />
+						<Separator orientation="vertical" />
+						<ColorSelector open={openColor} onOpenChange={setOpenColor} />
+						<Separator orientation="vertical" />
+						<AddCommentSelector />
+					</GenerativeMenuSwitch>
+				</EditorContent>
+			</>
 		)
 	);
 }
 
-export type PageRichTextEditor_ClassNames = "PageRichTextEditor-toolbar";
+type PageRichTextEditorToolbar_ClassNames = "PageRichTextEditorToolbar";
 
-export type PageRichTextEditorToolbar_Props = {
+type PageRichTextEditorToolbar_Props = {
 	charsCount: number;
 	syncStatus: SyncStatus;
 	syncChanged: boolean;
@@ -433,7 +427,7 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 	const [openLink, setOpenLink] = useState(false);
 
 	return (
-		<Toolbar editor={editor} className={cn("PageRichTextEditor-toolbar" satisfies PageRichTextEditor_ClassNames)}>
+		<Toolbar editor={editor} className={cn("PageRichTextEditorToolbar" satisfies PageRichTextEditorToolbar_ClassNames)}>
 			<HistoryButtons />
 			<Separator orientation="vertical" />
 			<NodeSelector open={openNode} onOpenChange={setOpenNode} />
@@ -448,7 +442,7 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 			<Separator orientation="vertical" />
 			<MyBadge
 				variant="secondary"
-				className={cn("PageRichTextEditorBodyContent-status-badge" satisfies PageRichTextEditorBodyContent_ClassNames)}
+				className={cn("PageRichTextEditorInner-status-badge" satisfies PageRichTextEditorInner_ClassNames)}
 			>
 				{/*
 				If syncChanged it's false then force to show "Saved" because when the
@@ -460,8 +454,8 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 				variant="secondary"
 				className={cn(
 					charsCount
-						? ("PageRichTextEditorBodyContent-word-count-badge" satisfies PageRichTextEditorBodyContent_ClassNames)
-						: ("PageRichTextEditorBodyContent-word-count-badge-hidden" satisfies PageRichTextEditorBodyContent_ClassNames),
+						? ("PageRichTextEditorInner-word-count-badge" satisfies PageRichTextEditorInner_ClassNames)
+						: ("PageRichTextEditorInner-word-count-badge-hidden" satisfies PageRichTextEditorInner_ClassNames),
 				)}
 			>
 				{charsCount} Words
