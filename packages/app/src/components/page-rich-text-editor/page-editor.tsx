@@ -17,6 +17,7 @@ import { app_convex_api } from "../../lib/app-convex-client.ts";
 import { pages_ROOT_ID, type pages_TreeItem } from "../../lib/pages.ts";
 import { Home } from "lucide-react";
 import { MyLink } from "../my-link.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 
 function ai_docs_create_liveblocks_room_id(orgId: string, projectId: string, docId: string) {
 	return `${orgId}:${projectId}:${docId}`;
@@ -53,6 +54,9 @@ type PageEditorHeader_ClassNames =
 	| "PageEditorHeader"
 	| "PageEditorHeader-breadcrumb"
 	| "PageEditorHeader-breadcrumb-home"
+	| "PageEditorHeader-breadcrumb-home-underline-hack"
+	| "PageEditorHeader-breadcrumb-segment"
+	| "PageEditorHeader-breadcrumb-segment-current"
 	| "PageEditorHeader-breadcrumb-separator"
 	| "PageEditorHeader-diff-switch"
 	| "PageEditorHeader-switch-container"
@@ -81,34 +85,73 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 	return (
 		<div className={cn("PageEditorHeader" satisfies PageEditorHeader_ClassNames)}>
 			{/* Left: Breadcrumb path */}
-			{treeItemsList && breadcrumbPath.length > 0 && (
-				<div className={cn("PageEditorHeader-breadcrumb" satisfies PageEditorHeader_ClassNames)}>
-					<MyLink to="/pages" variant="button-tertiary">
-						<Home className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)} size={16} />
-					</MyLink>
-					<span>/</span>
-					{breadcrumbPath.map((item, index) => {
-						const isCurrentPage = index === breadcrumbPath.length - 1;
-						const breadcrumbItem = (
-							<React.Fragment key={item.index}>
-								{isCurrentPage ? (
-									<span>{item.title}</span>
-								) : (
-									<MyLink to="/pages" search={{ pageId: item.index }}>
-										{item.title}
-									</MyLink>
-								)}
-								{index < breadcrumbPath.length - 1 && (
-									<span className={cn("PageEditorHeader-breadcrumb-separator" satisfies PageEditorHeader_ClassNames)}>
-										/
-									</span>
-								)}
-							</React.Fragment>
-						);
-						return breadcrumbItem;
-					})}
-				</div>
-			)}
+			<ol className={cn("PageEditorHeader-breadcrumb" satisfies PageEditorHeader_ClassNames)}>
+				{pageId && treeItemsList && breadcrumbPath.length > 0 ? (
+					<>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<MyLink
+									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
+									to="/pages"
+									variant="button-tertiary"
+								>
+									<li
+										className={cn(
+											"PageEditorHeader-breadcrumb-home-underline-hack" satisfies PageEditorHeader_ClassNames,
+										)}
+										inert
+									>
+										&nbsp;&nbsp;&nbsp;&nbsp;
+									</li>
+									<Home size={16} />
+								</MyLink>
+							</TooltipTrigger>
+							<TooltipContent>
+								<p>Home</p>
+							</TooltipContent>
+						</Tooltip>
+						<span>/</span>
+						{breadcrumbPath.map((item, index) => {
+							const isCurrentPage = index === breadcrumbPath.length - 1;
+							const breadcrumbItem = (
+								<React.Fragment key={item.index}>
+									{isCurrentPage ? (
+										<li
+											className={cn(
+												"PageEditorHeader-breadcrumb-segment-current" satisfies PageEditorHeader_ClassNames,
+											)}
+										>
+											{item.title}
+										</li>
+									) : (
+										<li>
+											<MyLink
+												className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
+												to="/pages"
+												search={{ pageId: item.index }}
+												variant="button-tertiary"
+											>
+												{item.title}
+											</MyLink>
+										</li>
+									)}
+									{index < breadcrumbPath.length - 1 && (
+										<span className={cn("PageEditorHeader-breadcrumb-separator" satisfies PageEditorHeader_ClassNames)}>
+											/
+										</span>
+									)}
+								</React.Fragment>
+							);
+							return breadcrumbItem;
+						})}
+					</>
+				) : (
+					<li className={cn("PageEditorHeader-breadcrumb-segment-current" satisfies PageEditorHeader_ClassNames)}>
+						<Home size={16} />
+						<span>Home</span>
+					</li>
+				)}
+			</ol>
 
 			{/* Right: Both switches in a container */}
 			<div className={cn("PageEditorHeader-switch-group" satisfies PageEditorHeader_ClassNames)}>

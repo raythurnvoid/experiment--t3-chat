@@ -14,8 +14,8 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
-		border-bottom: 1px solid hsl(var(--border) / 0.8);
-		background: hsl(var(--background));
+		border-bottom: 1px solid var(--gray-500);
+		background: var(--background);
 		padding-left: 16px;
 		padding-right: 16px;
 	}
@@ -31,16 +31,49 @@
 		align-items: center;
 		gap: 4px;
 		font-size: 0.875rem;
-		color: hsl(var(--muted-foreground));
+		color: var(--gray-800);
 	}
 
-	.PageEditorHeader-breadcrumb-home {
-		color: hsl(var(--muted-foreground));
+	.PageEditorHeader-breadcrumb-home,
+	.PageEditorHeader-breadcrumb-segment,
+	.PageEditorHeader-breadcrumb-segment-current {
+		white-space: nowrap;
+
+		padding: 6px;
+
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.PageEditorHeader-breadcrumb-home,
+	.PageEditorHeader-breadcrumb-segment {
+		color: var(--gray-600);
 		cursor: pointer;
+
+		&:hover {
+			color: var(--gray-800);
+			text-decoration: underline;
+		}
 	}
 
-	.PageEditorHeader-breadcrumb-separator {
-		color: hsl(var(--muted-foreground) / 0.6);
+	.PageEditorHeader-breadcrumb-home-underline-hack {
+		position: absolute;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 16px;
+		height: 16px;
+		margin-top: 4px;
+		pointer-events: none;
+		user-select: none;
+		text-decoration: inherit;
+	}
+
+	.PageEditorHeader-breadcrumb-segment-current {
+		padding: 8px;
+		color: var(--gray-700);
 	}
 
 	.PageEditorHeader-switch-group {
@@ -58,6 +91,6 @@
 	.PageEditorHeader-label-text,
 	.PageEditorHeader-switch-text {
 		font-size: 0.75rem;
-		color: hsl(var(--muted-foreground) / 0.8);
+		color: var(--gray-600);
 	}
 }

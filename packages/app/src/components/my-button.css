@@ -29,7 +29,7 @@
 
 		/* Focus ring */
 		&:focus-visible {
-			border-color: var(--gray-700);
+			border-color: var(--gray-800);
 		}
 
 		/* Invalid state ring */
@@ -121,7 +121,7 @@
 		&:hover,
 		&:focus-visible {
 			background: var(--gray-300);
-			color: var(--gray-700);
+			color: var(--gray-800);
 		}
 
 		&:active {
@@ -154,7 +154,7 @@
 		&:hover,
 		&:focus-visible {
 			background: var(--gray-300);
-			color: var(--gray-700);
+			color: var(--gray-800);
 		}
 
 		@media (prefers-color-scheme: dark) {

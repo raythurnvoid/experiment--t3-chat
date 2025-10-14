@@ -158,10 +158,10 @@
 		.PagesSidebarTreeItem-content {
 			&.PagesSidebarTreeItem-content-selected {
 				background-color: var(--gray-800);
-				border-color: var(--gray-700);
+				border-color: var(--gray-800);
 
 				&:hover {
-					background-color: var(--gray-700);
+					background-color: var(--gray-800);
 				}
 
 				@media (prefers-color-scheme: dark) {
@@ -207,7 +207,7 @@
 					border-color: var(--gray-300);
 
 					@media (prefers-color-scheme: dark) {
-						border-color: var(--gray-700);
+						border-color: var(--gray-800);
 					}
 				}
 			}
@@ -319,7 +319,7 @@
 	.PagesSidebar-tree-drag-between-line {
 		height: 4px;
 		width: calc(100% + 16px);
-		background-color: var(--gray-700);
+		background-color: var(--gray-800);
 		transform: translate3d(-8px, -6px, 0);
 	}
 
@@ -344,7 +344,7 @@
 		flex: 1;
 
 		&:focus {
-			border: 1px solid var(--gray-700);
+			border: 1px solid var(--gray-800);
 			padding: 2px;
 		}
 	}
