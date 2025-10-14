@@ -1,4 +1,4 @@
-import "./editor.css";
+import "./page-rich-text-editor.css";
 import { useState, useEffect, useRef } from "react";
 import {
 	EditorCommand,

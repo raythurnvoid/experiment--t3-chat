@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { QuickStart } from "./quick-start.tsx";
-import { PageEditor, type PageEditor_Ref } from "../page-rich-text-editor/page-editor.tsx";
+import { PageEditor, type PageEditor_Ref } from "../page-editor/page-editor.tsx";
 import {
 	global_event_ai_chat_open_canvas,
 	global_event_ai_chat_open_canvas_by_path,

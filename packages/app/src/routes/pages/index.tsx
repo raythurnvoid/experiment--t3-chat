@@ -34,7 +34,7 @@ type RoutePages_ClassNames =
 	| "RoutePages-editor-wrapper";
 
 const PageEditor = React.lazy(() =>
-	import("../../components/page-rich-text-editor/page-editor.tsx").then((module) => ({
+	import("../../components/page-editor/page-editor.tsx").then((module) => ({
 		default: module.PageEditor,
 	})),
 );
