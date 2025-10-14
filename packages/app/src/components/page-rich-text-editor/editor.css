@@ -20,25 +20,48 @@
 		padding-right: 64px;
 		padding-top: 16px;
 		padding-bottom: 16px;
-		font-family: var(--font-sans);
-		font-size: 0.875rem;
-		line-height: 1.25rem;
+
+		font-size: 1rem;
+		line-height: 1.5rem;
 		font-weight: 400;
+		color: var(--gray-900);
+
 		outline: none;
 
 		&:focus {
 			outline: none;
 		}
-	}
 
-	.PageRichTextEditorInner-status-bar {
-		display: flex;
-		gap: 8px;
-		padding-left: 32px;
-		padding-right: 32px;
-		padding-top: 32px;
-		padding-bottom: 8px;
-		outline: none;
+		/* Editor content styles */
+		/* Tiptap editor styles to match liveblocks example */
+		&:focus p[data-placeholder]::before {
+			content: attr(data-placeholder);
+			position: absolute;
+			user-select: none;
+			pointer-events: none;
+			color: var(--gray-600);
+		}
+
+		h1 {
+			font-size: 2em;
+			line-height: 2;
+			font-weight: 400;
+			color: var(--gray-900);
+		}
+
+		h2 {
+			font-size: 1.6rem;
+			font-weight: 400;
+			line-height: 1.6;
+			color: var(--gray-800);
+		}
+
+		h3 {
+			font-size: 1.4rem;
+			font-weight: 400;
+			line-height: 1.4;
+			color: var(--gray-800);
+		}
 	}
 
 	.PageRichTextEditorInner-threads-container {
@@ -53,8 +76,8 @@
 		max-height: 330px;
 		overflow-y: auto;
 		border-radius: 6px;
-		border: 1px solid hsl(var(--muted));
-		background: hsl(var(--background));
+		border: 1px solid var(--gray-500);
+		background: var(--gray-100);
 		padding-left: 4px;
 		padding-right: 4px;
 		padding-top: 8px;
@@ -66,7 +89,7 @@
 	.PageRichTextEditorInner-editor-command-empty {
 		padding-left: 8px;
 		padding-right: 8px;
-		color: hsl(var(--muted-foreground));
+		color: var(--gray-400);
 	}
 
 	.PageRichTextEditorInner-editor-command-item {
@@ -83,11 +106,15 @@
 		font-size: 0.875rem;
 
 		&:hover {
-			background: hsl(var(--accent));
+			background: var(--gray-300);
 		}
 
 		&[aria-selected="true"] {
-			background: hsl(var(--accent));
+			background: var(--gray-300);
+
+			&:hover {
+				background: var(--gray-400);
+			}
 		}
 	}
 
@@ -98,17 +125,18 @@
 		align-items: center;
 		justify-content: center;
 		border-radius: 6px;
-		border: 1px solid hsl(var(--muted));
-		background: hsl(var(--background));
+		border: 1px solid var(--gray-500);
+		background: var(--gray-050);
 	}
 
 	.PageRichTextEditorInner-editor-command-item-title {
 		font-weight: 500;
+		color: var(--gray-700);
 	}
 
 	.PageRichTextEditorInner-editor-command-item-description {
 		font-size: 0.75rem;
-		color: hsl(var(--muted-foreground));
+		color: var(--gray-600);
 	}
 
 	.PageRichTextEditorToolbar {

@@ -60,21 +60,6 @@ const starterKit = StarterKit.configure({
 	// The Liveblocks extension comes with its own history handling
 	history: false,
 
-	bulletList: {
-		HTMLAttributes: {
-			class: cx("list-disc list-outside leading-3 -mt-2"),
-		},
-	},
-	orderedList: {
-		HTMLAttributes: {
-			class: cx("list-decimal list-outside leading-3 -mt-2"),
-		},
-	},
-	listItem: {
-		HTMLAttributes: {
-			class: cx("leading-normal -mb-2"),
-		},
-	},
 	blockquote: {
 		HTMLAttributes: {
 			class: cx("border-l-4 border-primary"),

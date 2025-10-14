@@ -37,6 +37,7 @@ import { api } from "../../../convex/_generated/api.js";
 import { ySyncPluginKey } from "y-prosemirror";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
 import { MyBadge } from "../my-badge.tsx";
+import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -72,7 +73,7 @@ type PageRichTextEditorInner_ClassNames =
 	| "PageRichTextEditorInner"
 	| "PageRichTextEditorInner-editor-container"
 	| "PageRichTextEditorInner-editor-content"
-	| "PageRichTextEditorInner-status-bar"
+	| "PageRichTextEditorInner-toolbar"
 	| "PageRichTextEditorInner-threads-container"
 	| "PageRichTextEditorInner-editor-command"
 	| "PageRichTextEditorInner-editor-command-empty"
@@ -82,7 +83,6 @@ type PageRichTextEditorInner_ClassNames =
 	| "PageRichTextEditorInner-editor-command-item-content"
 	| "PageRichTextEditorInner-editor-command-item-title"
 	| "PageRichTextEditorInner-editor-command-item-description"
-	| "PageRichTextEditorInner-toolbar"
 	| "PageRichTextEditorInner-status-badge"
 	| "PageRichTextEditorInner-word-count-badge"
 	| "PageRichTextEditorInner-word-count-badge-hidden";
@@ -294,118 +294,116 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 		}
 	};
 
-	return (
-		isEditorReady && (
-			<>
-				{headerSlot}
-				<EditorContent
-					className={cn("PageRichTextEditorInner" satisfies PageRichTextEditorInner_ClassNames)}
-					editorContainerProps={{
-						className: cn("PageRichTextEditorInner-editor-container" satisfies PageRichTextEditorInner_ClassNames),
-					}}
-					editorProps={{
-						attributes: {
-							class: cn("PageRichTextEditorInner-editor-content" satisfies PageRichTextEditorInner_ClassNames),
-						},
-						handleDOMEvents: {
-							keydown: (_view, event) => handleCommandNavigation(event),
-						},
-						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-					}}
-					extensions={extensions}
-					immediatelyRender={false}
-					onCreate={handleCreate}
-					onUpdate={handleUpdate}
-					slotBefore={
-						/* Status Bar */
-						<div className={cn("PageRichTextEditorInner-status-bar" satisfies PageRichTextEditorInner_ClassNames)}>
-							<PageRichTextEditorToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
-						</div>
-					}
-					slotAfter={<ImageResizer />}
-				>
-					<div className={cn("PageRichTextEditorInner-threads-container" satisfies PageRichTextEditorInner_ClassNames)}>
-						<Threads />
+	return isEditorReady ? (
+		<>
+			{headerSlot}
+			<EditorContent
+				className={cn("PageRichTextEditorInner" satisfies PageRichTextEditorInner_ClassNames)}
+				editorContainerProps={{
+					className: cn("PageRichTextEditorInner-editor-container" satisfies PageRichTextEditorInner_ClassNames),
+				}}
+				editorProps={{
+					attributes: {
+						class: cn("PageRichTextEditorInner-editor-content" satisfies PageRichTextEditorInner_ClassNames),
+					},
+					handleDOMEvents: {
+						keydown: (_view, event) => handleCommandNavigation(event),
+					},
+					handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+					handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+				}}
+				extensions={extensions}
+				immediatelyRender={false}
+				onCreate={handleCreate}
+				onUpdate={handleUpdate}
+				slotBefore={
+					/* Status Bar */
+					<div className={cn("PageRichTextEditorInner-toolbar" satisfies PageRichTextEditorInner_ClassNames)}>
+						<PageRichTextEditorToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
 					</div>
+				}
+				slotAfter={<ImageResizer />}
+			>
+				<div className={cn("PageRichTextEditorInner-threads-container" satisfies PageRichTextEditorInner_ClassNames)}>
+					<Threads />
+				</div>
 
-					<EditorCommand
-						className={cn("PageRichTextEditorInner-editor-command" satisfies PageRichTextEditorInner_ClassNames)}
+				<EditorCommand
+					className={cn("PageRichTextEditorInner-editor-command" satisfies PageRichTextEditorInner_ClassNames)}
+				>
+					<EditorCommandEmpty
+						className={cn("PageRichTextEditorInner-editor-command-empty" satisfies PageRichTextEditorInner_ClassNames)}
 					>
-						<EditorCommandEmpty
-							className={cn(
-								"PageRichTextEditorInner-editor-command-empty" satisfies PageRichTextEditorInner_ClassNames,
-							)}
-						>
-							No results
-						</EditorCommandEmpty>
-						<EditorCommandList
-							className={cn("PageRichTextEditorInner-editor-command-list" satisfies PageRichTextEditorInner_ClassNames)}
-						>
-							{suggestionItems.map((item) => (
-								<EditorCommandItem
-									value={item.title}
-									onCommand={(val) => {
-										if (!item?.command) {
-											return;
-										}
+						No results
+					</EditorCommandEmpty>
+					<EditorCommandList
+						className={cn("PageRichTextEditorInner-editor-command-list" satisfies PageRichTextEditorInner_ClassNames)}
+					>
+						{suggestionItems.map((item) => (
+							<EditorCommandItem
+								value={item.title}
+								onCommand={(val) => {
+									if (!item?.command) {
+										return;
+									}
 
-										item.command(val);
-									}}
+									item.command(val);
+								}}
+								className={cn(
+									"PageRichTextEditorInner-editor-command-item" satisfies PageRichTextEditorInner_ClassNames,
+								)}
+								key={item.title}
+							>
+								<div
 									className={cn(
-										"PageRichTextEditorInner-editor-command-item" satisfies PageRichTextEditorInner_ClassNames,
+										"PageRichTextEditorInner-editor-command-item-icon" satisfies PageRichTextEditorInner_ClassNames,
 									)}
-									key={item.title}
 								>
-									<div
+									{item.icon}
+								</div>
+								<div
+									className={cn(
+										"PageRichTextEditorInner-editor-command-item-content" satisfies PageRichTextEditorInner_ClassNames,
+									)}
+								>
+									<p
 										className={cn(
-											"PageRichTextEditorInner-editor-command-item-icon" satisfies PageRichTextEditorInner_ClassNames,
+											"PageRichTextEditorInner-editor-command-item-title" satisfies PageRichTextEditorInner_ClassNames,
 										)}
 									>
-										{item.icon}
-									</div>
-									<div
+										{item.title}
+									</p>
+									<p
 										className={cn(
-											"PageRichTextEditorInner-editor-command-item-content" satisfies PageRichTextEditorInner_ClassNames,
+											"PageRichTextEditorInner-editor-command-item-description" satisfies PageRichTextEditorInner_ClassNames,
 										)}
 									>
-										<p
-											className={cn(
-												"PageRichTextEditorInner-editor-command-item-title" satisfies PageRichTextEditorInner_ClassNames,
-											)}
-										>
-											{item.title}
-										</p>
-										<p
-											className={cn(
-												"PageRichTextEditorInner-editor-command-item-description" satisfies PageRichTextEditorInner_ClassNames,
-											)}
-										>
-											{item.description}
-										</p>
-									</div>
-								</EditorCommandItem>
-							))}
-						</EditorCommandList>
-					</EditorCommand>
+										{item.description}
+									</p>
+								</div>
+							</EditorCommandItem>
+						))}
+					</EditorCommandList>
+				</EditorCommand>
 
-					<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
-						<Separator orientation="vertical" />
-						<NodeSelector open={openNode} onOpenChange={setOpenNode} />
-						<Separator orientation="vertical" />
-						<LinkSelector open={openLink} onOpenChange={setOpenLink} />
-						<Separator orientation="vertical" />
-						<MathSelector />
-						<Separator orientation="vertical" />
-						<TextButtons />
-						<Separator orientation="vertical" />
-						<ColorSelector open={openColor} onOpenChange={setOpenColor} />
-						<Separator orientation="vertical" />
-						<AddCommentSelector />
-					</GenerativeMenuSwitch>
-				</EditorContent>
-			</>
-		)
+				<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
+					<Separator orientation="vertical" />
+					<NodeSelector open={openNode} onOpenChange={setOpenNode} />
+					<Separator orientation="vertical" />
+					<LinkSelector open={openLink} onOpenChange={setOpenLink} />
+					<Separator orientation="vertical" />
+					<MathSelector />
+					<Separator orientation="vertical" />
+					<TextButtons />
+					<Separator orientation="vertical" />
+					<ColorSelector open={openColor} onOpenChange={setOpenColor} />
+					<Separator orientation="vertical" />
+					<AddCommentSelector />
+				</GenerativeMenuSwitch>
+			</EditorContent>
+		</>
+	) : (
+		<PageEditorSkeleton />
 	);
 }
 

@@ -223,33 +223,7 @@
 		@apply z-30;
 	}
 
-	/* Tiptap editor styles to match liveblocks example */
-	.tiptap:focus p[data-placeholder]::before {
-		content: attr(data-placeholder);
-		position: absolute;
-		user-select: none;
-		pointer-events: none;
-		color: hsl(var(--foreground) / 0.4);
-	}
-
 	/* Typography styles */
-	.tiptap h1 {
-		font-size: 2rem;
-		font-weight: 700;
-		line-height: 1.2;
-	}
-
-	.tiptap h2 {
-		font-size: 1.5rem;
-		font-weight: 600;
-		line-height: 1.2;
-	}
-
-	.tiptap h3 {
-		font-size: 1.25rem;
-		font-weight: 600;
-		line-height: 1.2;
-	}
 
 	.tiptap h4 {
 		font-size: 1rem;
