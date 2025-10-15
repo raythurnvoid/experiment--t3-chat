@@ -19,7 +19,7 @@ import { ColorSelector } from "./selectors/color-selector.tsx";
 import { LinkSelector } from "./selectors/link-selector.tsx";
 import { NodeSelector } from "./selectors/node-selector.tsx";
 import { MathSelector } from "./selectors/math-selector.tsx";
-import { TextButtons } from "./selectors/text-buttons.tsx";
+import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
 import { AddCommentSelector } from "./selectors/add-comment-selector.tsx";
 import { Separator } from "../../ui/separator.tsx";
 import GenerativeMenuSwitch from "./generative/generative-menu-switch.tsx";
@@ -394,7 +394,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 					<Separator orientation="vertical" />
 					<MathSelector />
 					<Separator orientation="vertical" />
-					<TextButtons />
+					<PageEditorRichTextToolsTextStyles />
 					<Separator orientation="vertical" />
 					<ColorSelector open={openColor} onOpenChange={setOpenColor} />
 					<Separator orientation="vertical" />
@@ -440,7 +440,7 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 				<Separator orientation="vertical" />
 				<MathSelector />
 				<Separator orientation="vertical" />
-				<TextButtons />
+				<PageEditorRichTextToolsTextStyles />
 				<Separator orientation="vertical" />
 				<ColorSelector open={openColor} onOpenChange={setOpenColor} />
 				<Separator orientation="vertical" />

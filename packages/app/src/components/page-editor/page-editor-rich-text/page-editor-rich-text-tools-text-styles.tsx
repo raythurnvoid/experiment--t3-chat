@@ -1,8 +1,12 @@
-import { MyIconButton } from "@/components/my-icon-button.tsx";
+import "./page-editor-rich-text-tools-text-styles.css";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
 import { EditorBubbleItem, useEditor } from "novel";
+import { cn } from "@/lib/utils.ts";
 
-export function TextButtons() {
+export type PageEditorRichTextToolsTextStyles_ClassNames = "PageEditorRichTextToolsTextStyles";
+
+export function PageEditorRichTextToolsTextStyles() {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
@@ -10,14 +14,16 @@ export function TextButtons() {
 	if (!editor) return null;
 
 	return (
-		<div className="flex">
+		<div className={cn("PageEditorRichTextToolsTextStyles" satisfies PageEditorRichTextToolsTextStyles_ClassNames)}>
 			<EditorBubbleItem
 				onSelect={(editor) => {
 					editor?.chain().focus().toggleBold().run();
 				}}
 			>
 				<MyIconButton variant="ghost" tooltip="Bold">
-					<BoldIcon className="h-4 w-4" />
+					<MyIconButtonIcon>
+						<BoldIcon />
+					</MyIconButtonIcon>
 				</MyIconButton>
 			</EditorBubbleItem>
 
@@ -27,7 +33,9 @@ export function TextButtons() {
 				}}
 			>
 				<MyIconButton variant="ghost" tooltip="Italic">
-					<ItalicIcon className="h-4 w-4" />
+					<MyIconButtonIcon>
+						<ItalicIcon />
+					</MyIconButtonIcon>
 				</MyIconButton>
 			</EditorBubbleItem>
 
@@ -37,7 +45,9 @@ export function TextButtons() {
 				}}
 			>
 				<MyIconButton variant="ghost" tooltip="Underline">
-					<UnderlineIcon className="h-4 w-4" />
+					<MyIconButtonIcon>
+						<UnderlineIcon />
+					</MyIconButtonIcon>
 				</MyIconButton>
 			</EditorBubbleItem>
 
@@ -47,7 +57,9 @@ export function TextButtons() {
 				}}
 			>
 				<MyIconButton variant="ghost" tooltip="Strikethrough">
-					<StrikethroughIcon className="h-4 w-4" />
+					<MyIconButtonIcon>
+						<StrikethroughIcon />
+					</MyIconButtonIcon>
 				</MyIconButton>
 			</EditorBubbleItem>
 
@@ -57,7 +69,9 @@ export function TextButtons() {
 				}}
 			>
 				<MyIconButton variant="ghost" tooltip="Code">
-					<CodeIcon className="h-4 w-4" />
+					<MyIconButtonIcon>
+						<CodeIcon />
+					</MyIconButtonIcon>
 				</MyIconButton>
 			</EditorBubbleItem>
 		</div>
