@@ -45,6 +45,7 @@ export default defineConfig(
 
 			"react-hooks/exhaustive-deps": "off",
 			"react-hooks/set-state-in-effect": "off",
+			"react-hooks/no-unused-directives": "off",
 
 			"@typescript-eslint/ban-ts-comment": "off",
 			"@typescript-eslint/no-array-constructor": "off",

@@ -3,7 +3,10 @@ import { cn } from "@/lib/utils.ts";
 import { Redo, Undo } from "lucide-react";
 import { EditorBubbleItem, useEditor } from "novel";
 
-export const HistoryButtons = () => {
+export function HistoryButtons() {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
 	const { editor } = useEditor();
 	if (!editor) return null;
 
@@ -46,4 +49,4 @@ export const HistoryButtons = () => {
 			))}
 		</div>
 	);
-};
+}

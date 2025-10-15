@@ -4,6 +4,9 @@ import {
 	Heading1,
 	Heading2,
 	Heading3,
+	Heading4,
+	Heading5,
+	Heading6,
 	List,
 	ListOrdered,
 	Text,
@@ -57,6 +60,33 @@ export const suggestionItems = createSuggestionItems([
 		icon: <Heading3 size={18} />,
 		command: ({ editor, range }) => {
 			editor.chain().focus().deleteRange(range).setNode("heading", { level: 3 }).run();
+		},
+	},
+	{
+		title: "Heading 4",
+		description: "Smaller section heading.",
+		searchTerms: ["subsection", "small"],
+		icon: <Heading4 size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).setNode("heading", { level: 4 }).run();
+		},
+	},
+	{
+		title: "Heading 5",
+		description: "Very small section heading.",
+		searchTerms: ["subsection", "x-small"],
+		icon: <Heading5 size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).setNode("heading", { level: 5 }).run();
+		},
+	},
+	{
+		title: "Heading 6",
+		description: "Tiny section heading.",
+		searchTerms: ["subsection", "tiny"],
+		icon: <Heading6 size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).setNode("heading", { level: 6 }).run();
 		},
 	},
 	{

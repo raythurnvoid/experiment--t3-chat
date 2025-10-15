@@ -3,9 +3,11 @@ import { cn } from "@/lib/utils.ts";
 import { SigmaIcon } from "lucide-react";
 import { useEditor } from "novel";
 
-export const MathSelector = () => {
-	const { editor } = useEditor();
+export function MathSelector() {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
 
+	const { editor } = useEditor();
 	if (!editor) return null;
 
 	return (
@@ -29,4 +31,4 @@ export const MathSelector = () => {
 			<SigmaIcon className={cn("size-4", { "text-blue-500": editor.isActive("math") })} strokeWidth={2.3} />
 		</Button>
 	);
-};
+}

@@ -4,9 +4,13 @@ import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from
 import { EditorBubbleItem, useEditor } from "novel";
 import type { SelectorItem } from "./node-selector";
 
-export const TextButtons = () => {
+export function TextButtons() {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
 	const { editor } = useEditor();
 	if (!editor) return null;
+
 	const items: SelectorItem[] = [
 		{
 			name: "bold",
@@ -39,6 +43,7 @@ export const TextButtons = () => {
 			icon: CodeIcon,
 		},
 	];
+
 	return (
 		<div className="flex">
 			{items.map((item) => (
@@ -59,4 +64,4 @@ export const TextButtons = () => {
 			))}
 		</div>
 	);
-};
+}

@@ -3,9 +3,11 @@ import { cn } from "@/lib/utils.ts";
 import { MessageSquarePlus } from "lucide-react";
 import { useEditor } from "novel";
 
-export const AddCommentSelector = () => {
-	const { editor } = useEditor();
+export function AddCommentSelector() {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
 
+	const { editor } = useEditor();
 	if (!editor) return null;
 
 	return (
@@ -26,4 +28,4 @@ export const AddCommentSelector = () => {
 			/>
 		</Button>
 	);
-};
+}

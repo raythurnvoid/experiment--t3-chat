@@ -92,10 +92,13 @@ interface ColorSelectorProps {
 	onOpenChange: (open: boolean) => void;
 }
 
-export const ColorSelector = ({ open, onOpenChange }: ColorSelectorProps) => {
-	const { editor } = useEditor();
+export function ColorSelector({ open, onOpenChange }: ColorSelectorProps) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
 
+	const { editor } = useEditor();
 	if (!editor) return null;
+
 	const activeColorItem = TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }));
 
 	const activeHighlightItem = HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }));
@@ -173,4 +176,4 @@ export const ColorSelector = ({ open, onOpenChange }: ColorSelectorProps) => {
 			</PopoverContent>
 		</Popover>
 	);
-};
+}

@@ -31,7 +31,10 @@ interface LinkSelectorProps {
 	onOpenChange: (open: boolean) => void;
 }
 
-export const LinkSelector = ({ open, onOpenChange }: LinkSelectorProps) => {
+export function LinkSelector({ open, onOpenChange }: LinkSelectorProps) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
 	const inputRef = useRef<HTMLInputElement>(null);
 	const { editor } = useEditor();
 
@@ -101,4 +104,4 @@ export const LinkSelector = ({ open, onOpenChange }: LinkSelectorProps) => {
 			</PopoverContent>
 		</Popover>
 	);
-};
+}

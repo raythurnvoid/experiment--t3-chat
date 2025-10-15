@@ -6,6 +6,9 @@ import {
 	Heading1,
 	Heading2,
 	Heading3,
+	Heading4,
+	Heading5,
+	Heading6,
 	ListOrdered,
 	type LucideIcon,
 	TextIcon,
@@ -51,6 +54,24 @@ const items: SelectorItem[] = [
 		isActive: (editor) => editor?.isActive("heading", { level: 3 }) ?? false,
 	},
 	{
+		name: "Heading 4",
+		icon: Heading4,
+		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 4 }).run(),
+		isActive: (editor) => editor?.isActive("heading", { level: 4 }) ?? false,
+	},
+	{
+		name: "Heading 5",
+		icon: Heading5,
+		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 5 }).run(),
+		isActive: (editor) => editor?.isActive("heading", { level: 5 }) ?? false,
+	},
+	{
+		name: "Heading 6",
+		icon: Heading6,
+		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 6 }).run(),
+		isActive: (editor) => editor?.isActive("heading", { level: 6 }) ?? false,
+	},
+	{
 		name: "To-do List",
 		icon: CheckSquare,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleTaskList().run(),
@@ -86,9 +107,13 @@ interface NodeSelectorProps {
 	onOpenChange: (open: boolean) => void;
 }
 
-export const NodeSelector = ({ open, onOpenChange }: NodeSelectorProps) => {
+export function NodeSelector({ open, onOpenChange }: NodeSelectorProps) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
 	const { editor } = useEditor();
 	if (!editor) return null;
+
 	const activeItem = items.filter((item) => item.isActive(editor)).pop() ?? {
 		name: "Multiple",
 	};
@@ -123,4 +148,4 @@ export const NodeSelector = ({ open, onOpenChange }: NodeSelectorProps) => {
 			</PopoverContent>
 		</Popover>
 	);
-};
+}

@@ -125,6 +125,17 @@
 	--red-600: oklch(50% 0.1331 25.72);
 	--red-700: oklch(55% 0.1331 25.72);
 
+	/* Novel highlight colors for light mode */
+	--novel-highlight-default: #ffffff;
+	--novel-highlight-purple: #f6f3f8;
+	--novel-highlight-red: #fdebeb;
+	--novel-highlight-yellow: #fbf4a2;
+	--novel-highlight-blue: #c1ecf9;
+	--novel-highlight-green: #acf79f;
+	--novel-highlight-orange: #faebdd;
+	--novel-highlight-pink: #faf1f5;
+	--novel-highlight-gray: #f1f1ef;
+
 	/* App-specific styles */
 	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
 	line-height: 1.5;
@@ -172,6 +183,17 @@
 	--sidebar-accent-foreground: var(--gray-800);
 	--sidebar-border: var(--gray-300);
 	--sidebar-ring: var(--gray-100);
+
+	/* Novel highlight colors for dark mode */
+	--novel-highlight-default: #000000;
+	--novel-highlight-purple: #3f2c4b;
+	--novel-highlight-red: #5c1a1a;
+	--novel-highlight-yellow: #5c4b1a;
+	--novel-highlight-blue: #1a3d5c;
+	--novel-highlight-green: #1a5c20;
+	--novel-highlight-orange: #5c3a1a;
+	--novel-highlight-pink: #5c1a3a;
+	--novel-highlight-gray: #3a3a3a;
 }
 
 /* Tailwind CSS v4 Theme Mappings */
@@ -242,44 +264,6 @@
 		box-sizing: border-box;
 		border-left: 0.25rem solid hsl(var(--foreground) / 0.25);
 		padding-left: 1rem;
-	}
-
-	/* List styles */
-	.tiptap ul {
-		display: block;
-		list-style-type: disc;
-		margin-block-start: 1rem;
-		margin-block-end: 1rem;
-		margin-inline-start: 0px;
-		margin-inline-end: 0px;
-		padding-inline-start: 40px;
-		unicode-bidi: isolate;
-	}
-
-	.tiptap ol {
-		display: block;
-		list-style-type: decimal;
-		margin-block-start: 1rem;
-		margin-block-end: 1rem;
-		margin-inline-start: 0px;
-		margin-inline-end: 0px;
-		padding-inline-start: 40px;
-		unicode-bidi: isolate;
-	}
-
-	.tiptap li {
-		display: list-item;
-		text-align: -webkit-match-parent;
-		unicode-bidi: isolate;
-	}
-
-	.tiptap li::marker {
-		unicode-bidi: isolate;
-		font-variant-numeric: tabular-nums;
-		text-transform: none;
-		text-indent: 0px !important;
-		text-align: start !important;
-		text-align-last: start !important;
 	}
 }
 
