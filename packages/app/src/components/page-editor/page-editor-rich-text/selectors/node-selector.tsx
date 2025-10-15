@@ -1,7 +1,6 @@
 import {
 	Check,
 	CheckSquare,
-	ChevronDown,
 	Code,
 	Heading1,
 	Heading2,
@@ -14,10 +13,15 @@ import {
 	TextIcon,
 	TextQuote,
 } from "lucide-react";
-import { EditorBubbleItem, useEditor } from "novel";
-import { Button } from "../../../ui/button.tsx";
-import { PopoverContent, PopoverTrigger } from "../../../ui/popover.tsx";
-import { Popover } from "@radix-ui/react-popover";
+import { useEditor } from "novel";
+import {
+	MySelect,
+	MySelectTrigger,
+	MySelectOpenIndicator,
+	MySelectPopover,
+	MySelectItem,
+} from "../../../my-select.tsx";
+import { MyButton } from "../../../my-button.tsx";
 
 export type SelectorItem = {
 	name: string;
@@ -31,7 +35,6 @@ const items: SelectorItem[] = [
 		name: "Text",
 		icon: TextIcon,
 		command: (editor) => editor?.chain().focus().clearNodes().run(),
-		// I feel like there has to be a more efficient way to do this – feel free to PR if you know how!
 		isActive: (editor) =>
 			(editor?.isActive("paragraph") && !editor?.isActive("bulletList") && !editor?.isActive("orderedList")) ?? false,
 	},
@@ -119,22 +122,23 @@ export function NodeSelector({ open, onOpenChange }: NodeSelectorProps) {
 	};
 
 	return (
-		<Popover modal={true} open={open} onOpenChange={onOpenChange}>
-			<PopoverTrigger asChild className="gap-2 rounded-none border-none hover:bg-accent focus:ring-0">
-				<Button size="sm" variant="ghost" className="gap-2">
-					<span className="text-sm whitespace-nowrap">{activeItem.name}</span>
-					<ChevronDown className="h-4 w-4" />
-				</Button>
-			</PopoverTrigger>
-			<PopoverContent sideOffset={5} align="start" className="w-48 p-1">
+		<MySelect defaultValue={activeItem.name}>
+			<MySelectTrigger>
+				<MyButton variant="ghost">
+					{activeItem.name || "Select format"}
+					<MySelectOpenIndicator />
+				</MyButton>
+			</MySelectTrigger>
+			<MySelectPopover className="w-48 p-1">
 				{items.map((item) => (
-					<EditorBubbleItem
+					<MySelectItem
 						key={item.name}
-						onSelect={(editor) => {
+						value={item.name}
+						className="flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-sm hover:bg-accent"
+						onClick={() => {
 							item.command(editor);
 							onOpenChange(false);
 						}}
-						className="flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-sm hover:bg-accent"
 					>
 						<div className="flex items-center space-x-2">
 							<div className="rounded-sm border p-1">
@@ -143,9 +147,9 @@ export function NodeSelector({ open, onOpenChange }: NodeSelectorProps) {
 							<span>{item.name}</span>
 						</div>
 						{activeItem.name === item.name && <Check className="h-4 w-4" />}
-					</EditorBubbleItem>
+					</MySelectItem>
 				))}
-			</PopoverContent>
-		</Popover>
+			</MySelectPopover>
+		</MySelect>
 	);
 }
