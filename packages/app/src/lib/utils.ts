@@ -162,3 +162,30 @@ export function msg_with_nullish_values(name: string, deps: Record<string, any>)
 	}
 	return undefined;
 }
+
+/**
+ * Calculates the scrollbar width and sets it as a CSS custom property.
+ * Creates an invisible container to measure the scrollbar width accurately.
+ */
+export function valorize_scrollbar_width_px_css_var(): void {
+	const id = "invisible-container-to-calculate-scrollbar-width";
+
+	let invisibleContainer = document.getElementById(id);
+
+	if (!invisibleContainer) {
+		invisibleContainer = document.createElement("div");
+		invisibleContainer.id = id;
+		invisibleContainer.style.position = "absolute";
+		invisibleContainer.style.zIndex = "-1";
+		invisibleContainer.style.width = "100px";
+		invisibleContainer.style.height = "0px";
+		invisibleContainer.style.opacity = "0";
+		invisibleContainer.style.overflow = "scroll";
+		invisibleContainer.style.pointerEvents = "none";
+		document.body.appendChild(invisibleContainer);
+	}
+
+	const scrollbarWidth = invisibleContainer.offsetWidth - invisibleContainer.clientWidth;
+
+	document.body.style.setProperty("--app-scrollbar-w", `${scrollbarWidth}px`);
+}

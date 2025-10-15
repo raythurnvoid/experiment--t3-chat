@@ -407,7 +407,12 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 	);
 }
 
-type PageRichTextEditorToolbar_ClassNames = "PageRichTextEditorToolbar";
+type PageRichTextEditorToolbar_ClassNames =
+	| "PageRichTextEditorToolbar"
+	| "PageRichTextEditorToolbar-scrollable-area"
+	| "PageRichTextEditorToolbar-status-badge"
+	| "PageRichTextEditorToolbar-word-count-badge"
+	| "PageRichTextEditorToolbar-word-count-badge-hidden";
 
 type PageRichTextEditorToolbar_Props = {
 	charsCount: number;
@@ -426,40 +431,42 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 
 	return (
 		<Toolbar editor={editor} className={cn("PageRichTextEditorToolbar" satisfies PageRichTextEditorToolbar_ClassNames)}>
-			<HistoryButtons />
-			<Separator orientation="vertical" />
-			<NodeSelector open={openNode} onOpenChange={setOpenNode} />
-			<Separator orientation="vertical" />
-			<LinkSelector open={openLink} onOpenChange={setOpenLink} />
-			<Separator orientation="vertical" />
-			<MathSelector />
-			<Separator orientation="vertical" />
-			<TextButtons />
-			<Separator orientation="vertical" />
-			<ColorSelector open={openColor} onOpenChange={setOpenColor} />
-			<Separator orientation="vertical" />
-			<MyBadge
-				variant="secondary"
-				className={cn("PageRichTextEditorInner-status-badge" satisfies PageRichTextEditorInner_ClassNames)}
-			>
-				{/*
-				If syncChanged it's false then force to show "Saved" because when the
-				editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
-				*/}
-				{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
-			</MyBadge>
-			<MyBadge
-				variant="secondary"
-				className={cn(
-					charsCount
-						? ("PageRichTextEditorInner-word-count-badge" satisfies PageRichTextEditorInner_ClassNames)
-						: ("PageRichTextEditorInner-word-count-badge-hidden" satisfies PageRichTextEditorInner_ClassNames),
-				)}
-			>
-				{charsCount} Words
-			</MyBadge>
-			<VersionsDialog />
-			<NotificationsPopover />
+			<div className={cn("PageRichTextEditorToolbar-scrollable-area" satisfies PageRichTextEditorToolbar_ClassNames)}>
+				<HistoryButtons />
+				<Separator orientation="vertical" />
+				<NodeSelector open={openNode} onOpenChange={setOpenNode} />
+				<Separator orientation="vertical" />
+				<LinkSelector open={openLink} onOpenChange={setOpenLink} />
+				<Separator orientation="vertical" />
+				<MathSelector />
+				<Separator orientation="vertical" />
+				<TextButtons />
+				<Separator orientation="vertical" />
+				<ColorSelector open={openColor} onOpenChange={setOpenColor} />
+				<Separator orientation="vertical" />
+				<MyBadge
+					variant="secondary"
+					className={cn("PageRichTextEditorToolbar-status-badge" satisfies PageRichTextEditorToolbar_ClassNames)}
+				>
+					{/*
+					If syncChanged it's false then force to show "Saved" because when the
+					editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
+					*/}
+					{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
+				</MyBadge>
+				<MyBadge
+					variant="secondary"
+					className={cn(
+						charsCount
+							? ("PageRichTextEditorToolbar-word-count-badge" satisfies PageRichTextEditorToolbar_ClassNames)
+							: ("PageRichTextEditorToolbar-word-count-badge-hidden" satisfies PageRichTextEditorToolbar_ClassNames),
+					)}
+				>
+					{charsCount} Words
+				</MyBadge>
+				<VersionsDialog />
+				<NotificationsPopover />
+			</div>
 		</Toolbar>
 	);
 }

@@ -5,13 +5,9 @@
 @import "tailwindcss/utilities.css" layer(utilities);
 
 /* Liveblocks styles for AI docs editor */
-@import "@liveblocks/react-ui/styles.css";
-@import "@liveblocks/react-ui/styles/dark/media-query.css";
-@import "@liveblocks/react-tiptap/styles.css";
-
-/* Mantine and BlockNote styles */
-@import "@blocknote/core/fonts/inter.css";
-@import "@blocknote/mantine/style.css";
+@import "@liveblocks/react-ui/styles.css" layer(external);
+@import "@liveblocks/react-ui/styles/dark/media-query.css" layer(external);
+@import "@liveblocks/react-tiptap/styles.css" layer(external);
 
 @import "tw-animate-css";
 

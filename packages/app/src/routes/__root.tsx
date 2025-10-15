@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { auth_set_token_manager, useAuth } from "../lib/auth.ts";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { cn } from "../lib/utils.ts";
+import { cn, valorize_scrollbar_width_px_css_var } from "../lib/utils.ts";
 
 function Layout() {
 	const auth = useAuth();
@@ -17,6 +17,10 @@ function Layout() {
 				}),
 		});
 	}, [auth]);
+
+	useEffect(() => {
+		valorize_scrollbar_width_px_css_var();
+	}, []);
 
 	if (!auth.isLoaded) {
 		return null;
