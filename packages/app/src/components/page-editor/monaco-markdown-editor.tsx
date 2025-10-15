@@ -55,7 +55,6 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 
 	useEffect(() => {
 		if (!editor) return;
-		console.log("editor");
 
 		const yDoc = yProvider.getYDoc();
 		const yText = yDoc.getText(`markdown:${pageId}`);

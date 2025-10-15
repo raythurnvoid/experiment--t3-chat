@@ -1,6 +1,6 @@
 import "./app-ai-chat.css";
 import { makeAssistantToolUI, useMessage, useMessagePartRuntime, useThreadListItemRuntime } from "@assistant-ui/react";
-import type { ToolCallContentPartProps } from "@assistant-ui/react";
+import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import { CopyIcon, FileText, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils.ts";
 import { Badge } from "./ui/badge.tsx";
@@ -80,7 +80,7 @@ function ToolMetaHeader(props: { metadata: Record<string, any> }) {
 	);
 }
 
-function CreateArtifactToolUiComponent(props: ToolCallContentPartProps<CreateArtifactArgs, void>) {
+function CreateArtifactToolUiComponent(props: ToolCallMessagePartProps<CreateArtifactArgs, void>) {
 	const { args, status } = props;
 	// Safely parse arguments using Zod
 	const argsParseResult = parseCreateArtifactArgs(args);
@@ -148,7 +148,7 @@ const CreateArtifactToolUi = makeAssistantToolUI<CreateArtifactArgs, void>({
 });
 
 function ReadPageToolUiComponent(
-	props: ToolCallContentPartProps<ai_tool_create_read_page_ToolInput, ai_tool_create_read_page_ToolOutput>,
+	props: ToolCallMessagePartProps<ai_tool_create_read_page_ToolInput, ai_tool_create_read_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
@@ -188,7 +188,7 @@ const ReadPageToolUI = makeAssistantToolUI({
 });
 
 function ListPagesToolUiComponent(
-	props: ToolCallContentPartProps<ai_tool_create_list_pages_ToolInput, ai_tool_create_list_pages_ToolOutput>,
+	props: ToolCallMessagePartProps<ai_tool_create_list_pages_ToolInput, ai_tool_create_list_pages_ToolOutput>,
 ) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
@@ -221,7 +221,7 @@ const ListPagesToolUi = makeAssistantToolUI({
 });
 
 function GlobPagesToolUiComponent(
-	props: ToolCallContentPartProps<ai_tool_create_glob_pages_ToolInput, ai_tool_create_glob_pages_ToolOutput>,
+	props: ToolCallMessagePartProps<ai_tool_create_glob_pages_ToolInput, ai_tool_create_glob_pages_ToolOutput>,
 ) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
@@ -254,7 +254,7 @@ const GlobPagesToolUi = makeAssistantToolUI({
 });
 
 function GrepPagesToolUiComponent(
-	props: ToolCallContentPartProps<ai_tool_create_grep_pages_ToolInput, ai_tool_create_grep_pages_ToolOutput>,
+	props: ToolCallMessagePartProps<ai_tool_create_grep_pages_ToolInput, ai_tool_create_grep_pages_ToolOutput>,
 ) {
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
@@ -287,7 +287,7 @@ const GrepPagesToolUi = makeAssistantToolUI({
 });
 
 function TextSearchPagesToolUiComponent(
-	props: ToolCallContentPartProps<
+	props: ToolCallMessagePartProps<
 		ai_tool_create_text_search_pages_ToolInput,
 		ai_tool_create_text_search_pages_ToolOutput
 	>,
@@ -323,7 +323,7 @@ const TextSearchPagesToolUi = makeAssistantToolUI({
 });
 
 function WritePageToolUiComponent(
-	props: ToolCallContentPartProps<ai_tool_create_write_page_ToolInput, ai_tool_create_write_page_ToolOutput>,
+	props: ToolCallMessagePartProps<ai_tool_create_write_page_ToolInput, ai_tool_create_write_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
 	const threadListItemRuntime = useThreadListItemRuntime();
@@ -403,7 +403,7 @@ const WritePageToolUi = makeAssistantToolUI({
 });
 
 function EditPageToolUiComponent(
-	props: ToolCallContentPartProps<ai_tool_create_edit_page_ToolInput, ai_tool_create_edit_page_ToolOutput>,
+	props: ToolCallMessagePartProps<ai_tool_create_edit_page_ToolInput, ai_tool_create_edit_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
 	const threadListItemRuntime = useThreadListItemRuntime();

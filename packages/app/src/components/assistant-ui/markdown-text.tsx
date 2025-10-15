@@ -71,7 +71,7 @@ function H1Component(props: React.ComponentPropsWithoutRef<"h1">) {
 	);
 }
 
-function H2Component(props: React.ComponentProps<"h2">) {
+function H2Component(props: React.ComponentPropsWithoutRef<"h2">) {
 	const { className, ...rest } = props;
 	return (
 		<h2
@@ -84,7 +84,7 @@ function H2Component(props: React.ComponentProps<"h2">) {
 	);
 }
 
-function H3Component(props: React.ComponentProps<"h3">) {
+function H3Component(props: React.ComponentPropsWithoutRef<"h3">) {
 	const { className, ...rest } = props;
 	return (
 		<h3
@@ -97,7 +97,7 @@ function H3Component(props: React.ComponentProps<"h3">) {
 	);
 }
 
-function H4Component(props: React.ComponentProps<"h4">) {
+function H4Component(props: React.ComponentPropsWithoutRef<"h4">) {
 	const { className, ...rest } = props;
 	return (
 		<h4
@@ -110,47 +110,47 @@ function H4Component(props: React.ComponentProps<"h4">) {
 	);
 }
 
-function H5Component(props: React.ComponentProps<"h5">) {
+function H5Component(props: React.ComponentPropsWithoutRef<"h5">) {
 	const { className, ...rest } = props;
 	return <h5 className={cn("aui-md-h5 my-4 text-lg font-semibold first:mt-0 last:mb-0", className)} {...rest} />;
 }
 
-function H6Component(props: React.ComponentProps<"h6">) {
+function H6Component(props: React.ComponentPropsWithoutRef<"h6">) {
 	const { className, ...rest } = props;
 	return <h6 className={cn("aui-md-h6 my-4 font-semibold first:mt-0 last:mb-0", className)} {...rest} />;
 }
 
-function PComponent(props: React.ComponentProps<"p">) {
+function PComponent(props: React.ComponentPropsWithoutRef<"p">) {
 	const { className, ...rest } = props;
 	return <p className={cn("aui-md-p mt-5 mb-5 leading-7 first:mt-0 last:mb-0", className)} {...rest} />;
 }
 
-function AComponent(props: React.ComponentProps<"a">) {
+function AComponent(props: React.ComponentPropsWithoutRef<"a">) {
 	const { className, ...rest } = props;
 	return <a className={cn("aui-md-a font-medium text-primary underline underline-offset-4", className)} {...rest} />;
 }
 
-function BlockquoteComponent(props: React.ComponentProps<"blockquote">) {
+function BlockquoteComponent(props: React.ComponentPropsWithoutRef<"blockquote">) {
 	const { className, ...rest } = props;
 	return <blockquote className={cn("aui-md-blockquote border-l-2 pl-6 italic", className)} {...rest} />;
 }
 
-function UlComponent(props: React.ComponentProps<"ul">) {
+function UlComponent(props: React.ComponentPropsWithoutRef<"ul">) {
 	const { className, ...rest } = props;
 	return <ul className={cn("aui-md-ul my-5 ml-6 list-disc [&>li]:mt-2", className)} {...rest} />;
 }
 
-function OlComponent(props: React.ComponentProps<"ol">) {
+function OlComponent(props: React.ComponentPropsWithoutRef<"ol">) {
 	const { className, ...rest } = props;
 	return <ol className={cn("aui-md-ol my-5 ml-6 list-decimal [&>li]:mt-2", className)} {...rest} />;
 }
 
-function HrComponent(props: React.ComponentProps<"hr">) {
+function HrComponent(props: React.ComponentPropsWithoutRef<"hr">) {
 	const { className, ...rest } = props;
 	return <hr className={cn("aui-md-hr my-5 border-b", className)} {...rest} />;
 }
 
-function TableComponent(props: React.ComponentProps<"table">) {
+function TableComponent(props: React.ComponentPropsWithoutRef<"table">) {
 	const { className, ...rest } = props;
 	return (
 		<table
@@ -160,7 +160,7 @@ function TableComponent(props: React.ComponentProps<"table">) {
 	);
 }
 
-function ThComponent(props: React.ComponentProps<"th">) {
+function ThComponent(props: React.ComponentPropsWithoutRef<"th">) {
 	const { className, ...rest } = props;
 	return (
 		<th
@@ -173,7 +173,7 @@ function ThComponent(props: React.ComponentProps<"th">) {
 	);
 }
 
-function TdComponent(props: React.ComponentProps<"td">) {
+function TdComponent(props: React.ComponentPropsWithoutRef<"td">) {
 	const { className, ...rest } = props;
 	return (
 		<td
@@ -186,7 +186,7 @@ function TdComponent(props: React.ComponentProps<"td">) {
 	);
 }
 
-function TrComponent(props: React.ComponentProps<"tr">) {
+function TrComponent(props: React.ComponentPropsWithoutRef<"tr">) {
 	const { className, ...rest } = props;
 	return (
 		<tr
@@ -199,12 +199,12 @@ function TrComponent(props: React.ComponentProps<"tr">) {
 	);
 }
 
-function SupComponent(props: React.ComponentProps<"sup">) {
+function SupComponent(props: React.ComponentPropsWithoutRef<"sup">) {
 	const { className, ...rest } = props;
 	return <sup className={cn("aui-md-sup [&>a]:text-xs [&>a]:no-underline", className)} {...rest} />;
 }
 
-function PreComponent(props: React.ComponentProps<"pre">) {
+function PreComponent(props: React.ComponentPropsWithoutRef<"pre">) {
 	const { className, ...rest } = props;
 	return (
 		<pre
@@ -214,7 +214,7 @@ function PreComponent(props: React.ComponentProps<"pre">) {
 	);
 }
 
-function CodeComponent(props: React.ComponentProps<"code">) {
+function CodeComponent(props: React.ComponentPropsWithoutRef<"code">) {
 	const { className, ...rest } = props;
 	const isCodeBlock = useIsMarkdownCodeBlock();
 	return (

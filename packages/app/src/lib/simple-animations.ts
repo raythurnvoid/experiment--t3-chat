@@ -184,16 +184,16 @@ export function simple_animations_create_id(label: string) {
 	return `simple_animation::${id_counter++}::${label}`;
 }
 
-const animations_registry = new WeakMap<
-	HTMLElement,
-	Map<
-		string,
-		{
-			keyframes: Keyframe[];
-			options: simple_animations_AnimateOptions;
-		}
-	>
->();
+// const animations_registry = new WeakMap<
+// 	HTMLElement,
+// 	Map<
+// 		string,
+// 		{
+// 			keyframes: Keyframe[];
+// 			options: simple_animations_AnimateOptions;
+// 		}
+// 	>
+// >();
 
 export function simple_animations_register_animation(
 	element: HTMLElement,

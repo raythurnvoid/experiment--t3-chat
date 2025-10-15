@@ -1,16 +1,16 @@
 "use client";
 
-import { Command, CommandInput } from "../../ui/command.tsx";
+import { Command, CommandInput } from "../../../ui/command.tsx";
 import { useCompletion } from "@ai-sdk/react";
 import { ArrowUp, Loader, Sparkles } from "lucide-react";
 import { useEditor, addAIHighlight } from "novel";
 import { useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
-import { Button } from "../../ui/button.tsx";
+import { Button } from "../../../ui/button.tsx";
 import AICompletionCommands from "./ai-completion-command.tsx";
 import AISelectorCommands from "./ai-selector-commands.tsx";
-import { app_fetch_main_api_url } from "../../../lib/fetch.ts";
+import { app_fetch_main_api_url } from "../../../../lib/fetch.ts";
 //TODO: I think it makes more sense to create a custom Tiptap extension for this functionality https://tiptap.dev/docs/editor/ai/introduction
 
 interface AISelectorProps {

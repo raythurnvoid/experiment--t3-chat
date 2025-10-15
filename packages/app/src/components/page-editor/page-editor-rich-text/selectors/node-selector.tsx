@@ -15,8 +15,8 @@ import {
 	TextQuote,
 } from "lucide-react";
 import { EditorBubbleItem, useEditor } from "novel";
-import { Button } from "../../ui/button.tsx";
-import { PopoverContent, PopoverTrigger } from "../../ui/popover.tsx";
+import { Button } from "../../../ui/button.tsx";
+import { PopoverContent, PopoverTrigger } from "../../../ui/popover.tsx";
 import { Popover } from "@radix-ui/react-popover";
 
 export type SelectorItem = {

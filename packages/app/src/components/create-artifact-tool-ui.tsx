@@ -1,6 +1,6 @@
 import { memo, useEffect } from "react";
 import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
-import type { ToolCallContentPartProps } from "@assistant-ui/react";
+import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import { useCanvasStore } from "../stores/canvas-store.ts";
 import type { ArtifactTextContent, Artifact } from "../types/canvas.ts";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
@@ -8,7 +8,7 @@ import { Button } from "./ui/button.tsx";
 import { FileText, Eye, AlertCircle, Loader2 } from "lucide-react";
 
 // Define props interface for better typing
-type CreateArtifactToolProps = ToolCallContentPartProps<CreateArtifactArgs, void>;
+type CreateArtifactToolProps = ToolCallMessagePartProps<CreateArtifactArgs, void>;
 
 function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolProps) {
 	const { setArtifact, setCurrentArtifactId, getArtifactById } = useCanvasStore();

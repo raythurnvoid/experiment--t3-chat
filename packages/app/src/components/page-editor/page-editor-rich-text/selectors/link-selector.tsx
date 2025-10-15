@@ -1,5 +1,5 @@
-import { Button } from "../../ui/button.tsx";
-import { PopoverContent } from "../../ui/popover.tsx";
+import { Button } from "../../../ui/button.tsx";
+import { PopoverContent } from "../../../ui/popover.tsx";
 import { cn } from "@/lib/utils.ts";
 import { Popover, PopoverTrigger } from "@radix-ui/react-popover";
 import { Check, Trash } from "lucide-react";

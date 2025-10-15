@@ -1,4 +1,4 @@
-import { Button } from "../../ui/button.tsx";
+import { Button } from "../../../ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 import { SigmaIcon } from "lucide-react";
 import { useEditor } from "novel";
