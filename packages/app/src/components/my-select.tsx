@@ -2,22 +2,31 @@ import "./my-select.css";
 import * as Ariakit from "@ariakit/react";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
-import { MyButtonIcon } from "./my-button.tsx";
-import { ChevronDownIcon } from "lucide-react";
+import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
+import { ChevronDownIcon, Check } from "lucide-react";
 
 export type MySelect_ClassNames = "MySelect";
 
-export type MySelect_Props = {
-	defaultValue?: string;
-	value?: string;
-	onChange?: (value: string) => void;
-	children?: React.ReactNode;
-};
+export type MySelect_Props = Ariakit.SelectProviderProps;
 
 export function MySelect(props: MySelect_Props) {
 	const { children, ...rest } = props;
 
 	return <Ariakit.SelectProvider {...rest}>{children}</Ariakit.SelectProvider>;
+}
+
+export type MySelectLabel_ClassNames = "MySelectLabel";
+
+export type MySelectLabel_Props = Ariakit.SelectLabelProps;
+
+export function MySelectLabel(props: MySelectLabel_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<Ariakit.SelectLabel className={cn("MySelectLabel" satisfies MySelectLabel_ClassNames, className)} {...rest}>
+			{children}
+		</Ariakit.SelectLabel>
+	);
 }
 
 export type MySelectTrigger_ClassNames = "MySelectTrigger";
@@ -42,7 +51,7 @@ export function MySelectTrigger(props: MySelectTrigger_Props) {
 export type MySelectOpenIndicator_ClassNames = "MySelectOpenIndicator";
 
 export type MySelectOpenIndicator_Props = {
-	children?: Ariakit.SelectProps["render"];
+	children?: React.ReactNode;
 } & Omit<Ariakit.SelectArrowProps, ExtractStrict<keyof Ariakit.SelectArrowProps, "render" | "children">>;
 
 export function MySelectOpenIndicator(props: MySelectOpenIndicator_Props) {
@@ -51,13 +60,7 @@ export function MySelectOpenIndicator(props: MySelectOpenIndicator_Props) {
 	return (
 		<Ariakit.SelectArrow
 			className={cn("MySelectOpenIndicator" satisfies MySelectOpenIndicator_ClassNames, className)}
-			render={
-				children ?? (
-					<MyButtonIcon>
-						<ChevronDownIcon />
-					</MyButtonIcon>
-				)
-			}
+			render={<MyIcon>{children ?? <ChevronDownIcon />}</MyIcon>}
 			{...rest}
 		></Ariakit.SelectArrow>
 	);
@@ -83,6 +86,43 @@ export function MySelectPopover(props: MySelectPopover_Props) {
 	);
 }
 
+export type MySelectPopoverScrollableArea_ClassNames = "MySelectPopoverScrollableArea";
+
+export type MySelectPopoverScrollableArea_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+export function MySelectPopoverScrollableArea(props: MySelectPopoverScrollableArea_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<div
+			className={cn("MySelectPopoverScrollableArea" satisfies MySelectPopoverScrollableArea_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</div>
+	);
+}
+
+export type MySelectPopoverContent_ClassNames = "MySelectPopoverContent";
+
+export type MySelectPopoverContent_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+export function MySelectPopoverContent(props: MySelectPopoverContent_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<div className={cn("MySelectPopoverContent" satisfies MySelectPopoverContent_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+}
+
 export type MySelectItem_ClassNames = "MySelectItem";
 
 export type MySelectItem_Props = Ariakit.SelectItemProps;
@@ -101,16 +141,90 @@ export function MySelectItem(props: MySelectItem_Props) {
 	);
 }
 
-export type MySelectLabel_ClassNames = "MySelectLabel";
+export type MySelectItemIndicator_ClassNames = "MySelectItemIndicator";
 
-export type MySelectLabel_Props = Ariakit.SelectLabelProps;
+export type MySelectItemIndicator_Props = MyIcon_Props;
 
-export function MySelectLabel(props: MySelectLabel_Props) {
+export function MySelectItemIndicator(props: MySelectItemIndicator_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectLabel className={cn("MySelectLabel" satisfies MySelectLabel_ClassNames, className)} {...rest}>
+		<MyIcon className={cn("MySelectItemIndicator" satisfies MySelectItemIndicator_ClassNames, className)} {...rest}>
+			{children ?? <Check />}
+		</MyIcon>
+	);
+}
+
+export type MySelectItemContent_ClassNames = "MySelectItemContent";
+
+export type MySelectItemContent_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+export function MySelectItemContent(props: MySelectItemContent_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<div className={cn("MySelectItemContent" satisfies MySelectItemContent_ClassNames, className)} {...rest}>
 			{children}
-		</Ariakit.SelectLabel>
+		</div>
+	);
+}
+
+export type MySelectItemContentPrimary_ClassNames = "MySelectItemContentPrimary";
+
+export type MySelectItemContentPrimary_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+export function MySelectItemContentPrimary(props: MySelectItemContentPrimary_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<div
+			className={cn("MySelectItemContentPrimary" satisfies MySelectItemContentPrimary_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</div>
+	);
+}
+
+export type MySelectItemContentSecondary_ClassNames = "MySelectItemContentSecondary";
+
+export type MySelectItemContentSecondary_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+export function MySelectItemContentSecondary(props: MySelectItemContentSecondary_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<div
+			className={cn("MySelectItemContentSecondary" satisfies MySelectItemContentSecondary_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</div>
+	);
+}
+
+export type MySelectItemContentIcon_ClassNames = "MySelectItemContentIcon";
+
+export type MySelectItemContentIcon_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+export function MySelectItemContentIcon(props: MySelectItemContentIcon_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<MyIcon className={cn("MySelectItemContentIcon" satisfies MySelectItemContentIcon_ClassNames, className)} {...rest}>
+			{children}
+		</MyIcon>
 	);
 }

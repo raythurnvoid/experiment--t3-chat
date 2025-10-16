@@ -1,0 +1,13 @@
+@layer common_components {
+	.NodeSelector-popover {
+		width: 200px;
+	}
+
+	.NodeSelector-icon {
+		border: 1px solid var(--color-base-1-10);
+		border-radius: 4px;
+		padding: 1px;
+		width: 20px;
+		height: 20px;
+	}
+}

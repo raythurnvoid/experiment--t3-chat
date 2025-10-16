@@ -5,6 +5,8 @@ import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { cn, valorize_scrollbar_width_px_css_var } from "../lib/utils.ts";
 
+export type RootLayout_ClassNames = "RootLayout";
+
 function Layout() {
 	const auth = useAuth();
 
@@ -27,7 +29,7 @@ function Layout() {
 	}
 
 	return (
-		<div className={cn("RootLayout", "flex h-full flex-col")}>
+		<div className={cn("RootLayout" satisfies RootLayout_ClassNames)}>
 			<MainAppSidebar>
 				<Outlet />
 			</MainAppSidebar>

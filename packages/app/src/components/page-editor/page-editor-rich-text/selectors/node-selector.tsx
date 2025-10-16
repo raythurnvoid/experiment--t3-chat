@@ -1,5 +1,4 @@
 import {
-	Check,
 	CheckSquare,
 	Code,
 	Heading1,
@@ -19,9 +18,17 @@ import {
 	MySelectTrigger,
 	MySelectOpenIndicator,
 	MySelectPopover,
+	MySelectPopoverContent,
+	MySelectPopoverScrollableArea,
 	MySelectItem,
+	MySelectItemIndicator,
+	MySelectItemContent,
+	MySelectItemContentPrimary,
+	MySelectItemContentIcon,
 } from "../../../my-select.tsx";
 import { MyButton } from "../../../my-button.tsx";
+import { cn } from "@/lib/utils.ts";
+import "./node-selector.css";
 
 export type SelectorItem = {
 	name: string;
@@ -105,14 +112,23 @@ const items: SelectorItem[] = [
 		isActive: (editor) => editor?.isActive("codeBlock") ?? false,
 	},
 ];
-interface NodeSelectorProps {
+
+export type NodeSelector_ClassNames =
+	| "NodeSelector"
+	| "NodeSelector-popover"
+	| "NodeSelector-item"
+	| "NodeSelector-icon";
+
+export type NodeSelector_Props = {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-}
+};
 
-export function NodeSelector({ open, onOpenChange }: NodeSelectorProps) {
+export function NodeSelector(props: NodeSelector_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
+
+	const { open, onOpenChange } = props;
 
 	const { editor } = useEditor();
 	if (!editor) return null;
@@ -122,34 +138,37 @@ export function NodeSelector({ open, onOpenChange }: NodeSelectorProps) {
 	};
 
 	return (
-		<MySelect defaultValue={activeItem.name}>
-			<MySelectTrigger>
-				<MyButton variant="ghost">
-					{activeItem.name || "Select format"}
-					<MySelectOpenIndicator />
-				</MyButton>
-			</MySelectTrigger>
-			<MySelectPopover className="w-48 p-1">
-				{items.map((item) => (
-					<MySelectItem
-						key={item.name}
-						value={item.name}
-						className="flex cursor-pointer items-center justify-between rounded-sm px-2 py-1 text-sm hover:bg-accent"
-						onClick={() => {
-							item.command(editor);
-							onOpenChange(false);
-						}}
-					>
-						<div className="flex items-center space-x-2">
-							<div className="rounded-sm border p-1">
-								<item.icon className="h-3 w-3" />
-							</div>
-							<span>{item.name}</span>
-						</div>
-						{activeItem.name === item.name && <Check className="h-4 w-4" />}
-					</MySelectItem>
-				))}
-			</MySelectPopover>
-		</MySelect>
+		<div className={cn("NodeSelector" satisfies NodeSelector_ClassNames)}>
+			<MySelect value={activeItem.name} open={open} setOpen={onOpenChange}>
+				<MySelectTrigger>
+					<MyButton variant="ghost">
+						{activeItem.name || "Select format"}
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySelectTrigger>
+				<MySelectPopover className={cn("NodeSelector-popover" satisfies NodeSelector_ClassNames)}>
+					<MySelectPopoverScrollableArea>
+						<MySelectPopoverContent>
+							{items.map((item) => (
+								<MySelectItem
+									key={item.name}
+									className={cn("NodeSelector-item" satisfies NodeSelector_ClassNames)}
+									value={item.name}
+								>
+									<MySelectItemContent>
+										<MySelectItemContentIcon className={cn("NodeSelector-icon" satisfies NodeSelector_ClassNames)}>
+											<item.icon />
+										</MySelectItemContentIcon>
+										<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
+									</MySelectItemContent>
+
+									{activeItem.name === item.name && <MySelectItemIndicator />}
+								</MySelectItem>
+							))}
+						</MySelectPopoverContent>
+					</MySelectPopoverScrollableArea>
+				</MySelectPopover>
+			</MySelect>
+		</div>
 	);
 }
