@@ -15,10 +15,10 @@ import { ImageResizer, handleCommandNavigation, handleImageDrop, handleImagePast
 import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
 import { defaultExtensions } from "./extensions.ts";
-import { ColorSelector } from "./selectors/color-selector.tsx";
+import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
 import { LinkSelector } from "./selectors/link-selector.tsx";
-import { NodeSelector } from "./selectors/node-selector.tsx";
-import { MathSelector } from "./selectors/math-selector.tsx";
+import { PageEditorRichTextToolsNodeSelector } from "./page-editor-rich-text-tools-node-selector.tsx";
+import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools-math-toggle.tsx";
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
 import { AddCommentSelector } from "./selectors/add-comment-selector.tsx";
 import { Separator } from "../../ui/separator.tsx";
@@ -388,15 +388,15 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 
 				<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
 					<Separator orientation="vertical" />
-					<NodeSelector open={openNode} onOpenChange={setOpenNode} />
+					<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
 					<Separator orientation="vertical" />
 					<LinkSelector open={openLink} onOpenChange={setOpenLink} />
 					<Separator orientation="vertical" />
-					<MathSelector />
+					<PageEditorRichTextToolsMathToggle />
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsTextStyles />
 					<Separator orientation="vertical" />
-					<ColorSelector open={openColor} onOpenChange={setOpenColor} />
+					<PageEditorRichTextToolsColorSelector open={openColor} onOpenChange={setOpenColor} />
 					<Separator orientation="vertical" />
 					<AddCommentSelector />
 				</GenerativeMenuSwitch>
@@ -434,15 +434,15 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 			<div className={cn("PageRichTextEditorToolbar-scrollable-area" satisfies PageRichTextEditorToolbar_ClassNames)}>
 				<HistoryButtons />
 				<Separator orientation="vertical" />
-				<NodeSelector open={openNode} onOpenChange={setOpenNode} />
+				<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
 				<Separator orientation="vertical" />
 				<LinkSelector open={openLink} onOpenChange={setOpenLink} />
 				<Separator orientation="vertical" />
-				<MathSelector />
+				<PageEditorRichTextToolsMathToggle />
 				<Separator orientation="vertical" />
 				<PageEditorRichTextToolsTextStyles />
 				<Separator orientation="vertical" />
-				<ColorSelector open={openColor} onOpenChange={setOpenColor} />
+				<PageEditorRichTextToolsColorSelector open={openColor} onOpenChange={setOpenColor} />
 				<Separator orientation="vertical" />
 				<MyBadge
 					variant="secondary"

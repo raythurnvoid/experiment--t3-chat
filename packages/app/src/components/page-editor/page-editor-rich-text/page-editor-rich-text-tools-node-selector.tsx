@@ -25,19 +25,19 @@ import {
 	MySelectItemContent,
 	MySelectItemContentPrimary,
 	MySelectItemContentIcon,
-} from "../../../my-select.tsx";
-import { MyButton } from "../../../my-button.tsx";
+} from "@/components/my-select.tsx";
+import { MyButton } from "@/components/my-button.tsx";
 import { cn } from "@/lib/utils.ts";
-import "./node-selector.css";
+import "./page-editor-rich-text-tools-node-selector.css";
 
-export type SelectorItem = {
+type Item = {
 	name: string;
 	icon: LucideIcon;
 	command: (editor: ReturnType<typeof useEditor>["editor"]) => void;
 	isActive: (editor: ReturnType<typeof useEditor>["editor"]) => boolean;
 };
 
-const items: SelectorItem[] = [
+const items: Item[] = [
 	{
 		name: "Text",
 		icon: TextIcon,
@@ -113,18 +113,18 @@ const items: SelectorItem[] = [
 	},
 ];
 
-export type NodeSelector_ClassNames =
-	| "NodeSelector"
-	| "NodeSelector-popover"
-	| "NodeSelector-item"
-	| "NodeSelector-icon";
+export type PageEditorRichTextToolsNodeSelector_ClassNames =
+	| "PageEditorRichTextToolsNodeSelector"
+	| "PageEditorRichTextToolsNodeSelector-popover"
+	| "PageEditorRichTextToolsNodeSelector-item"
+	| "PageEditorRichTextToolsNodeSelector-icon";
 
-export type NodeSelector_Props = {
+export type PageEditorRichTextToolsNodeSelector_Props = {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 };
 
-export function NodeSelector(props: NodeSelector_Props) {
+export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToolsNodeSelector_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
@@ -137,8 +137,12 @@ export function NodeSelector(props: NodeSelector_Props) {
 		name: "Multiple",
 	};
 
+	const handleClick = (item: Item) => {
+		item.command(editor);
+	};
+
 	return (
-		<div className={cn("NodeSelector" satisfies NodeSelector_ClassNames)}>
+		<div className={cn("PageEditorRichTextToolsNodeSelector" satisfies PageEditorRichTextToolsNodeSelector_ClassNames)}>
 			<MySelect value={activeItem.name} open={open} setOpen={onOpenChange}>
 				<MySelectTrigger>
 					<MyButton variant="ghost">
@@ -146,17 +150,28 @@ export function NodeSelector(props: NodeSelector_Props) {
 						<MySelectOpenIndicator />
 					</MyButton>
 				</MySelectTrigger>
-				<MySelectPopover className={cn("NodeSelector-popover" satisfies NodeSelector_ClassNames)}>
+				<MySelectPopover
+					className={cn(
+						"PageEditorRichTextToolsNodeSelector-popover" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
+					)}
+				>
 					<MySelectPopoverScrollableArea>
 						<MySelectPopoverContent>
 							{items.map((item) => (
 								<MySelectItem
 									key={item.name}
-									className={cn("NodeSelector-item" satisfies NodeSelector_ClassNames)}
+									className={cn(
+										"PageEditorRichTextToolsNodeSelector-item" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
+									)}
 									value={item.name}
+									onClick={() => handleClick(item)}
 								>
 									<MySelectItemContent>
-										<MySelectItemContentIcon className={cn("NodeSelector-icon" satisfies NodeSelector_ClassNames)}>
+										<MySelectItemContentIcon
+											className={cn(
+												"PageEditorRichTextToolsNodeSelector-icon" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
+											)}
+										>
 											<item.icon />
 										</MySelectItemContentIcon>
 										<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>

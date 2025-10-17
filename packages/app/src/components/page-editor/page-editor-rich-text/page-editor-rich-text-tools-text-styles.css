@@ -6,3 +6,7 @@
 	width: 20px;
 	height: 20px;
 }
+
+.PageEditorRichTextToolsTextStyles-active {
+	color: var(--color-accent-06);
+}

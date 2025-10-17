@@ -48,7 +48,7 @@ type MySidebar_CssVars = {
 	"--my-sidebar-width-collapsed": string;
 };
 
-const MySidebar_CSS_VARS_DEFAULTS: Partial<MySidebar_CssVars> = {
+const MySidebar_CssVars_DEFAULTS: Partial<MySidebar_CssVars> = {
 	"--my-sidebar-width": "320px",
 	"--my-sidebar-width-collapsed": "47px",
 };
@@ -83,7 +83,7 @@ export function MySidebar(props: MySidebar_Props) {
 				className,
 			)}
 			style={{
-				...MySidebar_CSS_VARS_DEFAULTS,
+				...MySidebar_CssVars_DEFAULTS,
 				...style,
 			}}
 			{...rest}

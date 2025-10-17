@@ -1,0 +1,40 @@
+@layer common_components {
+	.PageEditorRichTextToolsColorSelector .MyButton {
+		width: 60px;
+	}
+
+	.PageEditorRichTextToolsColorSelector-popover {
+		width: 200px;
+	}
+
+	.PageEditorRichTextToolsColorSelector-item {
+		cursor: pointer;
+	}
+
+	.PageEditorRichTextToolsColorSelectorPreview {
+		border-radius: 4px;
+		border: 1px solid var(--color-base-1-10);
+
+		padding: 2px 8px;
+
+		font-weight: 500;
+
+		width: 20px;
+		height: 20px;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		user-select: none;
+		pointer-events: none;
+
+		color: var(--PageEditorRichTextToolsColorSelector-selected-fg);
+		background-color: var(--PageEditorRichTextToolsColorSelector-selected-bg);
+	}
+
+	.PageEditorRichTextToolsColorSelector-check-icon {
+		width: 16px;
+		height: 16px;
+	}
+}

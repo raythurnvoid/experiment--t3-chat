@@ -1,9 +1,13 @@
 @layer common_components {
-	.NodeSelector-popover {
+	.PageEditorRichTextToolsNodeSelector .MyButton {
+		width: 100px;
+	}
+
+	.PageEditorRichTextToolsNodeSelector-popover {
 		width: 200px;
 	}
 
-	.NodeSelector-icon {
+	.PageEditorRichTextToolsNodeSelector-icon {
 		border: 1px solid var(--color-base-1-10);
 		border-radius: 4px;
 		padding: 1px;

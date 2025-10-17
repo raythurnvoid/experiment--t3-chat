@@ -247,7 +247,7 @@ export type Thread_CssVars = {
 	"--thread-width-collapsed": string;
 };
 
-const Thread_CSS_VARS_DEFAULTS: Partial<Thread_CssVars> = {
+const Thread_CssVars_DEFAULTS: Partial<Thread_CssVars> = {
 	"--thread-width": "320px",
 	"--thread-width-collapsed": "48px",
 } as const;
@@ -264,9 +264,11 @@ export function Thread(props: React.ComponentProps<"aside">) {
 		<aside
 			className={cn("Thread" satisfies Thread_ClassNames, className)}
 			style={{
-				...Thread_CSS_VARS_DEFAULTS,
-				...(width && { ["--thread-width" satisfies keyof Thread_CssVars]: width }),
-				...(widthCollapsed && { ["--thread-width-collapsed" satisfies keyof Thread_CssVars]: widthCollapsed }),
+				...({
+					...Thread_CssVars_DEFAULTS,
+					"--thread-width": width ?? Thread_CssVars_DEFAULTS["--thread-width"],
+					"--thread-width-collapsed": widthCollapsed ?? Thread_CssVars_DEFAULTS["--thread-width-collapsed"],
+				} satisfies Partial<Thread_CssVars>),
 				...style,
 			}}
 			{...rest}

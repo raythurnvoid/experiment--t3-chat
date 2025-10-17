@@ -1,0 +1,14 @@
+@layer common_components {
+	.PageEditorRichTextToolsMathToggle {
+		display: flex;
+	}
+
+	.PageEditorRichTextToolsMathToggle .MyIconButtonIcon {
+		width: 20px;
+		height: 20px;
+	}
+
+	.PageEditorRichTextToolsMathToggle-active {
+		color: var(--color-accent-06);
+	}
+}

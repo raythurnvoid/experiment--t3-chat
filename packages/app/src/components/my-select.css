@@ -133,4 +133,22 @@
 			color: var(--gray-400);
 		}
 	}
+
+	.MySelectItemsGroup-separator {
+		margin-top: 12px;
+		border-top: 1px solid var(--color-base-1-10);
+	}
+
+	.MySelectItemsGroupText {
+		cursor: default;
+
+		padding: 4px 12px;
+
+		font-size: 0.85rem;
+		font-weight: 500;
+
+		color: var(--color-fg-08);
+
+		min-height: 30px;
+	}
 }

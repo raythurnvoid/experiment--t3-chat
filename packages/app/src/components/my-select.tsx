@@ -228,3 +228,48 @@ export function MySelectItemContentIcon(props: MySelectItemContentIcon_Props) {
 		</MyIcon>
 	);
 }
+
+export type MySelectItemsGroup_ClassNames = "MySelectItemsGroup" | "MySelectItemsGroup-separator";
+
+export type MySelectItemsGroup_Props = {
+	children?: React.ReactNode;
+	className?: string;
+	separator?: boolean;
+} & Omit<Ariakit.SelectGroupProps, "children" | "className">;
+
+export function MySelectItemsGroup(props: MySelectItemsGroup_Props) {
+	const { className, children, separator = false, ...rest } = props;
+
+	return (
+		<Ariakit.SelectGroup
+			className={cn(
+				"MySelectItemsGroup" satisfies MySelectItemsGroup_ClassNames,
+				separator && ("MySelectItemsGroup-separator" satisfies MySelectItemsGroup_ClassNames),
+				className,
+			)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.SelectGroup>
+	);
+}
+
+export type MySelectItemsGroupText_ClassNames = "MySelectItemsGroupText";
+
+export type MySelectItemsGroupText_Props = {
+	children?: React.ReactNode;
+	className?: string;
+} & Omit<Ariakit.SelectGroupLabelProps, "children" | "className">;
+
+export function MySelectItemsGroupText(props: MySelectItemsGroupText_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<Ariakit.SelectGroupLabel
+			className={cn("MySelectItemsGroupText" satisfies MySelectItemsGroupText_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.SelectGroupLabel>
+	);
+}
