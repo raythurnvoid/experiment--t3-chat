@@ -19,6 +19,33 @@ import {
 import { MyButton } from "@/components/my-button.tsx";
 import { cn } from "@/lib/utils.ts";
 
+// Color variable types for type safety
+export type PageRichTextEditorTextColorFgVars = {
+	"--PageRichTextEditor-text-color-fg-default": string;
+	"--PageRichTextEditor-text-color-fg-purple": string;
+	"--PageRichTextEditor-text-color-fg-red": string;
+	"--PageRichTextEditor-text-color-fg-yellow": string;
+	"--PageRichTextEditor-text-color-fg-blue": string;
+	"--PageRichTextEditor-text-color-fg-green": string;
+	"--PageRichTextEditor-text-color-fg-orange": string;
+	"--PageRichTextEditor-text-color-fg-pink": string;
+	"--PageRichTextEditor-text-color-fg-gray": string;
+};
+
+export type PageRichTextEditorTextColorBgVars = {
+	"--PageRichTextEditor-text-color-bg-default": string;
+	"--PageRichTextEditor-text-color-bg-purple": string;
+	"--PageRichTextEditor-text-color-bg-red": string;
+	"--PageRichTextEditor-text-color-bg-yellow": string;
+	"--PageRichTextEditor-text-color-bg-blue": string;
+	"--PageRichTextEditor-text-color-bg-green": string;
+	"--PageRichTextEditor-text-color-bg-orange": string;
+	"--PageRichTextEditor-text-color-bg-pink": string;
+	"--PageRichTextEditor-text-color-bg-gray": string;
+};
+
+export type PageRichTextEditorTextColorVars = PageRichTextEditorTextColorFgVars & PageRichTextEditorTextColorBgVars;
+
 export interface BubbleColorMenuItem {
 	name: string;
 	color: string;
@@ -27,78 +54,78 @@ export interface BubbleColorMenuItem {
 const TEXT_COLORS: BubbleColorMenuItem[] = [
 	{
 		name: "Default",
-		color: "var(--novel-black)",
+		color: "var(--PageRichTextEditor-text-color-fg-default)",
 	},
 	{
 		name: "Purple",
-		color: "#9333EA",
+		color: "var(--PageRichTextEditor-text-color-fg-purple)",
 	},
 	{
 		name: "Red",
-		color: "#E00000",
+		color: "var(--PageRichTextEditor-text-color-fg-red)",
 	},
 	{
 		name: "Yellow",
-		color: "#EAB308",
+		color: "var(--PageRichTextEditor-text-color-fg-yellow)",
 	},
 	{
 		name: "Blue",
-		color: "#2563EB",
+		color: "var(--PageRichTextEditor-text-color-fg-blue)",
 	},
 	{
 		name: "Green",
-		color: "#008A00",
+		color: "var(--PageRichTextEditor-text-color-fg-green)",
 	},
 	{
 		name: "Orange",
-		color: "#FFA500",
+		color: "var(--PageRichTextEditor-text-color-fg-orange)",
 	},
 	{
 		name: "Pink",
-		color: "#BA4081",
+		color: "var(--PageRichTextEditor-text-color-fg-pink)",
 	},
 	{
 		name: "Gray",
-		color: "#A8A29E",
+		color: "var(--PageRichTextEditor-text-color-fg-gray)",
 	},
 ];
 
 const HIGHLIGHT_COLORS: BubbleColorMenuItem[] = [
 	{
 		name: "Default",
-		color: "var(--novel-highlight-default)",
+		color: "var(--PageRichTextEditor-text-color-bg-default)",
 	},
 	{
 		name: "Purple",
-		color: "var(--novel-highlight-purple)",
+		color: "var(--PageRichTextEditor-text-color-bg-purple)",
 	},
 	{
 		name: "Red",
-		color: "var(--novel-highlight-red)",
+		color: "var(--PageRichTextEditor-text-color-bg-red)",
 	},
 	{
 		name: "Yellow",
-		color: "var(--novel-highlight-yellow)",
+		color: "var(--PageRichTextEditor-text-color-bg-yellow)",
 	},
 	{
 		name: "Blue",
-		color: "var(--novel-highlight-blue)",
+		color: "var(--PageRichTextEditor-text-color-bg-blue)",
 	},
 	{
 		name: "Green",
-		color: "var(--novel-highlight-green)",
+		color: "var(--PageRichTextEditor-text-color-bg-green)",
 	},
 	{
 		name: "Orange",
-		color: "var(--novel-highlight-orange)",
+		color: "var(--PageRichTextEditor-text-color-bg-orange)",
 	},
 	{
 		name: "Pink",
-		color: "var(--novel-highlight-pink)",
+		color: "var(--PageRichTextEditor-text-color-bg-pink)",
 	},
 	{
 		name: "Gray",
-		color: "var(--novel-highlight-gray)",
+		color: "var(--PageRichTextEditor-text-color-bg-gray)",
 	},
 ];
 
@@ -111,7 +138,7 @@ type PageEditorRichTextToolsColorSelectorPreview_CssVars = {
 
 const PageEditorRichTextToolsColorSelectorPreview_CssVars_DEFAULTS: Partial<PageEditorRichTextToolsColorSelectorPreview_CssVars> =
 	{
-		"--PageEditorRichTextToolsColorSelector-selected-fg": "transparent",
+		"--PageEditorRichTextToolsColorSelector-selected-fg": TEXT_COLORS[0].color,
 		"--PageEditorRichTextToolsColorSelector-selected-bg": "transparent",
 	} as const;
 

@@ -10,7 +10,7 @@ import {
 	useEditor,
 	type EditorContentProps,
 } from "novel";
-import { Editor } from "@tiptap/react";
+import { Editor, type JSONContent as TiptapJSONContent } from "@tiptap/react";
 import { ImageResizer, handleCommandNavigation, handleImageDrop, handleImagePaste } from "novel";
 import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
@@ -29,22 +29,23 @@ import { slashCommand, suggestionItems } from "./slash-command.tsx";
 import { Threads } from "./threads.tsx";
 import VersionsDialog from "./version-history-dialog.tsx";
 import { AI_NAME } from "./constants.ts";
-import { cn, create_promise_with_resolvers } from "../../../lib/utils.ts";
+import { cn, create_promise_with_resolvers, make } from "../../../lib/utils.ts";
 import { HistoryButtons } from "./selectors/history-buttons.tsx";
 import { app_fetch_ai_docs_contextual_prompt } from "../../../lib/fetch.ts";
 import { useMutation, useConvex } from "convex/react";
-import { api } from "../../../../convex/_generated/api.js";
 import { ySyncPluginKey } from "y-prosemirror";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../../lib/ai-chat.ts";
 import { MyBadge } from "../../my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
+import { app_convex_api } from "../../../lib/app-convex-client.ts";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
-const INITIAL_CONTENT = `
-<h1>Welcome</h1>
-<p>You can start editing your document here.</p>
-`;
+const INITIAL_CONTENT = make<TiptapJSONContent>({
+	text:
+		"<h1>Welcome</h1>\n" + //
+		"<p>You can start editing your document here.</p>",
+});
 
 export type PageRichTextEditor_ClassNames = "PageRichTextEditor";
 
@@ -87,14 +88,15 @@ type PageRichTextEditorInner_ClassNames =
 	| "PageRichTextEditorInner-word-count-badge"
 	| "PageRichTextEditorInner-word-count-badge-hidden";
 
-type PageRichTextEditorInner_Props = React.ComponentProps<"div"> & {
-	initialContent?: string;
+type PageRichTextEditorInner_Props = {
+	className?: string;
+	initialContent?: TiptapJSONContent;
 	pageId: string;
 	headerSlot?: React.ReactNode;
 };
 
 function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
-	const { pageId, headerSlot } = props;
+	const { className, initialContent, pageId, headerSlot } = props;
 	const [openAi, setOpenAi] = useState(false);
 	const [openNode, setOpenNode] = useState(false);
 	const [openColor, setOpenColor] = useState(false);
@@ -106,7 +108,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 
 	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-	const updateAndBroadcastMarkdown = useMutation(api.ai_docs_temp.update_page_and_broadcast_markdown);
+	const updateAndBroadcastMarkdown = useMutation(app_convex_api.ai_docs_temp.update_page_and_broadcast_markdown);
 	const convex = useConvex();
 
 	const liveblocks = useLiveblocksExtension({
@@ -164,7 +166,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 		let valueGetterSet = false;
 		const valueGetterDeferred = create_promise_with_resolvers<() => string | null>();
 
-		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
+		const watcher = convex.watchQuery(app_convex_api.ai_docs_temp.get_page_text_content_by_page_id, {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 			pageId: pageId,
@@ -298,7 +300,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 		<>
 			{headerSlot}
 			<EditorContent
-				className={cn("PageRichTextEditorInner" satisfies PageRichTextEditorInner_ClassNames)}
+				className={cn("PageRichTextEditorInner" satisfies PageRichTextEditorInner_ClassNames, className)}
 				editorContainerProps={{
 					className: cn("PageRichTextEditorInner-editor-container" satisfies PageRichTextEditorInner_ClassNames),
 				}}
@@ -313,6 +315,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 					handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
 				}}
 				extensions={extensions}
+				initialContent={initialContent}
 				immediatelyRender={false}
 				onCreate={handleCreate}
 				onUpdate={handleUpdate}

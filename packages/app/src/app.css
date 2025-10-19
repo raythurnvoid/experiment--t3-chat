@@ -210,16 +210,27 @@
 	--color-accent-alt-09: oklch(0.8 0.07 270);
 	--color-accent-alt-10: oklch(0.85 0.051 270);
 
-	/* Novel highlight colors for light mode */
-	--novel-highlight-default: #ffffff;
-	--novel-highlight-purple: #f6f3f8;
-	--novel-highlight-red: #fdebeb;
-	--novel-highlight-yellow: #fbf4a2;
-	--novel-highlight-blue: #c1ecf9;
-	--novel-highlight-green: #acf79f;
-	--novel-highlight-orange: #faebdd;
-	--novel-highlight-pink: #faf1f5;
-	--novel-highlight-gray: #f1f1ef;
+	/* PageRichTextEditor text colors */
+	--PageRichTextEditor-text-color-fg-default: var(--color-fg-01);
+	--PageRichTextEditor-text-color-fg-purple: #9333ea;
+	--PageRichTextEditor-text-color-fg-red: #e00000;
+	--PageRichTextEditor-text-color-fg-yellow: #eab308;
+	--PageRichTextEditor-text-color-fg-blue: #2563eb;
+	--PageRichTextEditor-text-color-fg-green: #008a00;
+	--PageRichTextEditor-text-color-fg-orange: #ffa500;
+	--PageRichTextEditor-text-color-fg-pink: #ba4081;
+	--PageRichTextEditor-text-color-fg-gray: #a8a29e;
+
+	/* PageRichTextEditor highlight colors */
+	--PageRichTextEditor-text-color-bg-default: #ffffff;
+	--PageRichTextEditor-text-color-bg-purple: #f6f3f8;
+	--PageRichTextEditor-text-color-bg-red: #fdebeb;
+	--PageRichTextEditor-text-color-bg-yellow: #fbf4a2;
+	--PageRichTextEditor-text-color-bg-blue: #c1ecf9;
+	--PageRichTextEditor-text-color-bg-green: #acf79f;
+	--PageRichTextEditor-text-color-bg-orange: #faebdd;
+	--PageRichTextEditor-text-color-bg-pink: #faf1f5;
+	--PageRichTextEditor-text-color-bg-gray: #f1f1ef;
 
 	/* App-specific styles */
 	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
@@ -269,16 +280,27 @@
 	--sidebar-border: var(--gray-300);
 	--sidebar-ring: var(--gray-100);
 
-	/* Novel highlight colors for dark mode */
-	--novel-highlight-default: #000000;
-	--novel-highlight-purple: #3f2c4b;
-	--novel-highlight-red: #5c1a1a;
-	--novel-highlight-yellow: #5c4b1a;
-	--novel-highlight-blue: #1a3d5c;
-	--novel-highlight-green: #1a5c20;
-	--novel-highlight-orange: #5c3a1a;
-	--novel-highlight-pink: #5c1a3a;
-	--novel-highlight-gray: #3a3a3a;
+	/* PageRichTextEditor text colors - dark mode */
+	--PageRichTextEditor-text-color-fg-default: var(--color-fg-12);
+	--PageRichTextEditor-text-color-fg-purple: #9333ea;
+	--PageRichTextEditor-text-color-fg-red: #e00000;
+	--PageRichTextEditor-text-color-fg-yellow: #eab308;
+	--PageRichTextEditor-text-color-fg-blue: #2563eb;
+	--PageRichTextEditor-text-color-fg-green: #008a00;
+	--PageRichTextEditor-text-color-fg-orange: #ffa500;
+	--PageRichTextEditor-text-color-fg-pink: #ba4081;
+	--PageRichTextEditor-text-color-fg-gray: #a8a29e;
+
+	/* PageRichTextEditor highlight colors - dark mode */
+	--PageRichTextEditor-text-color-bg-default: #000000;
+	--PageRichTextEditor-text-color-bg-purple: #3f2c4b;
+	--PageRichTextEditor-text-color-bg-red: #5c1a1a;
+	--PageRichTextEditor-text-color-bg-yellow: #5c4b1a;
+	--PageRichTextEditor-text-color-bg-blue: #1a3d5c;
+	--PageRichTextEditor-text-color-bg-green: #1a5c20;
+	--PageRichTextEditor-text-color-bg-orange: #5c3a1a;
+	--PageRichTextEditor-text-color-bg-pink: #5c1a3a;
+	--PageRichTextEditor-text-color-bg-gray: #3a3a3a;
 }
 
 /* Tailwind CSS v4 Theme Mappings */
