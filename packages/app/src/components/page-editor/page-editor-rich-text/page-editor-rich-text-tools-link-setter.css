@@ -1,0 +1,28 @@
+@layer components {
+	.PageEditorRichTextToolsLinkSetter-trigger-button {
+		text-decoration: underline;
+		text-decoration-color: currentColor;
+		text-underline-offset: 4px;
+
+		&.PageEditorRichTextToolsLinkSetter-trigger-button-active {
+			color: var(--color-accent-06);
+		}
+	}
+
+	.PageEditorRichTextToolsLinkSetter-popover-content {
+		width: 240px;
+		padding: 0;
+	}
+
+	.PageEditorRichTextToolsLinkSetter-form {
+		display: flex;
+		gap: 4px;
+		padding: 4px 6px;
+
+		align-items: center;
+	}
+
+	.PageEditorRichTextToolsLinkSetter-input {
+		flex: 1;
+	}
+}

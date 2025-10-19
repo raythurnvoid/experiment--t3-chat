@@ -1,6 +1,6 @@
 @layer common_components {
 	.PageEditorRichTextToolsNodeSelector .MyButton {
-		width: 100px;
+		width: 140px;
 	}
 
 	.PageEditorRichTextToolsNodeSelector-popover {

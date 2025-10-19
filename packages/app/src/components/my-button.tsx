@@ -20,6 +20,7 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	ref?: Ref<HTMLButtonElement>;
 	id?: string;
 	className?: string;
+	type?: ComponentPropsWithRef<"button">["type"];
 	variant?:
 		| "default"
 		| "destructive"
@@ -33,12 +34,13 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 };
 
 export function MyButton(props: MyButton_Props) {
-	const { ref, id, className, variant = "default", children, ...rest } = props;
+	const { ref, id, className, type = "button", variant = "default", children, ...rest } = props;
 
 	return (
 		<button
 			ref={ref}
 			id={id}
+			type={type}
 			className={cn(
 				"MyButton" satisfies MyButton_ClassNames,
 				variant === "default" && ("MyButton-variant-default" satisfies MyButton_ClassNames),

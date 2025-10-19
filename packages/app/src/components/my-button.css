@@ -31,18 +31,6 @@
 		&:focus-visible {
 			border-color: var(--color-fg-12);
 		}
-
-		/* Invalid state ring */
-		&[aria-invalid="true"] {
-			border-color: var(--destructive);
-			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&[aria-invalid="true"] {
-				box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
-			}
-		}
 	}
 
 	/* Variants */
@@ -58,7 +46,8 @@
 
 	.MyButton-variant-destructive {
 		background: var(--destructive);
-		color: white;
+		color: var(--color-fg-10);
+
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
 		@media (prefers-color-scheme: dark) {
@@ -67,16 +56,6 @@
 
 		&:hover {
 			background: var(--red-300);
-		}
-
-		&:focus-visible {
-			box-shadow: 0 0 0 3px var(--red-300);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&:focus-visible {
-				box-shadow: 0 0 0 3px var(--red-300);
-			}
 		}
 	}
 

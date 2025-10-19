@@ -16,7 +16,7 @@ import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/r
 import { useSyncStatus } from "@liveblocks/react/suspense";
 import { defaultExtensions } from "./extensions.ts";
 import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
-import { LinkSelector } from "./selectors/link-selector.tsx";
+import { PageEditorRichTextToolsLinkSetter } from "./page-editor-rich-text-tools-link-setter.tsx";
 import { PageEditorRichTextToolsNodeSelector } from "./page-editor-rich-text-tools-node-selector.tsx";
 import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools-math-toggle.tsx";
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
@@ -220,7 +220,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 
 		let initialized = false;
 
-		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
+		const watcher = convex.watchQuery(app_convex_api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 			pageId: pageId,
@@ -393,7 +393,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
 					<Separator orientation="vertical" />
-					<LinkSelector open={openLink} onOpenChange={setOpenLink} />
+					<PageEditorRichTextToolsLinkSetter open={openLink} onOpenChange={setOpenLink} />
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsMathToggle />
 					<Separator orientation="vertical" />
@@ -439,7 +439,7 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 				<Separator orientation="vertical" />
 				<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
 				<Separator orientation="vertical" />
-				<LinkSelector open={openLink} onOpenChange={setOpenLink} />
+				<PageEditorRichTextToolsLinkSetter open={openLink} onOpenChange={setOpenLink} />
 				<Separator orientation="vertical" />
 				<PageEditorRichTextToolsMathToggle />
 				<Separator orientation="vertical" />
