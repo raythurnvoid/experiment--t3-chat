@@ -22,21 +22,21 @@ const items: Item[] = [
 		command: (editor) => editor?.chain().focus().toggleBold().run(),
 		isActive: (editor) => editor?.isActive("bold") ?? false,
 		icon: BoldIcon,
-		tooltip: "Bold",
+		tooltip: "Bold (Ctrl+B)",
 	},
 	{
 		name: "italic",
 		command: (editor) => editor?.chain().focus().toggleItalic().run(),
 		isActive: (editor) => editor?.isActive("italic") ?? false,
 		icon: ItalicIcon,
-		tooltip: "Italic",
+		tooltip: "Italic (Ctrl+I)",
 	},
 	{
 		name: "underline",
 		command: (editor) => editor?.chain().focus().toggleUnderline().run(),
 		isActive: (editor) => editor?.isActive("underline") ?? false,
 		icon: UnderlineIcon,
-		tooltip: "Underline",
+		tooltip: "Underline (Ctrl+U)",
 	},
 	{
 		name: "strike",
@@ -50,7 +50,7 @@ const items: Item[] = [
 		command: (editor) => editor?.chain().focus().toggleCode().run(),
 		isActive: (editor) => editor?.isActive("code") ?? false,
 		icon: CodeIcon,
-		tooltip: "Code",
+		tooltip: "Code (Ctrl+E)",
 	},
 ];
 

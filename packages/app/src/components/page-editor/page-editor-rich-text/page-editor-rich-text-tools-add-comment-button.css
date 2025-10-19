@@ -1,0 +1,5 @@
+@layer components {
+	.PageEditorRichTextToolsAddCommentButton-active {
+		color: var(--color-accent-06);
+	}
+}

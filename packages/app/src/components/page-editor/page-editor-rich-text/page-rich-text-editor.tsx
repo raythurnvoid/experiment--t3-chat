@@ -20,7 +20,7 @@ import { PageEditorRichTextToolsLinkSetter } from "./page-editor-rich-text-tools
 import { PageEditorRichTextToolsNodeSelector } from "./page-editor-rich-text-tools-node-selector.tsx";
 import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools-math-toggle.tsx";
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
-import { AddCommentSelector } from "./selectors/add-comment-selector.tsx";
+import { PageEditorRichTextToolsAddCommentButton } from "./page-editor-rich-text-tools-add-comment-button.tsx";
 import { Separator } from "../../ui/separator.tsx";
 import GenerativeMenuSwitch from "./generative/generative-menu-switch.tsx";
 import NotificationsPopover from "./notifications-popover.tsx";
@@ -30,7 +30,7 @@ import { Threads } from "./threads.tsx";
 import VersionsDialog from "./version-history-dialog.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn, create_promise_with_resolvers, make } from "../../../lib/utils.ts";
-import { HistoryButtons } from "./selectors/history-buttons.tsx";
+import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
 import { app_fetch_ai_docs_contextual_prompt } from "../../../lib/fetch.ts";
 import { useMutation, useConvex } from "convex/react";
 import { ySyncPluginKey } from "y-prosemirror";
@@ -401,7 +401,7 @@ function PageRichTextEditorInner(props: PageRichTextEditorInner_Props) {
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsColorSelector open={openColor} onOpenChange={setOpenColor} />
 					<Separator orientation="vertical" />
-					<AddCommentSelector />
+					<PageEditorRichTextToolsAddCommentButton />
 				</GenerativeMenuSwitch>
 			</EditorContent>
 		</>
@@ -435,7 +435,7 @@ function PageRichTextEditorToolbar(props: PageRichTextEditorToolbar_Props) {
 	return (
 		<Toolbar editor={editor} className={cn("PageRichTextEditorToolbar" satisfies PageRichTextEditorToolbar_ClassNames)}>
 			<div className={cn("PageRichTextEditorToolbar-scrollable-area" satisfies PageRichTextEditorToolbar_ClassNames)}>
-				<HistoryButtons />
+				<PageEditorRichTextToolsHistoryButtons />
 				<Separator orientation="vertical" />
 				<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
 				<Separator orientation="vertical" />
