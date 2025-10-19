@@ -210,27 +210,27 @@
 	--color-accent-alt-09: oklch(0.8 0.07 270);
 	--color-accent-alt-10: oklch(0.85 0.051 270);
 
-	/* PageRichTextEditor text colors */
-	--PageRichTextEditor-text-color-fg-default: var(--color-fg-01);
-	--PageRichTextEditor-text-color-fg-purple: #9333ea;
-	--PageRichTextEditor-text-color-fg-red: #e00000;
-	--PageRichTextEditor-text-color-fg-yellow: #eab308;
-	--PageRichTextEditor-text-color-fg-blue: #2563eb;
-	--PageRichTextEditor-text-color-fg-green: #008a00;
-	--PageRichTextEditor-text-color-fg-orange: #ffa500;
-	--PageRichTextEditor-text-color-fg-pink: #ba4081;
-	--PageRichTextEditor-text-color-fg-gray: #a8a29e;
+	/* PageEditorRichText text colors */
+	--PageEditorRichText-text-color-fg-default: var(--color-fg-01);
+	--PageEditorRichText-text-color-fg-purple: #9333ea;
+	--PageEditorRichText-text-color-fg-red: #e00000;
+	--PageEditorRichText-text-color-fg-yellow: #eab308;
+	--PageEditorRichText-text-color-fg-blue: #2563eb;
+	--PageEditorRichText-text-color-fg-green: #008a00;
+	--PageEditorRichText-text-color-fg-orange: #ffa500;
+	--PageEditorRichText-text-color-fg-pink: #ba4081;
+	--PageEditorRichText-text-color-fg-gray: #a8a29e;
 
-	/* PageRichTextEditor highlight colors */
-	--PageRichTextEditor-text-color-bg-default: #ffffff;
-	--PageRichTextEditor-text-color-bg-purple: #f6f3f8;
-	--PageRichTextEditor-text-color-bg-red: #fdebeb;
-	--PageRichTextEditor-text-color-bg-yellow: #fbf4a2;
-	--PageRichTextEditor-text-color-bg-blue: #c1ecf9;
-	--PageRichTextEditor-text-color-bg-green: #acf79f;
-	--PageRichTextEditor-text-color-bg-orange: #faebdd;
-	--PageRichTextEditor-text-color-bg-pink: #faf1f5;
-	--PageRichTextEditor-text-color-bg-gray: #f1f1ef;
+	/* PageEditorRichText highlight colors */
+	--PageEditorRichText-text-color-bg-default: #ffffff;
+	--PageEditorRichText-text-color-bg-purple: #f6f3f8;
+	--PageEditorRichText-text-color-bg-red: #fdebeb;
+	--PageEditorRichText-text-color-bg-yellow: #fbf4a2;
+	--PageEditorRichText-text-color-bg-blue: #c1ecf9;
+	--PageEditorRichText-text-color-bg-green: #acf79f;
+	--PageEditorRichText-text-color-bg-orange: #faebdd;
+	--PageEditorRichText-text-color-bg-pink: #faf1f5;
+	--PageEditorRichText-text-color-bg-gray: #f1f1ef;
 
 	/* App-specific styles */
 	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
@@ -280,27 +280,27 @@
 	--sidebar-border: var(--gray-300);
 	--sidebar-ring: var(--gray-100);
 
-	/* PageRichTextEditor text colors - dark mode */
-	--PageRichTextEditor-text-color-fg-default: var(--color-fg-12);
-	--PageRichTextEditor-text-color-fg-purple: #9333ea;
-	--PageRichTextEditor-text-color-fg-red: #e00000;
-	--PageRichTextEditor-text-color-fg-yellow: #eab308;
-	--PageRichTextEditor-text-color-fg-blue: #2563eb;
-	--PageRichTextEditor-text-color-fg-green: #008a00;
-	--PageRichTextEditor-text-color-fg-orange: #ffa500;
-	--PageRichTextEditor-text-color-fg-pink: #ba4081;
-	--PageRichTextEditor-text-color-fg-gray: #a8a29e;
+	/* PageEditorRichText text colors - dark mode */
+	--PageEditorRichText-text-color-fg-default: var(--color-fg-12);
+	--PageEditorRichText-text-color-fg-purple: #9333ea;
+	--PageEditorRichText-text-color-fg-red: #e00000;
+	--PageEditorRichText-text-color-fg-yellow: #eab308;
+	--PageEditorRichText-text-color-fg-blue: #2563eb;
+	--PageEditorRichText-text-color-fg-green: #008a00;
+	--PageEditorRichText-text-color-fg-orange: #ffa500;
+	--PageEditorRichText-text-color-fg-pink: #ba4081;
+	--PageEditorRichText-text-color-fg-gray: #a8a29e;
 
-	/* PageRichTextEditor highlight colors - dark mode */
-	--PageRichTextEditor-text-color-bg-default: #000000;
-	--PageRichTextEditor-text-color-bg-purple: #3f2c4b;
-	--PageRichTextEditor-text-color-bg-red: #5c1a1a;
-	--PageRichTextEditor-text-color-bg-yellow: #5c4b1a;
-	--PageRichTextEditor-text-color-bg-blue: #1a3d5c;
-	--PageRichTextEditor-text-color-bg-green: #1a5c20;
-	--PageRichTextEditor-text-color-bg-orange: #5c3a1a;
-	--PageRichTextEditor-text-color-bg-pink: #5c1a3a;
-	--PageRichTextEditor-text-color-bg-gray: #3a3a3a;
+	/* PageEditorRichText highlight colors - dark mode */
+	--PageEditorRichText-text-color-bg-default: #000000;
+	--PageEditorRichText-text-color-bg-purple: #3f2c4b;
+	--PageEditorRichText-text-color-bg-red: #5c1a1a;
+	--PageEditorRichText-text-color-bg-yellow: #5c4b1a;
+	--PageEditorRichText-text-color-bg-blue: #1a3d5c;
+	--PageEditorRichText-text-color-bg-green: #1a5c20;
+	--PageEditorRichText-text-color-bg-orange: #5c3a1a;
+	--PageEditorRichText-text-color-bg-pink: #5c1a3a;
+	--PageEditorRichText-text-color-bg-gray: #3a3a3a;
 }
 
 /* Tailwind CSS v4 Theme Mappings */

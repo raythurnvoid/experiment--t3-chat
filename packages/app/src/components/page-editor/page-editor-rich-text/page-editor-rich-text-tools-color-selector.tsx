@@ -20,31 +20,31 @@ import { MyButton } from "@/components/my-button.tsx";
 import { cn } from "@/lib/utils.ts";
 
 // Color variable types for type safety
-export type PageRichTextEditorTextColorFgVars = {
-	"--PageRichTextEditor-text-color-fg-default": string;
-	"--PageRichTextEditor-text-color-fg-purple": string;
-	"--PageRichTextEditor-text-color-fg-red": string;
-	"--PageRichTextEditor-text-color-fg-yellow": string;
-	"--PageRichTextEditor-text-color-fg-blue": string;
-	"--PageRichTextEditor-text-color-fg-green": string;
-	"--PageRichTextEditor-text-color-fg-orange": string;
-	"--PageRichTextEditor-text-color-fg-pink": string;
-	"--PageRichTextEditor-text-color-fg-gray": string;
+export type PageEditorRichTextTextColorFgVars = {
+	"--PageEditorRichText-text-color-fg-default": string;
+	"--PageEditorRichText-text-color-fg-purple": string;
+	"--PageEditorRichText-text-color-fg-red": string;
+	"--PageEditorRichText-text-color-fg-yellow": string;
+	"--PageEditorRichText-text-color-fg-blue": string;
+	"--PageEditorRichText-text-color-fg-green": string;
+	"--PageEditorRichText-text-color-fg-orange": string;
+	"--PageEditorRichText-text-color-fg-pink": string;
+	"--PageEditorRichText-text-color-fg-gray": string;
 };
 
-export type PageRichTextEditorTextColorBgVars = {
-	"--PageRichTextEditor-text-color-bg-default": string;
-	"--PageRichTextEditor-text-color-bg-purple": string;
-	"--PageRichTextEditor-text-color-bg-red": string;
-	"--PageRichTextEditor-text-color-bg-yellow": string;
-	"--PageRichTextEditor-text-color-bg-blue": string;
-	"--PageRichTextEditor-text-color-bg-green": string;
-	"--PageRichTextEditor-text-color-bg-orange": string;
-	"--PageRichTextEditor-text-color-bg-pink": string;
-	"--PageRichTextEditor-text-color-bg-gray": string;
+export type PageEditorRichTextTextColorBgVars = {
+	"--PageEditorRichText-text-color-bg-default": string;
+	"--PageEditorRichText-text-color-bg-purple": string;
+	"--PageEditorRichText-text-color-bg-red": string;
+	"--PageEditorRichText-text-color-bg-yellow": string;
+	"--PageEditorRichText-text-color-bg-blue": string;
+	"--PageEditorRichText-text-color-bg-green": string;
+	"--PageEditorRichText-text-color-bg-orange": string;
+	"--PageEditorRichText-text-color-bg-pink": string;
+	"--PageEditorRichText-text-color-bg-gray": string;
 };
 
-export type PageRichTextEditorTextColorVars = PageRichTextEditorTextColorFgVars & PageRichTextEditorTextColorBgVars;
+export type PageEditorRichTextTextColorVars = PageEditorRichTextTextColorFgVars & PageEditorRichTextTextColorBgVars;
 
 export interface BubbleColorMenuItem {
 	name: string;
@@ -54,78 +54,78 @@ export interface BubbleColorMenuItem {
 const TEXT_COLORS: BubbleColorMenuItem[] = [
 	{
 		name: "Default",
-		color: "var(--PageRichTextEditor-text-color-fg-default)",
+		color: "var(--PageEditorRichText-text-color-fg-default)",
 	},
 	{
 		name: "Purple",
-		color: "var(--PageRichTextEditor-text-color-fg-purple)",
+		color: "var(--PageEditorRichText-text-color-fg-purple)",
 	},
 	{
 		name: "Red",
-		color: "var(--PageRichTextEditor-text-color-fg-red)",
+		color: "var(--PageEditorRichText-text-color-fg-red)",
 	},
 	{
 		name: "Yellow",
-		color: "var(--PageRichTextEditor-text-color-fg-yellow)",
+		color: "var(--PageEditorRichText-text-color-fg-yellow)",
 	},
 	{
 		name: "Blue",
-		color: "var(--PageRichTextEditor-text-color-fg-blue)",
+		color: "var(--PageEditorRichText-text-color-fg-blue)",
 	},
 	{
 		name: "Green",
-		color: "var(--PageRichTextEditor-text-color-fg-green)",
+		color: "var(--PageEditorRichText-text-color-fg-green)",
 	},
 	{
 		name: "Orange",
-		color: "var(--PageRichTextEditor-text-color-fg-orange)",
+		color: "var(--PageEditorRichText-text-color-fg-orange)",
 	},
 	{
 		name: "Pink",
-		color: "var(--PageRichTextEditor-text-color-fg-pink)",
+		color: "var(--PageEditorRichText-text-color-fg-pink)",
 	},
 	{
 		name: "Gray",
-		color: "var(--PageRichTextEditor-text-color-fg-gray)",
+		color: "var(--PageEditorRichText-text-color-fg-gray)",
 	},
 ];
 
 const HIGHLIGHT_COLORS: BubbleColorMenuItem[] = [
 	{
 		name: "Default",
-		color: "var(--PageRichTextEditor-text-color-bg-default)",
+		color: "var(--PageEditorRichText-text-color-bg-default)",
 	},
 	{
 		name: "Purple",
-		color: "var(--PageRichTextEditor-text-color-bg-purple)",
+		color: "var(--PageEditorRichText-text-color-bg-purple)",
 	},
 	{
 		name: "Red",
-		color: "var(--PageRichTextEditor-text-color-bg-red)",
+		color: "var(--PageEditorRichText-text-color-bg-red)",
 	},
 	{
 		name: "Yellow",
-		color: "var(--PageRichTextEditor-text-color-bg-yellow)",
+		color: "var(--PageEditorRichText-text-color-bg-yellow)",
 	},
 	{
 		name: "Blue",
-		color: "var(--PageRichTextEditor-text-color-bg-blue)",
+		color: "var(--PageEditorRichText-text-color-bg-blue)",
 	},
 	{
 		name: "Green",
-		color: "var(--PageRichTextEditor-text-color-bg-green)",
+		color: "var(--PageEditorRichText-text-color-bg-green)",
 	},
 	{
 		name: "Orange",
-		color: "var(--PageRichTextEditor-text-color-bg-orange)",
+		color: "var(--PageEditorRichText-text-color-bg-orange)",
 	},
 	{
 		name: "Pink",
-		color: "var(--PageRichTextEditor-text-color-bg-pink)",
+		color: "var(--PageEditorRichText-text-color-bg-pink)",
 	},
 	{
 		name: "Gray",
-		color: "var(--PageRichTextEditor-text-color-bg-gray)",
+		color: "var(--PageEditorRichText-text-color-bg-gray)",
 	},
 ];
 

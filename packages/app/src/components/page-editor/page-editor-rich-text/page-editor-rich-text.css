@@ -1,0 +1,181 @@
+@layer components {
+	.PageEditorRichText {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageEditorRichTextInner {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageEditorRichTextInner-editor-container {
+		height: 100%;
+		width: 100%;
+	}
+
+	.PageEditorRichTextInner-editor-content {
+		height: 100%;
+		padding-left: 64px;
+		padding-right: 64px;
+		padding-top: 16px;
+		padding-bottom: 16px;
+
+		font-size: 1rem;
+		line-height: 1.5rem;
+		font-weight: 400;
+		color: var(--PageEditorRichText-text-color-fg-default);
+
+		outline: none;
+
+		&:focus {
+			outline: none;
+		}
+
+		/* Editor content styles */
+		/* Tiptap editor styles to match liveblocks example */
+		&:focus p[data-placeholder]::before {
+			content: attr(data-placeholder);
+			position: absolute;
+			user-select: none;
+			pointer-events: none;
+			color: var(--gray-600);
+		}
+
+		h1 {
+			font-size: 2em;
+			line-height: 2;
+			font-weight: 400;
+		}
+
+		h2 {
+			--PageEditorRichText-text-color-fg-default: var(--color-fg-02);
+
+			.dark & {
+				--PageEditorRichText-text-color-fg-default: var(--color-fg-11);
+			}
+
+			font-size: 1.6em;
+			font-weight: 400;
+			line-height: 1.6;
+			color: var(--PageEditorRichText-text-color-fg-default);
+		}
+
+		h3 {
+			--PageEditorRichText-text-color-fg-default: var(--color-fg-02);
+
+			.dark & {
+				--PageEditorRichText-text-color-fg-default: var(--color-fg-11);
+			}
+
+			font-size: 1.4em;
+			font-weight: 400;
+			line-height: 1.6;
+			color: var(--PageEditorRichText-text-color-fg-default);
+		}
+
+		h4 {
+			--PageEditorRichText-text-color-fg-default: var(--color-fg-02);
+
+			.dark & {
+				--PageEditorRichText-text-color-fg-default: var(--color-fg-11);
+			}
+
+			font-size: 1.3em;
+			font-weight: 500;
+			line-height: 1.6;
+			color: var(--PageEditorRichText-text-color-fg-default);
+		}
+
+		h5 {
+			font-size: 1.2em;
+			font-weight: 500;
+			line-height: 1.6;
+		}
+
+		h6 {
+			font-size: 1.1em;
+			font-weight: 700;
+			line-height: 1.4;
+		}
+
+		p {
+			margin-bottom: 0.2em 0;
+		}
+
+		ul {
+			display: block;
+			list-style-type: disc;
+			margin: 0.2em 0;
+			padding-inline-start: 40px;
+			unicode-bidi: isolate;
+		}
+
+		ol {
+			display: block;
+			list-style-type: decimal;
+			margin: 0.2em 0;
+			padding-inline-start: 40px;
+			unicode-bidi: isolate;
+		}
+
+		li {
+			display: list-item;
+			text-align: -webkit-match-parent;
+			unicode-bidi: isolate;
+		}
+
+		li::marker {
+			unicode-bidi: isolate;
+			font-variant-numeric: tabular-nums;
+			text-transform: none;
+			text-indent: 0px;
+			text-align: start;
+			text-align-last: start;
+		}
+	}
+
+	.PageEditorRichTextInner-threads-container {
+		position: absolute;
+		right: 0;
+		margin-right: 16px;
+	}
+
+	.PageEditorRichTextToolbar {
+		height: 44px;
+		background: var(--gray-050);
+
+		contain: inline-size layout style;
+
+		position: relative;
+		z-index: 1;
+	}
+
+	.PageEditorRichTextToolbar-scrollable-area {
+		gap: 4px;
+
+		flex-direction: row;
+		align-items: center;
+		display: flex;
+
+		padding: 4px 8px;
+
+		overflow-x: auto;
+		overflow-y: hidden;
+		contain: content;
+
+		scrollbar-width: initial;
+
+		min-width: 0;
+	}
+
+	.PageEditorRichTextToolbar-word-count-badge-hidden {
+		display: none;
+	}
+
+	.PageEditorRichTextToolbar-status-badge,
+	.PageEditorRichTextToolbar-word-count-badge {
+		padding: 4px 8px;
+		font-size: 0.9rem;
+	}
+}

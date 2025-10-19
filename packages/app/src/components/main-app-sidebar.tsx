@@ -198,7 +198,7 @@ function MainAppSidebarInset({ children }: { children: React.ReactNode }) {
 	);
 }
 
-export const MainAppSidebar = Object.assign(
+export const MainAppSidebar = ((/* iife */) => {
 	function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 		const { children, ...rest } = props;
 
@@ -277,16 +277,15 @@ export const MainAppSidebar = Object.assign(
 				<MainAppSidebarInset>{children}</MainAppSidebarInset>
 			</SidebarProvider>
 		);
-	},
-	{
+	}
+
+	return Object.assign(MainAppSidebar, {
 		useSidebar() {
 			const context = React.use(MainSidebarContext);
-
 			if (!context) {
 				throw new Error(`${MainAppSidebar.name}.useSidebar must be used within ${MainAppSidebar.name}}`);
 			}
-
 			return context;
 		},
-	},
-);
+	});
+})();

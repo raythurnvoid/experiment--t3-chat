@@ -32,6 +32,7 @@ This is a monorepo project with the following essential structure that you must 
 ## Folders organization
 
 - [packages/app/](mdc:packages/app) - MAIN APPLICATION ROOT
+
   - [src/](mdc:packages/app/src) - React frontend application code
     - [src/components/](mdc:packages/app/src/components) - React components (UI, assistant-ui, canvas)
     - [src/routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
@@ -56,6 +57,7 @@ This is a monorepo project with the following essential structure that you must 
 ## Submodules (Special Import Handling)
 
 - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui) - Assistant UI submodule with custom overrides
+
   - Importing: Import directly from the submodule (NOT from node_modules)
     - Correct:
       ```ts
@@ -68,6 +70,7 @@ This is a monorepo project with the following essential structure that you must 
     - [examples/](mdc:packages/app/vendor/assistant-ui/examples)
 
 - [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks) - Liveblocks submodule
+
   - Importing: Use standard node_modules imports in the app, submodule is for reference
     - Correct:
       ```ts
@@ -82,6 +85,7 @@ This is a monorepo project with the following essential structure that you must 
     - [starter-kits/](mdc:packages/app/vendor/liveblocks/starter-kits)
 
 - [packages/app/vendor/ai/](mdc:packages/app/vendor/ai) - AI SDK repository
+
   - Importing: Use standard node_modules imports in the app, submodule is for reference
   - Documentation folders:
     - [content/docs/](mdc:packages/app/vendor/ai/content/docs)

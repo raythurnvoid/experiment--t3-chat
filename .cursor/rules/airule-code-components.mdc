@@ -498,3 +498,27 @@ const focusInput = () => {
 	inputRef.current?.focus();
 };
 ```
+
+# Component Static Properties
+
+## Object.assign with IIFE Pattern
+
+When adding static properties to React components using `Object.assign`, wrap the component in an IIFE (Immediately Invoked Function Expression) to let the compiler detect and optimize the component.
+
+The IIFE is necessary to allow the React compiler to detect and optimize the component.
+
+```tsx
+export const ComponentName = ((/* iife */) => {
+	function ComponentName(props: ComponentName_Props) {
+		const { children, ...rest } = props;
+
+		return <div {...rest}>{children}</div>;
+	}
+
+	return Object.assign(ComponentName, {
+		staticMethod() {
+			// static method implementation
+		},
+	});
+})();
+```
