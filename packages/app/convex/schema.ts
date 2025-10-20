@@ -286,6 +286,24 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
 		.index("by_page_id", ["page_id"]),
+
+	pages_snapshots: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+	})
+		.index("by_page_id", ["page_id"])
+		.index("by_workspace_project", ["workspace_id", "project_id"]),
+
+	pages_snapshots_contents: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_snapshot_id: v.id("pages_snapshots"),
+		content: v.string(),
+		page_id: v.string(),
+	})
+		.index("by_page_snapshot_id", ["page_snapshot_id"])
+		.index("by_page_id", ["page_id"]),
 });
 
 export default app_convex_schema;

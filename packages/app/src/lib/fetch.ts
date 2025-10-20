@@ -76,6 +76,26 @@ export async function app_fetch_ai_docs_contextual_prompt(
 	});
 }
 
+export async function app_fetch_create_version_snapshot(
+	args: app_fetch_JsonArgs & {
+		input: {
+			workspace_id: string;
+			project_id: string;
+			page_id: string;
+			content: string;
+		};
+	},
+) {
+	const url = `${convex_http_url}/api/create_version_snapshot`;
+
+	return await app_fetch_json<{ snapshotId: string }>({
+		...args,
+		url,
+		method: "POST",
+		body: args.input,
+	});
+}
+
 // #region Core
 const base_url_main = convex_http_url;
 

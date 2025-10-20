@@ -499,6 +499,32 @@ const focusInput = () => {
 };
 ```
 
+### useRef with setTimeout and setInterval
+
+Store timer IDs in a ref to manage cleanup
+
+```tsx
+import { useRef, useEffect } from "react";
+
+export function MyComponent(props: MyComponent_Props) {
+	// ... eventually props and other state
+
+	const timerRef = useRef<ReturnType<typeof setTimeout>>(null);
+
+	function startTimer() {
+		if (timerRef.current) {
+			clearTimeout(timerRef.current);
+		}
+
+		timerRef.current = setTimeout(() => {
+			// ... task implementation
+		}, 1000);
+	}
+
+	// ... rest of the component
+}
+```
+
 # Component Static Properties
 
 ## Object.assign with IIFE Pattern

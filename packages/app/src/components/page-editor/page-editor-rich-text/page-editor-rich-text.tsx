@@ -18,7 +18,7 @@ import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
 import { Threads } from "./threads.tsx";
-import VersionsDialog from "./version-history-dialog.tsx";
+import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn, create_promise_with_resolvers, make } from "../../../lib/utils.ts";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
@@ -29,8 +29,61 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../..
 import { MyBadge } from "../../my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "../../../lib/app-convex-client.ts";
+import { app_fetch_create_version_snapshot } from "../../../lib/fetch.ts";
+
+/**
+ * 2 seconds.
+ */
+const SNAPSHOT_DEBOUNCE_DURATION = 2000; // 2 seconds
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
+
+function useStoreSnapshot(editor: Editor | null, pageId: string) {
+	const snapshotTimer = useRef<ReturnType<typeof setTimeout>>(null);
+
+	const sendVersionSnapshot = async () => {
+		if (!editor) return;
+
+		const markdownContent = editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+
+		const result = await app_fetch_create_version_snapshot({
+			input: {
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_id: pageId,
+				content: markdownContent,
+			},
+			keepalive: true,
+		});
+
+		if (result._nay) {
+			console.error("Failed to create version snapshot:", result._nay.message);
+		}
+	};
+
+	const restartTimer = () => {
+		if (snapshotTimer.current) {
+			clearTimeout(snapshotTimer.current);
+		}
+
+		snapshotTimer.current = setTimeout(() => {
+			void sendVersionSnapshot();
+		}, SNAPSHOT_DEBOUNCE_DURATION);
+	};
+
+	const cancelTimer = () => {
+		if (snapshotTimer.current) {
+			clearTimeout(snapshotTimer.current);
+			snapshotTimer.current = null;
+		}
+	};
+
+	return {
+		restartTimer,
+		cancelTimer,
+		sendVersionSnapshot,
+	};
+}
 
 const INITIAL_CONTENT = make<TiptapJSONContent>({
 	text:
@@ -89,10 +142,12 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const [charsCount, setCharsCount] = useState<number>(0);
 	const [contentLoaded, setContentLoaded] = useState(false);
 
-	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(null);
 
 	const updateAndBroadcastMarkdown = useMutation(app_convex_api.ai_docs_temp.update_page_and_broadcast_markdown);
 	const convex = useConvex();
+
+	const storeSnapshotController = useStoreSnapshot(editor, pageId);
 
 	const liveblocks = useLiveblocksExtension({
 		comments: true,
@@ -231,6 +286,40 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		};
 	}, [editor, isEditorReady, contentLoaded]);
 
+	// Set up document update listeners for snapshot versioning
+	useEffect(() => {
+		if (!editor) return;
+
+		const handleUpdate = (update: any, origin: any) => {
+			if (origin === "local") {
+				storeSnapshotController.restartTimer();
+			} else {
+				storeSnapshotController.cancelTimer();
+			}
+		};
+
+		const handleVisibilityChange = () => {
+			if (document.hidden) {
+				// Tab is hidden and we have local changes that are more recent than remote changes
+				storeSnapshotController.cancelTimer();
+				void storeSnapshotController.sendVersionSnapshot();
+			}
+		};
+
+		const doc = editor.storage.collaboration?.doc;
+
+		// Listen to Yjs document updates through the editor
+		doc?.on("update", handleUpdate);
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+
+		return () => {
+			doc?.off("update", handleUpdate);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+
+			storeSnapshotController.cancelTimer();
+		};
+	}, [editor, storeSnapshotController]);
+
 	// Cleanup timeout on unmount
 	useEffect(() => {
 		return () => {
@@ -305,7 +394,12 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				slotBefore={
 					/* Status Bar */
 					<div className={cn("PageEditorRichTextInner-toolbar" satisfies PageEditorRichTextInner_ClassNames)}>
-						<PageEditorRichTextToolbar charsCount={charsCount} syncStatus={syncStatus} syncChanged={syncChanged} />
+						<PageEditorRichTextToolbar
+							charsCount={charsCount}
+							syncStatus={syncStatus}
+							syncChanged={syncChanged}
+							pageId={pageId}
+						/>
 					</div>
 				}
 				slotAfter={<ImageResizer />}
@@ -348,10 +442,11 @@ type PageEditorRichTextToolbar_Props = {
 	charsCount: number;
 	syncStatus: SyncStatus;
 	syncChanged: boolean;
+	pageId: string;
 };
 
 function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
-	const { charsCount, syncStatus, syncChanged } = props;
+	const { charsCount, syncStatus, syncChanged, pageId } = props;
 
 	const { editor } = useEditor();
 
@@ -394,7 +489,7 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 				>
 					{charsCount} Words
 				</MyBadge>
-				<VersionsDialog />
+				<PageEditorSnapshotsModal pageId={pageId} />
 				<NotificationsPopover />
 			</div>
 		</Toolbar>

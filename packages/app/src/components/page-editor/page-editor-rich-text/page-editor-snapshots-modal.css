@@ -1,0 +1,19 @@
+@layer common_components {
+	.PageEditorSnapshotsModal-item {
+		border: 1px solid var(--border);
+	}
+
+	.PageEditorSnapshotsModal-item:hover {
+		border-color: var(--border);
+	}
+
+	.PageEditorSnapshotsModal-preview {
+		max-height: 400px;
+		overflow-y: auto;
+	}
+
+	.PageEditorSnapshotsModal-preview pre {
+		max-height: 400px;
+		overflow-y: auto;
+	}
+}

@@ -35,6 +35,8 @@ import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from 
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import { minimatch } from "minimatch";
 import type { Doc } from "./_generated/dataModel";
+import { internal } from "./_generated/api.js";
+import { z } from "zod";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
 if (!LIVEBLOCKS_SECRET_KEY) {
@@ -1145,7 +1147,7 @@ export const list_pages = internalQuery({
 			}
 		} finally {
 			// Clean up the iterators
-			await Promise.all(stack.map((frame) => frame.iterator?.return?.()));
+			await Promise.all(stack.map((frame) => frame.iterator?.return?.()).filter((x) => x != null));
 		}
 
 		return { items: results, truncated };
@@ -1408,5 +1410,138 @@ export const ensure_home_page = mutation({
 		});
 
 		return { page_id };
+	},
+});
+
+const create_version_snapshot_body_schema = z.object({
+	workspace_id: z.string(),
+	project_id: z.string(),
+	page_id: z.string(),
+	content: z.string(),
+});
+
+export const create_version_snapshot = httpAction(async (ctx, request) => {
+	try {
+		const bodyResult = await server_request_json_parse_and_validate(request, create_version_snapshot_body_schema);
+
+		if (bodyResult._nay) {
+			return server_convex_response_error_client({
+				body: bodyResult._nay,
+				headers: server_convex_headers_cors(),
+			});
+		}
+
+		const { workspace_id, project_id, page_id, content } = bodyResult._yay;
+
+		const snapshotId = await ctx.runMutation(internal.ai_docs_temp.store_version_snapshot, {
+			workspace_id,
+			project_id,
+			page_id,
+			content,
+		});
+
+		return new Response(JSON.stringify({ snapshotId }), {
+			status: 200,
+			headers: server_convex_headers_cors(),
+		});
+	} catch (error: unknown) {
+		console.error("Version snapshot creation error:", error);
+		return server_convex_response_error_server({
+			body: {
+				message: error instanceof Error ? error.message : "Internal server error",
+			},
+			headers: server_convex_headers_cors(),
+		});
+	}
+});
+
+export const store_version_snapshot = internalMutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+		content: v.string(),
+	},
+	returns: v.id("pages_snapshots"),
+	handler: async (ctx, args) => {
+		// Create snapshot entry
+		const snapshotId = await ctx.db.insert("pages_snapshots", {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			page_id: args.page_id,
+		});
+
+		// Create content entry
+		await ctx.db.insert("pages_snapshots_contents", {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			page_snapshot_id: snapshotId,
+			content: args.content,
+			page_id: args.page_id,
+		});
+
+		return snapshotId;
+	},
+});
+
+export const get_page_snapshots_list = query({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.string(),
+	},
+	returns: v.array(
+		v.object({
+			_id: v.id("pages_snapshots"),
+			_creationTime: v.number(),
+			workspace_id: v.string(),
+			project_id: v.string(),
+			page_id: v.string(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const snapshots = await ctx.db
+			.query("pages_snapshots")
+			.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
+			.order("desc")
+			.collect();
+
+		return snapshots.map((snapshot) => ({
+			_id: snapshot._id,
+			_creationTime: snapshot._creationTime,
+			workspace_id: snapshot.workspace_id,
+			project_id: snapshot.project_id,
+			page_id: snapshot.page_id,
+		}));
+	},
+});
+
+export const get_page_snapshot_content = query({
+	args: {
+		page_snapshot_id: v.id("pages_snapshots"),
+	},
+	returns: v.union(
+		v.object({
+			content: v.string(),
+			page_snapshot_id: v.id("pages_snapshots"),
+			_creationTime: v.number(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const content = await ctx.db
+			.query("pages_snapshots_contents")
+			.withIndex("by_page_snapshot_id", (q) => q.eq("page_snapshot_id", args.page_snapshot_id))
+			.first();
+
+		if (!content) {
+			return null;
+		}
+
+		return {
+			content: content.content,
+			page_snapshot_id: content.page_snapshot_id,
+			_creationTime: content._creationTime,
+		};
 	},
 });
