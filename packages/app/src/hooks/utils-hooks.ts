@@ -1,5 +1,6 @@
 import { useRef, useMemo, useState, useEffect } from "react";
 import { create_promise_with_resolvers, tuple } from "../lib/utils.ts";
+import type { ExtractStrict } from "type-fest";
 
 /**
  * A hook that returns a ref that is updated with the latest value of the passed parameter.
@@ -82,5 +83,168 @@ export function useRenderPromise() {
 	return function () {
 		setDummyState({});
 		return promiseRef.current;
+	};
+}
+
+type WatchableValueEventEmitterListenOptions = Omit<
+	AddEventListenerOptions,
+	ExtractStrict<keyof AddEventListenerOptions, "capture">
+>;
+
+class WatchableValueEventEmitter<T> {
+	static eventType = "WatchableValueEventEmitter:value";
+
+	eventEmitter = document.createElement("div") as {
+		dispatchEvent: HTMLElement["dispatchEvent"];
+		addEventListener: (
+			type: string,
+			listener: EventListenerOrEventListenerObject,
+			options?: WatchableValueEventEmitterListenOptions,
+		) => void;
+	};
+
+	constructor() {}
+
+	dispatch(value: T, options?: WatchableValueEventEmitterListenOptions) {
+		this.eventEmitter.dispatchEvent(
+			new CustomEvent(WatchableValueEventEmitter.eventType, {
+				detail: value,
+				...options,
+			}),
+		);
+	}
+
+	listen(listener: (value: T) => void, options?: WatchableValueEventEmitterListenOptions) {
+		const abortController = new AbortController();
+
+		this.eventEmitter.addEventListener(
+			WatchableValueEventEmitter.eventType,
+			(event) => {
+				listener((event as CustomEvent<T>).detail);
+			},
+			{
+				...options,
+				signal: options?.signal ? AbortSignal.any([abortController.signal, options.signal]) : abortController.signal,
+			},
+		);
+
+		return () => {
+			abortController.abort();
+		};
+	}
+}
+
+/**
+ * Returns an object that can be used to watch a value or to
+ * wait for the first value to be set.
+ *
+ * @example
+ * ```tsx
+ * function MyComponent() {
+ *  // ... component setup
+ *
+ * 	const watchableValue = useWatchableValue<SomeValue>();
+ *
+ *  useEffect(() => {
+ *    if (!someState) return;
+ *
+ * 		watchableValue.setValue(someState);
+ * 	}, [someState]);
+ *
+ * 	useEffect(() => {
+ * 		watchableValue.firstValuePromise.then((watcher) => {
+ *      // Access the first value that was set
+ * 			console.info(watcher.firstValue);
+ *
+ *      // Access the current value
+ *      console.info(watcher.getCurrentValue());
+ * 		});
+ * 	}, []);
+ *
+ *  useEffect(() => {
+ *    const unwatch = watchableValue.watch((value) => {
+ *      // Handle the value change
+ *      console.info(value);
+ *    });
+ *
+ *    return () => unwatch();
+ *  }, []);
+ *
+ *  // ... rest of the component implementation
+ * }
+ * ```
+ */
+export function useWatchableValue<T>(initialValue?: T) {
+	const firstValueDeferred = ((/* iife  */) => {
+		let deferred: PromiseWithResolvers<{
+			/**
+			 * The first value that was set.
+			 */
+			firstValue: T;
+			/**
+			 * Get the current value.
+			 */
+			getCurrentValue: () => T;
+		}>;
+
+		if (initialValue !== undefined) {
+			deferred = {
+				promise: Promise.resolve({
+					firstValue: initialValue,
+					getCurrentValue: () => initialValue,
+				}),
+				resolve: () => {},
+				reject: () => {},
+			};
+		} else {
+			deferred = create_promise_with_resolvers();
+		}
+
+		return deferred;
+	})();
+
+	const firstValueSet = useRef(initialValue !== undefined ? true : false);
+
+	const currentValue = useRef<T | undefined>(initialValue);
+
+	const eventEmitter = new WatchableValueEventEmitter<T>();
+
+	return {
+		/**
+		 * A promise that resolves when the first value is set.
+		 */
+		firstValuePromise: firstValueDeferred.promise,
+		/**
+		 * Set the value and resolve
+		 * the `firstValuePromise` if it hasn't been resolved yet.
+		 */
+		setValue(value: T) {
+			currentValue.current = value;
+
+			eventEmitter.dispatch(value);
+
+			if (!firstValueSet.current) {
+				firstValueDeferred.resolve({
+					firstValue: value,
+					getCurrentValue: () => value,
+				});
+				firstValueSet.current = true;
+			}
+		},
+		/**
+		 * Get the current value.
+		 *
+		 * To ensure the values has been initialized,
+		 * use the `getCurrentValue` function resolved by the `firstValuePromise`.
+		 */
+		getCurrentValue() {
+			return currentValue.current;
+		},
+		/**
+		 * Watch for changes to the value.
+		 */
+		watch(listener: (value: T) => void, options?: WatchableValueEventEmitterListenOptions) {
+			return eventEmitter.listen(listener, options);
+		},
 	};
 }

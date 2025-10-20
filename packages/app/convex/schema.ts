@@ -291,6 +291,7 @@ const app_convex_schema = defineSchema({
 		workspace_id: v.string(),
 		project_id: v.string(),
 		page_id: v.string(),
+		created_by: v.string(),
 	})
 		.index("by_page_id", ["page_id"])
 		.index("by_workspace_project", ["workspace_id", "project_id"]),

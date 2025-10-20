@@ -20,31 +20,46 @@ import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-too
 import { Threads } from "./threads.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
-import { cn, create_promise_with_resolvers, make } from "../../../lib/utils.ts";
+import { cn, make } from "@/lib/utils.ts";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
-import { app_fetch_ai_docs_contextual_prompt } from "../../../lib/fetch.ts";
+import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { useMutation, useConvex } from "convex/react";
 import { ySyncPluginKey } from "y-prosemirror";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../../lib/ai-chat.ts";
-import { MyBadge } from "../../my-badge.tsx";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
-import { app_convex_api } from "../../../lib/app-convex-client.ts";
-import { app_fetch_create_version_snapshot } from "../../../lib/fetch.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_fetch_create_version_snapshot } from "@/lib/fetch.ts";
+import { useAuth } from "@/lib/auth.ts";
+import { useWatchableValue } from "@/hooks/utils-hooks.ts";
+import type { FunctionReturnType } from "convex/server";
 
 /**
- * 2 seconds.
+ * 5 seconds.
  */
-const SNAPSHOT_DEBOUNCE_DURATION = 2000; // 2 seconds
+const SNAPSHOT_DEBOUNCE_DURATION = 5000;
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
 function useStoreSnapshot(editor: Editor | null, pageId: string) {
+	const auth = useAuth();
+
 	const snapshotTimer = useRef<ReturnType<typeof setTimeout>>(null);
+	const currentSnapshotContent = useRef<string | null>(null);
+
+	const getEditorContentAsMarkdown = () => {
+		if (!editor) return null;
+		return editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+	};
+
+	const updateCurrentSnapshotContent = () => {
+		currentSnapshotContent.current = getEditorContentAsMarkdown();
+	};
 
 	const sendVersionSnapshot = async () => {
-		if (!editor) return;
+		const markdownContent = getEditorContentAsMarkdown();
 
-		const markdownContent = editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+		if (!markdownContent || markdownContent === currentSnapshotContent.current) return;
 
 		const result = await app_fetch_create_version_snapshot({
 			input: {
@@ -54,6 +69,7 @@ function useStoreSnapshot(editor: Editor | null, pageId: string) {
 				content: markdownContent,
 			},
 			keepalive: true,
+			auth: auth.isAuthenticated,
 		});
 
 		if (result._nay) {
@@ -82,6 +98,7 @@ function useStoreSnapshot(editor: Editor | null, pageId: string) {
 		restartTimer,
 		cancelTimer,
 		sendVersionSnapshot,
+		updateCurrentSnapshotContent,
 	};
 }
 
@@ -133,11 +150,15 @@ type PageEditorRichTextInner_Props = {
 
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { className, initialContent, pageId, headerSlot } = props;
+
+	const [editor, setEditor] = useState<Editor | null>(null);
+
+	const storeSnapshotController = useStoreSnapshot(editor, pageId);
+
 	const [openAi, setOpenAi] = useState(false);
 	const [openNode, setOpenNode] = useState(false);
 	const [openColor, setOpenColor] = useState(false);
 	const [openLink, setOpenLink] = useState(false);
-	const [editor, setEditor] = useState<Editor | null>(null);
 
 	const [charsCount, setCharsCount] = useState<number>(0);
 	const [contentLoaded, setContentLoaded] = useState(false);
@@ -146,8 +167,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	const updateAndBroadcastMarkdown = useMutation(app_convex_api.ai_docs_temp.update_page_and_broadcast_markdown);
 	const convex = useConvex();
-
-	const storeSnapshotController = useStoreSnapshot(editor, pageId);
 
 	const liveblocks = useLiveblocksExtension({
 		comments: true,
@@ -179,31 +198,12 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	 * Allow to pre-load the content from Convex
 	 * and set it once the editor is ready
 	 */
-	const pageContentQueryWatch = useRef<
-		PromiseWithResolvers<{
-			valueGetterPromise: Promise<() => string | null>;
-			unsubscribe: () => void;
-		}>
-	>(null);
-	if (pageContentQueryWatch.current === null) {
-		pageContentQueryWatch.current = create_promise_with_resolvers<{
-			valueGetterPromise: Promise<() => string | null>;
-			unsubscribe: () => void;
-		}>();
-	}
-
-	/**
-	 * Prevent feedback loops when applying remote broadcasts
-	 */
-	const isApplyingBroadcastRef = useRef(false);
+	const pageContentWatchableQuery = useWatchableValue<{
+		value: FunctionReturnType<typeof app_convex_api.ai_docs_temp.get_page_text_content_by_page_id>;
+		unsubscribe: () => void;
+	}>();
 
 	useEffect(() => {
-		if (!pageContentQueryWatch.current) return;
-
-		let currentValue: string | null | undefined = undefined;
-		let valueGetterSet = false;
-		const valueGetterDeferred = create_promise_with_resolvers<() => string | null>();
-
 		const watcher = convex.watchQuery(app_convex_api.ai_docs_temp.get_page_text_content_by_page_id, {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -211,43 +211,35 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		});
 
 		const unsubscribe = watcher.onUpdate(() => {
-			currentValue = watcher.localQueryResult();
-			if (!valueGetterSet) {
-				valueGetterDeferred.resolve(() => currentValue ?? null);
-				valueGetterSet = true;
-			}
-		});
-
-		pageContentQueryWatch.current.resolve({
-			valueGetterPromise: valueGetterDeferred.promise,
-			unsubscribe: () => {
-				unsubscribe();
-				pageContentQueryWatch.current = null;
-			},
+			pageContentWatchableQuery.setValue({
+				value: watcher.localQueryResult() ?? null,
+				unsubscribe: () => unsubscribe(),
+			});
 		});
 
 		return () => {
-			pageContentQueryWatch.current?.promise.then((watch) => watch.unsubscribe()).catch(console.error);
+			unsubscribe();
 		};
 	}, []);
 
 	// Set content from Convex when editor is ready
 	useEffect(() => {
-		if (!editor || !isEditorReady || contentLoaded || !pageId || !pageContentQueryWatch.current) {
+		if (!editor || !isEditorReady || contentLoaded || !pageId) {
 			return;
 		}
 
-		pageContentQueryWatch.current.promise
-			.then(async (watch) => {
-				const remoteContent = await watch.valueGetterPromise.then((valueGetter) => valueGetter());
+		pageContentWatchableQuery.firstValuePromise
+			.then(async (watcher) => {
+				const query = watcher.getCurrentValue();
+				const remoteContent = query.value;
 
 				if (remoteContent) {
 					editor.commands.setContent(remoteContent, false);
+					storeSnapshotController.updateCurrentSnapshotContent();
 				}
 
 				setContentLoaded(true);
-
-				watch.unsubscribe();
+				query.unsubscribe();
 			})
 			.catch(console.error);
 	}, [editor, isEditorReady]);
@@ -273,12 +265,8 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				return;
 			}
 
-			// Apply update without triggering our own save; guard using ref
-			isApplyingBroadcastRef.current = true;
 			editor.commands.setContent(update.text_content, false);
-			queueMicrotask(() => {
-				isApplyingBroadcastRef.current = false;
-			});
+			storeSnapshotController.updateCurrentSnapshotContent();
 		});
 
 		return () => {
@@ -286,18 +274,8 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		};
 	}, [editor, isEditorReady, contentLoaded]);
 
-	// Set up document update listeners for snapshot versioning
 	useEffect(() => {
-		if (!editor) return;
-
-		const handleUpdate = (update: any, origin: any) => {
-			if (origin === "local") {
-				storeSnapshotController.restartTimer();
-			} else {
-				storeSnapshotController.cancelTimer();
-			}
-		};
-
+		// Set up visibility change listener for snapshot versioning
 		const handleVisibilityChange = () => {
 			if (document.hidden) {
 				// Tab is hidden and we have local changes that are more recent than remote changes
@@ -306,23 +284,13 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			}
 		};
 
-		const doc = editor.storage.collaboration?.doc;
-
-		// Listen to Yjs document updates through the editor
-		doc?.on("update", handleUpdate);
 		document.addEventListener("visibilitychange", handleVisibilityChange);
 
 		return () => {
-			doc?.off("update", handleUpdate);
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
-
 			storeSnapshotController.cancelTimer();
-		};
-	}, [editor, storeSnapshotController]);
 
-	// Cleanup timeout on unmount
-	useEffect(() => {
-		return () => {
+			// Cleanup save debounce on unmount
 			if (saveOnDbDebounce.current) {
 				window.clearTimeout(saveOnDbDebounce.current);
 			}
@@ -341,13 +309,19 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	};
 
 	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor, transaction }) => {
-		if (isApplyingBroadcastRef.current) {
-			return;
-		}
 		setCharsCount(editor.storage.characterCount.words());
 
-		// Debounce content save to Convex (100ms)
-		if (!transaction.getMeta(ySyncPluginKey)) {
+		// Detect if this is a Yjs collaboration update
+		const isFromYjs = !!transaction.getMeta(ySyncPluginKey);
+
+		if (isFromYjs) {
+			// Remote update from other clients - cancel snapshot timer
+			storeSnapshotController.cancelTimer();
+		} else {
+			// Local update from this client - restart snapshot timer and save to DB
+			storeSnapshotController.restartTimer();
+
+			// Debounce content save to Convex (100ms)
 			if (saveOnDbDebounce.current) {
 				clearTimeout(saveOnDbDebounce.current);
 			}

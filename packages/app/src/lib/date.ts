@@ -5,7 +5,7 @@
  *
  * This would prevent to show invalid dates in the UI.
  */
-const PAST_TIME_TOLERANCE = 1000;
+const PAST_TIME_TOLERANCE = 5000;
 
 /**
  * Format a timestamp as a relative time string

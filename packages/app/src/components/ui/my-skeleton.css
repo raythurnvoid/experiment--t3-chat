@@ -1,0 +1,20 @@
+@layer components {
+	.MySkeleton {
+		contain: strict;
+
+		border-radius: 8px;
+		background: var(--color-base-1-06);
+
+		animation: MySkeleton-pulse 2s ease-in infinite;
+	}
+
+	@keyframes MySkeleton-pulse {
+		0%,
+		100% {
+			filter: opacity(1);
+		}
+		50% {
+			filter: opacity(0.5);
+		}
+	}
+}

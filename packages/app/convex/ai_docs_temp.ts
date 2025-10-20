@@ -1433,11 +1433,14 @@ export const create_version_snapshot = httpAction(async (ctx, request) => {
 
 		const { workspace_id, project_id, page_id, content } = bodyResult._yay;
 
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
 		const snapshotId = await ctx.runMutation(internal.ai_docs_temp.store_version_snapshot, {
 			workspace_id,
 			project_id,
 			page_id,
 			content,
+			created_by: user.name,
 		});
 
 		return new Response(JSON.stringify({ snapshotId }), {
@@ -1461,6 +1464,7 @@ export const store_version_snapshot = internalMutation({
 		project_id: v.string(),
 		page_id: v.string(),
 		content: v.string(),
+		created_by: v.string(),
 	},
 	returns: v.id("pages_snapshots"),
 	handler: async (ctx, args) => {
@@ -1469,6 +1473,7 @@ export const store_version_snapshot = internalMutation({
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
 			page_id: args.page_id,
+			created_by: args.created_by,
 		});
 
 		// Create content entry
@@ -1497,6 +1502,7 @@ export const get_page_snapshots_list = query({
 			workspace_id: v.string(),
 			project_id: v.string(),
 			page_id: v.string(),
+			created_by: v.string(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -1512,6 +1518,7 @@ export const get_page_snapshots_list = query({
 			workspace_id: snapshot.workspace_id,
 			project_id: snapshot.project_id,
 			page_id: snapshot.page_id,
+			created_by: snapshot.created_by,
 		}));
 	},
 });
@@ -1525,6 +1532,7 @@ export const get_page_snapshot_content = query({
 			content: v.string(),
 			page_snapshot_id: v.id("pages_snapshots"),
 			_creationTime: v.number(),
+			created_by: v.string(),
 		}),
 		v.null(),
 	),
@@ -1538,10 +1546,17 @@ export const get_page_snapshot_content = query({
 			return null;
 		}
 
+		// Get the snapshot to access created_by
+		const snapshot = await ctx.db.get(args.page_snapshot_id);
+		if (!snapshot) {
+			return null;
+		}
+
 		return {
 			content: content.content,
 			page_snapshot_id: content.page_snapshot_id,
 			_creationTime: content._creationTime,
+			created_by: snapshot.created_by,
 		};
 	},
 });
