@@ -463,7 +463,7 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 				>
 					{charsCount} Words
 				</MyBadge>
-				<PageEditorSnapshotsModal pageId={pageId} />
+				<PageEditorSnapshotsModal pageId={pageId} editor={editor} />
 				<NotificationsPopover />
 			</div>
 		</Toolbar>

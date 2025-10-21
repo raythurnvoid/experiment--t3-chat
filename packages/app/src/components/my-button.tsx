@@ -31,6 +31,13 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 		| "ghost-secondary"
 		| "tertiary"
 		| "link";
+
+	/**
+	 * Whether the button is in loading state.
+	 *
+	 * @default false
+	 */
+	"aria-busy"?: boolean;
 };
 
 export function MyButton(props: MyButton_Props) {

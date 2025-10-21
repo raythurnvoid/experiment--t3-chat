@@ -210,6 +210,28 @@
 	--color-accent-alt-09: oklch(0.8 0.07 270);
 	--color-accent-alt-10: oklch(0.85 0.051 270);
 
+	--color-green-01: oklch(0.255 0.073 147);
+	--color-green-02: oklch(0.328 0.093 147);
+	--color-green-03: oklch(0.401 0.114 147);
+	--color-green-04: oklch(0.474 0.135 147);
+	--color-green-05: oklch(0.546 0.156 147);
+	--color-green-06: oklch(0.619 0.176 147);
+	--color-green-07: oklch(0.692 0.197 147);
+	--color-green-08: oklch(0.765 0.218 147);
+	--color-green-09: oklch(0.837 0.238 147);
+	--color-green-10: oklch(0.9 0.127 147);
+
+	--color-red-01: oklch(0.255 0.173 31);
+	--color-red-02: oklch(0.328 0.193 31);
+	--color-red-03: oklch(0.401 0.214 31);
+	--color-red-04: oklch(0.474 0.235 31);
+	--color-red-05: oklch(0.546 0.256 31);
+	--color-red-06: oklch(0.619 0.276 31);
+	--color-red-07: oklch(0.692 0.297 31);
+	--color-red-08: oklch(0.765 0.318 31);
+	--color-red-09: oklch(0.837 0.338 31);
+	--color-red-10: oklch(0.9 0.227 31);
+
 	/* PageEditorRichText text colors */
 	--PageEditorRichText-text-color-fg-default: var(--color-fg-01);
 	--PageEditorRichText-text-color-fg-purple: #9333ea;

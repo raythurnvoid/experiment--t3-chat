@@ -21,15 +21,17 @@
 		transition: background-color 0.15s ease-in-out;
 		outline: none;
 
-		/* Disabled */
 		&:disabled {
 			pointer-events: none;
 			opacity: 0.5;
 		}
 
-		/* Focus ring */
 		&:focus-visible {
 			border-color: var(--color-fg-12);
+		}
+
+		&[aria-busy="true"] {
+			cursor: wait;
 		}
 	}
 

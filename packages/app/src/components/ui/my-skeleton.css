@@ -1,9 +1,11 @@
-@layer components {
+@layer common_components {
 	.MySkeleton {
 		contain: strict;
 
 		border-radius: 8px;
 		background: var(--color-base-1-06);
+
+		height: 1rem;
 
 		animation: MySkeleton-pulse 2s ease-in infinite;
 	}

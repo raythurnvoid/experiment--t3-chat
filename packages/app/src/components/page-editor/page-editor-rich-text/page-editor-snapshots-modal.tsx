@@ -11,26 +11,48 @@ import {
 	MyModalScrollableArea,
 	MyModalFooter,
 	MyModalCloseTrigger,
+	MyModalHeading,
 } from "../../my-modal.tsx";
-import { MyButton } from "../../my-button.tsx";
+import { MyButton, MyButtonIcon } from "../../my-button.tsx";
 import { MyIconButton } from "../../my-icon-button.tsx";
 import { MySkeleton } from "../../ui/my-skeleton.tsx";
 import { Clock, FileText } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../../lib/ai-chat.ts";
+import { diffWordsWithSpace } from "diff";
+import type { Editor } from "@tiptap/react";
 
 export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal"
 	| "PageEditorSnapshotsModal-skeleton-list"
-	| "PageEditorSnapshotsModal-skeleton-button"
-	| "PageEditorSnapshotsModal-snapshot-item";
+	| "PageEditorSnapshotsModal-skeleton-list-item"
+	| "PageEditorSnapshotsModal-snapshot-item"
+	| "PageEditorSnapshotsModal-snapshot-icon"
+	| "PageEditorSnapshotsModal-snapshot-main-text"
+	| "PageEditorSnapshotsModal-snapshot-support-text"
+	| "PageEditorSnapshotsModal-empty-message-container"
+	| "PageEditorSnapshotsModal-empty-message"
+	| "PageEditorSnapshotsModal-preview-scrollable-area"
+	| "PageEditorSnapshotsModal-preview-snapshot-data"
+	| "PageEditorSnapshotsModal-preview-body"
+	| "PageEditorSnapshotsModal-preview-popover"
+	| "PageEditorSnapshotsModal-preview-error-container"
+	| "PageEditorSnapshotsModal-preview-error-message"
+	| "PageEditorSnapshotsModal-preview-snapshot-data-skeleton"
+	| "PageEditorSnapshotsModal-preview-body-skeleton"
+	| "PageEditorSnapshotsModal-preview-diff-container"
+	| "PageEditorSnapshotsModal-preview-diff-word"
+	| "PageEditorSnapshotsModal-preview-diff-added"
+	| "PageEditorSnapshotsModal-preview-diff-removed"
+	| "PageEditorSnapshotsModal-preview-diff-unchanged";
 
 export type PageEditorSnapshotsModal_Props = {
 	pageId: string;
+	editor: Editor | null;
 };
 
 export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {
-	const { pageId } = props;
+	const { pageId, editor } = props;
 	const [isListOpen, setIsListOpen] = useState(false);
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
@@ -45,6 +67,15 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		app_convex_api.ai_docs_temp.get_page_snapshot_content,
 		selectedSnapshotId ? { page_snapshot_id: selectedSnapshotId } : "skip",
 	);
+
+	const getCurrentEditorContent = () => {
+		if (!editor) return "";
+		return editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+	};
+
+	const createDiff = (snapshotContent: string) => {
+		return diffWordsWithSpace(snapshotContent, getCurrentEditorContent());
+	};
 
 	const handleSnapshotClick = (snapshotId: app_convex_Id<"pages_snapshots">) => {
 		setSelectedSnapshotId(snapshotId);
@@ -80,7 +111,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	return (
 		<>
 			{/* Snapshots Button */}
-			<MyIconButton variant="ghost" tooltip="Snapshots" onClick={() => setIsListOpen(true)}>
+			<MyIconButton variant="ghost" tooltip="Snapshots" disabled={!editor} onClick={() => setIsListOpen(true)}>
 				<Clock />
 			</MyIconButton>
 
@@ -88,49 +119,65 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 			<MyModal open={isListOpen} setOpen={setIsListOpen}>
 				<MyModalPopover>
 					<MyModalHeader>
-						<h2 className="text-lg font-semibold">Page Snapshots</h2>
+						<MyModalHeading>Page Snapshots</MyModalHeading>
 					</MyModalHeader>
 
 					<MyModalScrollableArea>
 						{snapshots === undefined ? (
 							<div className="PageEditorSnapshotsModal-skeleton-list">
 								{Array.from({ length: 10 }, (_, index) => (
-									<MyButton
+									<MySkeleton
 										key={index}
-										variant="ghost"
 										className={cn(
-											"PageEditorSnapshotsModal-skeleton-button" satisfies PageEditorSnapshotsModal_ClassNames,
+											"PageEditorSnapshotsModal-skeleton-list-item" satisfies PageEditorSnapshotsModal_ClassNames,
 										)}
-										disabled
-									>
-										<FileText className="h-4 w-4" />
-										<div>
-											<MySkeleton className="mb-1 h-4 w-32" />
-											<MySkeleton className="h-3 w-24" />
-										</div>
-									</MyButton>
+									/>
 								))}
 							</div>
 						) : snapshots.length === 0 ? (
-							<div className="flex items-center justify-center py-8">
-								<div className="text-sm text-muted-foreground">No snapshots yet</div>
+							<div
+								className={cn(
+									"PageEditorSnapshotsModal-empty-message-container" satisfies PageEditorSnapshotsModal_ClassNames,
+								)}
+							>
+								<div
+									className={cn("PageEditorSnapshotsModal-empty-message" satisfies PageEditorSnapshotsModal_ClassNames)}
+								>
+									No snapshots yet
+								</div>
 							</div>
 						) : (
 							<div className="space-y-2">
 								{snapshots.map((snapshot) => (
 									<MyButton
 										key={snapshot._id}
-										variant="ghost"
+										variant="secondary"
 										className={cn(
 											"PageEditorSnapshotsModal-snapshot-item" satisfies PageEditorSnapshotsModal_ClassNames,
 										)}
 										onClick={() => handleSnapshotClick(snapshot._id)}
 									>
-										<FileText className="h-4 w-4 text-muted-foreground" />
-										<div className="min-w-0 flex-1">
-											<div className="text-sm font-medium">{formatTime(snapshot._creationTime)}</div>
-											<div className="text-xs text-muted-foreground">Created by {snapshot.created_by}</div>
-										</div>
+										<MyButtonIcon
+											className={cn(
+												"PageEditorSnapshotsModal-snapshot-icon" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											<FileText />
+										</MyButtonIcon>
+										<span
+											className={cn(
+												"PageEditorSnapshotsModal-snapshot-main-text" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											{formatTime(snapshot._creationTime)}
+										</span>
+										<span
+											className={cn(
+												"PageEditorSnapshotsModal-snapshot-support-text" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											{snapshot.created_by}
+										</span>
 									</MyButton>
 								))}
 							</div>
@@ -141,32 +188,88 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 					{/* Preview Modal */}
 					<MyModal open={isPreviewOpen} setOpen={setIsPreviewOpen}>
-						<MyModalPopover>
+						<MyModalPopover
+							className={cn("PageEditorSnapshotsModal-preview-popover" satisfies PageEditorSnapshotsModal_ClassNames)}
+						>
 							<MyModalHeader>
-								<h2 className="text-lg font-semibold">Snapshot Preview</h2>
+								<MyModalHeading>Snapshot Preview</MyModalHeading>
 							</MyModalHeader>
 
-							<MyModalScrollableArea>
-								{selectedSnapshotContent === undefined ? (
-									<div className="flex items-center justify-center py-8">
-										<div className="text-sm text-muted-foreground">Loading content...</div>
-									</div>
-								) : selectedSnapshotContent === null ? (
-									<div className="flex items-center justify-center py-8">
-										<div className="text-sm text-muted-foreground">Content not found</div>
+							<MyModalScrollableArea
+								className={cn(
+									"PageEditorSnapshotsModal-preview-scrollable-area" satisfies PageEditorSnapshotsModal_ClassNames,
+								)}
+							>
+								{selectedSnapshotContent === null ? (
+									<div
+										className={cn(
+											"PageEditorSnapshotsModal-preview-error-container" satisfies PageEditorSnapshotsModal_ClassNames,
+										)}
+									>
+										<div
+											className={cn(
+												"PageEditorSnapshotsModal-preview-error-message" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											Error loading snapshot content
+										</div>
 									</div>
 								) : (
-									<div className="space-y-4">
-										<div className="text-sm text-muted-foreground">
-											<div>{formatTime(selectedSnapshotContent._creationTime)}</div>
-											<div>Created by {selectedSnapshotContent.created_by}</div>
+									<>
+										<div
+											className={cn(
+												"PageEditorSnapshotsModal-preview-snapshot-data" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											{selectedSnapshotContent === undefined ? (
+												Array.from({ length: 2 }, (_, index) => (
+													<MySkeleton
+														key={index}
+														className={cn(
+															"PageEditorSnapshotsModal-preview-snapshot-data-skeleton" satisfies PageEditorSnapshotsModal_ClassNames,
+														)}
+													/>
+												))
+											) : (
+												<>
+													<div>{formatTime(selectedSnapshotContent._creationTime)}</div>
+													<div>{selectedSnapshotContent.created_by}</div>
+												</>
+											)}
 										</div>
-										<div className="PageEditorSnapshotsModal-preview">
-											<pre className="overflow-auto rounded-lg bg-muted p-4 font-mono text-sm whitespace-pre-wrap">
-												{selectedSnapshotContent.content}
-											</pre>
-										</div>
-									</div>
+										<pre
+											className={cn(
+												"PageEditorSnapshotsModal-preview-diff-container" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											{selectedSnapshotContent === undefined
+												? Array.from({ length: 20 }, (_, index) => (
+														<MySkeleton
+															key={index}
+															className={cn(
+																"PageEditorSnapshotsModal-preview-body-skeleton" satisfies PageEditorSnapshotsModal_ClassNames,
+															)}
+														/>
+													))
+												: createDiff(selectedSnapshotContent.content).map((part, index) => (
+														<span
+															key={index}
+															className={cn(
+																"PageEditorSnapshotsModal-preview-diff-word" satisfies PageEditorSnapshotsModal_ClassNames,
+																part.added &&
+																	("PageEditorSnapshotsModal-preview-diff-added" satisfies PageEditorSnapshotsModal_ClassNames),
+																part.removed &&
+																	("PageEditorSnapshotsModal-preview-diff-removed" satisfies PageEditorSnapshotsModal_ClassNames),
+																!part.added &&
+																	!part.removed &&
+																	("PageEditorSnapshotsModal-preview-diff-unchanged" satisfies PageEditorSnapshotsModal_ClassNames),
+															)}
+														>
+															{part.value}
+														</span>
+													))}
+										</pre>
+									</>
 								)}
 							</MyModalScrollableArea>
 
@@ -174,7 +277,13 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 								<MyButton variant="outline" onClick={handleCancel}>
 									Cancel
 								</MyButton>
-								<MyButton onClick={handleConfirm}>Confirm</MyButton>
+								<MyButton
+									disabled={selectedSnapshotContent == null}
+									aria-busy={selectedSnapshotContent == null}
+									onClick={handleConfirm}
+								>
+									Confirm
+								</MyButton>
 							</MyModalFooter>
 
 							<MyModalCloseTrigger />

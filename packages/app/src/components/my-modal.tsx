@@ -1,6 +1,6 @@
 import "./my-modal.css";
 import * as Ariakit from "@ariakit/react";
-import type { ReactNode, ComponentPropsWithRef } from "react";
+import type { ComponentPropsWithRef } from "react";
 import { cn } from "@/lib/utils.ts";
 import { MyIconButton } from "./my-icon-button.tsx";
 import { X } from "lucide-react";
@@ -18,9 +18,12 @@ export function MyModal(props: MyModal_Props) {
 
 export type MyModalTrigger_ClassNames = "MyModalTrigger";
 
-export type MyModalTrigger_Props = {
+export type MyModalTrigger_Props = Omit<
+	Ariakit.DialogDisclosureProps,
+	ExtractStrict<keyof Ariakit.DialogDisclosureProps, "render" | "children">
+> & {
 	children?: Ariakit.DialogDisclosureProps["render"];
-} & Omit<Ariakit.DialogDisclosureProps, ExtractStrict<keyof Ariakit.DialogDisclosureProps, "render" | "children">>;
+};
 
 export function MyModalTrigger(props: MyModalTrigger_Props) {
 	const { className, children, ...rest } = props;
@@ -115,12 +118,52 @@ export function MyModalFooter(props: MyModalFooter_Props) {
 	);
 }
 
+export type MyModalHeading_ClassNames = "MyModalHeading";
+
+export type MyModalHeading_Props = ComponentPropsWithRef<"h1">;
+
+export function MyModalHeading(props: MyModalHeading_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<Ariakit.DialogHeading
+			id={id}
+			ref={ref}
+			className={cn("MyModalHeading" satisfies MyModalHeading_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.DialogHeading>
+	);
+}
+
+export type MyModalDescription_ClassNames = "MyModalDescription";
+
+export type MyModalDescription_Props = ComponentPropsWithRef<"p">;
+
+export function MyModalDescription(props: MyModalDescription_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<Ariakit.DialogDescription
+			id={id}
+			ref={ref}
+			className={cn("MyModalDescription" satisfies MyModalDescription_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.DialogDescription>
+	);
+}
+
 export type MyModalCloseTrigger_ClassNames = "MyModalCloseTrigger";
 
-export type MyModalCloseTrigger_Props = {
-	children?: ReactNode;
-	className?: string;
-} & Omit<Ariakit.DialogDismissProps, "children" | "className">;
+export type MyModalCloseTrigger_Props = Omit<
+	Ariakit.DialogDismissProps,
+	ExtractStrict<keyof Ariakit.DialogDismissProps, "children" | "render">
+> & {
+	children?: Ariakit.DialogDismissProps["render"];
+};
 
 export function MyModalCloseTrigger(props: MyModalCloseTrigger_Props) {
 	const { className, children, ...rest } = props;
@@ -128,13 +171,14 @@ export function MyModalCloseTrigger(props: MyModalCloseTrigger_Props) {
 	return (
 		<Ariakit.DialogDismiss
 			className={cn("MyModalCloseTrigger" satisfies MyModalCloseTrigger_ClassNames, className)}
+			render={
+				children ?? (
+					<MyIconButton variant="ghost" tooltip="Close">
+						<X />
+					</MyIconButton>
+				)
+			}
 			{...rest}
-		>
-			{children || (
-				<MyIconButton variant="ghost" tooltip="Close">
-					<X />
-				</MyIconButton>
-			)}
-		</Ariakit.DialogDismiss>
+		></Ariakit.DialogDismiss>
 	);
 }
