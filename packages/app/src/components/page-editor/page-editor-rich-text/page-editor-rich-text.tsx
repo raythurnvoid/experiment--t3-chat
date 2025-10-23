@@ -33,6 +33,7 @@ import { app_fetch_create_version_snapshot } from "@/lib/fetch.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { useWatchableValue } from "@/hooks/utils-hooks.ts";
 import type { FunctionReturnType } from "convex/server";
+import { tspan } from "motion/react-m";
 
 /**
  * 5 seconds.
@@ -210,15 +211,24 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			pageId: pageId,
 		});
 
+		let subscribed = true;
+
+		const doSafeUnsubscribe = () => {
+			if (subscribed) {
+				unsubscribe();
+				subscribed = false;
+			}
+		};
+
 		const unsubscribe = watcher.onUpdate(() => {
 			pageContentWatchableQuery.setValue({
 				value: watcher.localQueryResult() ?? null,
-				unsubscribe: () => unsubscribe(),
+				unsubscribe: () => doSafeUnsubscribe(),
 			});
 		});
 
 		return () => {
-			unsubscribe();
+			doSafeUnsubscribe();
 		};
 	}, []);
 
@@ -246,7 +256,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	// Subscribe to page updates broadcast and apply incoming content
 	useEffect(() => {
-		if (!editor || !isEditorReady || contentLoaded || !pageId) return;
+		if (!editor || !isEditorReady || !pageId) return;
 
 		let initialized = false;
 
@@ -265,14 +275,26 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				return;
 			}
 
-			editor.commands.setContent(update.text_content, false);
+			editor
+				.chain()
+				.setContent(update.text_content, false)
+				.command(({ tr }) => {
+					tr.setMeta(ySyncPluginKey, {
+						snapshot: {},
+						prevSnapshot: {},
+					}).setMeta("addToHistory", false);
+
+					return true;
+				})
+				.run();
+
 			storeSnapshotController.updateCurrentSnapshotContent();
 		});
 
 		return () => {
 			unsubscribe();
 		};
-	}, [editor, isEditorReady, contentLoaded]);
+	}, [editor, isEditorReady]);
 
 	useEffect(() => {
 		// Set up visibility change listener for snapshot versioning

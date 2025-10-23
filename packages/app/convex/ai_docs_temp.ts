@@ -942,6 +942,79 @@ export const apply_patch_to_page_and_broadcast = mutation({
 	},
 });
 
+export const restore_snapshot_and_broadcast = mutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageSnapshotId: v.id("pages_snapshots"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const snapshotContent = await ctx.db
+			.query("pages_snapshots_contents")
+			.withIndex("by_page_snapshot_id", (q) => q.eq("page_snapshot_id", args.pageSnapshotId))
+			.first();
+
+		if (!snapshotContent) {
+			throw new Error("Snapshot content not found");
+		}
+
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", snapshotContent.page_id),
+			)
+			.first();
+
+		if (!page) {
+			throw new Error("Page not found");
+		}
+
+		// Create a snapshot with the current content (before restoration)
+		await do_store_version_snapshot(ctx, {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: snapshotContent.page_id,
+			content: page.text_content,
+			created_by: user.name,
+		});
+
+		// Create a snapshot with the restored content
+		await do_store_version_snapshot(ctx, {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: snapshotContent.page_id,
+			content: snapshotContent.content,
+			created_by: user.name,
+		});
+
+		await ctx.db.patch(page._id, {
+			text_content: snapshotContent.content,
+			updated_by: user.name,
+			updated_at: Date.now(),
+		});
+
+		await Promise.all([
+			ctx.db.insert("page_updates_richtext_broadcast", {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: snapshotContent.page_id,
+				text_content: snapshotContent.content,
+			}),
+			ctx.db.insert("page_updates_markdown_broadcast", {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: snapshotContent.page_id,
+				text_content: snapshotContent.content,
+			}),
+		]);
+
+		return null;
+	},
+});
+
 export const get_page_by_path = query({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(
@@ -1458,34 +1531,41 @@ export const create_version_snapshot = httpAction(async (ctx, request) => {
 	}
 });
 
+// Shared helper for snapshot creation
+const store_version_snapshot_args_schema = v.object({
+	workspace_id: v.string(),
+	project_id: v.string(),
+	page_id: v.string(),
+	content: v.string(),
+	created_by: v.string(),
+});
+
+async function do_store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
+	// Create snapshot entry
+	const snapshotId = await ctx.db.insert("pages_snapshots", {
+		workspace_id: args.workspace_id,
+		project_id: args.project_id,
+		page_id: args.page_id,
+		created_by: args.created_by,
+	});
+
+	// Create content entry
+	await ctx.db.insert("pages_snapshots_contents", {
+		workspace_id: args.workspace_id,
+		project_id: args.project_id,
+		page_snapshot_id: snapshotId,
+		content: args.content,
+		page_id: args.page_id,
+	});
+
+	return snapshotId;
+}
+
 export const store_version_snapshot = internalMutation({
-	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.string(),
-		content: v.string(),
-		created_by: v.string(),
-	},
+	args: store_version_snapshot_args_schema,
 	returns: v.id("pages_snapshots"),
 	handler: async (ctx, args) => {
-		// Create snapshot entry
-		const snapshotId = await ctx.db.insert("pages_snapshots", {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
-			page_id: args.page_id,
-			created_by: args.created_by,
-		});
-
-		// Create content entry
-		await ctx.db.insert("pages_snapshots_contents", {
-			workspace_id: args.workspace_id,
-			project_id: args.project_id,
-			page_snapshot_id: snapshotId,
-			content: args.content,
-			page_id: args.page_id,
-		});
-
-		return snapshotId;
+		return await do_store_version_snapshot(ctx, args);
 	},
 });
 

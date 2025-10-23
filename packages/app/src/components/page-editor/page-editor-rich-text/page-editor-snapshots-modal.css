@@ -115,7 +115,7 @@
 		font-size: 0.875rem;
 		color: var(--color-fg-08);
 
-		padding: 20px;
+		padding-inline: 20px;
 		height: 83px;
 
 		margin-bottom: 16px;
@@ -124,6 +124,34 @@
 
 		border-bottom: 1px solid var(--color-base-1-07);
 		box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+
+		display: grid;
+		grid-template:
+			"time 	actions" 22px
+			"author actions" 22px /
+			1fr auto;
+		align-items: center;
+		align-content: center;
+		gap: 12px;
+	}
+
+	.PageEditorSnapshotsModal-preview-snapshot-data-time {
+		grid-area: time;
+	}
+
+	.PageEditorSnapshotsModal-preview-snapshot-data-author {
+		grid-area: author;
+	}
+
+	.PageEditorSnapshotsModal-navigation-actions {
+		grid-area: actions;
+		display: flex;
+		gap: 8px;
+	}
+
+	.PageEditorSnapshotsModal-navigation-action {
+		width: 110px;
+		justify-content: space-between;
 	}
 
 	.PageEditorSnapshotsModal-preview-error-container {
@@ -144,16 +172,18 @@
 
 		background: var(--color-base-1-07);
 
-		&:not(:last-child) {
-			margin-bottom: 12px;
-		}
-
 		&:nth-child(1) {
+			grid-area: time;
 			width: 20ch;
 		}
 
 		&:nth-child(2) {
+			grid-area: author;
 			width: 25ch;
+		}
+
+		&:nth-child(3) {
+			grid-area: actions;
 		}
 	}
 

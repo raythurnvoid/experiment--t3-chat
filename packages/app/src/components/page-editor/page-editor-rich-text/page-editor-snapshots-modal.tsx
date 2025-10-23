@@ -1,6 +1,6 @@
 import "./page-editor-snapshots-modal.css";
 import { useState } from "react";
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
 import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
@@ -16,7 +16,8 @@ import {
 import { MyButton, MyButtonIcon } from "../../my-button.tsx";
 import { MyIconButton } from "../../my-icon-button.tsx";
 import { MySkeleton } from "../../ui/my-skeleton.tsx";
-import { Clock, FileText } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip.tsx";
+import { Clock, FileText, ChevronLeft, ChevronRight } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../../lib/ai-chat.ts";
 import { diffWordsWithSpace } from "diff";
@@ -34,6 +35,8 @@ export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal-empty-message"
 	| "PageEditorSnapshotsModal-preview-scrollable-area"
 	| "PageEditorSnapshotsModal-preview-snapshot-data"
+	| "PageEditorSnapshotsModal-preview-snapshot-data-time"
+	| "PageEditorSnapshotsModal-preview-snapshot-data-author"
 	| "PageEditorSnapshotsModal-preview-body"
 	| "PageEditorSnapshotsModal-preview-popover"
 	| "PageEditorSnapshotsModal-preview-error-container"
@@ -44,7 +47,9 @@ export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal-preview-diff-word"
 	| "PageEditorSnapshotsModal-preview-diff-added"
 	| "PageEditorSnapshotsModal-preview-diff-removed"
-	| "PageEditorSnapshotsModal-preview-diff-unchanged";
+	| "PageEditorSnapshotsModal-preview-diff-unchanged"
+	| "PageEditorSnapshotsModal-navigation-actions"
+	| "PageEditorSnapshotsModal-navigation-action";
 
 export type PageEditorSnapshotsModal_Props = {
 	pageId: string;
@@ -56,6 +61,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	const [isListOpen, setIsListOpen] = useState(false);
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
+	const [isRestoring, setIsRestoring] = useState(false);
 
 	const snapshots = useQuery(app_convex_api.ai_docs_temp.get_page_snapshots_list, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
@@ -68,13 +74,15 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		selectedSnapshotId ? { page_snapshot_id: selectedSnapshotId } : "skip",
 	);
 
+	const restoreSnapshotAndBroadcast = useMutation(app_convex_api.ai_docs_temp.restore_snapshot_and_broadcast);
+
 	const getCurrentEditorContent = () => {
 		if (!editor) return "";
 		return editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
 	};
 
 	const createDiff = (snapshotContent: string) => {
-		return diffWordsWithSpace(snapshotContent, getCurrentEditorContent());
+		return diffWordsWithSpace(getCurrentEditorContent(), snapshotContent);
 	};
 
 	const handleSnapshotClick = (snapshotId: app_convex_Id<"pages_snapshots">) => {
@@ -82,16 +90,46 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		setIsPreviewOpen(true);
 	};
 
-	const handleConfirm = () => {
-		console.debug("Snapshot selected:", selectedSnapshotId);
-		setIsPreviewOpen(false);
-		setIsListOpen(false);
-		setSelectedSnapshotId(null);
+	const handleConfirm = async () => {
+		if (!selectedSnapshotId) return;
+
+		setIsRestoring(true);
+		try {
+			await restoreSnapshotAndBroadcast({
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageSnapshotId: selectedSnapshotId,
+			});
+			console.debug("Snapshot restored:", selectedSnapshotId);
+			setIsPreviewOpen(false);
+			setIsListOpen(false);
+			setSelectedSnapshotId(null);
+		} catch (err) {
+			console.error("Failed to restore snapshot:", err);
+		} finally {
+			setIsRestoring(false);
+		}
 	};
 
 	const handleCancel = () => {
 		setIsPreviewOpen(false);
 		setSelectedSnapshotId(null);
+	};
+
+	const handlePreviousSnapshot = () => {
+		if (!snapshots || !selectedSnapshotId) return;
+		const currentIndex = snapshots.findIndex((s) => s._id === selectedSnapshotId);
+		if (currentIndex > 0) {
+			setSelectedSnapshotId(snapshots[currentIndex - 1]._id);
+		}
+	};
+
+	const handleNextSnapshot = () => {
+		if (!snapshots || !selectedSnapshotId) return;
+		const currentIndex = snapshots.findIndex((s) => s._id === selectedSnapshotId);
+		if (currentIndex < snapshots.length - 1) {
+			setSelectedSnapshotId(snapshots[currentIndex + 1]._id);
+		}
 	};
 
 	const formatTime = (timestamp: number) => {
@@ -107,6 +145,13 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		}
 		return relativeTime;
 	};
+
+	const currentIndex = snapshots && selectedSnapshotId ? snapshots.findIndex((s) => s._id === selectedSnapshotId) : -1;
+	const previousSnapshot = currentIndex > 0 ? snapshots?.[currentIndex - 1] : null;
+	const nextSnapshot =
+		currentIndex >= 0 && currentIndex < (snapshots?.length ?? 0) - 1 ? snapshots?.[currentIndex + 1] : null;
+	const isPreviousDisabled = !snapshots || !selectedSnapshotId || currentIndex === 0;
+	const isNextDisabled = !snapshots || !selectedSnapshotId || currentIndex === (snapshots?.length ?? 0) - 1;
 
 	return (
 		<>
@@ -222,7 +267,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 											)}
 										>
 											{selectedSnapshotContent === undefined ? (
-												Array.from({ length: 2 }, (_, index) => (
+												Array.from({ length: 3 }, (_, index) => (
 													<MySkeleton
 														key={index}
 														className={cn(
@@ -232,8 +277,104 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 												))
 											) : (
 												<>
-													<div>{formatTime(selectedSnapshotContent._creationTime)}</div>
-													<div>{selectedSnapshotContent.created_by}</div>
+													<div
+														className={cn(
+															"PageEditorSnapshotsModal-preview-snapshot-data-time" satisfies PageEditorSnapshotsModal_ClassNames,
+														)}
+													>
+														{formatTime(selectedSnapshotContent._creationTime)}
+													</div>
+													<div
+														className={cn(
+															"PageEditorSnapshotsModal-preview-snapshot-data-author" satisfies PageEditorSnapshotsModal_ClassNames,
+														)}
+													>
+														{selectedSnapshotContent.created_by}
+													</div>
+													<div
+														className={cn(
+															"PageEditorSnapshotsModal-navigation-actions" satisfies PageEditorSnapshotsModal_ClassNames,
+														)}
+													>
+														{previousSnapshot && !isPreviousDisabled ? (
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<MyButton
+																		variant="outline"
+																		className={cn(
+																			"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
+																		)}
+																		onClick={handlePreviousSnapshot}
+																		disabled={isPreviousDisabled}
+																	>
+																		<MyButtonIcon>
+																			<ChevronLeft />
+																		</MyButtonIcon>
+																		Previous
+																	</MyButton>
+																</TooltipTrigger>
+																<TooltipContent>
+																	<div>
+																		<div>{formatTime(previousSnapshot._creationTime)}</div>
+																		<div>{previousSnapshot.created_by}</div>
+																	</div>
+																</TooltipContent>
+															</Tooltip>
+														) : (
+															<MyButton
+																variant="outline"
+																className={cn(
+																	"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
+																)}
+																onClick={handlePreviousSnapshot}
+																disabled={isPreviousDisabled}
+															>
+																<MyButtonIcon>
+																	<ChevronLeft />
+																</MyButtonIcon>
+																Previous
+															</MyButton>
+														)}
+														{nextSnapshot && !isNextDisabled ? (
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<MyButton
+																		variant="outline"
+																		className={cn(
+																			"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
+																		)}
+																		onClick={handleNextSnapshot}
+																		disabled={isNextDisabled}
+																	>
+																		Next
+																		<MyButtonIcon>
+																			<ChevronRight />
+																		</MyButtonIcon>
+																	</MyButton>
+																</TooltipTrigger>
+																<TooltipContent>
+																	<div>
+																		<div>{formatTime(nextSnapshot._creationTime)}</div>
+																		<div>{nextSnapshot.created_by}</div>
+																	</div>
+																</TooltipContent>
+															</Tooltip>
+														) : (
+															<MyButton
+																variant="outline"
+																className={cn(
+																	"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
+																)}
+																onClick={handleNextSnapshot}
+																disabled={isNextDisabled}
+															>
+																Next
+																<MyButtonIcon>
+																	<ChevronRight />
+																</MyButtonIcon>
+															</MyButton>
+														)}
+													</div>
 												</>
 											)}
 										</div>
@@ -274,12 +415,12 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 							</MyModalScrollableArea>
 
 							<MyModalFooter>
-								<MyButton variant="outline" onClick={handleCancel}>
+								<MyButton variant="outline" onClick={handleCancel} disabled={isRestoring}>
 									Cancel
 								</MyButton>
 								<MyButton
-									disabled={selectedSnapshotContent == null}
-									aria-busy={selectedSnapshotContent == null}
+									disabled={selectedSnapshotContent == null || isRestoring}
+									aria-busy={selectedSnapshotContent == null || isRestoring}
 									onClick={handleConfirm}
 								>
 									Confirm
