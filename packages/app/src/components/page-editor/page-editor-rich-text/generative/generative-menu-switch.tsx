@@ -18,9 +18,9 @@ const GenerativeMenuSwitch = ({ children, open, onOpenChange }: GenerativeMenuSw
 
 	return (
 		<EditorBubble
-			tippyOptions={{
+			options={{
 				placement: open ? "bottom-start" : "top",
-				onHidden: () => {
+				onHide: () => {
 					if (!editor) {
 						return;
 					}

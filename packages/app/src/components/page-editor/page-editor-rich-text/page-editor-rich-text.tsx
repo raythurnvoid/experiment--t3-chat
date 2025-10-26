@@ -1,6 +1,6 @@
 import "./page-editor-rich-text.css";
 import { useState, useEffect, useRef } from "react";
-import { EditorContent, EditorRoot, useEditor, type EditorContentProps } from "novel";
+import { EditorContent, EditorRoot, useEditor, type EditorContentProps, DragHandle } from "novel";
 import { Editor, type JSONContent as TiptapJSONContent } from "@tiptap/react";
 import { ImageResizer, handleCommandNavigation, handleImageDrop, handleImagePaste } from "novel";
 import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
@@ -33,7 +33,6 @@ import { app_fetch_create_version_snapshot } from "@/lib/fetch.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { useWatchableValue } from "@/hooks/utils-hooks.ts";
 import type { FunctionReturnType } from "convex/server";
-import { tspan } from "motion/react-m";
 
 /**
  * 5 seconds.
@@ -50,7 +49,7 @@ function useStoreSnapshot(editor: Editor | null, pageId: string) {
 
 	const getEditorContentAsMarkdown = () => {
 		if (!editor) return null;
-		return editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+		return editor.getMarkdown();
 	};
 
 	const updateCurrentSnapshotContent = () => {
@@ -135,6 +134,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner"
 	| "PageEditorRichTextInner-editor-container"
+	| "PageEditorRichTextInner-editor-wrapper"
 	| "PageEditorRichTextInner-editor-content"
 	| "PageEditorRichTextInner-toolbar"
 	| "PageEditorRichTextInner-threads-container"
@@ -188,7 +188,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		},
 	});
 
-	const extensions = [...defaultExtensions, (PageEditorRichTextToolsSlashCommand as any).slashCommand, liveblocks];
+	const extensions = [...defaultExtensions, PageEditorRichTextToolsSlashCommand.slashCommand, liveblocks];
 
 	const syncStatus = useSyncStatus({ smooth: true });
 	const oldSyncValue = useRef(syncStatus);
@@ -244,7 +244,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				const remoteContent = query.value;
 
 				if (remoteContent) {
-					editor.commands.setContent(remoteContent, false);
+					editor.commands.setContent(remoteContent, { emitUpdate: false });
 					storeSnapshotController.updateCurrentSnapshotContent();
 				}
 
@@ -277,7 +277,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 			editor
 				.chain()
-				.setContent(update.text_content, false)
+				.setContent(update.text_content, { emitUpdate: false })
 				.command(({ tr }) => {
 					tr.setMeta(ySyncPluginKey, {
 						snapshot: {},
@@ -350,7 +350,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 			saveOnDbDebounce.current = setTimeout(async () => {
 				try {
-					const textContent = editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+					const textContent = editor.getMarkdown();
 					await updateAndBroadcastMarkdown({
 						workspaceId: ai_chat_HARDCODED_ORG_ID,
 						projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -365,10 +365,23 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	};
 
 	return isEditorReady ? (
-		<>
+		<div className={cn("PageEditorRichTextInner" satisfies PageEditorRichTextInner_ClassNames, className)}>
 			{headerSlot}
+			{editor && (
+				<DragHandle editor={editor}>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						fill="none"
+						viewBox="0 0 24 24"
+						strokeWidth="1.5"
+						stroke="currentColor"
+					>
+						<path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
+					</svg>
+				</DragHandle>
+			)}
 			<EditorContent
-				className={cn("PageEditorRichTextInner" satisfies PageEditorRichTextInner_ClassNames, className)}
+				className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
 				editorContainerProps={{
 					className: cn("PageEditorRichTextInner-editor-container" satisfies PageEditorRichTextInner_ClassNames),
 				}}
@@ -421,7 +434,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					<PageEditorRichTextToolsAddCommentButton />
 				</GenerativeMenuSwitch>
 			</EditorContent>
-		</>
+		</div>
 	) : (
 		<PageEditorSkeleton />
 	);

@@ -14,8 +14,14 @@
 		width: 100%;
 	}
 
+	.PageEditorRichTextInner-editor-wrapper {
+		height: 100%;
+		width: 100%;
+	}
+
 	.PageEditorRichTextInner-editor-content {
 		height: 100%;
+		width: 100%;
 		padding-left: 64px;
 		padding-right: 64px;
 		padding-top: 16px;

@@ -78,7 +78,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 	const getCurrentEditorContent = () => {
 		if (!editor) return "";
-		return editor.storage.markdown.serializer.serialize(editor.state.doc) as string;
+		return editor.getMarkdown();
 	};
 
 	const createDiff = (snapshotContent: string) => {

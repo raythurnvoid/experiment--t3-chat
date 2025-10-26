@@ -4,39 +4,27 @@ import {
 	CodeBlockLowlight,
 	Color,
 	CustomKeymap,
-	GlobalDragHandle,
 	HighlightExtension,
 	HorizontalRule,
+	Markdown,
 	Placeholder,
 	StarterKit,
 	TaskItem,
 	TaskList,
 	TextStyle,
-	TiptapLink,
-	TiptapUnderline,
 	Twitter,
 	Youtube,
 	Mathematics,
 } from "novel";
-import { Markdown } from "tiptap-markdown";
+import { TextAlign } from "@tiptap/extension-text-align";
+import { Typography } from "@tiptap/extension-typography";
 import { cx } from "class-variance-authority";
 import { common, createLowlight } from "lowlight";
-
-const MarkdownExtension = Markdown.configure({
-	transformCopiedText: true,
-});
 
 //TODO I am using cx here to get tailwind autocomplete working, idk if someone else can write a regex to just capture the class key in objects
 const aiHighlight = AIHighlight;
 //You can overwrite the placeholder with your own configuration
 const placeholder = Placeholder;
-const tiptapLink = TiptapLink.configure({
-	HTMLAttributes: {
-		class: cx(
-			"text-muted-foreground underline underline-offset-[3px] hover:text-primary transition-colors cursor-pointer",
-		),
-	},
-});
 
 const taskList = TaskList.configure({
 	HTMLAttributes: {
@@ -58,20 +46,8 @@ const horizontalRule = HorizontalRule.configure({
 
 const starterKit = StarterKit.configure({
 	// The Liveblocks extension comes with its own history handling
-	history: false,
-
-	blockquote: {
-		HTMLAttributes: {
-			class: cx("border-l-4 border-primary"),
-		},
-	},
+	undoRedo: false,
 	codeBlock: false,
-	code: {
-		HTMLAttributes: {
-			class: cx("rounded-md bg-muted  px-1.5 py-1 font-mono font-medium"),
-			spellcheck: "false",
-		},
-	},
 	horizontalRule: false,
 	dropcursor: {
 		color: "#DBEAFE",
@@ -114,7 +90,6 @@ const characterCount = CharacterCount.configure();
 export const defaultExtensions = [
 	starterKit,
 	placeholder,
-	tiptapLink,
 	taskList,
 	taskItem,
 	horizontalRule,
@@ -124,11 +99,11 @@ export const defaultExtensions = [
 	twitter,
 	mathematics,
 	characterCount,
-	TiptapUnderline,
-	MarkdownExtension,
+	Markdown,
 	HighlightExtension,
 	TextStyle,
 	Color,
 	CustomKeymap,
-	GlobalDragHandle,
+	TextAlign,
+	Typography,
 ];
