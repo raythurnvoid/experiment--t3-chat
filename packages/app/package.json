@@ -101,7 +101,7 @@
 		"minimatch": "^10.0.3",
 		"monaco-editor": "^0.52.2",
 		"motion": "^12.23.24",
-		"novel": "^1.0.2",
+		"novel": "workspace:*",
 		"opencode": "workspace:*",
 		"p-queue": "^8.1.1",
 		"react": "^19.2.0",

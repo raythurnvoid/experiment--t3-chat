@@ -14,3 +14,11 @@
 [submodule "packages/app/vendor/presence"]
 	path = packages/app/vendor/presence
 	url = https://github.com/get-convex/presence
+[submodule "novel"]
+	path = packages/app/vendor/novel
+	url = https://github.com/raythurnvoid/novel.git
+	branch = main
+[submodule "packages/app/vendor/novel"]
+	path = packages/app/vendor/novel
+	url = https://github.com/raythurnvoid/novel.git
+	branch = main

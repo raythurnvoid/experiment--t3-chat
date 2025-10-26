@@ -47,6 +47,7 @@ This is a monorepo project with the following essential structure that you must 
   - [vendor/liveblocks/](mdc:packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
   - [vendor/ai/](mdc:packages/app/vendor/ai) - AI SDK submodule (full repo for reference)
   - [vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
+  - [vendor/novel/](mdc:packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
 
 - [+personal/](mdc:+personal) - DOCUMENTATION & RESEARCH FOLDER
   - [+personal/+ai/](mdc:+personal/+ai) - Only writable subfolder for AI-generated content
@@ -101,6 +102,19 @@ This is a monorepo project with the following essential structure that you must 
   - Package folders:
     - [packages/](mdc:packages/app/vendor/opencode/packages)
 
+- [packages/app/vendor/novel/](mdc:packages/app/vendor/novel) - Novel rich text editor submodule
+  - Importing: Use standard node_modules imports in the app, submodule is for reference
+    - Correct:
+      ```ts
+      import { useEditor } from "novel";
+      ```
+  - Documentation folders:
+    - [README.md](mdc:packages/app/vendor/novel/README.md)
+  - Examples folders:
+    - [apps/web/](mdc:packages/app/vendor/novel/apps/web) - Example implementation
+  - Package folders:
+    - [packages/headless/](mdc:packages/app/vendor/novel/packages/headless) - Core editor package
+
 ## 3rd Party Documentation Research
 
 When users ask about 3rd party libraries or request implementations using external dependencies, conduct thorough documentation research for accurate responses.
@@ -108,7 +122,7 @@ When users ask about 3rd party libraries or request implementations using extern
 Documentation Sources
 
 - [+personal/sources](mdc:+personal/sources) - read [+personal/sources/README.md](mdc:+personal/sources/README.md) when reading inside the folder
-- Submodules - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks), [packages/app/vendor/ai/](mdc:packages/app/vendor/ai), and [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) have full repos for reference
+- Submodules - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks), [packages/app/vendor/ai/](mdc:packages/app/vendor/ai), [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode), and [packages/app/vendor/novel/](mdc:packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 
 Research Process
