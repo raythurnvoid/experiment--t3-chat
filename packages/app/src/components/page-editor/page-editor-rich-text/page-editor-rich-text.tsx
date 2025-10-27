@@ -244,7 +244,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				const remoteContent = query.value;
 
 				if (remoteContent) {
-					editor.commands.setContent(remoteContent, { emitUpdate: false });
+					// editor.commands.setContent(remoteContent, { contentType: "markdown", emitUpdate: false });
 					storeSnapshotController.updateCurrentSnapshotContent();
 				}
 

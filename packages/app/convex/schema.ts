@@ -304,7 +304,8 @@ const app_convex_schema = defineSchema({
 		page_id: v.string(),
 	})
 		.index("by_page_snapshot_id", ["page_snapshot_id"])
-		.index("by_page_id", ["page_id"]),
+		.index("by_page_id", ["page_id"])
+		.index("by_page_id_and_snapshot_id", ["page_id", "page_snapshot_id"]),
 });
 
 export default app_convex_schema;

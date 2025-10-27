@@ -1,10 +1,5 @@
 {
-  "node": {
-    "externalPackages": [
-      "ai",
-      "@ai-sdk/openai",
-      "zod",
-      "@liveblocks/node"
-    ]
-  }
+	"node": {
+		"externalPackages": ["ai", "@ai-sdk/openai", "zod"]
+	}
 }

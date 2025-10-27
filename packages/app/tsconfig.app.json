@@ -38,6 +38,7 @@
 		"src",
 		"convex",
 		"server",
-		"shared"
+		"shared",
+		"server"
 	]
 }

@@ -12,6 +12,7 @@ import type * as ai_chat from "../ai_chat.js";
 import type * as ai_docs_temp from "../ai_docs_temp.js";
 import type * as auth from "../auth.js";
 import type * as http from "../http.js";
+import type * as pages_snapshot from "../pages_snapshot.js";
 import type * as presence from "../presence.js";
 
 import type {
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   ai_docs_temp: typeof ai_docs_temp;
   auth: typeof auth;
   http: typeof http;
+  pages_snapshot: typeof pages_snapshot;
   presence: typeof presence;
 }>;
 declare const fullApiWithMounts: typeof fullApi;

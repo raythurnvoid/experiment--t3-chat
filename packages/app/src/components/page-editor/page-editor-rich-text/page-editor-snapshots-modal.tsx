@@ -1,6 +1,6 @@
 import "./page-editor-snapshots-modal.css";
 import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useAction } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
 import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
@@ -71,10 +71,10 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 	const selectedSnapshotContent = useQuery(
 		app_convex_api.ai_docs_temp.get_page_snapshot_content,
-		selectedSnapshotId ? { page_snapshot_id: selectedSnapshotId } : "skip",
+		selectedSnapshotId ? { page_id: pageId, page_snapshot_id: selectedSnapshotId } : "skip",
 	);
 
-	const restoreSnapshotAndBroadcast = useMutation(app_convex_api.ai_docs_temp.restore_snapshot_and_broadcast);
+	const restoreSnapshotAndBroadcast = useAction(app_convex_api.pages_snapshot.restore_snapshot);
 
 	const getCurrentEditorContent = () => {
 		if (!editor) return "";
@@ -99,6 +99,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageSnapshotId: selectedSnapshotId,
+				pageId: pageId,
 			});
 			console.debug("Snapshot restored:", selectedSnapshotId);
 			setIsPreviewOpen(false);

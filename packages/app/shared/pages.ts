@@ -30,3 +30,7 @@ export function pages_create_tree_placeholder_child(itemId: string): pages_TreeI
 		updatedBy: "",
 	};
 }
+
+export function ai_docs_create_liveblocks_room_id(workspaceId: string, projectId: string, pageId: string): string {
+	return `${workspaceId}:${projectId}:${pageId}`;
+}

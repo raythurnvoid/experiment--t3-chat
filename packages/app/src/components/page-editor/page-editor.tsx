@@ -1,27 +1,23 @@
 import "./page-editor.css";
 import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
 import { ClientSideSuspense } from "@liveblocks/react";
-import { useAuth } from "../../lib/auth.ts";
-import { app_fetch_ai_docs_liveblocks_auth } from "../../lib/fetch.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
+import { useAuth } from "@/lib/auth.ts";
+import { app_fetch_ai_docs_liveblocks_auth } from "@/lib/fetch.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
 import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
-import { cn } from "../../lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
 import { useQuery } from "convex/react";
-import { app_convex_api } from "../../lib/app-convex-client.ts";
-import { pages_ROOT_ID, type pages_TreeItem } from "../../lib/pages.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { pages_ROOT_ID, ai_docs_create_liveblocks_room_id, type pages_TreeItem } from "@/lib/pages.ts";
 import { Home } from "lucide-react";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
-
-function ai_docs_create_liveblocks_room_id(orgId: string, projectId: string, docId: string) {
-	return `${orgId}:${projectId}:${docId}`;
-}
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
