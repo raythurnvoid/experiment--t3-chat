@@ -292,6 +292,7 @@ const app_convex_schema = defineSchema({
 		project_id: v.string(),
 		page_id: v.string(),
 		created_by: v.string(),
+		is_archived: v.optional(v.boolean()),
 	})
 		.index("by_page_id", ["page_id"])
 		.index("by_workspace_project", ["workspace_id", "project_id"]),

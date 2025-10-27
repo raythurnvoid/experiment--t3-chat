@@ -1501,6 +1501,7 @@ export const get_page_snapshots_list = query({
 		workspace_id: v.string(),
 		project_id: v.string(),
 		page_id: v.string(),
+		show_archived: v.boolean(),
 	},
 	returns: v.array(
 		v.object({
@@ -1510,6 +1511,7 @@ export const get_page_snapshots_list = query({
 			project_id: v.string(),
 			page_id: v.string(),
 			created_by: v.string(),
+			is_archived: v.optional(v.boolean()),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -1519,14 +1521,22 @@ export const get_page_snapshots_list = query({
 			.order("desc")
 			.collect();
 
-		return snapshots.map((snapshot) => ({
-			_id: snapshot._id,
-			_creationTime: snapshot._creationTime,
-			workspace_id: snapshot.workspace_id,
-			project_id: snapshot.project_id,
-			page_id: snapshot.page_id,
-			created_by: snapshot.created_by,
-		}));
+		return snapshots
+			.filter((snapshot) => {
+				if (args.show_archived) {
+					return true;
+				}
+				return !snapshot.is_archived;
+			})
+			.map((snapshot) => ({
+				_id: snapshot._id,
+				_creationTime: snapshot._creationTime,
+				workspace_id: snapshot.workspace_id,
+				project_id: snapshot.project_id,
+				page_id: snapshot.page_id,
+				created_by: snapshot.created_by,
+				is_archived: Boolean(snapshot.is_archived),
+			}));
 	},
 });
 
@@ -1568,5 +1578,31 @@ export const get_page_snapshot_content = query({
 			_creationTime: content._creationTime,
 			created_by: snapshot.created_by,
 		};
+	},
+});
+
+export const archive_snapshot = mutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_snapshot_id: v.id("pages_snapshots"),
+	},
+	handler: async (ctx, args) => {
+		await ctx.db.patch(args.page_snapshot_id, {
+			is_archived: true,
+		});
+	},
+});
+
+export const unarchive_snapshot = mutation({
+	args: {
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_snapshot_id: v.id("pages_snapshots"),
+	},
+	handler: async (ctx, args) => {
+		await ctx.db.patch(args.page_snapshot_id, {
+			is_archived: false,
+		});
 	},
 });

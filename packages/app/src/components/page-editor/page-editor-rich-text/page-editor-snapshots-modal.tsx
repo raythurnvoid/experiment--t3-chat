@@ -1,6 +1,6 @@
 import "./page-editor-snapshots-modal.css";
 import { useState } from "react";
-import { useQuery, useAction } from "convex/react";
+import { useQuery, useAction, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
 import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
@@ -14,10 +14,12 @@ import {
 	MyModalHeading,
 } from "../../my-modal.tsx";
 import { MyButton, MyButtonIcon } from "../../my-button.tsx";
-import { MyIconButton } from "../../my-icon-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "../../my-icon-button.tsx";
 import { MySkeleton } from "../../ui/my-skeleton.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip.tsx";
-import { Clock, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { Switch } from "../../ui/switch.tsx";
+import { Label } from "../../ui/label.tsx";
+import { Clock, FileText, ChevronLeft, ChevronRight, Archive, ArchiveRestore } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../../lib/ai-chat.ts";
 import { diffWordsWithSpace } from "diff";
@@ -25,12 +27,17 @@ import type { Editor } from "@tiptap/react";
 
 export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal"
+	| "PageEditorSnapshotsModal-filters"
 	| "PageEditorSnapshotsModal-skeleton-list"
 	| "PageEditorSnapshotsModal-skeleton-list-item"
 	| "PageEditorSnapshotsModal-snapshot-item"
+	| "PageEditorSnapshotsModal-snapshot-item-archived"
+	| "PageEditorSnapshotsModal-snapshot-primary-button"
 	| "PageEditorSnapshotsModal-snapshot-icon"
-	| "PageEditorSnapshotsModal-snapshot-main-text"
+	| "PageEditorSnapshotsModal-snapshot-archived-label"
 	| "PageEditorSnapshotsModal-snapshot-support-text"
+	| "PageEditorSnapshotsModal-snapshot-actions"
+	| "PageEditorSnapshotsModal-snapshot-action-button"
 	| "PageEditorSnapshotsModal-empty-message-container"
 	| "PageEditorSnapshotsModal-empty-message"
 	| "PageEditorSnapshotsModal-preview-scrollable-area"
@@ -62,11 +69,13 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
 	const [isRestoring, setIsRestoring] = useState(false);
+	const [showArchived, setShowArchived] = useState(false);
 
 	const snapshots = useQuery(app_convex_api.ai_docs_temp.get_page_snapshots_list, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
 		project_id: ai_chat_HARDCODED_PROJECT_ID,
 		page_id: pageId,
+		show_archived: showArchived,
 	});
 
 	const selectedSnapshotContent = useQuery(
@@ -75,6 +84,8 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	);
 
 	const restoreSnapshotAndBroadcast = useAction(app_convex_api.pages_snapshot.restore_snapshot);
+	const archiveSnapshot = useMutation(app_convex_api.ai_docs_temp.archive_snapshot);
+	const unarchiveSnapshot = useMutation(app_convex_api.ai_docs_temp.unarchive_snapshot);
 
 	const getCurrentEditorContent = () => {
 		if (!editor) return "";
@@ -133,6 +144,33 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		}
 	};
 
+	const handleArchiveClick = async (
+		e: React.MouseEvent,
+		snapshotId: app_convex_Id<"pages_snapshots">,
+		isArchived: boolean | undefined,
+	) => {
+		const mutation = isArchived ? unarchiveSnapshot : archiveSnapshot;
+		await mutation({
+			workspace_id: ai_chat_HARDCODED_ORG_ID,
+			project_id: ai_chat_HARDCODED_PROJECT_ID,
+			page_snapshot_id: snapshotId,
+		});
+	};
+
+	const handleSnapshotItemClick = (
+		e: React.MouseEvent<HTMLDivElement>,
+		snapshotId: app_convex_Id<"pages_snapshots">,
+	) => {
+		const target = e.target as HTMLElement;
+
+		// Don't forward click if clicking on an interactive element
+		if (target.closest("button") || target.closest("a") || target.closest('[role="button"]')) {
+			return;
+		}
+
+		handleSnapshotClick(snapshotId);
+	};
+
 	const formatTime = (timestamp: number) => {
 		const relativeTime = format_relative_time(timestamp);
 		const showAgo = should_show_ago_suffix(timestamp);
@@ -168,6 +206,11 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 						<MyModalHeading>Page Snapshots</MyModalHeading>
 					</MyModalHeader>
 
+					<div className={cn("PageEditorSnapshotsModal-filters" satisfies PageEditorSnapshotsModal_ClassNames)}>
+						<Label htmlFor="show-archived">Show archived</Label>
+						<Switch id="show-archived" checked={showArchived} onCheckedChange={setShowArchived} />
+					</div>
+
 					<MyModalScrollableArea>
 						{snapshots === undefined ? (
 							<div className="PageEditorSnapshotsModal-skeleton-list">
@@ -195,13 +238,14 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 						) : (
 							<div className="space-y-2">
 								{snapshots.map((snapshot) => (
-									<MyButton
+									<div
 										key={snapshot._id}
-										variant="secondary"
 										className={cn(
 											"PageEditorSnapshotsModal-snapshot-item" satisfies PageEditorSnapshotsModal_ClassNames,
+											snapshot.is_archived &&
+												("PageEditorSnapshotsModal-snapshot-item-archived" satisfies PageEditorSnapshotsModal_ClassNames),
 										)}
-										onClick={() => handleSnapshotClick(snapshot._id)}
+										onClick={(e) => handleSnapshotItemClick(e, snapshot._id)}
 									>
 										<MyButtonIcon
 											className={cn(
@@ -210,13 +254,24 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 										>
 											<FileText />
 										</MyButtonIcon>
-										<span
+										<button
+											type="button"
 											className={cn(
-												"PageEditorSnapshotsModal-snapshot-main-text" satisfies PageEditorSnapshotsModal_ClassNames,
+												"PageEditorSnapshotsModal-snapshot-primary-button" satisfies PageEditorSnapshotsModal_ClassNames,
 											)}
+											onClick={() => handleSnapshotClick(snapshot._id)}
 										>
 											{formatTime(snapshot._creationTime)}
-										</span>
+											{snapshot.is_archived && (
+												<span
+													className={cn(
+														"PageEditorSnapshotsModal-snapshot-archived-label" satisfies PageEditorSnapshotsModal_ClassNames,
+													)}
+												>
+													{" - "}Archived
+												</span>
+											)}
+										</button>
 										<span
 											className={cn(
 												"PageEditorSnapshotsModal-snapshot-support-text" satisfies PageEditorSnapshotsModal_ClassNames,
@@ -224,7 +279,23 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 										>
 											{snapshot.created_by}
 										</span>
-									</MyButton>
+										<div
+											className={cn(
+												"PageEditorSnapshotsModal-snapshot-actions" satisfies PageEditorSnapshotsModal_ClassNames,
+											)}
+										>
+											<MyIconButton
+												className={cn(
+													"PageEditorSnapshotsModal-snapshot-action-button" satisfies PageEditorSnapshotsModal_ClassNames,
+												)}
+												variant="ghost-secondary"
+												tooltip={snapshot.is_archived ? "Restore" : "Archive"}
+												onClick={(e) => handleArchiveClick(e, snapshot._id, snapshot.is_archived)}
+											>
+												<MyIconButtonIcon>{snapshot.is_archived ? <ArchiveRestore /> : <Archive />}</MyIconButtonIcon>
+											</MyIconButton>
+										</div>
+									</div>
 								))}
 							</div>
 						)}

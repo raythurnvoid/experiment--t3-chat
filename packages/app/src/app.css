@@ -1,5 +1,5 @@
 /* https://tailwindcss.com/docs/preflight#disabling-preflight */
-@layer external, normalize, theme, base, common_components, components, utilities, top_layer;
+@layer external, theme, base, normalize, common_components, components, utilities, top_layer;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
@@ -38,27 +38,15 @@
 		line-height: 1.1;
 	}
 
-	/* Scope button styles to exclude Liveblocks components */
 	button {
-		border-radius: 8px;
-		border: 1px solid transparent;
-		padding-inline: 0;
-		padding-block: 0;
-		font-size: 1em;
-		font-weight: 500;
-		font-family: inherit;
-		background-color: #1a1a1a;
+		border-radius: 0;
+		border: 0;
+		padding: 0;
+		font: unset;
+		background: none;
 		cursor: pointer;
-		transition: border-color 0.25s;
-	}
-
-	button {
-		border-color: #646cff;
-	}
-
-	button:focus,
-	button:focus-visible {
-		outline: 4px auto -webkit-focus-ring-color;
+		outline: none;
+		text-align: unset;
 	}
 }
 
