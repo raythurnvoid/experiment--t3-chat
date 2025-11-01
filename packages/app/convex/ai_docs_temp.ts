@@ -1,5 +1,5 @@
 /*
-Pages are organized in a emuted file system in which each page exists in a tree and each page can have children.
+Pages are organized in a emulated file system in which each page exists in a tree and each page can have children.
 
 This structure allows file system like operations such has finding all items under a certain path (`foo/bar/*`) or
 listing all children or the content of a certain page (`foo/bar/baz`).
@@ -13,7 +13,10 @@ import {
 	type QueryCtx,
 	type MutationCtx,
 	internalMutation,
+	action,
 } from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internal, api } from "./_generated/api.js";
 import { paginationOptsValidator } from "convex/server";
 import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -28,15 +31,27 @@ import {
 } from "../server/server-utils.ts";
 import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
-import { Liveblocks } from "@liveblocks/node";
 import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
 import { v, type Infer } from "convex/values";
 import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
-import { pages_FIRST_VERSION, pages_ROOT_ID } from "../shared/pages.ts";
+import {
+	pages_FIRST_VERSION,
+	pages_ROOT_ID,
+	pages_YJS_DOC_KEYS,
+	ai_docs_create_liveblocks_room_id,
+	server_pages_get_liveblocks,
+} from "../server/pages.ts";
 import { minimatch } from "minimatch";
-import type { Doc } from "./_generated/dataModel";
-import { internal } from "./_generated/api.js";
 import { z } from "zod";
+import { withProsemirrorDocument } from "@liveblocks/node-prosemirror";
+import { Result } from "../src/lib/errors-as-values-utils.ts";
+import {
+	server_page_editor_markdown_to_json,
+	server_page_editor_get_schema,
+	server_page_editor_DEFAULT_FIELD,
+} from "../server/page-editor.ts";
+import { Doc as YDoc, encodeStateVector, encodeStateAsUpdate, applyUpdate } from "yjs";
+import { simpleDiff } from "lib0/diff";
 
 const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
 if (!LIVEBLOCKS_SECRET_KEY) {
@@ -167,9 +182,7 @@ export const liveblocks_auth = httpAction(async (ctx, request) => {
 		});
 	}
 
-	const liveblocks = new Liveblocks({
-		secret: LIVEBLOCKS_SECRET_KEY,
-	});
+	const liveblocks = server_pages_get_liveblocks();
 
 	const userResult = await server_convex_get_user_fallback_to_anonymous(ctx);
 
@@ -741,62 +754,14 @@ export const update_page_and_broadcast = mutation({
 				updated_at: Date.now(),
 			});
 		}
-
-		// Insert broadcast rows for both editors; consumers will use _creationTime ordering
-		await Promise.all([
-			ctx.db.insert("page_updates_richtext_broadcast", {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-				page_id: args.pageId,
-				text_content: args.textContent,
-			}),
-			ctx.db.insert("page_updates_markdown_broadcast", {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-				page_id: args.pageId,
-				text_content: args.textContent,
-			}),
-		]);
 	},
 });
 
-export const get_page_updates_richtext_broadcast_latest = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
-	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
-	handler: async (ctx, args) => {
-		const rows = await ctx.db
-			.query("page_updates_richtext_broadcast")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.order("desc")
-			.take(1);
-
-		const row = rows[0];
-		if (!row) return null;
-		return { page_id: row.page_id, text_content: row.text_content };
-	},
-});
-
-export const get_page_updates_markdown_broadcast_latest = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
-	returns: v.union(v.object({ page_id: v.string(), text_content: v.string() }), v.null()),
-	handler: async (ctx, args) => {
-		const rows = await ctx.db
-			.query("page_updates_markdown_broadcast")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.order("desc")
-			.take(1);
-
-		const row = rows[0];
-		if (!row) return null;
-		return { page_id: row.page_id, text_content: row.text_content };
-	},
-});
-
-export const update_page_and_broadcast_richtext = mutation({
+/**
+ * Internal mutation to update page content in the database.
+ * Used by actions that need to update the DB from Node.js runtime.
+ */
+export const internal_update_page_content = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
@@ -821,50 +786,6 @@ export const update_page_and_broadcast_richtext = mutation({
 				updated_at: Date.now(),
 			});
 		}
-
-		await ctx.db.insert("page_updates_richtext_broadcast", {
-			workspace_id: args.workspaceId,
-			project_id: args.projectId,
-			page_id: args.pageId,
-			text_content: args.textContent,
-		});
-
-		return null;
-	},
-});
-
-export const update_page_and_broadcast_markdown = mutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.string(),
-		textContent: v.string(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.first();
-
-		if (page) {
-			await ctx.db.patch(page._id, {
-				text_content: args.textContent,
-				updated_by: user.name,
-				updated_at: Date.now(),
-			});
-		}
-
-		await ctx.db.insert("page_updates_markdown_broadcast", {
-			workspace_id: args.workspaceId,
-			project_id: args.projectId,
-			page_id: args.pageId,
-			text_content: args.textContent,
-		});
 
 		return null;
 	},
@@ -922,21 +843,6 @@ export const apply_patch_to_page_and_broadcast = mutation({
 				await ctx.db.delete(existing._id);
 			}
 		}
-
-		await Promise.all([
-			ctx.db.insert("page_updates_richtext_broadcast", {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-				page_id: args.pageId,
-				text_content: newText,
-			}),
-			ctx.db.insert("page_updates_markdown_broadcast", {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-				page_id: args.pageId,
-				text_content: newText,
-			}),
-		]);
 
 		return null;
 	},
@@ -1221,19 +1127,25 @@ export const get_page_text_content_by_path = internalQuery({
 	},
 });
 
+async function do_get_page_text_content_by_page_id(
+	ctx: QueryCtx,
+	args: { workspaceId: string; projectId: string; pageId: string },
+) {
+	const page = await ctx.db
+		.query("pages")
+		.withIndex("by_workspace_project_and_page_id", (q) =>
+			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+		)
+		.first();
+
+	if (!page) return null;
+	return page.text_content ?? null;
+}
 export const get_page_text_content_by_page_id = query({
 	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.first();
-
-		if (!page) return null;
-		return page.text_content ?? null;
+		return await do_get_page_text_content_by_page_id(ctx, args);
 	},
 });
 
@@ -1540,6 +1452,34 @@ export const get_page_snapshots_list = query({
 	},
 });
 
+async function do_get_page_snapshot_content(
+	ctx: QueryCtx,
+	args: { page_id: string; page_snapshot_id: Id<"pages_snapshots"> },
+) {
+	const content = await ctx.db
+		.query("pages_snapshots_contents")
+		.withIndex("by_page_id_and_snapshot_id", (q) =>
+			q.eq("page_id", args.page_id).eq("page_snapshot_id", args.page_snapshot_id),
+		)
+		.first();
+
+	if (!content) {
+		return null;
+	}
+
+	const snapshot = await ctx.db.get(args.page_snapshot_id);
+	if (!snapshot) {
+		return null;
+	}
+
+	return {
+		content: content.content,
+		page_snapshot_id: content.page_snapshot_id,
+		_creationTime: content._creationTime,
+		created_by: snapshot.created_by,
+	};
+}
+
 export const get_page_snapshot_content = query({
 	args: {
 		page_id: v.string(),
@@ -1554,31 +1494,7 @@ export const get_page_snapshot_content = query({
 		}),
 		v.null(),
 	),
-	handler: async (ctx, args) => {
-		const content = await ctx.db
-			.query("pages_snapshots_contents")
-			.withIndex("by_page_id_and_snapshot_id", (q) =>
-				q.eq("page_id", args.page_id).eq("page_snapshot_id", args.page_snapshot_id),
-			)
-			.first();
-
-		if (!content) {
-			return null;
-		}
-
-		// Get the snapshot to access created_by
-		const snapshot = await ctx.db.get(args.page_snapshot_id);
-		if (!snapshot) {
-			return null;
-		}
-
-		return {
-			content: content.content,
-			page_snapshot_id: content.page_snapshot_id,
-			_creationTime: content._creationTime,
-			created_by: snapshot.created_by,
-		};
-	},
+	handler: do_get_page_snapshot_content,
 });
 
 export const archive_snapshot = mutation({
@@ -1604,5 +1520,272 @@ export const unarchive_snapshot = mutation({
 		await ctx.db.patch(args.page_snapshot_id, {
 			is_archived: false,
 		});
+	},
+});
+
+/**
+ * Write markdown content to Monaco editor's Yjs YText document.
+ *
+ * Uses smart diffing similar to TipTap's updateYText to only send minimal deltas.
+ */
+async function write_markdown_to_plain_text_yjs(args: {
+	roomId: string;
+	markdownContent: string;
+}): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
+	try {
+		const liveblocks = server_pages_get_liveblocks();
+
+		const update = await liveblocks.getYjsDocumentAsBinaryUpdate(args.roomId);
+
+		// Create base Y.Doc from current state
+		const yDoc = new YDoc();
+		applyUpdate(yDoc, new Uint8Array(update));
+
+		// Get the Plain Text content
+		const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
+		const currentText = yText.toString();
+
+		// If content is the same, no update needed
+		if (currentText === args.markdownContent) {
+			return Result({ _yay: null });
+		}
+
+		// Capture state vector before making changes
+		const beforeVector = encodeStateVector(yDoc);
+
+		// Apply diff
+		yDoc.transact(() => {
+			const diff = simpleDiff(currentText, args.markdownContent);
+			yText.delete(diff.index, diff.remove);
+			yText.insert(diff.index, diff.insert);
+		}, "monaco-backend-update");
+
+		// Create state vector of changes since `beforeVector`
+		const diffUpdate = encodeStateAsUpdate(yDoc, beforeVector);
+
+		await liveblocks.sendYjsBinaryUpdate(args.roomId, diffUpdate);
+
+		return Result({ _yay: null });
+	} catch (error) {
+		const msg = `Failed to update Plain Text Yjs: ${(error as Error)?.message ?? error}`;
+		console.error(msg);
+		return Result({ _nay: { message: msg } });
+	}
+}
+
+/**
+ * Write markdown content to Rich Text editor's Yjs document.
+ *
+ * This converts markdown to JSON and writes it to the ProseMirror document.
+ */
+async function write_markdown_to_rich_text_yjs(args: {
+	roomId: string;
+	markdownContent: string;
+}): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
+	try {
+		const liveblocks = server_pages_get_liveblocks();
+
+		// Convert markdown to TipTap/ProseMirror JSON
+		const editorDocJson = server_page_editor_markdown_to_json(args.markdownContent);
+
+		if (editorDocJson._nay) {
+			const msg = `Failed to parse markdown to TipTap/ProseMirror JSON: ${editorDocJson._nay.message}`;
+			console.error(msg);
+			return Result({ _nay: { message: msg } });
+		}
+
+		const schema = server_page_editor_get_schema();
+
+		// Write to YJS using liveblocks' `withProsemirrorDocument`
+		await withProsemirrorDocument(
+			{ roomId: args.roomId, client: liveblocks, schema, field: server_page_editor_DEFAULT_FIELD },
+			async (docApi) => {
+				await docApi.setContent(editorDocJson._yay);
+			},
+		);
+
+		return Result({ _yay: null });
+	} catch (error) {
+		const msg = `Failed to update Rich Text Yjs: ${(error as Error)?.message ?? error}`;
+		console.error(msg);
+		return Result({ _nay: { message: msg } });
+	}
+}
+
+/**
+ * Action to update page content and sync to Monaco editor via Yjs.
+ * Replaces the broadcast mechanism - writes directly to Monaco's Yjs YText document.
+ */
+export const update_page_and_sync_to_monaco = action({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		textContent: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
+
+		await Promise.all([
+			ctx.runMutation(internal.ai_docs_temp.internal_update_page_content, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				textContent: args.textContent,
+			}),
+			write_markdown_to_plain_text_yjs({ roomId, markdownContent: args.textContent }),
+		]);
+	},
+});
+
+/**
+ * Action to update page content and sync to Rich Text editor via Yjs.
+ * Replaces the broadcast mechanism - writes directly to Rich Text's ProseMirror Yjs document.
+ */
+export const update_page_and_sync_to_richtext = action({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		textContent: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
+
+		await Promise.all([
+			ctx.runMutation(internal.ai_docs_temp.internal_update_page_content, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				textContent: args.textContent,
+			}),
+			write_markdown_to_rich_text_yjs({ roomId, markdownContent: args.textContent }),
+		]);
+	},
+});
+
+export const apply_snapshot_restore_in_convex = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		pageSnapshotId: v.id("pages_snapshots"),
+	},
+	returns: v.union(
+		v.object({
+			_yay: v.null(),
+		}),
+		v.object({
+			_nay: v.object({
+				name: v.string(),
+				message: v.string(),
+			}),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const [snapshotContent, pageTextContent] = await Promise.all([
+			do_get_page_snapshot_content(ctx, {
+				page_id: args.pageId,
+				page_snapshot_id: args.pageSnapshotId,
+			}),
+
+			do_get_page_text_content_by_page_id(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			}),
+		]);
+
+		if (!snapshotContent) {
+			const msg = "Snapshot content not found";
+			console.error(msg);
+			return Result({ _nay: { message: msg } });
+		}
+
+		if (!pageTextContent) {
+			const msg = "Page text content not found";
+			console.error(msg);
+			return Result({ _nay: { message: msg } });
+		}
+
+		await Promise.all([
+			do_store_version_snapshot(ctx, {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: args.pageId,
+				content: pageTextContent,
+				created_by: user.name,
+			}),
+
+			do_store_version_snapshot(ctx, {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: args.pageId,
+				content: snapshotContent.content,
+				created_by: user.name,
+			}),
+		]);
+
+		return Result({ _yay: null });
+	},
+});
+
+export const restore_snapshot = action({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+		pageSnapshotId: v.id("pages_snapshots"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await Promise.all([
+			ctx.runMutation(internal.ai_docs_temp.apply_snapshot_restore_in_convex, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				pageSnapshotId: args.pageSnapshotId,
+			}),
+			(async (/* iife */) => {
+				const snapshotContent = await ctx.runQuery(api.ai_docs_temp.get_page_snapshot_content, {
+					page_id: args.pageId,
+					page_snapshot_id: args.pageSnapshotId,
+				});
+
+				if (!snapshotContent) {
+					const msg = "Snapshot content not found";
+					console.error(msg);
+					return Result({ _nay: { message: msg } });
+				}
+
+				const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
+
+				return Promise.all([
+					(async (/* iife Update Rich Text YJS */) => {
+						const result = await write_markdown_to_rich_text_yjs({ roomId, markdownContent: snapshotContent.content });
+
+						if (result._nay) {
+							const msg = `Failed to update Rich Text YJS: ${result._nay.message}`;
+							console.error(msg);
+						}
+					})(),
+					(async (/* iife Update Plain Text YJS */) => {
+						const monacoSyncResult = await write_markdown_to_plain_text_yjs({
+							roomId,
+							markdownContent: snapshotContent.content,
+						});
+
+						if (monacoSyncResult._nay) {
+							const msg = `Failed to update Plain Text YJS: ${monacoSyncResult._nay.message}`;
+							console.error(msg);
+						}
+					})(),
+				]);
+			})(),
+		]);
 	},
 });

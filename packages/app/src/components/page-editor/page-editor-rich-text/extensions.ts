@@ -27,8 +27,7 @@ const sharedExtensions = pages_get_tiptap_shared_extensions();
 const starterKit = StarterKit.configure({
 	// The Liveblocks extension comes with its own history handling
 	undoRedo: false,
-	codeBlock: false,
-	horizontalRule: false,
+	underline: false,
 	dropcursor: {
 		color: "#DBEAFE",
 		width: 4,

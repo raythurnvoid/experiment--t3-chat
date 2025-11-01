@@ -261,32 +261,6 @@ const app_convex_schema = defineSchema({
 		scheduled_function_id: v.id("_scheduled_functions"),
 	}).index("by_user_id", ["user_id"]),
 
-	page_updates_richtext_broadcast: defineTable({
-		/** Workspace ID extracted from roomId */
-		workspace_id: v.string(),
-		/** Project ID extracted from roomId */
-		project_id: v.string(),
-		/** Related page id (same as pages.page_id) */
-		page_id: v.string(),
-		/** Text content to broadcast */
-		text_content: v.string(),
-	})
-		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
-		.index("by_page_id", ["page_id"]),
-
-	page_updates_markdown_broadcast: defineTable({
-		/** Workspace ID extracted from roomId */
-		workspace_id: v.string(),
-		/** Project ID extracted from roomId */
-		project_id: v.string(),
-		/** Related page id (same as pages.page_id) */
-		page_id: v.string(),
-		/** Text content to broadcast */
-		text_content: v.string(),
-	})
-		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
-		.index("by_page_id", ["page_id"]),
-
 	pages_snapshots: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),

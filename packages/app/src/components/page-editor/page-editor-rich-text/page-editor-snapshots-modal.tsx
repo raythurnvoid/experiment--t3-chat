@@ -83,7 +83,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		selectedSnapshotId ? { page_id: pageId, page_snapshot_id: selectedSnapshotId } : "skip",
 	);
 
-	const restoreSnapshotAndBroadcast = useAction(app_convex_api.pages_snapshot.restore_snapshot);
+	const restoreSnapshotAndBroadcast = useAction(app_convex_api.ai_docs_temp.restore_snapshot);
 	const archiveSnapshot = useMutation(app_convex_api.ai_docs_temp.archive_snapshot);
 	const unarchiveSnapshot = useMutation(app_convex_api.ai_docs_temp.unarchive_snapshot);
 

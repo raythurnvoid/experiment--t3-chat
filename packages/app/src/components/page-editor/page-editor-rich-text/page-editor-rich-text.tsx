@@ -1,8 +1,17 @@
 import "./page-editor-rich-text.css";
 import { useState, useEffect, useRef } from "react";
-import { EditorContent, EditorRoot, useEditor, type EditorContentProps, DragHandle } from "novel";
+import {
+	EditorContent,
+	EditorRoot,
+	useEditor,
+	type EditorContentProps,
+	DragHandle,
+	ImageResizer,
+	handleCommandNavigation,
+	handleImageDrop,
+	handleImagePaste,
+} from "novel";
 import { Editor, type JSONContent as TiptapJSONContent } from "@tiptap/react";
-import { ImageResizer, handleCommandNavigation, handleImageDrop, handleImagePaste } from "novel";
 import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
 import { defaultExtensions } from "./extensions.ts";
@@ -12,7 +21,7 @@ import { PageEditorRichTextToolsNodeSelector } from "./page-editor-rich-text-too
 import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools-math-toggle.tsx";
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
 import { PageEditorRichTextToolsAddCommentButton } from "./page-editor-rich-text-tools-add-comment-button.tsx";
-import { Separator } from "../../ui/separator.tsx";
+import { Separator } from "@/components/ui/separator.tsx";
 import GenerativeMenuSwitch from "./generative/generative-menu-switch.tsx";
 import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
@@ -23,8 +32,8 @@ import { AI_NAME } from "./constants.ts";
 import { cn, make } from "@/lib/utils.ts";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
-import { useMutation, useConvex } from "convex/react";
-import { ySyncPluginKey } from "y-prosemirror";
+import { useConvex, useAction } from "convex/react";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
@@ -33,6 +42,7 @@ import { app_fetch_create_version_snapshot } from "@/lib/fetch.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { useWatchableValue } from "@/hooks/utils-hooks.ts";
 import type { FunctionReturnType } from "convex/server";
+import { pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 
 /**
  * 5 seconds.
@@ -166,10 +176,11 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(null);
 
-	const updateAndBroadcastMarkdown = useMutation(app_convex_api.ai_docs_temp.update_page_and_broadcast_markdown);
+	const updateAndSyncToMonaco = useAction(app_convex_api.ai_docs_temp.update_page_and_sync_to_monaco);
 	const convex = useConvex();
 
 	const liveblocks = useLiveblocksExtension({
+		field: pages_YJS_DOC_KEYS.richText,
 		comments: true,
 		ai: {
 			name: AI_NAME,
@@ -254,48 +265,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			.catch(console.error);
 	}, [editor, isEditorReady]);
 
-	// Subscribe to page updates broadcast and apply incoming content
-	useEffect(() => {
-		if (!editor || !isEditorReady || !pageId) return;
-
-		let initialized = false;
-
-		const watcher = convex.watchQuery(app_convex_api.ai_docs_temp.get_page_updates_richtext_broadcast_latest, {
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pageId,
-		});
-
-		const unsubscribe = watcher.onUpdate(() => {
-			const update = watcher.localQueryResult();
-			if (!editor || !update) return;
-
-			if (!initialized) {
-				initialized = true;
-				return;
-			}
-
-			editor
-				.chain()
-				.setContent(update.text_content, { emitUpdate: false })
-				.command(({ tr }) => {
-					tr.setMeta(ySyncPluginKey, {
-						snapshot: {},
-						prevSnapshot: {},
-					}).setMeta("addToHistory", false);
-
-					return true;
-				})
-				.run();
-
-			storeSnapshotController.updateCurrentSnapshotContent();
-		});
-
-		return () => {
-			unsubscribe();
-		};
-	}, [editor, isEditorReady]);
-
 	useEffect(() => {
 		// Set up visibility change listener for snapshot versioning
 		const handleVisibilityChange = () => {
@@ -351,11 +320,11 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			saveOnDbDebounce.current = setTimeout(async () => {
 				try {
 					const textContent = editor.getMarkdown();
-					console.log("[PageEditorRichText] Saving markdown to DB:", {
+					console.debug("[PageEditorRichText] Saving markdown to DB:", {
 						html: editor.getHTML(),
 						markdown: textContent,
 					});
-					await updateAndBroadcastMarkdown({
+					await updateAndSyncToMonaco({
 						workspaceId: ai_chat_HARDCODED_ORG_ID,
 						projectId: ai_chat_HARDCODED_PROJECT_ID,
 						pageId: pageId!,

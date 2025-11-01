@@ -11,6 +11,10 @@ import Highlight from "@tiptap/extension-highlight";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
+export const pages_YJS_DOC_KEYS = {
+	richText: "default",
+	plainText: "markdown",
+};
 
 export type { pages_TreeItem };
 
@@ -55,8 +59,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			starterKit: StarterKit.configure({
 				// The Liveblocks extension comes with its own history handling
 				undoRedo: false,
-				codeBlock: false,
-				horizontalRule: false,
+				underline: false,
 				dropcursor: false, // DOM-only, disabled for server
 				gapcursor: false,
 			}),

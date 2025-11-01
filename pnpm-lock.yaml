@@ -31,6 +31,7 @@ overrides:
   '@tiptap/extension-drag-handle-react': 3.8.0
   '@tiptap/extension-collaboration': 3.8.0
   '@tiptap/markdown': 3.8.0
+  '@tiptap/y-tiptap': 3.0.0
 
 importers:
 
@@ -258,6 +259,9 @@ importers:
       '@tiptap/starter-kit':
         specifier: 3.8.0
         version: 3.8.0
+      '@tiptap/y-tiptap':
+        specifier: 3.0.0
+        version: 3.0.0(prosemirror-model@1.25.3)(prosemirror-state@1.4.3)(prosemirror-view@1.41.3)(y-protocols@1.0.6(yjs@13.6.27))(yjs@13.6.27)
       ai:
         specifier: 5.0.59
         version: 5.0.59(zod@3.25.76)
@@ -303,6 +307,9 @@ importers:
       katex:
         specifier: ^0.16.24
         version: 0.16.24
+      lib0:
+        specifier: ^0.2.114
+        version: 0.2.114
       listhen:
         specifier: ^1.9.0
         version: 1.9.0
@@ -1319,12 +1326,12 @@ importers:
       '@tiptap/starter-kit':
         specifier: 3.8.0
         version: 3.8.0
+      '@tiptap/y-tiptap':
+        specifier: 3.0.0
+        version: 3.0.0(prosemirror-model@1.25.3)(prosemirror-state@1.4.3)(prosemirror-view@1.41.3)(y-protocols@1.0.6(yjs@13.6.27))(yjs@13.6.27)
       prosemirror-markdown:
         specifier: ^1.13.1
         version: 1.13.2
-      y-prosemirror:
-        specifier: ^1.3.7
-        version: 1.3.7(prosemirror-model@1.25.3)(prosemirror-state@1.4.3)(prosemirror-view@1.41.3)(y-protocols@1.0.6(yjs@13.6.27))(yjs@13.6.27)
       yjs:
         specifier: ^13.6.20
         version: 13.6.27
@@ -1605,6 +1612,9 @@ importers:
       '@tiptap/suggestion':
         specifier: 3.8.0
         version: 3.8.0(@tiptap/core@3.8.0(@tiptap/pm@3.8.0))(@tiptap/pm@3.8.0)
+      '@tiptap/y-tiptap':
+        specifier: 3.0.0
+        version: 3.0.0(prosemirror-model@1.25.3)(prosemirror-state@1.4.3)(prosemirror-view@1.41.3)(y-protocols@1.0.6(yjs@13.6.27))(yjs@13.6.27)
       '@types/react':
         specifier: '*'
         version: 19.2.2
@@ -1620,9 +1630,6 @@ importers:
       react-dom:
         specifier: ^18 || ^19 || ^19.0.0-rc
         version: 19.2.0(react@19.2.0)
-      y-prosemirror:
-        specifier: ^1.3.7
-        version: 1.3.7(prosemirror-model@1.25.3)(prosemirror-state@1.4.3)(prosemirror-view@1.41.3)(y-protocols@1.0.6(yjs@13.6.27))(yjs@13.6.27)
       yjs:
         specifier: ^13.6.18
         version: 13.6.27
@@ -4775,14 +4782,14 @@ packages:
     peerDependencies:
       '@tiptap/core': 3.8.0
       '@tiptap/pm': 3.8.0
-      '@tiptap/y-tiptap': ^3.0.0-beta.3
+      '@tiptap/y-tiptap': 3.0.0
 
   '@tiptap/extension-collaboration@3.8.0':
     resolution: {integrity: sha512-LdExkJZAsEabNeKJPQ77kwti7H0ksZqoh5NXBg0B9mJv8Ls3chvWWciIFmnewMMVWSuvFlVuYxcXW63SCUK1Bw==}
     peerDependencies:
       '@tiptap/core': 3.8.0
       '@tiptap/pm': 3.8.0
-      '@tiptap/y-tiptap': ^3.0.0-beta.3
+      '@tiptap/y-tiptap': 3.0.0
       yjs: ^13
 
   '@tiptap/extension-color@3.8.0':
@@ -4811,7 +4818,7 @@ packages:
       '@tiptap/extension-collaboration': 3.8.0
       '@tiptap/extension-node-range': ^3.8.0
       '@tiptap/pm': 3.8.0
-      '@tiptap/y-tiptap': ^3.0.0-beta.3
+      '@tiptap/y-tiptap': 3.0.0
 
   '@tiptap/extension-dropcursor@3.8.0':
     resolution: {integrity: sha512-/71aSSZwbzi8HbIpL/OuscNxkY9PLY4m4oBsSwSScsF5X9bggkqrvizITrzuNNsCK2sDoAQJPTSxyr1OhOzpgQ==}
