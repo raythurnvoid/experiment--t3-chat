@@ -351,6 +351,10 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			saveOnDbDebounce.current = setTimeout(async () => {
 				try {
 					const textContent = editor.getMarkdown();
+					console.log("[PageEditorRichText] Saving markdown to DB:", {
+						html: editor.getHTML(),
+						markdown: textContent,
+					});
 					await updateAndBroadcastMarkdown({
 						workspaceId: ai_chat_HARDCODED_ORG_ID,
 						projectId: ai_chat_HARDCODED_PROJECT_ID,

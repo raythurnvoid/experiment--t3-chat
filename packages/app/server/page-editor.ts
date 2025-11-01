@@ -9,46 +9,9 @@
  */
 
 import { Editor, getSchema } from "@tiptap/core";
-import StarterKit from "@tiptap/starter-kit";
-import { Markdown } from "@tiptap/markdown";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
-import { TextAlign } from "@tiptap/extension-text-align";
-import { Typography } from "@tiptap/extension-typography";
 import type { JSONContent } from "@tiptap/core";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-
-/**
- * Server-safe Tiptap extensions (no DOM, no React, no Liveblocks).
- *
- * Mirrors the client-side editor's content model but excludes:
- * - CodeBlockLowlight (requires lowlight DOM)
- * - YouTube, Twitter (DOM embeds)
- * - Mathematics (KaTeX DOM)
- * - Liveblocks collaboration
- * - Novel UI components
- */
-const server_page_editor_EXTENSIONS = [
-	StarterKit.configure({
-		// Disable features we don't need server-side
-		undoRedo: false, // No undo/redo needed for parsing
-		codeBlock: false, // Use plain code block (no syntax highlighting)
-		dropcursor: false, // DOM-only
-		gapcursor: false, // DOM-only
-	}),
-	TaskList,
-	TaskItem.configure({
-		nested: true,
-	}),
-	TextAlign.configure({
-		types: ["heading", "paragraph"],
-	}),
-	Typography,
-	Markdown.configure({
-		// Match client-side indentation
-		indentation: { style: "space", size: 2 },
-	}),
-];
+import { pages_get_tiptap_shared_extensions } from "../shared/pages.ts";
 
 /**
  * Default field name for Liveblocks Yjs documents.
@@ -64,7 +27,8 @@ export const server_page_editor_DEFAULT_FIELD = "default";
  * @returns ProseMirror Schema instance
  */
 export function server_page_editor_get_schema() {
-	return getSchema(server_page_editor_EXTENSIONS);
+	const extensions = pages_get_tiptap_shared_extensions();
+	return getSchema(Object.values(extensions));
 }
 
 /**
@@ -75,10 +39,11 @@ export function server_page_editor_get_schema() {
  * @returns Editor instance (call `.destroy()` when done to prevent memory leaks)
  */
 function server_page_editor_create(): Editor {
+	const extensions = pages_get_tiptap_shared_extensions();
 	return new Editor({
 		element: null, // REQUIRED for server-side (no DOM mounting)
 		content: { type: "doc", content: [] },
-		extensions: server_page_editor_EXTENSIONS,
+		extensions: Object.values(extensions),
 
 		// Avoid calls to `setTimeout`
 		enableInputRules: false,

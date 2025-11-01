@@ -95,6 +95,7 @@ This is a monorepo project with the following essential structure that you must 
     - [examples/](mdc:packages/app/vendor/ai/examples)
 
 - [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule
+
   - Importing: Use standard node_modules imports in the app, submodule is for reference
   - Documentation folders:
     - [README.md](mdc:packages/app/vendor/opencode/README.md)
@@ -167,17 +168,17 @@ For other libraries like Liveblocks, use standard node_modules imports:
 import { LiveblocksProvider } from "@liveblocks/react";
 ```
 
-# Code guidelines
+# Code guidelines and patterns
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
-The code of the app is located at [packages/app/](mdc:packages/app).
-
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
-## Object.assign Usage
+## Object.assign instead of spread operator
 
-When using `Object.assign`, always verify that arguments are not `undefined` before passing them to prevent unexpected behaviors and potential runtime errors.
+When conditionally assigning properties to an object, use `Object.assign` instead of the spread operator to keep a cleaner syntax.
+
+Check values for non undefined-ness to avoid appending undefined properties to the object.
 
 ✅ Correct Pattern
 
@@ -187,8 +188,8 @@ Object.assign(
 		updated_by: updated_by,
 		updated_at: Date.now(),
 	},
-	args.title !== undefined ? { title: args.title } : {},
-	args.is_archived !== undefined ? { archived: args.is_archived } : {},
+	args.title !== undefined ? { title: args.title } : null,
+	args.is_archived !== undefined ? { archived: args.is_archived } : null,
 );
 ```
 
@@ -272,6 +273,37 @@ export function useAiChat_grouped_threads() {
 ```
 
 ### Third-Party and Native JavaScript Functions
+
+## IIFE
+
+IIFEs should be marked with an `/* iife */` comment to make them explicitly visible to the USER.
+
+```ts
+const someValue = ((/* iife */) => {
+	// complex logic here
+	return someValue;
+})();
+```
+
+## Lazy singletons
+
+To lazily create a singleton only when it's used to optimize performance and memory usage you can use the IIFE pattern.
+
+The IIFE can return a named function with the same name of the symbol it's being assigned to improve the debugging experience.
+
+```ts
+const get_singleton = ((/* iife */) => {
+	function value() {
+		return { someValue: "someValue" };
+	}
+
+	let cache: ReturnType<typeof value> | undefined;
+
+	return function get_singleton() {
+		return (cache ??= value());
+	};
+})();
+```
 
 # Application Architecture
 
