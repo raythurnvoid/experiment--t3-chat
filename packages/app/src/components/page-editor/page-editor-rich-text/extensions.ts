@@ -4,7 +4,6 @@ import {
 	CodeBlockLowlight,
 	Color,
 	CustomKeymap,
-	HorizontalRule,
 	Placeholder,
 	StarterKit,
 	TaskItem,
@@ -33,6 +32,10 @@ const starterKit = StarterKit.configure({
 		width: 4,
 	},
 	gapcursor: false,
+
+	//
+	horizontalRule: false,
+	codeBlock: false,
 });
 
 const taskList = TaskList.configure({
@@ -46,12 +49,6 @@ const taskItem = TaskItem.configure({
 		class: cx("flex gap-2 items-start my-4"),
 	},
 	nested: true,
-});
-
-const horizontalRule = HorizontalRule.configure({
-	HTMLAttributes: {
-		class: cx("mt-4 mb-6 border-t border-muted-foreground"),
-	},
 });
 
 const codeBlockLowlight = CodeBlockLowlight.configure({
@@ -90,7 +87,6 @@ export const defaultExtensions = [
 	placeholder,
 	taskList,
 	taskItem,
-	horizontalRule,
 	aiHighlight,
 	codeBlockLowlight,
 	youtube,
@@ -105,4 +101,5 @@ export const defaultExtensions = [
 	CustomKeymap,
 	sharedExtensions.textAlign,
 	sharedExtensions.typography,
+	sharedExtensions.horizontalRule,
 ];

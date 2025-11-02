@@ -8,6 +8,7 @@ import { Typography } from "@tiptap/extension-typography";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Underline } from "@tiptap/extension-underline";
 import Highlight from "@tiptap/extension-highlight";
+import { HorizontalRule } from "novel";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
@@ -62,6 +63,8 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 				underline: false,
 				dropcursor: false, // DOM-only, disabled for server
 				gapcursor: false,
+
+				horizontalRule: false,
 			}),
 			taskList: TaskList.configure({
 				HTMLAttributes: {
@@ -114,6 +117,11 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 					// Return HTML <u> tag to preserve underline formatting
 					const content = helpers.renderChildren(node.content || []);
 					return `<u>${content}</u>`;
+				},
+			}),
+			horizontalRule: HorizontalRule.configure({
+				HTMLAttributes: {
+					class: "mt-4 mb-6 border-t border-muted-foreground",
 				},
 			}),
 		};

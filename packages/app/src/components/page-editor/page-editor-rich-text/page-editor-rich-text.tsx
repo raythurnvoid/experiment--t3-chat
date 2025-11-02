@@ -11,7 +11,7 @@ import {
 	handleImageDrop,
 	handleImagePaste,
 } from "novel";
-import { Editor, type JSONContent as TiptapJSONContent } from "@tiptap/react";
+import { Editor } from "@tiptap/react";
 import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
 import { defaultExtensions } from "./extensions.ts";
@@ -29,10 +29,10 @@ import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-too
 import { Threads } from "./threads.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
-import { cn, make } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
-import { useConvex, useAction } from "convex/react";
+import { useAction } from "convex/react";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
@@ -40,9 +40,7 @@ import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { app_fetch_create_version_snapshot } from "@/lib/fetch.ts";
 import { useAuth } from "@/lib/auth.ts";
-import { useWatchableValue } from "@/hooks/utils-hooks.ts";
-import type { FunctionReturnType } from "convex/server";
-import { pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
+import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 
 /**
  * 5 seconds.
@@ -112,12 +110,6 @@ function useStoreSnapshot(editor: Editor | null, pageId: string) {
 	};
 }
 
-const INITIAL_CONTENT = make<TiptapJSONContent>({
-	text:
-		"<h1>Welcome</h1>\n" + //
-		"<p>You can start editing your document here.</p>",
-});
-
 export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
@@ -132,7 +124,6 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 		<EditorRoot>
 			<PageEditorRichTextInner
 				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
-				initialContent={INITIAL_CONTENT}
 				pageId={pageId}
 				headerSlot={headerSlot}
 				{...rest}
@@ -154,13 +145,12 @@ type PageEditorRichTextInner_ClassNames =
 
 type PageEditorRichTextInner_Props = {
 	className?: string;
-	initialContent?: TiptapJSONContent;
 	pageId: string;
 	headerSlot?: React.ReactNode;
 };
 
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
-	const { className, initialContent, pageId, headerSlot } = props;
+	const { className, pageId, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 
@@ -177,9 +167,9 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(null);
 
 	const updateAndSyncToMonaco = useAction(app_convex_api.ai_docs_temp.update_page_and_sync_to_monaco);
-	const convex = useConvex();
 
 	const liveblocks = useLiveblocksExtension({
+		initialContent: pages_get_rich_text_initial_content(),
 		field: pages_YJS_DOC_KEYS.richText,
 		comments: true,
 		ai: {
@@ -206,63 +196,14 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const [syncChanged, setSyncChanged] = useState(false);
 	const isEditorReady = useIsEditorReady();
 
-	/**
-	 * Allow to pre-load the content from Convex
-	 * and set it once the editor is ready
-	 */
-	const pageContentWatchableQuery = useWatchableValue<{
-		value: FunctionReturnType<typeof app_convex_api.ai_docs_temp.get_page_text_content_by_page_id>;
-		unsubscribe: () => void;
-	}>();
-
-	useEffect(() => {
-		const watcher = convex.watchQuery(app_convex_api.ai_docs_temp.get_page_text_content_by_page_id, {
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pageId,
-		});
-
-		let subscribed = true;
-
-		const doSafeUnsubscribe = () => {
-			if (subscribed) {
-				unsubscribe();
-				subscribed = false;
-			}
-		};
-
-		const unsubscribe = watcher.onUpdate(() => {
-			pageContentWatchableQuery.setValue({
-				value: watcher.localQueryResult() ?? null,
-				unsubscribe: () => doSafeUnsubscribe(),
-			});
-		});
-
-		return () => {
-			doSafeUnsubscribe();
-		};
-	}, []);
-
-	// Set content from Convex when editor is ready
+	// Initialize the snapshots controller when the editor is ready
 	useEffect(() => {
 		if (!editor || !isEditorReady || contentLoaded || !pageId) {
 			return;
 		}
 
-		pageContentWatchableQuery.firstValuePromise
-			.then(async (watcher) => {
-				const query = watcher.getCurrentValue();
-				const remoteContent = query.value;
-
-				if (remoteContent) {
-					// editor.commands.setContent(remoteContent, { contentType: "markdown", emitUpdate: false });
-					storeSnapshotController.updateCurrentSnapshotContent();
-				}
-
-				setContentLoaded(true);
-				query.unsubscribe();
-			})
-			.catch(console.error);
+		storeSnapshotController.updateCurrentSnapshotContent();
+		setContentLoaded(true);
 	}, [editor, isEditorReady]);
 
 	useEffect(() => {
@@ -302,7 +243,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor, transaction }) => {
 		setCharsCount(editor.storage.characterCount.words());
 
-		// Detect if this is a Yjs collaboration update
+		// Detect if this is a Yjs backend update
 		const isFromYjs = !!transaction.getMeta(ySyncPluginKey);
 
 		if (isFromYjs) {
@@ -369,7 +310,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
 				}}
 				extensions={extensions}
-				initialContent={initialContent}
 				immediatelyRender={false}
 				onCreate={handleCreate}
 				onUpdate={handleUpdate}

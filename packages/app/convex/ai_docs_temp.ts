@@ -1596,7 +1596,7 @@ async function write_markdown_to_rich_text_yjs(args: {
 
 		const schema = server_page_editor_get_schema();
 
-		// Write to YJS using liveblocks' `withProsemirrorDocument`
+		// Write to Yjs using liveblocks' `withProsemirrorDocument`
 		await withProsemirrorDocument(
 			{ roomId: args.roomId, client: liveblocks, schema, field: server_page_editor_DEFAULT_FIELD },
 			async (docApi) => {
@@ -1765,22 +1765,22 @@ export const restore_snapshot = action({
 				const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
 
 				return Promise.all([
-					(async (/* iife Update Rich Text YJS */) => {
+					(async (/* iife Update Rich Text Yjs */) => {
 						const result = await write_markdown_to_rich_text_yjs({ roomId, markdownContent: snapshotContent.content });
 
 						if (result._nay) {
-							const msg = `Failed to update Rich Text YJS: ${result._nay.message}`;
+							const msg = `Failed to update Rich Text Yjs: ${result._nay.message}`;
 							console.error(msg);
 						}
 					})(),
-					(async (/* iife Update Plain Text YJS */) => {
+					(async (/* iife Update Plain Text Yjs */) => {
 						const monacoSyncResult = await write_markdown_to_plain_text_yjs({
 							roomId,
 							markdownContent: snapshotContent.content,
 						});
 
 						if (monacoSyncResult._nay) {
-							const msg = `Failed to update Plain Text YJS: ${monacoSyncResult._nay.message}`;
+							const msg = `Failed to update Plain Text Yjs: ${monacoSyncResult._nay.message}`;
 							console.error(msg);
 						}
 					})(),
