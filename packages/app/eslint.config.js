@@ -1,3 +1,5 @@
+// @ts-check
+
 import js from "@eslint/js";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -6,6 +8,50 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import importPlugin from "eslint-plugin-import";
 import { defineConfig } from "eslint/config";
 
+/**
+ * @param {{
+ * 	files: string[];
+ * 	from: string;
+ * 	allowTypeImports?: boolean;
+ * 	message?: string;
+ * }} args
+ */
+function restrictImports(args) {
+	const { files, from, allowTypeImports = false, message } = args;
+
+	const dir = from;
+
+	// Match relative imports: ../dir/, ../../dir/, etc.
+	const relativePattern = `^(\\.\\./)+${dir}(/.*)?(\\.ts)?$`;
+	// Match TypeScript alias imports: @/../dir/ or @/ (if dir is src)
+	const aliasPattern = dir === "src" ? `^@/(.*)?(\\.ts)?$` : `^@/\\.\\./${dir}(/.*)?(\\.ts)?$`;
+	// Combine both patterns
+	const regex = `${relativePattern}|${aliasPattern}`;
+
+	/**
+	 * @satisfies {import('eslint').Linter.Config}
+	 */
+	const config = {
+		files,
+		rules: {
+			"no-restricted-imports": [
+				"error",
+				{
+					patterns: [
+						{
+							regex,
+							allowTypeImports,
+							message: message || `Files cannot import from ${dir}/`,
+						},
+					],
+				},
+			],
+		},
+	};
+
+	return config;
+}
+
 export default defineConfig(
 	{ ignores: ["dist", "vendor"] },
 	reactRefresh.configs.vite,
@@ -13,6 +59,7 @@ export default defineConfig(
 		plugins: {
 			js: js,
 			"@typescript-eslint": tseslint.plugin,
+			// @ts-expect-error
 			"react-hooks": reactHooks,
 		},
 	},
@@ -23,7 +70,6 @@ export default defineConfig(
 			tseslint.configs.recommendedTypeChecked,
 			importPlugin.flatConfigs.recommended,
 			importPlugin.flatConfigs.typescript,
-			reactHooks.configs["recommended-latest"],
 		],
 		languageOptions: {
 			ecmaVersion: 2025,
@@ -40,12 +86,6 @@ export default defineConfig(
 			"no-constant-condition": "off",
 			"no-case-declarations": "off",
 			"no-console": ["error", { allow: ["debug", "info", "error", "warn"] }],
-
-			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
-
-			"react-hooks/exhaustive-deps": "off",
-			"react-hooks/set-state-in-effect": "off",
-			"react-hooks/no-unused-directives": "off",
 
 			"@typescript-eslint/ban-ts-comment": "off",
 			"@typescript-eslint/no-array-constructor": "off",
@@ -136,4 +176,39 @@ export default defineConfig(
 			"import/prefer-default-export": "off",
 		},
 	},
+
+	{
+		files: ["src/**/*.{tsx,jsx}"],
+		extends: [reactHooks.configs.flat["recommended-latest"]],
+		rules: {
+			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
+
+			// React Hooks rules - customize as needed for your project
+			"react-hooks/exhaustive-deps": "off",
+			"react-hooks/set-state-in-effect": "off",
+			"react-hooks/no-unused-directives": "off",
+		},
+	},
+
+	restrictImports({
+		files: ["src/**/*.{ts,tsx}"],
+		from: "server",
+	}),
+
+	restrictImports({
+		files: ["shared/**/*.ts"],
+		from: "server",
+		allowTypeImports: true,
+	}),
+
+	restrictImports({
+		files: ["shared/**/*.ts"],
+		from: "src",
+		allowTypeImports: true,
+	}),
+
+	restrictImports({
+		files: ["server/**/*.ts"],
+		from: "src",
+	}),
 );
