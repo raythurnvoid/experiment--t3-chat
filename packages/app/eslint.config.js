@@ -178,7 +178,7 @@ export default defineConfig(
 	},
 
 	{
-		files: ["src/**/*.{tsx,jsx}"],
+		files: ["src/**/*.{ts,tsx}"],
 		extends: [reactHooks.configs.flat["recommended-latest"]],
 		rules: {
 			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
