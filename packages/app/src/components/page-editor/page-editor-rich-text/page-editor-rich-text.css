@@ -179,6 +179,14 @@
 		display: none;
 	}
 
+	.PageEditorRichTextToolbar-status-badge {
+		width: 10ch;
+	}
+
+	.PageEditorRichTextToolbar-word-count-badge {
+		min-width: 12ch;
+	}
+
 	.PageEditorRichTextToolbar-status-badge,
 	.PageEditorRichTextToolbar-word-count-badge {
 		padding: 4px 8px;
