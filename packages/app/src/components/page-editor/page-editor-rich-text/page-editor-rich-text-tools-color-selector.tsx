@@ -20,34 +20,10 @@ import {
 import { MyButton } from "@/components/my-button.tsx";
 import { cn, sx } from "@/lib/utils.ts";
 import { useForceRender } from "@/hooks/utils-hooks.ts";
-
-// Color variable types for type safety
-export type PageEditorRichTextTextColorFgVars = {
-	"--PageEditorRichText-text-color-fg-default": string;
-	"--PageEditorRichText-text-color-fg-purple": string;
-	"--PageEditorRichText-text-color-fg-red": string;
-	"--PageEditorRichText-text-color-fg-yellow": string;
-	"--PageEditorRichText-text-color-fg-blue": string;
-	"--PageEditorRichText-text-color-fg-green": string;
-	"--PageEditorRichText-text-color-fg-orange": string;
-	"--PageEditorRichText-text-color-fg-pink": string;
-	"--PageEditorRichText-text-color-fg-gray": string;
-};
-
-export type PageEditorRichTextTextColorBgVars = {
-	"--PageEditorRichText-text-color-bg-default": string;
-	"--PageEditorRichText-text-color-bg-purple": string;
-	"--PageEditorRichText-text-color-bg-red": string;
-	"--PageEditorRichText-text-color-bg-yellow": string;
-	"--PageEditorRichText-text-color-bg-blue": string;
-	"--PageEditorRichText-text-color-bg-green": string;
-	"--PageEditorRichText-text-color-bg-orange": string;
-	"--PageEditorRichText-text-color-bg-pink": string;
-	"--PageEditorRichText-text-color-bg-gray": string;
-};
-
-type FgColor = keyof PageEditorRichTextTextColorFgVars;
-type BgColor = keyof PageEditorRichTextTextColorBgVars;
+import type {
+	PageEditorRichText_FgColorCssVarKeys,
+	PageEditorRichText_BgColorCssVarKeys,
+} from "./page-editor-rich-text.tsx";
 
 export interface BubbleColorMenuItem {
 	name: string;
@@ -57,83 +33,83 @@ export interface BubbleColorMenuItem {
 const TEXT_COLORS = [
 	{
 		name: "Default",
-		color: `var(${"--PageEditorRichText-text-color-fg-default" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Purple",
-		color: `var(${"--PageEditorRichText-text-color-fg-purple" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-purple" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Red",
-		color: `var(${"--PageEditorRichText-text-color-fg-red" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-red" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Yellow",
-		color: `var(${"--PageEditorRichText-text-color-fg-yellow" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-yellow" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Blue",
-		color: `var(${"--PageEditorRichText-text-color-fg-blue" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-blue" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Green",
-		color: `var(${"--PageEditorRichText-text-color-fg-green" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-green" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Orange",
-		color: `var(${"--PageEditorRichText-text-color-fg-orange" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-orange" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Pink",
-		color: `var(${"--PageEditorRichText-text-color-fg-pink" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-pink" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 	{
 		name: "Gray",
-		color: `var(${"--PageEditorRichText-text-color-fg-gray" satisfies FgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-fg-gray" satisfies PageEditorRichText_FgColorCssVarKeys})`,
 	},
 ] as const;
 
 const HIGHLIGHT_COLORS = [
 	{
 		name: "Default",
-		color: `var(${"--PageEditorRichText-text-color-bg-default" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Purple",
-		color: `var(${"--PageEditorRichText-text-color-bg-purple" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-purple" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Red",
-		color: `var(${"--PageEditorRichText-text-color-bg-red" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-red" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Yellow",
-		color: `var(${"--PageEditorRichText-text-color-bg-yellow" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-yellow" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Blue",
-		color: `var(${"--PageEditorRichText-text-color-bg-blue" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-blue" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Green",
-		color: `var(${"--PageEditorRichText-text-color-bg-green" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-green" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Orange",
-		color: `var(${"--PageEditorRichText-text-color-bg-orange" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-orange" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Pink",
-		color: `var(${"--PageEditorRichText-text-color-bg-pink" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-pink" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 	{
 		name: "Gray",
-		color: `var(${"--PageEditorRichText-text-color-bg-gray" satisfies BgColor})`,
+		color: `var(${"--PageEditorRichText-text-color-bg-gray" satisfies PageEditorRichText_BgColorCssVarKeys})`,
 	},
 ] as const;
 
-type FgColorCssValue = `var(${FgColor})`;
-type BgColorCssValue = `var(${BgColor})`;
+type FgColorCssValue = `var(${PageEditorRichText_FgColorCssVarKeys})`;
+type BgColorCssValue = `var(${PageEditorRichText_BgColorCssVarKeys})`;
 
 type SelectedValue = FgColorCssValue | BgColorCssValue;
 
@@ -158,9 +134,9 @@ type PageEditorRichTextToolsColorSelectorPreview_CssVars = {
 const PageEditorRichTextToolsColorSelectorPreview_CssVars_DEFAULTS: Partial<PageEditorRichTextToolsColorSelectorPreview_CssVars> =
 	{
 		"--PageEditorRichTextToolsColorSelector-selected-fg":
-			"--PageEditorRichText-text-color-fg-default" satisfies FgColor,
+			"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys,
 		"--PageEditorRichTextToolsColorSelector-selected-bg":
-			"--PageEditorRichText-text-color-bg-default" satisfies BgColor,
+			"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys,
 	} as const;
 
 export type PageEditorRichTextToolsColorSelectorPreview_Props = {
@@ -228,7 +204,10 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 
 		editor.commands.command(({ commands }) => {
 			commands.unsetColor();
-			if (item.color !== `var(${"--PageEditorRichText-text-color-fg-default" satisfies FgColor})`) {
+			if (
+				item.color !==
+				`var(${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys})`
+			) {
 				commands.setColor(item.color);
 			}
 			return true;
@@ -242,7 +221,10 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 
 		editor.commands.command(({ commands }) => {
 			commands.unsetHighlight();
-			if (item.color !== `var${"--PageEditorRichText-text-color-bg-default" satisfies BgColor}`) {
+			if (
+				item.color !==
+				`var${"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys}`
+			) {
 				commands.setHighlight({ color: item.color });
 			}
 			return true;
@@ -275,7 +257,7 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 							activeBackground={activeBackground?.color}
 						/>
 						<MySelectOpenIndicator>
-							<ChevronDown className="h-4 w-4" />
+							<ChevronDown />
 						</MySelectOpenIndicator>
 					</MyButton>
 				</MySelectTrigger>
@@ -293,7 +275,8 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 								{TEXT_COLORS.map((item) => {
 									const isSelected =
 										item === activeColor ||
-										(item.color === `var${"--PageEditorRichText-text-color-fg-default" satisfies FgColor}` &&
+										(item.color ===
+											`var${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys}` &&
 											!activeColor);
 
 									return (

@@ -112,6 +112,28 @@ function useStoreSnapshot(editor: Editor | null, pageId: string) {
 
 export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
+export type PageEditorRichText_BgColorCssVarKeys =
+	| "--PageEditorRichText-text-color-bg-default"
+	| "--PageEditorRichText-text-color-bg-purple"
+	| "--PageEditorRichText-text-color-bg-red"
+	| "--PageEditorRichText-text-color-bg-yellow"
+	| "--PageEditorRichText-text-color-bg-blue"
+	| "--PageEditorRichText-text-color-bg-green"
+	| "--PageEditorRichText-text-color-bg-orange"
+	| "--PageEditorRichText-text-color-bg-pink"
+	| "--PageEditorRichText-text-color-bg-gray";
+
+export type PageEditorRichText_FgColorCssVarKeys =
+	| "--PageEditorRichText-text-color-fg-default"
+	| "--PageEditorRichText-text-color-fg-purple"
+	| "--PageEditorRichText-text-color-fg-red"
+	| "--PageEditorRichText-text-color-fg-yellow"
+	| "--PageEditorRichText-text-color-fg-blue"
+	| "--PageEditorRichText-text-color-fg-green"
+	| "--PageEditorRichText-text-color-fg-orange"
+	| "--PageEditorRichText-text-color-fg-pink"
+	| "--PageEditorRichText-text-color-fg-gray";
+
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 	pageId: string;
 	headerSlot?: React.ReactNode;
