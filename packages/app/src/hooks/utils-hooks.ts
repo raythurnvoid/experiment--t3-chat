@@ -248,3 +248,8 @@ export function useWatchableValue<T>(initialValue?: T) {
 		},
 	};
 }
+
+export function useForceRender() {
+	const [, setState] = useState({});
+	return () => setState({});
+}

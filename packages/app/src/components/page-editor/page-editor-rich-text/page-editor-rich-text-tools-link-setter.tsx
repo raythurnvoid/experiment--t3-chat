@@ -1,7 +1,7 @@
 import "./page-editor-rich-text-tools-link-setter.css";
 import { Check, Trash, LinkIcon } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
 import { useEditor } from "novel";
-import { useEffect, useRef } from "react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -38,16 +38,13 @@ export type PageEditorRichTextToolsLinkSetter_ClassNames =
 	| "PageEditorRichTextToolsLinkSetter-input"
 	| "PageEditorRichTextToolsLinkSetter-icon";
 
-export type PageEditorRichTextToolsLinkSetter_Props = {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-};
+export type PageEditorRichTextToolsLinkSetter_Props = {};
 
 export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextToolsLinkSetter_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { open, onOpenChange } = props;
+	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const { editor } = useEditor();
 
@@ -70,14 +67,14 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 				if (inputRef.current) {
 					inputRef.current.value = "";
 				}
-				onOpenChange(false);
+				setOpen(false);
 			}
 		} else {
 			const input = target[0] as HTMLInputElement;
 			const url = getUrlFromString(input.value);
 			if (url && editor) {
 				editor.chain().focus().setLink({ href: url }).run();
-				onOpenChange(false);
+				setOpen(false);
 			}
 		}
 	};
@@ -86,7 +83,7 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 
 	return (
 		<div className={cn("PageEditorRichTextToolsLinkSetter" satisfies PageEditorRichTextToolsLinkSetter_ClassNames)}>
-			<MyPopover open={open} setOpen={onOpenChange}>
+			<MyPopover open={open} setOpen={setOpen}>
 				<MyPopoverTrigger>
 					<MyButton
 						variant="ghost"

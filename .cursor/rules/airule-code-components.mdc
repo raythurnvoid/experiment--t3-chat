@@ -72,7 +72,19 @@ export type Example_Props = React.ComponentProps<"div"> & {
 };
 ```
 
-### Example
+# Propsless Components
+
+For components that don't accept any props, define an empty props type with the `_Props` suffix:
+
+```ts
+export type MyComponent_Props = {};
+
+export function MyComponent(props: MyComponent_Props) {
+	// Component implementation
+}
+```
+
+## Example
 
 ```tsx
 export type Toolbar_Props = React.ComponentProps<"div"> & {
@@ -102,13 +114,6 @@ export function Toolbar(props: Toolbar_Props) {
 	);
 }
 ```
-
-## No Barrel Exports
-
-- Do not create index.\* barrel files (index.ts, index.tsx, index.js).
-- Always import from concrete files and export from the component file directly.
-- Example: import from "./components/ui/button.tsx" or export from "./button.tsx"; do not add a directory-level index.
-- Barrel files are bad for intellisense and code completion.
 
 # Component Styles
 
@@ -278,6 +283,28 @@ export function Thread(props: React.ComponentProps<"aside">) {
 ```
 
 - Prefer overriding specific properties via `className` over custom positioning. Fall back to custom CSS only when necessary.
+
+## className and style utilities
+
+Use `cn` from `@/lib/utils.ts` to merge class names, and `sx` for style objects:
+
+```ts
+import { cn, sx } from "@/lib/utils.ts";
+
+// className merging with cn
+<div
+	className={cn(
+		"base-class" satisfies MyComponent_ClassNames,
+		className,
+		condition && "conditional-class",
+	)}
+/>
+
+// style objects with sx (especially useful for CSS custom properties)
+<div
+	style={sx({ "--MyComponent-custom-var": value } satisfies Partial<MyComponent_CssVars>)}
+/>
+```
 
 # React 19 Context Patterns
 

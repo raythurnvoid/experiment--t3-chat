@@ -221,7 +221,7 @@
 	--color-red-10: oklch(0.9 0.227 31);
 
 	/* PageEditorRichText text colors */
-	--PageEditorRichText-text-color-fg-default: var(--color-fg-01);
+	--PageEditorRichText-text-color-fg-default: inherit;
 	--PageEditorRichText-text-color-fg-purple: #9333ea;
 	--PageEditorRichText-text-color-fg-red: #e00000;
 	--PageEditorRichText-text-color-fg-yellow: #eab308;
@@ -232,7 +232,7 @@
 	--PageEditorRichText-text-color-fg-gray: #a8a29e;
 
 	/* PageEditorRichText highlight colors */
-	--PageEditorRichText-text-color-bg-default: #ffffff;
+	--PageEditorRichText-text-color-bg-default: transparent;
 	--PageEditorRichText-text-color-bg-purple: #f6f3f8;
 	--PageEditorRichText-text-color-bg-red: #fdebeb;
 	--PageEditorRichText-text-color-bg-yellow: #fbf4a2;
@@ -291,7 +291,7 @@
 	--sidebar-ring: var(--gray-100);
 
 	/* PageEditorRichText text colors - dark mode */
-	--PageEditorRichText-text-color-fg-default: var(--color-fg-12);
+	--PageEditorRichText-text-color-fg-default: inherit;
 	--PageEditorRichText-text-color-fg-purple: #9333ea;
 	--PageEditorRichText-text-color-fg-red: #e00000;
 	--PageEditorRichText-text-color-fg-yellow: #eab308;
@@ -302,7 +302,7 @@
 	--PageEditorRichText-text-color-fg-gray: #a8a29e;
 
 	/* PageEditorRichText highlight colors - dark mode */
-	--PageEditorRichText-text-color-bg-default: #000000;
+	--PageEditorRichText-text-color-bg-default: transparent;
 	--PageEditorRichText-text-color-bg-purple: #3f2c4b;
 	--PageEditorRichText-text-color-bg-red: #5c1a1a;
 	--PageEditorRichText-text-color-bg-yellow: #5c4b1a;

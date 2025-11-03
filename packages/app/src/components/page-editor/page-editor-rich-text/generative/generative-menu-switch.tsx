@@ -1,3 +1,6 @@
+// Derived from Liveblocks:
+// liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
+
 import { EditorBubble, useEditor, removeAIHighlight } from "novel";
 import { Fragment, type ReactNode, useEffect } from "react";
 import { Button } from "../../../ui/button.tsx";
@@ -26,7 +29,7 @@ const GenerativeMenuSwitch = ({ children, open, onOpenChange }: GenerativeMenuSw
 					}
 
 					onOpenChange(false);
-					editor.chain().unsetHighlight().run();
+					removeAIHighlight(editor);
 				},
 			}}
 			className="flex w-fit max-w-[90vw] overflow-hidden rounded-md border border-muted bg-background shadow-xl"

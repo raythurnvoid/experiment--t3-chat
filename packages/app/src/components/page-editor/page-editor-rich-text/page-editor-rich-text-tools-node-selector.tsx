@@ -12,6 +12,7 @@ import {
 	TextIcon,
 	TextQuote,
 } from "lucide-react";
+import { useState } from "react";
 import { useEditor } from "novel";
 import {
 	MySelect,
@@ -119,16 +120,13 @@ export type PageEditorRichTextToolsNodeSelector_ClassNames =
 	| "PageEditorRichTextToolsNodeSelector-item"
 	| "PageEditorRichTextToolsNodeSelector-icon";
 
-export type PageEditorRichTextToolsNodeSelector_Props = {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-};
+export type PageEditorRichTextToolsNodeSelector_Props = {};
 
 export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToolsNodeSelector_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { open, onOpenChange } = props;
+	const [open, setOpen] = useState(false);
 
 	const { editor } = useEditor();
 	if (!editor) return null;
@@ -143,7 +141,7 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 
 	return (
 		<div className={cn("PageEditorRichTextToolsNodeSelector" satisfies PageEditorRichTextToolsNodeSelector_ClassNames)}>
-			<MySelect value={activeItem.name} open={open} setOpen={onOpenChange}>
+			<MySelect value={activeItem.name} open={open} setOpen={setOpen}>
 				<MySelectTrigger>
 					<MyButton variant="ghost">
 						{activeItem.name || "Select format"}

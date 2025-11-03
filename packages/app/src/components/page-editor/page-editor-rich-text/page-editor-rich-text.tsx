@@ -157,9 +157,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const storeSnapshotController = useStoreSnapshot(editor, pageId);
 
 	const [openAi, setOpenAi] = useState(false);
-	const [openNode, setOpenNode] = useState(false);
-	const [openColor, setOpenColor] = useState(false);
-	const [openLink, setOpenLink] = useState(false);
 
 	const [charsCount, setCharsCount] = useState<number>(0);
 	const [contentLoaded, setContentLoaded] = useState(false);
@@ -334,15 +331,15 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 				<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
 					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
+					<PageEditorRichTextToolsNodeSelector />
 					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsLinkSetter open={openLink} onOpenChange={setOpenLink} />
+					<PageEditorRichTextToolsLinkSetter />
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsMathToggle />
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsTextStyles />
 					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector open={openColor} onOpenChange={setOpenColor} />
+					<PageEditorRichTextToolsColorSelector />
 					<Separator orientation="vertical" />
 					<PageEditorRichTextToolsAddCommentButton />
 				</GenerativeMenuSwitch>
@@ -372,24 +369,20 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 
 	const { editor } = useEditor();
 
-	const [openNode, setOpenNode] = useState(false);
-	const [openColor, setOpenColor] = useState(false);
-	const [openLink, setOpenLink] = useState(false);
-
 	return (
 		<Toolbar editor={editor} className={cn("PageEditorRichTextToolbar" satisfies PageEditorRichTextToolbar_ClassNames)}>
 			<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
 				<PageEditorRichTextToolsHistoryButtons />
 				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsNodeSelector open={openNode} onOpenChange={setOpenNode} />
+				<PageEditorRichTextToolsNodeSelector />
 				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsLinkSetter open={openLink} onOpenChange={setOpenLink} />
+				<PageEditorRichTextToolsLinkSetter />
 				<Separator orientation="vertical" />
 				<PageEditorRichTextToolsMathToggle />
 				<Separator orientation="vertical" />
 				<PageEditorRichTextToolsTextStyles />
 				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsColorSelector open={openColor} onOpenChange={setOpenColor} />
+				<PageEditorRichTextToolsColorSelector />
 				<Separator orientation="vertical" />
 				<MyBadge
 					variant="secondary"

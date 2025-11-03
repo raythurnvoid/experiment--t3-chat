@@ -305,6 +305,13 @@ const get_singleton = ((/* iife */) => {
 })();
 ```
 
+## No Barrel Exports
+
+- Do not create index.\* barrel files (index.ts, index.tsx, index.js).
+- Always import from concrete files and export from the component file directly.
+- Example: import from "./components/ui/button.tsx" or export from "./button.tsx"; do not add a directory-level index.
+- Barrel files are bad for intellisense and code completion.
+
 # Application Architecture
 
 This app is an AI chatbot that allows users to chat with AI, call tools, and produce documents in a canvas panel.
