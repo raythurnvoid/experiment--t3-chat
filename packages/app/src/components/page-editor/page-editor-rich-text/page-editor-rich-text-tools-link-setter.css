@@ -17,7 +17,7 @@
 	.PageEditorRichTextToolsLinkSetter-form {
 		display: flex;
 		gap: 4px;
-		padding: 4px 6px;
+		padding: 4px;
 
 		align-items: center;
 	}
