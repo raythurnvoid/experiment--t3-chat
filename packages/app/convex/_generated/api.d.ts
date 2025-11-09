@@ -11,6 +11,7 @@
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_docs_temp from "../ai_docs_temp.js";
 import type * as auth from "../auth.js";
+import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as presence from "../presence.js";
 
@@ -32,6 +33,7 @@ declare const fullApi: ApiFromModules<{
   ai_chat: typeof ai_chat;
   ai_docs_temp: typeof ai_docs_temp;
   auth: typeof auth;
+  crons: typeof crons;
   http: typeof http;
   presence: typeof presence;
 }>;

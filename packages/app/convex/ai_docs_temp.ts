@@ -35,6 +35,14 @@ import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-util
 import { v, type Infer } from "convex/values";
 import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
 import {
+	date_get_week_start_timestamp,
+	date_get_day_start_timestamp,
+	date_get_hour_start_timestamp,
+	date_MS_DAY,
+	date_MS_DAYS_30,
+	date_MS_WEEK,
+} from "../shared/date.ts";
+import {
 	pages_FIRST_VERSION,
 	pages_ROOT_ID,
 	pages_YJS_DOC_KEYS,
@@ -1905,5 +1913,75 @@ export const restore_snapshot = action({
 				]);
 			})(),
 		]);
+	},
+});
+
+/**
+ * Internal mutation to cleanup old snapshots based on retention rules.
+ * Runs daily at 5AM UTC via cron job.
+ *
+ * Retention rules:
+ * - Older than 30 days: keep only the last snapshot for each week
+ * - Older than 7 days (but <= 30 days): keep only the last snapshot for each day
+ * - Older than 1 day (but <= 7 days): keep only the last snapshot each hour
+ * - <= 1 day old: keep all snapshots
+ */
+export const cleanup_old_snapshots = internalMutation({
+	handler: async (ctx) => {
+		const now = Date.now();
+		const timestamp60DaysAgo = now - 60 * 24 * 60 * 60 * 1000;
+
+		const latestSnapshotPageIdWithTimeSlot = new Set<string>();
+		const deletePromises: Array<Promise<any>> = [];
+
+		const snapshotsToScanCursor = ctx.db
+			.query("pages_snapshots")
+			.withIndex("by_creation_time", (q) => q.gte("_creationTime", timestamp60DaysAgo))
+			.order("desc");
+
+		for await (const snapshot of snapshotsToScanCursor) {
+			const age = now - snapshot._creationTime;
+			let keepSnapshot = false;
+
+			// If the snapshot is less than 1 day old, keep it
+			if (age <= date_MS_DAY) {
+				keepSnapshot = true;
+			} else {
+				// If the snapshot is older than 1 day, we need to determine the time slot it belongs to
+				let bucketTimestamp: number;
+
+				if (age > date_MS_DAYS_30) {
+					bucketTimestamp = date_get_week_start_timestamp(snapshot._creationTime);
+				} else if (age > date_MS_WEEK) {
+					bucketTimestamp = date_get_day_start_timestamp(snapshot._creationTime);
+				} else {
+					bucketTimestamp = date_get_hour_start_timestamp(snapshot._creationTime);
+				}
+
+				// If this is the first snapshot for this time slot, it means it's the latest
+				// therefore we keep it
+				const snapshotTimeSlotKey = `${snapshot.page_id}::${bucketTimestamp}`;
+				if (!latestSnapshotPageIdWithTimeSlot.has(snapshotTimeSlotKey)) {
+					latestSnapshotPageIdWithTimeSlot.add(snapshotTimeSlotKey);
+					keepSnapshot = true;
+				}
+			}
+
+			if (!keepSnapshot) {
+				deletePromises.push(
+					// TODO: If we save the content id in the snapshot folder we can use the more efficient .get
+					ctx.db
+						.query("pages_snapshots_contents")
+						.withIndex("by_page_snapshot_id", (q) => q.eq("page_snapshot_id", snapshot._id))
+						.first()
+						.then((content) => content && ctx.db.delete(content._id)),
+					ctx.db.delete(snapshot._id),
+				);
+			}
+		}
+
+		await Promise.all(deletePromises);
+
+		return null;
 	},
 });
