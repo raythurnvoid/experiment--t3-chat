@@ -9,9 +9,11 @@ import importPlugin from "eslint-plugin-import";
 import { defineConfig } from "eslint/config";
 
 /**
+ * Eslint rule to prevent the specified `files` from importing from the specified `from` paths.
+ *
  * @param {{
  * 	files: string[];
- * 	from: string;
+ * 	from: string[];
  * 	allowTypeImports?: boolean;
  * 	message?: string;
  * }} args
@@ -19,14 +21,22 @@ import { defineConfig } from "eslint/config";
 function restrictImports(args) {
 	const { files, from, allowTypeImports = false, message } = args;
 
-	const dir = from;
+	const patterns = from.map((dir) => {
+		// Match relative imports: ../dir/, ../../dir/, etc.
+		const relativePattern = `^(\\.\\./)+${dir}(/.*)?(\\.ts)?$`;
+		// Match TypeScript alias imports: @/../dir/ or @/ (if dir is src)
+		const aliasPattern = dir === "src" ? `^@/(.*)?(\\.ts)?$` : `^@/\\.\\./${dir}(/.*)?(\\.ts)?$`;
+		// Match bare imports: dir/... (resolved via baseUrl)
+		const barePattern = `^${dir}(/.*)?(\\.ts)?$`;
+		// Combine all patterns
+		const regex = `${relativePattern}|${aliasPattern}|${barePattern}`;
 
-	// Match relative imports: ../dir/, ../../dir/, etc.
-	const relativePattern = `^(\\.\\./)+${dir}(/.*)?(\\.ts)?$`;
-	// Match TypeScript alias imports: @/../dir/ or @/ (if dir is src)
-	const aliasPattern = dir === "src" ? `^@/(.*)?(\\.ts)?$` : `^@/\\.\\./${dir}(/.*)?(\\.ts)?$`;
-	// Combine both patterns
-	const regex = `${relativePattern}|${aliasPattern}`;
+		return {
+			regex,
+			allowTypeImports,
+			message: message || `Files cannot import from ${dir}/`,
+		};
+	});
 
 	/**
 	 * @satisfies {import('eslint').Linter.Config}
@@ -37,13 +47,7 @@ function restrictImports(args) {
 			"no-restricted-imports": [
 				"error",
 				{
-					patterns: [
-						{
-							regex,
-							allowTypeImports,
-							message: message || `Files cannot import from ${dir}/`,
-						},
-					],
+					patterns,
 				},
 			],
 		},
@@ -192,23 +196,17 @@ export default defineConfig(
 
 	restrictImports({
 		files: ["src/**/*.{ts,tsx}"],
-		from: "server",
+		from: ["server"],
 	}),
 
 	restrictImports({
 		files: ["shared/**/*.ts"],
-		from: "server",
-		allowTypeImports: true,
-	}),
-
-	restrictImports({
-		files: ["shared/**/*.ts"],
-		from: "src",
+		from: ["server", "src", "novel"],
 		allowTypeImports: true,
 	}),
 
 	restrictImports({
 		files: ["server/**/*.ts"],
-		from: "src",
+		from: ["src", "novel"],
 	}),
 );
