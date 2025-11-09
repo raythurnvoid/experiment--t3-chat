@@ -3,6 +3,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { cn } from "@/lib/utils.ts";
 import { SigmaIcon } from "lucide-react";
 import { EditorBubbleItem, useEditor } from "novel";
+import { useEditorState } from "@tiptap/react";
 
 export type PageEditorRichTextToolsMathToggle_ClassNames =
 	| "PageEditorRichTextToolsMathToggle"
@@ -13,6 +14,18 @@ export function PageEditorRichTextToolsMathToggle() {
 	"use no memo";
 
 	const { editor } = useEditor();
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			if (!editor) return null;
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
 	if (!editor) return null;
 
 	const isActive = editor.isActive("math");

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useEditor } from "novel";
+import { useEditorState } from "@tiptap/react";
 import {
 	MySelect,
 	MySelectTrigger,
@@ -126,9 +127,21 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
+	const { editor } = useEditor();
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			if (!editor) return null;
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
 	const [open, setOpen] = useState(false);
 
-	const { editor } = useEditor();
 	if (!editor) return null;
 
 	const activeItem = items.filter((item) => item.isActive(editor)).pop() ?? {

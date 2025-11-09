@@ -2,6 +2,7 @@ import "./page-editor-rich-text-tools-text-styles.css";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
 import { EditorBubbleItem, useEditor } from "novel";
+import { useEditorState } from "@tiptap/react";
 import { cn } from "@/lib/utils.ts";
 
 export type PageEditorRichTextToolsTextStyles_ClassNames =
@@ -59,6 +60,18 @@ export function PageEditorRichTextToolsTextStyles() {
 	"use no memo";
 
 	const { editor } = useEditor();
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			if (!editor) return null;
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
 	if (!editor) return null;
 
 	return (

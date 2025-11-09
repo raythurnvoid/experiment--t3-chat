@@ -2,6 +2,7 @@ import "./page-editor-rich-text-tools-link-setter.css";
 import { Check, Trash, LinkIcon } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useEditor } from "novel";
+import { useEditorState } from "@tiptap/react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -44,9 +45,21 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
+	const { editor } = useEditor();
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			if (!editor) return null;
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
 	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
-	const { editor } = useEditor();
 
 	// Autofocus on input by default
 	useEffect(() => {

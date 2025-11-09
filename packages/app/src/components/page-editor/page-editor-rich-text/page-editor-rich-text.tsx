@@ -293,7 +293,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				} catch (error) {
 					console.error("Failed to save text content:", error);
 				}
-			}, 100);
+			}, 500);
 		}
 	};
 

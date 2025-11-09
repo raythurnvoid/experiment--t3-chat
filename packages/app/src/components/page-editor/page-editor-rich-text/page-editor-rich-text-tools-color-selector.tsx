@@ -24,6 +24,7 @@ import type {
 	PageEditorRichText_FgColorCssVarKeys,
 	PageEditorRichText_BgColorCssVarKeys,
 } from "./page-editor-rich-text.tsx";
+import { useEditorState } from "@tiptap/react";
 
 export interface BubbleColorMenuItem {
 	name: string;
@@ -189,9 +190,21 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
+	const { editor } = useEditor();
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			if (!editor) return null;
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
 	const [open, setOpen] = useState(false);
 
-	const { editor } = useEditor();
 	const forceRender = useForceRender();
 
 	const activeColor = editor ? TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color })) : undefined;
