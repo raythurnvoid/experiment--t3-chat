@@ -8,7 +8,7 @@ import { Typography } from "@tiptap/extension-typography";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Underline } from "@tiptap/extension-underline";
 import Highlight from "@tiptap/extension-highlight";
-import { HorizontalRule } from "novel";
+import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
