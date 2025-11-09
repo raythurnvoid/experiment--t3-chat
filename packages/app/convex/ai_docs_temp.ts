@@ -757,6 +757,48 @@ export const update_page_and_broadcast = mutation({
 	},
 });
 
+export async function schedule_snapshot(
+	ctx: MutationCtx,
+	args: {
+		page_id: string;
+		workspace_id: string;
+		project_id: string;
+	},
+) {
+	// Query for existing scheduled snapshot for this page
+	const existing = await ctx.db
+		.query("pages_snapshot_schedules")
+		.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
+		.first();
+
+	// Cancel existing scheduled function if it exists
+	if (existing) {
+		await ctx.scheduler.cancel(existing.scheduled_function_id);
+	}
+
+	// Schedule new snapshot creation after 10 seconds
+	const scheduledId = await ctx.scheduler.runAfter(10_000, internal.ai_docs_temp.create_snapshot_after_inactivity, {
+		page_id: args.page_id,
+		workspace_id: args.workspace_id,
+		project_id: args.project_id,
+	});
+
+	// Store the scheduled function ID
+	if (existing) {
+		await ctx.db.replace(existing._id, {
+			page_id: args.page_id,
+			scheduled_function_id: scheduledId,
+		});
+	} else {
+		await ctx.db.insert("pages_snapshot_schedules", {
+			page_id: args.page_id,
+			scheduled_function_id: scheduledId,
+		});
+	}
+
+	return null;
+}
+
 /**
  * Internal mutation to update page content in the database.
  * Used by actions that need to update the DB from Node.js runtime.
@@ -784,6 +826,13 @@ export const internal_update_page_content = internalMutation({
 				text_content: args.textContent,
 				updated_by: user.name,
 				updated_at: Date.now(),
+			});
+
+			// Schedule snapshot creation after 10 seconds of inactivity
+			await schedule_snapshot(ctx, {
+				page_id: page.page_id,
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
 			});
 		}
 
@@ -1386,6 +1435,7 @@ async function do_store_version_snapshot(ctx: MutationCtx, args: Infer<typeof st
 		project_id: args.project_id,
 		page_id: args.page_id,
 		created_by: args.created_by,
+		is_archived: false,
 	});
 
 	// Create content entry
@@ -1405,6 +1455,74 @@ export const store_version_snapshot = internalMutation({
 	returns: v.id("pages_snapshots"),
 	handler: async (ctx, args) => {
 		return await do_store_version_snapshot(ctx, args);
+	},
+});
+
+export const create_snapshot_after_inactivity = internalMutation({
+	args: {
+		page_id: v.string(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		try {
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+			const textContent = await do_get_page_text_content_by_page_id(ctx, {
+				workspaceId: args.workspace_id,
+				projectId: args.project_id,
+				pageId: args.page_id,
+			});
+
+			if (!textContent) {
+				return null;
+			}
+
+			// Get the most recent non-archived snapshot for this page
+			const lastSnapshot =
+				(await ctx.db
+					.query("pages_snapshots")
+					.withIndex("by_page_id_and_is_archived", (q) => q.eq("page_id", args.page_id).eq("is_archived", undefined))
+					.order("desc")
+					.first()) ??
+				(await ctx.db
+					.query("pages_snapshots")
+					.withIndex("by_page_id_and_is_archived", (q) => q.eq("page_id", args.page_id).eq("is_archived", false))
+					.order("desc")
+					.first());
+
+			// If a snapshot exists, compare its content with the new content
+			if (lastSnapshot) {
+				const lastSnapshotContent = await do_get_page_snapshot_content(ctx, {
+					page_id: args.page_id,
+					page_snapshot_id: lastSnapshot._id,
+				});
+
+				// Skip creating a new snapshot if content hasn't changed
+				if (lastSnapshotContent && lastSnapshotContent.content === textContent) {
+					return null;
+				}
+			}
+
+			await do_store_version_snapshot(ctx, {
+				workspace_id: args.workspace_id,
+				project_id: args.project_id,
+				page_id: args.page_id,
+				content: textContent,
+				created_by: user.name,
+			});
+
+			return null;
+		} finally {
+			const schedule = await ctx.db
+				.query("pages_snapshot_schedules")
+				.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
+				.first();
+			if (schedule) {
+				await ctx.db.delete(schedule._id);
+			}
+		}
 	},
 });
 

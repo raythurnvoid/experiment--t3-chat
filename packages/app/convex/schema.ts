@@ -269,6 +269,7 @@ const app_convex_schema = defineSchema({
 		is_archived: v.optional(v.boolean()),
 	})
 		.index("by_page_id", ["page_id"])
+		.index("by_page_id_and_is_archived", ["page_id", "is_archived"])
 		.index("by_workspace_project", ["workspace_id", "project_id"]),
 
 	pages_snapshots_contents: defineTable({
@@ -281,6 +282,11 @@ const app_convex_schema = defineSchema({
 		.index("by_page_snapshot_id", ["page_snapshot_id"])
 		.index("by_page_id", ["page_id"])
 		.index("by_page_id_and_snapshot_id", ["page_id", "page_snapshot_id"]),
+
+	pages_snapshot_schedules: defineTable({
+		page_id: v.string(),
+		scheduled_function_id: v.id("_scheduled_functions"),
+	}).index("by_page_id", ["page_id"]),
 });
 
 export default app_convex_schema;

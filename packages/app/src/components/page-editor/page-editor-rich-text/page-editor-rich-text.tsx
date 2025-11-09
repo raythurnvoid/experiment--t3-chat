@@ -38,77 +38,9 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai
 import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { app_fetch_create_version_snapshot } from "@/lib/fetch.ts";
-import { useAuth } from "@/lib/auth.ts";
 import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 
-/**
- * 5 seconds.
- */
-const SNAPSHOT_DEBOUNCE_DURATION = 5000;
-
 type SyncStatus = ReturnType<typeof useSyncStatus>;
-
-function useStoreSnapshot(editor: Editor | null, pageId: string) {
-	const auth = useAuth();
-
-	const snapshotTimer = useRef<ReturnType<typeof setTimeout>>(null);
-	const currentSnapshotContent = useRef<string | null>(null);
-
-	const getEditorContentAsMarkdown = () => {
-		if (!editor) return null;
-		return editor.getMarkdown();
-	};
-
-	const updateCurrentSnapshotContent = () => {
-		currentSnapshotContent.current = getEditorContentAsMarkdown();
-	};
-
-	const sendVersionSnapshot = async () => {
-		const markdownContent = getEditorContentAsMarkdown();
-
-		if (!markdownContent || markdownContent === currentSnapshotContent.current) return;
-
-		const result = await app_fetch_create_version_snapshot({
-			input: {
-				workspace_id: ai_chat_HARDCODED_ORG_ID,
-				project_id: ai_chat_HARDCODED_PROJECT_ID,
-				page_id: pageId,
-				content: markdownContent,
-			},
-			keepalive: true,
-			auth: auth.isAuthenticated,
-		});
-
-		if (result._nay) {
-			console.error("Failed to create version snapshot:", result._nay.message);
-		}
-	};
-
-	const restartTimer = () => {
-		if (snapshotTimer.current) {
-			clearTimeout(snapshotTimer.current);
-		}
-
-		snapshotTimer.current = setTimeout(() => {
-			void sendVersionSnapshot();
-		}, SNAPSHOT_DEBOUNCE_DURATION);
-	};
-
-	const cancelTimer = () => {
-		if (snapshotTimer.current) {
-			clearTimeout(snapshotTimer.current);
-			snapshotTimer.current = null;
-		}
-	};
-
-	return {
-		restartTimer,
-		cancelTimer,
-		sendVersionSnapshot,
-		updateCurrentSnapshotContent,
-	};
-}
 
 export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
@@ -176,12 +108,9 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 
-	const storeSnapshotController = useStoreSnapshot(editor, pageId);
-
 	const [openAi, setOpenAi] = useState(false);
 
 	const [charsCount, setCharsCount] = useState<number>(0);
-	const [contentLoaded, setContentLoaded] = useState(false);
 
 	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(null);
 
@@ -215,33 +144,9 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const [syncChanged, setSyncChanged] = useState(false);
 	const isEditorReady = useIsEditorReady();
 
-	// Initialize the snapshots controller when the editor is ready
 	useEffect(() => {
-		if (!editor || !isEditorReady || contentLoaded || !pageId) {
-			return;
-		}
-
-		storeSnapshotController.updateCurrentSnapshotContent();
-		setContentLoaded(true);
-	}, [editor, isEditorReady]);
-
-	useEffect(() => {
-		// Set up visibility change listener for snapshot versioning
-		const handleVisibilityChange = () => {
-			if (document.hidden) {
-				// Tab is hidden and we have local changes that are more recent than remote changes
-				storeSnapshotController.cancelTimer();
-				void storeSnapshotController.sendVersionSnapshot();
-			}
-		};
-
-		document.addEventListener("visibilitychange", handleVisibilityChange);
-
+		// Cleanup save debounce on unmount
 		return () => {
-			document.removeEventListener("visibilitychange", handleVisibilityChange);
-			storeSnapshotController.cancelTimer();
-
-			// Cleanup save debounce on unmount
 			if (saveOnDbDebounce.current) {
 				window.clearTimeout(saveOnDbDebounce.current);
 			}
@@ -265,14 +170,9 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		// Detect if this is a Yjs backend update
 		const isFromYjs = !!transaction.getMeta(ySyncPluginKey);
 
-		if (isFromYjs) {
-			// Remote update from other clients - cancel snapshot timer
-			storeSnapshotController.cancelTimer();
-		} else {
-			// Local update from this client - restart snapshot timer and save to DB
-			storeSnapshotController.restartTimer();
-
-			// Debounce content save to Convex (100ms)
+		if (!isFromYjs) {
+			// Local update from this client - save to DB
+			// Debounce content save to Convex (500ms)
 			if (saveOnDbDebounce.current) {
 				clearTimeout(saveOnDbDebounce.current);
 			}
