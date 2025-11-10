@@ -41,7 +41,7 @@ export function Canvas() {
 
 			setEditorPageId(payload.pageId);
 			setThreadId(payload.threadId);
-			await renderPromise();
+			await renderPromise.wait();
 
 			if (!editor.current) {
 				console.warn("Canvas: open requested but editor not initialized");

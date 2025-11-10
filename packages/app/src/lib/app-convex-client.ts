@@ -2,6 +2,8 @@ import { ConvexReactClient } from "convex/react";
 import type { ai_chat_Message, ai_chat_Thread } from "./ai-chat.ts";
 import type { Doc as app_convex_Doc, Id as app_convex_Id } from "../../convex/_generated/dataModel.js";
 import type convex_schema from "../../convex/schema.ts";
+import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
+import { Result } from "./errors-as-values-utils.ts";
 
 // Cannot be import.meta.env.VITE_CONVEX_URL because indirectly imported by the hono server via assistant-ui dep
 export const app_convex_deployment_url = import.meta.env
@@ -81,3 +83,51 @@ export function app_convex_adapt_convex_to_app_message(convex_message: ConvexMes
 }
 
 // #endregion Convex-App adapters
+
+// #region helpers
+
+export async function app_convex_wait_new_query_value<Q extends FunctionReference<"query", "public">>(
+	query: Q,
+	queryArgs?: FunctionArgs<Q>,
+	args?: {
+		signal?: AbortSignal;
+	},
+) {
+	const watcher = app_convex.watchQuery(query, queryArgs);
+
+	let canDispose = true;
+
+	const valuePromise = new Promise<FunctionReturnType<Q> | undefined>((resolve) => {
+		args?.signal?.addEventListener(
+			"abort",
+			() => {
+				resolve(undefined);
+
+				if (canDispose) {
+					canDispose = false;
+					dispose();
+				}
+			},
+			{ once: true },
+		);
+
+		const dispose = watcher.onUpdate(() => {
+			resolve(watcher.localQueryResult());
+
+			if (canDispose) {
+				canDispose = false;
+				dispose();
+			}
+		});
+	});
+
+	const value = await valuePromise;
+
+	if (value === undefined && canDispose) {
+		return Result({ _nay: { name: "nay_abort", message: args?.signal?.reason?.message ?? "Query aborted" } });
+	}
+
+	return Result({ _yay: value });
+}
+
+// #endregion helpers

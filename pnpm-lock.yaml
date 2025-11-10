@@ -208,6 +208,9 @@ importers:
       '@radix-ui/react-use-controllable-state':
         specifier: ^1.2.2
         version: 1.2.2(@types/react@19.2.2)(react@19.2.0)
+      '@remix-run/interaction':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@sanity/diff-match-patch':
         specifier: ^3.2.0
         version: 3.2.0
@@ -4271,6 +4274,9 @@ packages:
 
   '@remirror/core-constants@3.0.0':
     resolution: {integrity: sha512-42aWfPrimMfDKDi4YegyS7x+/0tlzaqwPQCULLanv3DMIlu96KTJR0fM5isWX2UViOqlGnX6YFgqWepcX+XMNg==}
+
+  '@remix-run/interaction@0.1.0':
+    resolution: {integrity: sha512-5AoVEKPad9+ss/HqjaDEKNjG1uFp9FFdHaaCtxLz5Yw0+xdiJF+ur7r6D1TAUFIVNZToD1WyHurVRD3sjUZBbw==}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -13370,6 +13376,8 @@ snapshots:
       react: 19.2.0
 
   '@remirror/core-constants@3.0.0': {}
+
+  '@remix-run/interaction@0.1.0': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

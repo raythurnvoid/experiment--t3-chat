@@ -1,6 +1,7 @@
 import { useRef, useMemo, useState, useEffect } from "react";
 import { create_promise_with_resolvers, tuple } from "../lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
+import { Result } from "../lib/errors-as-values-utils.ts";
 
 /**
  * A hook that returns a ref that is updated with the latest value of the passed parameter.
@@ -64,10 +65,8 @@ export function useRenderPromise() {
 
 	// Create a ref to hold our promise
 	const promiseWithResolversRef = useRef<PromiseWithResolvers<void>>(null);
-	const promiseRef = useRef<Promise<void>>(Promise.resolve()) as React.RefObject<Promise<void>>;
-
-	if (promiseRef.current === null) {
-		promiseRef.current = Promise.resolve();
+	if (promiseWithResolversRef.current === null) {
+		promiseWithResolversRef.current = create_promise_with_resolvers<void>();
 	}
 
 	useEffect(() => {
@@ -77,12 +76,34 @@ export function useRenderPromise() {
 		// On each render, create a new promise
 		const promiseWithResolvers = create_promise_with_resolvers<void>();
 		promiseWithResolversRef.current = promiseWithResolvers;
-		promiseRef.current = promiseWithResolvers.promise;
 	});
 
-	return function () {
-		setDummyState({});
-		return promiseRef.current;
+	return {
+		tick: () => {
+			setDummyState({});
+			return promiseWithResolversRef.current?.promise;
+		},
+		wait: async (options?: { signal?: AbortSignal }) => {
+			const promise = new Promise<{ aborted: boolean }>((resolve, reject) => {
+				options?.signal?.addEventListener(
+					"abort",
+					() => {
+						resolve({ aborted: true });
+					},
+					{ once: true },
+				);
+
+				promiseWithResolversRef.current?.promise.then(() => resolve({ aborted: false })).catch(reject);
+			});
+
+			const pResult = await promise;
+
+			if (pResult.aborted) {
+				return Result({ _nay: { name: "nay_abort", message: options?.signal?.reason?.message ?? "Aborted" } });
+			}
+
+			return Result({ _yay: null });
+		},
 	};
 }
 

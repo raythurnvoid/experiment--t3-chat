@@ -34,7 +34,7 @@ import {
 import { useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { generate_timestamp_uuid } from "@/lib/utils.ts";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex_api, app_convex_wait_new_query_value } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import {
@@ -47,6 +47,8 @@ import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } f
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import { TypedEventTarget } from "@remix-run/interaction";
+import { useRenderPromise } from "../../../hooks/utils-hooks.ts";
 
 /**
  * `react-complex-tree` flat data record object
@@ -77,8 +79,11 @@ type NotionLikeDataProvider_Args = {
  * Custom TreeDataProvider
  */
 class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
+	eventTarget = new TypedEventTarget<{
+		change: CustomEvent<TreeItemIndex[]>;
+	}>();
+
 	data: PagesSidebarTreeCollection;
-	treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
 	args: NotionLikeDataProvider_Args;
 
@@ -146,10 +151,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 		this.notifyTreeChange(visibleItemsIds);
 	}
 
-	destroy() {
-		this.treeChangeListeners = [];
-	}
-
 	async getTreeItem(itemId: TreeItemIndex) {
 		const item = this.data[itemId];
 		if (!item) {
@@ -168,7 +169,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 				...this.data[itemId],
 				children: sortedChildren,
 			};
-			this.notifyTreeChange([itemId]);
 
 			this.args
 				.movePages({
@@ -182,13 +182,12 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	}
 
 	onDidChangeTreeData(listener: (changedItemIds: TreeItemIndex[]) => void): { dispose(): void } {
-		this.treeChangeListeners.push(listener);
+		const abortController = new AbortController();
+		this.eventTarget.addEventListener("change", (event) => listener(event.detail), { signal: abortController.signal });
+
 		return {
 			dispose: () => {
-				const index = this.treeChangeListeners.indexOf(listener);
-				if (index > -1) {
-					this.treeChangeListeners.splice(index, 1);
-				}
+				abortController.abort();
 			},
 		};
 	}
@@ -207,7 +206,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			data: { ...item.data, title: trimmedName },
 		};
 		this.data[item.index] = updatedItem;
-		this.notifyTreeChange([item.index]);
 
 		// Find parent and re-sort its children since title changed
 		const parentItem = Object.values(this.data).find((parent) => parent.children?.includes(item.index));
@@ -217,7 +215,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 				...parentItem,
 				children: sortedChildren,
 			};
-			this.notifyTreeChange([parentItem.index]);
 		}
 
 		this.args
@@ -231,7 +228,7 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	}
 
 	createNewItem(parentId: string, title: string = "Untitled"): string {
-		const pageId = generate_timestamp_uuid("doc");
+		const pageId = generate_timestamp_uuid("page");
 		const parentItem = this.data[parentId];
 
 		if (parentItem) {
@@ -277,8 +274,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			};
 
 			this.data[parentId] = updatedParent;
-
-			this.notifyTreeChange([parentId, pageId]);
 		}
 
 		this.args
@@ -312,7 +307,7 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	}
 
 	private notifyTreeChange(changedItemIds: TreeItemIndex[]): void {
-		this.treeChangeListeners.forEach((listener) => listener(changedItemIds));
+		this.eventTarget.dispatchEvent(new CustomEvent("change", { detail: changedItemIds }));
 	}
 
 	updateArchiveStatus(itemId: TreeItemIndex, newIsArchived: boolean): void {
@@ -330,8 +325,6 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 				isArchived: newIsArchived,
 			},
 		};
-
-		this.notifyTreeChange([itemId]);
 	}
 
 	getAllData(): Record<TreeItemIndex, TreeItem<pages_TreeItem>> {
@@ -339,7 +332,7 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	}
 }
 
-type docs_TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<pages_TreeItem>;
+type TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<pages_TreeItem>;
 
 type PagesSidebar_CssVars = {
 	"--PagesSidebarTreeItem-content-depth": number;
@@ -711,13 +704,15 @@ type PagesSidebarTreeArea_Props = {
 	selectedDocId: string | null;
 	searchQuery: string;
 	showArchived: boolean;
-	onSelectItems: docs_TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
+	onSelectItems: TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
 	onArchive: (itemId: string) => void;
 	onPrimaryAction: (itemId: string, itemType: string) => void;
+	onAddChild: (parentId: string) => void;
 };
 
 function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
-	const { ref, selectedDocId, searchQuery, showArchived, onSelectItems, onArchive, onPrimaryAction } = props;
+	const { ref, selectedDocId, searchQuery, showArchived, onSelectItems, onArchive, onPrimaryAction, onAddChild } =
+		props;
 
 	const context = use(PagesTreeContext);
 	if (!context) {
@@ -725,8 +720,6 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	}
 
 	const { dataProvider, treeItems } = context;
-
-	const navigate = useNavigate();
 
 	const treeRef = useRef<TreeRef | null>(null);
 	const rootElement = useRef<HTMLDivElement>(null);
@@ -786,17 +779,6 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		}
 	}, [selectedDocId, treeItems, showArchived]);
 
-	const handleAddChild = (parentId: string) => {
-		if (dataProvider) {
-			const newItemId = dataProvider.createNewItem(parentId, "New Page");
-			// Navigate to the new page
-			navigate({
-				to: "/pages",
-				search: { pageId: newItemId },
-			}).catch(console.error);
-		}
-	};
-
 	const handleArchive = (itemId: string) => {
 		// Update local data immediately for better UX
 		if (dataProvider) {
@@ -825,7 +807,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		}).catch(console.error);
 	};
 
-	const handlePrimaryAction: docs_TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (
+	const handlePrimaryAction: TypedUncontrolledTreeEnvironmentProps["onPrimaryAction"] = (
 		item: TreeItem<pages_TreeItem>,
 		treeId: string,
 	) => {
@@ -834,7 +816,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		}
 	};
 
-	const handleShouldRenderChildren: docs_TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
+	const handleShouldRenderChildren: TypedUncontrolledTreeEnvironmentProps["shouldRenderChildren"] = (
 		item: TreeItem<pages_TreeItem>,
 		context: any,
 	) => {
@@ -1022,7 +1004,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 							selectedDocId={selectedDocId}
 							showArchived={showArchived}
 							isDragging={isDragging}
-							onAdd={handleAddChild}
+							onAdd={onAddChild}
 							onArchive={handleArchive}
 							onUnarchive={handleUnarchive}
 						/>
@@ -1090,6 +1072,9 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const { selectedPageId, state = "expanded", onClose, onArchive, onPrimaryAction } = props;
 
 	const navigate = useNavigate();
+
+	const renderPromise = useRenderPromise();
+
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
@@ -1097,9 +1082,9 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});
 
-	const movePages = useMutation(app_convex_api.ai_docs_temp.move_pages);
-	const renamePage = useMutation(app_convex_api.ai_docs_temp.rename_page);
-	const createPage = useMutation(app_convex_api.ai_docs_temp.create_page);
+	const serverMovePages = useMutation(app_convex_api.ai_docs_temp.move_pages);
+	const serverRenamePage = useMutation(app_convex_api.ai_docs_temp.rename_page);
+	const serverCreatePage = useMutation(app_convex_api.ai_docs_temp.create_page);
 
 	const root = pages_create_tree_root();
 	const dataProvider = new NotionLikeDataProvider({
@@ -1116,13 +1101,13 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		movePages: async (params) => {
-			movePages(params).catch((e) => console.error(`Error moving pages:`, e));
+			serverMovePages(params).catch((e) => console.error(`Error moving pages:`, e));
 		},
 		renamePage: async (params) => {
-			renamePage(params).catch((e) => console.error(`Error renaming page:`, e));
+			serverRenamePage(params).catch((e) => console.error(`Error renaming page:`, e));
 		},
 		createPage: async (params) => {
-			createPage(params).catch((e) => console.error(`Error creating page:`, e));
+			serverCreatePage(params).catch((e) => console.error(`Error creating page:`, e));
 		},
 	});
 
@@ -1163,9 +1148,36 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 		return () => {
 			disposable.dispose();
-			dataProvider.destroy();
 		};
 	}, [dataProvider]);
+
+	function createPage(parentPageId: string) {
+		const newPageId = dataProvider.createNewItem(parentPageId, "New Page");
+
+		navigate({
+			to: "/pages",
+			search: { pageId: newPageId },
+		}).catch(console.error);
+
+		return app_convex_wait_new_query_value(
+			app_convex_api.ai_docs_temp.get_tree_items_list,
+			{
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			},
+			{
+				signal: AbortSignal.timeout(5000),
+			},
+		)
+			.then((result) => {
+				if (result._yay) {
+					return renderPromise.wait({ signal: AbortSignal.timeout(5000) }).then(() => {
+						treeRef.current?.startRenamingItem(newPageId);
+					});
+				}
+			})
+			.catch(console.error);
+	}
 
 	const handleFold = () => {
 		treeRef.current?.collapseAll();
@@ -1175,12 +1187,12 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		treeRef.current?.expandAll();
 	};
 
-	const handleNewPage = () => {
-		const newItemId = dataProvider.createNewItem(pages_ROOT_ID, "New Page");
-		navigate({
-			to: "/pages",
-			search: { pageId: newItemId },
-		}).catch(console.error);
+	const handleNewPage = async () => {
+		await createPage(pages_ROOT_ID);
+	};
+
+	const handleAddChild = async (parentPageId: string) => {
+		await createPage(parentPageId);
 	};
 
 	const handleClearSelection = () => {
@@ -1344,6 +1356,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 							onSelectItems={handleSelectItems}
 							onArchive={onArchive}
 							onPrimaryAction={onPrimaryAction}
+							onAddChild={handleAddChild}
 						/>
 					</MySidebarContent>
 				</div>
