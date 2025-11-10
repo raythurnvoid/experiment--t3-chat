@@ -69,6 +69,8 @@ export default defineConfig({
 			"@liveblocks/client",
 			"@liveblocks/core",
 			"@liveblocks/node",
+
+			"@remix-run/interaction",
 		],
 	},
 });

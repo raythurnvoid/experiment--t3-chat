@@ -22,3 +22,6 @@
 	path = packages/app/vendor/novel
 	url = https://github.com/raythurnvoid/novel.git
 	branch = main
+[submodule "remix"]
+	path = packages/app/vendor/remix
+	url = https://github.com/remix-run/remix.git
