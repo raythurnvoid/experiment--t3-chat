@@ -16,6 +16,10 @@ export function useLiveRef<T>(value: T) {
 	return ref;
 }
 
+function is_update_function<T>(value: T | ((oldValue: T) => T)): value is (oldValue: T) => T {
+	return typeof value === "function";
+}
+
 /**
  * A hook that works similar to useState but returns a ref and provides
  * a setter function that will update the ref and force a re-render.
@@ -31,9 +35,9 @@ export function useLiveState<T>(initialValue: T) {
 	return useMemo(
 		() =>
 			// eslint-disable-next-line react-hooks/refs
-			tuple(ref, (value: T) => {
+			tuple(ref, (value: T | ((oldValue: T) => T)) => {
 				if (ref.current === value) return;
-				const newValue = typeof value === "function" ? value(ref.current) : value;
+				const newValue = is_update_function(value) ? value(ref.current) : value;
 				setState(newValue);
 				ref.current = newValue;
 			}),
@@ -273,4 +277,16 @@ export function useWatchableValue<T>(initialValue?: T) {
 export function useForceRender() {
 	const [, setState] = useState({});
 	return () => setState({});
+}
+
+export function useAsyncEffect(effect: (signal: AbortSignal) => Promise<void>, dependencies: any[]) {
+	useEffect(() => {
+		const abortController = new AbortController();
+
+		effect(abortController.signal).catch(console.error);
+
+		return () => {
+			abortController.abort();
+		};
+	}, dependencies);
 }

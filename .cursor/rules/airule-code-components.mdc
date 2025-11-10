@@ -1,6 +1,6 @@
 ---
 description: Guidelines for creating and styling React components, including class naming patterns, semantic classnames, and component organization
-globs: packages/**/src/components/**/*.tsx
+globs: packages/**/src/**/*.tsx, packages/**/src/**/*-hooks.ts, packages/**/src/**/use-*.ts
 alwaysApply: false
 ---
 

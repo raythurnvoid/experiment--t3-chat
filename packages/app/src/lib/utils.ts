@@ -18,7 +18,7 @@ export function sx(style: CSSPropertiesX) {
 
 export type CSSPropertiesX = CSSProperties & Record<string, string | number | undefined | null>;
 
-export function forward_ref(refValue: any, ...targetRefs: React.Ref<any>[]) {
+export function forward_ref(refValue: any, ...targetRefs: (React.Ref<any> | undefined)[]) {
 	const cleanedUpFns: (() => void)[] = [];
 	if (targetRefs) {
 		for (const targetRef of targetRefs) {

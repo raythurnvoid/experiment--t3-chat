@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useState, createContext, use, useRef, useEffect } from "react";
+import React, { useState, createContext, use, useRef, useEffect, useLayoutEffect, useEffectEvent } from "react";
 import {
 	FileText,
 	Plus,
@@ -30,6 +30,8 @@ import {
 	type TreeInformation,
 	type TreeDataProvider,
 	type UncontrolledTreeEnvironmentProps,
+	useTreeEnvironment,
+	type TreeEnvironmentContextProps,
 } from "react-complex-tree";
 import { useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
@@ -48,7 +50,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { TypedEventTarget } from "@remix-run/interaction";
-import { useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import { useAsyncEffect, useLiveState, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 
 /**
  * `react-complex-tree` flat data record object
@@ -491,7 +493,7 @@ type PagesSidebarTreeItem_Props = {
 	context: TreeItemRenderContext;
 	arrow: React.ReactNode;
 	info: TreeInformation;
-	selectedDocId: string | null;
+	selectedPageId: string | null;
 	showArchived: boolean;
 	isDragging: boolean;
 	onAdd: (parentId: string) => void;
@@ -507,7 +509,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		title,
 		context,
 		arrow,
-		selectedDocId,
+		selectedPageId,
 		showArchived,
 		isDragging,
 		onAdd,
@@ -518,7 +520,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const data = item.data as pages_TreeItem;
 
 	// Current selected document
-	const isNavigated = selectedDocId === item.index;
+	const isNavigated = selectedPageId === item.index;
 	const isPlaceholder = data.type === "placeholder";
 	const isArchived = item.data.isArchived;
 	const isRenaming = context.isRenaming;
@@ -691,6 +693,60 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 
 const TREE_ID = "pages-tree";
 
+type PagesSidebarTree_Props = {
+	ref: React.Ref<TreeRef>;
+	selectedPageId: string | null;
+	treeItems: Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
+	showArchived: boolean;
+};
+
+/**
+ * Temporary wrapper component to test focusing after tree renders
+ */
+function PagesSidebarTree(props: PagesSidebarTree_Props) {
+	const { ref, selectedPageId, treeItems, showArchived } = props;
+
+	const treeRef = useRef<TreeRef>(null);
+
+	const environment = useTreeEnvironment();
+
+	// Check for rendered items and focus selected one on every render
+	useEffect(() => {
+		if (!selectedPageId || !treeRef.current) {
+			return;
+		}
+
+		const navigatedItem = treeItems[selectedPageId];
+		if (
+			!navigatedItem ||
+			navigatedItem.data.type === "placeholder" ||
+			(navigatedItem.data.isArchived && !showArchived)
+		) {
+			return;
+		}
+
+		const treeLinearItems = environment.linearItems?.[TREE_ID] ?? [];
+		const isRendered = treeLinearItems.some(({ item }) => item === selectedPageId);
+
+		if (!isRendered) {
+			return;
+		}
+
+		const treeInstance = treeRef.current;
+		if (treeInstance && !treeInstance.isFocused) {
+			try {
+				treeInstance.focusItem(selectedPageId, false);
+			} catch (error) {
+				console.warn("Error focusing tree item:", error);
+			}
+		}
+	}, [selectedPageId, treeItems, showArchived, environment.linearItems]);
+
+	return (
+		<Tree ref={(inst) => forward_ref(inst, ref, treeRef)} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Pages" />
+	);
+}
+
 type PagesSidebarTreeArea_ClassNames =
 	| "PagesSidebarTreeArea"
 	| "PagesSidebarTreeArea-drag-over"
@@ -701,7 +757,7 @@ type PagesSidebarTreeArea_ClassNames =
 
 type PagesSidebarTreeArea_Props = {
 	ref: React.Ref<TreeRef | null>;
-	selectedDocId: string | null;
+	selectedPageId: string | null;
 	searchQuery: string;
 	showArchived: boolean;
 	onSelectItems: TypedUncontrolledTreeEnvironmentProps["onSelectItems"];
@@ -711,7 +767,7 @@ type PagesSidebarTreeArea_Props = {
 };
 
 function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
-	const { ref, selectedDocId, searchQuery, showArchived, onSelectItems, onArchive, onPrimaryAction, onAddChild } =
+	const { ref, selectedPageId, searchQuery, showArchived, onSelectItems, onArchive, onPrimaryAction, onAddChild } =
 		props;
 
 	const context = use(PagesTreeContext);
@@ -720,6 +776,8 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	}
 
 	const { dataProvider, treeItems } = context;
+
+	const renderPromise = useRenderPromise();
 
 	const treeRef = useRef<TreeRef | null>(null);
 	const rootElement = useRef<HTMLDivElement>(null);
@@ -762,22 +820,41 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 	}
 
 	// Set active item when tree items and navigated item are available
-	useEffect(() => {
-		if (treeRef.current && selectedDocId && treeItems[selectedDocId] && !treeRef.current.isFocused) {
-			const navigatedItem = treeItems[selectedDocId];
-			if (
-				navigatedItem &&
-				navigatedItem.data.type !== "placeholder" &&
-				(!navigatedItem.data.isArchived || showArchived)
-			) {
-				try {
-					treeRef.current.focusItem(selectedDocId, false);
-				} catch (error) {
-					console.warn("Error focusing tree item:", error);
+	useAsyncEffect(
+		async (signal) => {
+			if (treeRef.current && selectedPageId && !treeRef.current.isFocused) {
+				const navigatedItem = treeItems[selectedPageId];
+				if (
+					navigatedItem &&
+					navigatedItem.data.type !== "placeholder" &&
+					(!navigatedItem.data.isArchived || showArchived)
+				) {
+					try {
+						const timeoutSignal = AbortSignal.timeout(1000);
+						queueMicrotask(async () => {
+							while (true) {
+								const isSelectedPageRendered = treeRef.current?.treeEnvironmentContext.linearItems?.[TREE_ID].some(
+									(item) => item.item === selectedPageId,
+								);
+
+								if (isSelectedPageRendered) {
+									treeRef?.current?.focusItem(selectedPageId, false);
+									break;
+								} else if (timeoutSignal.aborted) {
+									break;
+								}
+
+								await renderPromise.wait({ signal: AbortSignal.any([signal, timeoutSignal]) });
+							}
+						});
+					} catch (error) {
+						console.warn("Error focusing tree item:", error);
+					}
 				}
 			}
-		}
-	}, [selectedDocId, treeItems, showArchived]);
+		},
+		[selectedPageId, treeItems, showArchived],
+	);
 
 	const handleArchive = (itemId: string) => {
 		// Update local data immediately for better UX
@@ -927,22 +1004,21 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 			treeRef.current?.selectItems([]);
 
 			// Priority 1: Focus navigated item
-			if (selectedDocId) {
-				const navigatedItem = treeItems[selectedDocId];
+			if (selectedPageId) {
+				const navigatedItem = treeItems[selectedPageId];
 				if (
 					navigatedItem &&
 					navigatedItem.data.type !== "placeholder" &&
 					(!navigatedItem.data.isArchived || showArchived)
 				) {
-					treeRef.current?.focusItem(selectedDocId, false);
+					treeRef.current?.focusItem(selectedPageId, false);
 					return;
 				}
 			}
 
 			// Priority 2: Focus first visible item
 			{
-				const linear = treeRef.current?.treeEnvironmentContext.linearItems?.[TREE_ID] ?? [];
-				for (const { item: itemId } of linear) {
+				for (const { item: itemId } of treeRef.current?.treeEnvironmentContext.linearItems?.[TREE_ID] ?? []) {
 					const item = treeItems[itemId];
 					if (item && item.data.type !== "placeholder" && (!item.data.isArchived || showArchived)) {
 						treeRef.current?.focusItem(itemId, false);
@@ -1001,7 +1077,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 					return (
 						<PagesSidebarTreeItem
 							{...props}
-							selectedDocId={selectedDocId}
+							selectedPageId={selectedPageId}
 							showArchived={showArchived}
 							isDragging={isDragging}
 							onAdd={onAddChild}
@@ -1016,26 +1092,24 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 					return (
 						<div
 							{...props.containerProps}
-							onBlur={handleBlur}
 							className={cn(
 								"PagesSidebarTreeArea-container" satisfies PagesSidebarTreeArea_ClassNames,
 								props.info.isFocused &&
 									("PagesSidebarTreeArea-container-focused" satisfies PagesSidebarTreeArea_ClassNames),
 								isDragging && ("PagesSidebarTreeArea-container-dragging" satisfies PagesSidebarTreeArea_ClassNames),
 							)}
+							onBlur={handleBlur}
 						>
 							{props.children}
 						</div>
 					);
 				}}
 			>
-				<Tree
-					ref={(inst) => {
-						return forward_ref(inst, ref, treeRef);
-					}}
-					treeId={TREE_ID}
-					rootItem={pages_ROOT_ID}
-					treeLabel="Pages"
+				<PagesSidebarTree
+					ref={(inst) => forward_ref(inst, ref, treeRef)}
+					selectedPageId={selectedPageId}
+					treeItems={treeItems}
+					showArchived={showArchived}
 				/>
 			</UncontrolledTreeEnvironment>
 		</div>
@@ -1350,7 +1424,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 					<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 						<PagesSidebarTreeArea
 							ref={treeRef}
-							selectedDocId={selectedPageId}
+							selectedPageId={selectedPageId}
 							searchQuery={searchQuery}
 							showArchived={showArchived}
 							onSelectItems={handleSelectItems}
