@@ -233,7 +233,13 @@ export function PageEditor(props: PageEditor_Props) {
 				return result._yay.payload;
 			}}
 		>
-			<RoomProvider id={roomId}>
+			<RoomProvider
+				// Setting the key is necessary to ensure the editor is properly re-created
+				// including the liveblocks yjs extensions
+				// to prevent showing content from the previous room.
+				key={roomId}
+				id={roomId}
+			>
 				<ClientSideSuspense fallback={<PageEditorSkeleton />}>
 					<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
 						<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>

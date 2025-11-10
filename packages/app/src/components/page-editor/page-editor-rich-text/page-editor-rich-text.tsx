@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Activity } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -75,7 +75,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 	const { className, pageId, headerSlot, ...rest } = props;
 
 	return (
-		<EditorRoot>
+		<EditorRoot key={pageId}>
 			<PageEditorRichTextInner
 				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
 				pageId={pageId}
@@ -88,6 +88,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 
 type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner"
+	| "PageEditorRichTextInner-visible"
 	| "PageEditorRichTextInner-editor-container"
 	| "PageEditorRichTextInner-editor-wrapper"
 	| "PageEditorRichTextInner-editor-content"
@@ -197,78 +198,89 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		}
 	};
 
-	return isEditorReady ? (
-		<div className={cn("PageEditorRichTextInner" satisfies PageEditorRichTextInner_ClassNames, className)}>
-			{headerSlot}
-			{editor && (
-				<DragHandle editor={editor}>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						fill="none"
-						viewBox="0 0 24 24"
-						strokeWidth="1.5"
-						stroke="currentColor"
-					>
-						<path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
-					</svg>
-				</DragHandle>
-			)}
-			<EditorContent
-				className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
-				editorContainerProps={{
-					className: cn("PageEditorRichTextInner-editor-container" satisfies PageEditorRichTextInner_ClassNames),
-				}}
-				editorProps={{
-					attributes: {
-						class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
-					},
-					handleDOMEvents: {
-						keydown: (_view, event) => handleCommandNavigation(event),
-					},
-					handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-					handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-				}}
-				extensions={extensions}
-				immediatelyRender={false}
-				onCreate={handleCreate}
-				onUpdate={handleUpdate}
-				slotBefore={
-					/* Status Bar */
-					<div className={cn("PageEditorRichTextInner-toolbar" satisfies PageEditorRichTextInner_ClassNames)}>
-						<PageEditorRichTextToolbar
-							charsCount={charsCount}
-							syncStatus={syncStatus}
-							syncChanged={syncChanged}
-							pageId={pageId}
-						/>
-					</div>
-				}
-				slotAfter={<ImageResizer />}
+	return (
+		<>
+			<div
+				className={cn(
+					"PageEditorRichTextInner" satisfies PageEditorRichTextInner_ClassNames,
+					// Due to some weird combination of things, if the EditorContent component is not rendered
+					// it results in it creating the TipTap Editor instance twice causing issues when
+					// settings the initial content, therefore the componet has to be rendered but
+					// hidden via cSS to prevent incomplete content to show while all the things are loading.
+					isEditorReady && ("PageEditorRichTextInner-visible" satisfies PageEditorRichTextInner_ClassNames),
+					className,
+				)}
 			>
-				<div className={cn("PageEditorRichTextInner-threads-container" satisfies PageEditorRichTextInner_ClassNames)}>
-					<Threads />
-				</div>
+				{headerSlot}
+				{editor && (
+					<DragHandle editor={editor}>
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							fill="none"
+							viewBox="0 0 24 24"
+							strokeWidth="1.5"
+							stroke="currentColor"
+						>
+							<path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
+						</svg>
+					</DragHandle>
+				)}
+				<EditorContent
+					className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
+					editorContainerProps={{
+						className: cn("PageEditorRichTextInner-editor-container" satisfies PageEditorRichTextInner_ClassNames),
+					}}
+					editorProps={{
+						attributes: {
+							class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
+						},
+						handleDOMEvents: {
+							keydown: (_view, event) => handleCommandNavigation(event),
+						},
+						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+					}}
+					extensions={extensions}
+					immediatelyRender={false}
+					onCreate={handleCreate}
+					onUpdate={handleUpdate}
+					slotBefore={
+						/* Status Bar */
+						<div className={cn("PageEditorRichTextInner-toolbar" satisfies PageEditorRichTextInner_ClassNames)}>
+							<PageEditorRichTextToolbar
+								charsCount={charsCount}
+								syncStatus={syncStatus}
+								syncChanged={syncChanged}
+								pageId={pageId}
+							/>
+						</div>
+					}
+					slotAfter={<ImageResizer />}
+				>
+					<div className={cn("PageEditorRichTextInner-threads-container" satisfies PageEditorRichTextInner_ClassNames)}>
+						<Threads />
+					</div>
 
-				<PageEditorRichTextToolsSlashCommand />
+					<PageEditorRichTextToolsSlashCommand />
 
-				<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsNodeSelector />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsLinkSetter />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsMathToggle />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsTextStyles />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsAddCommentButton />
-				</GenerativeMenuSwitch>
-			</EditorContent>
-		</div>
-	) : (
-		<PageEditorSkeleton />
+					<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
+						<Separator orientation="vertical" />
+						<PageEditorRichTextToolsNodeSelector />
+						<Separator orientation="vertical" />
+						<PageEditorRichTextToolsLinkSetter />
+						<Separator orientation="vertical" />
+						<PageEditorRichTextToolsMathToggle />
+						<Separator orientation="vertical" />
+						<PageEditorRichTextToolsTextStyles />
+						<Separator orientation="vertical" />
+						<PageEditorRichTextToolsColorSelector />
+						<Separator orientation="vertical" />
+						<PageEditorRichTextToolsAddCommentButton />
+					</GenerativeMenuSwitch>
+				</EditorContent>
+			</div>
+			{!isEditorReady && <PageEditorSkeleton />}
+		</>
 	);
 }
 

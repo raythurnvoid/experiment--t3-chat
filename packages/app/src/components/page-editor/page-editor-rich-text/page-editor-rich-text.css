@@ -5,6 +5,10 @@
 	}
 
 	.PageEditorRichTextInner {
+		&:not(.PageEditorRichTextInner-visible) {
+			display: none;
+		}
+
 		height: 100%;
 		width: 100%;
 	}
