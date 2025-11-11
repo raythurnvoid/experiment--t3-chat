@@ -44,7 +44,7 @@ import {
 	pages_ROOT_ID,
 	type pages_TreeItem,
 } from "@/lib/pages.ts";
-import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
+import { format_relative_time } from "@/lib/date.ts";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "@/components/my-link.tsx";
@@ -543,10 +543,8 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	// Tooltip content for non-placeholder items
 	const tooltipContent = !isPlaceholder
 		? (() => {
-				const relativeTime = format_relative_time(data.updatedAt);
-				const showAt = should_show_at_prefix(data.updatedAt);
-				const showAgo = should_show_ago_suffix(data.updatedAt);
-				return `Updated${showAt ? " at" : ""} ${relativeTime}${showAgo ? " ago" : ""} by ${data.updatedBy || "Unknown"}`;
+				const relativeTime = format_relative_time(data.updatedAt, { prefixForDatesPast7Days: "the " });
+				return `Updated ${relativeTime} by ${data.updatedBy || "Unknown"}`;
 			})()
 		: undefined;
 

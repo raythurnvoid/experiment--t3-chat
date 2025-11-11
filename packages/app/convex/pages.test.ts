@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with, test_mocks_hardcoded } from "./test.setup.ts";
+import { test_convex, test_mocks_fill_db_with, test_mocks_hardcoded } from "./test-setup.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";

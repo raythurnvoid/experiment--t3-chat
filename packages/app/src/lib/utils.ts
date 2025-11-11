@@ -189,3 +189,11 @@ export function valorize_scrollbar_width_px_css_var(): void {
 
 	document.body.style.setProperty("--app-scrollbar-w", `${scrollbarWidth}px`);
 }
+
+export function string_optional(strings: TemplateStringsArray, ...values: any[]): string {
+	if (values.some((value) => value != null && value !== "")) {
+		return String.raw(strings, ...values);
+	}
+
+	return "";
+}

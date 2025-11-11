@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery, useAction, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
-import { format_relative_time, should_show_ago_suffix, should_show_at_prefix } from "@/lib/date.ts";
+import { format_relative_time } from "@/lib/date.ts";
 import {
 	MyModal,
 	MyModalPopover,
@@ -171,20 +171,6 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		handleSnapshotClick(snapshotId);
 	};
 
-	const formatTime = (timestamp: number) => {
-		const relativeTime = format_relative_time(timestamp);
-		const showAgo = should_show_ago_suffix(timestamp);
-		const showAt = should_show_at_prefix(timestamp);
-
-		if (showAt) {
-			return `at ${relativeTime}`;
-		}
-		if (showAgo) {
-			return `${relativeTime} ago`;
-		}
-		return relativeTime;
-	};
-
 	const currentIndex = snapshots && selectedSnapshotId ? snapshots.findIndex((s) => s._id === selectedSnapshotId) : -1;
 	const previousSnapshot = currentIndex > 0 ? snapshots?.[currentIndex - 1] : null;
 	const nextSnapshot =
@@ -261,7 +247,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 											)}
 											onClick={() => handleSnapshotClick(snapshot._id)}
 										>
-											{formatTime(snapshot._creationTime)}
+											{format_relative_time(snapshot._creationTime)}
 											{snapshot.is_archived && (
 												<span
 													className={cn(
@@ -354,7 +340,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 															"PageEditorSnapshotsModal-preview-snapshot-data-time" satisfies PageEditorSnapshotsModal_ClassNames,
 														)}
 													>
-														{formatTime(selectedSnapshotContent._creationTime)}
+														{format_relative_time(selectedSnapshotContent._creationTime)}
 													</div>
 													<div
 														className={cn(
@@ -387,7 +373,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																</TooltipTrigger>
 																<TooltipContent>
 																	<div>
-																		<div>{formatTime(previousSnapshot._creationTime)}</div>
+																		<div>{format_relative_time(previousSnapshot._creationTime)}</div>
 																		<div>{previousSnapshot.created_by}</div>
 																	</div>
 																</TooltipContent>
@@ -426,7 +412,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																</TooltipTrigger>
 																<TooltipContent>
 																	<div>
-																		<div>{formatTime(nextSnapshot._creationTime)}</div>
+																		<div>{format_relative_time(nextSnapshot._creationTime)}</div>
 																		<div>{nextSnapshot.created_by}</div>
 																	</div>
 																</TooltipContent>

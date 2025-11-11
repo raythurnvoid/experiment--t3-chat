@@ -1,4 +1,4 @@
-import "../convex/test.setup.ts";
+import "../convex/test-setup.ts";
 import { test, expect } from "vitest";
 import { z } from "zod";
 import {

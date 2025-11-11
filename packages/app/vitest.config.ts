@@ -23,7 +23,7 @@ export default defineConfig({
 							inline: ["convex-test"],
 						},
 					},
-					setupFiles: ["./convex/test.setup.ts"],
+					setupFiles: ["./convex/test-setup.ts"],
 				},
 			},
 		],

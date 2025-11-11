@@ -1,23 +1,11 @@
+import "./test-setup-env.ts";
 import { convexTest } from "convex-test";
 import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
-import type { Doc, TableNames } from "./_generated/dataModel.ts";
+import type { Doc, TableNames } from "./_generated/dataModel";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
-import type { MutationCtx } from "./_generated/server.d.ts";
-
-// CORS origin used by server-utils headers helpers
-if (!process.env.ALLOWED_ORIGINS) {
-	process.env.ALLOWED_ORIGINS = "ALLOWED_ORIGINS";
-}
-
-// Liveblocks secrets referenced in ai_docs_temp.ts
-if (!process.env.LIVEBLOCKS_SECRET_KEY) {
-	process.env.LIVEBLOCKS_SECRET_KEY = "LIVEBLOCKS_SECRET_KEY";
-}
-if (!process.env.LIVEBLOCKS_WEBHOOK_SECRET) {
-	process.env.LIVEBLOCKS_WEBHOOK_SECRET = "LIVEBLOCKS_WEBHOOK_SECRET";
-}
+import type { MutationCtx } from "./_generated/server";
 
 // #region helpers
 
