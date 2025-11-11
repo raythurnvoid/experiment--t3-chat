@@ -60,8 +60,8 @@ type TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<pa
 
 const TREE_ID = "pages-tree";
 
-// #region NotionLikeDataProvider
-type NotionLikeDataProvider_Args = {
+// #region TreeDataProvider
+type PagesSidebarTreeDataProvider_Args = {
 	initialData: PagesSidebarTreeCollection;
 	workspaceId: string;
 	projectId: string;
@@ -84,16 +84,16 @@ type NotionLikeDataProvider_Args = {
 /**
  * Custom TreeDataProvider
  */
-class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
+class PagesSidebarTreeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	eventTarget = new TypedEventTarget<{
 		change: CustomEvent<TreeItemIndex[]>;
 	}>();
 
 	data: PagesSidebarTreeCollection;
 
-	args: NotionLikeDataProvider_Args;
+	args: PagesSidebarTreeDataProvider_Args;
 
-	constructor(args: NotionLikeDataProvider_Args) {
+	constructor(args: PagesSidebarTreeDataProvider_Args) {
 		this.args = args;
 		this.data = { ...args.initialData };
 	}
@@ -337,18 +337,18 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 		return { ...this.data };
 	}
 }
-// #endregion NotionLikeDataProvider
+// #endregion TreeDataProvider
 
-// #region PagesSidebarTreeContext
+// #region TreeContext
 type PagesSidebarTreeContext = {
-	dataProvider: NotionLikeDataProvider;
+	dataProvider: PagesSidebarTreeDataProvider;
 	treeItems: Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
 };
 
 const PagesTreeContext = createContext<PagesSidebarTreeContext | null>(null);
-// #endregion PagesSidebarTreeContext
+// #endregion TreeContext
 
-// #region PagesSidebarTreeItemArrow
+// #region TreeItemArrow
 type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
 
 interface PagesSidebarTreeItemArrow_Props {
@@ -375,9 +375,9 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 		</MyIconButton>
 	);
 }
-// #endregion PagesSidebarTreeItemArrow
+// #endregion TreeItemArrow
 
-// #region PagesSidebarTreeItemIcon
+// #region TreeItemIcon
 type PagesSidebarTreeItemIcon_ClassNames = "PagesSidebarTreeItemIcon";
 
 function PagesSidebarTreeItemIcon() {
@@ -387,9 +387,9 @@ function PagesSidebarTreeItemIcon() {
 		</MyIcon>
 	);
 }
-// #endregion PagesSidebarTreeItemIcon
+// #endregion TreeItemIcon
 
-// #region PagesSidebarTreeItemPrimaryActionContent
+// #region TreeItemPrimaryActionContent
 type PagesSidebarTreeItemPrimaryActionContent_ClassNames = "PagesSidebarTreeItemPrimaryActionContent";
 
 type PagesSidebarTreeItemPrimaryActionContent_Props = {
@@ -412,9 +412,9 @@ function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPri
 		</div>
 	);
 }
-// #endregion PagesSidebarTreeItemPrimaryActionContent
+// #endregion TreeItemPrimaryActionContent
 
-// #region PagesSidebarTreeItemNoChildrenPlaceholder
+// #region TreeItemNoChildrenPlaceholder
 type PagesSidebarTreeItemNoChildrenPlaceholder_ClassNames = "PagesSidebarTreeItemNoChildrenPlaceholder";
 
 type PagesSidebarTreeItemNoChildrenPlaceholder_Props = {
@@ -448,9 +448,9 @@ function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNo
 		</li>
 	);
 }
-// #endregion PagesSidebarTreeItemNoChildrenPlaceholder
+// #endregion TreeItemNoChildrenPlaceholder
 
-// #region PagesSidebarTreeItemActionIconButton
+// #region TreeItemActionIconButton
 type PagesSidebarTreeItemActionIconButton_ClassNames = "PagesSidebarTreeItemActionIconButton";
 
 type PagesSidebarTreeItemActionIconButton_Props = {
@@ -479,9 +479,9 @@ function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionI
 		</MyIconButton>
 	);
 }
-// #endregion PagesSidebarTreeItemActionIconButton
+// #endregion TreeItemActionIconButton
 
-// #region PagesSidebarTreeItem
+// #region TreeItem
 type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem"
 	| "PagesSidebarTreeItem-content"
@@ -668,12 +668,12 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		</li>
 	);
 }
-// #endregion PagesSidebarTreeItem
+// #endregion TreeItem
 
-// #region TreeRenameInputComponent
-type TreeRenameInputComponent_ClassNames = "TreeRenameInputComponent" | "TreeRenameInputComponent-input";
+// #region TreeRenameInput
+type PagesSidebarTreeRenameInput_ClassNames = "PagesSidebarTreeRenameInput" | "PagesSidebarTreeRenameInput-input";
 
-type TreeRenameInputComponent_Props = {
+type PagesSidebarTreeRenameInput_Props = {
 	item: TreeItem<pages_TreeItem>;
 	inputProps: React.InputHTMLAttributes<HTMLInputElement>;
 	inputRef: React.Ref<HTMLInputElement>;
@@ -682,7 +682,7 @@ type TreeRenameInputComponent_Props = {
 	formProps: React.FormHTMLAttributes<HTMLFormElement>;
 };
 
-function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
+function PagesSidebarTreeRenameInput(props: PagesSidebarTreeRenameInput_Props) {
 	const { inputProps, inputRef, formProps } = props;
 
 	const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
@@ -690,12 +690,12 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 	};
 
 	return (
-		<form {...formProps} className={"TreeRenameInputComponent" satisfies TreeRenameInputComponent_ClassNames}>
+		<form {...formProps} className={"PagesSidebarTreeRenameInput" satisfies PagesSidebarTreeRenameInput_ClassNames}>
 			<MyInput>
 				<MyInputControl
 					{...inputProps}
 					ref={inputRef}
-					className={"TreeRenameInputComponent-input" satisfies TreeRenameInputComponent_ClassNames}
+					className={"PagesSidebarTreeRenameInput-input" satisfies PagesSidebarTreeRenameInput_ClassNames}
 					autoFocus
 					required
 					onBlur={handleBlur}
@@ -704,9 +704,9 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 		</form>
 	);
 }
-// #endregion TreeRenameInputComponent
+// #endregion TreeRenameInput
 
-// #region PagesSidebarTree
+// #region Tree
 type PagesSidebarTree_Props = {
 	ref: React.Ref<TreeRef>;
 	selectedPageId: string | null;
@@ -760,9 +760,9 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		<Tree ref={(inst) => forward_ref(inst, ref, treeRef)} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Pages" />
 	);
 }
-// #endregion PagesSidebarTree
+// #endregion Tree
 
-// #region PagesSidebarTreeArea
+// #region TreeArea
 type PagesSidebarTreeArea_ClassNames =
 	| "PagesSidebarTreeArea"
 	| "PagesSidebarTreeArea-drag-over"
@@ -1078,7 +1078,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 					return <div {...props.lineProps} className="PagesSidebar-tree-drag-between-line" />;
 				}}
 				renderRenameInput={(props) => {
-					return <TreeRenameInputComponent {...props} />;
+					return <PagesSidebarTreeRenameInput {...props} />;
 				}}
 				renderItemArrow={(props) => <PagesSidebarTreeItemArrow {...props} />}
 				renderItem={(props) => {
@@ -1131,7 +1131,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		</div>
 	);
 }
-// #endregion PagesSidebarTreeArea
+// #endregion TreeArea
 
 // #region PagesSidebar
 type PagesSidebar_ClassNames =
@@ -1183,7 +1183,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const serverCreatePage = useMutation(app_convex_api.ai_docs_temp.create_page);
 
 	const root = pages_create_tree_root();
-	const dataProvider = new NotionLikeDataProvider({
+	const dataProvider = new PagesSidebarTreeDataProvider({
 		initialData: {
 			[root.index]: {
 				index: root.index,

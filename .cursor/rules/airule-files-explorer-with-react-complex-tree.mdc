@@ -18,19 +18,19 @@ The DocsSidebar v2 component is a sophisticated Notion-like file explorer for an
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    User Interface                        │
+│                    User Interface                       │
 │  React Complex Tree + shadcn/ui + Tailwind CSS          │
 ├─────────────────────────────────────────────────────────┤
-│                  State Management                        │
-│              DocsSearchContext                           │
+│                  State Management                       │
+│              DocsSearchContext                          │
 ├─────────────────────────────────────────────────────────┤
-│                 Real-time Collaboration                  │
+│                 Real-time Collaboration                 │
 │         Liveblocks (Yjs + TipTap Editor)                │
 ├─────────────────────────────────────────────────────────┤
-│                   Data Persistence                       │
+│                   Data Persistence                      │
 │          Convex (Database + HTTP Actions)               │
 ├─────────────────────────────────────────────────────────┤
-│                    AI Integration                        │
+│                    AI Integration                       │
 │        Novel Editor + Contextual AI Prompts             │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -74,7 +74,7 @@ interface DocData {
 }
 
 // Custom data provider
-class NotionLikeDataProvider implements TreeDataProvider<DocData> {
+class PagesSidebarTreeDataProvider implements TreeDataProvider<DocData> {
 	// Handles all tree operations with automatic sorting
 	// Manages placeholder items for empty folders
 	// Notifies listeners of tree changes
@@ -139,13 +139,13 @@ The UncontrolledTreeEnvironment is configured with specific patterns for Notion-
   // Custom rendering
   renderItem={(props) => <TreeItem {...props} />}
   renderItemArrow={(props) => <TreeItemArrow {...props} />}
-  renderRenameInput={(props) => <TreeRenameInputComponent {...props} />}
+  renderRenameInput={(props) => <PagesSidebarTreeRenameInput {...props} />}
 />
 ```
 
 ### Custom Data Provider Implementation
 
-The NotionLikeDataProvider extends TreeDataProvider with critical features:
+The PagesSidebarTreeDataProvider extends TreeDataProvider with critical features:
 
 1. **Automatic Alphabetical Sorting**: All children arrays are sorted on every change
 2. **Placeholder System**: Empty folders automatically get "No files inside" placeholder
@@ -153,7 +153,7 @@ The NotionLikeDataProvider extends TreeDataProvider with critical features:
 4. **CRUD Operations**: Create, rename, move with proper parent-child relationship management
 
 ```typescript
-class NotionLikeDataProvider implements TreeDataProvider<DocData> {
+class PagesSidebarTreeDataProvider implements TreeDataProvider<DocData> {
 	private data: Record<TreeItemIndex, TreeItem<DocData>>;
 	private treeChangeListeners: ((changedItemIds: TreeItemIndex[]) => void)[] = [];
 
@@ -457,11 +457,11 @@ className={cn(
 
    ```typescript
    // ❌ WRONG - Recreates every render
-   const dataProvider = new NotionLikeDataProvider(data);
+   const dataProvider = new PagesSidebarTreeDataProvider(data);
 
    // ✅ CORRECT - Stable instance
    const dataProvider = useMemo(() => {
-   	const provider = new NotionLikeDataProvider(data);
+   	const provider = new PagesSidebarTreeDataProvider(data);
    	dataProviderRef.current = provider;
    	return provider;
    }, []); // Empty deps

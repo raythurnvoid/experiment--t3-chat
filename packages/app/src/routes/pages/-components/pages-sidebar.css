@@ -154,7 +154,7 @@
 		}
 	}
 
-	.PagesSidebarTreeArea-container:not(:has(.TreeRenameInputComponent-input:focus)) {
+	.PagesSidebarTreeArea-container:not(:has(.PagesSidebarTreeRenameInput-input:focus)) {
 		.PagesSidebarTreeItem-content {
 			&.PagesSidebarTreeItem-content-selected {
 				background-color: var(--gray-800);
@@ -335,12 +335,12 @@
 		user-select: none;
 	}
 
-	.TreeRenameInputComponent {
+	.PagesSidebarTreeRenameInput {
 		display: flex;
 		width: 100%;
 	}
 
-	.TreeRenameInputComponent-input {
+	.PagesSidebarTreeRenameInput-input {
 		flex: 1;
 
 		&:focus {
