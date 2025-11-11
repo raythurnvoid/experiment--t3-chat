@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useState, createContext, use, useRef, useEffect, useLayoutEffect, useEffectEvent } from "react";
+import React, { useState, createContext, use, useRef, useEffect } from "react";
 import {
 	FileText,
 	Plus,
@@ -31,7 +31,6 @@ import {
 	type TreeDataProvider,
 	type UncontrolledTreeEnvironmentProps,
 	useTreeEnvironment,
-	type TreeEnvironmentContextProps,
 } from "react-complex-tree";
 import { useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
@@ -50,13 +49,18 @@ import { useNavigate } from "@tanstack/react-router";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { TypedEventTarget } from "@remix-run/interaction";
-import { useAsyncEffect, useLiveState, useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import { useAsyncEffect, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 
 /**
  * `react-complex-tree` flat data record object
  */
 type PagesSidebarTreeCollection = Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
 
+type TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<pages_TreeItem>;
+
+const TREE_ID = "pages-tree";
+
+// #region NotionLikeDataProvider
 type NotionLikeDataProvider_Args = {
 	initialData: PagesSidebarTreeCollection;
 	workspaceId: string;
@@ -333,20 +337,18 @@ class NotionLikeDataProvider implements TreeDataProvider<pages_TreeItem> {
 		return { ...this.data };
 	}
 }
+// #endregion NotionLikeDataProvider
 
-type TypedUncontrolledTreeEnvironmentProps = UncontrolledTreeEnvironmentProps<pages_TreeItem>;
-
-type PagesSidebar_CssVars = {
-	"--PagesSidebarTreeItem-content-depth": number;
-};
-
+// #region PagesSidebarTreeContext
 type PagesSidebarTreeContext = {
 	dataProvider: NotionLikeDataProvider;
 	treeItems: Record<TreeItemIndex, TreeItem<pages_TreeItem>>;
 };
 
 const PagesTreeContext = createContext<PagesSidebarTreeContext | null>(null);
+// #endregion PagesSidebarTreeContext
 
+// #region PagesSidebarTreeItemArrow
 type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
 
 interface PagesSidebarTreeItemArrow_Props {
@@ -373,7 +375,9 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 		</MyIconButton>
 	);
 }
+// #endregion PagesSidebarTreeItemArrow
 
+// #region PagesSidebarTreeItemIcon
 type PagesSidebarTreeItemIcon_ClassNames = "PagesSidebarTreeItemIcon";
 
 function PagesSidebarTreeItemIcon() {
@@ -383,7 +387,9 @@ function PagesSidebarTreeItemIcon() {
 		</MyIcon>
 	);
 }
+// #endregion PagesSidebarTreeItemIcon
 
+// #region PagesSidebarTreeItemPrimaryActionContent
 type PagesSidebarTreeItemPrimaryActionContent_ClassNames = "PagesSidebarTreeItemPrimaryActionContent";
 
 type PagesSidebarTreeItemPrimaryActionContent_Props = {
@@ -406,7 +412,9 @@ function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPri
 		</div>
 	);
 }
+// #endregion PagesSidebarTreeItemPrimaryActionContent
 
+// #region PagesSidebarTreeItemNoChildrenPlaceholder
 type PagesSidebarTreeItemNoChildrenPlaceholder_ClassNames = "PagesSidebarTreeItemNoChildrenPlaceholder";
 
 type PagesSidebarTreeItemNoChildrenPlaceholder_Props = {
@@ -440,7 +448,9 @@ function PagesSidebarTreeItemNoChildrenPlaceholder(props: PagesSidebarTreeItemNo
 		</li>
 	);
 }
+// #endregion PagesSidebarTreeItemNoChildrenPlaceholder
 
+// #region PagesSidebarTreeItemActionIconButton
 type PagesSidebarTreeItemActionIconButton_ClassNames = "PagesSidebarTreeItemActionIconButton";
 
 type PagesSidebarTreeItemActionIconButton_Props = {
@@ -469,7 +479,9 @@ function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionI
 		</MyIconButton>
 	);
 }
+// #endregion PagesSidebarTreeItemActionIconButton
 
+// #region PagesSidebarTreeItem
 type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem"
 	| "PagesSidebarTreeItem-content"
@@ -656,7 +668,9 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		</li>
 	);
 }
+// #endregion PagesSidebarTreeItem
 
+// #region TreeRenameInputComponent
 type TreeRenameInputComponent_ClassNames = "TreeRenameInputComponent" | "TreeRenameInputComponent-input";
 
 type TreeRenameInputComponent_Props = {
@@ -690,9 +704,9 @@ function TreeRenameInputComponent(props: TreeRenameInputComponent_Props) {
 		</form>
 	);
 }
+// #endregion TreeRenameInputComponent
 
-const TREE_ID = "pages-tree";
-
+// #region PagesSidebarTree
 type PagesSidebarTree_Props = {
 	ref: React.Ref<TreeRef>;
 	selectedPageId: string | null;
@@ -746,7 +760,9 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		<Tree ref={(inst) => forward_ref(inst, ref, treeRef)} treeId={TREE_ID} rootItem={pages_ROOT_ID} treeLabel="Pages" />
 	);
 }
+// #endregion PagesSidebarTree
 
+// #region PagesSidebarTreeArea
 type PagesSidebarTreeArea_ClassNames =
 	| "PagesSidebarTreeArea"
 	| "PagesSidebarTreeArea-drag-over"
@@ -1115,7 +1131,9 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		</div>
 	);
 }
+// #endregion PagesSidebarTreeArea
 
+// #region PagesSidebar
 type PagesSidebar_ClassNames =
 	| "PagesSidebar"
 	| "PagesSidebar-header"
@@ -1133,6 +1151,10 @@ type PagesSidebar_ClassNames =
 	| "PagesSidebar-multi-selection-counter"
 	| "PagesSidebar-multi-selection-counter-label"
 	| "PagesSidebar-content";
+
+type PagesSidebar_CssVars = {
+	"--PagesSidebarTreeItem-content-depth": number;
+};
 
 export type PagesSidebar_Props = {
 	state: MySidebar_Props["state"];
@@ -1438,3 +1460,4 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		</PagesTreeContext.Provider>
 	);
 }
+// #endregion PagesSidebar

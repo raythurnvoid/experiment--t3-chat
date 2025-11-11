@@ -575,3 +575,20 @@ export const ComponentName = ((/* iife */) => {
 	});
 })();
 ```
+
+# Component Region Wrapping
+
+Wrap each component and its related types in VS Code region markers. Place `#region ComponentName` before all
+type definitions and other symbols related to the component, and `#endregion ComponentName` after the component function.
+
+```tsx
+// #region ComponentName
+type ComponentName_ClassNames = "ComponentName";
+type ComponentName_Props = React.ComponentProps<"div"> & { children?: React.ReactNode };
+
+function ComponentName(props: ComponentName_Props) {
+	const { children, ...rest } = props;
+	return <div {...rest}>{children}</div>;
+}
+// #endregion ComponentName
+```
