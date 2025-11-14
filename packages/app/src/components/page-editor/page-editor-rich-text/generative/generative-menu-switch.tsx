@@ -16,13 +16,18 @@ const GenerativeMenuSwitch = ({ children, open, onOpenChange }: GenerativeMenuSw
 	const { editor } = useEditor();
 
 	useEffect(() => {
-		if (!open && editor) removeAIHighlight(editor);
+		if (!editor) return;
+
+		if (!open) {
+			removeAIHighlight(editor);
+		}
 	}, [open]);
 
 	return (
 		<EditorBubble
+			appendTo={document.body}
 			options={{
-				placement: open ? "bottom-start" : "top",
+				placement: "bottom-start",
 				onHide: () => {
 					if (!editor) {
 						return;
