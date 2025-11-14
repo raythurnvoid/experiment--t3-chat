@@ -1,4 +1,4 @@
-import "../convex/test-setup.ts";
+import "../convex/setup.test.ts";
 import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
 import { ai_tool_create_list_pages } from "./server-ai-tools.ts";

@@ -89,15 +89,15 @@ export function useRenderPromise() {
 		},
 		wait: async (options?: { signal?: AbortSignal }) => {
 			const promise = new Promise<{ aborted: boolean }>((resolve, reject) => {
-				options?.signal?.addEventListener(
-					"abort",
-					() => {
-						resolve({ aborted: true });
-					},
-					{ once: true },
-				);
+				const handleAbort = () => {
+					resolve({ aborted: true });
+				};
+				options?.signal?.addEventListener("abort", handleAbort, { once: true });
 
-				promiseWithResolversRef.current?.promise.then(() => resolve({ aborted: false })).catch(reject);
+				promiseWithResolversRef.current?.promise
+					.then(() => resolve({ aborted: false }))
+					.catch(reject)
+					.finally(() => options?.signal?.removeEventListener("abort", handleAbort));
 			});
 
 			const pResult = await promise;

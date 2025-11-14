@@ -21,8 +21,10 @@ export default defineConfig({
 						{
 							target: "19",
 							sources: (filename: string) => {
-								// Compile only `src/` stuff
-								return filename.startsWith(path.resolve(__dirname, "src"));
+								return (
+									filename.startsWith(path.resolve(__dirname, "src")) ||
+									filename.startsWith(path.resolve(__dirname, "vendor/novel"))
+								);
 							},
 						},
 					],

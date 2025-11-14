@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef, Activity } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -184,6 +184,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					console.debug("[PageEditorRichText] Saving markdown to DB:", {
 						html: editor.getHTML(),
 						markdown: textContent,
+						transaction,
 					});
 					await updateAndSyncToMonaco({
 						workspaceId: ai_chat_HARDCODED_ORG_ID,

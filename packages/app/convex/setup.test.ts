@@ -1,4 +1,4 @@
-import "./test-setup-env.ts";
+import "./setup-env.test.ts";
 import { convexTest } from "convex-test";
 import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
