@@ -196,4 +196,28 @@
 		padding: 4px 8px;
 		font-size: 0.9rem;
 	}
+
+	.PageEditorRichTextBubble {
+		display: flex;
+		width: fit-content;
+		max-width: 90vw;
+		overflow: hidden;
+		border-radius: 6px;
+		border: 1px solid var(--color-base-1-10);
+		background: var(--color-base-1-05);
+		box-shadow:
+			0 20px 25px -5px rgb(0 0 0 / 0.1),
+			0 8px 10px -6px rgb(0 0 0 / 0.1);
+	}
+
+	.PageEditorRichTextBubble-button {
+		gap: 4px;
+		border-radius: 0;
+		color: var(--PageEditorRichText-text-color-fg-purple);
+	}
+
+	.PageEditorRichTextBubble-icon {
+		width: 20px;
+		height: 20px;
+	}
 }

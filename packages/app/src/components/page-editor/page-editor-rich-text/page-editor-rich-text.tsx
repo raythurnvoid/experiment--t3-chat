@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment, type ReactNode } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -10,6 +10,8 @@ import {
 	handleCommandNavigation,
 	handleImageDrop,
 	handleImagePaste,
+	EditorBubble,
+	removeAIHighlight,
 } from "novel";
 import { Editor } from "@tiptap/react";
 import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
@@ -21,16 +23,15 @@ import { PageEditorRichTextToolsNodeSelector } from "./page-editor-rich-text-too
 import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools-math-toggle.tsx";
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
 import { PageEditorRichTextToolsAddCommentButton } from "./page-editor-rich-text-tools-add-comment-button.tsx";
+import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
+import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
-import GenerativeMenuSwitch from "./generative/generative-menu-switch.tsx";
 import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
-import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
 import { Threads } from "./threads.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn } from "@/lib/utils.ts";
-import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { useAction } from "convex/react";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
@@ -39,9 +40,13 @@ import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
+import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { AISelector } from "./generative/ai-selector.tsx";
+import { Sparkles } from "lucide-react";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
+// #region PageEditorRichText
 export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
 export type PageEditorRichText_BgColorCssVarKeys =
@@ -75,6 +80,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 	const { className, pageId, headerSlot, ...rest } = props;
 
 	return (
+		// remount on pageId to prevent stale state on page changes
 		<EditorRoot key={pageId}>
 			<PageEditorRichTextInner
 				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
@@ -85,7 +91,9 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 		</EditorRoot>
 	);
 }
+// #endregion PageEditorRichText
 
+// #region PageEditorRichTextInner
 type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner"
 	| "PageEditorRichTextInner-visible"
@@ -145,21 +153,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const [syncChanged, setSyncChanged] = useState(false);
 	const isEditorReady = useIsEditorReady();
 
-	useEffect(() => {
-		// Cleanup save debounce on unmount
-		return () => {
-			if (saveOnDbDebounce.current) {
-				window.clearTimeout(saveOnDbDebounce.current);
-			}
-		};
-	}, []);
-
-	// Detect if the sync status changed
-	useEffect(() => {
-		if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
-			setSyncChanged(true);
-		}
-	}, [syncStatus]);
+	const currentMarkdownContent = useRef<string | null>(null);
 
 	const handleCreate = ({ editor }: { editor: Editor }) => {
 		setEditor(editor);
@@ -180,24 +174,51 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 			saveOnDbDebounce.current = setTimeout(async () => {
 				try {
-					const textContent = editor.getMarkdown();
-					console.debug("[PageEditorRichText] Saving markdown to DB:", {
-						html: editor.getHTML(),
-						markdown: textContent,
-						transaction,
-					});
-					await updateAndSyncToMonaco({
-						workspaceId: ai_chat_HARDCODED_ORG_ID,
-						projectId: ai_chat_HARDCODED_PROJECT_ID,
-						pageId: pageId!,
-						textContent: textContent,
-					});
+					const markdownContent = editor.getMarkdown();
+
+					if (currentMarkdownContent.current !== markdownContent) {
+						console.debug("[PageEditorRichText] Saving markdown to DB:", {
+							html: editor.getHTML(),
+							markdown: markdownContent,
+							transaction,
+						});
+						currentMarkdownContent.current = markdownContent;
+						await updateAndSyncToMonaco({
+							workspaceId: ai_chat_HARDCODED_ORG_ID,
+							projectId: ai_chat_HARDCODED_PROJECT_ID,
+							pageId: pageId!,
+							textContent: markdownContent,
+						});
+					}
 				} catch (error) {
 					console.error("Failed to save text content:", error);
 				}
 			}, 500);
 		}
 	};
+
+	useEffect(() => {
+		// Cleanup save debounce on unmount
+		return () => {
+			if (saveOnDbDebounce.current) {
+				window.clearTimeout(saveOnDbDebounce.current);
+			}
+		};
+	}, []);
+
+	useEffect(() => {
+		if (editor && isEditorReady) {
+			console.debug("[PageEditorRichText] Editor is ready");
+			currentMarkdownContent.current = editor.getMarkdown();
+		}
+	}, [isEditorReady]);
+
+	// Detect if the sync status changed
+	useEffect(() => {
+		if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
+			setSyncChanged(true);
+		}
+	}, [syncStatus]);
 
 	return (
 		<>
@@ -264,27 +285,16 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 					<PageEditorRichTextToolsSlashCommand />
 
-					<GenerativeMenuSwitch open={openAi} onOpenChange={setOpenAi}>
-						<Separator orientation="vertical" />
-						<PageEditorRichTextToolsNodeSelector />
-						<Separator orientation="vertical" />
-						<PageEditorRichTextToolsLinkSetter />
-						<Separator orientation="vertical" />
-						<PageEditorRichTextToolsMathToggle />
-						<Separator orientation="vertical" />
-						<PageEditorRichTextToolsTextStyles />
-						<Separator orientation="vertical" />
-						<PageEditorRichTextToolsColorSelector />
-						<Separator orientation="vertical" />
-						<PageEditorRichTextToolsAddCommentButton />
-					</GenerativeMenuSwitch>
+					<PageEditorRichTextBubble open={openAi} onOpenChange={setOpenAi} />
 				</EditorContent>
 			</div>
 			{!isEditorReady && <PageEditorSkeleton />}
 		</>
 	);
 }
+// #endregion PageEditorRichTextInner
 
+// #region PageEditorRichTextToolbar
 type PageEditorRichTextToolbar_ClassNames =
 	| "PageEditorRichTextToolbar"
 	| "PageEditorRichTextToolbar-scrollable-area"
@@ -345,3 +355,79 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 		</Toolbar>
 	);
 }
+// #endregion PageEditorRichTextToolbar
+
+// #region PageEditorRichTextBubble
+
+// Derived from Liveblocks:
+// liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
+
+export type PageEditorRichTextBubble_ClassNames =
+	| "PageEditorRichTextBubble"
+	| "PageEditorRichTextBubble-button"
+	| "PageEditorRichTextBubble-icon";
+
+export type PageEditorRichTextBubble_Props = {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+};
+
+export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
+	const { open, onOpenChange } = props;
+	const { editor } = useEditor();
+
+	useEffect(() => {
+		if (!editor) return;
+
+		if (!open) {
+			removeAIHighlight(editor);
+		}
+	}, [open]);
+
+	return (
+		<EditorBubble
+			appendTo={document.body}
+			options={{
+				placement: "bottom-start",
+				onHide: () => {
+					if (!editor) {
+						return;
+					}
+
+					onOpenChange(false);
+					removeAIHighlight(editor);
+				},
+			}}
+			className={cn("PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames)}
+		>
+			{open && <AISelector open={open} onOpenChange={onOpenChange} />}
+			{!open && (
+				<>
+					<MyButton
+						variant="ghost"
+						className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
+						onClick={() => onOpenChange(true)}
+					>
+						<MyButtonIcon className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}>
+							<Sparkles />
+						</MyButtonIcon>
+						Ask AI
+					</MyButton>
+					<Separator orientation="vertical" />
+					<PageEditorRichTextToolsNodeSelector />
+					<Separator orientation="vertical" />
+					<PageEditorRichTextToolsLinkSetter />
+					<Separator orientation="vertical" />
+					<PageEditorRichTextToolsMathToggle />
+					<Separator orientation="vertical" />
+					<PageEditorRichTextToolsTextStyles />
+					<Separator orientation="vertical" />
+					<PageEditorRichTextToolsColorSelector />
+					<Separator orientation="vertical" />
+					<PageEditorRichTextToolsAddCommentButton />
+				</>
+			)}
+		</EditorBubble>
+	);
+}
+// #endregion PageEditorRichTextBubble

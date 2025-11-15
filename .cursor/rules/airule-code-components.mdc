@@ -581,6 +581,12 @@ export const ComponentName = ((/* iife */) => {
 Wrap each component and its related types in VS Code region markers. Place `#region ComponentName` before all
 type definitions and other symbols related to the component, and `#endregion ComponentName` after the component function.
 
+Many modules include several compound components that already share an obvious prefix (for example, `PageEditorRichTextInner`,
+`PageEditorRichTextToolbar`, `PageEditorRichTextBubble`). Repeating the full prefix in every region label adds noise without
+improving clarity. In those cases, you may shorten the region label to the specific component name required to identify the section
+(`// #region Toolbar`, `// #region Bubble`, etc.). Always choose the shortest label that still makes it obvious which component and
+types are wrapped.
+
 ```tsx
 // #region ComponentName
 type ComponentName_ClassNames = "ComponentName";
