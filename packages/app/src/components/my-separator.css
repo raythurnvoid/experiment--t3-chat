@@ -1,0 +1,24 @@
+@layer common_components {
+	.MySeparator {
+		box-sizing: border-box;
+		flex-shrink: 0;
+
+		background: var(--gray-300);
+
+		align-self: stretch;
+	}
+
+	.MySeparator-horizontal {
+		height: 1px;
+	}
+
+	.MySeparator-vertical {
+		width: 1px;
+	}
+
+	.MySeparatorHr {
+		margin: 0;
+		padding: 0;
+		border: none;
+	}
+}
