@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef, Fragment, type ReactNode } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -14,7 +14,7 @@ import {
 	removeAIHighlight,
 } from "novel";
 import { Editor } from "@tiptap/react";
-import { Toolbar, useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
+import { useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
 import { defaultExtensions } from "./extensions.ts";
 import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
@@ -25,7 +25,7 @@ import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools
 import { PageEditorRichTextToolsAddCommentButton } from "./page-editor-rich-text-tools-add-comment-button.tsx";
 import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
-import { Separator } from "@/components/ui/separator.tsx";
+import { MySeparator } from "@/components/my-separator.tsx";
 import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { Threads } from "./threads.tsx";
@@ -100,7 +100,6 @@ type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner-editor-container"
 	| "PageEditorRichTextInner-editor-wrapper"
 	| "PageEditorRichTextInner-editor-content"
-	| "PageEditorRichTextInner-toolbar"
 	| "PageEditorRichTextInner-threads-container"
 	| "PageEditorRichTextInner-status-badge"
 	| "PageEditorRichTextInner-word-count-badge"
@@ -268,14 +267,12 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					onUpdate={handleUpdate}
 					slotBefore={
 						/* Status Bar */
-						<div className={cn("PageEditorRichTextInner-toolbar" satisfies PageEditorRichTextInner_ClassNames)}>
-							<PageEditorRichTextToolbar
-								charsCount={charsCount}
-								syncStatus={syncStatus}
-								syncChanged={syncChanged}
-								pageId={pageId}
-							/>
-						</div>
+						<PageEditorRichTextToolbar
+							charsCount={charsCount}
+							syncStatus={syncStatus}
+							syncChanged={syncChanged}
+							pageId={pageId}
+						/>
 					}
 					slotAfter={<ImageResizer />}
 				>
@@ -295,14 +292,14 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 // #endregion PageEditorRichTextInner
 
 // #region PageEditorRichTextToolbar
-type PageEditorRichTextToolbar_ClassNames =
+export type PageEditorRichTextToolbar_ClassNames =
 	| "PageEditorRichTextToolbar"
 	| "PageEditorRichTextToolbar-scrollable-area"
 	| "PageEditorRichTextToolbar-status-badge"
 	| "PageEditorRichTextToolbar-word-count-badge"
 	| "PageEditorRichTextToolbar-word-count-badge-hidden";
 
-type PageEditorRichTextToolbar_Props = {
+export type PageEditorRichTextToolbar_Props = {
 	charsCount: number;
 	syncStatus: SyncStatus;
 	syncChanged: boolean;
@@ -314,45 +311,55 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 
 	const { editor } = useEditor();
 
+	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
+
 	return (
-		<Toolbar editor={editor} className={cn("PageEditorRichTextToolbar" satisfies PageEditorRichTextToolbar_ClassNames)}>
-			<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
-				<PageEditorRichTextToolsHistoryButtons />
-				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsNodeSelector />
-				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsLinkSetter />
-				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsMathToggle />
-				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsTextStyles />
-				<Separator orientation="vertical" />
-				<PageEditorRichTextToolsColorSelector />
-				<Separator orientation="vertical" />
-				<MyBadge
-					variant="secondary"
-					className={cn("PageEditorRichTextToolbar-status-badge" satisfies PageEditorRichTextToolbar_ClassNames)}
-				>
-					{/*
+		<div
+			ref={setPortalElement}
+			role="toolbar"
+			aria-label="Toolbar"
+			aria-orientation="horizontal"
+			className={cn("PageEditorRichTextToolbar" satisfies PageEditorRichTextToolbar_ClassNames)}
+		>
+			{portalElement && (
+				<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
+					<PageEditorRichTextToolsHistoryButtons />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsNodeSelector />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsLinkSetter />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsMathToggle />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsTextStyles />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsColorSelector portalElement={portalElement} />
+					<MySeparator orientation="vertical" />
+					<MyBadge
+						variant="secondary"
+						className={cn("PageEditorRichTextToolbar-status-badge" satisfies PageEditorRichTextToolbar_ClassNames)}
+					>
+						{/*
 					If syncChanged it's false then force to show "Saved" because when the
 					editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
 					*/}
-					{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
-				</MyBadge>
-				<MyBadge
-					variant="secondary"
-					className={cn(
-						charsCount
-							? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
-							: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
-					)}
-				>
-					{charsCount} Words
-				</MyBadge>
-				<PageEditorSnapshotsModal pageId={pageId} editor={editor} />
-				<NotificationsPopover />
-			</div>
-		</Toolbar>
+						{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
+					</MyBadge>
+					<MyBadge
+						variant="secondary"
+						className={cn(
+							charsCount
+								? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
+								: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
+						)}
+					>
+						{charsCount} Words
+					</MyBadge>
+					<PageEditorSnapshotsModal pageId={pageId} editor={editor} />
+					<NotificationsPopover />
+				</div>
+			)}
+		</div>
 	);
 }
 // #endregion PageEditorRichTextToolbar
@@ -364,6 +371,7 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 
 export type PageEditorRichTextBubble_ClassNames =
 	| "PageEditorRichTextBubble"
+	| "PageEditorRichTextBubble-content"
 	| "PageEditorRichTextBubble-button"
 	| "PageEditorRichTextBubble-icon";
 
@@ -374,7 +382,10 @@ export type PageEditorRichTextBubble_Props = {
 
 export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
 	const { open, onOpenChange } = props;
+
 	const { editor } = useEditor();
+
+	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
 	useEffect(() => {
 		if (!editor) return;
@@ -386,7 +397,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	return (
 		<EditorBubble
-			appendTo={document.body}
+			className={cn("PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames)}
 			options={{
 				placement: "bottom-start",
 				onHide: () => {
@@ -398,35 +409,43 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 					removeAIHighlight(editor);
 				},
 			}}
-			className={cn("PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames)}
 		>
-			{open && <AISelector open={open} onOpenChange={onOpenChange} />}
-			{!open && (
-				<>
-					<MyButton
-						variant="ghost"
-						className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
-						onClick={() => onOpenChange(true)}
-					>
-						<MyButtonIcon className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}>
-							<Sparkles />
-						</MyButtonIcon>
-						Ask AI
-					</MyButton>
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsNodeSelector />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsLinkSetter />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsMathToggle />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsTextStyles />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector />
-					<Separator orientation="vertical" />
-					<PageEditorRichTextToolsAddCommentButton />
-				</>
-			)}
+			<div
+				ref={(inst) => {
+					setPortalElement(inst);
+				}}
+				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
+			>
+				{open && <AISelector open={open} onOpenChange={onOpenChange} />}
+				{!open && portalElement && (
+					<>
+						<MyButton
+							variant="ghost"
+							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
+							onClick={() => onOpenChange(true)}
+						>
+							<MyButtonIcon
+								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
+							>
+								<Sparkles />
+							</MyButtonIcon>
+							Ask AI
+						</MyButton>
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsNodeSelector />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsLinkSetter />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsMathToggle />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsTextStyles />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsColorSelector portalElement={portalElement} />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsAddCommentButton />
+					</>
+				)}
+			</div>
 		</EditorBubble>
 	);
 }

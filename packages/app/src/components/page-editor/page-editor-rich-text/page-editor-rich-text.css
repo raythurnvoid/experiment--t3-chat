@@ -197,13 +197,17 @@
 		font-size: 0.9rem;
 	}
 
-	.PageEditorRichTextBubble {
+	.PageEditorRichTextBubble-content {
 		display: flex;
+
 		width: fit-content;
 		max-width: 90vw;
-		overflow: hidden;
+
+		contain: layout style;
+
 		border-radius: 6px;
 		border: 1px solid var(--color-base-1-10);
+
 		background: var(--color-base-1-05);
 		box-shadow:
 			0 20px 25px -5px rgb(0 0 0 / 0.1),
@@ -219,5 +223,12 @@
 	.PageEditorRichTextBubble-icon {
 		width: 20px;
 		height: 20px;
+	}
+
+	.PageEditorRichTextToolbar,
+	.PageEditorRichTextBubble {
+		.MySeparator {
+			margin-block: 4px;
+		}
 	}
 }
