@@ -1,6 +1,5 @@
 import "./page-editor-rich-text-tools-color-selector.css";
 import { Check, ChevronDown } from "lucide-react";
-import { useCallback, useState } from "react";
 import { useEditor } from "novel";
 import {
 	MySelect,
@@ -16,7 +15,6 @@ import {
 	MySelectItemContentIcon,
 	MySelectItemsGroup,
 	MySelectItemsGroupText,
-	type MySelectPopover_Props,
 } from "@/components/my-select.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { cn, sx } from "@/lib/utils.ts";
@@ -24,8 +22,6 @@ import { useForceRender } from "@/hooks/utils-hooks.ts";
 import type {
 	PageEditorRichText_FgColorCssVarKeys,
 	PageEditorRichText_BgColorCssVarKeys,
-	PageEditorRichTextToolbar_ClassNames,
-	PageEditorRichTextBubble_ClassNames,
 } from "./page-editor-rich-text.tsx";
 import { useEditorState } from "@tiptap/react";
 

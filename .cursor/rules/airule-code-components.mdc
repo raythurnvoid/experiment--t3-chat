@@ -117,7 +117,7 @@ export function Toolbar(props: Toolbar_Props) {
 
 # Component Styles
 
-- Declare a `_ClassNames` union type enumerating all CSS class strings. Class values are prefixed with the main component name and use kebab-case for words. Always include a root class whose value equals the component name (even if no styles are needed) so the component is identifiable in HTML.
+- Declare a `_ClassNames` union type enumerating all CSS class strings. Class values are prefixed with the main component name and use kebab-case for words. **Always include a root class whose value equals the component name (even if no styles are needed)** so the component is identifiable in HTML. This is especially important for debugging: having a unique class name on each component makes it easy to recognize and inspect components in the DOM using browser DevTools, even when the component doesn't have custom styles yet.
 
 ```ts
 type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
@@ -134,6 +134,35 @@ type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 Instead of a single `<ComponentName>_ClassNames` union, group class names by compound component. Each subcomponent gets its own `_ClassNames` type. Use PascalCase for subcomponent root classes and dash-suffixed modifiers for states, variants, and sizes.
 
 **Type Placement**: Each `_ClassNames` type must be placed directly above its corresponding component definition, before any `_Props` or `_Ref` types.
+
+**Reusing Styles from Other Components**: When a component needs to reuse styling from another `my-*` component, import the other component's `_ClassNames` type and apply both the component's own class name and the reused class name. This maintains component identity for debugging while inheriting shared styles. For example:
+
+```tsx
+import type { MyInputArea_ClassNames, MyInputControl_ClassNames } from "./my-input.tsx";
+
+export type MyComboboxInputArea_ClassNames = "MyComboboxInputArea";
+
+export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
+	const { className, children, ...rest } = props;
+	return (
+		<div
+			className={cn(
+				"MyComboboxInputArea" satisfies MyComboboxInputArea_ClassNames,
+				"MyInputArea" satisfies MyInputArea_ClassNames,
+				className,
+			)}
+			{...rest}
+		>
+			{children}
+		</div>
+	);
+}
+```
+
+This pattern ensures that:
+1. The component has its own identifiable class name (`MyComboboxInputArea`) for debugging
+2. The component inherits styles from the reused component (`MyInputArea`)
+3. Both class names are type-checked using `satisfies` for safety
 
 ```tsx
 export type Thread_ClassNames = "Thread";

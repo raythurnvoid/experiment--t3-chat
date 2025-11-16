@@ -1,0 +1,150 @@
+@layer common_components {
+	/* MyComboboxInput reuses MyInputArea, MyInputControl, MyInputIcon, and MyInputBox classes from my-input.css */
+	.MyComboboxInput {
+		position: relative;
+	}
+
+	/* Focus ring for combobox input - matches MyInput focus behavior */
+	.MyComboboxInput:has(.MyInputControl:focus-visible) .MyInputBox {
+		border-color: var(--ring);
+	}
+
+	/* Invalid state ring - matches MyInput invalid behavior */
+	.MyComboboxInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
+		border-color: var(--destructive);
+		box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
+	}
+
+	/* Dark mode invalid state */
+	@media (prefers-color-scheme: dark) {
+		.MyComboboxInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
+			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
+		}
+	}
+
+	.MyComboboxList {
+		box-sizing: border-box;
+		position: relative;
+
+		max-height: 300px;
+		overflow-x: hidden;
+		overflow-y: auto;
+	}
+
+	.MyComboboxPopover {
+		box-sizing: border-box;
+		position: relative;
+
+		max-height: 300px;
+
+		border-radius: 6px;
+		border: 1px solid var(--color-base-1-10);
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-11);
+
+		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+
+		contain: content;
+
+		&:focus-visible {
+			outline: 2px solid var(--color-base-2-06);
+		}
+	}
+
+	.MyComboboxPopoverScrollableArea {
+		max-height: inherit;
+		overflow-x: hidden;
+		overflow-y: auto;
+	}
+
+	.MyComboboxPopoverContent {
+		padding: 4px;
+	}
+
+	.MyComboboxItem {
+		box-sizing: border-box;
+		position: relative;
+
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		width: 100%;
+		padding: 6px;
+		border-radius: 4px;
+
+		font-size: 0.875rem;
+		line-height: 1.25;
+
+		cursor: pointer;
+		outline: none;
+		user-select: none;
+
+		transition:
+			background-color 150ms ease,
+			color 150ms ease;
+
+		&[aria-disabled="true"] {
+			pointer-events: none;
+			opacity: 0.5;
+		}
+
+		&[data-active-item] {
+			background: var(--color-base-1-07);
+			color: var(--color-fg-12);
+		}
+	}
+
+	.MyComboboxEmpty {
+		padding: 24px 12px;
+		text-align: center;
+
+		font-size: 0.875rem;
+		color: var(--muted-foreground);
+	}
+
+	/* Combobox label */
+	.MyComboboxLabel {
+		padding: 8px 8px 4px 8px;
+		font-size: 0.75em;
+		font-weight: 500;
+		color: var(--gray-600);
+
+		@media (prefers-color-scheme: dark) {
+			color: var(--gray-400);
+		}
+	}
+
+	.MyComboboxGroup-separator {
+		margin-top: 12px;
+		border-top: 1px solid var(--color-base-1-10);
+	}
+
+	.MyComboboxGroup-heading,
+	.MyComboboxGroupHeading {
+		cursor: default;
+
+		padding: 4px 12px;
+
+		font-size: 0.85rem;
+		font-weight: 500;
+
+		color: var(--color-fg-08);
+
+		min-height: 30px;
+	}
+
+	.MyComboboxCancel {
+		cursor: pointer;
+		padding: 4px 8px;
+		border-radius: 4px;
+		font-size: 0.875rem;
+		color: var(--muted-foreground);
+
+		&:hover {
+			background: var(--color-base-1-06);
+			color: var(--color-fg-12);
+		}
+	}
+}

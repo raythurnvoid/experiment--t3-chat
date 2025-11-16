@@ -108,7 +108,7 @@ export function MyInputHelperText(props: MyInputHelperText_Props) {
 	);
 }
 
-type MyInputIcon_ClassNames = "MyInputIcon";
+export type MyInputIcon_ClassNames = "MyInputIcon";
 
 export type MyInputIcon_Props = ComponentPropsWithRef<typeof MyIcon>;
 
@@ -118,7 +118,7 @@ export function MyInputIcon(props: MyInputIcon_Props) {
 	return <MyIcon className={cn("MyInputIcon" satisfies MyInputIcon_ClassNames, className)} {...rest} />;
 }
 
-type MyInputBox_ClassNames = "MyInputBox";
+export type MyInputBox_ClassNames = "MyInputBox";
 
 export type MyInputBox_Props = ComponentPropsWithRef<"div">;
 
@@ -132,7 +132,7 @@ export function MyInputBox(props: MyInputBox_Props) {
 	);
 }
 
-type MyInputArea_ClassNames = "MyInputArea";
+export type MyInputArea_ClassNames = "MyInputArea";
 
 export type MyInputArea_Props = ComponentPropsWithRef<"div"> & {
 	/**
@@ -185,7 +185,7 @@ export function MyInputArea(props: MyInputArea_Props) {
 	);
 }
 
-type MyInputControl_ClassNames = "MyInputControl";
+export type MyInputControl_ClassNames = "MyInputControl";
 
 export type MyInputControl_Props = Omit<ComponentPropsWithRef<"input">, "size" | "id">;
 
