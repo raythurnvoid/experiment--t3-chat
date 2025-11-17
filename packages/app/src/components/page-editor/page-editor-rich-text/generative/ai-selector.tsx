@@ -5,9 +5,7 @@ import {
 	ArrowUp,
 	Check,
 	CheckCheck,
-	Loader,
 	RefreshCcwDot,
-	Sparkles,
 	StepForward,
 	TextQuote,
 	TrashIcon,
@@ -32,6 +30,7 @@ import { MySeparator } from "@/components/my-separator.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
+import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import { cn } from "@/lib/utils.ts";
 
 const OPTIONS = {
@@ -74,45 +73,33 @@ type GenerationOption = GenerationOptionSelectable | "zap";
 export type AiSelectorCompletionPreview_ClassNames =
 	| "AiSelectorCompletionPreview"
 	| "AiSelectorCompletionPreview-wrapper"
-	| "AiSelectorCompletionPreview-content";
+	| "AiSelectorCompletionPreview-content"
+	| "AiSelectorCompletionPreview-loader";
 
 export type AiSelectorCompletionPreview_Props = {
 	completion: string;
+	isLoading: boolean;
 };
 
 function AiSelectorCompletionPreview(props: AiSelectorCompletionPreview_Props) {
-	const { completion } = props;
+	const { completion, isLoading } = props;
 
 	return (
 		<div className={cn("AiSelectorCompletionPreview-wrapper" satisfies AiSelectorCompletionPreview_ClassNames)}>
 			<div className={cn("AiSelectorCompletionPreview-content" satisfies AiSelectorCompletionPreview_ClassNames)}>
-				<Markdown>{completion}</Markdown>
+				{isLoading ? (
+					<div className={cn("AiSelectorCompletionPreview-loader" satisfies AiSelectorCompletionPreview_ClassNames)}>
+						<MySpinner />
+						Generating new content&hellip;
+					</div>
+				) : (
+					completion && <Markdown>{completion}</Markdown>
+				)}
 			</div>
 		</div>
 	);
 }
 // #endregion CompletionPreview
-
-// #region LoadingState
-export type AiSelectorLoadingState_ClassNames =
-	| "AiSelectorLoadingState"
-	| "AiSelectorLoadingState-icon"
-	| "AiSelectorLoadingState-loader";
-
-export type AiSelectorLoadingState_Props = {};
-
-function AiSelectorLoadingState(props: AiSelectorLoadingState_Props) {
-	return (
-		<div className={cn("AiSelectorLoadingState" satisfies AiSelectorLoadingState_ClassNames)}>
-			<Sparkles className={cn("AiSelectorLoadingState-icon" satisfies AiSelectorLoadingState_ClassNames)} />
-			AI is thinking
-			<div className={cn("AiSelectorLoadingState-loader" satisfies AiSelectorLoadingState_ClassNames)}>
-				<Loader />
-			</div>
-		</div>
-	);
-}
-// #endregion LoadingState
 
 // #region InputArea
 export type AiSelectorInputArea_ClassNames =
@@ -122,10 +109,11 @@ export type AiSelectorInputArea_ClassNames =
 
 export type AiSelectorInputArea_Props = {
 	placeholder: string;
+	disabled: boolean;
 };
 
 function AiSelectorInputArea(props: AiSelectorInputArea_Props) {
-	const { placeholder } = props;
+	const { placeholder, disabled } = props;
 
 	return (
 		<div className={cn("AiSelectorInputArea" satisfies AiSelectorInputArea_ClassNames)}>
@@ -136,10 +124,11 @@ function AiSelectorInputArea(props: AiSelectorInputArea_Props) {
 						className={cn("AiSelectorInputArea-control" satisfies AiSelectorInputArea_ClassNames)}
 						autoSelect={false}
 						placeholder={placeholder}
-						autoFocus
+						autoFocus={!disabled}
+						disabled={disabled}
 					/>
 				</MyComboboxInputArea>
-				<MyIconButton type="submit" variant="default">
+				<MyIconButton type="submit" variant="default" disabled={disabled}>
 					<MyIconButtonIcon>
 						<ArrowUp />
 					</MyIconButtonIcon>
@@ -157,20 +146,21 @@ export type AiSelectorGenerationActions_Props = {
 	onReplaceSelection: () => void;
 	onInsertBelow: () => void;
 	onDiscard: () => void;
+	disabled: boolean;
 };
 
 function AiSelectorGenerationActions(props: AiSelectorGenerationActions_Props) {
-	const { onReplaceSelection, onInsertBelow, onDiscard } = props;
+	const { onReplaceSelection, onInsertBelow, onDiscard, disabled } = props;
 
 	return (
 		<div className={cn("AiSelectorGenerationActions" satisfies AiSelectorGenerationActions_ClassNames)}>
-			<MyButton onClick={onReplaceSelection} variant="outline">
+			<MyButton onClick={onReplaceSelection} variant="outline" disabled={disabled}>
 				<MyButtonIcon>
 					<Check className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)} />
 				</MyButtonIcon>
 				Replace selection
 			</MyButton>
-			<MyButton onClick={onInsertBelow} variant="outline">
+			<MyButton onClick={onInsertBelow} variant="outline" disabled={disabled}>
 				<MyButtonIcon>
 					<TextQuote
 						className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)}
@@ -178,7 +168,7 @@ function AiSelectorGenerationActions(props: AiSelectorGenerationActions_Props) {
 				</MyButtonIcon>
 				Insert below
 			</MyButton>
-			<MyButton onClick={onDiscard} variant="ghost">
+			<MyButton onClick={onDiscard} variant="ghost" disabled={disabled}>
 				<MyButtonIcon>
 					<TrashIcon
 						className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)}
@@ -309,6 +299,7 @@ export function AiSelector(props: AiSelector_Props) {
 		},
 	});
 
+	const isLoading = completionInst.isLoading;
 	const hasCompletion = completionInst.completion.length > 0;
 
 	function triggerGeneration(args: { text: string; option: GenerationOption; command?: string }) {
@@ -425,27 +416,24 @@ export function AiSelector(props: AiSelector_Props) {
 			{editor && (
 				<form ref={formRef} onSubmit={handleSubmit}>
 					<div className={cn("AiSelector-container" satisfies AiSelector_ClassNames)}>
-						{hasCompletion && <AiSelectorCompletionPreview completion={completionInst.completion} />}
+						{(hasCompletion || isLoading) && (
+							<AiSelectorCompletionPreview completion={completionInst.completion} isLoading={isLoading} />
+						)}
 
-						{completionInst.isLoading && <AiSelectorLoadingState />}
+						<AiSelectorInputArea
+							placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
+							disabled={isLoading}
+						/>
 
-						{!completionInst.isLoading && (
-							<>
-								<AiSelectorInputArea
-									placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
-								/>
-								{hasCompletion ? (
-									<>
-										<AiSelectorGenerationActions
-											onReplaceSelection={handleReplaceSelection}
-											onInsertBelow={handleInsertBelow}
-											onDiscard={handleDiscard}
-										/>
-									</>
-								) : (
-									<AiSelectorOptionList filter={inputValue} onSelect={handleOptionSelect} />
-								)}
-							</>
+						{hasCompletion || isLoading ? (
+							<AiSelectorGenerationActions
+								onReplaceSelection={handleReplaceSelection}
+								onInsertBelow={handleInsertBelow}
+								onDiscard={handleDiscard}
+								disabled={isLoading}
+							/>
+						) : (
+							<AiSelectorOptionList filter={inputValue} onSelect={handleOptionSelect} />
 						)}
 					</div>
 				</form>

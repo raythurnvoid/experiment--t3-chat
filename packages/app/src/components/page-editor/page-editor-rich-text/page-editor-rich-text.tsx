@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -383,12 +383,26 @@ export type PageEditorRichTextBubble_Props = {
 export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
 	const { open, onOpenChange } = props;
 
+	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
+
 	const { editor } = useEditor();
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
-	useEffect(() => {
+	const handlePopoverBlur = (e: FocusEvent) => {
+		if (e.relatedTarget === document.activeElement) {
+			bubbleSurfaceRef.current?.focus();
+		}
+	};
+
+	useLayoutEffect(() => {
 		if (!editor) return;
+
+		if (open) {
+			if (bubbleSurfaceRef.current) {
+				bubbleSurfaceRef.current.focus();
+			}
+		}
 
 		if (!open) {
 			removeAIHighlight(editor);
@@ -397,6 +411,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	return (
 		<EditorBubble
+			ref={bubbleSurfaceRef}
 			className={cn("PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames)}
 			options={{
 				placement: "bottom-start",
@@ -407,6 +422,15 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 					onOpenChange(false);
 					removeAIHighlight(editor);
+
+					bubbleSurfaceRef.current?.removeEventListener("blur", handlePopoverBlur);
+				},
+				onShow() {
+					if (bubbleSurfaceRef.current) {
+						bubbleSurfaceRef.current.focus();
+
+						bubbleSurfaceRef.current?.addEventListener("blur", handlePopoverBlur);
+					}
 				},
 			}}
 		>

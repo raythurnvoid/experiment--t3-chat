@@ -1,0 +1,49 @@
+@layer common_components {
+	.MySpinner {
+		--MySpinner-size: 1em;
+		--MySpinner-color: currentColor;
+		--MySpinner-duration: 1.4s;
+
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: var(--MySpinner-size);
+		height: var(--MySpinner-size);
+		color: var(--MySpinner-color);
+	}
+
+	.MySpinner-circle {
+		width: 100%;
+		height: 100%;
+		animation: MySpinner-rotate var(--MySpinner-duration) linear infinite;
+	}
+
+	.MySpinner-path {
+		stroke-dasharray: 1, 200;
+		stroke-dashoffset: 0;
+		stroke-linecap: round;
+		animation: MySpinner-dash var(--MySpinner-duration) ease-in-out infinite;
+	}
+
+	@keyframes MySpinner-rotate {
+		100% {
+			transform: rotate(360deg);
+		}
+	}
+
+	@keyframes MySpinner-dash {
+		0% {
+			stroke-dasharray: 1, 200;
+			stroke-dashoffset: 0;
+		}
+		50% {
+			stroke-dasharray: 89, 200;
+			stroke-dashoffset: -35px;
+		}
+		100% {
+			stroke-dasharray: 89, 200;
+			stroke-dashoffset: -124px;
+		}
+	}
+}
+
