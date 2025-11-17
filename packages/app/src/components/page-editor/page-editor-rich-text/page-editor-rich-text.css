@@ -224,11 +224,4 @@
 		width: 20px;
 		height: 20px;
 	}
-
-	.PageEditorRichTextToolbar,
-	.PageEditorRichTextBubble {
-		.MySeparator {
-			margin-block: 4px;
-		}
-	}
 }

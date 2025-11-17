@@ -14,7 +14,7 @@ import {
 	WrapText,
 } from "lucide-react";
 import { useEditor, addAIHighlight, getPrevText } from "novel";
-import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { app_fetch_main_api_url } from "../../../../lib/fetch.ts";
@@ -30,98 +30,62 @@ import {
 } from "@/components/my-combobox.tsx";
 import { MySeparator } from "@/components/my-separator.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
 
-// #region AISelector
-export type AISelector_ClassNames = "AISelector" | "AISelector-container";
-
-export type AISelector_Props = {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-};
-
-export function AISelector(props: AISelector_Props) {
-	const { onOpenChange } = props;
-	const { editor } = useEditor();
-	const [inputValue, setInputValue] = useState("");
-
-	const { completion, complete, isLoading } = useCompletion({
-		api: app_fetch_main_api_url("/api/ai-docs-temp/contextual-prompt"),
-		fetch: async (input, requestInit) => {
-			const response = await fetch(input, requestInit);
-			if (response.status === 429) {
-				toast.error("You have reached your request limit for the day.");
-				return response;
-			}
-			return response;
+const OPTIONS = {
+	transform: [
+		{
+			value: "improve",
+			label: "Improve writing",
+			Icon: RefreshCcwDot,
 		},
-		onError: (e) => {
-			toast.error(e.message);
+		{
+			value: "fix",
+			label: "Fix grammar",
+			Icon: CheckCheck,
 		},
-	});
+		{
+			value: "shorter",
+			label: "Make shorter",
+			Icon: ArrowDownWideNarrow,
+		},
+		{
+			value: "longer",
+			label: "Make longer",
+			Icon: WrapText,
+		},
+	],
+	continue: [
+		{
+			value: "continue",
+			label: "Continue writing",
+			Icon: StepForward,
+		},
+	],
+} as const;
 
-	const hasCompletion = completion.length > 0;
+type GenerationOptionSelectable = "improve" | "fix" | "shorter" | "longer" | "continue";
 
-	return (
-		<MyCombobox value={inputValue} setValue={setInputValue} open={true}>
-			<div className={cn("AISelector-container" satisfies AISelector_ClassNames)}>
-				{hasCompletion && <AISelector.CompletionPreview completion={completion} />}
-
-				{isLoading && <AISelector.LoadingState />}
-
-				{!isLoading && (
-					<>
-						<AISelector.InputArea
-							hasCompletion={hasCompletion}
-							inputValue={inputValue}
-							setInputValue={setInputValue}
-							completion={completion}
-							complete={complete}
-							editor={editor}
-						/>
-						{hasCompletion ? (
-							<MyComboboxList>
-								<AISelector.CompletionActions
-									completion={completion}
-									onDiscard={() => {
-										if (!editor) {
-											return;
-										}
-
-										editor.chain().unsetHighlight().focus().run();
-										onOpenChange(false);
-									}}
-								/>
-							</MyComboboxList>
-						) : (
-							<MyComboboxList>
-								<AISelector.OptionList onSelect={(value, option) => complete(value, { body: { option } })} />
-							</MyComboboxList>
-						)}
-					</>
-				)}
-			</div>
-		</MyCombobox>
-	);
-}
-// #endregion AISelector
+type GenerationOption = GenerationOptionSelectable | "zap";
 
 // #region CompletionPreview
-export type AISelectorCompletionPreview_ClassNames =
-	| "AISelectorCompletionPreview"
-	| "AISelectorCompletionPreview-wrapper"
-	| "AISelectorCompletionPreview-content";
+export type AiSelectorCompletionPreview_ClassNames =
+	| "AiSelectorCompletionPreview"
+	| "AiSelectorCompletionPreview-wrapper"
+	| "AiSelectorCompletionPreview-content";
 
-export type AISelectorCompletionPreview_Props = {
+export type AiSelectorCompletionPreview_Props = {
 	completion: string;
 };
 
-function AISelectorCompletionPreview(props: AISelectorCompletionPreview_Props) {
+function AiSelectorCompletionPreview(props: AiSelectorCompletionPreview_Props) {
 	const { completion } = props;
 
 	return (
-		<div className={cn("AISelectorCompletionPreview-wrapper" satisfies AISelectorCompletionPreview_ClassNames)}>
-			<div className={cn("AISelectorCompletionPreview-content" satisfies AISelectorCompletionPreview_ClassNames)}>
+		<div className={cn("AiSelectorCompletionPreview-wrapper" satisfies AiSelectorCompletionPreview_ClassNames)}>
+			<div className={cn("AiSelectorCompletionPreview-content" satisfies AiSelectorCompletionPreview_ClassNames)}>
 				<Markdown>{completion}</Markdown>
 			</div>
 		</div>
@@ -130,19 +94,19 @@ function AISelectorCompletionPreview(props: AISelectorCompletionPreview_Props) {
 // #endregion CompletionPreview
 
 // #region LoadingState
-export type AISelectorLoadingState_ClassNames =
-	| "AISelectorLoadingState"
-	| "AISelectorLoadingState-icon"
-	| "AISelectorLoadingState-loader";
+export type AiSelectorLoadingState_ClassNames =
+	| "AiSelectorLoadingState"
+	| "AiSelectorLoadingState-icon"
+	| "AiSelectorLoadingState-loader";
 
-export type AISelectorLoadingState_Props = {};
+export type AiSelectorLoadingState_Props = {};
 
-function AISelectorLoadingState(props: AISelectorLoadingState_Props) {
+function AiSelectorLoadingState(props: AiSelectorLoadingState_Props) {
 	return (
-		<div className={cn("AISelectorLoadingState" satisfies AISelectorLoadingState_ClassNames)}>
-			<Sparkles className={cn("AISelectorLoadingState-icon" satisfies AISelectorLoadingState_ClassNames)} />
+		<div className={cn("AiSelectorLoadingState" satisfies AiSelectorLoadingState_ClassNames)}>
+			<Sparkles className={cn("AiSelectorLoadingState-icon" satisfies AiSelectorLoadingState_ClassNames)} />
 			AI is thinking
-			<div className={cn("AISelectorLoadingState-loader" satisfies AISelectorLoadingState_ClassNames)}>
+			<div className={cn("AiSelectorLoadingState-loader" satisfies AiSelectorLoadingState_ClassNames)}>
 				<Loader />
 			</div>
 		</div>
@@ -151,262 +115,342 @@ function AISelectorLoadingState(props: AISelectorLoadingState_Props) {
 // #endregion LoadingState
 
 // #region InputArea
-export type AISelectorInputArea_ClassNames =
-	| "AISelectorInputArea"
-	| "AISelectorInputArea-form"
-	| "AISelectorInputArea-input"
-	| "AISelectorInputArea-control";
+export type AiSelectorInputArea_ClassNames =
+	| "AiSelectorInputArea"
+	| "AiSelectorInputArea-input"
+	| "AiSelectorInputArea-control";
 
-export type AISelectorInputArea_Props = {
-	hasCompletion: boolean;
-	inputValue: string;
-	setInputValue: (value: string) => void;
-	completion: string;
-	complete: (prompt: string, options?: any) => Promise<any>;
-	editor: ReturnType<typeof useEditor>["editor"];
+export type AiSelectorInputArea_Props = {
+	placeholder: string;
 };
 
-function AISelectorInputArea(props: AISelectorInputArea_Props) {
-	const { hasCompletion, inputValue, setInputValue, completion, complete, editor } = props;
-
-	const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-		e.preventDefault();
-
-		if (!editor) {
-			return;
-		}
-
-		if (completion)
-			return complete(completion, {
-				body: { option: "zap", command: inputValue },
-			}).then(() => setInputValue(""));
-
-		const slice = editor.state.selection.content();
-		const text = (editor.storage.markdown as any).serializer.serialize(slice.content);
-
-		complete(text, {
-			body: { option: "zap", command: inputValue },
-		})
-			.then(() => setInputValue(""))
-			.catch((e) => {
-				toast.error(e.message);
-			});
-	};
+function AiSelectorInputArea(props: AiSelectorInputArea_Props) {
+	const { placeholder } = props;
 
 	return (
-		<div className={cn("AISelectorInputArea" satisfies AISelectorInputArea_ClassNames)}>
-			<form onSubmit={handleSubmit} className={cn("AISelectorInputArea-form" satisfies AISelectorInputArea_ClassNames)}>
-				<MyComboboxInput className={cn("AISelectorInputArea-input" satisfies AISelectorInputArea_ClassNames)}>
-					<MyComboboxInputBox />
-					<MyComboboxInputArea>
-						<MyComboboxInputControl
-							className={cn("AISelectorInputArea-control" satisfies AISelectorInputArea_ClassNames)}
-							autoFocus
-							autoSelect={false}
-							placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
-							onFocus={() => {
-								if (!editor) {
-									return;
-								}
-
-								addAIHighlight(editor);
-							}}
-							onChange={(e) => {
-								setInputValue(e.target.value);
-							}}
-						/>
-					</MyComboboxInputArea>
-					<MyIconButton type="submit" variant="default">
-						<MyIconButtonIcon>
-							<ArrowUp />
-						</MyIconButtonIcon>
-					</MyIconButton>
-				</MyComboboxInput>
-			</form>
+		<div className={cn("AiSelectorInputArea" satisfies AiSelectorInputArea_ClassNames)}>
+			<MyComboboxInput className={cn("AiSelectorInputArea-input" satisfies AiSelectorInputArea_ClassNames)}>
+				<MyComboboxInputBox />
+				<MyComboboxInputArea>
+					<MyComboboxInputControl
+						className={cn("AiSelectorInputArea-control" satisfies AiSelectorInputArea_ClassNames)}
+						autoSelect={false}
+						placeholder={placeholder}
+						autoFocus
+					/>
+				</MyComboboxInputArea>
+				<MyIconButton type="submit" variant="default">
+					<MyIconButtonIcon>
+						<ArrowUp />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</MyComboboxInput>
 		</div>
 	);
 }
 // #endregion InputArea
 
-// #region CompletionActions
-export type AISelectorCompletionActions_ClassNames =
-	| "AISelectorCompletionActions-item"
-	| "AISelectorCompletionActions-icon";
+// #region GenerationActions
+export type AiSelectorGenerationActions_ClassNames = "AiSelectorGenerationActions" | "AiSelectorGenerationActions-icon";
 
-export type AISelectorCompletionActions_Props = {
-	completion: string;
+export type AiSelectorGenerationActions_Props = {
+	onReplaceSelection: () => void;
+	onInsertBelow: () => void;
 	onDiscard: () => void;
 };
 
-function AISelectorCompletionActions(props: AISelectorCompletionActions_Props) {
-	const { completion, onDiscard } = props;
-	const { editor } = useEditor();
+function AiSelectorGenerationActions(props: AiSelectorGenerationActions_Props) {
+	const { onReplaceSelection, onInsertBelow, onDiscard } = props;
 
 	return (
-		<>
-			<MyComboboxGroup>
-				<MyComboboxItem
-					className={cn("AISelectorCompletionActions-item" satisfies AISelectorCompletionActions_ClassNames)}
-					value="replace"
-					hideOnClick={false}
-					setValueOnClick={false}
-					onClick={() => {
-						if (!editor) {
-							return;
-						}
-
-						const selection = editor.view.state.selection;
-
-						editor
-							.chain()
-							.focus()
-							.insertContentAt(
-								{
-									from: selection.from,
-									to: selection.to,
-								},
-								completion,
-							)
-							.run();
-					}}
-				>
-					<Check className={cn("AISelectorCompletionActions-icon" satisfies AISelectorCompletionActions_ClassNames)} />
-					Replace selection
-				</MyComboboxItem>
-				<MyComboboxItem
-					className={cn("AISelectorCompletionActions-item" satisfies AISelectorCompletionActions_ClassNames)}
-					value="insert"
-					hideOnClick={false}
-					setValueOnClick={false}
-					onClick={() => {
-						if (!editor) {
-							return;
-						}
-
-						const selection = editor.view.state.selection;
-						editor
-							.chain()
-							.focus()
-							.insertContentAt(selection.to + 1, completion)
-							.run();
-					}}
-				>
+		<div className={cn("AiSelectorGenerationActions" satisfies AiSelectorGenerationActions_ClassNames)}>
+			<MyButton onClick={onReplaceSelection} variant="outline">
+				<MyButtonIcon>
+					<Check className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)} />
+				</MyButtonIcon>
+				Replace selection
+			</MyButton>
+			<MyButton onClick={onInsertBelow} variant="outline">
+				<MyButtonIcon>
 					<TextQuote
-						className={cn("AISelectorCompletionActions-icon" satisfies AISelectorCompletionActions_ClassNames)}
+						className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)}
 					/>
-					Insert below
-				</MyComboboxItem>
-			</MyComboboxGroup>
-			<MySeparator />
-
-			<MyComboboxGroup>
-				<MyComboboxItem
-					onClick={onDiscard}
-					value="thrash"
-					hideOnClick={false}
-					setValueOnClick={false}
-					className={cn("AISelectorCompletionActions-item" satisfies AISelectorCompletionActions_ClassNames)}
-				>
+				</MyButtonIcon>
+				Insert below
+			</MyButton>
+			<MyButton onClick={onDiscard} variant="ghost">
+				<MyButtonIcon>
 					<TrashIcon
-						className={cn("AISelectorCompletionActions-icon" satisfies AISelectorCompletionActions_ClassNames)}
+						className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)}
 					/>
-					Discard
-				</MyComboboxItem>
-			</MyComboboxGroup>
-		</>
+				</MyButtonIcon>
+				Discard
+			</MyButton>
+		</div>
 	);
 }
-// #endregion CompletionActions
+// #endregion GenerationActions
 
-// #region OptionList
-export type AISelectorOptionList_ClassNames = "AISelectorOptionList-item" | "AISelectorOptionList-icon";
+// #region OptionItem
+export type AiSelectorOptionItem_ClassNames = "AiSelectorOptionItem" | "AiSelectorOptionItem-icon";
 
-const options = [
-	{
-		value: "improve",
-		label: "Improve writing",
-		icon: RefreshCcwDot,
-	},
-	{
-		value: "fix",
-		label: "Fix grammar",
-		icon: CheckCheck,
-	},
-	{
-		value: "shorter",
-		label: "Make shorter",
-		icon: ArrowDownWideNarrow,
-	},
-	{
-		value: "longer",
-		label: "Make longer",
-		icon: WrapText,
-	},
-] as const;
-
-export type AISelectorOptionList_Props = {
-	onSelect: (value: string, option: string) => void;
+export type AiSelectorOptionItem_Props = {
+	value: GenerationOptionSelectable;
+	label: string;
+	onClick: () => void;
+	icon: ReactNode;
 };
 
-function AISelectorOptionList(props: AISelectorOptionList_Props) {
-	const { onSelect } = props;
-	const { editor } = useEditor();
+function AiSelectorOptionItem(props: AiSelectorOptionItem_Props) {
+	const { value, label, onClick, icon } = props;
 
 	return (
-		<>
-			<MyComboboxGroup heading="Edit or review selection">
-				{options.map((option) => (
-					<MyComboboxItem
-						onClick={() => {
-							if (!editor) {
-								return;
-							}
+		<MyComboboxItem
+			className={cn("AiSelectorOptionItem" satisfies AiSelectorOptionItem_ClassNames)}
+			value={value}
+			hideOnClick={false}
+			setValueOnClick={false}
+			onClick={onClick}
+		>
+			{icon}
+			{label}
+		</MyComboboxItem>
+	);
+}
+// #endregion OptionItem
 
-							const slice = editor.state.selection.content();
-							const text = (editor.storage.markdown as any).serializer.serialize(slice.content);
-							onSelect(text, option.value);
-						}}
-						hideOnClick={false}
-						setValueOnClick={false}
-						className={cn("AISelectorOptionList-item" satisfies AISelectorOptionList_ClassNames)}
+// #region OptionList
+export type AiSelectorOptionList_ClassNames = "AiSelectorOptionList";
+
+export type AiSelectorOptionList_Props = {
+	filter: string;
+	onSelect: (option: GenerationOptionSelectable) => void;
+};
+
+function AiSelectorOptionList(props: AiSelectorOptionList_Props) {
+	const { filter, onSelect } = props;
+
+	const filteredOptions = {
+		transform: OPTIONS.transform.filter((option) => option.label.toLowerCase().includes(filter.toLowerCase())),
+		continue: OPTIONS.continue.filter((option) => option.label.toLowerCase().includes(filter.toLowerCase())),
+	} as const;
+
+	return (
+		<MyComboboxList className={cn("AiSelectorOptionList" satisfies AiSelectorOptionList_ClassNames)}>
+			<MyComboboxGroup heading="Edit or review selection">
+				{filteredOptions.transform.map((option) => (
+					<AiSelectorOptionItem
 						key={option.value}
 						value={option.value}
-					>
-						<option.icon className={cn("AISelectorOptionList-icon" satisfies AISelectorOptionList_ClassNames)} />
-						{option.label}
-					</MyComboboxItem>
+						label={option.label}
+						icon={
+							<MyIcon className={cn("AiSelectorOptionItem-icon" satisfies AiSelectorOptionItem_ClassNames)}>
+								<option.Icon />
+							</MyIcon>
+						}
+						onClick={() => {
+							onSelect(option.value);
+						}}
+					/>
 				))}
 			</MyComboboxGroup>
-			<MySeparator />
-			<MyComboboxGroup heading="Use AI to do more">
-				<MyComboboxItem
-					onClick={() => {
-						if (!editor) {
-							return;
-						}
-
-						const pos = editor.state.selection.from;
-
-						const text = getPrevText(editor, pos);
-						onSelect(text, "continue");
-					}}
-					hideOnClick={false}
-					setValueOnClick={false}
-					value="continue"
-					className={cn("AISelectorOptionList-item" satisfies AISelectorOptionList_ClassNames)}
-				>
-					<StepForward className={cn("AISelectorOptionList-icon" satisfies AISelectorOptionList_ClassNames)} />
-					Continue writing
-				</MyComboboxItem>
-			</MyComboboxGroup>
-		</>
+			{filteredOptions.continue.length > 0 && (
+				<>
+					{filteredOptions.transform.length > 0 && <MySeparator />}
+					<MyComboboxGroup heading="Use AI to do more">
+						{filteredOptions.continue.map((option) => (
+							<AiSelectorOptionItem
+								key={option.value}
+								value={option.value}
+								label={option.label}
+								icon={
+									<MyIcon className={cn("AiSelectorOptionItem-icon" satisfies AiSelectorOptionItem_ClassNames)}>
+										<option.Icon />
+									</MyIcon>
+								}
+								onClick={() => {
+									onSelect(option.value);
+								}}
+							/>
+						))}
+					</MyComboboxGroup>
+				</>
+			)}
+		</MyComboboxList>
 	);
 }
 // #endregion OptionList
 
-// Assign compound components
-AISelector.CompletionPreview = AISelectorCompletionPreview;
-AISelector.LoadingState = AISelectorLoadingState;
-AISelector.InputArea = AISelectorInputArea;
-AISelector.CompletionActions = AISelectorCompletionActions;
-AISelector.OptionList = AISelectorOptionList;
+// #region AiSelector
+export type AiSelector_ClassNames = "AiSelector" | "AiSelector-container";
+
+export type AiSelector_Props = {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+};
+
+export function AiSelector(props: AiSelector_Props) {
+	const { onOpenChange } = props;
+	const { editor } = useEditor();
+	const [inputValue, setInputValue] = useState("");
+	const formRef = useRef<HTMLFormElement>(null);
+
+	const completionInst = useCompletion({
+		api: app_fetch_main_api_url("/api/ai-docs-temp/contextual-prompt"),
+		fetch: async (input, requestInit) => {
+			const response = await fetch(input, requestInit);
+			if (response.status === 429) {
+				throw new Error("You have reached your request limit for the day.");
+			}
+			return response;
+		},
+		onError: (e) => {
+			toast.error(e.message);
+		},
+	});
+
+	const hasCompletion = completionInst.completion.length > 0;
+
+	function triggerGeneration(args: { text: string; option: GenerationOption; command?: string }) {
+		if (!editor || !editor.markdown) {
+			return;
+		}
+
+		completionInst
+			.complete(args.text, {
+				body: { option: args.option, command: args.command },
+			})
+			.catch((e) => {
+				console.error(e);
+				toast.error(e.message);
+			});
+	}
+
+	const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+		e.preventDefault();
+
+		if (!editor || !editor.markdown) {
+			return;
+		}
+
+		if (completionInst.completion) {
+			return completionInst.complete(completionInst.completion, {
+				body: { option: "zap", command: inputValue },
+			});
+		}
+
+		const slice = editor.state.selection.content();
+		const text = editor.markdown.serialize(slice.content.toJSON());
+
+		triggerGeneration({ text, option: "zap", command: inputValue });
+
+		setInputValue("");
+	};
+
+	const handleOptionSelect = (option: GenerationOptionSelectable) => {
+		if (!editor || !editor.markdown) {
+			return;
+		}
+
+		switch (option) {
+			case "continue": {
+				const pos = editor.state.selection.from;
+				const text = getPrevText(editor, pos);
+				triggerGeneration({ text, option });
+				break;
+			}
+			default: {
+				const slice = editor.state.selection.content();
+				const text = editor.markdown.serialize(slice.content.toJSON());
+				triggerGeneration({ text, option });
+				break;
+			}
+		}
+
+		setInputValue("");
+	};
+
+	const handleReplaceSelection = () => {
+		if (!editor) {
+			return;
+		}
+
+		const selection = editor.view.state.selection;
+
+		editor
+			.chain()
+			.focus()
+			.insertContentAt(
+				{
+					from: selection.from,
+					to: selection.to,
+				},
+				completionInst.completion,
+			)
+			.run();
+	};
+
+	const handleInsertBelow = () => {
+		if (!editor) {
+			return;
+		}
+
+		const selection = editor.view.state.selection;
+		editor
+			.chain()
+			.focus()
+			.insertContentAt(selection.to + 1, completionInst.completion)
+			.run();
+	};
+
+	const handleDiscard = () => {
+		if (!editor) {
+			return;
+		}
+
+		editor.chain().unsetHighlight().focus().run();
+		onOpenChange(false);
+	};
+
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+
+		addAIHighlight(editor);
+	}, [editor]);
+
+	return (
+		<MyCombobox value={inputValue} setValue={setInputValue} open={true}>
+			{editor && (
+				<form ref={formRef} onSubmit={handleSubmit}>
+					<div className={cn("AiSelector-container" satisfies AiSelector_ClassNames)}>
+						{hasCompletion && <AiSelectorCompletionPreview completion={completionInst.completion} />}
+
+						{completionInst.isLoading && <AiSelectorLoadingState />}
+
+						{!completionInst.isLoading && (
+							<>
+								<AiSelectorInputArea
+									placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
+								/>
+								{hasCompletion ? (
+									<>
+										<AiSelectorGenerationActions
+											onReplaceSelection={handleReplaceSelection}
+											onInsertBelow={handleInsertBelow}
+											onDiscard={handleDiscard}
+										/>
+									</>
+								) : (
+									<AiSelectorOptionList filter={inputValue} onSelect={handleOptionSelect} />
+								)}
+							</>
+						)}
+					</div>
+				</form>
+			)}
+		</MyCombobox>
+	);
+}
+// #endregion AiSelector

@@ -1,96 +1,94 @@
 @layer common_components {
-	.AISelector-container {
+	.AiSelector-container {
 		width: 350px;
 	}
 
-	.AISelectorCompletionPreview-wrapper {
+	.AiSelectorCompletionPreview-wrapper {
 		display: flex;
 		max-height: 400px;
 	}
 
-	.AISelectorCompletionPreview-content {
+	.AiSelectorCompletionPreview-content {
 		overflow-x: auto;
 		padding: 8px 16px;
 		font-size: 0.875rem;
 		line-height: 1.5;
 		color: var(--color-fg-08);
-	}
 
-	.AISelectorCompletionPreview-content p {
-		margin: 0;
-	}
-
-	.AISelectorCompletionPreview-content p + p {
-		margin-top: 0.5em;
-	}
-
-	.AISelectorCompletionPreview-content h1,
-	.AISelectorCompletionPreview-content h2,
-	.AISelectorCompletionPreview-content h3,
-	.AISelectorCompletionPreview-content h4,
-	.AISelectorCompletionPreview-content h5,
-	.AISelectorCompletionPreview-content h6 {
-		margin-top: 0;
-		margin-bottom: 0.5em;
-		font-weight: 600;
-	}
-
-	.AISelectorCompletionPreview-content ul,
-	.AISelectorCompletionPreview-content ol {
-		margin: 0;
-		padding-left: 1.5em;
-	}
-
-	.AISelectorCompletionPreview-content code {
-		font-size: 0.875em;
-		padding: 0.125em 0.25em;
-		border-radius: 0.25em;
-		background: var(--color-base-2-03);
-		color: var(--color-fg-08);
-	}
-
-	.AISelectorCompletionPreview-content pre {
-		padding: 0.75em;
-		border-radius: 0.375em;
-		background: var(--color-base-2-02);
-		color: var(--color-fg-08);
-		overflow-x: auto;
-	}
-
-	.AISelectorCompletionPreview-content pre code {
-		background: transparent;
-		padding: 0;
-	}
-
-	.AISelectorCompletionPreview-content blockquote {
-		margin: 0;
-		padding-left: 1em;
-		border-left: 0.25em solid var(--color-base-2-05);
-		color: var(--color-fg-06);
-	}
-
-	@media (prefers-color-scheme: dark) {
-		.AISelectorCompletionPreview-content {
-			color: var(--color-fg-11);
+		p {
+			margin: 0;
 		}
 
-		.AISelectorCompletionPreview-content code {
-			background: var(--color-base-1-05);
-			color: var(--color-fg-10);
+		p + p {
+			margin-top: 0.5em;
 		}
 
-		.AISelectorCompletionPreview-content pre {
-			background: var(--color-base-1-04);
-			color: var(--color-fg-10);
+		h1,
+		h2,
+		h3,
+		h4,
+		h5,
+		h6 {
+			margin-top: 0;
+			margin-bottom: 0.5em;
+			font-weight: 600;
 		}
 
-		.AISelectorCompletionPreview-content blockquote {
-			border-left-color: var(--color-base-1-07);
+		ul,
+		ol {
+			margin: 0;
+			padding-left: 1.5em;
+		}
+
+		code {
+			font-size: 0.875em;
+			padding: 0.125em 0.25em;
+			border-radius: 0.25em;
+			background: var(--color-base-2-03);
 			color: var(--color-fg-08);
 		}
+
+		pre {
+			padding: 0.75em;
+			border-radius: 0.375em;
+			background: var(--color-base-2-02);
+			color: var(--color-fg-08);
+			overflow-x: auto;
+
+			code {
+				background: transparent;
+				padding: 0;
+			}
+		}
+
+		blockquote {
+			margin: 0;
+			padding-left: 1em;
+			border-left: 0.25em solid var(--color-base-2-05);
+			color: var(--color-fg-06);
+		}
+
+		@media (prefers-color-scheme: dark) {
+			color: var(--color-fg-11);
+
+			code {
+				background: var(--color-base-1-05);
+				color: var(--color-fg-10);
+			}
+
+			pre {
+				background: var(--color-base-1-04);
+				color: var(--color-fg-10);
+			}
+
+			blockquote {
+				border-left-color: var(--color-base-1-07);
+				color: var(--color-fg-08);
+			}
+		}
 	}
 
-	.AISelectorLoadingState {
+	.AiSelectorLoadingState {
 		display: flex;
 		align-items: center;
 		height: 48px;
@@ -102,24 +100,24 @@
 		color: var(--color-accent-alt-05);
 	}
 
-	.AISelectorLoadingState-icon {
+	.AiSelectorLoadingState-icon {
 		margin-right: 8px;
 		height: 16px;
 		width: 16px;
 		flex-shrink: 0;
 	}
 
-	.AISelectorLoadingState-loader {
+	.AiSelectorLoadingState-loader {
 		margin-top: 4px;
 		margin-left: 8px;
 	}
 
-	.AISelectorInputArea-form {
+	.AiSelectorInputArea-form {
 		display: flex;
 		width: 100%;
 	}
 
-	.AISelectorInputArea-input {
+	.AiSelectorInputArea-input {
 		flex: 1;
 		position: relative;
 
@@ -132,31 +130,36 @@
 		margin: -1px -1px 0 -1px;
 	}
 
-	.AISelectorCompletionActions-item {
+	.AiSelectorGenerationActions {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		padding: 8px;
+	}
+
+	.AiSelectorGenerationActions-icon {
+		height: 16px;
+		width: 16px;
+	}
+
+	.AiSelectorOptionList {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 8px;
+	}
+
+	.AiSelectorOptionItem {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 		padding-left: 16px;
 		padding-right: 16px;
-	}
 
-	.AISelectorCompletionActions-icon {
-		height: 16px;
-		width: 16px;
-		color: var(--color-fg-06);
-	}
-
-	.AISelectorOptionList-item {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding-left: 16px;
-		padding-right: 16px;
-	}
-
-	.AISelectorOptionList-icon {
-		height: 16px;
-		width: 16px;
-		color: var(--color-accent-alt-05);
+		.MyIcon {
+			height: 16px;
+			width: 16px;
+		}
 	}
 }
