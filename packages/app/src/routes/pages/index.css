@@ -14,11 +14,8 @@
 	}
 
 	.RoutePages-editor-panel {
-		position: relative;
-		display: flex;
+		contain: strict;
 		height: 100%;
-		flex-direction: column;
-		overflow: hidden;
 		background-color: hsl(var(--background));
 
 		.RoutePages-editor-panel-controls {
@@ -48,10 +45,7 @@
 		}
 
 		.RoutePages-editor-content {
-			display: flex;
-			min-height: 0;
-			flex: 1 1 0%;
-			overflow: hidden;
+			height: 100%;
 		}
 	}
 
