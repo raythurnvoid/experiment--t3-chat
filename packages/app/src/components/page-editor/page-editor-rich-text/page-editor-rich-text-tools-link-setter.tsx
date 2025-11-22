@@ -9,8 +9,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
 import { cn } from "@/lib/utils.ts";
 
-// eslint-disable-next-line react-refresh/only-export-components
-export function isValidUrl(url: string) {
+function isValidUrl(url: string) {
 	try {
 		new URL(url);
 		return true;
@@ -18,8 +17,8 @@ export function isValidUrl(url: string) {
 		return false;
 	}
 }
-// eslint-disable-next-line react-refresh/only-export-components
-export function getUrlFromString(str: string) {
+
+function getUrlFromString(str: string) {
 	if (isValidUrl(str)) return str;
 	try {
 		if (str.includes(".") && !str.includes(" ")) {
