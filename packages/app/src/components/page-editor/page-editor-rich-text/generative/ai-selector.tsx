@@ -11,7 +11,7 @@ import {
 	TrashIcon,
 	WrapText,
 } from "lucide-react";
-import { useEditor, addAIHighlight, getPrevText } from "novel";
+import { useEditor, addAIHighlight } from "novel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
@@ -346,7 +346,9 @@ export function AiSelector(props: AiSelector_Props) {
 		switch (option) {
 			case "continue": {
 				const pos = editor.state.selection.from;
-				const text = getPrevText(editor, pos);
+				const slice = editor.state.doc.slice(0, pos);
+				const json = slice.content.toJSON();
+				const text = editor.markdown.serialize(json);
 				triggerGeneration({ text, option });
 				break;
 			}
