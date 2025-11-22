@@ -72,11 +72,12 @@
 		}
 
 		@media (prefers-color-scheme: dark) {
-			background: var(--gray-100);
-			border-color: var(--input);
+			background: var(--color-base-1-05);
+			border-color: var(--color-base-1-09);
 
 			&:hover {
-				background: var(--gray-100);
+				background: var(--color-base-1-06);
+				color: var(--color-fg-11);
 			}
 		}
 	}
