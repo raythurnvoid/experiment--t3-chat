@@ -68,7 +68,7 @@ export function MyButton(props: MyButton_Props) {
 	);
 }
 
-type MyButtonIcon_ClassNames = "MyButtonIcon";
+export type MyButtonIcon_ClassNames = "MyButtonIcon";
 
 export type MyButtonIcon_Props = ComponentPropsWithRef<"span"> & {
 	ref?: Ref<HTMLSpanElement>;

@@ -13,12 +13,12 @@
 		width: 100%;
 	}
 
-	.PageEditorRichTextInner-editor-container {
+	.PageEditorRichTextInner-editor-wrapper {
 		height: 100%;
 		width: 100%;
 	}
 
-	.PageEditorRichTextInner-editor-wrapper {
+	.PageEditorRichTextInner-editor-container {
 		height: 100%;
 		width: 100%;
 	}
@@ -153,6 +153,14 @@
 		position: absolute;
 		right: 0;
 		margin-right: 16px;
+	}
+
+	.PageEditorRichTextDragHandle {
+		cursor: grab;
+
+		padding: 0px;
+		height: 1.5rem;
+		width: 1.5rem;
 	}
 
 	.PageEditorRichTextToolbar {

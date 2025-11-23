@@ -1,11 +1,12 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
 import {
 	EditorContent,
 	EditorRoot,
 	useEditor,
 	type EditorContentProps,
 	DragHandle,
+	type DragHandleProps,
 	ImageResizer,
 	handleCommandNavigation,
 	handleImageDrop,
@@ -39,9 +40,15 @@ import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import {
+	MyButton,
+	MyButtonIcon,
+	type MyButton_ClassNames,
+	type MyButtonIcon_ClassNames,
+} from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
-import { Sparkles } from "lucide-react";
+import { Sparkles, GripVertical } from "lucide-react";
+import { offset } from "@floating-ui/dom";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -92,7 +99,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 }
 // #endregion PageEditorRichText
 
-// #region PageEditorRichTextInner
+// #region Inner
 type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner"
 	| "PageEditorRichTextInner-visible"
@@ -232,19 +239,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				)}
 			>
 				{headerSlot}
-				{editor && (
-					<DragHandle editor={editor}>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							fill="none"
-							viewBox="0 0 24 24"
-							strokeWidth="1.5"
-							stroke="currentColor"
-						>
-							<path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
-						</svg>
-					</DragHandle>
-				)}
+				{editor && <PageEditorRichTextDragHandle editor={editor} />}
 				<EditorContent
 					className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
 					editorContainerProps={{
@@ -288,9 +283,70 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		</>
 	);
 }
-// #endregion PageEditorRichTextInner
+// #endregion Inner
 
-// #region PageEditorRichTextToolbar
+// #region DragHandle
+type PageEditorRichTextDragHandle_ClassNames = "PageEditorRichTextDragHandle";
+
+type PageEditorRichTextDragHandle_Props = {
+	editor: Editor;
+};
+
+function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle_Props) {
+	const { editor } = props;
+
+	const currentNodeRef = useRef<Parameters<NonNullable<DragHandleProps["onNodeChange"]>>[0]["node"]>(null);
+
+	const computePositionConfig = useMemo<DragHandleProps["computePositionConfig"]>(() => {
+		return {
+			middleware: [
+				// eslint-disable-next-line react-hooks/refs
+				offset((state) => {
+					const nodeType = currentNodeRef.current?.type.name;
+
+					// Headings have different line-heights and need vertical centering
+					// h1: line-height 2, h2-h5: line-height 1.6, h6: line-height 1.4
+					// Paragraphs and other nodes are fine with default positioning (top-aligned)
+					if (nodeType === "heading") {
+						const referenceHeight = state.rects.reference.height;
+						// Center vertically by offsetting by half the reference height
+						return {
+							mainAxis: 0,
+							crossAxis: referenceHeight / 2 - 10,
+						};
+					}
+
+					// For paragraphs and other nodes, no offset (top-aligned)
+					return { mainAxis: 0, crossAxis: 1 };
+				}),
+			],
+		};
+	}, []);
+
+	const handleNodeChange: DragHandleProps["onNodeChange"] = ({ node }) => {
+		currentNodeRef.current = node;
+	};
+
+	return (
+		<DragHandle
+			editor={editor}
+			className={cn(
+				"PageEditorRichTextDragHandle" satisfies PageEditorRichTextDragHandle_ClassNames,
+				"MyButton" satisfies MyButton_ClassNames,
+				"MyButton-variant-ghost-secondary" satisfies MyButton_ClassNames,
+			)}
+			onNodeChange={handleNodeChange}
+			computePositionConfig={computePositionConfig}
+		>
+			<MyButtonIcon className={cn("MyButtonIcon" satisfies MyButtonIcon_ClassNames)}>
+				<GripVertical />
+			</MyButtonIcon>
+		</DragHandle>
+	);
+}
+// #endregion DragHandle
+
+// #region Toolbar
 export type PageEditorRichTextToolbar_ClassNames =
 	| "PageEditorRichTextToolbar"
 	| "PageEditorRichTextToolbar-scrollable-area"
@@ -361,9 +417,9 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 		</div>
 	);
 }
-// #endregion PageEditorRichTextToolbar
+// #endregion Toolbar
 
-// #region PageEditorRichTextBubble
+// #region Bubble
 
 // Derived from Liveblocks:
 // liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
@@ -451,4 +507,4 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		</EditorBubble>
 	);
 }
-// #endregion PageEditorRichTextBubble
+// #endregion Bubble
