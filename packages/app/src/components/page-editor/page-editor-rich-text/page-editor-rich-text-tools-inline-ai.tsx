@@ -11,7 +11,7 @@ import {
 	TrashIcon,
 	WrapText,
 } from "lucide-react";
-import { useEditor, addAIHighlight } from "novel";
+import { useEditor } from "novel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
@@ -459,7 +459,7 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 			return;
 		}
 
-		editor.chain().unsetHighlight().focus().run();
+		editor.chain().clearAIHighlight().focus().run();
 		onOpenChange(false);
 	};
 
@@ -468,7 +468,7 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 			return;
 		}
 
-		addAIHighlight(editor);
+		editor.chain().setAIHighlight().run();
 	}, [editor]);
 
 	return (

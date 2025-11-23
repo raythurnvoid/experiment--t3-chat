@@ -143,6 +143,10 @@
 			text-align: start;
 			text-align-last: start;
 		}
+
+		[data-ai-highlight] {
+			background-color: var(--color-base-1-10);
+		}
 	}
 
 	.PageEditorRichTextInner-threads-container {

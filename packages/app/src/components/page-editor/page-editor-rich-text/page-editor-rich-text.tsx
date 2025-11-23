@@ -11,7 +11,6 @@ import {
 	handleImageDrop,
 	handleImagePaste,
 	EditorBubble,
-	removeAIHighlight,
 } from "novel";
 import { Editor } from "@tiptap/react";
 import { useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
@@ -405,7 +404,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		}
 
 		if (!open) {
-			removeAIHighlight(editor);
+			editor.chain().clearAIHighlight().run();
 		}
 	}, [open]);
 
@@ -421,7 +420,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 					}
 
 					onOpenChange(false);
-					removeAIHighlight(editor);
+					editor.chain().clearAIHighlight().run();
 
 					bubbleSurfaceRef.current?.removeEventListener("blur", handlePopoverBlur);
 				},
