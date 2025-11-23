@@ -1,4 +1,4 @@
-import "./ai-selector.css";
+import "./page-editor-rich-text-tools-inline-ai.css";
 import { useCompletion } from "@ai-sdk/react";
 import {
 	ArrowDownWideNarrow,
@@ -15,7 +15,7 @@ import { useEditor, addAIHighlight } from "novel";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
-import { app_fetch_main_api_url } from "../../../../lib/fetch.ts";
+import { app_fetch_main_api_url } from "../../../lib/fetch.ts";
 import {
 	MyCombobox,
 	MyComboboxInput,
@@ -70,25 +70,39 @@ type GenerationOptionSelectable = "improve" | "fix" | "shorter" | "longer" | "co
 type GenerationOption = GenerationOptionSelectable | "zap";
 
 // #region CompletionPreview
-export type AiSelectorCompletionPreview_ClassNames =
-	| "AiSelectorCompletionPreview"
-	| "AiSelectorCompletionPreview-wrapper"
-	| "AiSelectorCompletionPreview-content"
-	| "AiSelectorCompletionPreview-loader";
+export type PageEditorRichTextToolsInlineAiCompletionPreview_ClassNames =
+	| "PageEditorRichTextToolsInlineAiCompletionPreview"
+	| "PageEditorRichTextToolsInlineAiCompletionPreview-wrapper"
+	| "PageEditorRichTextToolsInlineAiCompletionPreview-content"
+	| "PageEditorRichTextToolsInlineAiCompletionPreview-loader";
 
-export type AiSelectorCompletionPreview_Props = {
+export type PageEditorRichTextToolsInlineAiCompletionPreview_Props = {
 	completion: string;
 	isLoading: boolean;
 };
 
-function AiSelectorCompletionPreview(props: AiSelectorCompletionPreview_Props) {
+function PageEditorRichTextToolsInlineAiCompletionPreview(
+	props: PageEditorRichTextToolsInlineAiCompletionPreview_Props,
+) {
 	const { completion, isLoading } = props;
 
 	return (
-		<div className={cn("AiSelectorCompletionPreview-wrapper" satisfies AiSelectorCompletionPreview_ClassNames)}>
-			<div className={cn("AiSelectorCompletionPreview-content" satisfies AiSelectorCompletionPreview_ClassNames)}>
+		<div
+			className={cn(
+				"PageEditorRichTextToolsInlineAiCompletionPreview-wrapper" satisfies PageEditorRichTextToolsInlineAiCompletionPreview_ClassNames,
+			)}
+		>
+			<div
+				className={cn(
+					"PageEditorRichTextToolsInlineAiCompletionPreview-content" satisfies PageEditorRichTextToolsInlineAiCompletionPreview_ClassNames,
+				)}
+			>
 				{isLoading ? (
-					<div className={cn("AiSelectorCompletionPreview-loader" satisfies AiSelectorCompletionPreview_ClassNames)}>
+					<div
+						className={cn(
+							"PageEditorRichTextToolsInlineAiCompletionPreview-loader" satisfies PageEditorRichTextToolsInlineAiCompletionPreview_ClassNames,
+						)}
+					>
 						<MySpinner />
 						Generating new content&hellip;
 					</div>
@@ -102,26 +116,36 @@ function AiSelectorCompletionPreview(props: AiSelectorCompletionPreview_Props) {
 // #endregion CompletionPreview
 
 // #region InputArea
-export type AiSelectorInputArea_ClassNames =
-	| "AiSelectorInputArea"
-	| "AiSelectorInputArea-input"
-	| "AiSelectorInputArea-control";
+export type PageEditorRichTextToolsInlineAiInputArea_ClassNames =
+	| "PageEditorRichTextToolsInlineAiInputArea"
+	| "PageEditorRichTextToolsInlineAiInputArea-input"
+	| "PageEditorRichTextToolsInlineAiInputArea-control";
 
-export type AiSelectorInputArea_Props = {
+export type PageEditorRichTextToolsInlineAiInputArea_Props = {
 	placeholder: string;
 	disabled: boolean;
 };
 
-function AiSelectorInputArea(props: AiSelectorInputArea_Props) {
+function PageEditorRichTextToolsInlineAiInputArea(props: PageEditorRichTextToolsInlineAiInputArea_Props) {
 	const { placeholder, disabled } = props;
 
 	return (
-		<div className={cn("AiSelectorInputArea" satisfies AiSelectorInputArea_ClassNames)}>
-			<MyComboboxInput className={cn("AiSelectorInputArea-input" satisfies AiSelectorInputArea_ClassNames)}>
+		<div
+			className={cn(
+				"PageEditorRichTextToolsInlineAiInputArea" satisfies PageEditorRichTextToolsInlineAiInputArea_ClassNames,
+			)}
+		>
+			<MyComboboxInput
+				className={cn(
+					"PageEditorRichTextToolsInlineAiInputArea-input" satisfies PageEditorRichTextToolsInlineAiInputArea_ClassNames,
+				)}
+			>
 				<MyComboboxInputBox />
 				<MyComboboxInputArea>
 					<MyComboboxInputControl
-						className={cn("AiSelectorInputArea-control" satisfies AiSelectorInputArea_ClassNames)}
+						className={cn(
+							"PageEditorRichTextToolsInlineAiInputArea-control" satisfies PageEditorRichTextToolsInlineAiInputArea_ClassNames,
+						)}
 						autoSelect={false}
 						placeholder={placeholder}
 						autoFocus={!disabled}
@@ -140,30 +164,44 @@ function AiSelectorInputArea(props: AiSelectorInputArea_Props) {
 // #endregion InputArea
 
 // #region GenerationActions
-export type AiSelectorGenerationActions_ClassNames = "AiSelectorGenerationActions" | "AiSelectorGenerationActions-icon";
+export type PageEditorRichTextToolsInlineAiGenerationActions_ClassNames =
+	| "PageEditorRichTextToolsInlineAiGenerationActions"
+	| "PageEditorRichTextToolsInlineAiGenerationActions-icon";
 
-export type AiSelectorGenerationActions_Props = {
+export type PageEditorRichTextToolsInlineAiGenerationActions_Props = {
 	onReplaceSelection: () => void;
 	onInsertBelow: () => void;
 	onDiscard: () => void;
 	disabled: boolean;
 };
 
-function AiSelectorGenerationActions(props: AiSelectorGenerationActions_Props) {
+function PageEditorRichTextToolsInlineAiGenerationActions(
+	props: PageEditorRichTextToolsInlineAiGenerationActions_Props,
+) {
 	const { onReplaceSelection, onInsertBelow, onDiscard, disabled } = props;
 
 	return (
-		<div className={cn("AiSelectorGenerationActions" satisfies AiSelectorGenerationActions_ClassNames)}>
+		<div
+			className={cn(
+				"PageEditorRichTextToolsInlineAiGenerationActions" satisfies PageEditorRichTextToolsInlineAiGenerationActions_ClassNames,
+			)}
+		>
 			<MyButton onClick={onReplaceSelection} variant="outline" disabled={disabled}>
 				<MyButtonIcon>
-					<Check className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)} />
+					<Check
+						className={cn(
+							"PageEditorRichTextToolsInlineAiGenerationActions-icon" satisfies PageEditorRichTextToolsInlineAiGenerationActions_ClassNames,
+						)}
+					/>
 				</MyButtonIcon>
 				Replace selection
 			</MyButton>
 			<MyButton onClick={onInsertBelow} variant="outline" disabled={disabled}>
 				<MyButtonIcon>
 					<TextQuote
-						className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)}
+						className={cn(
+							"PageEditorRichTextToolsInlineAiGenerationActions-icon" satisfies PageEditorRichTextToolsInlineAiGenerationActions_ClassNames,
+						)}
 					/>
 				</MyButtonIcon>
 				Insert below
@@ -171,7 +209,9 @@ function AiSelectorGenerationActions(props: AiSelectorGenerationActions_Props) {
 			<MyButton onClick={onDiscard} variant="ghost" disabled={disabled}>
 				<MyButtonIcon>
 					<TrashIcon
-						className={cn("AiSelectorGenerationActions-icon" satisfies AiSelectorGenerationActions_ClassNames)}
+						className={cn(
+							"PageEditorRichTextToolsInlineAiGenerationActions-icon" satisfies PageEditorRichTextToolsInlineAiGenerationActions_ClassNames,
+						)}
 					/>
 				</MyButtonIcon>
 				Discard
@@ -182,21 +222,25 @@ function AiSelectorGenerationActions(props: AiSelectorGenerationActions_Props) {
 // #endregion GenerationActions
 
 // #region OptionItem
-export type AiSelectorOptionItem_ClassNames = "AiSelectorOptionItem" | "AiSelectorOptionItem-icon";
+export type PageEditorRichTextToolsInlineAiOptionItem_ClassNames =
+	| "PageEditorRichTextToolsInlineAiOptionItem"
+	| "PageEditorRichTextToolsInlineAiOptionItem-icon";
 
-export type AiSelectorOptionItem_Props = {
+export type PageEditorRichTextToolsInlineAiOptionItem_Props = {
 	value: GenerationOptionSelectable;
 	label: string;
 	onClick: () => void;
 	icon: ReactNode;
 };
 
-function AiSelectorOptionItem(props: AiSelectorOptionItem_Props) {
+function PageEditorRichTextToolsInlineAiOptionItem(props: PageEditorRichTextToolsInlineAiOptionItem_Props) {
 	const { value, label, onClick, icon } = props;
 
 	return (
 		<MyComboboxItem
-			className={cn("AiSelectorOptionItem" satisfies AiSelectorOptionItem_ClassNames)}
+			className={cn(
+				"PageEditorRichTextToolsInlineAiOptionItem" satisfies PageEditorRichTextToolsInlineAiOptionItem_ClassNames,
+			)}
 			value={value}
 			hideOnClick={false}
 			setValueOnClick={false}
@@ -210,14 +254,14 @@ function AiSelectorOptionItem(props: AiSelectorOptionItem_Props) {
 // #endregion OptionItem
 
 // #region OptionList
-export type AiSelectorOptionList_ClassNames = "AiSelectorOptionList";
+export type PageEditorRichTextToolsInlineAiOptionList_ClassNames = "PageEditorRichTextToolsInlineAiOptionList";
 
-export type AiSelectorOptionList_Props = {
+export type PageEditorRichTextToolsInlineAiOptionList_Props = {
 	filter: string;
 	onSelect: (option: GenerationOptionSelectable) => void;
 };
 
-function AiSelectorOptionList(props: AiSelectorOptionList_Props) {
+function PageEditorRichTextToolsInlineAiOptionList(props: PageEditorRichTextToolsInlineAiOptionList_Props) {
 	const { filter, onSelect } = props;
 
 	const filteredOptions = {
@@ -226,15 +270,23 @@ function AiSelectorOptionList(props: AiSelectorOptionList_Props) {
 	} as const;
 
 	return (
-		<MyComboboxList className={cn("AiSelectorOptionList" satisfies AiSelectorOptionList_ClassNames)}>
+		<MyComboboxList
+			className={cn(
+				"PageEditorRichTextToolsInlineAiOptionList" satisfies PageEditorRichTextToolsInlineAiOptionList_ClassNames,
+			)}
+		>
 			<MyComboboxGroup heading="Edit or review selection">
 				{filteredOptions.transform.map((option) => (
-					<AiSelectorOptionItem
+					<PageEditorRichTextToolsInlineAiOptionItem
 						key={option.value}
 						value={option.value}
 						label={option.label}
 						icon={
-							<MyIcon className={cn("AiSelectorOptionItem-icon" satisfies AiSelectorOptionItem_ClassNames)}>
+							<MyIcon
+								className={cn(
+									"PageEditorRichTextToolsInlineAiOptionItem-icon" satisfies PageEditorRichTextToolsInlineAiOptionItem_ClassNames,
+								)}
+							>
 								<option.Icon />
 							</MyIcon>
 						}
@@ -249,12 +301,16 @@ function AiSelectorOptionList(props: AiSelectorOptionList_Props) {
 					{filteredOptions.transform.length > 0 && <MySeparator />}
 					<MyComboboxGroup heading="Use AI to do more">
 						{filteredOptions.continue.map((option) => (
-							<AiSelectorOptionItem
+							<PageEditorRichTextToolsInlineAiOptionItem
 								key={option.value}
 								value={option.value}
 								label={option.label}
 								icon={
-									<MyIcon className={cn("AiSelectorOptionItem-icon" satisfies AiSelectorOptionItem_ClassNames)}>
+									<MyIcon
+										className={cn(
+											"PageEditorRichTextToolsInlineAiOptionItem-icon" satisfies PageEditorRichTextToolsInlineAiOptionItem_ClassNames,
+										)}
+									>
 										<option.Icon />
 									</MyIcon>
 								}
@@ -271,15 +327,17 @@ function AiSelectorOptionList(props: AiSelectorOptionList_Props) {
 }
 // #endregion OptionList
 
-// #region AiSelector
-export type AiSelector_ClassNames = "AiSelector" | "AiSelector-container";
+// #region PageEditorRichTextToolsInlineAi
+export type PageEditorRichTextToolsInlineAi_ClassNames =
+	| "PageEditorRichTextToolsInlineAi"
+	| "PageEditorRichTextToolsInlineAi-container";
 
-export type AiSelector_Props = {
+export type PageEditorRichTextToolsInlineAi_Props = {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 };
 
-export function AiSelector(props: AiSelector_Props) {
+export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsInlineAi_Props) {
 	const { onOpenChange } = props;
 	const { editor } = useEditor();
 	const [inputValue, setInputValue] = useState("");
@@ -417,25 +475,32 @@ export function AiSelector(props: AiSelector_Props) {
 		<MyCombobox value={inputValue} setValue={setInputValue} open={true}>
 			{editor && (
 				<form ref={formRef} onSubmit={handleSubmit}>
-					<div className={cn("AiSelector-container" satisfies AiSelector_ClassNames)}>
+					<div
+						className={cn(
+							"PageEditorRichTextToolsInlineAi-container" satisfies PageEditorRichTextToolsInlineAi_ClassNames,
+						)}
+					>
 						{(hasCompletion || isLoading) && (
-							<AiSelectorCompletionPreview completion={completionInst.completion} isLoading={isLoading} />
+							<PageEditorRichTextToolsInlineAiCompletionPreview
+								completion={completionInst.completion}
+								isLoading={isLoading}
+							/>
 						)}
 
-						<AiSelectorInputArea
+						<PageEditorRichTextToolsInlineAiInputArea
 							placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
 							disabled={isLoading}
 						/>
 
 						{hasCompletion || isLoading ? (
-							<AiSelectorGenerationActions
+							<PageEditorRichTextToolsInlineAiGenerationActions
 								onReplaceSelection={handleReplaceSelection}
 								onInsertBelow={handleInsertBelow}
 								onDiscard={handleDiscard}
 								disabled={isLoading}
 							/>
 						) : (
-							<AiSelectorOptionList filter={inputValue} onSelect={handleOptionSelect} />
+							<PageEditorRichTextToolsInlineAiOptionList filter={inputValue} onSelect={handleOptionSelect} />
 						)}
 					</div>
 				</form>
@@ -443,4 +508,4 @@ export function AiSelector(props: AiSelector_Props) {
 		</MyCombobox>
 	);
 }
-// #endregion AiSelector
+// #endregion PageEditorRichTextToolsInlineAi

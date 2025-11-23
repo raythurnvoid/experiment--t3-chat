@@ -1,14 +1,14 @@
 @layer common_components {
-	.AiSelector-container {
+	.PageEditorRichTextToolsInlineAi-container {
 		width: 350px;
 	}
 
-	.AiSelectorCompletionPreview-wrapper {
+	.PageEditorRichTextToolsInlineAiCompletionPreview-wrapper {
 		display: flex;
 		max-height: 400px;
 	}
 
-	.AiSelectorCompletionPreview-content {
+	.PageEditorRichTextToolsInlineAiCompletionPreview-content {
 		overflow-x: auto;
 		padding: 16px;
 		font-size: 0.875rem;
@@ -89,7 +89,7 @@
 		}
 	}
 
-	.AiSelectorCompletionPreview-loader {
+	.PageEditorRichTextToolsInlineAiCompletionPreview-loader {
 		display: flex;
 		gap: 8px;
 		align-items: center;
@@ -100,12 +100,12 @@
 		}
 	}
 
-	.AiSelectorInputArea-form {
+	.PageEditorRichTextToolsInlineAiInputArea-form {
 		display: flex;
 		width: 100%;
 	}
 
-	.AiSelectorInputArea-input {
+	.PageEditorRichTextToolsInlineAiInputArea-input {
 		flex: 1;
 		position: relative;
 
@@ -118,7 +118,7 @@
 		margin: -1px -1px 0 -1px;
 	}
 
-	.AiSelectorGenerationActions {
+	.PageEditorRichTextToolsInlineAiGenerationActions {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -126,19 +126,19 @@
 		padding: 8px;
 	}
 
-	.AiSelectorGenerationActions-icon {
+	.PageEditorRichTextToolsInlineAiGenerationActions-icon {
 		height: 16px;
 		width: 16px;
 	}
 
-	.AiSelectorOptionList {
+	.PageEditorRichTextToolsInlineAiOptionList {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 		padding: 8px;
 	}
 
-	.AiSelectorOptionItem {
+	.PageEditorRichTextToolsInlineAiOptionItem {
 		display: flex;
 		align-items: center;
 		gap: 8px;

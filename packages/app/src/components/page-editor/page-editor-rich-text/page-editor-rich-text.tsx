@@ -41,7 +41,7 @@ import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { AiSelector } from "./generative/ai-selector.tsx";
+import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
 import { Sparkles } from "lucide-react";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
@@ -440,7 +440,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				}}
 				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
 			>
-				{open && <AiSelector open={open} onOpenChange={onOpenChange} />}
+				{open && <PageEditorRichTextToolsInlineAi open={open} onOpenChange={onOpenChange} />}
 				{!open && portalElement && (
 					<>
 						<MyButton
