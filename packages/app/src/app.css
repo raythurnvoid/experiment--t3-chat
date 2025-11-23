@@ -355,35 +355,6 @@
 	--radius: var(--radius);
 }
 
-/* Tiptap editor styles */
-@layer base {
-	/* Liveblocks portal z-index */
-	.lb-portal {
-		@apply z-30;
-	}
-
-	/* Typography styles */
-
-	.tiptap h4 {
-		font-size: 1rem;
-		font-weight: 600;
-		line-height: 1.2;
-	}
-
-	.tiptap h5 {
-		font-size: 0.875rem;
-		font-weight: 600;
-		line-height: 1.2;
-	}
-
-	/* Blockquote styles */
-	.tiptap blockquote {
-		box-sizing: border-box;
-		border-left: 0.25rem solid hsl(var(--foreground) / 0.25);
-		padding-left: 1rem;
-	}
-}
-
 /* App Styles */
 @layer base {
 	* {
