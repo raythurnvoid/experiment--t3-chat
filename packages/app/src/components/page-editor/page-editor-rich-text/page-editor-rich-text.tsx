@@ -388,20 +388,8 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
-	const handlePopoverBlur = (e: FocusEvent) => {
-		if (e.relatedTarget === document.activeElement) {
-			bubbleSurfaceRef.current?.focus();
-		}
-	};
-
 	useLayoutEffect(() => {
 		if (!editor) return;
-
-		if (open) {
-			if (bubbleSurfaceRef.current) {
-				bubbleSurfaceRef.current.focus();
-			}
-		}
 
 		if (!open) {
 			editor.chain().clearAIHighlight().run();
@@ -421,15 +409,6 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 					onOpenChange(false);
 					editor.chain().clearAIHighlight().run();
-
-					bubbleSurfaceRef.current?.removeEventListener("blur", handlePopoverBlur);
-				},
-				onShow() {
-					if (bubbleSurfaceRef.current) {
-						bubbleSurfaceRef.current.focus();
-
-						bubbleSurfaceRef.current?.addEventListener("blur", handlePopoverBlur);
-					}
 				},
 			}}
 		>
