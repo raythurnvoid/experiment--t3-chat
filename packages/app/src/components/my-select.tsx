@@ -5,16 +5,23 @@ import type { ExtractStrict } from "type-fest";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
 import { ChevronDownIcon, Check } from "lucide-react";
 
+// #region MySelect
 export type MySelect_ClassNames = "MySelect";
 
 export type MySelect_Props = Ariakit.SelectProviderProps;
 
 export function MySelect(props: MySelect_Props) {
-	const { children, ...rest } = props;
+	const { children, virtualFocus = true, ...rest } = props;
 
-	return <Ariakit.SelectProvider {...rest}>{children}</Ariakit.SelectProvider>;
+	return (
+		<Ariakit.SelectProvider virtualFocus={virtualFocus} {...rest}>
+			{children}
+		</Ariakit.SelectProvider>
+	);
 }
+// #endregion MySelect
 
+// #region Label
 export type MySelectLabel_ClassNames = "MySelectLabel";
 
 export type MySelectLabel_Props = Ariakit.SelectLabelProps;
@@ -28,31 +35,35 @@ export function MySelectLabel(props: MySelectLabel_Props) {
 		</Ariakit.SelectLabel>
 	);
 }
+// #endregion Label
 
+// #region Trigger
 export type MySelectTrigger_ClassNames = "MySelectTrigger";
 
 export type MySelectTrigger_Props = {
 	children?: Ariakit.SelectProps["render"];
-} & Omit<Ariakit.SelectProps, ExtractStrict<keyof Ariakit.SelectProps, "render" | "children">>;
+} & Omit<Ariakit.SelectProps, ExtractStrict<keyof Ariakit.SelectProps, "render">>;
 
 export function MySelectTrigger(props: MySelectTrigger_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { className, children, ...rest } = props;
 
 	return (
 		<Ariakit.Select
-			ref={ref}
 			className={cn("MySelectTrigger" satisfies MySelectTrigger_ClassNames, className)}
 			render={children}
 			{...rest}
 		/>
 	);
 }
+// #endregion Trigger
 
+// #region OpenIndicator
 export type MySelectOpenIndicator_ClassNames = "MySelectOpenIndicator";
 
-export type MySelectOpenIndicator_Props = {
-	children?: React.ReactNode;
-} & Omit<Ariakit.SelectArrowProps, ExtractStrict<keyof Ariakit.SelectArrowProps, "render" | "children">>;
+export type MySelectOpenIndicator_Props = Omit<
+	Ariakit.SelectArrowProps,
+	ExtractStrict<keyof Ariakit.SelectArrowProps, "render">
+>;
 
 export function MySelectOpenIndicator(props: MySelectOpenIndicator_Props) {
 	const { className, children, ...rest } = props;
@@ -65,7 +76,9 @@ export function MySelectOpenIndicator(props: MySelectOpenIndicator_Props) {
 		></Ariakit.SelectArrow>
 	);
 }
+// #endregion OpenIndicator
 
+// #region Popover
 export type MySelectPopover_ClassNames = "MySelectPopover";
 
 export type MySelectPopover_Props = Ariakit.SelectPopoverProps;
@@ -86,6 +99,7 @@ export function MySelectPopover(props: MySelectPopover_Props) {
 	);
 }
 
+// #region PopoverScrollableArea
 export type MySelectPopoverScrollableArea_ClassNames = "MySelectPopoverScrollableArea";
 
 export type MySelectPopoverScrollableArea_Props = {
@@ -105,7 +119,9 @@ export function MySelectPopoverScrollableArea(props: MySelectPopoverScrollableAr
 		</div>
 	);
 }
+// #endregion PopoverScrollableArea
 
+// #region PopoverContent
 export type MySelectPopoverContent_ClassNames = "MySelectPopoverContent";
 
 export type MySelectPopoverContent_Props = {
@@ -122,7 +138,10 @@ export function MySelectPopoverContent(props: MySelectPopoverContent_Props) {
 		</div>
 	);
 }
+// #endregion PopoverContent
+// #endregion Popover
 
+// #region Item
 export type MySelectItem_ClassNames = "MySelectItem";
 
 export type MySelectItem_Props = Ariakit.SelectItemProps;
@@ -141,6 +160,7 @@ export function MySelectItem(props: MySelectItem_Props) {
 	);
 }
 
+// #region ItemIndicator
 export type MySelectItemIndicator_ClassNames = "MySelectItemIndicator";
 
 export type MySelectItemIndicator_Props = MyIcon_Props;
@@ -154,7 +174,9 @@ export function MySelectItemIndicator(props: MySelectItemIndicator_Props) {
 		</MyIcon>
 	);
 }
+// #endregion ItemIndicator
 
+// #region ItemContent
 export type MySelectItemContent_ClassNames = "MySelectItemContent";
 
 export type MySelectItemContent_Props = {
@@ -172,6 +194,7 @@ export function MySelectItemContent(props: MySelectItemContent_Props) {
 	);
 }
 
+// #region ItemContentPrimary
 export type MySelectItemContentPrimary_ClassNames = "MySelectItemContentPrimary";
 
 export type MySelectItemContentPrimary_Props = {
@@ -191,7 +214,9 @@ export function MySelectItemContentPrimary(props: MySelectItemContentPrimary_Pro
 		</div>
 	);
 }
+// #endregion ItemContentPrimary
 
+// #region ItemContentSecondary
 export type MySelectItemContentSecondary_ClassNames = "MySelectItemContentSecondary";
 
 export type MySelectItemContentSecondary_Props = {
@@ -211,7 +236,9 @@ export function MySelectItemContentSecondary(props: MySelectItemContentSecondary
 		</div>
 	);
 }
+// #endregion ItemContentSecondary
 
+// #region ItemContentIcon
 export type MySelectItemContentIcon_ClassNames = "MySelectItemContentIcon";
 
 export type MySelectItemContentIcon_Props = {
@@ -228,14 +255,15 @@ export function MySelectItemContentIcon(props: MySelectItemContentIcon_Props) {
 		</MyIcon>
 	);
 }
+// #endregion ItemContentIcon
+// #endregion Item
 
+// #region ItemsGroup
 export type MySelectItemsGroup_ClassNames = "MySelectItemsGroup" | "MySelectItemsGroup-separator";
 
 export type MySelectItemsGroup_Props = {
-	children?: React.ReactNode;
-	className?: string;
 	separator?: boolean;
-} & Omit<Ariakit.SelectGroupProps, "children" | "className">;
+} & Ariakit.SelectGroupProps;
 
 export function MySelectItemsGroup(props: MySelectItemsGroup_Props) {
 	const { className, children, separator = false, ...rest } = props;
@@ -254,12 +282,10 @@ export function MySelectItemsGroup(props: MySelectItemsGroup_Props) {
 	);
 }
 
+// #region ItemsGroupText
 export type MySelectItemsGroupText_ClassNames = "MySelectItemsGroupText";
 
-export type MySelectItemsGroupText_Props = {
-	children?: React.ReactNode;
-	className?: string;
-} & Omit<Ariakit.SelectGroupLabelProps, "children" | "className">;
+export type MySelectItemsGroupText_Props = Ariakit.SelectGroupLabelProps;
 
 export function MySelectItemsGroupText(props: MySelectItemsGroupText_Props) {
 	const { className, children, ...rest } = props;
@@ -273,3 +299,5 @@ export function MySelectItemsGroupText(props: MySelectItemsGroupText_Props) {
 		</Ariakit.SelectGroupLabel>
 	);
 }
+// #endregion ItemsGroupText
+// #endregion ItemsGroup

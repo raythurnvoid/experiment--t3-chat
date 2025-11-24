@@ -52,6 +52,15 @@
 			color: var(--gray-600);
 		}
 
+		&.ProseMirror-hideselection::selection {
+			background-color: transparent;
+		}
+
+		.PageEditorRichTextInner-editor-container:focus-within & .ProseMirror-selectednode {
+			background-color: var(--color-base-alt-1-05);
+			border-radius: 12px;
+		}
+
 		h1 {
 			font-size: 2em;
 			line-height: 2;
@@ -153,14 +162,6 @@
 		position: absolute;
 		right: 0;
 		margin-right: 16px;
-	}
-
-	.PageEditorRichTextDragHandle {
-		cursor: grab;
-
-		padding: 0px;
-		height: 1.5rem;
-		width: 1.5rem;
 	}
 
 	.PageEditorRichTextToolbar {

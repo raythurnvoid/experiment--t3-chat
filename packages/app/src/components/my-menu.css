@@ -1,17 +1,5 @@
 @layer common_components {
-	.MySelectOpenIndicator.MyIcon {
-		width: 16px;
-		height: 16px;
-
-		transition: transform 0.15s ease-in-out;
-
-		/* Rotate open indicator when open */
-		.MySelectTrigger[aria-expanded="true"] & {
-			transform: rotate(-180deg);
-		}
-	}
-
-	.MySelectPopover {
+	.MyMenuPopover {
 		box-sizing: border-box;
 		position: relative;
 
@@ -33,17 +21,17 @@
 		}
 	}
 
-	.MySelectPopoverScrollableArea {
+	.MyMenuPopoverScrollableArea {
 		max-height: inherit;
 		overflow-x: hidden;
 		overflow-y: auto;
 	}
 
-	.MySelectPopoverContent {
+	.MyMenuPopoverContent {
 		padding: 4px;
 	}
 
-	.MySelectItem {
+	.MyMenuItem {
 		box-sizing: border-box;
 		position: relative;
 
@@ -85,13 +73,22 @@
 		}
 	}
 
-	.MySelectItemIndicator.MyIcon {
-		width: 16px;
-		height: 16px;
+	.MyMenuItem-variant-destructive {
+		background: var(--color-base-1-04);
+		color: var(--color-red-09);
+
+		&[aria-selected="true"] {
+			background: var(--color-red-02);
+			color: var(--color-red-09);
+		}
+
+		&[data-active-item] {
+			background: var(--color-red-03);
+			color: var(--color-red-10);
+		}
 	}
 
-	/* Select item content grid */
-	.MySelectItemContent {
+	.MyMenuItemContent {
 		display: grid;
 		grid-template: auto / auto 1fr;
 		row-gap: 4px;
@@ -101,14 +98,14 @@
 		flex: 1;
 	}
 
-	.MySelectItemContentPrimary {
+	.MyMenuItemContentPrimary {
 		grid-column: 2;
 		grid-row: 1;
 
 		height: 18px;
 	}
 
-	.MySelectItemContentSecondary {
+	.MyMenuItemContentSecondary {
 		grid-column: 2;
 		grid-row: 2;
 
@@ -116,7 +113,7 @@
 		color: var(--color-fg-09);
 	}
 
-	.MySelectItemContentIcon.MyIcon {
+	.MyMenuItemContentIcon.MyIcon {
 		grid-column: 1;
 		grid-row: 1 / -1;
 
@@ -126,25 +123,12 @@
 		margin-right: 8px;
 	}
 
-	/* Select label */
-	.MySelectLabel {
-		padding: 8px 8px 4px 8px;
-		font-size: 0.75em;
-		font-weight: 500;
-		color: var(--gray-600);
-
-		@media (prefers-color-scheme: dark) {
-			color: var(--gray-400);
-		}
+	.MyMenuItemSubMenuIndicator.MyIcon {
+		width: 16px;
+		height: 16px;
 	}
 
-	.MySelectItemsGroup-separator {
-		margin-top: 8px;
-		border-top: 1px solid var(--color-base-1-10);
-		padding-top: 8px;
-	}
-
-	.MySelectItemsGroupText {
+	.MyMenuItemsGroupText {
 		cursor: default;
 
 		padding: 4px 12px;
@@ -155,5 +139,11 @@
 		color: var(--color-fg-08);
 
 		min-height: 30px;
+	}
+
+	.MyMenuItemsGroup-separator {
+		margin-top: 8px;
+		border-top: 1px solid var(--color-base-1-10);
+		padding-top: 8px;
 	}
 }

@@ -7,7 +7,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
 
-type MyIconButton_ClassNames = "MyIconButton";
+export type MyIconButton_ClassNames = "MyIconButton";
 
 export type MyIconButton_Props = ComponentPropsWithRef<typeof MyButton> & {
 	ref?: Ref<HTMLButtonElement>;
