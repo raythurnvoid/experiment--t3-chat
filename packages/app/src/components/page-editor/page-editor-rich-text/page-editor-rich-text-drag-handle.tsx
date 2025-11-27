@@ -635,12 +635,12 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 					const referenceHeight = state.rects.reference.height;
 					// Center vertically by offsetting by half the reference height
 					return {
-						mainAxis: 0,
+						mainAxis: 8,
 						crossAxis: referenceHeight / 2 - 16,
 					};
 				}
 
-				return { mainAxis: 0, crossAxis: -5 };
+				return { mainAxis: 8, crossAxis: -5 };
 			}),
 		],
 	}));

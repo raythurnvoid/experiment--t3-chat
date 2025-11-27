@@ -21,6 +21,29 @@
 	.PageEditorRichTextInner-editor-container {
 		height: 100%;
 		width: 100%;
+
+		/*
+		Make this the `offsetElement` for the editor.
+		Some floating elements are injected in the `offsetElement`.
+		*/
+		position: relative;
+
+		.prosemirror-dropcursor-block {
+			transition: top 0.15s ease-out;
+			will-change: top;
+		}
+
+		.prosemirror-dropcursor-inline {
+			transition: left 0.15s ease-out;
+			will-change: left;
+		}
+
+		.prosemirror-dropcursor-block,
+		.prosemirror-dropcursor-inline,
+		.prosemirror-dropcursor-vertical {
+			background-color: var(--color-accent-07);
+			border-radius: 4px;
+		}
 	}
 
 	.PageEditorRichTextInner-editor-content {
@@ -57,8 +80,17 @@
 		}
 
 		.PageEditorRichTextInner-editor-container:focus-within & .ProseMirror-selectednode {
-			background-color: var(--color-base-alt-1-05);
-			border-radius: 12px;
+			position: relative;
+
+			&::before {
+				content: "";
+				background-color: var(--color-accent-01);
+				border-radius: 12px;
+
+				position: absolute;
+				inset: 0 -8px 0 -8px;
+				z-index: -1;
+			}
 		}
 
 		h1 {

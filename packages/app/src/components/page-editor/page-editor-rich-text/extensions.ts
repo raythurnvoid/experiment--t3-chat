@@ -29,7 +29,7 @@ const starterKit = StarterKit.configure({
 	undoRedo: false,
 	underline: false,
 	dropcursor: {
-		color: "#DBEAFE",
+		color: false,
 		width: 4,
 	},
 	gapcursor: false,
