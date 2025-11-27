@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import {
 	EditorContent,
 	EditorRoot,
-	useEditor,
 	type EditorContentProps,
 	ImageResizer,
 	handleCommandNavigation,
@@ -21,13 +20,12 @@ import { PageEditorRichTextToolsLinkSetter } from "./page-editor-rich-text-tools
 import { PageEditorRichTextToolsNodeSelector } from "./page-editor-rich-text-tools-node-selector.tsx";
 import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools-math-toggle.tsx";
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
-import { PageEditorRichTextToolsAddCommentButton } from "./page-editor-rich-text-tools-add-comment-button.tsx";
 import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
-import { MySeparator } from "@/components/my-separator.tsx";
+import { MySeparator, type MySeparator_ClassNames } from "@/components/my-separator.tsx";
 import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
-import { Threads } from "./threads.tsx";
+import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn } from "@/lib/utils.ts";
@@ -41,58 +39,238 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
-import { Sparkles } from "lucide-react";
+import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-comment.tsx";
+import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
-// #region PageEditorRichText
-export type PageEditorRichText_ClassNames = "PageEditorRichText";
+// #region Toolbar
+export type PageEditorRichTextToolbar_ClassNames =
+	| "PageEditorRichTextToolbar"
+	| "PageEditorRichTextToolbar-scrollable-area"
+	| "PageEditorRichTextToolbar-status-badge"
+	| "PageEditorRichTextToolbar-word-count-badge"
+	| "PageEditorRichTextToolbar-word-count-badge-hidden";
 
-export type PageEditorRichText_BgColorCssVarKeys =
-	| "--PageEditorRichText-text-color-bg-default"
-	| "--PageEditorRichText-text-color-bg-purple"
-	| "--PageEditorRichText-text-color-bg-red"
-	| "--PageEditorRichText-text-color-bg-yellow"
-	| "--PageEditorRichText-text-color-bg-blue"
-	| "--PageEditorRichText-text-color-bg-green"
-	| "--PageEditorRichText-text-color-bg-orange"
-	| "--PageEditorRichText-text-color-bg-pink"
-	| "--PageEditorRichText-text-color-bg-gray";
-
-export type PageEditorRichText_FgColorCssVarKeys =
-	| "--PageEditorRichText-text-color-fg-default"
-	| "--PageEditorRichText-text-color-fg-purple"
-	| "--PageEditorRichText-text-color-fg-red"
-	| "--PageEditorRichText-text-color-fg-yellow"
-	| "--PageEditorRichText-text-color-fg-blue"
-	| "--PageEditorRichText-text-color-fg-green"
-	| "--PageEditorRichText-text-color-fg-orange"
-	| "--PageEditorRichText-text-color-fg-pink"
-	| "--PageEditorRichText-text-color-fg-gray";
-
-export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
+export type PageEditorRichTextToolbar_Props = {
+	editor: Editor;
+	syncStatus: SyncStatus;
+	syncChanged: boolean;
+	charsCount: number;
 	pageId: string;
-	headerSlot?: React.ReactNode;
 };
 
-export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { className, pageId, headerSlot, ...rest } = props;
+function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
+	const { editor, syncStatus, syncChanged, charsCount, pageId } = props;
+
+	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
 	return (
-		// remount on pageId to prevent stale state on page changes
-		<EditorRoot key={pageId}>
-			<PageEditorRichTextInner
-				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
-				pageId={pageId}
-				headerSlot={headerSlot}
-				{...rest}
-			/>
-		</EditorRoot>
+		<div
+			ref={setPortalElement}
+			role="toolbar"
+			aria-label="Toolbar"
+			aria-orientation="horizontal"
+			className={cn("PageEditorRichTextToolbar" satisfies PageEditorRichTextToolbar_ClassNames)}
+		>
+			{portalElement && (
+				<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
+					<PageEditorRichTextToolsHistoryButtons editor={editor} />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsNodeSelector editor={editor} />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsLinkSetter editor={editor} />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsMathToggle editor={editor} />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsTextStyles editor={editor} />
+					<MySeparator orientation="vertical" />
+					<PageEditorRichTextToolsColorSelector editor={editor} portalElement={portalElement} />
+					<MySeparator orientation="vertical" />
+					<MyBadge
+						variant="secondary"
+						className={cn("PageEditorRichTextToolbar-status-badge" satisfies PageEditorRichTextToolbar_ClassNames)}
+					>
+						{/*
+					If syncChanged it's false then force to show "Saved" because when the
+					editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
+					*/}
+						{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
+					</MyBadge>
+					<MyBadge
+						variant="secondary"
+						className={cn(
+							charsCount
+								? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
+								: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
+						)}
+					>
+						{charsCount} Words
+					</MyBadge>
+					<PageEditorSnapshotsModal pageId={pageId} editor={editor} />
+					<NotificationsPopover />
+				</div>
+			)}
+		</div>
 	);
 }
-// #endregion PageEditorRichText
+// #endregion Toolbar
+
+// #region Bubble
+
+// Derived from Liveblocks:
+// liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
+
+export type PageEditorRichTextBubble_ClassNames =
+	| "PageEditorRichTextBubble"
+	| "PageEditorRichTextBubble-rendered"
+	| "PageEditorRichTextBubble-content"
+	| "PageEditorRichTextBubble-button"
+	| "PageEditorRichTextBubble-icon";
+
+export type PageEditorRichTextBubble_Props = {
+	editor: Editor;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+};
+
+export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
+	const { editor, open, onOpenChange } = props;
+
+	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
+
+	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
+	const [rendered, setRendered] = useState(true);
+	const [openComment, setOpenComment] = useState(false);
+
+	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
+		if (!editor) {
+			return;
+		}
+
+		// Reset rendered state so it's already `true` on show
+		setRendered(true);
+
+		onOpenChange(false);
+		setOpenComment(false);
+		editor.chain().clearAIHighlight().run();
+	};
+
+	// handle the escape key when the bubble menu or its descendants are focused
+	const handleKeyDown: EditorBubbleProps["onKeyDown"] = (event) => {
+		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
+			setRendered(false);
+			editor.commands.focus();
+		}
+	};
+
+	useLayoutEffect(() => {
+		if (!open) {
+			editor.chain().clearAIHighlight().run();
+		}
+	}, [open]);
+
+	// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+
+		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
+
+		const plugin = new Plugin({
+			props: {
+				handleKeyDown: (_view, event) => {
+					if (event.key !== "Escape") {
+						return false;
+					}
+
+					setRendered(false);
+					editor.commands.focus();
+
+					return true;
+				},
+			},
+		});
+
+		editor.registerPlugin(plugin);
+
+		return () => {
+			editor.unregisterPlugin(bubbleEscPluginKey);
+		};
+	}, [editor]);
+
+	return (
+		<EditorBubble
+			ref={bubbleSurfaceRef}
+			className={cn(
+				"PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames,
+				rendered && ("PageEditorRichTextBubble-rendered" satisfies PageEditorRichTextBubble_ClassNames),
+			)}
+			options={{
+				placement: "bottom-start",
+				onHide: handleHide,
+			}}
+			onKeyDown={handleKeyDown}
+		>
+			<div
+				ref={(inst) => {
+					setPortalElement(inst);
+				}}
+				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
+			>
+				{open && <PageEditorRichTextToolsInlineAi open={open} onOpenChange={onOpenChange} />}
+				{openComment && <PageEditorRichTextToolsComment onCancel={() => setOpenComment(false)} />}
+				{editor && !open && !openComment && portalElement && (
+					<>
+						<MyButton
+							variant="ghost"
+							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
+							onClick={() => onOpenChange(true)}
+						>
+							<MyButtonIcon
+								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
+							>
+								<Sparkles />
+							</MyButtonIcon>
+							Ask AI
+						</MyButton>
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsNodeSelector editor={editor} />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsLinkSetter editor={editor} />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsMathToggle editor={editor} />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsTextStyles editor={editor} />
+						<MySeparator orientation="vertical" />
+						<PageEditorRichTextToolsColorSelector editor={editor} portalElement={portalElement} />
+						<MySeparator orientation="vertical" />
+						<MyButton
+							variant="ghost"
+							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
+							onClick={() => {
+								onOpenChange(false);
+								setOpenComment(true);
+							}}
+						>
+							<MyButtonIcon
+								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
+							>
+								<MessageSquarePlus />
+							</MyButtonIcon>
+							Comment
+						</MyButton>
+					</>
+				)}
+			</div>
+		</EditorBubble>
+	);
+}
+// #endregion Bubble
 
 // #region Inner
 type PageEditorRichTextInner_ClassNames =
@@ -101,6 +279,7 @@ type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner-editor-container"
 	| "PageEditorRichTextInner-editor-wrapper"
 	| "PageEditorRichTextInner-editor-content"
+	| "PageEditorRichTextInner-panel-resize-handle"
 	| "PageEditorRichTextInner-threads-container"
 	| "PageEditorRichTextInner-status-badge"
 	| "PageEditorRichTextInner-word-count-badge"
@@ -234,51 +413,63 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				)}
 			>
 				{headerSlot}
-				<EditorContent
-					className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
-					editorContainerProps={{
-						className: cn("PageEditorRichTextInner-editor-container" satisfies PageEditorRichTextInner_ClassNames),
-					}}
-					editorProps={{
-						attributes: {
-							class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
-						},
-						handleDOMEvents: {
-							keydown: (_view, event) => handleCommandNavigation(event),
-						},
-						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-					}}
-					extensions={extensions}
-					immediatelyRender={false}
-					onCreate={handleCreate}
-					onUpdate={handleUpdate}
-					slotBefore={
-						/* Status Bar */
-						<PageEditorRichTextToolbar
-							charsCount={charsCount}
-							syncStatus={syncStatus}
-							syncChanged={syncChanged}
-							pageId={pageId}
-						/>
-					}
-					slotAfter={
-						editor && (
-							<>
-								<ImageResizer />
-								<PageEditorRichTextDragHandle editor={editor} />
-							</>
-						)
-					}
-				>
-					<div className={cn("PageEditorRichTextInner-threads-container" satisfies PageEditorRichTextInner_ClassNames)}>
-						<Threads />
-					</div>
-
-					<PageEditorRichTextToolsSlashCommand />
-
-					<PageEditorRichTextBubble open={openAi} onOpenChange={setOpenAi} />
-				</EditorContent>
+				{editor && (
+					<PageEditorRichTextToolbar
+						editor={editor}
+						charsCount={charsCount}
+						syncStatus={syncStatus}
+						syncChanged={syncChanged}
+						pageId={pageId}
+					/>
+				)}
+				<PanelGroup direction="horizontal">
+					<Panel collapsible={false} defaultSize={75}>
+						<EditorContent
+							className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
+							editorContainerProps={{
+								className: cn("PageEditorRichTextInner-editor-container" satisfies PageEditorRichTextInner_ClassNames),
+							}}
+							editorProps={{
+								attributes: {
+									class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
+								},
+								handleDOMEvents: {
+									keydown: (_view, event) => handleCommandNavigation(event),
+								},
+								handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+								handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+							}}
+							extensions={extensions}
+							immediatelyRender={false}
+							onCreate={handleCreate}
+							onUpdate={handleUpdate}
+							slotAfter={
+								editor && (
+									<>
+										<ImageResizer />
+										<PageEditorRichTextToolsSlashCommand />
+										<PageEditorRichTextDragHandle editor={editor} />
+										<PageEditorRichTextBubble editor={editor} open={openAi} onOpenChange={setOpenAi} />
+									</>
+								)
+							}
+						></EditorContent>
+					</Panel>
+					<PanelResizeHandle
+						className={cn(
+							"PageEditorRichTextInner-panel-resize-handle" satisfies PageEditorRichTextInner_ClassNames,
+							"MySeparator" satisfies MySeparator_ClassNames,
+							"MySeparator-vertical" satisfies MySeparator_ClassNames,
+						)}
+					/>
+					<Panel
+						className={cn("PageEditorRichTextInner-threads-container" satisfies PageEditorRichTextInner_ClassNames)}
+						collapsible={false}
+						defaultSize={25}
+					>
+						{editor && <PageEditorRichTextAnchoredComments editor={editor} />}
+					</Panel>
+				</PanelGroup>
 			</div>
 			{!isEditorReady && <PageEditorSkeleton />}
 		</>
@@ -286,216 +477,49 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 }
 // #endregion Inner
 
-// #region Toolbar
-export type PageEditorRichTextToolbar_ClassNames =
-	| "PageEditorRichTextToolbar"
-	| "PageEditorRichTextToolbar-scrollable-area"
-	| "PageEditorRichTextToolbar-status-badge"
-	| "PageEditorRichTextToolbar-word-count-badge"
-	| "PageEditorRichTextToolbar-word-count-badge-hidden";
+// #region PageEditorRichText
+export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
-export type PageEditorRichTextToolbar_Props = {
-	charsCount: number;
-	syncStatus: SyncStatus;
-	syncChanged: boolean;
+export type PageEditorRichText_BgColorCssVarKeys =
+	| "--PageEditorRichText-text-color-bg-default"
+	| "--PageEditorRichText-text-color-bg-purple"
+	| "--PageEditorRichText-text-color-bg-red"
+	| "--PageEditorRichText-text-color-bg-yellow"
+	| "--PageEditorRichText-text-color-bg-blue"
+	| "--PageEditorRichText-text-color-bg-green"
+	| "--PageEditorRichText-text-color-bg-orange"
+	| "--PageEditorRichText-text-color-bg-pink"
+	| "--PageEditorRichText-text-color-bg-gray";
+
+export type PageEditorRichText_FgColorCssVarKeys =
+	| "--PageEditorRichText-text-color-fg-default"
+	| "--PageEditorRichText-text-color-fg-purple"
+	| "--PageEditorRichText-text-color-fg-red"
+	| "--PageEditorRichText-text-color-fg-yellow"
+	| "--PageEditorRichText-text-color-fg-blue"
+	| "--PageEditorRichText-text-color-fg-green"
+	| "--PageEditorRichText-text-color-fg-orange"
+	| "--PageEditorRichText-text-color-fg-pink"
+	| "--PageEditorRichText-text-color-fg-gray";
+
+export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 	pageId: string;
+	headerSlot?: React.ReactNode;
 };
 
-function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
-	const { charsCount, syncStatus, syncChanged, pageId } = props;
-
-	const { editor } = useEditor();
-
-	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
+export function PageEditorRichText(props: PageEditorRichText_Props) {
+	const { className, pageId, headerSlot, ...rest } = props;
 
 	return (
-		<div
-			ref={setPortalElement}
-			role="toolbar"
-			aria-label="Toolbar"
-			aria-orientation="horizontal"
-			className={cn("PageEditorRichTextToolbar" satisfies PageEditorRichTextToolbar_ClassNames)}
-		>
-			{portalElement && (
-				<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
-					<PageEditorRichTextToolsHistoryButtons />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsNodeSelector />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsLinkSetter />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsMathToggle />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsTextStyles />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector portalElement={portalElement} />
-					<MySeparator orientation="vertical" />
-					<MyBadge
-						variant="secondary"
-						className={cn("PageEditorRichTextToolbar-status-badge" satisfies PageEditorRichTextToolbar_ClassNames)}
-					>
-						{/*
-					If syncChanged it's false then force to show "Saved" because when the
-					editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
-					*/}
-						{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
-					</MyBadge>
-					<MyBadge
-						variant="secondary"
-						className={cn(
-							charsCount
-								? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
-								: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
-						)}
-					>
-						{charsCount} Words
-					</MyBadge>
-					<PageEditorSnapshotsModal pageId={pageId} editor={editor} />
-					<NotificationsPopover />
-				</div>
-			)}
-		</div>
+		// remount on pageId to prevent stale state on page changes
+		<EditorRoot key={pageId}>
+			<PageEditorRichTextInner
+				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
+				pageId={pageId}
+				headerSlot={headerSlot}
+				{...rest}
+			/>
+		</EditorRoot>
 	);
 }
-// #endregion Toolbar
-
-// #region Bubble
-
-// Derived from Liveblocks:
-// liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
-
-export type PageEditorRichTextBubble_ClassNames =
-	| "PageEditorRichTextBubble"
-	| "PageEditorRichTextBubble-rendered"
-	| "PageEditorRichTextBubble-content"
-	| "PageEditorRichTextBubble-button"
-	| "PageEditorRichTextBubble-icon";
-
-export type PageEditorRichTextBubble_Props = {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-};
-
-export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
-	const { open, onOpenChange } = props;
-
-	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
-
-	const { editor } = useEditor();
-
-	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
-	const [rendered, setRendered] = useState(true);
-
-	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
-		if (!editor) {
-			return;
-		}
-
-		// Reset rendered state so it's already `true` on show
-		setRendered(true);
-
-		onOpenChange(false);
-		editor.chain().clearAIHighlight().run();
-	};
-
-	// handle the escape key when the bubble menu or its descendants are focused
-	const handleKeyDown: EditorBubbleProps["onKeyDown"] = (event) => {
-		if (!editor) return;
-
-		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
-			setRendered(false);
-			editor.commands.focus();
-		}
-	};
-
-	useLayoutEffect(() => {
-		if (!editor) return;
-
-		if (!open) {
-			editor.chain().clearAIHighlight().run();
-		}
-	}, [open]);
-
-	// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
-	useEffect(() => {
-		if (!editor) {
-			return;
-		}
-
-		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
-
-		const plugin = new Plugin({
-			props: {
-				handleKeyDown: (_view, event) => {
-					if (event.key !== "Escape") {
-						return false;
-					}
-
-					setRendered(false);
-					editor.commands.focus();
-
-					return true;
-				},
-			},
-		});
-
-		editor.registerPlugin(plugin);
-
-		return () => {
-			editor.unregisterPlugin(bubbleEscPluginKey);
-		};
-	}, [editor]);
-
-	return (
-		<EditorBubble
-			ref={bubbleSurfaceRef}
-			className={cn(
-				"PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames,
-				rendered && ("PageEditorRichTextBubble-rendered" satisfies PageEditorRichTextBubble_ClassNames),
-			)}
-			options={{
-				placement: "bottom-start",
-				onHide: handleHide,
-			}}
-			onKeyDown={handleKeyDown}
-		>
-			<div
-				ref={(inst) => {
-					setPortalElement(inst);
-				}}
-				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
-			>
-				{open && <PageEditorRichTextToolsInlineAi open={open} onOpenChange={onOpenChange} />}
-				{!open && portalElement && (
-					<>
-						<MyButton
-							variant="ghost"
-							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
-							onClick={() => onOpenChange(true)}
-						>
-							<MyButtonIcon
-								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
-							>
-								<Sparkles />
-							</MyButtonIcon>
-							Ask AI
-						</MyButton>
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsNodeSelector />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsLinkSetter />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsMathToggle />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsTextStyles />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsColorSelector portalElement={portalElement} />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsAddCommentButton />
-					</>
-				)}
-			</div>
-		</EditorBubble>
-	);
-}
-// #endregion Bubble
+// #endregion PageEditorRichText

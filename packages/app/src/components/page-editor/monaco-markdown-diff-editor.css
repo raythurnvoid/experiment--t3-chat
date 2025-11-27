@@ -1,4 +1,4 @@
-@layer common_components {
+@layer components {
 	/* Monaco Markdown Diff Editor - Accept/Discard widget styles */
 	:where(.MonacoMarkdownDiffEditor) {
 		/* Floating content widget container */

@@ -1,8 +1,7 @@
 import "./page-editor-rich-text-tools-link-setter.css";
 import { Check, Trash, LinkIcon } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
-import { useEditor } from "novel";
-import { useEditorState } from "@tiptap/react";
+import { useEditorState, type Editor } from "@tiptap/react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -38,19 +37,20 @@ export type PageEditorRichTextToolsLinkSetter_ClassNames =
 	| "PageEditorRichTextToolsLinkSetter-input"
 	| "PageEditorRichTextToolsLinkSetter-icon";
 
-export type PageEditorRichTextToolsLinkSetter_Props = {};
+export type PageEditorRichTextToolsLinkSetter_Props = {
+	editor: Editor;
+};
 
 export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextToolsLinkSetter_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = useEditor();
+	const { editor } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			if (!editor) return null;
 			return {
 				selection: editor.state.selection,
 			};
@@ -90,8 +90,6 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 			}
 		}
 	};
-
-	if (!editor) return null;
 
 	return (
 		<div className={cn("PageEditorRichTextToolsLinkSetter" satisfies PageEditorRichTextToolsLinkSetter_ClassNames)}>

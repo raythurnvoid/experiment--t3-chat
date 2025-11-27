@@ -1,50 +1,12 @@
 @layer components {
 	.PageEditorRichTextToolsSlashCommand {
-		z-index: 50;
-		height: auto;
-		max-height: 330px;
 		overflow-y: auto;
-		border-radius: 6px;
-		border: 1px solid var(--gray-500);
-		background: var(--gray-100);
-		padding-left: 4px;
-		padding-right: 4px;
-		padding-top: 8px;
-		padding-bottom: 8px;
-		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-		transition: all 150ms ease;
 	}
 
 	.PageEditorRichTextToolsSlashCommand-empty {
 		padding-left: 8px;
 		padding-right: 8px;
-		color: var(--gray-400);
-	}
-
-	.PageEditorRichTextToolsSlashCommand-item {
-		display: flex;
-		width: 100%;
-		align-items: center;
-		gap: 8px;
-		border-radius: 6px;
-		padding-left: 8px;
-		padding-right: 8px;
-		padding-top: 4px;
-		padding-bottom: 4px;
-		text-align: left;
-		font-size: 0.875rem;
-
-		&:hover {
-			background: var(--gray-300);
-		}
-
-		&[aria-selected="true"] {
-			background: var(--gray-300);
-
-			&:hover {
-				background: var(--gray-400);
-			}
-		}
+		color: var(--color-fg-02);
 	}
 
 	.PageEditorRichTextToolsSlashCommand-item-icon {
@@ -54,17 +16,7 @@
 		align-items: center;
 		justify-content: center;
 		border-radius: 6px;
-		border: 1px solid var(--gray-500);
-		background: var(--gray-050);
-	}
-
-	.PageEditorRichTextToolsSlashCommand-item-title {
-		font-weight: 500;
-		color: var(--gray-700);
-	}
-
-	.PageEditorRichTextToolsSlashCommand-item-description {
-		font-size: 0.75rem;
-		color: var(--gray-600);
+		border: 1px solid var(--color-base-1-12);
+		background: var(--color-base-1-06);
 	}
 }

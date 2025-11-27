@@ -16,10 +16,13 @@
 	.PageEditorRichTextInner-editor-wrapper {
 		height: 100%;
 		width: 100%;
+
+		display: flex;
 	}
 
 	.PageEditorRichTextInner-editor-container {
-		height: 100%;
+		flex: 1;
+
 		width: 100%;
 
 		/*
@@ -27,6 +30,9 @@
 		Some floating elements are injected in the `offsetElement`.
 		*/
 		position: relative;
+
+		overflow-y: auto;
+		overflow-x: hidden;
 
 		.prosemirror-dropcursor-block {
 			transition: top 0.15s ease-out;
@@ -72,7 +78,7 @@
 			position: absolute;
 			user-select: none;
 			pointer-events: none;
-			color: var(--gray-600);
+			color: var(--color-fg-07);
 		}
 
 		&.ProseMirror-hideselection::selection {
@@ -200,15 +206,58 @@
 		}
 	}
 
+	.PageEditorRichTextInner-panel-resize-handle {
+		contain: layout style;
+
+		&::after {
+			content: "";
+
+			position: absolute;
+			inset: 0;
+			background-color: inherit;
+		}
+
+		&::before {
+			content: "";
+
+			display: none;
+
+			position: absolute;
+			inset: 0;
+		}
+
+		&[data-resize-handle-state="drag"] {
+			&::after {
+				background-color: var(--color-base-alt-2-10);
+			}
+
+			&::before {
+				display: flex;
+				background-color: var(--color-base-alt-2-10);
+
+				left: -2px;
+				right: -2px;
+			}
+		}
+
+		&[data-resize-handle-state="hover"] {
+			&::before {
+				display: flex;
+				background-color: var(--color-base-alt-1-05);
+
+				left: -6px;
+				right: -6px;
+			}
+		}
+	}
+
 	.PageEditorRichTextInner-threads-container {
-		position: absolute;
-		right: 0;
-		margin-right: 16px;
+		contain: strict;
 	}
 
 	.PageEditorRichTextToolbar {
 		height: 44px;
-		background: var(--gray-050);
+		background: var(--color-base-alt-1-05);
 
 		contain: inline-size layout style;
 
@@ -276,7 +325,6 @@
 	.PageEditorRichTextBubble-button {
 		gap: 4px;
 		border-radius: 0;
-		color: var(--PageEditorRichText-text-color-fg-purple);
 	}
 
 	.PageEditorRichTextBubble-icon {

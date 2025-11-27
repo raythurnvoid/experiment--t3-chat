@@ -1,6 +1,5 @@
 import "./page-editor-rich-text-tools-color-selector.css";
 import { Check, ChevronDown } from "lucide-react";
-import { useEditor } from "novel";
 import {
 	MySelect,
 	MySelectTrigger,
@@ -23,7 +22,7 @@ import type {
 	PageEditorRichText_FgColorCssVarKeys,
 	PageEditorRichText_BgColorCssVarKeys,
 } from "./page-editor-rich-text.tsx";
-import { useEditorState } from "@tiptap/react";
+import { useEditorState, type Editor } from "@tiptap/react";
 
 export interface BubbleColorMenuItem {
 	name: string;
@@ -184,6 +183,7 @@ export type PageEditorRichTextToolsColorSelector_ClassNames =
 	| "PageEditorRichTextToolsColorSelector-check-icon";
 
 export type PageEditorRichTextToolsColorSelector_Props = {
+	editor: Editor;
 	portalElement: HTMLElement;
 };
 
@@ -191,15 +191,12 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { portalElement } = props;
-
-	const { editor } = useEditor();
+	const { editor, portalElement } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			if (!editor) return null;
 			return {
 				selection: editor.state.selection,
 			};
@@ -214,8 +211,6 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 		: undefined;
 
 	const handleColorSelect = (item: (typeof TEXT_COLORS)[number]) => {
-		if (!editor) return;
-
 		editor.commands.command(({ commands }) => {
 			commands.unsetColor();
 			if (
@@ -231,8 +226,6 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 	};
 
 	const handleHighlightSelect = (item: (typeof HIGHLIGHT_COLORS)[number]) => {
-		if (!editor) return;
-
 		editor.commands.command(({ commands }) => {
 			commands.unsetHighlight();
 			if (
@@ -247,7 +240,6 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 		forceRender();
 	};
 
-	if (!editor) return null;
 	return (
 		<div
 			className={cn("PageEditorRichTextToolsColorSelector" satisfies PageEditorRichTextToolsColorSelector_ClassNames)}

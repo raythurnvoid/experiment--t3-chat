@@ -1,4 +1,4 @@
-@layer common_components {
+@layer components {
 	.PageEditorRichTextToolsMathToggle {
 		display: flex;
 	}

@@ -1,8 +1,7 @@
 import "./page-editor-rich-text-tools-text-styles.css";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
-import { EditorBubbleItem, useEditor } from "novel";
-import { useEditorState } from "@tiptap/react";
+import { useEditorState, type Editor } from "@tiptap/react";
 import { cn } from "@/lib/utils.ts";
 
 export type PageEditorRichTextToolsTextStyles_ClassNames =
@@ -11,8 +10,8 @@ export type PageEditorRichTextToolsTextStyles_ClassNames =
 
 type Item = {
 	name: string;
-	command: (editor: ReturnType<typeof useEditor>["editor"]) => void;
-	isActive: (editor: ReturnType<typeof useEditor>["editor"]) => boolean;
+	command: (editor: Editor) => void;
+	isActive: (editor: Editor) => boolean;
 	icon: React.ComponentType;
 	tooltip: string;
 };
@@ -55,42 +54,43 @@ const items: Item[] = [
 	},
 ];
 
-export function PageEditorRichTextToolsTextStyles() {
+export type PageEditorRichTextToolsTextStyles_Props = {
+	editor: Editor;
+};
+
+export function PageEditorRichTextToolsTextStyles(props: PageEditorRichTextToolsTextStyles_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = useEditor();
+	const { editor } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			if (!editor) return null;
 			return {
 				selection: editor.state.selection,
 			};
 		},
 	});
 
-	if (!editor) return null;
-
 	return (
 		<div className={cn("PageEditorRichTextToolsTextStyles" satisfies PageEditorRichTextToolsTextStyles_ClassNames)}>
 			{items.map((item) => (
-				<EditorBubbleItem key={item.name} onSelect={item.command}>
-					<MyIconButton
-						variant="ghost"
-						tooltip={item.tooltip}
-						className={cn(
-							item.isActive(editor) &&
-								("PageEditorRichTextToolsTextStyles-active" satisfies PageEditorRichTextToolsTextStyles_ClassNames),
-						)}
-					>
-						<MyIconButtonIcon>
-							<item.icon />
-						</MyIconButtonIcon>
-					</MyIconButton>
-				</EditorBubbleItem>
+				<MyIconButton
+					key={item.name}
+					variant="ghost"
+					tooltip={item.tooltip}
+					onClick={() => item.command(editor)}
+					className={cn(
+						item.isActive(editor) &&
+							("PageEditorRichTextToolsTextStyles-active" satisfies PageEditorRichTextToolsTextStyles_ClassNames),
+					)}
+				>
+					<MyIconButtonIcon>
+						<item.icon />
+					</MyIconButtonIcon>
+				</MyIconButton>
 			))}
 		</div>
 	);

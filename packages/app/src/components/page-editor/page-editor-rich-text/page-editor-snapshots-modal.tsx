@@ -59,8 +59,8 @@ export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal-navigation-action";
 
 export type PageEditorSnapshotsModal_Props = {
-	pageId: string;
 	editor: Editor | null;
+	pageId: string;
 };
 
 export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {

@@ -25,6 +25,13 @@ import {
 	EditorCommandList,
 } from "novel";
 import { cn } from "@/lib/utils.ts";
+import type { MyPopover_ClassNames, MyPopoverContent_ClassNames } from "../../my-popover.tsx";
+import type {
+	MyMenuItem_ClassNames,
+	MyMenuItemContentIcon_ClassNames,
+	MyMenuItemContentPrimary_ClassNames,
+	MyMenuItemContentSecondary_ClassNames,
+} from "../../my-menu.tsx";
 
 export type PageEditorRichTextToolsSlashCommand_ClassNames =
 	| "PageEditorRichTextToolsSlashCommand"
@@ -214,75 +221,78 @@ const slashCommand = Command.configure({
 	},
 });
 
-export const PageEditorRichTextToolsSlashCommand = ((/* iife */) => {
-	function PageEditorRichTextToolsSlashCommand() {
-		return (
-			<EditorCommand
-				className={cn("PageEditorRichTextToolsSlashCommand" satisfies PageEditorRichTextToolsSlashCommand_ClassNames)}
+export function PageEditorRichTextToolsSlashCommand() {
+	return (
+		<EditorCommand
+			className={cn(
+				"PageEditorRichTextToolsSlashCommand" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+				"MyPopoverContent" satisfies MyPopoverContent_ClassNames,
+			)}
+		>
+			<EditorCommandEmpty
+				className={cn(
+					"PageEditorRichTextToolsSlashCommand-empty" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+				)}
 			>
-				<EditorCommandEmpty
-					className={cn(
-						"PageEditorRichTextToolsSlashCommand-empty" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
-					)}
-				>
-					No results
-				</EditorCommandEmpty>
-				<EditorCommandList
-					className={cn(
-						"PageEditorRichTextToolsSlashCommand-list" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
-					)}
-				>
-					{suggestionItems.map((item) => (
-						<EditorCommandItem
-							value={item.title}
-							onCommand={(val) => {
-								if (!item?.command) {
-									return;
-								}
+				No results
+			</EditorCommandEmpty>
+			<EditorCommandList
+				className={cn(
+					"PageEditorRichTextToolsSlashCommand-list" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+				)}
+			>
+				{suggestionItems.map((item) => (
+					<EditorCommandItem
+						value={item.title}
+						onCommand={(val) => {
+							if (!item?.command) {
+								return;
+							}
 
-								item.command(val);
-							}}
+							item.command(val);
+						}}
+						className={cn(
+							"PageEditorRichTextToolsSlashCommand-item" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+							"MyMenuItem" satisfies MyMenuItem_ClassNames,
+						)}
+						key={item.title}
+					>
+						<div
 							className={cn(
-								"PageEditorRichTextToolsSlashCommand-item" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+								"PageEditorRichTextToolsSlashCommand-item-icon" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+								"MyMenuItemContentIcon" satisfies MyMenuItemContentIcon_ClassNames,
 							)}
-							key={item.title}
 						>
-							<div
+							{item.icon}
+						</div>
+						<div
+							className={cn(
+								"PageEditorRichTextToolsSlashCommand-item-content" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+							)}
+						>
+							<p
 								className={cn(
-									"PageEditorRichTextToolsSlashCommand-item-icon" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+									"PageEditorRichTextToolsSlashCommand-item-title" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+									"MyMenuItemContentPrimary" satisfies MyMenuItemContentPrimary_ClassNames,
 								)}
 							>
-								{item.icon}
-							</div>
-							<div
+								{item.title}
+							</p>
+							<p
 								className={cn(
-									"PageEditorRichTextToolsSlashCommand-item-content" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+									"PageEditorRichTextToolsSlashCommand-item-description" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
+									"MyMenuItemContentSecondary" satisfies MyMenuItemContentSecondary_ClassNames,
 								)}
 							>
-								<p
-									className={cn(
-										"PageEditorRichTextToolsSlashCommand-item-title" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
-									)}
-								>
-									{item.title}
-								</p>
-								<p
-									className={cn(
-										"PageEditorRichTextToolsSlashCommand-item-description" satisfies PageEditorRichTextToolsSlashCommand_ClassNames,
-									)}
-								>
-									{item.description}
-								</p>
-							</div>
-						</EditorCommandItem>
-					))}
-				</EditorCommandList>
-			</EditorCommand>
-		);
-	}
+								{item.description}
+							</p>
+						</div>
+					</EditorCommandItem>
+				))}
+			</EditorCommandList>
+		</EditorCommand>
+	);
+}
 
-	return Object.assign(PageEditorRichTextToolsSlashCommand, {
-		suggestionItems,
-		slashCommand,
-	});
-})();
+PageEditorRichTextToolsSlashCommand.suggestionItems = suggestionItems;
+PageEditorRichTextToolsSlashCommand.slashCommand = slashCommand;

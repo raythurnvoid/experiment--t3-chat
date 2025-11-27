@@ -1,0 +1,29 @@
+@layer components {
+	.PageEditorRichTextToolsComment {
+		width: 350px;
+
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.PageEditorRichTextToolsComment-form {
+		margin: -1px -1px 0 -1px;
+	}
+
+	.PageEditorRichTextToolsComment-input {
+		position: relative;
+
+		display: flex;
+		gap: 4px;
+
+		padding: 4px;
+	}
+
+	.PageEditorRichTextToolsComment-actions {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 8px;
+	}
+}

@@ -2,31 +2,31 @@ import "./page-editor-rich-text-tools-math-toggle.css";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
 import { SigmaIcon } from "lucide-react";
-import { EditorBubbleItem, useEditor } from "novel";
-import { useEditorState } from "@tiptap/react";
+import { useEditorState, type Editor } from "@tiptap/react";
 
 export type PageEditorRichTextToolsMathToggle_ClassNames =
 	| "PageEditorRichTextToolsMathToggle"
 	| "PageEditorRichTextToolsMathToggle-active";
 
-export function PageEditorRichTextToolsMathToggle() {
+export type PageEditorRichTextToolsMathToggle_Props = {
+	editor: Editor;
+};
+
+export function PageEditorRichTextToolsMathToggle(props: PageEditorRichTextToolsMathToggle_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = useEditor();
+	const { editor } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			if (!editor) return null;
 			return {
 				selection: editor.state.selection,
 			};
 		},
 	});
-
-	if (!editor) return null;
 
 	const isActive = editor.isActive("math");
 
@@ -45,20 +45,19 @@ export function PageEditorRichTextToolsMathToggle() {
 
 	return (
 		<div className={cn("PageEditorRichTextToolsMathToggle" satisfies PageEditorRichTextToolsMathToggle_ClassNames)}>
-			<EditorBubbleItem onSelect={handleClick}>
-				<MyIconButton
-					variant="ghost"
-					tooltip="Math"
-					className={cn(
-						isActive &&
-							("PageEditorRichTextToolsMathToggle-active" satisfies PageEditorRichTextToolsMathToggle_ClassNames),
-					)}
-				>
-					<MyIconButtonIcon>
-						<SigmaIcon strokeWidth={2.3} />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</EditorBubbleItem>
+			<MyIconButton
+				variant="ghost"
+				tooltip="Math"
+				onClick={handleClick}
+				className={cn(
+					isActive &&
+						("PageEditorRichTextToolsMathToggle-active" satisfies PageEditorRichTextToolsMathToggle_ClassNames),
+				)}
+			>
+				<MyIconButtonIcon>
+					<SigmaIcon strokeWidth={2.3} />
+				</MyIconButtonIcon>
+			</MyIconButton>
 		</div>
 	);
 }

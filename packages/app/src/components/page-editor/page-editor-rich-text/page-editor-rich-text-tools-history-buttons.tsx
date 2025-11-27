@@ -1,20 +1,23 @@
 import "./page-editor-rich-text-tools-history-buttons.css";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
+import type { Editor } from "@tiptap/react";
 import { Redo, Undo } from "lucide-react";
-import { EditorBubbleItem, useEditor } from "novel";
 
 export type PageEditorRichTextToolsHistoryButtons_ClassNames =
 	| "PageEditorRichTextToolsHistoryButtons"
 	| "PageEditorRichTextToolsHistoryButtons-undo"
 	| "PageEditorRichTextToolsHistoryButtons-redo";
 
-export function PageEditorRichTextToolsHistoryButtons() {
+export type PageEditorRichTextToolsHistoryButtons_Props = {
+	editor: Editor;
+};
+
+export function PageEditorRichTextToolsHistoryButtons(props: PageEditorRichTextToolsHistoryButtons_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = useEditor();
-	if (!editor) return null;
+	const { editor } = props;
 
 	const canUndo = editor.can().chain().focus().undo().run();
 	const canRedo = editor.can().chain().focus().redo().run();
@@ -31,34 +34,32 @@ export function PageEditorRichTextToolsHistoryButtons() {
 		<div
 			className={cn("PageEditorRichTextToolsHistoryButtons" satisfies PageEditorRichTextToolsHistoryButtons_ClassNames)}
 		>
-			<EditorBubbleItem onSelect={handleUndo}>
-				<MyIconButton
-					variant="ghost"
-					tooltip="Undo (Ctrl+Z)"
-					disabled={!canUndo}
-					className={cn(
-						"PageEditorRichTextToolsHistoryButtons-undo" satisfies PageEditorRichTextToolsHistoryButtons_ClassNames,
-					)}
-				>
-					<MyIconButtonIcon>
-						<Undo />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</EditorBubbleItem>
-			<EditorBubbleItem onSelect={handleRedo}>
-				<MyIconButton
-					variant="ghost"
-					tooltip="Redo (Ctrl+Y)"
-					disabled={!canRedo}
-					className={cn(
-						"PageEditorRichTextToolsHistoryButtons-redo" satisfies PageEditorRichTextToolsHistoryButtons_ClassNames,
-					)}
-				>
-					<MyIconButtonIcon>
-						<Redo />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</EditorBubbleItem>
+			<MyIconButton
+				variant="ghost"
+				tooltip="Undo (Ctrl+Z)"
+				disabled={!canUndo}
+				onClick={handleUndo}
+				className={cn(
+					"PageEditorRichTextToolsHistoryButtons-undo" satisfies PageEditorRichTextToolsHistoryButtons_ClassNames,
+				)}
+			>
+				<MyIconButtonIcon>
+					<Undo />
+				</MyIconButtonIcon>
+			</MyIconButton>
+			<MyIconButton
+				variant="ghost"
+				tooltip="Redo (Ctrl+Y)"
+				disabled={!canRedo}
+				onClick={handleRedo}
+				className={cn(
+					"PageEditorRichTextToolsHistoryButtons-redo" satisfies PageEditorRichTextToolsHistoryButtons_ClassNames,
+				)}
+			>
+				<MyIconButtonIcon>
+					<Redo />
+				</MyIconButtonIcon>
+			</MyIconButton>
 		</div>
 	);
 }

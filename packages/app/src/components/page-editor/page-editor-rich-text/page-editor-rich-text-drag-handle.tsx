@@ -285,7 +285,6 @@ function PageEditorRichTextDragHandleColorSubMenu(props: PageEditorRichTextDragH
 	useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			if (!editor) return null;
 			return {
 				selection: editor.state.selection,
 			};
