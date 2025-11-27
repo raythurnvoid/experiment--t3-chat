@@ -14,6 +14,7 @@ import {
 import { Editor } from "@tiptap/react";
 import { useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { defaultExtensions } from "./extensions.ts";
 import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
 import { PageEditorRichTextToolsLinkSetter } from "./page-editor-rich-text-tools-link-setter.tsx";
@@ -42,6 +43,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
 import { Sparkles } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
+import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -364,6 +366,7 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 
 export type PageEditorRichTextBubble_ClassNames =
 	| "PageEditorRichTextBubble"
+	| "PageEditorRichTextBubble-rendered"
 	| "PageEditorRichTextBubble-content"
 	| "PageEditorRichTextBubble-button"
 	| "PageEditorRichTextBubble-icon";
@@ -381,6 +384,29 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 	const { editor } = useEditor();
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
+	const [rendered, setRendered] = useState(true);
+
+	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
+		if (!editor) {
+			return;
+		}
+
+		// Reset rendered state so it's already `true` on show
+		setRendered(true);
+
+		onOpenChange(false);
+		editor.chain().clearAIHighlight().run();
+	};
+
+	// handle the escape key when the bubble menu or its descendants are focused
+	const handleKeyDown: EditorBubbleProps["onKeyDown"] = (event) => {
+		if (!editor) return;
+
+		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
+			setRendered(false);
+			editor.commands.focus();
+		}
+	};
 
 	useLayoutEffect(() => {
 		if (!editor) return;
@@ -390,21 +416,48 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		}
 	}, [open]);
 
+	// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+
+		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
+
+		const plugin = new Plugin({
+			props: {
+				handleKeyDown: (_view, event) => {
+					if (event.key !== "Escape") {
+						return false;
+					}
+
+					setRendered(false);
+					editor.commands.focus();
+
+					return true;
+				},
+			},
+		});
+
+		editor.registerPlugin(plugin);
+
+		return () => {
+			editor.unregisterPlugin(bubbleEscPluginKey);
+		};
+	}, [editor]);
+
 	return (
 		<EditorBubble
 			ref={bubbleSurfaceRef}
-			className={cn("PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames)}
+			className={cn(
+				"PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames,
+				rendered && ("PageEditorRichTextBubble-rendered" satisfies PageEditorRichTextBubble_ClassNames),
+			)}
 			options={{
 				placement: "bottom-start",
-				onHide: () => {
-					if (!editor) {
-						return;
-					}
-
-					onOpenChange(false);
-					editor.chain().clearAIHighlight().run();
-				},
+				onHide: handleHide,
 			}}
+			onKeyDown={handleKeyDown}
 		>
 			<div
 				ref={(inst) => {

@@ -242,6 +242,10 @@
 		font-size: 0.9rem;
 	}
 
+	.PageEditorRichTextBubble:not(.PageEditorRichTextBubble-rendered) {
+		display: none;
+	}
+
 	.PageEditorRichTextBubble-content {
 		display: flex;
 
