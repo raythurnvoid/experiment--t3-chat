@@ -21,7 +21,7 @@
 
 	/* Focus ring */
 	.MyInput:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) .MyInputBox {
-		border-color: var(--ring);
+		border-color: var(--color-fg-12);
 	}
 
 	/* Invalid state ring */

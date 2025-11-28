@@ -6,7 +6,7 @@
 
 	/* Focus ring for combobox input - matches MyInput focus behavior */
 	.MyComboboxInput:has(.MyInputControl:focus-visible) .MyInputBox {
-		border-color: var(--ring);
+		border-color: var(--color-fg-12);
 	}
 
 	/* Invalid state ring - matches MyInput invalid behavior */
@@ -109,10 +109,10 @@
 		padding: 8px 8px 4px 8px;
 		font-size: 0.75em;
 		font-weight: 500;
-		color: var(--gray-600);
+		color: var(--color-fg-07);
 
 		@media (prefers-color-scheme: dark) {
-			color: var(--gray-400);
+			color: var(--color-fg-05);
 		}
 	}
 

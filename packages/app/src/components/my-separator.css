@@ -3,7 +3,7 @@
 		box-sizing: border-box;
 		flex-shrink: 0;
 
-		background: var(--gray-300);
+		background: var(--color-fg-03);
 
 		align-self: stretch;
 	}
