@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useEffectEvent } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -25,7 +25,7 @@ import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-t
 import { MySeparator, type MySeparator_ClassNames } from "@/components/my-separator.tsx";
 import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
-import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx.tsx";
+import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn } from "@/lib/utils.ts";
@@ -37,7 +37,7 @@ import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
 import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-comment.tsx";
 import { Sparkles, MessageSquarePlus } from "lucide-react";
@@ -133,54 +133,23 @@ export type PageEditorRichTextBubble_ClassNames =
 
 export type PageEditorRichTextBubble_Props = {
 	editor: Editor;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
 };
 
 export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
-	const { editor, open, onOpenChange } = props;
+	const { editor } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
+	const isShownRef = useRef(false);
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 	const [rendered, setRendered] = useState(true);
+
 	const [openComment, setOpenComment] = useState(false);
+	const [openAi, setOpenAi] = useState(false);
 
-	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
-		if (!editor) {
-			return;
-		}
-
-		// Reset rendered state so it's already `true` on show
-		setRendered(true);
-
-		onOpenChange(false);
-		setOpenComment(false);
-		editor.chain().clearAIHighlight().run();
-	};
-
-	// handle the escape key when the bubble menu or its descendants are focused
-	const handleKeyDown: EditorBubbleProps["onKeyDown"] = (event) => {
-		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
-			setRendered(false);
-			editor.commands.focus();
-		}
-	};
-
-	useLayoutEffect(() => {
-		if (!open) {
-			editor.chain().clearAIHighlight().run();
-		}
-	}, [open]);
-
-	// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
-	useEffect(() => {
-		if (!editor) {
-			return;
-		}
-
+	const handleMount = useEffectEvent(() => {
+		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
 		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
-
 		const plugin = new Plugin({
 			props: {
 				handleKeyDown: (_view, event) => {
@@ -195,13 +164,69 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				},
 			},
 		});
-
 		editor.registerPlugin(plugin);
+
+		// Listen for selection updates and reapply the decoration highlight if the bubble menu is shown
+		const handleSelectionUpdate = () => {
+			if (
+				isShownRef.current &&
+				rendered &&
+				!editor.state.selection.empty &&
+				editor.state.selection.from !== editor.state.selection.to
+			) {
+				editor.commands.setAIHighlight();
+			}
+		};
+		editor.on("selectionUpdate", handleSelectionUpdate);
 
 		return () => {
 			editor.unregisterPlugin(bubbleEscPluginKey);
+			editor.off("selectionUpdate", handleSelectionUpdate);
 		};
-	}, [editor]);
+	});
+
+	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
+		isShownRef.current = false;
+
+		// Reset rendered state so it's already `true` on show
+		setRendered(true);
+
+		setOpenAi(false);
+		setOpenComment(false);
+		editor.chain().clearAIHighlight().focus().run();
+	};
+
+	const handleShow: NonNullable<EditorBubbleProps["options"]>["onShow"] = () => {
+		isShownRef.current = true;
+
+		editor.commands.setAIHighlight();
+	};
+
+	// handle the escape key when the bubble menu or its descendants are focused
+	const handleKeyDown: EditorBubbleProps["onKeyDown"] = (event) => {
+		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
+			setRendered(false);
+			editor.commands.focus();
+		}
+	};
+
+	const handleClickAi: MyButton_Props["onClick"] = () => {
+		setOpenAi(true);
+	};
+
+	const handleClickComment: MyButton_Props["onClick"] = () => {
+		setOpenComment(true);
+	};
+
+	const handleDiscardAi: () => void = () => {
+		setOpenAi(false);
+	};
+
+	const handleCancelComment: () => void = () => {
+		setOpenComment(false);
+	};
+
+	useEffect(handleMount, []);
 
 	return (
 		<EditorBubble
@@ -213,6 +238,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			options={{
 				placement: "bottom-start",
 				onHide: handleHide,
+				onShow: handleShow,
 			}}
 			onKeyDown={handleKeyDown}
 		>
@@ -222,14 +248,14 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				}}
 				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
 			>
-				{open && <PageEditorRichTextToolsInlineAi open={open} onOpenChange={onOpenChange} />}
-				{openComment && <PageEditorRichTextToolsComment onCancel={() => setOpenComment(false)} />}
-				{editor && !open && !openComment && portalElement && (
+				{openAi && <PageEditorRichTextToolsInlineAi editor={editor} onDiscard={handleDiscardAi} />}
+				{openComment && <PageEditorRichTextToolsComment onCancel={handleCancelComment} />}
+				{!openAi && !openComment && portalElement && (
 					<>
 						<MyButton
 							variant="ghost"
 							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
-							onClick={() => onOpenChange(true)}
+							onClick={handleClickAi}
 						>
 							<MyButtonIcon
 								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
@@ -252,10 +278,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 						<MyButton
 							variant="ghost"
 							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
-							onClick={() => {
-								onOpenChange(false);
-								setOpenComment(true);
-							}}
+							onClick={handleClickComment}
 						>
 							<MyButtonIcon
 								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
@@ -295,8 +318,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { className, pageId, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
-
-	const [openAi, setOpenAi] = useState(false);
 
 	const [charsCount, setCharsCount] = useState<number>(0);
 
@@ -449,7 +470,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 										<ImageResizer />
 										<PageEditorRichTextToolsSlashCommand />
 										<PageEditorRichTextDragHandle editor={editor} />
-										<PageEditorRichTextBubble editor={editor} open={openAi} onOpenChange={setOpenAi} />
+										<PageEditorRichTextBubble editor={editor} />
 									</>
 								)
 							}

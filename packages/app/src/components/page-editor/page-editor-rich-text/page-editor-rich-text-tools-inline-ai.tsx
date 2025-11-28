@@ -11,8 +11,7 @@ import {
 	TrashIcon,
 	WrapText,
 } from "lucide-react";
-import { useEditor } from "novel";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { app_fetch_main_api_url } from "../../../lib/fetch.ts";
@@ -32,6 +31,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import { cn } from "@/lib/utils.ts";
+import type { Editor } from "@tiptap/core";
 
 const OPTIONS = {
 	transform: [
@@ -333,13 +333,13 @@ export type PageEditorRichTextToolsInlineAi_ClassNames =
 	| "PageEditorRichTextToolsInlineAi-container";
 
 export type PageEditorRichTextToolsInlineAi_Props = {
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
+	editor: Editor;
+	onDiscard: () => void;
 };
 
 export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsInlineAi_Props) {
-	const { onOpenChange } = props;
-	const { editor } = useEditor();
+	const { editor, onDiscard } = props;
+
 	const [inputValue, setInputValue] = useState("");
 	const formRef = useRef<HTMLFormElement>(null);
 
@@ -361,7 +361,7 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	const hasCompletion = completionInst.completion.length > 0;
 
 	function triggerGeneration(args: { text: string; option: GenerationOption; command?: string }) {
-		if (!editor || !editor.markdown) {
+		if (!editor.markdown) {
 			return;
 		}
 
@@ -378,7 +378,7 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
 		e.preventDefault();
 
-		if (!editor || !editor.markdown) {
+		if (!editor.markdown) {
 			return;
 		}
 
@@ -397,7 +397,7 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	};
 
 	const handleOptionSelect = (option: GenerationOptionSelectable) => {
-		if (!editor || !editor.markdown) {
+		if (!editor.markdown) {
 			return;
 		}
 
@@ -422,10 +422,6 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	};
 
 	const handleReplaceSelection = () => {
-		if (!editor) {
-			return;
-		}
-
 		const selection = editor.view.state.selection;
 
 		editor
@@ -442,10 +438,6 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	};
 
 	const handleInsertBelow = () => {
-		if (!editor) {
-			return;
-		}
-
 		const selection = editor.view.state.selection;
 		editor
 			.chain()
@@ -455,56 +447,42 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	};
 
 	const handleDiscard = () => {
-		if (!editor) {
-			return;
-		}
-
 		editor.chain().clearAIHighlight().focus().run();
-		onOpenChange(false);
+		onDiscard();
 	};
-
-	useEffect(() => {
-		if (!editor) {
-			return;
-		}
-
-		editor.chain().setAIHighlight().run();
-	}, [editor]);
 
 	return (
 		<MyCombobox value={inputValue} setValue={setInputValue} open={true}>
-			{editor && (
-				<form ref={formRef} onSubmit={handleSubmit}>
-					<div
-						className={cn(
-							"PageEditorRichTextToolsInlineAi-container" satisfies PageEditorRichTextToolsInlineAi_ClassNames,
-						)}
-					>
-						{(hasCompletion || isLoading) && (
-							<PageEditorRichTextToolsInlineAiCompletionPreview
-								completion={completionInst.completion}
-								isLoading={isLoading}
-							/>
-						)}
+			<form ref={formRef} onSubmit={handleSubmit}>
+				<div
+					className={cn(
+						"PageEditorRichTextToolsInlineAi-container" satisfies PageEditorRichTextToolsInlineAi_ClassNames,
+					)}
+				>
+					{(hasCompletion || isLoading) && (
+						<PageEditorRichTextToolsInlineAiCompletionPreview
+							completion={completionInst.completion}
+							isLoading={isLoading}
+						/>
+					)}
 
-						<PageEditorRichTextToolsInlineAiInputArea
-							placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
+					<PageEditorRichTextToolsInlineAiInputArea
+						placeholder={hasCompletion ? "Tell AI what to do next" : "Ask AI to edit or generate..."}
+						disabled={isLoading}
+					/>
+
+					{hasCompletion || isLoading ? (
+						<PageEditorRichTextToolsInlineAiGenerationActions
+							onReplaceSelection={handleReplaceSelection}
+							onInsertBelow={handleInsertBelow}
+							onDiscard={handleDiscard}
 							disabled={isLoading}
 						/>
-
-						{hasCompletion || isLoading ? (
-							<PageEditorRichTextToolsInlineAiGenerationActions
-								onReplaceSelection={handleReplaceSelection}
-								onInsertBelow={handleInsertBelow}
-								onDiscard={handleDiscard}
-								disabled={isLoading}
-							/>
-						) : (
-							<PageEditorRichTextToolsInlineAiOptionList filter={inputValue} onSelect={handleOptionSelect} />
-						)}
-					</div>
-				</form>
-			)}
+					) : (
+						<PageEditorRichTextToolsInlineAiOptionList filter={inputValue} onSelect={handleOptionSelect} />
+					)}
+				</div>
+			</form>
 		</MyCombobox>
 	);
 }
