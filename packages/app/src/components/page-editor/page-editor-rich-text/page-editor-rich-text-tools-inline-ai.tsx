@@ -447,7 +447,7 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 	};
 
 	const handleDiscard = () => {
-		editor.chain().clearAIHighlight().focus().run();
+		editor.chain().clearDecorationHighlight().focus().run();
 		onDiscard();
 	};
 

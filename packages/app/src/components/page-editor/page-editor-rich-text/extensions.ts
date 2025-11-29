@@ -1,5 +1,5 @@
 import {
-	AIHighlight,
+	DecorationHighlight,
 	CharacterCount,
 	CodeBlockLowlight,
 	Color,
@@ -18,7 +18,7 @@ import { common, createLowlight } from "lowlight";
 import { pages_get_tiptap_shared_extensions } from "@/lib/pages.ts";
 
 //TODO I am using cx here to get tailwind autocomplete working, idk if someone else can write a regex to just capture the class key in objects
-const aiHighlight = AIHighlight;
+const decorationHighlight = DecorationHighlight;
 //You can overwrite the placeholder with your own configuration
 const placeholder = Placeholder;
 
@@ -88,7 +88,7 @@ export const defaultExtensions = [
 	placeholder,
 	taskList,
 	taskItem,
-	aiHighlight,
+	decorationHighlight,
 	codeBlockLowlight,
 	youtube,
 	twitter,

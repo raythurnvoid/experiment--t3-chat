@@ -191,7 +191,7 @@
 			text-align-last: start;
 		}
 
-		[data-ai-highlight] {
+		[data-decoration-highlight] {
 			background-color: var(--color-base-1-10);
 		}
 

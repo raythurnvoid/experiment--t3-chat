@@ -174,7 +174,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				!editor.state.selection.empty &&
 				editor.state.selection.from !== editor.state.selection.to
 			) {
-				editor.commands.setAIHighlight();
+				editor.commands.setDecorationHighlight();
 			}
 		};
 		editor.on("selectionUpdate", handleSelectionUpdate);
@@ -193,13 +193,13 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 		setOpenAi(false);
 		setOpenComment(false);
-		editor.chain().clearAIHighlight().focus().run();
+		editor.chain().clearDecorationHighlight().focus().run();
 	};
 
 	const handleShow: NonNullable<EditorBubbleProps["options"]>["onShow"] = () => {
 		isShownRef.current = true;
 
-		editor.commands.setAIHighlight();
+		editor.commands.setDecorationHighlight();
 	};
 
 	// handle the escape key when the bubble menu or its descendants are focused
