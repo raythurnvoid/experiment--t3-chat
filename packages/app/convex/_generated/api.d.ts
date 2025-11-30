@@ -13,6 +13,7 @@ import type * as ai_docs_temp from "../ai_docs_temp.js";
 import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
+import type * as human_thread_messages from "../human_thread_messages.js";
 import type * as presence from "../presence.js";
 
 import type {
@@ -27,6 +28,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   crons: typeof crons;
   http: typeof http;
+  human_thread_messages: typeof human_thread_messages;
   presence: typeof presence;
 }>;
 

@@ -25,7 +25,7 @@ import {
 	EditorCommandList,
 } from "novel";
 import { cn } from "@/lib/utils.ts";
-import type { MyPopover_ClassNames, MyPopoverContent_ClassNames } from "../../my-popover.tsx";
+import type { MyPopoverContent_ClassNames } from "../../my-popover.tsx";
 import type {
 	MyMenuItem_ClassNames,
 	MyMenuItemContentIcon_ClassNames,

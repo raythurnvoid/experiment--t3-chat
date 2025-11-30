@@ -1,0 +1,63 @@
+@layer components {
+	.PageEditorRichTextThread {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 12px;
+		border-radius: 8px;
+		background-color: var(--color-bg);
+		border: 1px solid var(--color-border);
+		cursor: pointer;
+		transition:
+			background-color 0.2s,
+			border-color 0.2s;
+	}
+
+	.PageEditorRichTextThread:hover {
+		background-color: var(--color-bg-hover);
+	}
+
+	.PageEditorRichTextThread-active {
+		background-color: var(--color-bg-active);
+		border-color: var(--color-accent);
+	}
+
+	.PageEditorRichTextThread-messages {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.PageEditorRichTextThread-empty {
+		color: var(--color-fg-secondary);
+		font-size: 14px;
+		padding: 8px;
+		text-align: center;
+	}
+
+	.PageEditorRichTextThread-message {
+		padding: 8px;
+		border-radius: 6px;
+		background-color: var(--color-bg-secondary);
+	}
+
+	.PageEditorRichTextThread-message-content {
+		font-size: 14px;
+		line-height: 1.5;
+	}
+
+	.PageEditorRichTextThread-form {
+		margin-top: 8px;
+	}
+
+	.PageEditorRichTextThread-input {
+		position: relative;
+		display: flex;
+		gap: 4px;
+		padding: 4px;
+	}
+
+	.PageEditorRichTextThread-skeleton {
+		margin-top: 8px;
+	}
+}

@@ -287,6 +287,42 @@ const app_convex_schema = defineSchema({
 		page_id: v.string(),
 		scheduled_function_id: v.id("_scheduled_functions"),
 	}).index("by_page_id", ["page_id"]),
+
+	/**
+	 * Human thread messages table - a single table that represents both threads and messages.
+	 * Root messages (thread_id = null) act as thread heads.
+	 * Child messages (thread_id = rootId) form a linked list via parent_id.
+	 */
+	human_thread_messages: defineTable({
+		/** Workspace ID for multi-tenant scoping */
+		workspace_id: v.string(),
+		/** Project ID for multi-tenant scoping */
+		project_id: v.string(),
+		/**
+		 * null → this row is a root message (thread head).
+		 * non-null → this row is a child message belonging to the root whose id is thread_id.
+		 */
+		thread_id: v.union(v.id("human_thread_messages"), v.null()),
+		/**
+		 * null for roots.
+		 * For children: points to the previous message in that thread's linear chain.
+		 */
+		parent_id: v.union(v.id("human_thread_messages"), v.null()),
+		/**
+		 * Only meaningful on roots: id of the last child in the chain, or null if there are no children.
+		 */
+		last_child_id: v.union(v.id("human_thread_messages"), v.null()),
+		/** Soft delete / hide flag, especially for root messages */
+		is_archived: v.boolean(),
+		/** User ID who created this message */
+		created_by: v.string(),
+		/** Markdown content; produced from TipTap rich text on submit */
+		content: v.string(),
+	})
+		.index("by_workspace_project", ["workspace_id", "project_id"])
+		.index("by_workspace_project_and_is_archived", ["workspace_id", "project_id", "is_archived"])
+		.index("by_thread_id", ["thread_id"])
+		.index("by_parent_id", ["parent_id"]),
 });
 
 export default app_convex_schema;

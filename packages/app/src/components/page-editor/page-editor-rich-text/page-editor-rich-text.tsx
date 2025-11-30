@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef, useLayoutEffect, useEffectEvent } from "react";
+import { useState, useEffect, useRef, useEffectEvent } from "react";
 import {
 	EditorContent,
 	EditorRoot,
@@ -11,8 +11,9 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor } from "@tiptap/react";
-import { useLiveblocksExtension, useIsEditorReady } from "@liveblocks/react-tiptap";
+import { useLiveblocksExtension, useIsEditorReady, CommentsExtension } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
+import { useQuery } from "convex/react";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { defaultExtensions } from "./extensions.ts";
 import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
@@ -44,6 +45,7 @@ import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useLiveRef } from "../../../hooks/utils-hooks.ts";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -318,6 +320,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { className, pageId, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
+	const editorRef = useLiveRef(editor);
 
 	const [charsCount, setCharsCount] = useState<number>(0);
 
@@ -325,10 +328,16 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	const updateAndSyncToMonaco = useAction(app_convex_api.ai_docs_temp.update_page_and_sync_to_monaco);
 
+	const [threadIds, setThreadIds] = useState<string[]>([]);
+
+	const syncStatus = useSyncStatus({ smooth: true });
+	const oldSyncValue = useRef(syncStatus);
+	const [syncChanged, setSyncChanged] = useState(false);
+	const isEditorReady = useIsEditorReady();
+
 	const liveblocks = useLiveblocksExtension({
 		initialContent: pages_get_rich_text_initial_content(),
 		field: pages_YJS_DOC_KEYS.richText,
-		comments: true,
 		ai: {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
@@ -346,16 +355,51 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		},
 	});
 
-	const extensions = [...defaultExtensions, PageEditorRichTextToolsSlashCommand.slashCommand, liveblocks];
+	const extensions = [
+		...defaultExtensions,
+		PageEditorRichTextToolsSlashCommand.slashCommand,
+		liveblocks,
+		CommentsExtension.configure({
+			onThreadsChange: setThreadIds,
+		}),
+	];
 
-	const syncStatus = useSyncStatus({ smooth: true });
-	const oldSyncValue = useRef(syncStatus);
-	const [syncChanged, setSyncChanged] = useState(false);
-	const isEditorReady = useIsEditorReady();
+	const threadsQuery = useQuery(
+		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
+		threadIds.length > 0
+			? {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					threadIds,
+					isArchived: false,
+				}
+			: "skip",
+	);
 
 	const currentMarkdownContent = useRef<string | null>(null);
 
-	const handleCreate = ({ editor }: { editor: Editor }) => {
+	const handleThreadsQuery = useEffectEvent(() => {
+		if (!editor || !isEditorReady || !threadsQuery || threadIds.length === 0) {
+			return;
+		}
+
+		const activeThreadIds = new Set(threadsQuery.threads.map((thread) => thread.id as string));
+		const threadsToUpdate = threadIds.map((threadId) => ({
+			threadId,
+			orphan: !activeThreadIds.has(threadId),
+		}));
+
+		if (threadsToUpdate.length > 0) {
+			editorRef.current?.commands.command(({ commands }) => {
+				threadsToUpdate.forEach(({ threadId, orphan }) => {
+					commands.markCommentAsOrphan({ threadId, orphan });
+				});
+				return true;
+			});
+		}
+	});
+
+	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
 		setEditor(editor);
 	};
 
@@ -396,6 +440,8 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			}, 500);
 		}
 	};
+
+	useEffect(handleThreadsQuery, [editor, isEditorReady, threadsQuery]);
 
 	useEffect(() => {
 		// Cleanup save debounce on unmount
@@ -488,7 +534,9 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 						collapsible={false}
 						defaultSize={25}
 					>
-						{editor && <PageEditorRichTextAnchoredComments editor={editor} />}
+						{editor && threadsQuery && (
+							<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
+						)}
 					</Panel>
 				</PanelGroup>
 			</div>

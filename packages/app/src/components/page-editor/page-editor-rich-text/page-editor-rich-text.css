@@ -253,6 +253,8 @@
 
 	.PageEditorRichTextInner-threads-container {
 		contain: strict;
+
+		padding: 16px;
 	}
 
 	.PageEditorRichTextToolbar {
