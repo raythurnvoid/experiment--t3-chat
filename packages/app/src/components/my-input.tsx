@@ -5,6 +5,7 @@ import { createContext, use, useId } from "react";
 import { cn } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
 
+// #region Context
 /**
  * Context for MyInput to share IDs between components
  */
@@ -19,7 +20,9 @@ interface MyInputContext {
  * Context used to share the input field IDs with child components.
  */
 const MyInputContext = createContext<MyInputContext | null>(null);
+// #endregion Context
 
+// #region MyInput
 type MyInput_ClassNames = "MyInput" | "MyInput-variant-surface";
 
 export type MyInput_Props = ComponentPropsWithRef<"div"> & {
@@ -58,7 +61,9 @@ export function MyInput(props: MyInput_Props) {
 		</MyInputContext.Provider>
 	);
 }
+// #endregion MyInput
 
+// #region Label
 type MyInputLabel_ClassNames = "MyInputLabel";
 
 export type MyInputLabel_Props = Omit<ComponentPropsWithRef<"label">, "id">;
@@ -83,7 +88,9 @@ export function MyInputLabel(props: MyInputLabel_Props) {
 		</label>
 	);
 }
+// #endregion Label
 
+// #region HelperText
 type MyInputHelperText_ClassNames = "MyInputHelperText";
 
 export type MyInputHelperText_Props = Omit<ComponentPropsWithRef<"div">, "id">;
@@ -107,7 +114,9 @@ export function MyInputHelperText(props: MyInputHelperText_Props) {
 		</div>
 	);
 }
+// #endregion HelperText
 
+// #region Icon
 export type MyInputIcon_ClassNames = "MyInputIcon";
 
 export type MyInputIcon_Props = ComponentPropsWithRef<typeof MyIcon>;
@@ -117,7 +126,9 @@ export function MyInputIcon(props: MyInputIcon_Props) {
 
 	return <MyIcon className={cn("MyInputIcon" satisfies MyInputIcon_ClassNames, className)} {...rest} />;
 }
+// #endregion Icon
 
+// #region Box
 export type MyInputBox_ClassNames = "MyInputBox";
 
 export type MyInputBox_Props = ComponentPropsWithRef<"div">;
@@ -131,7 +142,9 @@ export function MyInputBox(props: MyInputBox_Props) {
 		</div>
 	);
 }
+// #endregion Box
 
+// #region Area
 export type MyInputArea_ClassNames = "MyInputArea";
 
 export type MyInputArea_Props = ComponentPropsWithRef<"div"> & {
@@ -184,7 +197,9 @@ export function MyInputArea(props: MyInputArea_Props) {
 		</div>
 	);
 }
+// #endregion Area
 
+// #region Control
 export type MyInputControl_ClassNames = "MyInputControl";
 
 export type MyInputControl_Props = Omit<ComponentPropsWithRef<"input">, "size" | "id">;
@@ -206,8 +221,10 @@ export function MyInputControl(props: MyInputControl_Props) {
 		/>
 	);
 }
+// #endregion Control
 
-type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
+// #region TextAreaControl
+export type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 
 export type MyInputTextAreaControl_Props = Omit<ComponentPropsWithRef<"textarea">, "size" | "id">;
 
@@ -228,3 +245,4 @@ export function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
 		/>
 	);
 }
+// #endregion TextAreaControl

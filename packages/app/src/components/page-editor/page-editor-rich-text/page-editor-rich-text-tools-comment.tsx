@@ -1,22 +1,24 @@
 import "./page-editor-rich-text-tools-comment.css";
 import { useEditor } from "novel";
-import { useState, useEffect, type ComponentProps } from "react";
+import { useState, useEffect, type ComponentProps, useRef } from "react";
 import { toast } from "sonner";
 import { useMutation } from "convex/react";
-import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyInput, MyInputBox, MyInputArea, type MyInputControl_ClassNames } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { ArrowUp, X } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
-import { tiptap_text_to_markdown } from "@/lib/tiptap-markdown.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
+import {
+	PageEditorRichTextCommentComposer,
+	type PageEditorRichTextCommentComposer_Ref,
+} from "./page-editor-rich-text-comment-composer.tsx";
 
 export type PageEditorRichTextToolsComment_ClassNames =
 	| "PageEditorRichTextToolsComment"
 	| "PageEditorRichTextToolsComment-form"
 	| "PageEditorRichTextToolsComment-input"
-	| "PageEditorRichTextToolsComment-actions";
+	| "PageEditorRichTextToolsComment-submit-button";
 
 export type PageEditorRichTextToolsComment_Props = {
 	onCancel: () => void;
@@ -28,21 +30,26 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 	const createHumanThreadRoot = useMutation(app_convex_api.human_thread_messages.human_thread_messages_threads_create);
 
 	const { editor } = useEditor();
-	const [text, setText] = useState("");
+	const [content, setContent] = useState("");
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
-	const handleChange: ComponentProps<"input">["onChange"] = (e) => {
-		setText(e.target.value);
+	const formRef = useRef<HTMLFormElement>(null);
+	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref>(null);
+
+	const handleChange = (value: string) => {
+		setContent(value);
 	};
 
 	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
 		e?.preventDefault();
 
-		if (!editor) {
+		if (!editor || !composerRef.current) {
 			return;
 		}
 
-		if (!text.trim()) {
+		const markdownContent = composerRef.current.getMarkdownContent();
+
+		if (!markdownContent.trim()) {
 			toast.error("Write a comment before submitting.");
 			return;
 		}
@@ -56,25 +63,28 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 		setIsSubmitting(true);
 
 		try {
-			// Convert text to markdown
-			const markdownContent = tiptap_text_to_markdown(text.trim());
-
 			// Create a new root message (thread) in Convex
 			const result = await createHumanThreadRoot({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				content: markdownContent,
+				content: markdownContent.trim(),
 			});
 
 			editor.commands.addComment(result.thread_id);
 
-			setText("");
+			setContent("");
 			onCancel();
 		} catch (err: any) {
 			console.error(err);
 			toast.error(err?.message ?? "Failed to create comment");
 		} finally {
 			setIsSubmitting(false);
+		}
+	};
+
+	const handleComposerEnter = () => {
+		if (formRef.current) {
+			formRef.current.requestSubmit();
 		}
 	};
 
@@ -88,6 +98,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 	return (
 		<div className={cn("PageEditorRichTextToolsComment" satisfies PageEditorRichTextToolsComment_ClassNames)}>
 			<form
+				ref={formRef}
 				className={cn("PageEditorRichTextToolsComment-form" satisfies PageEditorRichTextToolsComment_ClassNames)}
 				onSubmit={handleSubmit}
 			>
@@ -96,18 +107,22 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 				>
 					<MyInputBox />
 					<MyInputArea>
-						<MyInputControl
-							type="text"
+						<PageEditorRichTextCommentComposer
+							ref={composerRef}
 							placeholder="Add a comment..."
 							autoFocus
-							disabled={editor?.state.selection.empty}
+							disabled={editor?.state.selection.empty || isSubmitting}
 							onChange={handleChange}
+							onEnter={handleComposerEnter}
 						/>
 					</MyInputArea>
 					<MyIconButton
+						className={cn(
+							"PageEditorRichTextToolsComment-submit-button" satisfies PageEditorRichTextToolsComment_ClassNames,
+						)}
 						type="submit"
 						variant="default"
-						disabled={!text.trim() || editor?.state.selection.empty || isSubmitting}
+						disabled={!content.trim() || editor?.state.selection.empty || isSubmitting}
 					>
 						<MyIconButtonIcon>
 							<ArrowUp />
@@ -115,15 +130,6 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 					</MyIconButton>
 				</MyInput>
 			</form>
-
-			<div className={cn("PageEditorRichTextToolsComment-actions" satisfies PageEditorRichTextToolsComment_ClassNames)}>
-				<MyButton type="button" variant="ghost" onClick={onCancel}>
-					<MyButtonIcon>
-						<X />
-					</MyButtonIcon>
-					Cancel
-				</MyButton>
-			</div>
 		</div>
 	);
 }

@@ -1,0 +1,36 @@
+@layer components {
+	.PageEditorRichTextCommentComposer {
+		align-self: start;
+
+		width: 100%;
+
+		> div,
+		.PageEditorRichTextCommentComposer-editor {
+			width: inherit;
+		}
+	}
+
+	.PageEditorRichTextCommentComposer-editor {
+		padding: 4px 0 4px 0;
+
+		&.MyInputTextAreaControl {
+			resize: none;
+		}
+
+		/* Show placeholder only when the entire editor is empty */
+		p {
+			min-height: 1lh;
+
+			&.PageEditorRichTextCommentComposer-empty-editor::before {
+				content: attr(data-placeholder);
+
+				color: var(--color-fg-07);
+
+				pointer-events: none;
+
+				height: 0;
+				float: left;
+			}
+		}
+	}
+}
