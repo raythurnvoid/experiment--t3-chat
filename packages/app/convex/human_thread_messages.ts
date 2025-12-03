@@ -26,7 +26,7 @@ export const human_thread_messages_threads_create = mutation({
 			parent_id: null,
 			last_child_id: null,
 			is_archived: false,
-			created_by: user.id,
+			created_by: user.name,
 			content: args.content,
 		});
 
@@ -73,7 +73,7 @@ export const human_thread_messages_add = mutation({
 			parent_id: parentId,
 			last_child_id: null, // Children don't track their own children
 			is_archived: false,
-			created_by: user.id,
+			created_by: user.name,
 			content: args.content,
 		});
 

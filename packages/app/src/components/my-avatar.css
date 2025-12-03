@@ -1,0 +1,69 @@
+@layer common_components {
+	.MyAvatar {
+		--MyAvatar-size: 32px;
+
+		display: inline-flex;
+
+		width: var(--MyAvatar-size);
+		height: var(--MyAvatar-size);
+
+		border-radius: var(--MyAvatar-size);
+		contain: strict;
+	}
+
+	.MyAvatarImage,
+	.MyAvatarLoading,
+	.MyAvatarFallback {
+		width: var(--MyAvatar-size);
+		height: var(--MyAvatar-size);
+		border: none;
+	}
+
+	.MyAvatarImage {
+		object-fit: cover;
+
+		.MyAvatar:not(.MyAvatar-loaded) & {
+			visibility: hidden;
+		}
+	}
+
+	.MyAvatarLoading,
+	.MyAvatarFallback {
+		position: absolute;
+		left: 0;
+		top: 0;
+
+		width: var(--MyAvatar-size);
+		height: var(--MyAvatar-size);
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		color: var(--color-fg-11);
+
+		font-size: calc(var(--MyAvatar-size) * 0.5);
+		font-weight: 500;
+		line-height: 1;
+		text-align: center;
+	}
+
+	.MyAvatarLoading {
+		.MyAvatar:not(.MyAvatar-loading) & {
+			display: none;
+		}
+	}
+
+	.MyAvatarFallback {
+		background: var(--color-base-1-06);
+
+		.MyAvatar:not(.MyAvatar-fallback) & {
+			display: none;
+		}
+	}
+
+	.MyAvatarSkeleton {
+		width: 100%;
+		height: 100%;
+	}
+}

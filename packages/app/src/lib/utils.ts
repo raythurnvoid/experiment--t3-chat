@@ -197,3 +197,18 @@ export function string_optional(strings: TemplateStringsArray, ...values: any[])
 
 	return "";
 }
+
+export function compute_fallback_user_name(name: string) {
+	const hasSpaces = name.includes(" ");
+
+	if (hasSpaces) {
+		return name
+			.split(" ")
+			.map((word) => word[0].toUpperCase())
+			.join("");
+	} else if (name.length > 2) {
+		return name.slice(0, 2).toUpperCase();
+	} else {
+		return name[0].toUpperCase();
+	}
+}

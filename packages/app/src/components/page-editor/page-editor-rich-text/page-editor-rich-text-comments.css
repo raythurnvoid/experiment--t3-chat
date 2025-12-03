@@ -36,13 +36,34 @@
 	}
 
 	.PageEditorRichTextThread-message {
-		padding: 8px;
-		border-radius: 6px;
-		background-color: var(--color-bg-secondary);
+		display: grid;
+		grid-template:
+			"avatar header" auto
+			"avatar content" 1fr
+			/ auto 1fr;
+		gap: 4px;
+	}
+
+	.PageEditorRichTextThread-message-avatar {
+		grid-area: avatar;
+
+		width: 32px;
+		height: 32px;
+	}
+
+	.PageEditorRichTextThread-message-header {
+		grid-area: header;
+
+		font-size: 14px;
+
+		small {
+			color: var(--color-fg-07);
+		}
 	}
 
 	.PageEditorRichTextThread-message-content {
-		font-size: 14px;
+		grid-area: content;
+
 		line-height: 1.5;
 	}
 
