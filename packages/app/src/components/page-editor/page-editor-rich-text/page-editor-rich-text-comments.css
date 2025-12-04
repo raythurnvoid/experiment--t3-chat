@@ -1,34 +1,42 @@
 @layer components {
-	.PageEditorRichTextThread {
+	.PageEditorRichTextAnchoredCommentsThread {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+
 		padding: 12px;
+
 		border-radius: 8px;
-		background-color: var(--color-bg);
-		border: 1px solid var(--color-border);
-		cursor: pointer;
+
+		background-color: var(--color-base-1-01);
+		border: 1px solid var(--color-fg-02);
+
 		transition:
 			background-color 0.2s,
 			border-color 0.2s;
+
+		filter: opacity(0.8);
+
+		contain: content;
 	}
 
-	.PageEditorRichTextThread:hover {
-		background-color: var(--color-bg-hover);
+	.PageEditorRichTextAnchoredCommentsThread:hover,
+	.PageEditorRichTextAnchoredCommentsThread-active {
+		background-color: var(--color-base-1-02);
+		filter: opacity(1);
 	}
 
-	.PageEditorRichTextThread-active {
-		background-color: var(--color-bg-active);
-		border-color: var(--color-accent);
+	.PageEditorRichTextAnchoredCommentsThread-active {
+		border-color: var(--color-accent-01);
 	}
 
-	.PageEditorRichTextThread-messages {
+	.PageEditorRichTextAnchoredCommentsThread-messages {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
 	}
 
-	.PageEditorRichTextThread-no-messages-placeholder {
+	.PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -37,8 +45,8 @@
 		height: 49px;
 	}
 
-	.PageEditorRichTextThread-message,
-	.PageEditorRichTextThread-skeleton {
+	.PageEditorRichTextAnchoredCommentsMessage,
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton {
 		display: grid;
 		grid-template:
 			"avatar header" auto
@@ -47,17 +55,17 @@
 		gap: 4px;
 	}
 
-	.PageEditorRichTextThread-message-avatar,
-	.PageEditorRichTextThread-skeleton-avatar {
+	.PageEditorRichTextAnchoredCommentsMessage-avatar,
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton-avatar {
 		grid-area: avatar;
 	}
 
-	.PageEditorRichTextThread-message-header,
-	.PageEditorRichTextThread-skeleton-header {
+	.PageEditorRichTextAnchoredCommentsMessage-header,
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton-header {
 		grid-area: header;
 	}
 
-	.PageEditorRichTextThread-message-header {
+	.PageEditorRichTextAnchoredCommentsMessage-header {
 		font-size: 14px;
 
 		small {
@@ -65,43 +73,49 @@
 		}
 	}
 
-	.PageEditorRichTextThread-message-content,
-	.PageEditorRichTextThread-skeleton-content {
+	.PageEditorRichTextAnchoredCommentsMessage-content,
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton-content {
 		grid-area: content;
 	}
 
-	.PageEditorRichTextThread-message-content {
+	.PageEditorRichTextAnchoredCommentsMessage-content {
 		line-height: 1.5;
 	}
 
-	.PageEditorRichTextThread-form {
-		margin-top: 8px;
+	.PageEditorRichTextAnchoredCommentsForm {
+		margin: -1px -1px 0 -1px;
 	}
 
-	.PageEditorRichTextThread-input {
+	.PageEditorRichTextAnchoredCommentsForm-input {
 		position: relative;
+
 		display: flex;
 		gap: 4px;
+
 		padding: 4px;
 	}
 
-	.PageEditorRichTextThread-skeleton {
+	.PageEditorRichTextAnchoredCommentsForm-submit-button {
+		align-self: end;
+	}
+
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton {
 		height: 49px;
 	}
 
-	.PageEditorRichTextThread-skeleton-avatar {
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton-avatar {
 		width: 32px;
 		height: 32px;
 
 		border-radius: 16px;
 	}
 
-	.PageEditorRichTextThread-skeleton-header {
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton-header {
 		height: 21px;
 		width: 150px;
 	}
 
-	.PageEditorRichTextThread-skeleton-content {
+	.PageEditorRichTextAnchoredCommentsMessageSkeleton-content {
 		height: 24px;
 		width: 80%;
 	}

@@ -1,9 +1,12 @@
+// This and the `page-editor-rich-text-comments.tsx` component should be implemented in
+// a very similar way
+
 import "./page-editor-rich-text-tools-comment.css";
 import { useEditor } from "novel";
 import { useState, useEffect, type ComponentProps, useRef } from "react";
 import { toast } from "sonner";
 import { useMutation } from "convex/react";
-import { MyInput, MyInputBox, MyInputArea, type MyInputControl_ClassNames } from "@/components/my-input.tsx";
+import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
@@ -11,6 +14,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	PageEditorRichTextCommentComposer,
+	type PageEditorRichTextCommentComposer_Props,
 	type PageEditorRichTextCommentComposer_Ref,
 } from "./page-editor-rich-text-comment-composer.tsx";
 
@@ -27,17 +31,25 @@ export type PageEditorRichTextToolsComment_Props = {
 export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsComment_Props) {
 	const { onCancel } = props;
 
-	const createHumanThreadRoot = useMutation(app_convex_api.human_thread_messages.human_thread_messages_threads_create);
+	const createCommentsThread = useMutation(app_convex_api.human_thread_messages.human_thread_messages_threads_create);
 
 	const { editor } = useEditor();
-	const [content, setContent] = useState("");
+	const [isEmpty, setIsEmpty] = useState(true);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
 	const formRef = useRef<HTMLFormElement>(null);
 	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref>(null);
 
-	const handleChange = (value: string) => {
-		setContent(value);
+	const handleChange: PageEditorRichTextCommentComposer_Props["onChange"] = () => {
+		if (!composerRef.current) return;
+
+		setIsEmpty(composerRef.current?.isEmpty());
+	};
+
+	const handleComposerEnter: PageEditorRichTextCommentComposer_Props["onEnter"] = () => {
+		if (!formRef.current) return;
+
+		formRef.current.requestSubmit();
 	};
 
 	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
@@ -47,9 +59,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 			return;
 		}
 
-		const markdownContent = composerRef.current.getMarkdownContent();
-
-		if (!markdownContent.trim()) {
+		if (isEmpty) {
 			toast.error("Write a comment before submitting.");
 			return;
 		}
@@ -60,11 +70,13 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 			return;
 		}
 
+		const markdownContent = composerRef.current.getMarkdownContent();
+
 		setIsSubmitting(true);
 
 		try {
 			// Create a new root message (thread) in Convex
-			const result = await createHumanThreadRoot({
+			const result = await createCommentsThread({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				content: markdownContent.trim(),
@@ -72,19 +84,15 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 
 			editor.commands.addComment(result.thread_id);
 
-			setContent("");
+			composerRef.current?.clear();
+			setIsEmpty(true);
+
 			onCancel();
 		} catch (err: any) {
 			console.error(err);
 			toast.error(err?.message ?? "Failed to create comment");
 		} finally {
 			setIsSubmitting(false);
-		}
-	};
-
-	const handleComposerEnter = () => {
-		if (formRef.current) {
-			formRef.current.requestSubmit();
 		}
 	};
 
@@ -109,7 +117,6 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 					<MyInputArea>
 						<PageEditorRichTextCommentComposer
 							ref={composerRef}
-							placeholder="Add a comment..."
 							autoFocus
 							disabled={editor?.state.selection.empty || isSubmitting}
 							onChange={handleChange}
@@ -122,7 +129,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 						)}
 						type="submit"
 						variant="default"
-						disabled={!content.trim() || editor?.state.selection.empty || isSubmitting}
+						disabled={isEmpty || editor?.state.selection.empty || isSubmitting}
 					>
 						<MyIconButtonIcon>
 							<ArrowUp />

@@ -9,6 +9,7 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
+import { marked } from "marked";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
@@ -50,6 +51,52 @@ export function ai_docs_create_liveblocks_room_id(workspaceId: string, projectId
 }
 
 /**
+ * Shared marked instance configured for pages.
+ *
+ * Configured with GitHub Flavored Markdown enabled and breaks disabled.
+ */
+const pages_marked = ((/* iife */) => {
+	function value() {
+		const instance = marked;
+		instance.setOptions({
+			gfm: true,
+			breaks: false,
+		});
+		return instance;
+	}
+
+	let cache: ReturnType<typeof value>;
+
+	return function pages_marked() {
+		return (cache ??= value());
+	};
+})();
+
+/**
+ * Parse markdown string to HTML.
+ */
+export const pages_parse_markdown_to_html = ((/* iife */) => {
+	function value(markdown: string) {
+		const markedInstance = pages_marked();
+		const result = markedInstance.parse(markdown, { async: false });
+		return result;
+	}
+
+	const cache = new Map<Parameters<typeof value>[0], ReturnType<typeof value>>();
+
+	return function pages_parse_markdown_to_html(markdown: string) {
+		const cachedValue = cache.get(markdown);
+		if (cachedValue) {
+			return cachedValue;
+		}
+
+		const result = value(markdown);
+		cache.set(markdown, result);
+		return result;
+	};
+})();
+
+/**
  * Server-safe Tiptap extensions (no DOM, no React).
  *
  * Shared with client and server code.
@@ -80,10 +127,8 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			textAlign: TextAlign,
 			typography: Typography,
 			markdown: Markdown.configure({
-				markedOptions: {
-					gfm: true,
-					breaks: false,
-				},
+				// @ts-expect-error Tiptap expects another version of marked but this should do fine
+				marked: pages_marked(),
 			}),
 			highlight: Highlight.extend({
 				renderMarkdown: (node, helpers, ctx) => {

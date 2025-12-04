@@ -49,7 +49,8 @@
 			"@tiptap/extension-drag-handle": "3.8.0",
 			"@tiptap/extension-drag-handle-react": "3.8.0",
 			"@tiptap/markdown": "3.8.0",
-			"@tiptap/y-tiptap": "3.0.0"
+			"@tiptap/y-tiptap": "3.0.0",
+			"marked": "17.0.1"
 		}
 	}
 }

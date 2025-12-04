@@ -36,6 +36,7 @@ overrides:
   '@tiptap/extension-drag-handle-react': 3.8.0
   '@tiptap/markdown': 3.8.0
   '@tiptap/y-tiptap': 3.0.0
+  marked: 17.0.1
 
 importers:
 
@@ -350,6 +351,9 @@ importers:
       lucide-react:
         specifier: ^0.544.0
         version: 0.544.0(react@19.2.0)
+      marked:
+        specifier: 17.0.1
+        version: 17.0.1
       minimatch:
         specifier: ^10.0.3
         version: 10.0.3
@@ -1738,8 +1742,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.0(react@19.2.0)
       marked:
-        specifier: ^15.0.11
-        version: 15.0.12
+        specifier: 17.0.1
+        version: 17.0.1
       react:
         specifier: ^18 || ^19 || ^19.0.0-rc
         version: 19.2.0
@@ -8496,13 +8500,8 @@ packages:
   markdown-table@3.0.4:
     resolution: {integrity: sha512-wiYz4+JrLyb/DqW2hkFJxP7Vd7JuTDm77fvbM8VfEQdmSMqcImWeeRbHwZjBjIFki/VaMK2BhFi7oUUZeM5bqw==}
 
-  marked@15.0.12:
-    resolution: {integrity: sha512-8dD6FusOQSrpv9Z1rdNMdlSgQOIP880DHqnohobOmYLElGEqAL/JvxvuxZO16r4HtjTlfPRDC1hbvxC9dPN2nA==}
-    engines: {node: '>= 18'}
-    hasBin: true
-
-  marked@16.4.1:
-    resolution: {integrity: sha512-ntROs7RaN3EvWfy3EZi14H4YxmT6A5YvywfhO+0pm+cH/dnSQRmdAmoFIc3B9aiwTehyk7pESH4ofyBY+V5hZg==}
+  marked@17.0.1:
+    resolution: {integrity: sha512-boeBdiS0ghpWcSwoNm/jJBwdpFaMnZWRzjA6SkUMYb40SVaN1x7mmfGKp0jvexGcx+7y2La5zRZsYFZI6Qpypg==}
     engines: {node: '>= 20'}
     hasBin: true
 
@@ -14568,7 +14567,7 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.8.0(@tiptap/pm@3.8.0)
       '@tiptap/pm': 3.8.0
-      marked: 16.4.1
+      marked: 17.0.1
 
   '@tiptap/pm@3.8.0':
     dependencies:
@@ -18942,9 +18941,7 @@ snapshots:
 
   markdown-table@3.0.4: {}
 
-  marked@15.0.12: {}
-
-  marked@16.4.1: {}
+  marked@17.0.1: {}
 
   math-intrinsics@1.1.0: {}
 

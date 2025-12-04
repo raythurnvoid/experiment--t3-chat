@@ -1,3 +1,7 @@
+// The `PageEditorRichTextAnchoredCommentsForm` subcomponent
+// and the `page-editor-rich-text-tools-comment.tsx` component
+// should be implemented in a very similar way
+
 import "./page-editor-rich-text-comments.css";
 import {
 	AnchoredThreads,
@@ -6,16 +10,20 @@ import {
 } from "@liveblocks/react-tiptap";
 import { cn, compute_fallback_user_name, sx } from "@/lib/utils.ts";
 import type { Editor } from "@tiptap/react";
-import type { human_thread_messages_Thread } from "../../../lib/page-editor-human-thread-bridge.ts";
-import { useState, type ComponentProps } from "react";
+import type { human_thread_messages_Thread } from "../../../lib/human-thread-messages.ts";
+import { useState, useRef, type ComponentProps } from "react";
 import { useQuery, useMutation } from "convex/react";
+import type { Id } from "../../../../convex/_generated/dataModel.js";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { ArrowUp } from "lucide-react";
-import { tiptap_text_to_markdown } from "@/lib/tiptap-markdown.ts";
-import { Response } from "@/components/ai-elements/response.tsx";
 import { toast } from "sonner";
+import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
+import {
+	PageEditorRichTextCommentComposer,
+	type PageEditorRichTextCommentComposer_Props,
+	type PageEditorRichTextCommentComposer_Ref,
+} from "./page-editor-rich-text-comment-composer.tsx";
 import { MySkeleton } from "@/components/ui/my-skeleton.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import {
@@ -25,27 +33,253 @@ import {
 	MyAvatarLoading,
 	MyAvatarSkeleton,
 } from "@/components/my-avatar.tsx";
+import { pages_parse_markdown_to_html } from "@/lib/pages.ts";
+import { useMemo, type HTMLAttributes } from "react";
+
+// #region PageEditorRichTextAnchoredCommentsMessageContent
+type PageEditorRichTextAnchoredCommentsMessageContent_ClassNames = "PageEditorRichTextAnchoredCommentsMessageContent";
+
+type PageEditorRichTextAnchoredCommentsMessageContent_Props = HTMLAttributes<HTMLDivElement> & {
+	markdown: string;
+};
+
+function PageEditorRichTextAnchoredCommentsMessageContent(
+	props: PageEditorRichTextAnchoredCommentsMessageContent_Props,
+) {
+	const { markdown, ...restProps } = props;
+
+	const htmlContent = useMemo(() => {
+		if (!markdown) {
+			return "";
+		}
+		return pages_parse_markdown_to_html(markdown);
+	}, [markdown]);
+
+	return (
+		<div
+			className={cn(
+				"PageEditorRichTextAnchoredCommentsMessageContent" satisfies PageEditorRichTextAnchoredCommentsMessageContent_ClassNames,
+			)}
+			dangerouslySetInnerHTML={{ __html: htmlContent }}
+			{...restProps}
+		/>
+	);
+}
+// #endregion PageEditorRichTextAnchoredCommentsMessageContent
+
+// #region PageEditorRichTextAnchoredCommentsMessage
+type PageEditorRichTextAnchoredCommentsMessage_ClassNames =
+	| "PageEditorRichTextAnchoredCommentsMessage"
+	| "PageEditorRichTextAnchoredCommentsMessage-avatar"
+	| "PageEditorRichTextAnchoredCommentsMessage-header"
+	| "PageEditorRichTextAnchoredCommentsMessage-content";
+
+type PageEditorRichTextAnchoredCommentsMessage_Props = ComponentProps<"div"> & {
+	createdBy: Pick<human_thread_messages_Thread, "created_by">["created_by"];
+	createdAt: Pick<human_thread_messages_Thread, "created_at">["created_at"];
+	content: Pick<human_thread_messages_Thread, "content">["content"];
+	showAvatarLoading: boolean;
+};
+
+function PageEditorRichTextAnchoredCommentsMessage(props: PageEditorRichTextAnchoredCommentsMessage_Props) {
+	const { createdBy, createdAt, content, showAvatarLoading, ...rest } = props;
+
+	return (
+		<div
+			className={cn(
+				"PageEditorRichTextAnchoredCommentsMessage" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames,
+			)}
+			{...rest}
+		>
+			<div
+				className={cn(
+					"PageEditorRichTextAnchoredCommentsMessage-avatar" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames,
+				)}
+			>
+				<MyAvatar>
+					<MyAvatarImage />
+					<MyAvatarFallback>
+						{showAvatarLoading ? compute_fallback_user_name(createdBy) : createdBy.slice(0, 2).toUpperCase()}
+					</MyAvatarFallback>
+					{showAvatarLoading && (
+						<MyAvatarLoading>
+							<MyAvatarSkeleton />
+						</MyAvatarLoading>
+					)}
+				</MyAvatar>
+			</div>
+			<div
+				className={cn(
+					"PageEditorRichTextAnchoredCommentsMessage-header" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames,
+				)}
+			>
+				<b>{createdBy}</b> <small>{format_relative_time(createdAt)}</small>
+			</div>
+			<PageEditorRichTextAnchoredCommentsMessageContent markdown={content} />
+		</div>
+	);
+}
+// #endregion PageEditorRichTextAnchoredCommentsMessage
+
+// #region PageEditorRichTextAnchoredCommentsMessageSkeleton
+type PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames =
+	| "PageEditorRichTextAnchoredCommentsMessageSkeleton"
+	| "PageEditorRichTextAnchoredCommentsMessageSkeleton-avatar"
+	| "PageEditorRichTextAnchoredCommentsMessageSkeleton-header"
+	| "PageEditorRichTextAnchoredCommentsMessageSkeleton-content";
+
+function PageEditorRichTextAnchoredCommentsMessageSkeleton() {
+	return (
+		<div
+			className={cn(
+				"PageEditorRichTextAnchoredCommentsMessageSkeleton" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
+			)}
+		>
+			<MySkeleton
+				className={cn(
+					"PageEditorRichTextAnchoredCommentsMessageSkeleton-avatar" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
+				)}
+			/>
+			<MySkeleton
+				className={cn(
+					"PageEditorRichTextAnchoredCommentsMessageSkeleton-header" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
+				)}
+			/>
+			<MySkeleton
+				className={cn(
+					"PageEditorRichTextAnchoredCommentsMessageSkeleton-content" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
+				)}
+			/>
+		</div>
+	);
+}
+// #endregion PageEditorRichTextAnchoredCommentsMessageSkeleton
+
+// #region Form
+type PageEditorRichTextAnchoredCommentsForm_ClassNames =
+	| "PageEditorRichTextAnchoredCommentsForm"
+	| "PageEditorRichTextAnchoredCommentsForm-input"
+	| "PageEditorRichTextAnchoredCommentsForm-submit-button";
+
+type PageEditorRichTextAnchoredCommentsForm_Props = {
+	threadId: Id<"human_thread_messages">;
+	onSubmit?: () => void;
+};
+
+function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchoredCommentsForm_Props) {
+	const { threadId, onSubmit } = props;
+
+	const addMessage = useMutation(app_convex_api.human_thread_messages.human_thread_messages_add);
+
+	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref>(null);
+	const formRef = useRef<HTMLFormElement>(null);
+	const [isSubmitting, setIsSubmitting] = useState(false);
+	const [isEmpty, setIsEmpty] = useState(true);
+
+	const handleChange: PageEditorRichTextCommentComposer_Props["onChange"] = () => {
+		if (!composerRef.current) return;
+
+		setIsEmpty(composerRef.current?.isEmpty());
+	};
+
+	const handleComposerEnter: PageEditorRichTextCommentComposer_Props["onEnter"] = () => {
+		if (!formRef.current) return;
+
+		formRef.current.requestSubmit();
+	};
+
+	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
+		e?.preventDefault();
+
+		if (!composerRef.current) {
+			return;
+		}
+
+		if (isEmpty) {
+			toast.error("Write a comment before submitting.");
+			return;
+		}
+
+		const markdownContent = composerRef.current.getMarkdownContent();
+
+		if (!threadId) {
+			toast.error("Thread ID is missing.");
+			return;
+		}
+
+		setIsSubmitting(true);
+
+		try {
+			// Add new message to thread
+			await addMessage({
+				rootId: threadId,
+				content: markdownContent.trim(),
+			});
+
+			// Clear the composer
+			composerRef.current?.clear();
+			setIsEmpty(true);
+			onSubmit?.();
+		} catch (e) {
+			const error = e as Error;
+			console.error(error);
+			toast.error(error?.message ?? "Failed to add comment");
+		} finally {
+			setIsSubmitting(false);
+		}
+	};
+
+	return (
+		<form
+			ref={formRef}
+			className={cn(
+				"PageEditorRichTextAnchoredCommentsForm" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames,
+			)}
+			onSubmit={handleSubmit}
+		>
+			<MyInput
+				className={cn(
+					"PageEditorRichTextAnchoredCommentsForm-input" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames,
+				)}
+			>
+				<MyInputBox />
+				<MyInputArea>
+					<PageEditorRichTextCommentComposer
+						ref={composerRef}
+						autoFocus
+						disabled={isSubmitting}
+						onChange={handleChange}
+						onEnter={handleComposerEnter}
+					/>
+				</MyInputArea>
+				<MyIconButton
+					className={cn(
+						"PageEditorRichTextAnchoredCommentsForm-submit-button" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames,
+					)}
+					type="submit"
+					variant="default"
+					disabled={isEmpty || isSubmitting}
+				>
+					<MyIconButtonIcon>
+						<ArrowUp />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</MyInput>
+		</form>
+	);
+}
+// #endregion Form
 
 // #region Thread
-export type PageEditorRichTextAnchoredCommentsThread_ClassNames =
-	| "PageEditorRichTextThread"
-	| "PageEditorRichTextThread-active"
-	| "PageEditorRichTextThread-messages"
-	| "PageEditorRichTextThread-message"
-	| "PageEditorRichTextThread-message-avatar"
-	| "PageEditorRichTextThread-message-header"
-	| "PageEditorRichTextThread-message-content"
-	| "PageEditorRichTextThread-no-messages-placeholder"
-	| "PageEditorRichTextThread-form"
-	| "PageEditorRichTextThread-input"
-	| "PageEditorRichTextThread-skeleton"
-	| "PageEditorRichTextThread-skeleton-avatar"
-	| "PageEditorRichTextThread-skeleton-header"
-	| "PageEditorRichTextThread-skeleton-content";
+type PageEditorRichTextAnchoredCommentsThread_ClassNames =
+	| "PageEditorRichTextAnchoredCommentsThread"
+	| "PageEditorRichTextAnchoredCommentsThread-active"
+	| "PageEditorRichTextAnchoredCommentsThread-messages"
+	| "PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder";
 
-export type PageEditorRichTextAnchoredCommentsThread_Props = AnchoredThreadComponent_Props & { editor: Editor };
+type PageEditorRichTextAnchoredCommentsThread_Props = AnchoredThreadComponent_Props & { editor: Editor };
 
-function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent_Props & { editor: Editor }) {
+function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAnchoredCommentsThread_Props) {
 	const { thread, isActive, onClick, className, style } = props;
 
 	const messagesQuery = useQuery(
@@ -58,50 +292,6 @@ function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent
 			: "skip",
 	);
 
-	const addMessage = useMutation(app_convex_api.human_thread_messages.human_thread_messages_add);
-
-	const [text, setText] = useState("");
-	const [isSubmitting, setIsSubmitting] = useState(false);
-
-	const handleChange: ComponentProps<"input">["onChange"] = (e) => {
-		setText(e.target.value);
-	};
-
-	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
-		e?.preventDefault();
-
-		if (!text.trim()) {
-			toast.error("Write a comment before submitting.");
-			return;
-		}
-
-		if (!thread.id) {
-			toast.error("Thread ID is missing.");
-			return;
-		}
-
-		setIsSubmitting(true);
-
-		try {
-			// Convert text to markdown
-			const markdownContent = tiptap_text_to_markdown(text.trim());
-
-			// Add new message to thread
-			await addMessage({
-				rootId: thread.id,
-				content: markdownContent,
-			});
-
-			setText("");
-		} catch (e) {
-			const error = e as Error;
-			console.error(error);
-			toast.error(error?.message ?? "Failed to add comment");
-		} finally {
-			setIsSubmitting(false);
-		}
-	};
-
 	const handleClick: ComponentProps<"div">["onClick"] = (e) => {
 		onClick?.(e);
 	};
@@ -109,8 +299,9 @@ function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent
 	return (
 		<div
 			className={cn(
-				"PageEditorRichTextThread" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-				isActive && ("PageEditorRichTextThread-active" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames),
+				"PageEditorRichTextAnchoredCommentsThread" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+				isActive &&
+					("PageEditorRichTextAnchoredCommentsThread-active" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames),
 				className,
 			)}
 			style={style}
@@ -118,142 +309,47 @@ function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent
 		>
 			<div
 				className={cn(
-					"PageEditorRichTextThread-messages" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+					"PageEditorRichTextAnchoredCommentsThread-messages" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
 				)}
 			>
 				{
 					// When not active, show the thread's content from props
 					!isActive ? (
-						<div
-							className={cn(
-								"PageEditorRichTextThread-message" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-							)}
-						>
-							<div
-								className={cn(
-									"PageEditorRichTextThread-message-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-								)}
-							>
-								<MyAvatar>
-									<MyAvatarImage />
-									<MyAvatarFallback>{compute_fallback_user_name(thread.created_by ?? "AN")}</MyAvatarFallback>
-									<MyAvatarLoading>
-										<MyAvatarSkeleton />
-									</MyAvatarLoading>
-								</MyAvatar>
-							</div>
-							<div
-								className={cn(
-									"PageEditorRichTextThread-message-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-								)}
-							>
-								<b>{thread.created_by}</b> <small>{format_relative_time(thread.created_at)}</small>
-							</div>
-							<Response
-								className={cn(
-									"PageEditorRichTextThread-message-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-								)}
-							>
-								{thread.content}
-							</Response>
-						</div>
+						<PageEditorRichTextAnchoredCommentsMessage
+							createdBy={thread.created_by}
+							createdAt={thread.created_at}
+							content={thread.content}
+							showAvatarLoading={true}
+						/>
 					) : // When active but query is still loading, show skeleton + thread content
 					messagesQuery === undefined ? (
 						<>
-							<div
-								className={cn(
-									"PageEditorRichTextThread-message" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-								)}
-							>
-								<div
-									className={cn(
-										"PageEditorRichTextThread-message-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								>
-									<MyAvatar>
-										<MyAvatarImage />
-										<MyAvatarFallback>{(thread.created_by ?? "AN").slice(0, 2).toUpperCase()}</MyAvatarFallback>
-									</MyAvatar>
-								</div>
-								<div
-									className={cn(
-										"PageEditorRichTextThread-message-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								>
-									<b>{thread.created_by}</b> <small>{format_relative_time(thread.created_at)}</small>
-								</div>
-								<Response
-									className={cn(
-										"PageEditorRichTextThread-message-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								>
-									{thread.content}
-								</Response>
-							</div>
-							<div
-								className={cn(
-									"PageEditorRichTextThread-skeleton" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-								)}
-							>
-								<MySkeleton
-									className={cn(
-										"PageEditorRichTextThread-skeleton-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								/>
-								<MySkeleton
-									className={cn(
-										"PageEditorRichTextThread-skeleton-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								/>
-								<MySkeleton
-									className={cn(
-										"PageEditorRichTextThread-skeleton-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								/>
-							</div>
+							<PageEditorRichTextAnchoredCommentsMessage
+								createdBy={thread.created_by}
+								createdAt={thread.created_at}
+								content={thread.content}
+								showAvatarLoading={false}
+							/>
+							<PageEditorRichTextAnchoredCommentsMessageSkeleton />
 						</>
 					) : (
 						<>
 							{
 								// When active and messages loaded, show all messages
 								messagesQuery.messages.map((message) => (
-									<div
+									<PageEditorRichTextAnchoredCommentsMessage
 										key={message._id}
-										className={cn(
-											"PageEditorRichTextThread-message" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-										)}
-									>
-										<div
-											className={cn(
-												"PageEditorRichTextThread-message-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-											)}
-										>
-											<MyAvatar>
-												<MyAvatarImage />
-												<MyAvatarFallback>{(message.created_by ?? "AN").slice(0, 2).toUpperCase()}</MyAvatarFallback>
-											</MyAvatar>
-										</div>
-										<div
-											className={cn(
-												"PageEditorRichTextThread-message-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-											)}
-										>
-											<b>{message.created_by}</b> <small>{format_relative_time(message._creationTime)}</small>
-										</div>
-										<Response
-											className={cn(
-												"PageEditorRichTextThread-message-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-											)}
-										>
-											{message.content}
-										</Response>
-									</div>
+										createdBy={message.created_by}
+										createdAt={message._creationTime}
+										content={message.content}
+										showAvatarLoading={false}
+									/>
 								))
 							}
 							{messagesQuery.messages.length === 1 && (
 								<small
 									className={
-										"PageEditorRichTextThread-no-messages-placeholder" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
+										"PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
 									}
 								>
 									<i>No messages yet</i>
@@ -264,35 +360,7 @@ function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent
 				}
 			</div>
 
-			{isActive && (
-				<form
-					className={cn("PageEditorRichTextThread-form" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames)}
-					onSubmit={handleSubmit}
-				>
-					<MyInput
-						className={cn(
-							"PageEditorRichTextThread-input" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-						)}
-					>
-						<MyInputBox />
-						<MyInputArea>
-							<MyInputControl
-								type="text"
-								placeholder="Add a comment..."
-								autoFocus
-								value={text}
-								onChange={handleChange}
-								disabled={isSubmitting}
-							/>
-						</MyInputArea>
-						<MyIconButton type="submit" variant="default" disabled={!text.trim() || isSubmitting}>
-							<MyIconButtonIcon>
-								<ArrowUp />
-							</MyIconButtonIcon>
-						</MyIconButton>
-					</MyInput>
-				</form>
-			)}
+			{isActive && thread.id && <PageEditorRichTextAnchoredCommentsForm threadId={thread.id} />}
 		</div>
 	);
 }
@@ -314,16 +382,17 @@ export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnch
 	// )
 
 	return (
-		<AnchoredThreads
-			className={cn("PageEditorRichTextAnchoredComments" satisfies PageEditorRichTextAnchoredComments_ClassNames)}
-			editor={editor}
-			threads={threads}
-			components={{ Thread: (props) => <PageEditorRichTextAnchoredCommentsThread {...props} editor={editor} /> }}
-			style={sx({
-				...AnchoredThreads_CssVars_DEFAULTS,
-				"--lb-tiptap-anchored-threads-active-thread-offset": "0px",
-			})}
-		/>
+		<aside className={cn("PageEditorRichTextAnchoredComments" satisfies PageEditorRichTextAnchoredComments_ClassNames)}>
+			<AnchoredThreads
+				editor={editor}
+				threads={threads}
+				components={{ Thread: (props) => <PageEditorRichTextAnchoredCommentsThread {...props} editor={editor} /> }}
+				style={sx({
+					...AnchoredThreads_CssVars_DEFAULTS,
+					"--lb-tiptap-anchored-threads-active-thread-offset": "0px",
+				})}
+			/>
+		</aside>
 	);
 }
 // #endregion PageEditorRichTextAnchoredComments

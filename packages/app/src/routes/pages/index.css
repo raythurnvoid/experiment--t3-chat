@@ -16,7 +16,7 @@
 	.RoutePages-editor-panel {
 		contain: strict;
 		height: 100%;
-		background-color: hsl(var(--background));
+		background-color: var(--color-base-1-03);
 
 		.RoutePages-editor-panel-controls {
 			position: absolute;

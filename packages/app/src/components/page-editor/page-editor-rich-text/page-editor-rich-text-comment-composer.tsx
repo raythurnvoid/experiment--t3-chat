@@ -1,6 +1,6 @@
 import "./page-editor-rich-text-comment-composer.css";
 import { EditorContent, useEditor } from "@tiptap/react";
-import type { Editor } from "@tiptap/core";
+import { isNodeEmpty, type Editor } from "@tiptap/core";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Document } from "@tiptap/extension-document";
@@ -18,6 +18,8 @@ export type PageEditorRichTextCommentComposer_ClassNames =
 
 export interface PageEditorRichTextCommentComposer_Ref {
 	getMarkdownContent: () => string;
+	clear: () => void;
+	isEmpty: () => boolean;
 }
 
 export type PageEditorRichTextCommentComposer_Props = {
@@ -27,7 +29,7 @@ export type PageEditorRichTextCommentComposer_Props = {
 	placeholder?: string;
 	autoFocus?: boolean;
 	disabled?: boolean;
-	onChange?: (markdown: string) => void;
+	onChange?: () => void;
 	onEnter?: () => void;
 };
 
@@ -36,7 +38,7 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 		ref,
 		className,
 		initialValue,
-		placeholder = "Add a comment...",
+		placeholder = "Add a comment",
 		autoFocus = false,
 		disabled = false,
 		onChange,
@@ -91,11 +93,11 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 						"PageEditorRichTextCommentComposer-editor" satisfies PageEditorRichTextCommentComposer_ClassNames,
 						"MyInputTextAreaControl" satisfies MyInputTextAreaControl_ClassNames,
 					),
+					"aria-label": placeholder,
 				},
 			},
 			onUpdate: ({ editor }) => {
-				const markdown = editor.getMarkdown();
-				onChangeRef.current?.(markdown);
+				onChangeRef.current?.();
 			},
 			onCreate: ({ editor }) => {
 				try {
@@ -120,6 +122,11 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 
 	useImperativeHandle(ref, () => ({
 		getMarkdownContent: () => editor?.getMarkdown() ?? "",
+		clear: () => void editor?.commands.clearContent(),
+		isEmpty: () => {
+			if (!editor) return true;
+			return isNodeEmpty(editor.state.doc, { ignoreWhitespace: true });
+		},
 	}));
 
 	return (

@@ -305,6 +305,42 @@ const get_singleton = ((/* iife */) => {
 })();
 ```
 
+### Parametrized functions with memoization
+
+For functions that take parameters and you want to memoize results based on those parameters, use a `Map` to cache results keyed by the input parameters.
+
+The pattern follows the same structure as lazy singletons, but uses a `Map` for caching multiple results:
+
+```ts
+export const pages_parse_markdown_to_html = ((/* iife */) => {
+	function value(markdown: string) {
+		const markedInstance = pages_marked();
+		const result = markedInstance.parse(markdown, { async: false });
+		return result;
+	}
+
+	const cache = new Map<Parameters<typeof value>[0], ReturnType<typeof value>>();
+
+	return function pages_parse_markdown_to_html(markdown: string) {
+		const cachedValue = cache.get(markdown);
+		if (cachedValue) {
+			return cachedValue;
+		}
+
+		const result = value(markdown);
+		cache.set(markdown, result);
+		return result;
+	};
+})();
+```
+
+**Key points:**
+
+- The `value` function accepts the same parameters as the returned function
+- Use a `Map` with appropriate key type (often `string` for single parameter, or a tuple/serialized object for multiple parameters)
+- Cache type uses `ReturnType<typeof value>` for type safety
+- Check cache first, compute and cache if missing, then return
+
 ## No Barrel Exports
 
 - Do not create index.\* barrel files (index.ts, index.tsx, index.js).
