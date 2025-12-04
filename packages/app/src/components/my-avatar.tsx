@@ -9,7 +9,6 @@ import {
 	type ComponentPropsWithRef,
 } from "react";
 import { cn, forward_ref } from "@/lib/utils.ts";
-import { flushSync } from "react-dom";
 import { MySkeleton, type MySkeleton_Props } from "./ui/my-skeleton.tsx";
 
 type ImageLoadingStatus = "loading" | "loaded" | "fallback";
@@ -26,10 +25,17 @@ const AvatarContext = createContext<AvatarContext_Value | null>(null);
 // #region Image
 export type MyAvatarImage_ClassNames = "MyAvatarImage";
 
-export type MyAvatarImage_Props = ComponentPropsWithRef<"img">;
+export type MyAvatarImage_Props = ComponentPropsWithRef<"img"> & {
+	/**
+	 * Delay the fallback state by 100 milliseconds.
+	 *
+	 * @default true
+	 */
+	fallbackDelay?: boolean;
+};
 
 export function MyAvatarImage(props: MyAvatarImage_Props) {
-	const { ref, className, src, srcSet, ...rest } = props;
+	const { ref, className, src, srcSet, fallbackDelay = true, ...rest } = props;
 
 	const context = use(AvatarContext);
 	if (!context) {
@@ -44,15 +50,23 @@ export function MyAvatarImage(props: MyAvatarImage_Props) {
 		if (!imageRef.current) return;
 
 		if (!src && !srcSet) {
-			updateStateTimeout.current = setTimeout(() => {
+			if (fallbackDelay) {
+				updateStateTimeout.current = setTimeout(() => {
+					context.setImageStatus("fallback");
+				}, 100);
+			} else {
 				context.setImageStatus("fallback");
-			}, 100);
+			}
 		} else if (imageRef.current.complete) {
 			context.setImageStatus("loaded");
 		} else {
-			updateStateTimeout.current = setTimeout(() => {
+			if (fallbackDelay) {
+				updateStateTimeout.current = setTimeout(() => {
+					context.setImageStatus("loading");
+				}, 100);
+			} else {
 				context.setImageStatus("loading");
-			}, 100);
+			}
 		}
 
 		return () => {
@@ -62,16 +76,12 @@ export function MyAvatarImage(props: MyAvatarImage_Props) {
 
 	const handleLoad: ComponentProps<"img">["onLoad"] = () => {
 		clearTimeout(updateStateTimeout.current);
-		flushSync(() => {
-			context.setImageStatus("loaded");
-		});
+		context.setImageStatus("loaded");
 	};
 
 	const handleError: ComponentProps<"img">["onError"] = () => {
 		clearTimeout(updateStateTimeout.current);
-		flushSync(() => {
-			context.setImageStatus("fallback");
-		});
+		context.setImageStatus("fallback");
 	};
 
 	return (
