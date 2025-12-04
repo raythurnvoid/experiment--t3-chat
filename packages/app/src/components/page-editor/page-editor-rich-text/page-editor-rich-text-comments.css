@@ -28,14 +28,17 @@
 		gap: 12px;
 	}
 
-	.PageEditorRichTextThread-empty {
-		color: var(--color-fg-secondary);
-		font-size: 14px;
-		padding: 8px;
-		text-align: center;
+	.PageEditorRichTextThread-no-messages-placeholder {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		color: var(--color-fg-07);
+		height: 49px;
 	}
 
-	.PageEditorRichTextThread-message {
+	.PageEditorRichTextThread-message,
+	.PageEditorRichTextThread-skeleton {
 		display: grid;
 		grid-template:
 			"avatar header" auto
@@ -44,16 +47,17 @@
 		gap: 4px;
 	}
 
-	.PageEditorRichTextThread-message-avatar {
+	.PageEditorRichTextThread-message-avatar,
+	.PageEditorRichTextThread-skeleton-avatar {
 		grid-area: avatar;
+	}
 
-		width: 32px;
-		height: 32px;
+	.PageEditorRichTextThread-message-header,
+	.PageEditorRichTextThread-skeleton-header {
+		grid-area: header;
 	}
 
 	.PageEditorRichTextThread-message-header {
-		grid-area: header;
-
 		font-size: 14px;
 
 		small {
@@ -61,9 +65,12 @@
 		}
 	}
 
-	.PageEditorRichTextThread-message-content {
+	.PageEditorRichTextThread-message-content,
+	.PageEditorRichTextThread-skeleton-content {
 		grid-area: content;
+	}
 
+	.PageEditorRichTextThread-message-content {
 		line-height: 1.5;
 	}
 
@@ -79,6 +86,23 @@
 	}
 
 	.PageEditorRichTextThread-skeleton {
-		margin-top: 8px;
+		height: 49px;
+	}
+
+	.PageEditorRichTextThread-skeleton-avatar {
+		width: 32px;
+		height: 32px;
+
+		border-radius: 16px;
+	}
+
+	.PageEditorRichTextThread-skeleton-header {
+		height: 21px;
+		width: 150px;
+	}
+
+	.PageEditorRichTextThread-skeleton-content {
+		height: 24px;
+		width: 80%;
 	}
 }

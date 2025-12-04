@@ -7,8 +7,7 @@ import {
 import { cn, compute_fallback_user_name, sx } from "@/lib/utils.ts";
 import type { Editor } from "@tiptap/react";
 import type { human_thread_messages_Thread } from "../../../lib/page-editor-human-thread-bridge.ts";
-import type { ComponentPropsWithoutRef } from "react";
-import { useEffect, useState, type ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
@@ -32,14 +31,17 @@ export type PageEditorRichTextAnchoredCommentsThread_ClassNames =
 	| "PageEditorRichTextThread"
 	| "PageEditorRichTextThread-active"
 	| "PageEditorRichTextThread-messages"
-	| "PageEditorRichTextThread-empty"
 	| "PageEditorRichTextThread-message"
 	| "PageEditorRichTextThread-message-avatar"
 	| "PageEditorRichTextThread-message-header"
 	| "PageEditorRichTextThread-message-content"
+	| "PageEditorRichTextThread-no-messages-placeholder"
 	| "PageEditorRichTextThread-form"
 	| "PageEditorRichTextThread-input"
-	| "PageEditorRichTextThread-skeleton";
+	| "PageEditorRichTextThread-skeleton"
+	| "PageEditorRichTextThread-skeleton-avatar"
+	| "PageEditorRichTextThread-skeleton-header"
+	| "PageEditorRichTextThread-skeleton-content";
 
 export type PageEditorRichTextAnchoredCommentsThread_Props = AnchoredThreadComponent_Props & { editor: Editor };
 
@@ -100,7 +102,7 @@ function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent
 		}
 	};
 
-	const handleClick: ComponentPropsWithoutRef<"div">["onClick"] = (e) => {
+	const handleClick: ComponentProps<"div">["onClick"] = (e) => {
 		onClick?.(e);
 	};
 
@@ -193,44 +195,71 @@ function PageEditorRichTextAnchoredCommentsThread(props: AnchoredThreadComponent
 									"PageEditorRichTextThread-skeleton" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
 								)}
 							>
-								<MySkeleton className="h-16 w-full" />
+								<MySkeleton
+									className={cn(
+										"PageEditorRichTextThread-skeleton-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+									)}
+								/>
+								<MySkeleton
+									className={cn(
+										"PageEditorRichTextThread-skeleton-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+									)}
+								/>
+								<MySkeleton
+									className={cn(
+										"PageEditorRichTextThread-skeleton-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+									)}
+								/>
 							</div>
 						</>
 					) : (
-						// When active and messages loaded, show all messages
-						messagesQuery.messages.map((message) => (
-							<div
-								key={message._id}
-								className={cn(
-									"PageEditorRichTextThread-message" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-								)}
-							>
-								<div
-									className={cn(
-										"PageEditorRichTextThread-message-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
+						<>
+							{
+								// When active and messages loaded, show all messages
+								messagesQuery.messages.map((message) => (
+									<div
+										key={message._id}
+										className={cn(
+											"PageEditorRichTextThread-message" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+										)}
+									>
+										<div
+											className={cn(
+												"PageEditorRichTextThread-message-avatar" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+											)}
+										>
+											<MyAvatar>
+												<MyAvatarImage />
+												<MyAvatarFallback>{(message.created_by ?? "AN").slice(0, 2).toUpperCase()}</MyAvatarFallback>
+											</MyAvatar>
+										</div>
+										<div
+											className={cn(
+												"PageEditorRichTextThread-message-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+											)}
+										>
+											<b>{message.created_by}</b> <small>{format_relative_time(message._creationTime)}</small>
+										</div>
+										<Response
+											className={cn(
+												"PageEditorRichTextThread-message-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
+											)}
+										>
+											{message.content}
+										</Response>
+									</div>
+								))
+							}
+							{messagesQuery.messages.length === 1 && (
+								<small
+									className={
+										"PageEditorRichTextThread-no-messages-placeholder" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
+									}
 								>
-									<MyAvatar>
-										<MyAvatarImage />
-										<MyAvatarFallback>{(message.created_by ?? "AN").slice(0, 2).toUpperCase()}</MyAvatarFallback>
-									</MyAvatar>
-								</div>
-								<div
-									className={cn(
-										"PageEditorRichTextThread-message-header" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								>
-									<b>{message.created_by}</b> <small>{format_relative_time(message._creationTime)}</small>
-								</div>
-								<Response
-									className={cn(
-										"PageEditorRichTextThread-message-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-									)}
-								>
-									{message.content}
-								</Response>
-							</div>
-						))
+									<i>No messages yet</i>
+								</small>
+							)}
+						</>
 					)
 				}
 			</div>
