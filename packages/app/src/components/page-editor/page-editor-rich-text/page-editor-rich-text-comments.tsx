@@ -57,9 +57,9 @@ function PageEditorRichTextAnchoredCommentsMessageContent(
 
 	return (
 		<div
-			className={cn(
-				"PageEditorRichTextAnchoredCommentsMessageContent" satisfies PageEditorRichTextAnchoredCommentsMessageContent_ClassNames,
-			)}
+			className={
+				"PageEditorRichTextAnchoredCommentsMessageContent" satisfies PageEditorRichTextAnchoredCommentsMessageContent_ClassNames
+			}
 			dangerouslySetInnerHTML={{ __html: htmlContent }}
 			{...restProps}
 		/>
@@ -78,40 +78,36 @@ type PageEditorRichTextAnchoredCommentsMessage_Props = ComponentProps<"div"> & {
 	createdBy: Pick<human_thread_messages_Thread, "created_by">["created_by"];
 	createdAt: Pick<human_thread_messages_Thread, "created_at">["created_at"];
 	content: Pick<human_thread_messages_Thread, "content">["content"];
-	showAvatarLoading: boolean;
+	avatarFallbackDelay: boolean;
 };
 
 function PageEditorRichTextAnchoredCommentsMessage(props: PageEditorRichTextAnchoredCommentsMessage_Props) {
-	const { createdBy, createdAt, content, showAvatarLoading, ...rest } = props;
+	const { createdBy, createdAt, content, avatarFallbackDelay, ...rest } = props;
 
 	return (
 		<div
-			className={cn(
-				"PageEditorRichTextAnchoredCommentsMessage" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames,
-			)}
+			className={
+				"PageEditorRichTextAnchoredCommentsMessage" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames
+			}
 			{...rest}
 		>
 			<div
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsMessage-avatar" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames,
-				)}
+				className={
+					"PageEditorRichTextAnchoredCommentsMessage-avatar" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames
+				}
 			>
 				<MyAvatar>
-					<MyAvatarImage />
-					<MyAvatarFallback>
-						{showAvatarLoading ? compute_fallback_user_name(createdBy) : createdBy.slice(0, 2).toUpperCase()}
-					</MyAvatarFallback>
-					{showAvatarLoading && (
-						<MyAvatarLoading>
-							<MyAvatarSkeleton />
-						</MyAvatarLoading>
-					)}
+					<MyAvatarImage fallbackDelay={avatarFallbackDelay} />
+					<MyAvatarFallback>{compute_fallback_user_name(createdBy)}</MyAvatarFallback>
+					<MyAvatarLoading>
+						<MyAvatarSkeleton />
+					</MyAvatarLoading>
 				</MyAvatar>
 			</div>
 			<div
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsMessage-header" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames,
-				)}
+				className={
+					"PageEditorRichTextAnchoredCommentsMessage-header" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames
+				}
 			>
 				<b>{createdBy}</b> <small>{format_relative_time(createdAt)}</small>
 			</div>
@@ -131,24 +127,24 @@ type PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames =
 function PageEditorRichTextAnchoredCommentsMessageSkeleton() {
 	return (
 		<div
-			className={cn(
-				"PageEditorRichTextAnchoredCommentsMessageSkeleton" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
-			)}
+			className={
+				"PageEditorRichTextAnchoredCommentsMessageSkeleton" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames
+			}
 		>
 			<MySkeleton
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsMessageSkeleton-avatar" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
-				)}
+				className={
+					"PageEditorRichTextAnchoredCommentsMessageSkeleton-avatar" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames
+				}
 			/>
 			<MySkeleton
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsMessageSkeleton-header" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
-				)}
+				className={
+					"PageEditorRichTextAnchoredCommentsMessageSkeleton-header" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames
+				}
 			/>
 			<MySkeleton
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsMessageSkeleton-content" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames,
-				)}
+				className={
+					"PageEditorRichTextAnchoredCommentsMessageSkeleton-content" satisfies PageEditorRichTextAnchoredCommentsMessageSkeleton_ClassNames
+				}
 			/>
 		</div>
 	);
@@ -232,15 +228,13 @@ function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchore
 	return (
 		<form
 			ref={formRef}
-			className={cn(
-				"PageEditorRichTextAnchoredCommentsForm" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames,
-			)}
+			className={"PageEditorRichTextAnchoredCommentsForm" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames}
 			onSubmit={handleSubmit}
 		>
 			<MyInput
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsForm-input" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames,
-				)}
+				className={
+					"PageEditorRichTextAnchoredCommentsForm-input" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames
+				}
 			>
 				<MyInputBox />
 				<MyInputArea>
@@ -253,9 +247,9 @@ function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchore
 					/>
 				</MyInputArea>
 				<MyIconButton
-					className={cn(
-						"PageEditorRichTextAnchoredCommentsForm-submit-button" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames,
-					)}
+					className={
+						"PageEditorRichTextAnchoredCommentsForm-submit-button" satisfies PageEditorRichTextAnchoredCommentsForm_ClassNames
+					}
 					type="submit"
 					variant="default"
 					disabled={isEmpty || isSubmitting}
@@ -274,13 +268,15 @@ function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchore
 type PageEditorRichTextAnchoredCommentsThread_ClassNames =
 	| "PageEditorRichTextAnchoredCommentsThread"
 	| "PageEditorRichTextAnchoredCommentsThread-active"
+	| "PageEditorRichTextAnchoredCommentsThread-content"
+	| "PageEditorRichTextAnchoredCommentsThread-summary"
 	| "PageEditorRichTextAnchoredCommentsThread-messages"
 	| "PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder";
 
 type PageEditorRichTextAnchoredCommentsThread_Props = AnchoredThreadComponent_Props & { editor: Editor };
 
 function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAnchoredCommentsThread_Props) {
-	const { thread, isActive, onClick, className, style } = props;
+	const { thread, isActive, onClick } = props;
 
 	const messagesQuery = useQuery(
 		app_convex_api.human_thread_messages.human_thread_messages_list,
@@ -292,76 +288,93 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 			: "skip",
 	);
 
-	const handleClick: ComponentProps<"div">["onClick"] = (e) => {
-		onClick?.(e);
+	const handleToggle: ComponentProps<"details">["onToggle"] = (e) => {
+		if (e.currentTarget.open) {
+			// @ts-expect-error onClick is a from liveblocks exptect a MouseEvent
+			// but this works fine as well
+			onClick?.(e);
+		}
 	};
 
 	return (
-		<div
+		<details
 			className={cn(
 				"PageEditorRichTextAnchoredCommentsThread" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
 				isActive &&
 					("PageEditorRichTextAnchoredCommentsThread-active" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames),
-				className,
 			)}
-			style={style}
-			onClick={handleClick}
+			open={isActive}
+			onToggle={handleToggle}
 		>
-			<div
-				className={cn(
-					"PageEditorRichTextAnchoredCommentsThread-messages" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames,
-				)}
-			>
-				{
-					// When not active, show the thread's content from props
-					!isActive ? (
-						<PageEditorRichTextAnchoredCommentsMessage
-							createdBy={thread.created_by}
-							createdAt={thread.created_at}
-							content={thread.content}
-							showAvatarLoading={true}
-						/>
-					) : // When active but query is still loading, show skeleton + thread content
-					messagesQuery === undefined ? (
-						<>
-							<PageEditorRichTextAnchoredCommentsMessage
-								createdBy={thread.created_by}
-								createdAt={thread.created_at}
-								content={thread.content}
-								showAvatarLoading={false}
-							/>
-							<PageEditorRichTextAnchoredCommentsMessageSkeleton />
-						</>
-					) : (
-						<>
-							{
-								// When active and messages loaded, show all messages
-								messagesQuery.messages.map((message) => (
-									<PageEditorRichTextAnchoredCommentsMessage
-										key={message._id}
-										createdBy={message.created_by}
-										createdAt={message._creationTime}
-										content={message.content}
-										showAvatarLoading={false}
-									/>
-								))
-							}
-							{messagesQuery.messages.length === 1 && (
-								<small
-									className={
-										"PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
-									}
-								>
-									<i>No messages yet</i>
-								</small>
-							)}
-						</>
-					)
+			{/* When not active, show the thread's content from props */}
+			<summary
+				className={
+					"PageEditorRichTextAnchoredCommentsThread-summary" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
 				}
-			</div>
+				hidden={isActive}
+				aria-description={"Open comments thread"}
+			>
+				<PageEditorRichTextAnchoredCommentsMessage
+					createdBy={thread.created_by}
+					createdAt={thread.created_at}
+					content={thread.content}
+					avatarFallbackDelay
+				/>
+			</summary>
+			<div
+				className={
+					"PageEditorRichTextAnchoredCommentsThread-content" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
+				}
+			>
+				<div
+					className={
+						"PageEditorRichTextAnchoredCommentsThread-messages" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
+					}
+				>
+					{
+						// When active but query is still loading, show skeleton + thread content
+						isActive &&
+							(messagesQuery === undefined ? (
+								<>
+									<PageEditorRichTextAnchoredCommentsMessage
+										createdBy={thread.created_by}
+										createdAt={thread.created_at}
+										content={thread.content}
+										avatarFallbackDelay={false}
+									/>
+									<PageEditorRichTextAnchoredCommentsMessageSkeleton />
+								</>
+							) : (
+								<>
+									{
+										// When active and messages loaded, show all messages
+										messagesQuery.messages.map((message) => (
+											<PageEditorRichTextAnchoredCommentsMessage
+												key={message._id}
+												createdBy={message.created_by}
+												createdAt={message._creationTime}
+												content={message.content}
+												avatarFallbackDelay={message.created_by !== thread.created_by}
+											/>
+										))
+									}
+									{messagesQuery.messages.length === 1 && (
+										<small
+											className={
+												"PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder" satisfies PageEditorRichTextAnchoredCommentsThread_ClassNames
+											}
+										>
+											<i>No messages yet</i>
+										</small>
+									)}
+								</>
+							))
+					}
+				</div>
 
-			{isActive && thread.id && <PageEditorRichTextAnchoredCommentsForm threadId={thread.id} />}
-		</div>
+				{isActive && thread.id && <PageEditorRichTextAnchoredCommentsForm threadId={thread.id} />}
+			</div>
+		</details>
 	);
 }
 // #endregion Thread
@@ -382,7 +395,7 @@ export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnch
 	// )
 
 	return (
-		<aside className={cn("PageEditorRichTextAnchoredComments" satisfies PageEditorRichTextAnchoredComments_ClassNames)}>
+		<aside className={"PageEditorRichTextAnchoredComments" satisfies PageEditorRichTextAnchoredComments_ClassNames}>
 			<AnchoredThreads
 				editor={editor}
 				threads={threads}

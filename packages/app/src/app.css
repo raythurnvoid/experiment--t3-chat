@@ -48,6 +48,20 @@
 		outline: none;
 		text-align: unset;
 	}
+
+	summary {
+		list-style: none;
+		cursor: pointer;
+		outline: none;
+
+		&::marker {
+			display: none;
+		}
+
+		&::-webkit-details-marker {
+			display: none;
+		}
+	}
 }
 
 /* shadcn/ui CSS Variables - Light Mode */
