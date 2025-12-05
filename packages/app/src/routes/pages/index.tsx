@@ -5,6 +5,7 @@ import { PagesSidebar, type PagesSidebar_Props } from "./-components/pages-sideb
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState, useEffect } from "react";
 import { Button } from "../../components/ui/button.tsx";
+import { PageEditorSkeleton } from "../../components/page-editor/page-editor-skeleton.tsx";
 import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
@@ -47,9 +48,7 @@ function RoutePagesContent(props: RoutePagesContent_Props) {
 	const { pageId } = props;
 
 	return (
-		<React.Suspense
-			fallback={<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading editor…</div>}
-		>
+		<React.Suspense fallback={<PageEditorSkeleton />}>
 			{pageId && (
 				<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
 					<PageEditor pageId={pageId} />
