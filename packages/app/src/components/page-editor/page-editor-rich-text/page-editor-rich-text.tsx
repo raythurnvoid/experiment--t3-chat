@@ -45,7 +45,7 @@ import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { useLiveRef } from "../../../hooks/utils-hooks.ts";
+import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -149,6 +149,12 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 	const [openComment, setOpenComment] = useState(false);
 	const [openAi, setOpenAi] = useState(false);
 
+	const renderPromise = useRenderPromise();
+
+	function updateBubbleMenuPosition() {
+		editor.view.dispatch(editor.state.tr.setMeta("bubbleMenu", "updatePosition"));
+	}
+
 	const handleMount = useEffectEvent(() => {
 		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
 		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
@@ -214,17 +220,33 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	const handleClickAi: MyButton_Props["onClick"] = () => {
 		setOpenAi(true);
+
+		// Recalculate the bubble menu position after the AI component is rendered
+		renderPromise
+			.wait()
+			.then(() => {
+				updateBubbleMenuPosition();
+			})
+			.catch(console.error);
 	};
 
 	const handleClickComment: MyButton_Props["onClick"] = () => {
 		setOpenComment(true);
+
+		// Recalculate the bubble menu position after the comment component is rendered
+		renderPromise
+			.wait()
+			.then(() => {
+				updateBubbleMenuPosition();
+			})
+			.catch(console.error);
 	};
 
 	const handleDiscardAi: () => void = () => {
 		setOpenAi(false);
 	};
 
-	const handleCancelComment: () => void = () => {
+	const handleCloseComment: () => void = () => {
 		setOpenComment(false);
 	};
 
@@ -251,7 +273,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
 			>
 				{openAi && <PageEditorRichTextToolsInlineAi editor={editor} onDiscard={handleDiscardAi} />}
-				{openComment && <PageEditorRichTextToolsComment onCancel={handleCancelComment} />}
+				{openComment && <PageEditorRichTextToolsComment onClose={handleCloseComment} />}
 				{!openAi && !openComment && portalElement && (
 					<>
 						<MyButton

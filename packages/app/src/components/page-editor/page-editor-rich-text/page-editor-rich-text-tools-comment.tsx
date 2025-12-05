@@ -25,11 +25,11 @@ export type PageEditorRichTextToolsComment_ClassNames =
 	| "PageEditorRichTextToolsComment-submit-button";
 
 export type PageEditorRichTextToolsComment_Props = {
-	onCancel: () => void;
+	onClose: () => void;
 };
 
 export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsComment_Props) {
-	const { onCancel } = props;
+	const { onClose } = props;
 
 	const createCommentsThread = useMutation(app_convex_api.human_thread_messages.human_thread_messages_threads_create);
 
@@ -87,7 +87,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 			composerRef.current?.clear();
 			setIsEmpty(true);
 
-			onCancel();
+			onClose();
 		} catch (err: any) {
 			console.error(err);
 			toast.error(err?.message ?? "Failed to create comment");
@@ -99,9 +99,9 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 	// Auto-close if selection becomes empty
 	useEffect(() => {
 		if (editor?.state.selection.empty) {
-			onCancel();
+			onClose();
 		}
-	}, [editor?.state.selection.empty, onCancel]);
+	}, [editor?.state.selection.empty, onClose]);
 
 	return (
 		<div className={cn("PageEditorRichTextToolsComment" satisfies PageEditorRichTextToolsComment_ClassNames)}>
