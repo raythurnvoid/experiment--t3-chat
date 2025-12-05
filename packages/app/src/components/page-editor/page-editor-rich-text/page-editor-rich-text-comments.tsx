@@ -8,10 +8,10 @@ import {
 	type AnchoredThreadComponent_Props,
 	AnchoredThreads_CssVars_DEFAULTS,
 } from "@liveblocks/react-tiptap";
-import { cn, compute_fallback_user_name, sx } from "@/lib/utils.ts";
+import { cn, compute_fallback_user_name, forward_ref, sx } from "@/lib/utils.ts";
 import type { Editor } from "@tiptap/react";
 import type { human_thread_messages_Thread } from "../../../lib/human-thread-messages.ts";
-import { useState, useRef, type ComponentProps } from "react";
+import { useState, useRef, type ComponentProps, type Ref } from "react";
 import { useQuery, useMutation } from "convex/react";
 import type { Id } from "../../../../convex/_generated/dataModel.js";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
@@ -19,6 +19,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { ArrowUp } from "lucide-react";
 import { toast } from "sonner";
 import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
+import { useRenderPromise } from "@/hooks/utils-hooks.ts";
 import {
 	PageEditorRichTextCommentComposer,
 	type PageEditorRichTextCommentComposer_Props,
@@ -159,6 +160,7 @@ type PageEditorRichTextAnchoredCommentsForm_ClassNames =
 
 type PageEditorRichTextAnchoredCommentsForm_Props = {
 	threadId: Id<"human_thread_messages">;
+	composerRef?: Ref<PageEditorRichTextCommentComposer_Ref>;
 	onSubmit?: () => void;
 };
 
@@ -167,7 +169,7 @@ function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchore
 
 	const addMessage = useMutation(app_convex_api.human_thread_messages.human_thread_messages_add);
 
-	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref>(null);
+	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
 	const formRef = useRef<HTMLFormElement>(null);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [isEmpty, setIsEmpty] = useState(true);
@@ -239,8 +241,7 @@ function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchore
 				<MyInputBox />
 				<MyInputArea>
 					<PageEditorRichTextCommentComposer
-						ref={composerRef}
-						autoFocus
+						ref={(inst) => forward_ref(inst, composerRef, props.composerRef)}
 						disabled={isSubmitting}
 						onChange={handleChange}
 						onEnter={handleComposerEnter}
@@ -278,6 +279,10 @@ type PageEditorRichTextAnchoredCommentsThread_Props = AnchoredThreadComponent_Pr
 function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAnchoredCommentsThread_Props) {
 	const { thread, isActive, onClick } = props;
 
+	const renderPromise = useRenderPromise();
+
+	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
+
 	const messagesQuery = useQuery(
 		app_convex_api.human_thread_messages.human_thread_messages_list,
 		isActive
@@ -289,11 +294,22 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 	);
 
 	const handleToggle: ComponentProps<"details">["onToggle"] = (e) => {
-		if (e.currentTarget.open) {
-			// @ts-expect-error onClick is a from liveblocks exptect a MouseEvent
-			// but this works fine as well
-			onClick?.(e);
+		// isActive is true it means the open happened from elsewhere and not by
+		// toggling the disclosure element
+		if (!e.currentTarget.open || isActive) {
+			return;
 		}
+
+		renderPromise
+			.wait()
+			.then(() => {
+				composerRef.current?.focus();
+			})
+			.catch(console.error);
+
+		// @ts-expect-error onClick is a from liveblocks exptect a MouseEvent
+		// but this works fine as well
+		onClick?.(e);
 	};
 
 	return (
@@ -372,7 +388,9 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 					}
 				</div>
 
-				{isActive && thread.id && <PageEditorRichTextAnchoredCommentsForm threadId={thread.id} />}
+				{isActive && thread.id && (
+					<PageEditorRichTextAnchoredCommentsForm composerRef={composerRef} threadId={thread.id} />
+				)}
 			</div>
 		</details>
 	);

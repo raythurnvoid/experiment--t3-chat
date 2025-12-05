@@ -1,6 +1,6 @@
 import "./page-editor-rich-text-comment-composer.css";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { isNodeEmpty, type Editor } from "@tiptap/core";
+import { isNodeEmpty, type Editor, type FocusPosition } from "@tiptap/core";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Document } from "@tiptap/extension-document";
@@ -20,6 +20,7 @@ export interface PageEditorRichTextCommentComposer_Ref {
 	getMarkdownContent: () => string;
 	clear: () => void;
 	isEmpty: () => boolean;
+	focus: (position?: FocusPosition) => boolean;
 }
 
 export type PageEditorRichTextCommentComposer_Props = {
@@ -27,7 +28,7 @@ export type PageEditorRichTextCommentComposer_Props = {
 	className?: string;
 	initialValue?: string;
 	placeholder?: string;
-	autoFocus?: boolean;
+	autoFocus?: FocusPosition;
 	disabled?: boolean;
 	onChange?: () => void;
 	onEnter?: () => void;
@@ -85,7 +86,7 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 				}),
 			],
 			immediatelyRender: false,
-			autofocus: autoFocus ? "start" : false,
+			autofocus: autoFocus,
 			editable: !disabled,
 			editorProps: {
 				attributes: {
@@ -96,7 +97,7 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 					"aria-label": placeholder,
 				},
 			},
-			onUpdate: ({ editor }) => {
+			onUpdate: () => {
 				onChangeRef.current?.();
 			},
 			onCreate: ({ editor }) => {
@@ -127,18 +128,21 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 			if (!editor) return true;
 			return isNodeEmpty(editor.state.doc, { ignoreWhitespace: true });
 		},
+		focus: (position = "end") => {
+			if (!editor) return false;
+			editor.commands.focus(position);
+			return true;
+		},
 	}));
 
 	return (
-		editor && (
-			<div
-				className={cn(
-					"PageEditorRichTextCommentComposer" satisfies PageEditorRichTextCommentComposer_ClassNames,
-					className,
-				)}
-			>
-				<EditorContent editor={editor} />
-			</div>
-		)
+		<div
+			className={cn(
+				"PageEditorRichTextCommentComposer" satisfies PageEditorRichTextCommentComposer_ClassNames,
+				className,
+			)}
+		>
+			{editor && <EditorContent editor={editor} />}
+		</div>
 	);
 }
