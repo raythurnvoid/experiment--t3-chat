@@ -199,16 +199,20 @@ export function string_optional(strings: TemplateStringsArray, ...values: any[])
 }
 
 export function compute_fallback_user_name(name: string) {
-	const hasSpaces = name.includes(" ");
+	const trimmedName = name.trim();
+	const hasSpaces = trimmedName.includes(" ");
 
 	if (hasSpaces) {
-		return name
-			.split(" ")
-			.map((word) => word[0].toUpperCase())
-			.join("");
-	} else if (name.length > 2) {
-		return name.slice(0, 2).toUpperCase();
+		const words = trimmedName.split(" ").filter((word) => word.length > 0);
+		if (words.length >= 2) {
+			// First letter of first word + first letter of last word
+			return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+		}
+		// Fallback: if somehow only one word after filtering, use first 2 chars
+		return trimmedName.slice(0, 2).toUpperCase().padEnd(2, trimmedName[0].toUpperCase());
 	} else {
-		return name[0].toUpperCase();
+		// Take first 2 characters, padding with first character if needed
+		const firstTwo = trimmedName.slice(0, 2).toUpperCase();
+		return firstTwo.padEnd(2, trimmedName[0].toUpperCase());
 	}
 }
