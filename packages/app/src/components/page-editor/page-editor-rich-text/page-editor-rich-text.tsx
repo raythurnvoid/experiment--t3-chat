@@ -248,6 +248,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	const handleCloseComment: () => void = () => {
 		setOpenComment(false);
+		setRendered(false);
 	};
 
 	useEffect(handleMount, []);

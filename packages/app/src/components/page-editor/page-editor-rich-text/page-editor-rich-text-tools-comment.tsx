@@ -82,7 +82,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 				content: markdownContent.trim(),
 			});
 
-			editor.commands.addComment(result.thread_id);
+			editor.chain().focus().addComment(result.thread_id).run();
 
 			composerRef.current?.clear();
 			setIsEmpty(true);
