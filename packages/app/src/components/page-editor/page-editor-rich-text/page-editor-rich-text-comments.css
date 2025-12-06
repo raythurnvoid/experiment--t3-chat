@@ -66,6 +66,13 @@
 			"avatar content" 1fr
 			/ auto 1fr;
 		gap: 4px;
+
+		&:has(.PageEditorRichTextAnchoredCommentsMessage-actions) {
+			grid-template:
+				"avatar header actions" auto
+				"avatar content content" 1fr
+				/ auto 1fr auto;
+		}
 	}
 
 	.PageEditorRichTextAnchoredCommentsMessage-avatar,
@@ -78,6 +85,14 @@
 		grid-area: header;
 	}
 
+	.PageEditorRichTextAnchoredCommentsMessage-actions {
+		grid-area: actions;
+
+		display: flex;
+		justify-content: flex-end;
+		align-items: flex-start;
+	}
+
 	.PageEditorRichTextAnchoredCommentsMessage-header {
 		font-size: 14px;
 
@@ -86,12 +101,12 @@
 		}
 	}
 
-	.PageEditorRichTextAnchoredCommentsMessage-content,
+	.PageEditorRichTextAnchoredCommentsMessageContent,
 	.PageEditorRichTextAnchoredCommentsMessageSkeleton-content {
 		grid-area: content;
 	}
 
-	.PageEditorRichTextAnchoredCommentsMessage-content {
+	.PageEditorRichTextAnchoredCommentsMessageContent {
 		line-height: 1.5;
 	}
 

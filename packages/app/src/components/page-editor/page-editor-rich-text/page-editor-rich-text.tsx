@@ -339,6 +339,30 @@ type PageEditorRichTextInner_Props = {
 	headerSlot?: React.ReactNode;
 };
 
+function useThreadsQuery(args: { threadIds: string[] }) {
+	const threadsQuery = useQuery(
+		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
+		args.threadIds.length > 0
+			? {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					threadIds: args.threadIds,
+					isArchived: false,
+				}
+			: "skip",
+	);
+
+	const threadsQueryCache = useRef(threadsQuery);
+
+	if (threadsQuery !== undefined) {
+		// eslint-disable-next-line react-hooks/refs
+		threadsQueryCache.current = threadsQuery;
+	}
+
+	// eslint-disable-next-line react-hooks/refs
+	return threadsQuery ?? threadsQueryCache.current;
+}
+
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { className, pageId, headerSlot } = props;
 
@@ -387,17 +411,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		}),
 	];
 
-	const threadsQuery = useQuery(
-		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
-		threadIds.length > 0
-			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					threadIds,
-					isArchived: false,
-				}
-			: "skip",
-	);
+	const threadsQuery = useThreadsQuery({ threadIds });
 
 	const currentMarkdownContent = useRef<string | null>(null);
 

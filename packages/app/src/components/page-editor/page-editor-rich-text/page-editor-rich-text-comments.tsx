@@ -11,12 +11,12 @@ import {
 import { cn, compute_fallback_user_name, forward_ref, sx } from "@/lib/utils.ts";
 import type { Editor } from "@tiptap/react";
 import type { human_thread_messages_Thread } from "../../../lib/human-thread-messages.ts";
-import { useState, useRef, type ComponentProps, type Ref } from "react";
+import { useState, useRef, type ComponentProps, type Ref, type ReactNode } from "react";
 import { useQuery, useMutation } from "convex/react";
 import type { Id } from "../../../../convex/_generated/dataModel.js";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { ArrowUp } from "lucide-react";
+import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
+import { ArrowUp, Check } from "lucide-react";
 import { toast } from "sonner";
 import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
 import { useRenderPromise } from "@/hooks/utils-hooks.ts";
@@ -73,17 +73,18 @@ type PageEditorRichTextAnchoredCommentsMessage_ClassNames =
 	| "PageEditorRichTextAnchoredCommentsMessage"
 	| "PageEditorRichTextAnchoredCommentsMessage-avatar"
 	| "PageEditorRichTextAnchoredCommentsMessage-header"
-	| "PageEditorRichTextAnchoredCommentsMessage-content";
+	| "PageEditorRichTextAnchoredCommentsMessage-actions";
 
 type PageEditorRichTextAnchoredCommentsMessage_Props = ComponentProps<"div"> & {
 	createdBy: Pick<human_thread_messages_Thread, "created_by">["created_by"];
 	createdAt: Pick<human_thread_messages_Thread, "created_at">["created_at"];
 	content: Pick<human_thread_messages_Thread, "content">["content"];
 	avatarFallbackDelay: boolean;
+	actionsSlot?: ReactNode;
 };
 
 function PageEditorRichTextAnchoredCommentsMessage(props: PageEditorRichTextAnchoredCommentsMessage_Props) {
-	const { createdBy, createdAt, content, avatarFallbackDelay, ...rest } = props;
+	const { createdBy, createdAt, content, avatarFallbackDelay, actionsSlot, ...rest } = props;
 
 	return (
 		<div
@@ -112,6 +113,15 @@ function PageEditorRichTextAnchoredCommentsMessage(props: PageEditorRichTextAnch
 			>
 				<b>{createdBy}</b> <small>{format_relative_time(createdAt)}</small>
 			</div>
+			{actionsSlot && (
+				<div
+					className={
+						"PageEditorRichTextAnchoredCommentsMessage-actions" satisfies PageEditorRichTextAnchoredCommentsMessage_ClassNames
+					}
+				>
+					{actionsSlot}
+				</div>
+			)}
 			<PageEditorRichTextAnchoredCommentsMessageContent markdown={content} />
 		</div>
 	);
@@ -265,11 +275,47 @@ function PageEditorRichTextAnchoredCommentsForm(props: PageEditorRichTextAnchore
 }
 // #endregion Form
 
+// #region ResolveButton
+type PageEditorRichTextAnchoredCommentsResolveButton_ClassNames = "PageEditorRichTextAnchoredCommentsResolveButton";
+
+type PageEditorRichTextAnchoredCommentsResolveButton_Props = {
+	isArchiving: boolean;
+	onClick: () => void;
+};
+
+function PageEditorRichTextAnchoredCommentsResolveButton(props: PageEditorRichTextAnchoredCommentsResolveButton_Props) {
+	const { isArchiving, onClick } = props;
+
+	const handleClick: MyIconButton_Props["onClick"] = (event) => {
+		onClick();
+	};
+
+	return (
+		<MyIconButton
+			className={
+				"PageEditorRichTextAnchoredCommentsResolveButton" satisfies PageEditorRichTextAnchoredCommentsResolveButton_ClassNames
+			}
+			variant="ghost-secondary"
+			tooltip="Mark as resolved"
+			aria-busy={isArchiving}
+			disabled={isArchiving}
+			onClick={handleClick}
+		>
+			<MyIconButtonIcon>
+				<Check />
+			</MyIconButtonIcon>
+		</MyIconButton>
+	);
+}
+// #endregion ResolveButton
+
 // #region Thread
 type PageEditorRichTextAnchoredCommentsThread_ClassNames =
 	| "PageEditorRichTextAnchoredCommentsThread"
 	| "PageEditorRichTextAnchoredCommentsThread-active"
 	| "PageEditorRichTextAnchoredCommentsThread-content"
+	| "PageEditorRichTextAnchoredCommentsThread-actions"
+	| "PageEditorRichTextAnchoredCommentsThread-resolve-button"
 	| "PageEditorRichTextAnchoredCommentsThread-summary"
 	| "PageEditorRichTextAnchoredCommentsThread-messages"
 	| "PageEditorRichTextAnchoredCommentsThread-no-messages-placeholder";
@@ -282,6 +328,10 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 	const renderPromise = useRenderPromise();
 
 	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
+
+	const archiveThread = useMutation(app_convex_api.human_thread_messages.human_thread_messages_archive);
+
+	const [isArchiving, setIsArchiving] = useState(false);
 
 	const messagesQuery = useQuery(
 		app_convex_api.human_thread_messages.human_thread_messages_list,
@@ -312,6 +362,24 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 		onClick?.(e);
 	};
 
+	const handleResolve = async () => {
+		if (!thread.id) {
+			return;
+		}
+
+		setIsArchiving(true);
+		try {
+			await archiveThread({ messageId: thread.id });
+			toast.success("Marked as resolved");
+		} catch (error) {
+			const err = error as Error;
+			console.error(err);
+			toast.error(err?.message ?? "Failed to resolve comment");
+		} finally {
+			setIsArchiving(false);
+		}
+	};
+
 	return (
 		<details
 			className={cn(
@@ -335,6 +403,11 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 					createdAt={thread.created_at}
 					content={thread.content}
 					avatarFallbackDelay
+					actionsSlot={
+						!thread.is_archived && (
+							<PageEditorRichTextAnchoredCommentsResolveButton isArchiving={isArchiving} onClick={handleResolve} />
+						)
+					}
 				/>
 			</summary>
 			<div
@@ -357,6 +430,14 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 										createdAt={thread.created_at}
 										content={thread.content}
 										avatarFallbackDelay={false}
+										actionsSlot={
+											!thread.is_archived && (
+												<PageEditorRichTextAnchoredCommentsResolveButton
+													isArchiving={isArchiving}
+													onClick={handleResolve}
+												/>
+											)
+										}
 									/>
 									<PageEditorRichTextAnchoredCommentsMessageSkeleton />
 								</>
@@ -364,13 +445,22 @@ function PageEditorRichTextAnchoredCommentsThread(props: PageEditorRichTextAncho
 								<>
 									{
 										// When active and messages loaded, show all messages
-										messagesQuery.messages.map((message) => (
+										messagesQuery.messages.map((message, index) => (
 											<PageEditorRichTextAnchoredCommentsMessage
 												key={message._id}
 												createdBy={message.created_by}
 												createdAt={message._creationTime}
 												content={message.content}
 												avatarFallbackDelay={message.created_by !== thread.created_by}
+												actionsSlot={
+													index === 0 &&
+													!thread.is_archived && (
+														<PageEditorRichTextAnchoredCommentsResolveButton
+															isArchiving={isArchiving}
+															onClick={handleResolve}
+														/>
+													)
+												}
 											/>
 										))
 									}
