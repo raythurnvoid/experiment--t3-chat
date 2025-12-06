@@ -22,8 +22,7 @@
 		outline: none;
 
 		&:disabled {
-			pointer-events: none;
-			opacity: 0.5;
+			cursor: default;
 		}
 
 		&:focus-visible {
@@ -133,16 +132,28 @@
 		background: transparent;
 		color: var(--color-fg-09);
 
-		&:hover,
-		&:focus-visible {
-			background: var(--color-base-1-06);
-			color: var(--color-fg-12);
+		&:not(:disabled) {
+			&:hover,
+			&:focus-visible {
+				background: var(--color-base-1-06);
+			}
+		}
+
+		&:disabled {
+			color: var(--color-fg-10);
 		}
 
 		@media (prefers-color-scheme: dark) {
-			&:hover,
-			&:focus-visible {
-				background: var(--color-base-1-04);
+			&:not(:disabled) {
+				&:hover,
+				&:focus-visible {
+					background: var(--color-base-1-04);
+					color: var(--color-fg-09);
+				}
+			}
+
+			&:disabled {
+				color: var(--color-fg-04);
 			}
 		}
 	}
