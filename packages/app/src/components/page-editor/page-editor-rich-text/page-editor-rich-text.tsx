@@ -13,7 +13,6 @@ import {
 import { Editor } from "@tiptap/react";
 import { useLiveblocksExtension, useIsEditorReady, CommentsExtension } from "@liveblocks/react-tiptap";
 import { useSyncStatus } from "@liveblocks/react/suspense";
-import { useQuery } from "convex/react";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { defaultExtensions } from "./extensions.ts";
 import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
@@ -46,6 +45,7 @@ import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handl
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import { useStableQuery } from "@/hooks/convex-hooks.ts";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -339,30 +339,6 @@ type PageEditorRichTextInner_Props = {
 	headerSlot?: React.ReactNode;
 };
 
-function useThreadsQuery(args: { threadIds: string[] }) {
-	const threadsQuery = useQuery(
-		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
-		args.threadIds.length > 0
-			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					threadIds: args.threadIds,
-					isArchived: false,
-				}
-			: "skip",
-	);
-
-	const threadsQueryCache = useRef(threadsQuery);
-
-	if (threadsQuery !== undefined) {
-		// eslint-disable-next-line react-hooks/refs
-		threadsQueryCache.current = threadsQuery;
-	}
-
-	// eslint-disable-next-line react-hooks/refs
-	return threadsQuery ?? threadsQueryCache.current;
-}
-
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { className, pageId, headerSlot } = props;
 
@@ -411,7 +387,17 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		}),
 	];
 
-	const threadsQuery = useThreadsQuery({ threadIds });
+	const threadsQuery = useStableQuery(
+		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
+		threadIds.length > 0
+			? {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					threadIds: threadIds,
+					isArchived: false,
+				}
+			: "skip",
+	);
 
 	const currentMarkdownContent = useRef<string | null>(null);
 
