@@ -324,11 +324,16 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 type PageEditorRichTextInner_ClassNames =
 	| "PageEditorRichTextInner"
 	| "PageEditorRichTextInner-visible"
-	| "PageEditorRichTextInner-editor-container"
-	| "PageEditorRichTextInner-editor-wrapper"
+	| "PageEditorRichTextInner-editor-area"
+	| "PageEditorRichTextInner-editor-panels-group"
+	| "PageEditorRichTextInner-editor-content-panel"
+	| "PageEditorRichTextInner-editor-content-root"
+	| "PageEditorRichTextInner-editor-content-container"
 	| "PageEditorRichTextInner-editor-content"
+	| "PageEditorRichTextInner-panel-resize-handle-container"
 	| "PageEditorRichTextInner-panel-resize-handle"
-	| "PageEditorRichTextInner-threads-container"
+	| "PageEditorRichTextInner-comments-panel"
+	| "PageEditorRichTextInner-comments-panel-background"
 	| "PageEditorRichTextInner-status-badge"
 	| "PageEditorRichTextInner-word-count-badge"
 	| "PageEditorRichTextInner-word-count-badge-hidden";
@@ -503,6 +508,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				)}
 			>
 				{headerSlot}
+
 				{editor && (
 					<PageEditorRichTextToolbar
 						editor={editor}
@@ -512,56 +518,90 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 						pageId={pageId}
 					/>
 				)}
-				<PanelGroup direction="horizontal">
-					<Panel collapsible={false} defaultSize={75}>
-						<EditorContent
-							className={cn("PageEditorRichTextInner-editor-wrapper" satisfies PageEditorRichTextInner_ClassNames)}
-							editorContainerProps={{
-								className: cn("PageEditorRichTextInner-editor-container" satisfies PageEditorRichTextInner_ClassNames),
-							}}
-							editorProps={{
-								attributes: {
-									class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
-								},
-								handleDOMEvents: {
-									keydown: (_view, event) => handleCommandNavigation(event),
-								},
-								handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-								handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-							}}
-							extensions={extensions}
-							immediatelyRender={false}
-							onCreate={handleCreate}
-							onUpdate={handleUpdate}
-							slotAfter={
-								editor && (
-									<>
-										<ImageResizer />
-										<PageEditorRichTextToolsSlashCommand />
-										<PageEditorRichTextDragHandle editor={editor} />
-										<PageEditorRichTextBubble editor={editor} />
-									</>
-								)
-							}
-						></EditorContent>
-					</Panel>
-					<PanelResizeHandle
-						className={cn(
-							"PageEditorRichTextInner-panel-resize-handle" satisfies PageEditorRichTextInner_ClassNames,
-							"MySeparator" satisfies MySeparator_ClassNames,
-							"MySeparator-vertical" satisfies MySeparator_ClassNames,
-						)}
-					/>
-					<Panel
-						className={cn("PageEditorRichTextInner-threads-container" satisfies PageEditorRichTextInner_ClassNames)}
-						collapsible={false}
-						defaultSize={25}
+
+				<div className={cn("PageEditorRichTextInner-editor-area" satisfies PageEditorRichTextInner_ClassNames)}>
+					<PanelGroup
+						direction="horizontal"
+						className={cn("PageEditorRichTextInner-editor-panels-group" satisfies PageEditorRichTextInner_ClassNames)}
+						style={{
+							height: "max-content",
+							overflow: "initial",
+						}}
 					>
-						{editor && threadsQuery && (
-							<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
-						)}
-					</Panel>
-				</PanelGroup>
+						<Panel
+							className={cn(
+								"PageEditorRichTextInner-editor-content-panel" satisfies PageEditorRichTextInner_ClassNames,
+							)}
+							collapsible={false}
+							defaultSize={75}
+						>
+							<EditorContent
+								className={cn(
+									"PageEditorRichTextInner-editor-content-root" satisfies PageEditorRichTextInner_ClassNames,
+								)}
+								editorContainerProps={{
+									className: cn(
+										"PageEditorRichTextInner-editor-content-container" satisfies PageEditorRichTextInner_ClassNames,
+									),
+								}}
+								editorProps={{
+									attributes: {
+										class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
+									},
+									handleDOMEvents: {
+										keydown: (_view, event) => handleCommandNavigation(event),
+									},
+									handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+									handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+								}}
+								extensions={extensions}
+								immediatelyRender={false}
+								onCreate={handleCreate}
+								onUpdate={handleUpdate}
+								slotAfter={
+									editor && (
+										<>
+											<ImageResizer />
+											<PageEditorRichTextToolsSlashCommand />
+											<PageEditorRichTextDragHandle editor={editor} />
+											<PageEditorRichTextBubble editor={editor} />
+										</>
+									)
+								}
+							></EditorContent>
+						</Panel>
+						<div
+							className={cn(
+								"PageEditorRichTextInner-panel-resize-handle-container" satisfies PageEditorRichTextInner_ClassNames,
+							)}
+						>
+							<PanelResizeHandle
+								className={cn(
+									"PageEditorRichTextInner-panel-resize-handle" satisfies PageEditorRichTextInner_ClassNames,
+									"MySeparator" satisfies MySeparator_ClassNames,
+									"MySeparator-vertical" satisfies MySeparator_ClassNames,
+								)}
+							/>
+						</div>
+						<Panel
+							className={cn("PageEditorRichTextInner-comments-panel" satisfies PageEditorRichTextInner_ClassNames)}
+							collapsible={false}
+							defaultSize={25}
+							style={{
+								overflow: "initial",
+							}}
+						>
+							<div
+								className={cn(
+									"PageEditorRichTextInner-comments-panel-background" satisfies PageEditorRichTextInner_ClassNames,
+								)}
+							></div>
+							{editor && threadsQuery && (
+								<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
+							)}
+						</Panel>
+					</PanelGroup>
+				</div>
 			</div>
 			{!isEditorReady && <PageEditorSkeleton />}
 		</>
