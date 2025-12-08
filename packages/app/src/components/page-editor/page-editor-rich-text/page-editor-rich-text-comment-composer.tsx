@@ -85,6 +85,7 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 						"PageEditorRichTextCommentComposer-empty-editor" satisfies PageEditorRichTextCommentComposer_ClassNames,
 				}),
 			],
+			injectCSS: false,
 			immediatelyRender: false,
 			autofocus: autoFocus,
 			editable: !disabled,

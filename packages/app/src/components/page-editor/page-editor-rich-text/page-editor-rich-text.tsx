@@ -539,6 +539,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 								className={cn(
 									"PageEditorRichTextInner-editor-content-root" satisfies PageEditorRichTextInner_ClassNames,
 								)}
+								injectCSS={false}
 								editorContainerProps={{
 									className: cn(
 										"PageEditorRichTextInner-editor-content-container" satisfies PageEditorRichTextInner_ClassNames,
