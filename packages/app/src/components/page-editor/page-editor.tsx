@@ -6,18 +6,30 @@ import { app_fetch_ai_docs_liveblocks_auth } from "@/lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
-import React, { useState, useImperativeHandle, type Ref } from "react";
+import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEvent, useRef } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
 import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
-import { cn } from "@/lib/utils.ts";
+import { cn, should_never_happen } from "@/lib/utils.ts";
 import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { pages_ROOT_ID, ai_docs_create_liveblocks_room_id, type pages_TreeItem } from "@/lib/pages.ts";
+import {
+	pages_ROOT_ID,
+	ai_docs_create_liveblocks_room_id,
+	type pages_TreeItem,
+	pages_PresenceStore,
+} from "@/lib/pages.ts";
 import { Home } from "lucide-react";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
+import {
+	usePresence,
+	usePresenceSessions,
+	usePresenceSessionsData,
+	usePresenceUsersData,
+} from "../../hooks/presence-hooks.ts";
+import { useLiveRef } from "../../hooks/utils-hooks.ts";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -46,6 +58,7 @@ function get_breadcrumb_path(
 	return path;
 }
 
+// #region Header
 type PageEditorHeader_ClassNames =
 	| "PageEditorHeader"
 	| "PageEditorHeader-breadcrumb"
@@ -177,46 +190,26 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 		</div>
 	);
 }
+// #endregion Header
 
-export type PageEditor_ClassNames = "PageEditor" | "PageEditor-editor-container";
-
-export type PageEditor_Ref = {
-	requestOpenDiff: (args: { pageId: string; modifiedEditorValue: string }) => void;
-	getMode: () => PageEditor_Mode;
-};
-
-export type PageEditor_Props = {
-	ref?: Ref<PageEditor_Ref>;
-	pageId: string | null | undefined;
+// #region Inner
+type PageEditorInner_Props = {
+	roomId: string;
+	pageId: string;
 	threadId?: string;
+	editorMode: PageEditor_Mode;
+	presenceStore: pages_PresenceStore;
+	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 };
 
-export function PageEditor(props: PageEditor_Props) {
-	const { ref: refProp, pageId, threadId } = props;
+function PageEditorInner(props: PageEditorInner_Props) {
+	const { roomId, pageId, editorMode, threadId, presenceStore, onEditorModeChange } = props;
 
 	const auth = useAuth();
-	const [editorMode, setEditorMode] = useState<PageEditor_Mode>("rich");
 
 	const handleDiffExit = () => {
-		setEditorMode("rich");
+		onEditorModeChange("rich");
 	};
-
-	useImperativeHandle(
-		refProp,
-		() => ({
-			requestOpenDiff: (_args: { pageId: string; modifiedEditorValue: string }) => {
-				setEditorMode("diff");
-			},
-			getMode: () => editorMode,
-		}),
-		[editorMode],
-	);
-
-	if (!pageId) {
-		return <div>No document selected</div>;
-	}
-
-	const roomId = ai_docs_create_liveblocks_room_id(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, pageId);
 
 	return (
 		<LiveblocksProvider
@@ -246,8 +239,9 @@ export function PageEditor(props: PageEditor_Props) {
 							{editorMode === "rich" ? (
 								<PageEditorRichText
 									pageId={pageId}
+									presenceStore={presenceStore}
 									headerSlot={
-										<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={setEditorMode} />
+										<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
 									}
 								/>
 							) : editorMode === "diff" ? (
@@ -266,5 +260,168 @@ export function PageEditor(props: PageEditor_Props) {
 		</LiveblocksProvider>
 	);
 }
+// #endregion Inner
 
+// #region PresenceSupplier
+
+type PageEditorPresenceSupplier_Props = {
+	userId: string | null | undefined;
+	pageId: string;
+
+	children: (props: {
+		roomId: PageEditorInner_Props["roomId"];
+		presenceStore: PageEditorInner_Props["presenceStore"];
+	}) => React.ReactNode;
+};
+
+function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
+	const { userId, pageId, children } = props;
+
+	const roomId = ai_docs_create_liveblocks_room_id(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, pageId);
+
+	const presence = usePresence({
+		roomId: roomId,
+		userId: userId ?? "",
+	});
+	const presenceRef = useLiveRef(presence);
+
+	const presenceSessions = usePresenceSessions({
+		roomToken: presence.roomToken,
+		userId: userId,
+	});
+
+	const presenceData = usePresenceUsersData({
+		roomToken: presence.roomToken,
+	});
+
+	const presenceSessionsData = usePresenceSessionsData({
+		roomToken: presence.roomToken,
+	});
+
+	const setSessionDataMutation = useMutation(app_convex_api.presence.setSessionData);
+	const setSessionDataDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+	const [presenceStore, setPresenceStore] = useState<pages_PresenceStore | null>(null);
+	const presenceStoreRef = useLiveRef<pages_PresenceStore | null>(presenceStore);
+
+	useEffect(() => {
+		// Reset on room changes so we don't keep rendering the old store while the new session connects.
+		presenceStore?.dispose();
+		setPresenceStore(null);
+	}, [roomId]);
+
+	useEffect(() => {
+		if (
+			presenceSessions &&
+			presenceData &&
+			presenceSessionsData &&
+			presenceRef.current.sessionId &&
+			presenceRef.current.roomToken &&
+			presenceRef.current.sessionToken
+		) {
+			if (presenceStoreRef.current) {
+				presenceStoreRef.current.sync({
+					sessions: presenceSessions,
+					sessionsData: presenceSessionsData,
+					usersRoomData: presenceData,
+				});
+			} else {
+				const presenceStore = new pages_PresenceStore({
+					data: {
+						sessions: presenceSessions,
+						sessionsData: presenceSessionsData,
+						usersRoomData: presenceData,
+					},
+					localSessionId: presenceRef.current.sessionId,
+					onSetSessionData: (data) => {
+						if (!presenceRef.current.sessionToken) {
+							throw should_never_happen("Missing deps", {
+								sessionToken: presenceRef.current.sessionToken,
+							});
+						}
+
+						const localSessionToken = presenceRef.current.sessionToken;
+
+						clearTimeout(setSessionDataDebounce.current);
+						setSessionDataDebounce.current = setTimeout(() => {
+							if (presenceRef.current.sessionToken !== localSessionToken) return;
+
+							setSessionDataMutation({
+								sessionToken: presenceRef.current.sessionToken,
+								data,
+							}).catch((error) => {
+								console.error(error);
+							});
+						}, 100);
+					},
+				});
+				setPresenceStore(presenceStore);
+			}
+		}
+	}, [
+		presenceSessions,
+		presenceData,
+		presenceSessionsData,
+		presence.sessionId,
+		presence.roomToken,
+		presence.sessionToken,
+		setSessionDataMutation,
+	]);
+
+	return presenceStore ? children({ roomId, presenceStore }) : <PageEditorSkeleton />;
+}
+
+// #endregion PresenceSupplier
+
+// #region PageEditor
 export type PageEditor_Mode = "rich" | "markdown" | "diff";
+
+export type PageEditor_ClassNames = "PageEditor" | "PageEditor-editor-container";
+
+export type PageEditor_Ref = {
+	requestOpenDiff: (args: { pageId: string; modifiedEditorValue: string }) => void;
+	getMode: () => PageEditor_Mode;
+};
+
+export type PageEditor_Props = {
+	ref?: Ref<PageEditor_Ref>;
+	pageId: string | null | undefined;
+	threadId?: string;
+};
+
+export function PageEditor(props: PageEditor_Props) {
+	const { ref: refProp, pageId, threadId } = props;
+
+	const auth = useAuth();
+
+	const [editorMode, setEditorMode] = useState<PageEditor_Mode>("rich");
+
+	useImperativeHandle(
+		refProp,
+		() => ({
+			requestOpenDiff: (_args: { pageId: string; modifiedEditorValue: string }) => {
+				setEditorMode("diff");
+			},
+			getMode: () => editorMode,
+		}),
+		[editorMode],
+	);
+
+	return pageId ? (
+		<PageEditorPresenceSupplier userId={auth.userId} pageId={pageId}>
+			{({ roomId, presenceStore }) => (
+				<PageEditorInner
+					roomId={roomId}
+					pageId={pageId}
+					editorMode={editorMode}
+					threadId={threadId}
+					presenceStore={presenceStore}
+					onEditorModeChange={setEditorMode}
+				/>
+			)}
+		</PageEditorPresenceSupplier>
+	) : (
+		<div>No document selected</div>
+	);
+}
+// #endregion PageEditor

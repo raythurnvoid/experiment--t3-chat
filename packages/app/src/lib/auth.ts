@@ -49,6 +49,8 @@ export function auth_set_token_manager(retriever: AuthTokenManager) {
 	auth_token_manager.resolve(retriever);
 }
 
+export type useAuth_Value = ReturnType<typeof useAuth>;
+
 export function useAuth() {
 	const clerk_auth = useClerkAuth();
 

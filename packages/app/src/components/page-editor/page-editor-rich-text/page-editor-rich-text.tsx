@@ -35,8 +35,10 @@ import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { pages_get_rich_text_initial_content, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
+import { app_convex_api, app_convex } from "@/lib/app-convex-client.ts";
+import { pages_get_rich_text_initial_content, pages_PresenceStore, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
+import { useAuth } from "@/lib/auth.ts";
+import { ai_docs_create_liveblocks_room_id } from "../../../../shared/pages.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
 import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-comment.tsx";
@@ -47,6 +49,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import type { ExtractStrict } from "type-fest";
+import { TypedEventTarget } from "@remix-run/interaction";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -347,11 +350,12 @@ type PageEditorRichTextInner_ClassNames =
 type PageEditorRichTextInner_Props = {
 	className?: string;
 	pageId: string;
+	presenceStore: pages_PresenceStore;
 	headerSlot?: React.ReactNode;
 };
 
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
-	const { className, pageId, headerSlot } = props;
+	const { className, pageId, presenceStore, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const editorRef = useLiveRef(editor);
@@ -372,6 +376,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const liveblocks = useLiveblocksExtension({
 		initialContent: pages_get_rich_text_initial_content(),
 		field: pages_YJS_DOC_KEYS.richText,
+		presenceStore,
 		ai: {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
@@ -647,11 +652,12 @@ export type PageEditorRichText_FgColorCssVarKeys =
 
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 	pageId: string;
+	presenceStore: pages_PresenceStore;
 	headerSlot?: React.ReactNode;
 };
 
 export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { className, pageId, headerSlot, ...rest } = props;
+	const { className, pageId, presenceStore, headerSlot, ...rest } = props;
 
 	return (
 		// remount on pageId to prevent stale state on page changes
@@ -659,6 +665,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 			<PageEditorRichTextInner
 				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
 				pageId={pageId}
+				presenceStore={presenceStore}
 				headerSlot={headerSlot}
 				{...rest}
 			/>

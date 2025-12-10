@@ -67,6 +67,18 @@ export declare const components: {
         { sessionToken: string },
         null
       >;
+      getSessionsData: FunctionReference<
+        "query",
+        "internal",
+        { roomToken: string },
+        Record<string, any>
+      >;
+      getUserData: FunctionReference<
+        "query",
+        "internal",
+        { roomToken: string },
+        Record<string, any>
+      >;
       heartbeat: FunctionReference<
         "mutation",
         "internal",
@@ -76,7 +88,7 @@ export declare const components: {
           sessionId: string;
           userId: string;
         },
-        { roomToken: string; sessionToken: string }
+        { isNewSession: boolean; roomToken: string; sessionToken: string }
       >;
       list: FunctionReference<
         "query",
@@ -89,6 +101,12 @@ export declare const components: {
         "internal",
         { limit?: number; onlineOnly?: boolean; roomId: string },
         Array<{ lastDisconnected: number; online: boolean; userId: string }>
+      >;
+      listSessions: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; roomToken: string },
+        Array<{ sessionId: string; userId: string }>
       >;
       listUser: FunctionReference<
         "query",
@@ -106,6 +124,30 @@ export declare const components: {
         "mutation",
         "internal",
         { roomId: string; userId: string },
+        null
+      >;
+      removeSessionData: FunctionReference<
+        "mutation",
+        "internal",
+        { roomToken: string; sessionId: string },
+        null
+      >;
+      removeUserData: FunctionReference<
+        "mutation",
+        "internal",
+        { roomToken: string; userId: string },
+        null
+      >;
+      setSessionData: FunctionReference<
+        "mutation",
+        "internal",
+        { data: any; sessionToken: string },
+        null
+      >;
+      setUserData: FunctionReference<
+        "mutation",
+        "internal",
+        { data: any; roomToken: string; userId: string },
         null
       >;
     };

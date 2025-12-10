@@ -323,6 +323,14 @@ const app_convex_schema = defineSchema({
 		.index("by_workspace_project_and_is_archived", ["workspace_id", "project_id", "is_archived"])
 		.index("by_thread_id", ["thread_id"])
 		.index("by_parent_id", ["parent_id"]),
+
+	presence_data: defineTable({
+		roomId: v.string(),
+		userId: v.string(),
+		data: v.any(),
+	})
+		.index("by_room_user", ["roomId", "userId"])
+		.index("by_room", ["roomId"]),
 });
 
 export default app_convex_schema;

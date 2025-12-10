@@ -6,7 +6,12 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 import reactRefresh from "eslint-plugin-react-refresh";
 import importPlugin from "eslint-plugin-import";
+import convexPlugin from "@convex-dev/eslint-plugin";
 import { defineConfig } from "eslint/config";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Eslint rule to prevent the specified `files` from importing from the specified `from` paths.
@@ -67,8 +72,9 @@ export default defineConfig(
 			"react-hooks": reactHooks,
 		},
 	},
+
 	{
-		files: ["src/**/*.{ts,tsx}", "convex/**/*.ts", "server/**/*.ts", "shared/**/*.ts"],
+		files: ["src/**/*.{ts,tsx}", "server/**/*.ts", "shared/**/*.ts", "convex/**/*.ts"],
 		extends: [
 			js.configs.recommended,
 			tseslint.configs.recommendedTypeChecked,
@@ -80,7 +86,7 @@ export default defineConfig(
 			globals: globals.browser,
 			parserOptions: {
 				projectService: true,
-				tsconfigRootDir: import.meta.dirname,
+				tsconfigRootDir: __dirname,
 			},
 		},
 		rules: {
@@ -192,6 +198,17 @@ export default defineConfig(
 			"react-hooks/set-state-in-effect": "off",
 			"react-hooks/no-unused-directives": "off",
 		},
+	},
+
+	{
+		files: ["convex/**/*.ts"],
+		plugins: {
+			"@convex-dev": convexPlugin,
+		},
+		languageOptions: {
+			globals: globals.worker,
+		},
+		rules: convexPlugin.configs.recommended[0].rules,
 	},
 
 	restrictImports({

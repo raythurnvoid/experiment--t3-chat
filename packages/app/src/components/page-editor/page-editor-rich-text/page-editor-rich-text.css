@@ -206,14 +206,39 @@
 			background-color: var(--color-base-1-10);
 		}
 
+		/*
+		Give a remote user a caret
+
+		See:
+		- Class names are defined by @tiptap/extension-collaboration-caret:
+		  +personal/sources/tiptap-3.8.0/packages/extension-collaboration-caret/src/collaboration-caret.ts
+		- Demo styles reference:
+		  +personal/sources/tiptap-3.8.0/demos/src/Extensions/CollaborationCaret/React/styles.scss
+		*/
 		.collaboration-carets__caret {
-			position: relative;
+			border-left: 1px solid #0d0d0d;
+			border-right: 1px solid #0d0d0d;
 			margin-left: -1px;
 			margin-right: -1px;
-			border-left: 1px solid;
-			border-right: 1px solid;
-			word-break: normal;
 			pointer-events: none;
+			position: relative;
+			word-break: normal;
+		}
+
+		/* Render the username above the caret */
+		.collaboration-carets__label {
+			border-radius: 3px 3px 3px 0;
+			color: #0d0d0d;
+			font-size: 12px;
+			font-style: normal;
+			font-weight: 600;
+			left: -1px;
+			line-height: normal;
+			padding: 0.1rem 0.3rem;
+			position: absolute;
+			top: -1.4em;
+			user-select: none;
+			white-space: nowrap;
 		}
 	}
 
