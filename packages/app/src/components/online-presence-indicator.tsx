@@ -1,10 +1,9 @@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.tsx";
 import { cn } from "@/lib/utils.ts";
-import usePresence from "@convex-dev/presence/react";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
+import { usePresence, usePresenceList } from "../hooks/presence-hooks.ts";
 
 const CLASS_NAMES = {
 	root: "OnlinePresenceIndicator",
@@ -23,13 +22,18 @@ export function OnlinePresenceIndicator(props: OnlinePresenceIndicator_Props) {
 	const { id, className, roomId = defaultRoomId, children, ...rest } = props;
 	const auth = useAuth();
 
-	const presenceState = usePresence({
-		presence: app_convex_api.presence,
+	const presence = usePresence({
 		roomId,
 		userId: auth.userId ?? "",
 		disconnectOnDocumentHidden: false,
 	});
-	const users = presenceState ?? [];
+
+	const presenceList = usePresenceList({
+		roomToken: presence.roomToken,
+		userId: auth.userId,
+	});
+
+	const users = presenceList ?? [];
 	const count = users.filter((u) => u.online).length;
 
 	return (

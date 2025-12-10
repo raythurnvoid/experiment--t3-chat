@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
-import type { KeysOfUnion, Primitive } from "type-fest";
+import type { KeysOfUnion, LiteralUnion, Primitive } from "type-fest";
 
 export * from "../../shared/shared-utils.ts";
 
@@ -55,12 +55,13 @@ export function delay(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function should_never_happen(message: string) {
-	console.error("[shouldNeverHappen]", message);
+export function should_never_happen(message: LiteralUnion<"Missing deps", string>, data: Record<string, any> = {}) {
+	console.error("[should_never_happen]", message, data);
 	if (import.meta.env.DEV) {
 		// eslint-disable-next-line no-debugger
 		debugger;
 	}
+	return new Error("[should_never_happen] " + message + "\n\t" + JSON.stringify(data, null, "\t"));
 }
 
 export function has_defined_property<O extends object, P extends KeysOfUnion<O>>(
@@ -214,5 +215,51 @@ export function compute_fallback_user_name(name: string) {
 		// Take first 2 characters, padding with first character if needed
 		const firstTwo = trimmedName.slice(0, 2).toUpperCase();
 		return firstTwo.padEnd(2, trimmedName[0].toUpperCase());
+	}
+}
+
+/**
+ * CustomEvent with better types.
+ *
+ * @example
+ * ```ts
+ * const event = new XCustomEvent("connected", { detail: { userId: "1", sessionId: "1" } });
+ * event.type; // "connected"
+ * event.detail; // { userId: "1", sessionId: "1" }
+ * ```
+ *
+ * @example
+ *
+ * Subclass
+ *
+ * ```ts
+ * class MyEvent extends XCustomEvent<{ connected: { userId: string; sessionId: string } }> {}
+ * ```
+ *
+ * @example
+ *
+ * With TypedEventTarget
+ *
+ * ```ts
+ * import { TypedEventTarget } from "@remix-run/interaction";
+ *
+ * class MyEvent extends XCustomEvent<{ connected: { userId: string; sessionId: string } }> {}
+ *
+ * class MyEventTarget extends TypedEventTarget<MyEvent["__map"]> {}
+ */
+export class XCustomEvent<T extends { [key: string]: any }> extends Event {
+	declare __map: {
+		[K in keyof T]: XCustomEvent<{ [X in K]: T[X] }>;
+	};
+	declare __union: this["__map"][keyof T];
+
+	// @ts-expect-error
+	type: keyof T;
+	detail: T[keyof T];
+
+	constructor(type: keyof T, args: EventInit & { detail: T[keyof T] }) {
+		super(type as string, args);
+		this.type = type;
+		this.detail = args.detail;
 	}
 }

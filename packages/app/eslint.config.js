@@ -6,6 +6,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 import reactRefresh from "eslint-plugin-react-refresh";
 import importPlugin from "eslint-plugin-import";
+import convexPlugin from "@convex-dev/eslint-plugin";
 import { defineConfig } from "eslint/config";
 
 /**
@@ -68,7 +69,7 @@ export default defineConfig(
 		},
 	},
 	{
-		files: ["src/**/*.{ts,tsx}", "convex/**/*.ts", "server/**/*.ts", "shared/**/*.ts"],
+		files: ["src/**/*.{ts,tsx}", "server/**/*.ts", "shared/**/*.ts"],
 		extends: [
 			js.configs.recommended,
 			tseslint.configs.recommendedTypeChecked,
@@ -192,6 +193,17 @@ export default defineConfig(
 			"react-hooks/set-state-in-effect": "off",
 			"react-hooks/no-unused-directives": "off",
 		},
+	},
+
+	{
+		files: ["convex/**/*.ts"],
+		plugins: {
+			"@convex-dev": convexPlugin,
+		},
+		languageOptions: {
+			globals: globals.worker,
+		},
+		rules: convexPlugin.configs.recommended[0].rules,
 	},
 
 	restrictImports({

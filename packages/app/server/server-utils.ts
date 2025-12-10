@@ -34,8 +34,6 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 		throw new Error("Failed to get user identity", { cause: userIdentityResult._nay });
 	}
 
-	const randomColor = "#" + Math.floor(Math.random() * 16777215).toString(16);
-
 	if (userIdentityResult._yay) {
 		const sub = userIdentityResult._yay.tokenIdentifier.slice(userIdentityResult._yay.tokenIdentifier.indexOf("|") + 1);
 		const userId = sub.slice(sub.indexOf("_") + 1);
@@ -45,7 +43,6 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 			id: userIdentityResult._yay.tokenIdentifier,
 			name: userIdentityResult._yay.name || userIdentityResult._yay.nickname || `User ${userId}`,
 			avatar: userIdentityResult._yay.pictureUrl || "https://via.placeholder.com/32",
-			color: randomColor, // Random color for now
 		};
 	} else {
 		// TODO: this should be randomized once per session
@@ -56,7 +53,6 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 			id: `${auth_ANONYMOUS_USER_ID}_${randomId}`,
 			name: `Anonymous User ${randomId}`,
 			avatar: "https://via.placeholder.com/32",
-			color: randomColor, /// Random color for now
 		};
 	}
 }
