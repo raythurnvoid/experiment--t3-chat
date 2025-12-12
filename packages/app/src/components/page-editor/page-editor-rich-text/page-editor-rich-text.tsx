@@ -182,7 +182,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				!editor.state.selection.empty &&
 				editor.state.selection.from !== editor.state.selection.to
 			) {
-				editor.commands.setDecorationHighlight();
+				editor.chain().clearDecorationHighlight().setDecorationHighlight().run();
 			}
 		};
 		editor.on("selectionUpdate", handleSelectionUpdate);
