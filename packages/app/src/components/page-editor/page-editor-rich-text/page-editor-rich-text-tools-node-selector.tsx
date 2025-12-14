@@ -12,7 +12,7 @@ import {
 	TextIcon,
 	TextQuote,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditor } from "novel";
 import { useEditorState, type Editor } from "@tiptap/react";
 import {
@@ -31,6 +31,8 @@ import {
 import { MyButton } from "@/components/my-button.tsx";
 import { cn } from "@/lib/utils.ts";
 import "./page-editor-rich-text-tools-node-selector.css";
+import { PageEditorRichText } from "./page-editor-rich-text.tsx";
+import type { PageEditorRichText_CustomAttributes } from "./page-editor-rich-text.tsx";
 
 type Item = {
 	name: string;
@@ -123,13 +125,14 @@ export type PageEditorRichTextToolsNodeSelector_ClassNames =
 
 export type PageEditorRichTextToolsNodeSelector_Props = {
 	editor: Editor;
+	setDecorationHighlightOnOpen?: boolean;
 };
 
 export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToolsNodeSelector_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = props;
+	const { editor, setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
@@ -143,6 +146,27 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 
 	const [open, setOpen] = useState(false);
 
+	const triggerButtonRef = useRef<HTMLButtonElement>(null);
+	const openRef = useRef(false);
+	const didSetDecorationHighlightRef = useRef(false);
+
+	const doSetOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+		const prev = openRef.current;
+		const nextOpen = typeof next === "function" ? next(prev) : next;
+
+		openRef.current = nextOpen;
+		setOpen(nextOpen);
+
+		if (setDecorationHighlightOnOpen) {
+			if (nextOpen && !prev) {
+				didSetDecorationHighlightRef.current = editor.commands.setDecorationHighlight();
+			} else if (!nextOpen && prev && didSetDecorationHighlightRef.current) {
+				PageEditorRichText.clearDecorationHighlightProperly(editor, triggerButtonRef.current);
+				didSetDecorationHighlightRef.current = false;
+			}
+		}
+	};
+
 	const activeItem = items.filter((item) => item.isActive(editor)).pop() ?? {
 		name: "Multiple",
 	};
@@ -151,11 +175,26 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 		item.command(editor);
 	};
 
+	// Unmount useEffect
+	useEffect(() => {
+		return () => {
+			if (didSetDecorationHighlightRef.current) {
+				PageEditorRichText.clearDecorationHighlightProperly(editor, triggerButtonRef.current);
+			}
+		};
+	}, []);
+
 	return (
 		<div className={cn("PageEditorRichTextToolsNodeSelector" satisfies PageEditorRichTextToolsNodeSelector_ClassNames)}>
-			<MySelect value={activeItem.name} open={open} setOpen={setOpen}>
+			<MySelect value={activeItem.name} open={open} setOpen={doSetOpen}>
 				<MySelectTrigger>
-					<MyButton variant="ghost">
+					<MyButton
+						ref={triggerButtonRef}
+						variant="ghost"
+						{...(setDecorationHighlightOnOpen
+							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<PageEditorRichText_CustomAttributes>)
+							: {})}
+					>
 						{activeItem.name || "Select format"}
 						<MySelectOpenIndicator />
 					</MyButton>

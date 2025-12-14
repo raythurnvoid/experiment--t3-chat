@@ -46,6 +46,7 @@ import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headle
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
+import type { ExtractStrict } from "type-fest";
 
 type SyncStatus = ReturnType<typeof useSyncStatus>;
 
@@ -82,15 +83,19 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 				<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
 					<PageEditorRichTextToolsHistoryButtons editor={editor} />
 					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsNodeSelector editor={editor} />
+					<PageEditorRichTextToolsNodeSelector editor={editor} setDecorationHighlightOnOpen={true} />
 					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsLinkSetter editor={editor} />
+					<PageEditorRichTextToolsLinkSetter editor={editor} setDecorationHighlightOnOpen={true} />
 					<MySeparator orientation="vertical" />
 					<PageEditorRichTextToolsMathToggle editor={editor} />
 					<MySeparator orientation="vertical" />
 					<PageEditorRichTextToolsTextStyles editor={editor} />
 					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector editor={editor} portalElement={portalElement} />
+					<PageEditorRichTextToolsColorSelector
+						editor={editor}
+						portalElement={portalElement}
+						setDecorationHighlightOnOpen={true}
+					/>
 					<MySeparator orientation="vertical" />
 					<MyBadge
 						variant="secondary"
@@ -201,7 +206,8 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 		setOpenAi(false);
 		setOpenComment(false);
-		editor.chain().clearDecorationHighlight().focus().run();
+
+		PageEditorRichText.clearDecorationHighlightProperly(editor);
 	};
 
 	const handleShow: NonNullable<EditorBubbleProps["options"]>["onShow"] = () => {
@@ -613,6 +619,10 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 // #region PageEditorRichText
 export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
+export type PageEditorRichText_CustomAttributes = {
+	"data-app-set-decoration-highlight": "";
+};
+
 export type PageEditorRichText_BgColorCssVarKeys =
 	| "--PageEditorRichText-text-color-bg-default"
 	| "--PageEditorRichText-text-color-bg-purple"
@@ -655,4 +665,43 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 		</EditorRoot>
 	);
 }
+
+/**
+ * Using `clearDecorationHighlight` can have unexpected results because DOM selection
+ * can behave in unxepected ways in certain situations like when the editor is not in focus,
+ * and relying on an artificial highlight using decoration also have non-trivial side effects.
+ *
+ * This functions aims to perform all the operations necessary to clear
+ * the decoration highlight properly to deliver a good UI.
+ *
+ * @param editor - The TipTap editor instance
+ * @param triggerElement - Optional trigger element (e.g., button) that opens the popover.
+ *                         If provided and matches document.activeElement, the decoration will be cleared.
+ */
+PageEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerElement?: HTMLElement | null) => {
+	// if the decorations are cleared while the editor is not in focus
+	// the browser will set an incorrect text selection range, therefore
+	// the DOM selection needs to be removed or it will look wrong.
+	document.getSelection()?.removeAllRanges();
+
+	setTimeout(() => {
+		const activeElement = document.activeElement;
+		const isTriggerActive = triggerElement && activeElement === triggerElement;
+		const elementSetDecorationHighlight =
+			activeElement?.getAttribute(
+				"data-app-set-decoration-highlight" satisfies ExtractStrict<
+					keyof PageEditorRichText_CustomAttributes,
+					"data-app-set-decoration-highlight"
+				>,
+			) == null;
+
+		if (isTriggerActive || elementSetDecorationHighlight) {
+			// Do not focus the editor here, otherwise it will conflict with ariakit when opening
+			// popovers while a non-collapsed selection is present in the editor.
+			//
+			// editor.chain().clearDecorationHighlight().focus().run();
+			editor.commands.clearDecorationHighlight();
+		}
+	});
+};
 // #endregion PageEditorRichText

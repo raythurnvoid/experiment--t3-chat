@@ -7,6 +7,8 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
 import { cn } from "@/lib/utils.ts";
+import { PageEditorRichText } from "./page-editor-rich-text.tsx";
+import type { PageEditorRichText_CustomAttributes } from "./page-editor-rich-text.tsx";
 
 function isValidUrl(url: string) {
 	try {
@@ -39,13 +41,14 @@ export type PageEditorRichTextToolsLinkSetter_ClassNames =
 
 export type PageEditorRichTextToolsLinkSetter_Props = {
 	editor: Editor;
+	setDecorationHighlightOnOpen?: boolean;
 };
 
 export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextToolsLinkSetter_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = props;
+	const { editor, setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
@@ -60,10 +63,41 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 
-	// Autofocus on input by default
+	const triggerButtonRef = useRef<HTMLButtonElement>(null);
+	const openRef = useRef(false);
+	const didSetDecorationHighlightRef = useRef(false);
+
+	const doSetOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+		const prev = openRef.current;
+		const nextOpen = typeof next === "function" ? next(prev) : next;
+
+		openRef.current = nextOpen;
+		setOpen(nextOpen);
+
+		if (setDecorationHighlightOnOpen) {
+			if (nextOpen && !prev) {
+				didSetDecorationHighlightRef.current = editor.commands.setDecorationHighlight();
+			} else if (!nextOpen && prev && didSetDecorationHighlightRef.current) {
+				PageEditorRichText.clearDecorationHighlightProperly(editor, triggerButtonRef.current);
+				didSetDecorationHighlightRef.current = false;
+			}
+		}
+	};
+
+	// Autofocus only when the popover opens (not on every render)
 	useEffect(() => {
-		inputRef.current?.focus();
-	});
+		if (!open) {
+			return;
+		}
+
+		const focusTimeout = setTimeout(() => {
+			inputRef.current?.focus();
+		});
+
+		return () => {
+			clearTimeout(focusTimeout);
+		};
+	}, [open]);
 
 	const activeHref = editor?.getAttributes("link").href ?? false;
 
@@ -79,29 +113,42 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 				if (inputRef.current) {
 					inputRef.current.value = "";
 				}
-				setOpen(false);
+				doSetOpen(false);
 			}
 		} else {
 			const input = target[0] as HTMLInputElement;
 			const url = getUrlFromString(input.value);
 			if (url && editor) {
 				editor.chain().focus().setLink({ href: url }).run();
-				setOpen(false);
+				doSetOpen(false);
 			}
 		}
 	};
 
+	// Unmount useEffect
+	useEffect(() => {
+		return () => {
+			if (didSetDecorationHighlightRef.current) {
+				PageEditorRichText.clearDecorationHighlightProperly(editor, triggerButtonRef.current);
+			}
+		};
+	}, []);
+
 	return (
 		<div className={cn("PageEditorRichTextToolsLinkSetter" satisfies PageEditorRichTextToolsLinkSetter_ClassNames)}>
-			<MyPopover open={open} setOpen={setOpen}>
+			<MyPopover open={open} setOpen={doSetOpen}>
 				<MyPopoverTrigger>
 					<MyButton
+						ref={triggerButtonRef}
 						variant="ghost"
 						className={cn(
 							"PageEditorRichTextToolsLinkSetter-trigger-button" satisfies PageEditorRichTextToolsLinkSetter_ClassNames,
 							editor.isActive("link") &&
 								("PageEditorRichTextToolsLinkSetter-trigger-button-active" satisfies PageEditorRichTextToolsLinkSetter_ClassNames),
 						)}
+						{...(setDecorationHighlightOnOpen
+							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<PageEditorRichText_CustomAttributes>)
+							: {})}
 					>
 						<MyButtonIcon>
 							<LinkIcon />

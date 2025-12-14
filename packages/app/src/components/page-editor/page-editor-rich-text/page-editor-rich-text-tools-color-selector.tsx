@@ -1,5 +1,6 @@
 import "./page-editor-rich-text-tools-color-selector.css";
 import { Check, ChevronDown } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
 	MySelect,
 	MySelectTrigger,
@@ -18,9 +19,11 @@ import {
 import { MyButton } from "@/components/my-button.tsx";
 import { cn, sx } from "@/lib/utils.ts";
 import { useForceRender } from "@/hooks/utils-hooks.ts";
-import type {
-	PageEditorRichText_FgColorCssVarKeys,
-	PageEditorRichText_BgColorCssVarKeys,
+import {
+	PageEditorRichText,
+	type PageEditorRichText_FgColorCssVarKeys,
+	type PageEditorRichText_BgColorCssVarKeys,
+	type PageEditorRichText_CustomAttributes,
 } from "./page-editor-rich-text.tsx";
 import { useEditorState, type Editor } from "@tiptap/react";
 
@@ -185,13 +188,14 @@ export type PageEditorRichTextToolsColorSelector_ClassNames =
 export type PageEditorRichTextToolsColorSelector_Props = {
 	editor: Editor;
 	portalElement: HTMLElement;
+	setDecorationHighlightOnOpen?: boolean;
 };
 
 export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextToolsColorSelector_Props) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, portalElement } = props;
+	const { editor, portalElement, setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
@@ -204,6 +208,28 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 	});
 
 	const forceRender = useForceRender();
+	const [open, setOpen] = useState(false);
+
+	const triggerButtonRef = useRef<HTMLButtonElement>(null);
+	const openRef = useRef(false);
+	const didSetDecorationHighlightRef = useRef(false);
+
+	const doSetOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+		const prev = openRef.current;
+		const nextOpen = typeof next === "function" ? next(prev) : next;
+
+		openRef.current = nextOpen;
+		setOpen(nextOpen);
+
+		if (setDecorationHighlightOnOpen) {
+			if (nextOpen && !prev) {
+				didSetDecorationHighlightRef.current = editor.commands.setDecorationHighlight();
+			} else if (!nextOpen && prev && didSetDecorationHighlightRef.current) {
+				PageEditorRichText.clearDecorationHighlightProperly(editor, triggerButtonRef.current);
+				didSetDecorationHighlightRef.current = false;
+			}
+		}
+	};
 
 	const activeColor = editor ? TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color })) : undefined;
 	const activeBackground = editor
@@ -240,6 +266,15 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 		forceRender();
 	};
 
+	// Unmount useEffect
+	useEffect(() => {
+		return () => {
+			if (didSetDecorationHighlightRef.current) {
+				PageEditorRichText.clearDecorationHighlightProperly(editor, triggerButtonRef.current);
+			}
+		};
+	}, []);
+
 	return (
 		<div
 			className={cn("PageEditorRichTextToolsColorSelector" satisfies PageEditorRichTextToolsColorSelector_ClassNames)}
@@ -251,9 +286,19 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 				} satisfies Partial<PageEditorRichTextToolsColorSelectorPreview_CssVars>),
 			})}
 		>
-			<MySelect value={make_selected_values({ color: activeColor?.color, background: activeBackground?.color })}>
+			<MySelect
+				value={make_selected_values({ color: activeColor?.color, background: activeBackground?.color })}
+				open={open}
+				setOpen={doSetOpen}
+			>
 				<MySelectTrigger>
-					<MyButton variant="ghost">
+					<MyButton
+						ref={triggerButtonRef}
+						variant="ghost"
+						{...(setDecorationHighlightOnOpen
+							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<PageEditorRichText_CustomAttributes>)
+							: {})}
+					>
 						<PageEditorRichTextToolsColorSelectorPreview
 							activeColor={activeColor?.color}
 							activeBackground={activeBackground?.color}
