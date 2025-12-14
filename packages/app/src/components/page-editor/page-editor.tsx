@@ -1,12 +1,9 @@
 import "./page-editor.css";
-import { LiveblocksProvider, RoomProvider } from "@liveblocks/react/suspense";
-import { ClientSideSuspense } from "@liveblocks/react";
 import { useAuth } from "@/lib/auth.ts";
-import { app_fetch_ai_docs_liveblocks_auth } from "@/lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
-import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEvent, useRef } from "react";
+import React, { useState, useImperativeHandle, type Ref, useEffect, useRef } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
 import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
@@ -30,6 +27,7 @@ import {
 	usePresenceUsersData,
 } from "../../hooks/presence-hooks.ts";
 import { useLiveRef } from "../../hooks/utils-hooks.ts";
+import { usePagesYjs } from "../../hooks/pages-hooks.ts";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -205,59 +203,40 @@ type PageEditorInner_Props = {
 function PageEditorInner(props: PageEditorInner_Props) {
 	const { roomId, pageId, editorMode, threadId, presenceStore, onEditorModeChange } = props;
 
-	const auth = useAuth();
+	const pagesYjs = usePagesYjs({ roomId, presenceStore });
 
 	const handleDiffExit = () => {
 		onEditorModeChange("rich");
 	};
 
 	return (
-		<LiveblocksProvider
-			authEndpoint={async (room) => {
-				const result = await app_fetch_ai_docs_liveblocks_auth({
-					input: { room },
-					auth: auth.isAuthenticated,
-				});
-
-				if (result._nay) {
-					throw new Error(`Failed to authenticate: ${result._nay.message}`);
-				}
-
-				return result._yay.payload;
-			}}
-		>
-			<RoomProvider
-				// Setting the key is necessary to ensure the editor is properly re-created
-				// including the liveblocks yjs extensions
-				// to prevent showing content from the previous room.
-				key={roomId}
-				id={roomId}
-			>
-				<ClientSideSuspense fallback={<PageEditorSkeleton />}>
-					<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
-						<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>
-							{editorMode === "rich" ? (
-								<PageEditorRichText
-									pageId={pageId}
-									presenceStore={presenceStore}
-									headerSlot={
-										<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
-									}
-								/>
-							) : editorMode === "diff" ? (
-								threadId ? (
-									<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
-								) : (
-									<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
-								)
-							) : (
-								<MonacoMarkdownEditor pageId={pageId} />
-							)}
-						</div>
-					</div>
-				</ClientSideSuspense>
-			</RoomProvider>
-		</LiveblocksProvider>
+		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
+			<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>
+				{pagesYjs ? (
+					editorMode === "rich" ? (
+						<PageEditorRichText
+							roomId={roomId}
+							pagesYjs={pagesYjs}
+							pageId={pageId}
+							presenceStore={presenceStore}
+							headerSlot={
+								<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
+							}
+						/>
+					) : editorMode === "diff" ? (
+						threadId ? (
+							<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
+						) : (
+							<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
+						)
+					) : (
+						<MonacoMarkdownEditor pageId={pageId} pagesYjs={pagesYjs} presenceStore={presenceStore} />
+					)
+				) : (
+					<PageEditorSkeleton />
+				)}
+			</div>
+		</div>
 	);
 }
 // #endregion Inner
@@ -321,6 +300,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 		) {
 			if (presenceStoreRef.current) {
 				presenceStoreRef.current.sync({
+					sessionToken: presenceRef.current.sessionToken,
 					sessions: presenceSessions,
 					sessionsData: presenceSessionsData,
 					usersRoomData: presenceData,
@@ -328,6 +308,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 			} else {
 				const presenceStore = new pages_PresenceStore({
 					data: {
+						sessionToken: presenceRef.current.sessionToken,
 						sessions: presenceSessions,
 						sessionsData: presenceSessionsData,
 						usersRoomData: presenceData,

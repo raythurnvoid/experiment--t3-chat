@@ -5,6 +5,14 @@ import type convex_schema from "../../convex/schema.ts";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
 import { Result } from "./errors-as-values-utils.ts";
 
+export type {
+	FunctionArgs as app_convex_FunctionArgs,
+	FunctionReference as app_convex_FunctionReference,
+	FunctionReturnType as app_convex_FunctionReturnType,
+} from "convex/server";
+
+export type { Watch as app_convex_Watch } from "convex/react";
+
 // Cannot be import.meta.env.VITE_CONVEX_URL because indirectly imported by the hono server via assistant-ui dep
 export const app_convex_deployment_url = import.meta.env
 	? (import.meta.env.VITE_CONVEX_URL as string)

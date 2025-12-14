@@ -4,20 +4,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Editor } from "@monaco-editor/react";
 import type { editor as M } from "monaco-editor";
 import { CatchBoundary } from "@tanstack/react-router";
-import { useRoom } from "@liveblocks/react/suspense";
-import { getYjsProviderForRoom } from "@liveblocks/yjs";
 import { MonacoBinding } from "y-monaco";
 import { useConvex, useAction } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { cn } from "@/lib/utils.ts";
 import type { Awareness } from "y-protocols/awareness";
-import { useSelf, useOthers } from "@liveblocks/react/suspense";
+import type { pages_PresenceStore } from "@/lib/pages.ts";
 import type * as Y from "yjs";
+import type { pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 
 export interface MonacoMarkdownEditor_Props {
 	pageId: string;
+	pagesYjs: pages_Yjs;
+	presenceStore: pages_PresenceStore;
 	className?: string;
 }
 
@@ -25,12 +26,9 @@ export interface MonacoMarkdownEditor_Props {
  * This component is inspired from Liveblocks example: liveblocks/examples/nextjs-yjs-monaco/src/components/CollaborativeEditor.tsx
  */
 function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
-	const { pageId, className } = props;
-	const room = useRoom();
+	const { pageId, pagesYjs, presenceStore, className } = props;
 	const convex = useConvex();
-	const selfUser = useSelf();
-	const otherUsers = useOthers();
-	const yProvider = useMemo(() => getYjsProviderForRoom(room), [room]);
+	const yProvider = pagesYjs.yjsProvider;
 
 	const [editor, setEditor] = useState<M.IStandaloneCodeEditor | null>(null);
 	const updateAndSyncToRichtext = useAction(api.ai_docs_temp.update_page_and_sync_to_richtext);
@@ -38,21 +36,7 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 	const [initialValue, setInitialValue] = useState<string | null | undefined>(undefined);
 
 	// Approximate useIsEditorReady for Monaco/Yjs: ready when Yjs provider is synchronizing or synchronized
-	const [isYjsReady, setIsYjsReady] = useState(false);
-	useEffect(() => {
-		const provider = yProvider;
-		if (!provider) return;
-		const updateStatus = () => {
-			const status = provider.getStatus();
-			setIsYjsReady(status === "synchronizing" || status === "synchronized");
-		};
-		updateStatus();
-		const handler = () => updateStatus();
-		provider.on("status", handler);
-		return () => {
-			provider.off("status", handler);
-		};
-	}, [yProvider]);
+	const isYjsReady = pagesYjs.syncStatus === "synchronizing" || pagesYjs.syncStatus === "synchronized";
 
 	useEffect(() => {
 		if (!editor) return;
@@ -77,6 +61,7 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					pageId: pageId,
 					textContent: value,
+					sessionId: presenceStore.localSessionId,
 				});
 			}
 		};
@@ -159,48 +144,36 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 			{/* Avatars bar showing current users */}
 			<div className="MonacoMarkdownEditor-avatars flex items-center gap-2 border-b border-border/80 bg-background/50 p-2">
 				{/* Current user avatar */}
-				{selfUser && (
+				{presenceStore.presenceData.get(presenceStore.localSessionId) && (
 					<div
 						className="MonacoMarkdownEditor-avatar flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 border-current text-xs font-medium"
 						style={{
-							backgroundColor: selfUser.info?.color as string,
+							backgroundColor: presenceStore.presenceData.get(presenceStore.localSessionId)?.color as string,
 							color: "white",
 						}}
-						title={selfUser.info?.name}
+						title={presenceStore.presenceData.get(presenceStore.localSessionId)?.name}
 					>
-						{selfUser.info?.avatar ? (
-							<img
-								src={selfUser.info.avatar}
-								alt={selfUser.info?.name}
-								className="h-full w-full rounded-full object-cover"
-							/>
-						) : selfUser.info?.name ? (
-							<span>{selfUser.info.name.charAt(0).toUpperCase()}</span>
+						{presenceStore.presenceData.get(presenceStore.localSessionId)?.name ? (
+							<span>{presenceStore.presenceData.get(presenceStore.localSessionId)!.name.charAt(0).toUpperCase()}</span>
 						) : null}
 					</div>
 				)}
 				{/* Other users' avatars */}
-				{otherUsers.map((user) => (
-					<div
-						key={user.connectionId}
-						className="MonacoMarkdownEditor-avatar flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 border-current text-xs font-medium"
-						style={{
-							backgroundColor: user.info?.color as string,
-							color: "white",
-						}}
-						title={user.info?.name || "Anonymous"}
-					>
-						{user.info?.avatar ? (
-							<img
-								src={user.info.avatar}
-								alt={user.info?.name || "Anonymous"}
-								className="h-full w-full rounded-full object-cover"
-							/>
-						) : (
-							<span>{(user.info?.name || "Anonymous").charAt(0).toUpperCase()}</span>
-						)}
-					</div>
-				))}
+				{Array.from(presenceStore.presenceData.entries())
+					.filter(([sessionId]) => sessionId !== presenceStore.localSessionId)
+					.map(([sessionId, user]) => (
+						<div
+							key={sessionId}
+							className="MonacoMarkdownEditor-avatar flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 border-current text-xs font-medium"
+							style={{
+								backgroundColor: user.color as string,
+								color: "white",
+							}}
+							title={user.name || "Anonymous"}
+						>
+							<span>{(user.name || "Anonymous").charAt(0).toUpperCase()}</span>
+						</div>
+					))}
 			</div>
 			{/* Monaco Editor */}
 			<div className="MonacoMarkdownEditor-editor flex-1">
@@ -263,12 +236,8 @@ function MonacoMarkdownEditor_Cursors(props: MonacoMarkdownEditor_Cursors_Props)
 	type UserAwareness = { user?: { name?: string; color?: string } };
 	type AwarenessList = Array<[number, UserAwareness | undefined]>;
 	const [awarenessUsers, setAwarenessUsers] = useState<AwarenessList>([]);
-	const userInfo = useSelf((me) => me.info);
 
 	useEffect(() => {
-		const localUser: UserAwareness["user"] = userInfo;
-		awareness.setLocalStateField("user", localUser);
-
 		function setUsers() {
 			setAwarenessUsers([...(awareness.getStates() as Map<number, UserAwareness>).entries()]);
 		}
@@ -279,7 +248,7 @@ function MonacoMarkdownEditor_Cursors(props: MonacoMarkdownEditor_Cursors_Props)
 		return () => {
 			awareness.off("change", setUsers);
 		};
-	}, [awareness, userInfo]);
+	}, [awareness]);
 
 	const cssContent = useMemo(() => {
 		const escapeCssContent = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, " ");

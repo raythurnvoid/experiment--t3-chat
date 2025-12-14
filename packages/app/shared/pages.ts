@@ -1,4 +1,5 @@
 import type { pages_TreeItem } from "../convex/ai_docs_temp.ts";
+import type { pages_YjsTailUpdates } from "../convex/yjs_sync.ts";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
@@ -18,7 +19,7 @@ export const pages_YJS_DOC_KEYS = {
 	plainText: "markdown",
 };
 
-export type { pages_TreeItem };
+export type { pages_TreeItem, pages_YjsTailUpdates };
 
 export function pages_create_tree_root(): pages_TreeItem {
 	return {
@@ -127,7 +128,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			textAlign: TextAlign,
 			typography: Typography,
 			markdown: Markdown.configure({
-				// @ts-expect-error Tiptap expects another version of marked but this should do fine
+				// Tiptap expects another version of marked but this should do fine
 				marked: pages_marked(),
 			}),
 			highlight: Highlight.extend({
@@ -178,3 +179,10 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 		return (cache ??= value());
 	};
 })();
+
+/**
+ * Convert a Uint8Array to an ArrayBuffer.
+ */
+export function pages_u8_to_array_buffer(u8: Uint8Array) {
+	return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+}

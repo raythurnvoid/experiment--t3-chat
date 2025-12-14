@@ -12,6 +12,7 @@ import {
 	query,
 	type QueryCtx,
 	type MutationCtx,
+	type ActionCtx,
 	internalMutation,
 	action,
 } from "./_generated/server.js";
@@ -30,8 +31,6 @@ import {
 	encode_path_segment,
 } from "../server/server-utils.ts";
 import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
-import { Result_try, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
 import { v, type Infer } from "convex/values";
 import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
 import {
@@ -47,29 +46,14 @@ import {
 	pages_ROOT_ID,
 	pages_YJS_DOC_KEYS,
 	ai_docs_create_liveblocks_room_id,
-	server_pages_get_liveblocks,
 } from "../server/pages.ts";
 import { minimatch } from "minimatch";
 import { z } from "zod";
-import { withProsemirrorDocument } from "@liveblocks/node-prosemirror";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-import {
-	server_page_editor_markdown_to_json,
-	server_page_editor_get_schema,
-	server_page_editor_DEFAULT_FIELD,
-} from "../server/page-editor.ts";
+import { server_page_editor_markdown_to_json, server_page_editor_get_schema } from "../server/page-editor.ts";
 import { Doc as YDoc, encodeStateVector, encodeStateAsUpdate, applyUpdate } from "yjs";
+import { initProseMirrorDoc, updateYFragment } from "@tiptap/y-tiptap";
 import { simpleDiff } from "lib0/diff";
-
-const LIVEBLOCKS_SECRET_KEY = process.env.LIVEBLOCKS_SECRET_KEY!;
-if (!LIVEBLOCKS_SECRET_KEY) {
-	throw new Error("LIVEBLOCKS_SECRET_KEY env var is not set");
-}
-
-const LIVEBLOCKS_WEBHOOK_SECRET = process.env.LIVEBLOCKS_WEBHOOK_SECRET || "";
-if (!LIVEBLOCKS_WEBHOOK_SECRET) {
-	console.warn("LIVEBLOCKS_WEBHOOK_SECRET env var is not set");
-}
 
 export const contextual_prompt = httpAction(async (ctx, request) => {
 	try {
@@ -179,128 +163,6 @@ export const contextual_prompt = httpAction(async (ctx, request) => {
 		});
 	}
 });
-
-export const liveblocks_auth = httpAction(async (ctx, request) => {
-	// Parse request body to get room parameter
-	const requestBodyResult = await Result_try_promise(request.json());
-	if (requestBodyResult._nay) {
-		return server_convex_response_error_client({
-			body: requestBodyResult._nay,
-			headers: server_convex_headers_cors(),
-		});
-	}
-
-	const liveblocks = server_pages_get_liveblocks();
-
-	const userResult = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-	// Create a session for access token authentication
-	const sessionResult = Result_try(() =>
-		liveblocks.prepareSession(userResult.id, {
-			userInfo: {
-				avatar: userResult.avatar,
-				name: userResult.name,
-				color: userResult.color,
-			},
-		}),
-	);
-
-	if (sessionResult._nay) {
-		console.error("Failed to create session:", sessionResult._nay);
-		return server_convex_response_error_server({
-			body: {
-				message: "Failed to create session",
-			},
-			headers: server_convex_headers_cors(),
-		});
-	}
-
-	// Set up room access using naming pattern: <workspace_id>:<project_id>:<document_id>
-	// For now, grant access to all documents in the hardcoded workspace/project
-	const workspacePattern = `${ai_chat_HARDCODED_ORG_ID}:${ai_chat_HARDCODED_PROJECT_ID}:*`;
-	sessionResult._yay.allow(workspacePattern, sessionResult._yay.FULL_ACCESS);
-	const accessTokenResult = await Result_try_promise(sessionResult._yay.authorize());
-	if (accessTokenResult._nay) {
-		console.error("Authorization failed:", accessTokenResult._nay);
-		return server_convex_response_error_client({
-			body: {
-				message: "Authorization failed",
-			},
-			headers: server_convex_headers_cors(),
-		});
-	}
-
-	if (accessTokenResult._yay.error) {
-		console.error("Authorization returned an error:", accessTokenResult._yay.error);
-		return server_convex_response_error_client({
-			body: {
-				message: "Authorization returned an error",
-			},
-			headers: server_convex_headers_cors(),
-		});
-	}
-
-	return new Response(accessTokenResult._yay.body, {
-		status: accessTokenResult._yay.status,
-		headers: server_convex_headers_cors(),
-	});
-});
-
-// @ts-ignore
-async function verify_webhook_signature(
-	body: string,
-	webhookId: string,
-	webhookTimestamp: string,
-	webhookSignature: string,
-	secret: string,
-): Promise<boolean> {
-	try {
-		// Extract base64 part from whsec_... format
-		const base64Secret = secret.startsWith("whsec_") ? secret.slice(6) : secret;
-
-		// Decode the webhook secret
-		const secretBytes = Uint8Array.from(atob(base64Secret), (c) => c.charCodeAt(0));
-
-		// Create the signed content: {webhookId}.{webhookTimestamp}.{body}
-		const signedContent = `${webhookId}.${webhookTimestamp}.${body}`;
-		const encoder = new TextEncoder();
-		const signedContentBytes = encoder.encode(signedContent);
-
-		// Import secret key for HMAC
-		const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-
-		// Compute HMAC
-		const signature = await crypto.subtle.sign("HMAC", key, signedContentBytes);
-		const computedSignature = btoa(String.fromCharCode(...new Uint8Array(signature)));
-
-		// Parse webhook signature header (format: "v1,signature1 v1,signature2")
-		const signatures = webhookSignature.split(" ");
-		for (const sig of signatures) {
-			const [version, providedSignature] = sig.split(",");
-			if (version === "v1" && providedSignature === computedSignature) {
-				return true;
-			}
-		}
-
-		return false;
-	} catch (error) {
-		console.error("Webhook signature verification failed:", error);
-		return false;
-	}
-}
-
-// @ts-ignore
-function is_timestamp_valid(timestampHeader: string): boolean {
-	try {
-		const webhookTimestamp = parseInt(timestampHeader, 10);
-		const now = Math.floor(Date.now() / 1000);
-		const tolerance = 5 * 60; // 5 minutes in seconds
-
-		return Math.abs(now - webhookTimestamp) <= tolerance;
-	} catch {
-		return false;
-	}
-}
 
 async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string; project_id: string; path: string }) {
 	if (args.path === "/") return null;
@@ -1649,67 +1511,31 @@ export const unarchive_snapshot = mutation({
 	},
 });
 
-/**
- * Write markdown content to Monaco editor's Yjs YText document.
- *
- * Uses smart diffing similar to TipTap's updateYText to only send minimal deltas.
- */
-async function write_markdown_to_plain_text_yjs(args: {
-	roomId: string;
-	markdownContent: string;
-}): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
-	try {
-		const liveblocks = server_pages_get_liveblocks();
-
-		const update = await liveblocks.getYjsDocumentAsBinaryUpdate(args.roomId);
-
-		// Create base Y.Doc from current state
-		const yDoc = new YDoc();
-		applyUpdate(yDoc, new Uint8Array(update));
-
-		// Get the Plain Text content
-		const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
-		const currentText = yText.toString();
-
-		// If content is the same, no update needed
-		if (currentText === args.markdownContent) {
-			return Result({ _yay: null });
-		}
-
-		// Capture state vector before making changes
-		const beforeVector = encodeStateVector(yDoc);
-
-		// Apply diff
-		yDoc.transact(() => {
-			const diff = simpleDiff(currentText, args.markdownContent);
-			yText.delete(diff.index, diff.remove);
-			yText.insert(diff.index, diff.insert);
-		}, "monaco-backend-update");
-
-		// Create state vector of changes since `beforeVector`
-		const diffUpdate = encodeStateAsUpdate(yDoc, beforeVector);
-
-		await liveblocks.sendYjsBinaryUpdate(args.roomId, diffUpdate);
-
-		return Result({ _yay: null });
-	} catch (error) {
-		const msg = `Failed to update Plain Text Yjs: ${(error as Error)?.message ?? error}`;
-		console.error(msg);
-		return Result({ _nay: { message: msg } });
-	}
+function to_array_buffer(u8: Uint8Array): ArrayBuffer {
+	return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
 }
 
-/**
- * Write markdown content to Rich Text editor's Yjs document.
- *
- * This converts markdown to JSON and writes it to the ProseMirror document.
- */
-async function write_markdown_to_rich_text_yjs(args: {
-	roomId: string;
-	markdownContent: string;
-}): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
+async function write_markdown_to_yjs_sync(
+	ctx: ActionCtx,
+	args: {
+		roomId: string;
+		markdownContent: string;
+		sessionId: string;
+	},
+): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
 	try {
-		const liveblocks = server_pages_get_liveblocks();
+		// Reconstruct the latest Y.Doc from Convex's head snapshot
+		const emptyStateVector = encodeStateVector(new YDoc());
+		const remote = await ctx.runQuery(api.yjs_sync.fetch_doc, {
+			roomId: args.roomId,
+			guid: null,
+			clientStateVector: to_array_buffer(emptyStateVector),
+		});
+
+		const yDoc = new YDoc();
+		applyUpdate(yDoc, new Uint8Array(remote.update));
+
+		const beforeVector = encodeStateVector(yDoc);
 
 		// Convert markdown to TipTap/ProseMirror JSON
 		const editorDocJson = server_page_editor_markdown_to_json(args.markdownContent);
@@ -1721,18 +1547,39 @@ async function write_markdown_to_rich_text_yjs(args: {
 		}
 
 		const schema = server_page_editor_get_schema();
+		const fragment = yDoc.getXmlFragment(pages_YJS_DOC_KEYS.richText);
+		const { meta } = initProseMirrorDoc(fragment, schema);
+		const node = schema.nodeFromJSON(editorDocJson._yay);
 
-		// Write to Yjs using liveblocks' `withProsemirrorDocument`
-		await withProsemirrorDocument(
-			{ roomId: args.roomId, client: liveblocks, schema, field: server_page_editor_DEFAULT_FIELD },
-			async (docApi) => {
-				await docApi.setContent(editorDocJson._yay);
-			},
-		);
+		const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
+		const currentText = yText.toString();
+
+		yDoc.transact(() => {
+			updateYFragment(yDoc, fragment, node, meta);
+
+			if (currentText !== args.markdownContent) {
+				const diff = simpleDiff(currentText, args.markdownContent);
+				yText.delete(diff.index, diff.remove);
+				yText.insert(diff.index, diff.insert);
+			}
+		}, "snapshot-restore");
+
+		const diffUpdate = encodeStateAsUpdate(yDoc, beforeVector);
+
+		if (diffUpdate.byteLength === 0) {
+			return Result({ _yay: null });
+		}
+
+		await ctx.runMutation(api.yjs_sync.submit_update, {
+			roomId: args.roomId,
+			guid: null,
+			update: to_array_buffer(diffUpdate),
+			sessionId: args.sessionId,
+		});
 
 		return Result({ _yay: null });
 	} catch (error) {
-		const msg = `Failed to update Rich Text Yjs: ${(error as Error)?.message ?? error}`;
+		const msg = `Failed to restore snapshot via Convex Yjs sync: ${(error as Error)?.message ?? error}`;
 		console.error(msg);
 		return Result({ _nay: { message: msg } });
 	}
@@ -1748,6 +1595,7 @@ export const update_page_and_sync_to_monaco = action({
 		projectId: v.string(),
 		pageId: v.string(),
 		textContent: v.string(),
+		sessionId: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1760,7 +1608,11 @@ export const update_page_and_sync_to_monaco = action({
 				pageId: args.pageId,
 				textContent: args.textContent,
 			}),
-			write_markdown_to_plain_text_yjs({ roomId, markdownContent: args.textContent }),
+			write_markdown_to_yjs_sync(ctx, {
+				roomId,
+				markdownContent: args.textContent,
+				sessionId: args.sessionId,
+			}),
 		]);
 	},
 });
@@ -1775,6 +1627,7 @@ export const update_page_and_sync_to_richtext = action({
 		projectId: v.string(),
 		pageId: v.string(),
 		textContent: v.string(),
+		sessionId: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1787,7 +1640,11 @@ export const update_page_and_sync_to_richtext = action({
 				pageId: args.pageId,
 				textContent: args.textContent,
 			}),
-			write_markdown_to_rich_text_yjs({ roomId, markdownContent: args.textContent }),
+			write_markdown_to_yjs_sync(ctx, {
+				roomId,
+				markdownContent: args.textContent,
+				sessionId: args.sessionId,
+			}),
 		]);
 	},
 });
@@ -1813,17 +1670,17 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const [snapshotContent, pageTextContent] = await Promise.all([
+		const [snapshotContent, page] = await Promise.all([
 			do_get_page_snapshot_content(ctx, {
 				page_id: args.pageId,
 				page_snapshot_id: args.pageSnapshotId,
 			}),
-
-			do_get_page_text_content_by_page_id(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageId: args.pageId,
-			}),
+			ctx.db
+				.query("pages")
+				.withIndex("by_workspace_project_and_page_id", (q) =>
+					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+				)
+				.first(),
 		]);
 
 		if (!snapshotContent) {
@@ -1832,11 +1689,13 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 			return Result({ _nay: { message: msg } });
 		}
 
-		if (!pageTextContent) {
-			const msg = "Page text content not found";
+		if (!page) {
+			const msg = "Page not found";
 			console.error(msg);
 			return Result({ _nay: { message: msg } });
 		}
+
+		const pageTextContent = page.text_content ?? "";
 
 		await Promise.all([
 			do_store_version_snapshot(ctx, {
@@ -1854,6 +1713,12 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 				content: snapshotContent.content,
 				created_by: user.name,
 			}),
+
+			ctx.db.patch(page._id, {
+				text_content: snapshotContent.content,
+				updated_by: user.name,
+				updated_at: Date.now(),
+			}),
 		]);
 
 		return Result({ _yay: null });
@@ -1866,6 +1731,7 @@ export const restore_snapshot = action({
 		projectId: v.string(),
 		pageId: v.string(),
 		pageSnapshotId: v.id("pages_snapshots"),
+		sessionId: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1889,28 +1755,15 @@ export const restore_snapshot = action({
 				}
 
 				const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
+				const yjsSyncResult = await write_markdown_to_yjs_sync(ctx, {
+					roomId,
+					markdownContent: snapshotContent.content,
+					sessionId: args.sessionId,
+				});
 
-				return Promise.all([
-					(async (/* iife Update Rich Text Yjs */) => {
-						const result = await write_markdown_to_rich_text_yjs({ roomId, markdownContent: snapshotContent.content });
-
-						if (result._nay) {
-							const msg = `Failed to update Rich Text Yjs: ${result._nay.message}`;
-							console.error(msg);
-						}
-					})(),
-					(async (/* iife Update Plain Text Yjs */) => {
-						const monacoSyncResult = await write_markdown_to_plain_text_yjs({
-							roomId,
-							markdownContent: snapshotContent.content,
-						});
-
-						if (monacoSyncResult._nay) {
-							const msg = `Failed to update Plain Text Yjs: ${monacoSyncResult._nay.message}`;
-							console.error(msg);
-						}
-					})(),
-				]);
+				if (yjsSyncResult._nay) {
+					console.error(`Failed to restore snapshot via Convex Yjs sync: ${yjsSyncResult._nay.message}`);
+				}
 			})(),
 		]);
 	},
@@ -1927,6 +1780,7 @@ export const restore_snapshot = action({
  * - <= 1 day old: keep all snapshots
  */
 export const cleanup_old_snapshots = internalMutation({
+	args: {},
 	handler: async (ctx) => {
 		const now = Date.now();
 		const timestamp60DaysAgo = now - 60 * 24 * 60 * 60 * 1000;

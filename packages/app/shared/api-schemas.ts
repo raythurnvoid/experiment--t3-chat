@@ -210,25 +210,6 @@ export interface api_schemas_Main {
 			};
 		};
 	};
-
-	"/api/ai-docs-temp/liveblocks-auth": {
-		post: {
-			pathParams: never;
-			searchParams: never;
-			body: {
-				room?: string;
-			};
-			headers: {
-				Authorization: string;
-			};
-			response: {
-				200: {
-					headers: {};
-					body: any; // liveblocks auth response
-				};
-			};
-		};
-	};
 }
 
 export type api_schemas_MainPaths = keyof api_schemas_Main;

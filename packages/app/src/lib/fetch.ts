@@ -40,23 +40,6 @@ export async function app_fetch_stream_runs(
 	});
 }
 
-export async function app_fetch_ai_docs_liveblocks_auth(
-	args: app_fetch_JsonArgs & {
-		input: {
-			room?: string;
-		};
-	},
-) {
-	const url = `${convex_http_url}/api/ai-docs-temp/liveblocks-auth`;
-
-	return await app_fetch_json<{ token: string }>({
-		...args,
-		url,
-		method: "POST",
-		body: args.input,
-	});
-}
-
 export async function app_fetch_ai_docs_contextual_prompt(
 	args: app_fetch_JsonArgs & {
 		input: {

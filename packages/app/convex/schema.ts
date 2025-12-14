@@ -235,6 +235,27 @@ const app_convex_schema = defineSchema({
 			filterFields: ["workspace_id", "project_id"],
 		}),
 
+	pages_yjs_doc_heads: defineTable({
+		room_id: v.string(),
+		guid: v.union(v.string(), v.null()),
+		seq: v.number(),
+		snapshot_update: v.bytes(),
+		snapshot_hash: v.string(),
+		updated_at: v.number(),
+	}).index("by_room_guid", ["room_id", "guid"]),
+
+	pages_yjs_updates: defineTable({
+		room_id: v.string(),
+		guid: v.union(v.string(), v.null()),
+		seq: v.number(),
+		update: v.bytes(),
+		session_id: v.string(),
+		snapshot_hash: v.string(),
+		created_at: v.number(),
+	})
+		.index("by_room_guid", ["room_id", "guid"])
+		.index("by_room_guid_and_seq", ["room_id", "guid", "seq"]),
+
 	/**
 	 * Pending edits overlay used to stage AI-written content until user saves.
 	 * Keys by user/thread/page to allow parallel staging across chat threads.

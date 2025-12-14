@@ -61,10 +61,11 @@ export type PageEditorSnapshotsModal_ClassNames =
 export type PageEditorSnapshotsModal_Props = {
 	editor: Editor | null;
 	pageId: string;
+	sessionId: string;
 };
 
 export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {
-	const { pageId, editor } = props;
+	const { pageId, editor, sessionId } = props;
 	const [isListOpen, setIsListOpen] = useState(false);
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
@@ -111,6 +112,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageSnapshotId: selectedSnapshotId,
 				pageId: pageId,
+				sessionId: sessionId,
 			});
 			console.debug("Snapshot restored:", selectedSnapshotId);
 			setIsPreviewOpen(false);

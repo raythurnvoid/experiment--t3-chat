@@ -11,8 +11,8 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor } from "@tiptap/react";
-import { useLiveblocksExtension, useIsEditorReady, CommentsExtension } from "@liveblocks/react-tiptap";
-import { useSyncStatus } from "@liveblocks/react/suspense";
+import { useLiveblocksExtension, CommentsExtension } from "@liveblocks/react-tiptap";
+import type { YjsSyncStatus } from "@liveblocks/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { defaultExtensions } from "./extensions.ts";
 import { PageEditorRichTextToolsColorSelector } from "./page-editor-rich-text-tools-color-selector.tsx";
@@ -23,7 +23,6 @@ import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools
 import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
 import { MySeparator, type MySeparator_ClassNames } from "@/components/my-separator.tsx";
-import NotificationsPopover from "./notifications-popover.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
@@ -50,8 +49,9 @@ import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import type { ExtractStrict } from "type-fest";
 import { TypedEventTarget } from "@remix-run/interaction";
+import type { pages_Yjs } from "@/hooks/pages-hooks.ts";
 
-type SyncStatus = ReturnType<typeof useSyncStatus>;
+type SyncStatus = YjsSyncStatus;
 
 // #region Toolbar
 export type PageEditorRichTextToolbar_ClassNames =
@@ -67,10 +67,11 @@ export type PageEditorRichTextToolbar_Props = {
 	syncChanged: boolean;
 	charsCount: number;
 	pageId: string;
+	sessionId: string;
 };
 
 function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
-	const { editor, syncStatus, syncChanged, charsCount, pageId } = props;
+	const { editor, syncStatus, syncChanged, charsCount, pageId, sessionId } = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
@@ -120,8 +121,7 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 					>
 						{charsCount} Words
 					</MyBadge>
-					<PageEditorSnapshotsModal pageId={pageId} editor={editor} />
-					<NotificationsPopover />
+					<PageEditorSnapshotsModal pageId={pageId} editor={editor} sessionId={sessionId} />
 				</div>
 			)}
 		</div>
@@ -349,13 +349,15 @@ type PageEditorRichTextInner_ClassNames =
 
 type PageEditorRichTextInner_Props = {
 	className?: string;
+	roomId: string;
+	pagesYjs: pages_Yjs;
 	pageId: string;
 	presenceStore: pages_PresenceStore;
 	headerSlot?: React.ReactNode;
 };
 
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
-	const { className, pageId, presenceStore, headerSlot } = props;
+	const { className, roomId, pagesYjs, pageId, presenceStore, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const editorRef = useLiveRef(editor);
@@ -368,15 +370,13 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	const [threadIds, setThreadIds] = useState<string[]>([]);
 
-	const syncStatus = useSyncStatus({ smooth: true });
-	const oldSyncValue = useRef(syncStatus);
-	const [syncChanged, setSyncChanged] = useState(false);
-	const isEditorReady = useIsEditorReady();
+	const isEditorReady = pagesYjs.syncStatus === "synchronizing" || pagesYjs.syncStatus === "synchronized";
 
 	const liveblocks = useLiveblocksExtension({
 		initialContent: pages_get_rich_text_initial_content(),
 		field: pages_YJS_DOC_KEYS.richText,
 		presenceStore,
+		yjsProvider: pagesYjs.yjsProvider,
 		ai: {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
@@ -471,6 +471,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 							projectId: ai_chat_HARDCODED_PROJECT_ID,
 							pageId: pageId!,
 							textContent: markdownContent,
+							sessionId: presenceStore.localSessionId,
 						});
 					}
 				} catch (error) {
@@ -498,13 +499,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		}
 	}, [isEditorReady]);
 
-	// Detect if the sync status changed
-	useEffect(() => {
-		if (isEditorReady && editor && oldSyncValue.current !== syncStatus) {
-			setSyncChanged(true);
-		}
-	}, [syncStatus]);
-
 	return (
 		<>
 			<div
@@ -524,9 +518,10 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					<PageEditorRichTextToolbar
 						editor={editor}
 						charsCount={charsCount}
-						syncStatus={syncStatus}
-						syncChanged={syncChanged}
+						syncStatus={pagesYjs.syncStatus}
+						syncChanged={pagesYjs.syncChanged}
 						pageId={pageId}
+						sessionId={presenceStore.localSessionId}
 					/>
 				)}
 
@@ -616,6 +611,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 				</div>
 			</div>
 			{!isEditorReady && <PageEditorSkeleton />}
+			{"" + pagesYjs.syncStatus}
 		</>
 	);
 }
@@ -651,19 +647,23 @@ export type PageEditorRichText_FgColorCssVarKeys =
 	| "--PageEditorRichText-text-color-fg-gray";
 
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
+	roomId: string;
+	pagesYjs: pages_Yjs;
 	pageId: string;
 	presenceStore: pages_PresenceStore;
 	headerSlot?: React.ReactNode;
 };
 
 export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { className, pageId, presenceStore, headerSlot, ...rest } = props;
+	const { className, roomId, pagesYjs, pageId, presenceStore, headerSlot, ...rest } = props;
 
 	return (
 		// remount on pageId to prevent stale state on page changes
 		<EditorRoot key={pageId}>
 			<PageEditorRichTextInner
 				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
+				roomId={roomId}
+				pagesYjs={pagesYjs}
 				pageId={pageId}
 				presenceStore={presenceStore}
 				headerSlot={headerSlot}
