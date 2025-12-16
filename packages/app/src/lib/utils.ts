@@ -61,7 +61,12 @@ export function should_never_happen(message: LiteralUnion<"Missing deps", string
 		// eslint-disable-next-line no-debugger
 		debugger;
 	}
-	return new Error("[should_never_happen] " + message + "\n\t" + JSON.stringify(data, null, "\t"));
+	return new Error(
+		"[should_never_happen] " +
+			message +
+			"\n\t" +
+			JSON.stringify(data, (_key, value) => (value === undefined ? "<undefined>" : value), "\t"),
+	);
 }
 
 export function has_defined_property<O extends object, P extends KeysOfUnion<O>>(
