@@ -269,8 +269,13 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				"PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames,
 				rendered && ("PageEditorRichTextBubble-rendered" satisfies PageEditorRichTextBubble_ClassNames),
 			)}
+			appendTo={document.body}
 			options={{
 				placement: "bottom-start",
+				flip: false,
+				shift: {
+					padding: 120,
+				},
 				onHide: handleHide,
 				onShow: handleShow,
 			}}
