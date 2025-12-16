@@ -188,9 +188,44 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		};
 		editor.on("selectionUpdate", handleSelectionUpdate);
 
+		// Global event listeners
+
+		function isElContainedInManagedAreas(el: EventTarget | null) {
+			const elAsNode = el as Node;
+			const isInBubble = bubbleSurfaceRef.current?.contains(elAsNode) == true;
+			const isInEditor = editor.view.dom.contains(elAsNode) == true;
+			// event.target on hoisted elements should be considered as "managed" areas
+			const isProbablyHoisted = document.getElementById("root" satisfies AppElementId)?.contains(elAsNode) == false;
+
+			return isInBubble || isInEditor || isProbablyHoisted;
+		}
+
+		const ac = new AbortController();
+		window.addEventListener(
+			"keydown",
+			(event: KeyboardEvent) => {
+				if (event.key === "Escape" && isElContainedInManagedAreas(event.target) === false) {
+					setRendered(false);
+					PageEditorRichText.clearDecorationHighlightProperly(editor);
+				}
+			},
+			{ signal: ac.signal, capture: true },
+		);
+		window.addEventListener(
+			"pointerdown",
+			(event: PointerEvent) => {
+				if (isElContainedInManagedAreas(event.target) === false) {
+					setRendered(false);
+					PageEditorRichText.clearDecorationHighlightProperly(editor);
+				}
+			},
+			{ signal: ac.signal, capture: true },
+		);
+
 		return () => {
 			editor.unregisterPlugin(bubbleEscPluginKey);
 			editor.off("selectionUpdate", handleSelectionUpdate);
+			ac.abort();
 		};
 	});
 
