@@ -268,3 +268,5 @@ export class XCustomEvent<T extends { [key: string]: any }> extends Event {
 		this.detail = args.detail;
 	}
 }
+
+export type AppElementId = "app_tiptap_hoisting_container";

@@ -187,7 +187,6 @@ export type PageEditorRichTextToolsColorSelector_ClassNames =
 
 export type PageEditorRichTextToolsColorSelector_Props = {
 	editor: Editor;
-	portalElement: HTMLElement;
 	setDecorationHighlightOnOpen?: boolean;
 };
 
@@ -195,7 +194,7 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, portalElement, setDecorationHighlightOnOpen = false } = props;
+	const { editor, setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to editor state changes to trigger re-renders when selection changes
 	useEditorState({
@@ -314,7 +313,6 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 					)}
 					autoFocusOnShow={false}
 					unmountOnHide
-					portalElement={portalElement}
 				>
 					<MySelectPopoverScrollableArea>
 						<MySelectPopoverContent>

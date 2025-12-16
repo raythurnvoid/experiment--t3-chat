@@ -27,17 +27,15 @@ import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
 import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
-import { cn } from "@/lib/utils.ts";
+import { cn, type AppElementId } from "@/lib/utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { useAction } from "convex/react";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
-import { app_convex_api, app_convex } from "@/lib/app-convex-client.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_PresenceStore, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
-import { useAuth } from "@/lib/auth.ts";
-import { ai_docs_create_liveblocks_room_id } from "../../../../shared/pages.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
 import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-comment.tsx";
@@ -48,7 +46,6 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import type { ExtractStrict } from "type-fest";
-import { TypedEventTarget } from "@remix-run/interaction";
 import type { pages_Yjs } from "@/hooks/pages-hooks.ts";
 
 type SyncStatus = YjsSyncStatus;
@@ -95,11 +92,7 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 					<MySeparator orientation="vertical" />
 					<PageEditorRichTextToolsTextStyles editor={editor} />
 					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector
-						editor={editor}
-						portalElement={portalElement}
-						setDecorationHighlightOnOpen={true}
-					/>
+					<PageEditorRichTextToolsColorSelector editor={editor} setDecorationHighlightOnOpen={true} />
 					<MySeparator orientation="vertical" />
 					<MyBadge
 						variant="secondary"
@@ -260,16 +253,26 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		setRendered(false);
 	};
 
+	/**
+	 * The container for the tiptap hoisted elements.
+	 * Used by the bubble to allow it to close when clicking on
+	 * focusable elements in the page because it checks for the parent
+	 * element to contain the focus relatedTarget and if the bubble
+	 * is hoisted in the body, the body will always contain the focus relatedTarget
+	 * preventing the bubble from closing.
+	 */
+	const hoistingContainer = document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
+
 	useEffect(handleMount, []);
 
-	return (
+	return hoistingContainer ? (
 		<EditorBubble
 			ref={bubbleSurfaceRef}
 			className={cn(
 				"PageEditorRichTextBubble" satisfies PageEditorRichTextBubble_ClassNames,
 				rendered && ("PageEditorRichTextBubble-rendered" satisfies PageEditorRichTextBubble_ClassNames),
 			)}
-			appendTo={document.body}
+			appendTo={hoistingContainer}
 			options={{
 				placement: "bottom-start",
 				flip: false,
@@ -312,7 +315,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 						<MySeparator orientation="vertical" />
 						<PageEditorRichTextToolsTextStyles editor={editor} />
 						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsColorSelector editor={editor} portalElement={portalElement} />
+						<PageEditorRichTextToolsColorSelector editor={editor} />
 						<MySeparator orientation="vertical" />
 						<MyButton
 							variant="ghost"
@@ -330,7 +333,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 				)}
 			</div>
 		</EditorBubble>
-	);
+	) : null;
 }
 // #endregion Bubble
 
@@ -354,7 +357,6 @@ type PageEditorRichTextInner_ClassNames =
 
 type PageEditorRichTextInner_Props = {
 	className?: string;
-	roomId: string;
 	pagesYjs: pages_Yjs;
 	pageId: string;
 	presenceStore: pages_PresenceStore;
@@ -362,7 +364,7 @@ type PageEditorRichTextInner_Props = {
 };
 
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
-	const { className, roomId, pagesYjs, pageId, presenceStore, headerSlot } = props;
+	const { className, pagesYjs, pageId, presenceStore, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const editorRef = useLiveRef(editor);
@@ -652,7 +654,6 @@ export type PageEditorRichText_FgColorCssVarKeys =
 	| "--PageEditorRichText-text-color-fg-gray";
 
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
-	roomId: string;
 	pagesYjs: pages_Yjs;
 	pageId: string;
 	presenceStore: pages_PresenceStore;
@@ -660,14 +661,13 @@ export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 };
 
 export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { className, roomId, pagesYjs, pageId, presenceStore, headerSlot, ...rest } = props;
+	const { className, pagesYjs, pageId, presenceStore, headerSlot, ...rest } = props;
 
 	return (
 		// remount on pageId to prevent stale state on page changes
 		<EditorRoot key={pageId}>
 			<PageEditorRichTextInner
 				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
-				roomId={roomId}
 				pagesYjs={pagesYjs}
 				pageId={pageId}
 				presenceStore={presenceStore}

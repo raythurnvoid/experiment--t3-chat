@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { auth_set_token_manager, useAuth } from "../lib/auth.ts";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { cn, valorize_scrollbar_width_px_css_var } from "../lib/utils.ts";
+import { cn, valorize_scrollbar_width_px_css_var, type AppElementId } from "../lib/utils.ts";
 
 export type RootLayout_ClassNames = "RootLayout";
 
@@ -34,6 +34,7 @@ function Layout() {
 				<Outlet />
 			</MainAppSidebar>
 			<AppTanStackRouterDevTools />
+			<div id={"app_tiptap_hoisting_container" satisfies AppElementId}></div>
 		</div>
 	);
 }
