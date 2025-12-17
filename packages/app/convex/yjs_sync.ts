@@ -1,10 +1,12 @@
-import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
+import { mutation, query, internalMutation, type QueryCtx, type MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import { v, type Infer } from "convex/values";
 import * as Y from "yjs";
 import { sha256 } from "@noble/hashes/sha2";
 import { Base64 } from "js-base64";
 import { pages_u8_to_array_buffer } from "../shared/pages.js";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
+import { auth_ANONYMOUS_USER_ID } from "../shared/shared-auth-constants.js";
 
 type yjs_sync_StreamKey = {
 	roomId: string;
@@ -149,21 +151,67 @@ async function yjs_sync_prune_updates(
 	}
 }
 
-export const submit_update = mutation({
-	args: {
-		roomId: v.string(),
-		guid: v.union(v.string(), v.null()),
-		update: v.bytes(),
-		sessionId: v.string(),
-	},
-	returns: v.object({
-		latestSeq: v.number(),
-		remoteSnapshotHash: v.string(),
-	}),
-	handler: async (ctx, args) => {
-		const stream: yjs_sync_StreamKey = { roomId: args.roomId, guid: args.guid };
+export const migrate_session_id_to_origin = internalMutation({
+	args: {},
+	handler: async (ctx) => {
+		const allUpdates = await ctx.db.query("pages_yjs_updates").collect();
 
-		const head = await yjs_sync_get_or_create_head_row(ctx, stream);
+		for (const update of allUpdates) {
+			// Skip if already migrated (has origin field)
+			if ("origin" in update && update.origin) {
+				continue;
+			}
+
+			// Migrate old session_id to origin format
+			const oldSessionId = (update as any).session_id as string | undefined;
+
+			if (oldSessionId) {
+				// Delete old record and recreate with new schema
+				const oldData = update;
+				await ctx.db.delete(update._id);
+				await ctx.db.insert("pages_yjs_updates", {
+					room_id: oldData.room_id,
+					guid: oldData.guid,
+					seq: oldData.seq,
+					update: oldData.update,
+					origin: {
+						type: "USER_EDIT",
+						session_id: oldSessionId,
+						user_id: auth_ANONYMOUS_USER_ID,
+					},
+					snapshot_hash: oldData.snapshot_hash,
+					created_at: oldData.created_at,
+				});
+			}
+		}
+	},
+});
+
+export function push_update(
+	ctx: MutationCtx,
+	args: {
+		stream: yjs_sync_StreamKey;
+		update: ArrayBuffer;
+		origin:
+			| {
+					type: "USER_EDIT";
+					session_id: string;
+					user_id: string;
+			  }
+			| {
+					type: "USER_SNAPSHOT_RESTORE";
+					session_id: string;
+					user_id: string;
+					snapshot_id: Id<"pages_snapshots">;
+			  }
+			| {
+					type: "USER_AI_EDIT";
+					user_id: string;
+			  };
+	},
+): Promise<{ latestSeq: number; remoteSnapshotHash: string }> {
+	return (async (/* iife */) => {
+		const head = await yjs_sync_get_or_create_head_row(ctx, args.stream);
 
 		const doc = new Y.Doc();
 		yjs_sync_apply_update(doc, head.snapshot_update);
@@ -174,11 +222,11 @@ export const submit_update = mutation({
 		const newSeq = head.seq + 1;
 
 		await ctx.db.insert("pages_yjs_updates", {
-			room_id: stream.roomId,
-			guid: stream.guid,
+			room_id: args.stream.roomId,
+			guid: args.stream.guid,
 			seq: newSeq,
 			update: args.update,
-			session_id: args.sessionId,
+			origin: args.origin,
 			snapshot_hash: newSnapshotHash,
 			created_at: Date.now(),
 		});
@@ -192,7 +240,7 @@ export const submit_update = mutation({
 
 		// Best-effort pruning to keep the update log bounded.
 		if (newSeq % 50 === 0) {
-			await yjs_sync_prune_updates(ctx, stream, {
+			await yjs_sync_prune_updates(ctx, args.stream, {
 				keepLastN: 512,
 				latestSeq: newSeq,
 				maxDeletes: 512,
@@ -200,6 +248,60 @@ export const submit_update = mutation({
 		}
 
 		return { latestSeq: newSeq, remoteSnapshotHash: newSnapshotHash };
+	})();
+}
+
+export const push_update_snapshot_restore = internalMutation({
+	args: {
+		roomId: v.string(),
+		guid: v.union(v.string(), v.null()),
+		update: v.bytes(),
+		sessionId: v.string(),
+		userId: v.string(),
+		snapshotId: v.id("pages_snapshots"),
+	},
+	returns: v.object({
+		latestSeq: v.number(),
+		remoteSnapshotHash: v.string(),
+	}),
+	handler: async (ctx, args) => {
+		return await push_update(ctx, {
+			stream: { roomId: args.roomId, guid: args.guid },
+			update: args.update,
+			origin: {
+				type: "USER_SNAPSHOT_RESTORE",
+				session_id: args.sessionId,
+				user_id: args.userId,
+				snapshot_id: args.snapshotId,
+			},
+		});
+	},
+});
+
+export const submit_update = mutation({
+	args: {
+		roomId: v.string(),
+		guid: v.union(v.string(), v.null()),
+		update: v.bytes(),
+		sessionId: v.string(),
+	},
+	returns: v.object({
+		latestSeq: v.number(),
+		remoteSnapshotHash: v.string(),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const stream: yjs_sync_StreamKey = { roomId: args.roomId, guid: args.guid };
+
+		return await push_update(ctx, {
+			stream,
+			update: args.update,
+			origin: {
+				type: "USER_EDIT",
+				session_id: args.sessionId,
+				user_id: user.id,
+			},
+		});
 	},
 });
 
@@ -210,7 +312,23 @@ const tail_updates_validator = v.object({
 		v.object({
 			seq: v.number(),
 			update: v.bytes(),
-			sessionId: v.string(),
+			origin: v.union(
+				v.object({
+					type: v.literal("USER_EDIT"),
+					session_id: v.string(),
+					user_id: v.string(),
+				}),
+				v.object({
+					type: v.literal("USER_SNAPSHOT_RESTORE"),
+					session_id: v.string(),
+					user_id: v.string(),
+					snapshot_id: v.id("pages_snapshots"),
+				}),
+				v.object({
+					type: v.literal("USER_AI_EDIT"),
+					user_id: v.string(),
+				}),
+			),
 			snapshotHash: v.string(),
 		}),
 	),
@@ -242,14 +360,21 @@ export const tail_updates = query({
 		const updatesAsc = changes.reverse().map((row) => ({
 			seq: row.seq,
 			update: row.update,
-			sessionId: row.session_id,
+			origin: row.origin,
 			snapshotHash: row.snapshot_hash,
 		}));
 
 		const filtered =
 			args.excludeSessionId === undefined
 				? updatesAsc
-				: updatesAsc.filter((u) => u.sessionId !== args.excludeSessionId);
+				: updatesAsc.filter((u) => {
+						// Only filter USER_EDIT with matching sessionId
+						if (u.origin.type === "USER_EDIT") {
+							return u.origin.session_id !== args.excludeSessionId;
+						}
+						// All other origins (USER_SNAPSHOT_RESTORE, USER_AI_EDIT) are always included
+						return true;
+					});
 
 		return {
 			latestSeq,

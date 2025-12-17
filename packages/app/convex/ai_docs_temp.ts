@@ -1521,6 +1521,7 @@ async function write_markdown_to_yjs_sync(
 		roomId: string;
 		markdownContent: string;
 		sessionId: string;
+		pageSnapshotId?: Id<"pages_snapshots">;
 	},
 ): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
 	try {
@@ -1554,15 +1555,18 @@ async function write_markdown_to_yjs_sync(
 		const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
 		const currentText = yText.toString();
 
-		yDoc.transact(() => {
-			updateYFragment(yDoc, fragment, node, meta);
+		yDoc.transact(
+			() => {
+				updateYFragment(yDoc, fragment, node, meta);
 
-			if (currentText !== args.markdownContent) {
-				const diff = simpleDiff(currentText, args.markdownContent);
-				yText.delete(diff.index, diff.remove);
-				yText.insert(diff.index, diff.insert);
-			}
-		}, "snapshot-restore");
+				if (currentText !== args.markdownContent) {
+					const diff = simpleDiff(currentText, args.markdownContent);
+					yText.delete(diff.index, diff.remove);
+					yText.insert(diff.index, diff.insert);
+				}
+			},
+			args.pageSnapshotId ? "snapshot-restore" : "user-edit",
+		);
 
 		const diffUpdate = encodeStateAsUpdate(yDoc, beforeVector);
 
@@ -1570,12 +1574,26 @@ async function write_markdown_to_yjs_sync(
 			return Result({ _yay: null });
 		}
 
-		await ctx.runMutation(api.yjs_sync.submit_update, {
-			roomId: args.roomId,
-			guid: null,
-			update: to_array_buffer(diffUpdate),
-			sessionId: args.sessionId,
-		});
+		if (args.pageSnapshotId) {
+			// Snapshot restoration
+			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+			await ctx.runMutation(internal.yjs_sync.push_update_snapshot_restore, {
+				roomId: args.roomId,
+				guid: null,
+				update: to_array_buffer(diffUpdate),
+				sessionId: args.sessionId,
+				userId: user.id,
+				snapshotId: args.pageSnapshotId,
+			});
+		} else {
+			// Regular user edit - use submit_update which handles USER_EDIT origin
+			await ctx.runMutation(api.yjs_sync.submit_update, {
+				roomId: args.roomId,
+				guid: null,
+				update: to_array_buffer(diffUpdate),
+				sessionId: args.sessionId,
+			});
+		}
 
 		return Result({ _yay: null });
 	} catch (error) {
@@ -1759,6 +1777,7 @@ export const restore_snapshot = action({
 					roomId,
 					markdownContent: snapshotContent.content,
 					sessionId: args.sessionId,
+					pageSnapshotId: args.pageSnapshotId,
 				});
 
 				if (yjsSyncResult._nay) {

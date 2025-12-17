@@ -249,7 +249,23 @@ const app_convex_schema = defineSchema({
 		guid: v.union(v.string(), v.null()),
 		seq: v.number(),
 		update: v.bytes(),
-		session_id: v.string(),
+		origin: v.union(
+			v.object({
+				type: v.literal("USER_EDIT"),
+				session_id: v.string(),
+				user_id: v.string(),
+			}),
+			v.object({
+				type: v.literal("USER_SNAPSHOT_RESTORE"),
+				session_id: v.string(),
+				user_id: v.string(),
+				snapshot_id: v.id("pages_snapshots"),
+			}),
+			v.object({
+				type: v.literal("USER_AI_EDIT"),
+				user_id: v.string(),
+			}),
+		),
 		snapshot_hash: v.string(),
 		created_at: v.number(),
 	})
