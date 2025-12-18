@@ -15,7 +15,6 @@ import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as human_thread_messages from "../human_thread_messages.js";
 import type * as presence from "../presence.js";
-import type * as yjs_sync from "../yjs_sync.js";
 
 import type {
   ApiFromModules,
@@ -31,7 +30,6 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   human_thread_messages: typeof human_thread_messages;
   presence: typeof presence;
-  yjs_sync: typeof yjs_sync;
 }>;
 
 /**

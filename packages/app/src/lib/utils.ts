@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
-import type { KeysOfUnion, LiteralUnion, Primitive } from "type-fest";
+import type { KeysOfUnion, Primitive } from "type-fest";
 
 export * from "../../shared/shared-utils.ts";
 
@@ -53,20 +53,6 @@ export function forward_ref(refValue: any, ...targetRefs: (React.Ref<any> | unde
  **/
 export function delay(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export function should_never_happen(message: LiteralUnion<"Missing deps", string>, data: Record<string, any> = {}) {
-	console.error("[should_never_happen]", message, data);
-	if (import.meta.env.DEV) {
-		// eslint-disable-next-line no-debugger
-		debugger;
-	}
-	return new Error(
-		"[should_never_happen] " +
-			message +
-			"\n\t" +
-			JSON.stringify(data, (_key, value) => (value === undefined ? "<undefined>" : value), "\t"),
-	);
 }
 
 export function has_defined_property<O extends object, P extends KeysOfUnion<O>>(

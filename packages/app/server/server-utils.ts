@@ -1,6 +1,6 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { auth_ANONYMOUS_USER_ID } from "../shared/shared-auth-constants.ts";
-import { Result, Result_try_promise } from "../src/lib/errors-as-values-utils.ts";
+import { Result, Result_try_promise } from "../shared/errors-as-values-utils.ts";
 import type z from "zod";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;

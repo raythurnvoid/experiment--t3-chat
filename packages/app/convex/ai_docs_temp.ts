@@ -12,12 +12,9 @@ import {
 	query,
 	type QueryCtx,
 	type MutationCtx,
-	type ActionCtx,
 	internalMutation,
-	action,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internal, api } from "./_generated/api.js";
 import { paginationOptsValidator } from "convex/server";
 import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -45,15 +42,19 @@ import {
 	pages_FIRST_VERSION,
 	pages_ROOT_ID,
 	pages_YJS_DOC_KEYS,
-	ai_docs_create_liveblocks_room_id,
+	pages_headless_editor_create,
+	pages_u8_to_array_buffer,
+	pages_headless_editor_set_content_from_markdown,
 } from "../server/pages.ts";
 import { minimatch } from "minimatch";
-import { z } from "zod";
-import { Result } from "../src/lib/errors-as-values-utils.ts";
-import { server_page_editor_markdown_to_json, server_page_editor_get_schema } from "../server/page-editor.ts";
-import { Doc as YDoc, encodeStateVector, encodeStateAsUpdate, applyUpdate } from "yjs";
-import { initProseMirrorDoc, updateYFragment } from "@tiptap/y-tiptap";
-import { simpleDiff } from "lib0/diff";
+import { Result } from "../shared/errors-as-values-utils.ts";
+import { Doc as YDoc, encodeStateVector, encodeStateAsUpdate, applyUpdate, mergeUpdates } from "yjs";
+import { updateYFragment } from "@tiptap/y-tiptap";
+import type { Editor } from "@tiptap/core";
+import { should_never_happen } from "../shared/shared-utils.ts";
+import app_convex_schema from "./schema.ts";
+import { internal } from "./_generated/api.js";
+import { doc } from "convex-helpers/validators";
 
 export const contextual_prompt = httpAction(async (ctx, request) => {
 	try {
@@ -214,7 +215,7 @@ async function resolve_page_id_from_path_fn(
 			.unique();
 		if (!page) return null;
 		currentNode = page.page_id;
-		pageId = page.page_id;
+		pageId = page._id;
 	}
 
 	return pageId;
@@ -326,16 +327,19 @@ export const get_tree_items_list = query({
 			},
 			...pages
 				.filter((page) => page.page_id && page.name !== "")
-				.map((page) => ({
-					type: "page" as const,
-					index: page.page_id,
-					parentId: page.parent_id,
-					title: page.name || "Untitled",
-					content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
-					isArchived: page.is_archived || false,
-					updatedAt: page.updated_at,
-					updatedBy: page.updated_by,
-				})),
+				.map(
+					(page) =>
+						({
+							type: "page" as const,
+							index: page.page_id,
+							parentId: page.parent_id,
+							title: page.name || "Untitled",
+							content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
+							isArchived: page.is_archived || false,
+							updatedAt: page.updated_at,
+							updatedBy: page.updated_by,
+						}) satisfies pages_TreeItem,
+				),
 		];
 
 		return treeItemsList;
@@ -352,11 +356,11 @@ type CreatePageInsertArgs = {
 	text_content: string;
 };
 
-async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs): Promise<string> {
+async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs) {
 	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 	const now = Date.now();
 
-	await ctx.db.insert("pages", {
+	const page_id = await ctx.db.insert("pages", {
 		workspace_id: args.workspace_id,
 		project_id: args.project_id,
 		page_id: args.page_id,
@@ -370,7 +374,29 @@ async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs): 
 		updated_at: now,
 	});
 
-	return args.page_id;
+	// Create initial Yjs snapshot + sequence tracker with the page.
+	// Important: do NOT store an empty bytes blob; Yjs update decoding may throw on empty payloads.
+	const initialSnapshotUpdate = pages_u8_to_array_buffer(encodeStateAsUpdate(new YDoc()));
+	await Promise.all([
+		ctx.db.insert("pages_yjs_snapshots", {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			page_id: page_id,
+			sequence: 0,
+			snapshot_update: initialSnapshotUpdate,
+			created_by: user.name,
+			updated_by: user.name,
+			updated_at: now,
+		}),
+		ctx.db.insert("pages_yjs_docs_last_sequences", {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			page_id: page_id,
+			last_sequence: 0,
+		}),
+	]);
+
+	return page_id;
 }
 
 export const create_page = mutation({
@@ -393,12 +419,26 @@ export const create_page = mutation({
 	},
 });
 
+export const get_page_id_from_client_generated_id = query({
+	args: { workspaceId: v.string(), projectId: v.string(), clientGeneratedId: v.string() },
+	returns: v.union(v.id("pages"), v.null()),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("pages")
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.clientGeneratedId),
+			)
+			.first();
+		return page?._id ?? null;
+	},
+});
+
 export const create_page_quick = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.object({ page_id: v.string() }),
+	returns: v.object({ page_id: v.id("pages") }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 
@@ -410,31 +450,28 @@ export const create_page_quick = mutation({
 			)
 			.first();
 
-		let tmp_page_id: string;
+		let tmp_page_id = null;
 
 		if (!tmp) {
-			tmp_page_id = `.tmp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-			await create_page_in_db(ctx, {
+			tmp_page_id = await create_page_in_db(ctx, {
 				workspace_id: workspaceId,
 				project_id: projectId,
-				page_id: tmp_page_id,
+				page_id: `.tmp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
 				parent_id: pages_ROOT_ID,
 				name: ".tmp",
 				text_content:
 					"Automatically generated temp folder\n\nThis page contains temporary pages generated by the system.",
 			});
 		} else {
-			tmp_page_id = tmp.page_id;
+			tmp_page_id = tmp._id;
 		}
 
 		// Create quick page under ".tmp"
-		const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 		const title = `Quick page created at ${new Date().toLocaleString("en-GB", { hour12: false })}`;
-
-		await create_page_in_db(ctx, {
+		const page_id = await create_page_in_db(ctx, {
 			workspace_id: workspaceId,
 			project_id: projectId,
-			page_id,
+			page_id: `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
 			parent_id: tmp_page_id,
 			name: title,
 			text_content: "",
@@ -599,117 +636,6 @@ export const unarchive_pages = mutation({
 	},
 });
 
-export const update_page_and_broadcast = mutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.string(),
-		textContent: v.string(),
-	},
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		// Find page by composite key
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.first();
-
-		if (page) {
-			await ctx.db.patch(page._id, {
-				text_content: args.textContent,
-				updated_by: user.name,
-				updated_at: Date.now(),
-			});
-		}
-	},
-});
-
-export async function schedule_snapshot(
-	ctx: MutationCtx,
-	args: {
-		page_id: string;
-		workspace_id: string;
-		project_id: string;
-	},
-) {
-	// Query for existing scheduled snapshot for this page
-	const existing = await ctx.db
-		.query("pages_snapshot_schedules")
-		.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
-		.first();
-
-	// Cancel existing scheduled function if it exists
-	if (existing) {
-		await ctx.scheduler.cancel(existing.scheduled_function_id);
-	}
-
-	// Schedule new snapshot creation after 10 seconds
-	const scheduledId = await ctx.scheduler.runAfter(10_000, internal.ai_docs_temp.create_snapshot_after_inactivity, {
-		page_id: args.page_id,
-		workspace_id: args.workspace_id,
-		project_id: args.project_id,
-	});
-
-	// Store the scheduled function ID
-	if (existing) {
-		await ctx.db.replace(existing._id, {
-			page_id: args.page_id,
-			scheduled_function_id: scheduledId,
-		});
-	} else {
-		await ctx.db.insert("pages_snapshot_schedules", {
-			page_id: args.page_id,
-			scheduled_function_id: scheduledId,
-		});
-	}
-
-	return null;
-}
-
-/**
- * Internal mutation to update page content in the database.
- * Used by actions that need to update the DB from Node.js runtime.
- */
-export const internal_update_page_content = internalMutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.string(),
-		textContent: v.string(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.first();
-
-		if (page) {
-			await ctx.db.patch(page._id, {
-				text_content: args.textContent,
-				updated_by: user.name,
-				updated_at: Date.now(),
-			});
-
-			// Schedule snapshot creation after 10 seconds of inactivity
-			await schedule_snapshot(ctx, {
-				page_id: page.page_id,
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-			});
-		}
-
-		return null;
-	},
-});
-
 export const apply_patch_to_page_and_broadcast = mutation({
 	args: {
 		workspaceId: v.string(),
@@ -773,7 +699,7 @@ export const get_page_by_path = query({
 		v.object({
 			workspace_id: v.union(v.string(), v.null()),
 			project_id: v.union(v.string(), v.null()),
-			page_id: v.string(),
+			page_id: v.id("pages"),
 			name: v.string(),
 			is_archived: v.boolean(),
 		}),
@@ -797,7 +723,7 @@ export const get_page_by_path = query({
 			? {
 					workspace_id: page.workspace_id,
 					project_id: page.project_id,
-					page_id: page.page_id,
+					page_id: page._id,
 					name: page.name,
 					is_archived: page.is_archived,
 				}
@@ -1117,41 +1043,6 @@ export const text_search_pages = internalQuery({
 	},
 });
 
-export const update_page_text_content = mutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.string(),
-		textContent: v.string(),
-	},
-	returns: v.union(v.null(), v.object({ bad: v.object({ message: v.string() }) })),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		// Query pages table using page_id (formerly page_id)
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.first();
-
-		if (!page) {
-			return {
-				bad: { message: "Page not found" },
-			};
-		}
-
-		await ctx.db.patch(page._id, {
-			text_content: args.textContent,
-			updated_by: user.name,
-			updated_at: Date.now(),
-		});
-
-		return null;
-	},
-});
-
 export const create_page_by_path = internalMutation({
 	args: {
 		workspaceId: v.string(),
@@ -1160,12 +1051,13 @@ export const create_page_by_path = internalMutation({
 		userId: v.string(),
 		threadId: v.string(),
 	},
-	returns: v.object({ page_id: v.string() }),
+	returns: v.object({ page_id: v.id("pages") }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 		const segments = server_path_extract_segments_from(args.path);
+
 		let currentParent = pages_ROOT_ID;
-		let lastPageId = pages_ROOT_ID;
+		let lastPageId = null;
 
 		for (let i = 0; i < segments.length; i++) {
 			const name = segments[i];
@@ -1180,11 +1072,11 @@ export const create_page_by_path = internalMutation({
 
 			if (!existing) {
 				// Create missing segment
-				const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-				await create_page_in_db(ctx, {
+				const clientGeneratedPageId = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+				const page_id = await create_page_in_db(ctx, {
 					workspace_id: workspaceId,
 					project_id: projectId,
-					page_id,
+					page_id: clientGeneratedPageId,
 					parent_id: currentParent,
 					name: name,
 					text_content: "",
@@ -1193,8 +1085,8 @@ export const create_page_by_path = internalMutation({
 				lastPageId = page_id;
 			} else {
 				// Continue traversal
-				currentParent = existing.page_id;
-				lastPageId = existing.page_id;
+				currentParent = existing._id;
+				lastPageId = existing._id;
 
 				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
 				if (i === segments.length - 1) {
@@ -1202,6 +1094,11 @@ export const create_page_by_path = internalMutation({
 				}
 			}
 		}
+
+		if (!lastPageId) {
+			throw should_never_happen("lastPageId not resolved after page creation");
+		}
+
 		return { page_id: lastPageId };
 	},
 });
@@ -1244,56 +1141,11 @@ export const ensure_home_page = mutation({
 	},
 });
 
-const create_version_snapshot_body_schema = z.object({
-	workspace_id: z.string(),
-	project_id: z.string(),
-	page_id: z.string(),
-	content: z.string(),
-});
-
-export const create_version_snapshot = httpAction(async (ctx, request) => {
-	try {
-		const bodyResult = await server_request_json_parse_and_validate(request, create_version_snapshot_body_schema);
-
-		if (bodyResult._nay) {
-			return server_convex_response_error_client({
-				body: bodyResult._nay,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		const { workspace_id, project_id, page_id, content } = bodyResult._yay;
-
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const snapshotId = await ctx.runMutation(internal.ai_docs_temp.store_version_snapshot, {
-			workspace_id,
-			project_id,
-			page_id,
-			content,
-			created_by: user.name,
-		});
-
-		return new Response(JSON.stringify({ snapshotId }), {
-			status: 200,
-			headers: server_convex_headers_cors(),
-		});
-	} catch (error: unknown) {
-		console.error("Version snapshot creation error:", error);
-		return server_convex_response_error_server({
-			body: {
-				message: error instanceof Error ? error.message : "Internal server error",
-			},
-			headers: server_convex_headers_cors(),
-		});
-	}
-});
-
 // Shared helper for snapshot creation
 const store_version_snapshot_args_schema = v.object({
 	workspace_id: v.string(),
 	project_id: v.string(),
-	page_id: v.string(),
+	page_id: v.id("pages"),
 	content: v.string(),
 	created_by: v.string(),
 });
@@ -1328,79 +1180,11 @@ export const store_version_snapshot = internalMutation({
 	},
 });
 
-export const create_snapshot_after_inactivity = internalMutation({
-	args: {
-		page_id: v.string(),
-		workspace_id: v.string(),
-		project_id: v.string(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		try {
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-			const textContent = await do_get_page_text_content_by_page_id(ctx, {
-				workspaceId: args.workspace_id,
-				projectId: args.project_id,
-				pageId: args.page_id,
-			});
-
-			if (!textContent) {
-				return null;
-			}
-
-			// Get the most recent non-archived snapshot for this page
-			const lastSnapshot =
-				(await ctx.db
-					.query("pages_snapshots")
-					.withIndex("by_page_id_and_is_archived", (q) => q.eq("page_id", args.page_id).eq("is_archived", undefined))
-					.order("desc")
-					.first()) ??
-				(await ctx.db
-					.query("pages_snapshots")
-					.withIndex("by_page_id_and_is_archived", (q) => q.eq("page_id", args.page_id).eq("is_archived", false))
-					.order("desc")
-					.first());
-
-			// If a snapshot exists, compare its content with the new content
-			if (lastSnapshot) {
-				const lastSnapshotContent = await do_get_page_snapshot_content(ctx, {
-					page_id: args.page_id,
-					page_snapshot_id: lastSnapshot._id,
-				});
-
-				// Skip creating a new snapshot if content hasn't changed
-				if (lastSnapshotContent && lastSnapshotContent.content === textContent) {
-					return null;
-				}
-			}
-
-			await do_store_version_snapshot(ctx, {
-				workspace_id: args.workspace_id,
-				project_id: args.project_id,
-				page_id: args.page_id,
-				content: textContent,
-				created_by: user.name,
-			});
-
-			return null;
-		} finally {
-			const schedule = await ctx.db
-				.query("pages_snapshot_schedules")
-				.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
-				.first();
-			if (schedule) {
-				await ctx.db.delete(schedule._id);
-			}
-		}
-	},
-});
-
 export const get_page_snapshots_list = query({
 	args: {
 		workspace_id: v.string(),
 		project_id: v.string(),
-		page_id: v.string(),
+		page_id: v.id("pages"),
 		show_archived: v.boolean(),
 	},
 	returns: v.array(
@@ -1409,7 +1193,7 @@ export const get_page_snapshots_list = query({
 			_creationTime: v.number(),
 			workspace_id: v.string(),
 			project_id: v.string(),
-			page_id: v.string(),
+			page_id: v.id("pages"),
 			created_by: v.string(),
 			is_archived: v.optional(v.boolean()),
 		}),
@@ -1442,12 +1226,15 @@ export const get_page_snapshots_list = query({
 
 async function do_get_page_snapshot_content(
 	ctx: QueryCtx,
-	args: { page_id: string; page_snapshot_id: Id<"pages_snapshots"> },
+	args: { workspace_id: string; project_id: string; page_snapshot_id: Id<"pages_snapshots"> },
 ) {
 	const content = await ctx.db
 		.query("pages_snapshots_contents")
-		.withIndex("by_page_id_and_snapshot_id", (q) =>
-			q.eq("page_id", args.page_id).eq("page_snapshot_id", args.page_snapshot_id),
+		.withIndex("by_workspace_project_and_page_snapshot_id", (q) =>
+			q
+				.eq("workspace_id", args.workspace_id)
+				.eq("project_id", args.project_id)
+				.eq("page_snapshot_id", args.page_snapshot_id),
 		)
 		.first();
 
@@ -1470,7 +1257,9 @@ async function do_get_page_snapshot_content(
 
 export const get_page_snapshot_content = query({
 	args: {
-		page_id: v.string(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.id("pages"),
 		page_snapshot_id: v.id("pages_snapshots"),
 	},
 	returns: v.union(
@@ -1511,168 +1300,344 @@ export const unarchive_snapshot = mutation({
 	},
 });
 
-function to_array_buffer(u8: Uint8Array): ArrayBuffer {
-	return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+function yjs_create_doc_from_yjs_update_data(update: ArrayBuffer) {
+	const yDoc = new YDoc();
+	applyUpdate(yDoc, new Uint8Array(update));
+	return yDoc;
+}
+
+function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
+	return pages_u8_to_array_buffer(mergeUpdates(updates));
+}
+
+function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
+	pageYjsData: Doc<"pages_yjs_snapshots">;
+	headlessEditorWithUpdatedContent: Editor;
+	opKind: "snapshot-restore" | "user-edit";
+}) {
+	const yjsDoc = yjs_create_doc_from_yjs_update_data(args.pageYjsData.snapshot_update);
+	const yjsBeforeVector = encodeStateVector(yjsDoc);
+	const yjsFragment = yjsDoc.getXmlFragment(pages_YJS_DOC_KEYS.richText);
+
+	yjsDoc.transact(() => {
+		updateYFragment(yjsDoc, yjsFragment, args.headlessEditorWithUpdatedContent.state.doc, {
+			mapping: new Map(),
+			isOMark: new Map(),
+		});
+	}, args.opKind);
+
+	// TODO: there's a small performance improvement that can be done by listening for updates events from ydoc
+	const diffUpdate = encodeStateAsUpdate(yjsDoc, yjsBeforeVector);
+
+	return diffUpdate.byteLength === 0 ? null : diffUpdate;
 }
 
 async function write_markdown_to_yjs_sync(
-	ctx: ActionCtx,
+	ctx: MutationCtx,
 	args: {
-		roomId: string;
+		workspaceId: string;
+		projectId: string;
+		userId: string;
+		pageId: Id<"pages">;
 		markdownContent: string;
 		sessionId: string;
-		pageSnapshotId?: Id<"pages_snapshots">;
+		pageSnapshotId: Id<"pages_snapshots">;
 	},
-): Promise<Result<{ _yay: null } | { _nay: { message: string } }>> {
-	try {
-		// Reconstruct the latest Y.Doc from Convex's head snapshot
-		const emptyStateVector = encodeStateVector(new YDoc());
-		const remote = await ctx.runQuery(api.yjs_sync.fetch_doc, {
-			roomId: args.roomId,
-			guid: null,
-			clientStateVector: to_array_buffer(emptyStateVector),
-		});
+) {
+	// Reconstruct the latest Y.Doc from last snapshot
+	const pageYjsData = await ctx.db
+		.query("pages_yjs_snapshots")
+		.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+		)
+		.order("desc")
+		.first();
 
-		const yDoc = new YDoc();
-		applyUpdate(yDoc, new Uint8Array(remote.update));
-
-		const beforeVector = encodeStateVector(yDoc);
-
-		// Convert markdown to TipTap/ProseMirror JSON
-		const editorDocJson = server_page_editor_markdown_to_json(args.markdownContent);
-
-		if (editorDocJson._nay) {
-			const msg = `Failed to parse markdown to TipTap/ProseMirror JSON: ${editorDocJson._nay.message}`;
-			console.error(msg);
-			return Result({ _nay: { message: msg } });
-		}
-
-		const schema = server_page_editor_get_schema();
-		const fragment = yDoc.getXmlFragment(pages_YJS_DOC_KEYS.richText);
-		const { meta } = initProseMirrorDoc(fragment, schema);
-		const node = schema.nodeFromJSON(editorDocJson._yay);
-
-		const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
-		const currentText = yText.toString();
-
-		yDoc.transact(
-			() => {
-				updateYFragment(yDoc, fragment, node, meta);
-
-				if (currentText !== args.markdownContent) {
-					const diff = simpleDiff(currentText, args.markdownContent);
-					yText.delete(diff.index, diff.remove);
-					yText.insert(diff.index, diff.insert);
-				}
-			},
-			args.pageSnapshotId ? "snapshot-restore" : "user-edit",
-		);
-
-		const diffUpdate = encodeStateAsUpdate(yDoc, beforeVector);
-
-		if (diffUpdate.byteLength === 0) {
-			return Result({ _yay: null });
-		}
-
-		if (args.pageSnapshotId) {
-			// Snapshot restoration
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-			await ctx.runMutation(internal.yjs_sync.push_update_snapshot_restore, {
-				roomId: args.roomId,
-				guid: null,
-				update: to_array_buffer(diffUpdate),
-				sessionId: args.sessionId,
-				userId: user.id,
-				snapshotId: args.pageSnapshotId,
-			});
-		} else {
-			// Regular user edit - use submit_update which handles USER_EDIT origin
-			await ctx.runMutation(api.yjs_sync.submit_update, {
-				roomId: args.roomId,
-				guid: null,
-				update: to_array_buffer(diffUpdate),
-				sessionId: args.sessionId,
-			});
-		}
-
-		return Result({ _yay: null });
-	} catch (error) {
-		const msg = `Failed to restore snapshot via Convex Yjs sync: ${(error as Error)?.message ?? error}`;
-		console.error(msg);
-		return Result({ _nay: { message: msg } });
+	if (!pageYjsData) {
+		return;
 	}
+
+	// Convert markdown to TipTap JSON
+	const headlessEditor = pages_headless_editor_create();
+	pages_headless_editor_set_content_from_markdown({
+		markdown: args.markdownContent,
+		mut_editor: headlessEditor,
+	});
+
+	const diffUpdate = yjs_compute_diff_update_with_headless_tiptap_editor({
+		pageYjsData,
+		headlessEditorWithUpdatedContent: headlessEditor,
+		opKind: "snapshot-restore",
+	});
+
+	if (!diffUpdate) {
+		return;
+	}
+
+	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([
+		new Uint8Array(pageYjsData.snapshot_update),
+		diffUpdate,
+	]);
+
+	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		pageId: args.pageId,
+	});
+
+	await Promise.all([
+		ctx.db.insert("pages_yjs_updates", {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+			sequence: newSequenceData.last_sequence,
+			update: pages_u8_to_array_buffer(diffUpdate),
+			origin: {
+				type: "USER_SNAPSHOT_RESTORE",
+				snapshot_id: args.pageSnapshotId,
+			},
+			created_by: args.userId,
+			created_at: Date.now(),
+		}),
+
+		ctx.db.patch(pageYjsData._id, {
+			sequence: newSequenceData.last_sequence,
+			snapshot_update: newSnapshotUpdate,
+			updated_at: Date.now(),
+			updated_by: args.userId,
+		}),
+	]);
 }
 
-/**
- * Action to update page content and sync to Monaco editor via Yjs.
- * Replaces the broadcast mechanism - writes directly to Monaco's Yjs YText document.
- */
-export const update_page_and_sync_to_monaco = action({
+export const yjs_get_doc_last_snapshot = query({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.string(),
-		textContent: v.string(),
-		sessionId: v.string(),
+		pageId: v.id("pages"),
 	},
-	returns: v.null(),
+	returns: v.union(doc(app_convex_schema, "pages_yjs_snapshots"), v.null()),
 	handler: async (ctx, args) => {
-		const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
-
-		await Promise.all([
-			ctx.runMutation(internal.ai_docs_temp.internal_update_page_content, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageId: args.pageId,
-				textContent: args.textContent,
-			}),
-			write_markdown_to_yjs_sync(ctx, {
-				roomId,
-				markdownContent: args.textContent,
-				sessionId: args.sessionId,
-			}),
-		]);
+		return await ctx.db
+			.query("pages_yjs_snapshots")
+			.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+			)
+			.order("desc")
+			.first();
 	},
 });
 
-/**
- * Action to update page content and sync to Rich Text editor via Yjs.
- * Replaces the broadcast mechanism - writes directly to Rich Text's ProseMirror Yjs document.
- */
-export const update_page_and_sync_to_richtext = action({
+export const yjs_snapshot_updates = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.string(),
-		textContent: v.string(),
-		sessionId: v.string(),
+		pageId: v.id("pages"),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
+		const scheduleLocks = await ctx.db
+			.query("pages_yjs_snapshot_schedules")
+			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
+			.collect();
 
-		await Promise.all([
-			ctx.runMutation(internal.ai_docs_temp.internal_update_page_content, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageId: args.pageId,
-				textContent: args.textContent,
-			}),
-			write_markdown_to_yjs_sync(ctx, {
-				roomId,
-				markdownContent: args.textContent,
-				sessionId: args.sessionId,
-			}),
-		]);
+		try {
+			// Load latest snapshot
+			const yjsSnapshotData = await ctx.db
+				.query("pages_yjs_snapshots")
+				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+				)
+				.order("desc")
+				.first();
+
+			if (!yjsSnapshotData) {
+				throw should_never_happen(
+					"yjs_snapshot_data or last_sequence_data are null.\n" + //
+						"The job should start only if the last sequence exists and is greater than 0\n" + //
+						"and only if the yjs snapshot data already exists, the snapshot data should\n" + //
+						"be created with the page",
+				);
+			}
+
+			// Fetch updates since snapshot up to uptoSeq
+			const updateDataList = await ctx.db
+				.query("pages_yjs_updates")
+				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+				)
+				.order("asc")
+				.collect();
+
+			if (updateDataList.length === 0) {
+				throw should_never_happen(
+					"No updates found since the last snapshot.\n" + //
+						"The job should start only if there are updates to compact",
+				);
+			}
+
+			const lastUpdate = updateDataList.at(-1)!;
+			const updatesSincsLastSnapshot = [];
+			for (const updateData of updateDataList) {
+				if (updateData.sequence > yjsSnapshotData.sequence) {
+					updatesSincsLastSnapshot.push(new Uint8Array(updateData.update));
+				}
+			}
+
+			// merge last snapshot update with all incremental updates into a single update blob
+			const snapshotUpdate = yjs_merge_updates_to_array_buffer([
+				new Uint8Array(yjsSnapshotData.snapshot_update),
+				...updateDataList.map((u) => new Uint8Array(u.update)),
+			]);
+			const now = Date.now();
+
+			await Promise.all([
+				// Write new snapshot row (append-only)
+				ctx.db.patch("pages_yjs_snapshots", yjsSnapshotData._id, {
+					sequence: lastUpdate.sequence,
+					snapshot_update: snapshotUpdate,
+					updated_by: "system",
+					updated_at: now,
+				}),
+
+				// Prune compacted updates
+				...updateDataList.map((updateData) => ctx.db.delete(updateData._id)),
+			]);
+
+			return null;
+		} finally {
+			for (const lock of scheduleLocks) {
+				await ctx.db.delete(lock._id);
+			}
+		}
 	},
 });
 
-export const apply_snapshot_restore_in_convex = internalMutation({
+async function yjs_increment_or_create_last_sequence(
+	ctx: MutationCtx,
+	args: { workspaceId: string; projectId: string; pageId: Id<"pages"> },
+) {
+	let lastSequenceData = await ctx.db
+		.query("pages_yjs_docs_last_sequences")
+		.withIndex("by_workspace_project_and_page_id", (q) =>
+			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+		)
+		.order("desc")
+		.first();
+
+	const newSequence = lastSequenceData ? lastSequenceData.last_sequence + 1 : 0;
+
+	// Update or create last_sequence tracking
+	if (lastSequenceData) {
+		await ctx.db.patch(lastSequenceData._id, { last_sequence: newSequence });
+	} else {
+		const lastSequenceDataId = await ctx.db.insert("pages_yjs_docs_last_sequences", {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+			last_sequence: 0,
+		});
+		lastSequenceData = (await ctx.db.get(lastSequenceDataId))!;
+	}
+
+	return lastSequenceData;
+}
+
+export const yjs_push_update = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.string(),
+		pageId: v.id("pages"),
+		update: v.bytes(),
+		sessionId: v.string(),
+	},
+	handler: async (ctx, args) => {
+		const pageId = ctx.db.normalizeId("pages", args.pageId);
+		if (!pageId) {
+			console.error("Invalid pageId", args.pageId);
+			return null;
+		}
+
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			pageId: args.pageId,
+		});
+
+		await ctx.db.insert("pages_yjs_updates", {
+			workspace_id: args.workspaceId,
+			project_id: args.projectId,
+			page_id: args.pageId,
+			sequence: newSequenceData.last_sequence,
+			update: args.update,
+			origin: {
+				type: "USER_EDIT",
+				session_id: args.sessionId,
+			},
+			created_by: user.name,
+			created_at: Date.now(),
+		});
+
+		// Schedule compaction every 50 updates (at seq 50, 100, 150, etc.)
+		if (newSequenceData.last_sequence > 0 && newSequenceData.last_sequence % 50 === 0) {
+			const existingSchedule = await ctx.db
+				.query("pages_yjs_snapshot_schedules")
+				.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
+				.first();
+
+			if (!existingSchedule) {
+				const scheduledId = await ctx.scheduler.runAfter(0, internal.ai_docs_temp.yjs_snapshot_updates, {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					pageId: args.pageId,
+				});
+
+				await ctx.db.insert("pages_yjs_snapshot_schedules", {
+					page_id: args.pageId,
+					scheduled_function_id: scheduledId,
+				});
+			}
+		}
+	},
+});
+
+export const yjs_get_incremental_updates = query({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+	},
+	returns: v.union(
+		v.object({
+			updates: v.array(doc(app_convex_schema, "pages_yjs_updates")),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const updates = await ctx.db
+			.query("pages_yjs_updates")
+			.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+			)
+			.order("desc")
+			.collect();
+
+		if (updates.length === 0) {
+			return null;
+		}
+
+		return { updates };
+	},
+});
+
+export const restore_snapshot = mutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
 		pageSnapshotId: v.id("pages_snapshots"),
+		sessionId: v.string(),
 	},
 	returns: v.union(
 		v.object({
@@ -1690,15 +1655,17 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 
 		const [snapshotContent, page] = await Promise.all([
 			do_get_page_snapshot_content(ctx, {
-				page_id: args.pageId,
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
 				page_snapshot_id: args.pageSnapshotId,
 			}),
-			ctx.db
-				.query("pages")
-				.withIndex("by_workspace_project_and_page_id", (q) =>
-					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-				)
-				.first(),
+			ctx.db.get("pages", args.pageId).then((doc) => {
+				if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) {
+					return null;
+				}
+
+				return doc;
+			}),
 		]);
 
 		if (!snapshotContent) {
@@ -1707,7 +1674,7 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 			return Result({ _nay: { message: msg } });
 		}
 
-		if (!page) {
+		if (!page || page.workspace_id !== args.workspaceId || page.project_id !== args.projectId) {
 			const msg = "Page not found";
 			console.error(msg);
 			return Result({ _nay: { message: msg } });
@@ -1715,7 +1682,11 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 
 		const pageTextContent = page.text_content ?? "";
 
+		// Restoring snapshots can be destructive and we defensively store
+		// the current state as a backup snapshot
+		// so the user can revert to it if needed.
 		await Promise.all([
+			// Store current state as a backup snapshot
 			do_store_version_snapshot(ctx, {
 				workspace_id: args.workspaceId,
 				project_id: args.projectId,
@@ -1724,6 +1695,7 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 				created_by: user.name,
 			}),
 
+			// Store the restored content as a new snapshot
 			do_store_version_snapshot(ctx, {
 				workspace_id: args.workspaceId,
 				project_id: args.projectId,
@@ -1732,59 +1704,24 @@ export const apply_snapshot_restore_in_convex = internalMutation({
 				created_by: user.name,
 			}),
 
-			ctx.db.patch(page._id, {
+			ctx.db.patch("pages", page._id, {
 				text_content: snapshotContent.content,
 				updated_by: user.name,
 				updated_at: Date.now(),
 			}),
+
+			write_markdown_to_yjs_sync(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: user.name,
+				pageId: args.pageId,
+				markdownContent: snapshotContent.content,
+				sessionId: args.sessionId,
+				pageSnapshotId: args.pageSnapshotId,
+			}),
 		]);
 
 		return Result({ _yay: null });
-	},
-});
-
-export const restore_snapshot = action({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.string(),
-		pageSnapshotId: v.id("pages_snapshots"),
-		sessionId: v.string(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		await Promise.all([
-			ctx.runMutation(internal.ai_docs_temp.apply_snapshot_restore_in_convex, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageId: args.pageId,
-				pageSnapshotId: args.pageSnapshotId,
-			}),
-			(async (/* iife */) => {
-				const snapshotContent = await ctx.runQuery(api.ai_docs_temp.get_page_snapshot_content, {
-					page_id: args.pageId,
-					page_snapshot_id: args.pageSnapshotId,
-				});
-
-				if (!snapshotContent) {
-					const msg = "Snapshot content not found";
-					console.error(msg);
-					return Result({ _nay: { message: msg } });
-				}
-
-				const roomId = ai_docs_create_liveblocks_room_id(args.workspaceId, args.projectId, args.pageId);
-				const yjsSyncResult = await write_markdown_to_yjs_sync(ctx, {
-					roomId,
-					markdownContent: snapshotContent.content,
-					sessionId: args.sessionId,
-					pageSnapshotId: args.pageSnapshotId,
-				});
-
-				if (yjsSyncResult._nay) {
-					console.error(`Failed to restore snapshot via Convex Yjs sync: ${yjsSyncResult._nay.message}`);
-				}
-			})(),
-		]);
 	},
 });
 
@@ -1842,10 +1779,15 @@ export const cleanup_old_snapshots = internalMutation({
 
 			if (!keepSnapshot) {
 				deletePromises.push(
-					// TODO: If we save the content id in the snapshot folder we can use the more efficient .get
+					// TODO: If we save the content id in the snapshot doc we can use the more efficient .get
 					ctx.db
 						.query("pages_snapshots_contents")
-						.withIndex("by_page_snapshot_id", (q) => q.eq("page_snapshot_id", snapshot._id))
+						.withIndex("by_workspace_project_and_page_snapshot_id", (q) =>
+							q
+								.eq("workspace_id", snapshot.workspace_id)
+								.eq("project_id", snapshot.project_id)
+								.eq("page_snapshot_id", snapshot._id),
+						)
 						.first()
 						.then((content) => content && ctx.db.delete(content._id)),
 					ctx.db.delete(snapshot._id),

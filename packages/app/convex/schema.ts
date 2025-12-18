@@ -235,42 +235,55 @@ const app_convex_schema = defineSchema({
 			filterFields: ["workspace_id", "project_id"],
 		}),
 
-	pages_yjs_doc_heads: defineTable({
-		room_id: v.string(),
-		guid: v.union(v.string(), v.null()),
-		seq: v.number(),
+	pages_yjs_snapshots: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.id("pages"),
+		sequence: v.number(),
 		snapshot_update: v.bytes(),
-		snapshot_hash: v.string(),
+		created_by: v.string(),
+		updated_by: v.string(),
 		updated_at: v.number(),
-	}).index("by_room_guid", ["room_id", "guid"]),
+	}).index("by_workspace_project_and_page_id_and_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
 
 	pages_yjs_updates: defineTable({
-		room_id: v.string(),
-		guid: v.union(v.string(), v.null()),
-		seq: v.number(),
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.id("pages"),
+		sequence: v.number(),
 		update: v.bytes(),
 		origin: v.union(
 			v.object({
 				type: v.literal("USER_EDIT"),
+				/**
+				 * Even though sessions are destroyed when users disconnect, this
+				 * is usedful to differentiate between local and remote edits.
+				 */
 				session_id: v.string(),
-				user_id: v.string(),
 			}),
 			v.object({
 				type: v.literal("USER_SNAPSHOT_RESTORE"),
-				session_id: v.string(),
-				user_id: v.string(),
 				snapshot_id: v.id("pages_snapshots"),
 			}),
 			v.object({
 				type: v.literal("USER_AI_EDIT"),
-				user_id: v.string(),
 			}),
 		),
-		snapshot_hash: v.string(),
+		created_by: v.string(),
 		created_at: v.number(),
-	})
-		.index("by_room_guid", ["room_id", "guid"])
-		.index("by_room_guid_and_seq", ["room_id", "guid", "seq"]),
+	}).index("by_workspace_project_and_page_id_and_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
+
+	pages_yjs_docs_last_sequences: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.id("pages"),
+		last_sequence: v.number(),
+	}).index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"]),
+
+	pages_yjs_snapshot_schedules: defineTable({
+		page_id: v.id("pages"),
+		scheduled_function_id: v.id("_scheduled_functions"),
+	}).index("by_page_id", ["page_id"]),
 
 	/**
 	 * Pending edits overlay used to stage AI-written content until user saves.
@@ -301,7 +314,7 @@ const app_convex_schema = defineSchema({
 	pages_snapshots: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),
-		page_id: v.string(),
+		page_id: v.id("pages"),
 		created_by: v.string(),
 		is_archived: v.optional(v.boolean()),
 	})
@@ -314,16 +327,8 @@ const app_convex_schema = defineSchema({
 		project_id: v.string(),
 		page_snapshot_id: v.id("pages_snapshots"),
 		content: v.string(),
-		page_id: v.string(),
-	})
-		.index("by_page_snapshot_id", ["page_snapshot_id"])
-		.index("by_page_id", ["page_id"])
-		.index("by_page_id_and_snapshot_id", ["page_id", "page_snapshot_id"]),
-
-	pages_snapshot_schedules: defineTable({
-		page_id: v.string(),
-		scheduled_function_id: v.id("_scheduled_functions"),
-	}).index("by_page_id", ["page_id"]),
+		page_id: v.id("pages"),
+	}).index("by_workspace_project_and_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
 
 	/**
 	 * Human thread messages table - a single table that represents both threads and messages.

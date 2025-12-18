@@ -10,9 +10,10 @@ import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { useMutation } from "convex/react";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { useMutation, useQuery } from "convex/react";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { useStableQuery } from "../../hooks/convex-hooks.ts";
 
 export const Route = createFileRoute({
 	component: RoutePagesComponent,
@@ -41,7 +42,7 @@ const PageEditor = React.lazy(() =>
 );
 
 type RoutePagesContent_Props = {
-	pageId: string | null | undefined;
+	pageId: app_convex_Id<"pages"> | null | undefined;
 };
 
 function RoutePagesContent(props: RoutePagesContent_Props) {
@@ -69,6 +70,18 @@ function RoutePagesComponent() {
 	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
 	const [homepageId, setHomepageId] = useState<string | null>(null);
 
+	const clientGeneratePageId = searchParams.pageId || homepageId;
+	const effectivePageId = useStableQuery(
+		app_convex_api.ai_docs_temp.get_page_id_from_client_generated_id,
+		clientGeneratePageId
+			? {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					clientGeneratedId: searchParams.pageId ?? homepageId ?? "",
+				}
+			: "skip",
+	);
+
 	useEffect(() => {
 		if (!searchParams.pageId && homepageId === null) {
 			ensureHomepage({
@@ -79,8 +92,6 @@ function RoutePagesComponent() {
 				.catch(console.error);
 		}
 	}, [searchParams.pageId]);
-
-	const effectivePageId = searchParams.pageId ?? homepageId ?? null;
 
 	// Navigation function to update URL with selected page
 	const navigateToPage = (pageId: string | null) => {
@@ -116,49 +127,52 @@ function RoutePagesComponent() {
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
 			{/* Pages Sidebar - positioned between main sidebar and content with animation */}
 			<PagesSidebar
-				selectedPageId={effectivePageId}
+				selectedPageId={clientGeneratePageId}
 				onClose={handleCloseSidebar}
 				onArchive={handleArchive}
 				onPrimaryAction={handlePrimaryAction}
 				state={pagesSidebarState}
 			/>
+			{effectivePageId ? (
+				// Main Content Area - takes remaining space
+				<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
+					<PanelGroup direction="horizontal" className="h-full">
+						{/* Pages Editor Panel */}
+						<Panel defaultSize={100} minSize={50}>
+							<div className={"RoutePages-editor-panel" satisfies RoutePages_ClassNames}>
+								{pagesSidebarState === "closed" && (
+									<div className={"RoutePages-editor-panel-controls" satisfies RoutePages_ClassNames}>
+										{/* Hamburger Menu - mobile only */}
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={toggleSidebar}
+											className={"RoutePages-editor-panel-hamburger-button" satisfies RoutePages_ClassNames}
+										>
+											<Menu className="h-4 w-4" />
+										</Button>
 
-			{/* Main Content Area - takes remaining space */}
-			<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
-				<PanelGroup direction="horizontal" className="h-full">
-					{/* Pages Editor Panel */}
-					<Panel defaultSize={100} minSize={50}>
-						<div className={"RoutePages-editor-panel" satisfies RoutePages_ClassNames}>
-							{pagesSidebarState === "closed" && (
-								<div className={"RoutePages-editor-panel-controls" satisfies RoutePages_ClassNames}>
-									{/* Hamburger Menu - mobile only */}
-									<Button
-										variant="outline"
-										size="sm"
-										onClick={toggleSidebar}
-										className={"RoutePages-editor-panel-hamburger-button" satisfies RoutePages_ClassNames}
-									>
-										<Menu className="h-4 w-4" />
-									</Button>
-
-									{/* Open Pages Sidebar button */}
-									<Button
-										variant="outline"
-										size="sm"
-										onClick={handleOpenSidebar}
-										className={"RoutePages-editor-panel-expand-button" satisfies RoutePages_ClassNames}
-									>
-										<PanelLeft className="h-4 w-4" />
-									</Button>
+										{/* Open Pages Sidebar button */}
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={handleOpenSidebar}
+											className={"RoutePages-editor-panel-expand-button" satisfies RoutePages_ClassNames}
+										>
+											<PanelLeft className="h-4 w-4" />
+										</Button>
+									</div>
+								)}
+								<div className={"RoutePages-editor-content" satisfies RoutePages_ClassNames}>
+									<RoutePagesContent pageId={effectivePageId} />
 								</div>
-							)}
-							<div className={"RoutePages-editor-content" satisfies RoutePages_ClassNames}>
-								<RoutePagesContent pageId={effectivePageId} />
 							</div>
-						</div>
-					</Panel>
-				</PanelGroup>
-			</div>
+						</Panel>
+					</PanelGroup>
+				</div>
+			) : (
+				<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
+			)}
 		</div>
 	);
 }

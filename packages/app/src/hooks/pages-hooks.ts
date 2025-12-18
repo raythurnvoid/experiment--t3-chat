@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LiveblocksYjsProvider } from "@liveblocks/yjs";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
+import type { app_convex_Id } from "../lib/app-convex-client.ts";
 
 export type pages_Yjs = {
 	yjsProvider: LiveblocksYjsProvider;
@@ -9,12 +10,14 @@ export type pages_Yjs = {
 };
 
 export type pages_Yjs_Props = {
-	roomId: string;
+	pageId: app_convex_Id<"pages">;
+	workspaceId: string;
+	projectId: string;
 	presenceStore: pages_PresenceStore;
 };
 
 export function usePagesYjs(props: pages_Yjs_Props) {
-	const { roomId, presenceStore } = props;
+	const { pageId, workspaceId, projectId, presenceStore } = props;
 
 	const [yjsProvider, setYjsProvider] = useState<LiveblocksYjsProvider | undefined>(undefined);
 	const [syncStatus, setSyncStatus] = useState<ReturnType<LiveblocksYjsProvider["getStatus"]>>("loading");
@@ -25,8 +28,11 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 
 	useEffect(() => {
 		const reactStrictWorkaroundTimer = setTimeout(() => {
-			const yjsProvider = new LiveblocksYjsProvider(roomId, {
+			const yjsProvider = new LiveblocksYjsProvider({
+				pageId: pageId,
 				presenceStore: presenceStore,
+				workspaceId: workspaceId,
+				projectId: projectId,
 			});
 
 			setYjsProvider(yjsProvider);
@@ -53,7 +59,7 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 			clearTimeout(reactStrictWorkaroundTimer);
 			onDestroyRef.current?.();
 		};
-	}, [roomId, presenceStore]);
+	}, [pageId, workspaceId, projectId, presenceStore]);
 
 	return yjsProvider ? { yjsProvider, syncStatus, syncChanged } : undefined;
 }

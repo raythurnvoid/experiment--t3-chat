@@ -4,12 +4,13 @@ import { api } from "../../../convex/_generated/api.js";
 import { MonacoMarkdownDiffEditor, type MonacoMarkdownDiffEditor_Ref } from "./monaco-markdown-diff-editor.tsx";
 import { cn } from "../../lib/utils.ts";
 import { useLiveState } from "../../hooks/utils-hooks.ts";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 export interface MonacoMarkdownDiffEditorAiEditsWrapper_Props {
 	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
 	id?: string;
 	className?: string;
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	threadId: string;
 	onExit: () => void;
 }

@@ -7,6 +7,7 @@ They can be used also to listen and dispatch events outside of React components.
 
 import { useEffect } from "react";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
+import type { app_convex_Id } from "./app-convex-client.ts";
 
 // #region Core
 type Key = "ai_chat::open_canvas" | "ai_chat::open_canvas_by_path";
@@ -54,7 +55,7 @@ export function useGlobalEvent<Handler extends HandlerFn>(listenFn: (handler: Ha
 
 // Extended payload supports opening in diff mode with an optional modified seed
 type global_event_ai_chat_open_canvas_Payload = {
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	mode: "diff" | "editor";
 	modifiedContent?: string;
 	threadId: string;

@@ -1,5 +1,4 @@
 import type { pages_TreeItem } from "../convex/ai_docs_temp.ts";
-import type { pages_YjsTailUpdates } from "../convex/yjs_sync.ts";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
@@ -19,7 +18,7 @@ export const pages_YJS_DOC_KEYS = {
 	plainText: "markdown",
 };
 
-export type { pages_TreeItem, pages_YjsTailUpdates };
+export type { pages_TreeItem };
 
 export function pages_create_tree_root(): pages_TreeItem {
 	return {
@@ -47,8 +46,8 @@ export function pages_create_tree_placeholder_child(itemId: string): pages_TreeI
 	};
 }
 
-export function ai_docs_create_liveblocks_room_id(workspaceId: string, projectId: string, pageId: string): string {
-	return `${workspaceId}:${projectId}:${pageId}`;
+export function pages_create_room_id(workspaceId: string, projectId: string, pageId: string): string {
+	return `pages::${workspaceId}::${projectId}::${pageId}`;
 }
 
 /**
@@ -184,5 +183,21 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
  * Convert a Uint8Array to an ArrayBuffer.
  */
 export function pages_u8_to_array_buffer(u8: Uint8Array) {
+	// Zero-copy if view covers entire buffer
+	if (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength) {
+		return u8.buffer as ArrayBuffer;
+	}
+	// Copy only if partial view (handles both cases safely)
 	return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+}
+
+/**
+ * Compare two Uint8Arrays for byte-level equality.
+ */
+export function pages_u8_equals(a: Uint8Array, b: Uint8Array) {
+	if (a.byteLength !== b.byteLength) return false;
+	for (let i = 0; i < a.byteLength; i++) {
+		if (a[i] !== b[i]) return false;
+	}
+	return true;
 }

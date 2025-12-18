@@ -5,7 +5,7 @@ import { Editor } from "@monaco-editor/react";
 import type { editor as M } from "monaco-editor";
 import { CatchBoundary } from "@tanstack/react-router";
 import { MonacoBinding } from "y-monaco";
-import { useConvex, useAction } from "convex/react";
+import { useConvex } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { cn } from "@/lib/utils.ts";
@@ -14,9 +14,10 @@ import type { pages_PresenceStore } from "@/lib/pages.ts";
 import type * as Y from "yjs";
 import type { pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 export interface MonacoMarkdownEditor_Props {
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	pagesYjs: pages_Yjs;
 	presenceStore: pages_PresenceStore;
 	className?: string;
@@ -31,7 +32,6 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 	const yProvider = pagesYjs.yjsProvider;
 
 	const [editor, setEditor] = useState<M.IStandaloneCodeEditor | null>(null);
-	const updateAndSyncToRichtext = useAction(api.ai_docs_temp.update_page_and_sync_to_richtext);
 	const textContentWatchRef = useRef<{ unsubscribe: () => void } | null>(null);
 	const [initialValue, setInitialValue] = useState<string | null | undefined>(undefined);
 
@@ -56,13 +56,6 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 		const handleYTextChange = async (_event: Y.YTextEvent, transaction: Y.Transaction) => {
 			if (transaction.local && transaction.origin !== "monaco-seed") {
 				const value = editor.getValue();
-				await updateAndSyncToRichtext({
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					pageId: pageId,
-					textContent: value,
-					sessionId: presenceStore.localSessionId,
-				});
 			}
 		};
 

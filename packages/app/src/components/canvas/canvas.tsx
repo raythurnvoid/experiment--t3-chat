@@ -5,14 +5,15 @@ import {
 	global_event_ai_chat_open_canvas,
 	global_event_ai_chat_open_canvas_by_path,
 	useGlobalEvent,
-} from "../../lib/global-events.tsx";
+} from "@/lib/global-events.tsx";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../lib/ai-chat.ts";
-import { useLiveState, useRenderPromise } from "../../hooks/utils-hooks.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { useLiveState, useRenderPromise } from "@/hooks/utils-hooks.ts";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 export function Canvas() {
-	const [editorPageId, setEditorPageId] = useLiveState<string | null>(null);
+	const [editorPageId, setEditorPageId] = useLiveState<app_convex_Id<"pages"> | null>(null);
 	const [threadId, setThreadId] = useLiveState<string | undefined>(undefined);
 	const editor = useRef<PageEditor_Ref | null>(null);
 	const convex = useConvex();

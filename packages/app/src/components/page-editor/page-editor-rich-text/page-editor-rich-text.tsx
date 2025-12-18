@@ -29,12 +29,11 @@ import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn, type AppElementId } from "@/lib/utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
-import { useAction } from "convex/react";
-import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_PresenceStore, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { PageEditorRichTextToolsInlineAi } from "./page-editor-rich-text-tools-inline-ai.tsx";
@@ -63,7 +62,7 @@ export type PageEditorRichTextToolbar_Props = {
 	syncStatus: SyncStatus;
 	syncChanged: boolean;
 	charsCount: number;
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	sessionId: string;
 };
 
@@ -393,7 +392,7 @@ type PageEditorRichTextInner_ClassNames =
 type PageEditorRichTextInner_Props = {
 	className?: string;
 	pagesYjs: pages_Yjs;
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
 	headerSlot?: React.ReactNode;
 };
@@ -405,10 +404,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const editorRef = useLiveRef(editor);
 
 	const [charsCount, setCharsCount] = useState<number>(0);
-
-	const saveOnDbDebounce = useRef<ReturnType<typeof setTimeout>>(null);
-
-	const updateAndSyncToMonaco = useAction(app_convex_api.ai_docs_temp.update_page_and_sync_to_monaco);
 
 	const [threadIds, setThreadIds] = useState<string[]>([]);
 
@@ -484,55 +479,11 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		setEditor(editor);
 	};
 
-	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor, transaction }) => {
+	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor }) => {
 		setCharsCount(editor.storage.characterCount.words());
-
-		// Detect if this is a Yjs backend update
-		const isFromYjs = !!transaction.getMeta(ySyncPluginKey);
-
-		if (!isFromYjs) {
-			// Local update from this client - save to DB
-			// Debounce content save to Convex (500ms)
-			if (saveOnDbDebounce.current) {
-				clearTimeout(saveOnDbDebounce.current);
-			}
-
-			saveOnDbDebounce.current = setTimeout(async () => {
-				try {
-					const markdownContent = editor.getMarkdown();
-
-					if (currentMarkdownContent.current !== markdownContent) {
-						console.debug("[PageEditorRichText] Saving markdown to DB:", {
-							html: editor.getHTML(),
-							markdown: markdownContent,
-							transaction,
-						});
-						currentMarkdownContent.current = markdownContent;
-						await updateAndSyncToMonaco({
-							workspaceId: ai_chat_HARDCODED_ORG_ID,
-							projectId: ai_chat_HARDCODED_PROJECT_ID,
-							pageId: pageId!,
-							textContent: markdownContent,
-							sessionId: presenceStore.localSessionId,
-						});
-					}
-				} catch (error) {
-					console.error("Failed to save text content:", error);
-				}
-			}, 500);
-		}
 	};
 
 	useEffect(handleThreadsQuery, [editor, isEditorReady, threadsQuery]);
-
-	useEffect(() => {
-		// Cleanup save debounce on unmount
-		return () => {
-			if (saveOnDbDebounce.current) {
-				window.clearTimeout(saveOnDbDebounce.current);
-			}
-		};
-	}, []);
 
 	useEffect(() => {
 		if (editor && isEditorReady) {
@@ -690,7 +641,7 @@ export type PageEditorRichText_FgColorCssVarKeys =
 
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 	pagesYjs: pages_Yjs;
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
 	headerSlot?: React.ReactNode;
 };

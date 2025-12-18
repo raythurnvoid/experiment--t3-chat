@@ -3,7 +3,7 @@ import { chat, thread_generate_title } from "./ai_chat.ts";
 import type { api_schemas_MainPaths } from "../shared/api-schemas.ts";
 import { httpAction } from "./_generated/server.js";
 import { server_convex_headers_preflight_cors } from "../server/server-utils.ts";
-import { contextual_prompt, create_version_snapshot } from "./ai_docs_temp.ts";
+import { contextual_prompt } from "./ai_docs_temp.ts";
 
 const http = httpRouter();
 
@@ -57,21 +57,6 @@ http.route({
 
 http.route({
 	path: "/api/ai-docs-temp/users",
-	method: "OPTIONS",
-	handler: httpAction(async () => {
-		return new Response(null, {
-			headers: server_convex_headers_preflight_cors(),
-		});
-	}),
-});
-
-http.route({
-	path: "/api/create_version_snapshot",
-	method: "POST",
-	handler: create_version_snapshot,
-});
-http.route({
-	path: "/api/create_version_snapshot",
 	method: "OPTIONS",
 	handler: httpAction(async () => {
 		return new Response(null, {

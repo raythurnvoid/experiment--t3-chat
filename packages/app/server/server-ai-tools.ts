@@ -12,7 +12,7 @@ import {
 	server_path_parent_of,
 } from "./server-utils.ts";
 import { minimatch } from "minimatch";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "./server-utils.ts";
 
 /**

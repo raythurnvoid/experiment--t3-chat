@@ -10,6 +10,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../li
 import { cn, make, msg_with_nullish_values as msg_with_nullish_values_get } from "../../lib/utils.ts";
 import { makePatches, stringifyPatches } from "@sanity/diff-match-patch";
 import { Button } from "../ui/button.tsx";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 const CLASS_NAMES = {
 	root: "MonacoMarkdownDiffEditor",
@@ -32,7 +33,7 @@ export type MonacoMarkdownDiffEditor_Ref = {
 export type MonacoMarkdownDiffEditor_Props = {
 	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
 	className?: string;
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	threadId?: string;
 	modifiedInitialValue?: string;
 	onExit: () => void;

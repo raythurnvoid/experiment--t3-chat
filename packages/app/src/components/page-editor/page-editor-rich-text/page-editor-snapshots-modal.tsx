@@ -1,6 +1,6 @@
 import "./page-editor-snapshots-modal.css";
 import { useState } from "react";
-import { useQuery, useAction, useMutation } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
 import { format_relative_time } from "@/lib/date.ts";
@@ -60,7 +60,7 @@ export type PageEditorSnapshotsModal_ClassNames =
 
 export type PageEditorSnapshotsModal_Props = {
 	editor: Editor | null;
-	pageId: string;
+	pageId: app_convex_Id<"pages">;
 	sessionId: string;
 };
 
@@ -81,10 +81,17 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 	const selectedSnapshotContent = useQuery(
 		app_convex_api.ai_docs_temp.get_page_snapshot_content,
-		selectedSnapshotId ? { page_id: pageId, page_snapshot_id: selectedSnapshotId } : "skip",
+		selectedSnapshotId
+			? {
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					page_id: pageId,
+					page_snapshot_id: selectedSnapshotId,
+				}
+			: "skip",
 	);
 
-	const restoreSnapshotAndBroadcast = useAction(app_convex_api.ai_docs_temp.restore_snapshot);
+	const restoreSnapshot = useMutation(app_convex_api.ai_docs_temp.restore_snapshot);
 	const archiveSnapshot = useMutation(app_convex_api.ai_docs_temp.archive_snapshot);
 	const unarchiveSnapshot = useMutation(app_convex_api.ai_docs_temp.unarchive_snapshot);
 
@@ -107,7 +114,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 		setIsRestoring(true);
 		try {
-			await restoreSnapshotAndBroadcast({
+			await restoreSnapshot({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageSnapshotId: selectedSnapshotId,

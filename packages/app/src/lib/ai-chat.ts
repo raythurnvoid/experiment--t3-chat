@@ -1,5 +1,4 @@
-export const ai_chat_HARDCODED_ORG_ID = "app_workspace_local_dev";
-export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
+export { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../shared/shared-utils.ts";
 
 /**
  * Assistant UI compatible thread meta.
@@ -175,6 +174,7 @@ export type ai_chat_MessageContentPartFile = {
 	mimeType: string;
 };
 
+// eslint-disable-next-line no-restricted-imports
 export type {
 	ai_tool_create_read_page_ToolInput,
 	ai_tool_create_read_page_ToolOutput,
