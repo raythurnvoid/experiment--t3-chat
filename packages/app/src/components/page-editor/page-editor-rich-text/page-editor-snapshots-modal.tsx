@@ -363,84 +363,57 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 															"PageEditorSnapshotsModal-navigation-actions" satisfies PageEditorSnapshotsModal_ClassNames,
 														)}
 													>
-														{previousSnapshot && !isPreviousDisabled ? (
-															<Tooltip>
-																<TooltipTrigger asChild>
-																	<MyButton
-																		variant="outline"
-																		className={cn(
-																			"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
-																		)}
-																		onClick={handlePreviousSnapshot}
-																		disabled={isPreviousDisabled}
-																	>
-																		<MyButtonIcon>
-																			<ChevronLeft />
-																		</MyButtonIcon>
-																		Previous
-																	</MyButton>
-																</TooltipTrigger>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<MyButton
+																	variant="outline"
+																	className={cn(
+																		"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
+																	)}
+																	onClick={handlePreviousSnapshot}
+																	disabled={isPreviousDisabled}
+																>
+																	<MyButtonIcon>
+																		<ChevronLeft />
+																	</MyButtonIcon>
+																	Newer
+																</MyButton>
+															</TooltipTrigger>
+															{previousSnapshot && !isPreviousDisabled && (
 																<TooltipContent>
 																	<div>
 																		<div>{format_relative_time(previousSnapshot._creationTime)}</div>
 																		<div>{previousSnapshot.created_by}</div>
 																	</div>
 																</TooltipContent>
-															</Tooltip>
-														) : (
-															<MyButton
-																variant="outline"
-																className={cn(
-																	"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
-																)}
-																onClick={handlePreviousSnapshot}
-																disabled={isPreviousDisabled}
-															>
-																<MyButtonIcon>
-																	<ChevronLeft />
-																</MyButtonIcon>
-																Previous
-															</MyButton>
-														)}
-														{nextSnapshot && !isNextDisabled ? (
-															<Tooltip>
-																<TooltipTrigger asChild>
-																	<MyButton
-																		variant="outline"
-																		className={cn(
-																			"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
-																		)}
-																		onClick={handleNextSnapshot}
-																		disabled={isNextDisabled}
-																	>
-																		Next
-																		<MyButtonIcon>
-																			<ChevronRight />
-																		</MyButtonIcon>
-																	</MyButton>
-																</TooltipTrigger>
+															)}
+														</Tooltip>
+
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<MyButton
+																	variant="outline"
+																	className={cn(
+																		"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
+																	)}
+																	onClick={handleNextSnapshot}
+																	disabled={isNextDisabled}
+																>
+																	Older
+																	<MyButtonIcon>
+																		<ChevronRight />
+																	</MyButtonIcon>
+																</MyButton>
+															</TooltipTrigger>
+															{nextSnapshot && !isNextDisabled && (
 																<TooltipContent>
 																	<div>
 																		<div>{format_relative_time(nextSnapshot._creationTime)}</div>
 																		<div>{nextSnapshot.created_by}</div>
 																	</div>
 																</TooltipContent>
-															</Tooltip>
-														) : (
-															<MyButton
-																variant="outline"
-																className={cn(
-																	"PageEditorSnapshotsModal-navigation-action" satisfies PageEditorSnapshotsModal_ClassNames,
-																)}
-																onClick={handleNextSnapshot}
-																disabled={isNextDisabled}
-															>
-																Next
-																<MyButtonIcon>
-																	<ChevronRight />
-																</MyButtonIcon>
-															</MyButton>
-														)}
+															)}
+														</Tooltip>
 													</div>
 												</>
 											)}
