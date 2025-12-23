@@ -1,4 +1,4 @@
-import type { IsAny, IsUnknown, LiteralUnion } from "type-fest";
+import type { IsAny, LiteralUnion } from "type-fest";
 
 /**
  * By default when calling `AbortController.abort` the reason is an instance of `DOMException` with a name `AbortError`.
@@ -95,7 +95,19 @@ export class AbortReason extends Error {
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For asynchronous functions, use `Result.tryAsync` instead.
  */
-export function Result_try<T>(fn: () => T): Result<{ _yay: T } | { _nay: any }> {
+export function Result_try<T>(fn: () => T): Result<
+	| { _yay: T }
+	| { _nay: null }
+	| {
+			_nay: {
+				name?: Result_nay_name;
+				message?: string;
+				cause?: unknown;
+				data?: unknown;
+				stack?: string;
+			};
+	  }
+> {
 	try {
 		return Result({ _yay: fn() });
 	} catch (error: any) {
@@ -107,7 +119,21 @@ export function Result_try<T>(fn: () => T): Result<{ _yay: T } | { _nay: any }> 
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For synchronous functions, use `Result.try` instead.
  */
-export function Result_try_async<T>(fn: () => Promise<T>) {
+export function Result_try_async<T>(fn: () => Promise<T>): Promise<
+	Result<
+		| { _yay: T }
+		| { _nay: null }
+		| {
+				_nay: {
+					name?: Result_nay_name;
+					message?: string;
+					cause?: unknown;
+					data?: unknown;
+					stack?: string;
+				};
+		  }
+	>
+> {
 	return fn()
 		.then((value) => {
 			return Result({ _yay: value });
@@ -121,7 +147,21 @@ export function Result_try_async<T>(fn: () => Promise<T>) {
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For cases where you have a function that returns a promise, use `Result.tryAsync` instead.
  */
-export function Result_try_promise<T>(promise: Promise<T>): Promise<Result<{ _yay: T } | { _nay: any }>> {
+export function Result_try_promise<T>(promise: Promise<T>): Promise<
+	Result<
+		| { _yay: T }
+		| { _nay: null }
+		| {
+				_nay: {
+					name?: Result_nay_name;
+					message?: string;
+					cause?: unknown;
+					data?: unknown;
+					stack?: string;
+				};
+		  }
+	>
+> {
 	return promise
 		.then((value) => {
 			return Result({ _yay: value });
@@ -133,9 +173,7 @@ export function Result_try_promise<T>(promise: Promise<T>): Promise<Result<{ _ya
 
 export function Result_nay_from(error_or_nay: unknown) {
 	if (error_or_nay == null) {
-		return {
-			message: error_or_nay === null ? "null" : "undefined",
-		};
+		return null;
 	} else if (typeof error_or_nay === "object") {
 		return {
 			// @ts-expect-error
@@ -159,7 +197,7 @@ export function Result_nay_from(error_or_nay: unknown) {
 }
 
 export function Result<
-	T extends
+	const T extends
 		| { _yay: unknown }
 		| {
 				_nay: {
@@ -167,36 +205,43 @@ export function Result<
 					message?: string;
 					cause?: unknown;
 					data?: unknown;
-				};
+					stack?: string;
+				} | null;
 		  },
 >(
 	args: T,
 ): T extends { _yay: unknown }
 	? Result<{ _yay: T["_yay"] }>
-	: Result<{
-			_nay: {
-				// @ts-expect-error
-				name: T["_nay"]["name"] extends Result_nay_name
-					? // @ts-expect-error
-						T["_nay"]["name"]
-					: "nay";
-				// @ts-expect-error
-				message: T["_nay"]["message"] extends string ? T["_nay"]["message"] : string;
-				// @ts-expect-error
-				cause: IsUnknown<T["_nay"]["cause"]> extends true ? never : T["_nay"]["cause"];
-				// @ts-expect-error
-				data: IsUnknown<T["_nay"]["data"]> extends true ? never : T["_nay"]["data"];
-			};
-		}> {
-	return "_nay" in args
-		? ({
+	: T extends { _nay: null }
+		? Result<{ _nay: null }>
+		: Result<{
 				_nay: {
-					name: args._nay.name,
-					message: args._nay.message,
-					cause: args._nay.cause,
-					data: args._nay.data,
-				},
-			} as any)
+					// @ts-expect-error
+					name: T["_nay"]["name"] extends Result_nay_name
+						? // @ts-expect-error
+							T["_nay"]["name"]
+						: undefined;
+					// @ts-expect-error
+					message: T["_nay"]["message"] extends string ? T["_nay"]["message"] : string;
+					// @ts-expect-error
+					cause: "cause" extends keyof T["_nay"] ? T["_nay"]["cause"] : never;
+					// @ts-expect-error
+					data: "data" extends keyof T["_nay"] ? T["_nay"]["data"] : never;
+					// @ts-expect-error
+					stack: "stack" extends keyof T["_nay"] ? string : never;
+				};
+			}> {
+	return "_nay" in args
+		? args._nay === null
+			? ({ _nay: null } as any)
+			: ({
+					_nay: {
+						name: args._nay.name,
+						message: args._nay.message,
+						cause: (args._nay as { cause?: unknown }).cause,
+						data: (args._nay as { data?: unknown }).data,
+					},
+				} as any)
 		: ({
 				_yay: args._yay,
 			} as any);
@@ -212,7 +257,8 @@ export type Result<
 			message?: string;
 			cause?: unknown;
 			data?: unknown;
-		};
+			stack?: string;
+		} | null;
 	},
 > = T extends { _yay: unknown }
 	? {
@@ -223,20 +269,24 @@ export type Result<
 			_nay: IsAny<T["_nay"]> extends true
 				? {
 						name?: Result_nay_name;
-						message: string;
+						message?: string;
 						cause?: unknown;
 						data?: unknown;
+						stack?: string;
 					}
-				: {
-						// @ts-expect-error
-						name: T["_nay"]["name"] extends Result_nay_name ? T["_nay"]["name"] : "nay";
-						// @ts-expect-error
-						message: T["_nay"]["message"] extends string ? T["_nay"]["message"] : string;
-						// @ts-expect-error
-						cause: T["_nay"]["cause"];
-						// @ts-expect-error
-						data: T["_nay"]["data"];
-					};
+				: T["_nay"] extends null
+					? null
+					: {
+							name: "name" extends keyof T["_nay"] ? T["_nay"]["name"] : "nay";
+							// @ts-expect-error
+							message: T["_nay"]["message"];
+							// @ts-expect-error
+							cause: T["_nay"]["cause"];
+							// @ts-expect-error
+							data: T["_nay"]["data"];
+							// @ts-expect-error
+							stack: T["_nay"]["stack"];
+						};
 			_yay?: never;
 		};
 

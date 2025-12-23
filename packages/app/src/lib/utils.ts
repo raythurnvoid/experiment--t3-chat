@@ -100,25 +100,6 @@ export function ui_create_auto_complete_off_value(): string {
 }
 
 /**
- * To be removed once `Promise.withResolvers` is widely available.
- *
- * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/withResolvers
- */
-export function create_promise_with_resolvers<T>(): {
-	promise: Promise<T>;
-	resolve: (value: T | PromiseLike<T>) => void | PromiseLike<void>;
-	reject: (reason?: unknown) => void | PromiseLike<void>;
-} {
-	let resolve: (value: T) => void;
-	let reject: (reason: unknown) => void;
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res;
-		reject = rej;
-	});
-	return { promise, resolve: resolve! as any, reject: reject! };
-}
-
-/**
  * Useful to create an object/value of a specific type while being sure that all properties are compliant with the type.
  *
  * Unlike `as` this will show an error if you only pass some properties of the object.

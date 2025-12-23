@@ -2,7 +2,7 @@ import type { api_schemas_MainPaths, api_schemas_Main } from "./api-schemas.ts";
 import type { LiteralUnion } from "type-fest";
 import { auth_get_token } from "./auth.ts";
 import { delay, should_never_happen } from "./utils.ts";
-import { Result, Result_nay_from } from "./errors-as-values-utils.ts";
+import { Result } from "./errors-as-values-utils.ts";
 
 const convex_http_url = import.meta.env
 	? (import.meta.env.VITE_CONVEX_HTTP_URL as string)
@@ -508,13 +508,8 @@ class StreamIteratorFactory {
 				const error = e as Error;
 				if (error.name === "AbortError") {
 					if (this.signal?.aborted) {
-						const abortReason = Result_nay_from(this.signal.reason);
 						yield Result({
-							_nay: {
-								name: "nay_abort",
-								message: abortReason.message,
-								cause: abortReason,
-							},
+							_nay: this.signal.reason as Error,
 						});
 						return;
 					} else {

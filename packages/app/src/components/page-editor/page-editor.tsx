@@ -3,9 +3,9 @@ import { useAuth } from "@/lib/auth.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
-import React, { useState, useImperativeHandle, type Ref, useEffect, useRef } from "react";
+import React, { useState, useImperativeHandle, type Ref, useEffect, useRef, useEffectEvent } from "react";
 import { Switch } from "../ui/switch.tsx";
-import { MonacoMarkdownEditor } from "./monaco-markdown-editor.tsx";
+import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
@@ -18,12 +18,11 @@ import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import {
 	usePresence,
+	usePresenceList,
 	usePresenceSessions,
 	usePresenceSessionsData,
 	usePresenceUsersData,
 } from "../../hooks/presence-hooks.ts";
-import { useLiveRef } from "../../hooks/utils-hooks.ts";
-import { usePagesYjs } from "../../hooks/pages-hooks.ts";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -186,67 +185,16 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 }
 // #endregion Header
 
-// #region Inner
-type PageEditorInner_Props = {
-	pageId: app_convex_Id<"pages">;
-	threadId?: string;
-	editorMode: PageEditor_Mode;
-	presenceStore: pages_PresenceStore;
-	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
-};
-
-function PageEditorInner(props: PageEditorInner_Props) {
-	const { pageId, editorMode, threadId, presenceStore, onEditorModeChange } = props;
-
-	const pagesYjs = usePagesYjs({
-		pageId: pageId,
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
-		presenceStore,
-	});
-
-	const handleDiffExit = () => {
-		onEditorModeChange("rich");
-	};
-
-	return (
-		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
-			<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>
-				{pagesYjs ? (
-					editorMode === "rich" ? (
-						<PageEditorRichText
-							pagesYjs={pagesYjs}
-							pageId={pageId}
-							presenceStore={presenceStore}
-							headerSlot={
-								<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
-							}
-						/>
-					) : editorMode === "diff" ? (
-						threadId ? (
-							<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
-						) : (
-							<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
-						)
-					) : (
-						<MonacoMarkdownEditor pageId={pageId} pagesYjs={pagesYjs} presenceStore={presenceStore} />
-					)
-				) : (
-					<PageEditorSkeleton />
-				)}
-			</div>
-		</div>
-	);
-}
-// #endregion Inner
-
 // #region PresenceSupplier
 
 type PageEditorPresenceSupplier_Props = {
 	userId: string | null | undefined;
 	pageId: app_convex_Id<"pages">;
 
-	children: (props: { presenceStore: PageEditorInner_Props["presenceStore"] }) => React.ReactNode;
+	children: (props: {
+		presenceStore: PageEditor_Inner_Props["presenceStore"];
+		onlineUsers: Array<{ userId: string; isSelf: boolean; color: string }>;
+	}) => React.ReactNode;
 };
 
 function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
@@ -258,7 +206,6 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 		roomId: roomId,
 		userId: userId ?? "",
 	});
-	const presenceRef = useLiveRef(presence);
 
 	const presenceSessions = usePresenceSessions({
 		roomToken: presence.roomToken,
@@ -273,72 +220,91 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 		roomToken: presence.roomToken,
 	});
 
+	const presenceList = usePresenceList({
+		roomToken: presence.roomToken,
+		userId: userId,
+	});
+
 	const setSessionDataMutation = useMutation(app_convex_api.presence.setSessionData);
 	const setSessionDataDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
 	const [presenceStore, setPresenceStore] = useState<pages_PresenceStore | null>(null);
-	const presenceStoreRef = useLiveRef<pages_PresenceStore | null>(presenceStore);
 
-	useEffect(() => {
-		// Reset on room changes so we don't keep rendering the old store while the new session connects.
-		presenceStore?.dispose();
-		setPresenceStore(null);
-	}, [roomId]);
+	// Compute onlineUsers from presenceList (user-level, online only, self first)
+	// Map userId -> color via presenceSessions and presenceSessionsData
+	const userIdToColorMap = new Map<string, string>();
+	if (presenceSessions && presenceSessionsData) {
+		for (const session of presenceSessions) {
+			const sessionColor = presenceSessionsData[session.sessionId]?.color;
+			if (sessionColor && !userIdToColorMap.has(session.userId)) {
+				userIdToColorMap.set(session.userId, sessionColor);
+			}
+		}
+	}
 
-	useEffect(() => {
+	const onlineUsers =
+		presenceList
+			?.filter((user) => user.online)
+			.map((user) => ({
+				userId: user.userId,
+				isSelf: user.userId === userId,
+				color: userIdToColorMap.get(user.userId) ?? "#808080", // fallback gray if no color found
+			})) ?? [];
+
+	const handlePresenceStateChange = useEffectEvent(() => {
 		if (
 			presenceSessions &&
 			presenceData &&
 			presenceSessionsData &&
-			presenceRef.current.sessionId &&
-			presenceRef.current.roomToken &&
-			presenceRef.current.sessionToken
+			presence.sessionId &&
+			presence.roomToken &&
+			presence.sessionToken
 		) {
-			if (presenceStoreRef.current) {
-				presenceStoreRef.current.sync({
-					sessionToken: presenceRef.current.sessionToken,
+			if (presenceStore) {
+				presenceStore.sync({
+					sessionToken: presence.sessionToken,
 					sessions: presenceSessions,
 					sessionsData: presenceSessionsData,
 					usersRoomData: presenceData,
 				});
 			} else {
+				if (Object.values(presenceSessions).length === 0) {
+					return;
+				}
+
 				const presenceStore = new pages_PresenceStore({
 					data: {
-						sessionToken: presenceRef.current.sessionToken,
+						sessionToken: presence.sessionToken,
 						sessions: presenceSessions,
 						sessionsData: presenceSessionsData,
 						usersRoomData: presenceData,
 					},
-					localSessionId: presenceRef.current.sessionId,
+					localSessionId: presence.sessionId,
 					onSetSessionData: () => {
-						if (!presenceRef.current.sessionToken) {
+						if (!presence.sessionToken) {
 							throw should_never_happen("Missing deps", {
-								sessionToken: presenceRef.current.sessionToken,
+								sessionToken: presence.sessionToken,
 							});
 						}
 
-						const localSessionToken = presenceRef.current.sessionToken;
+						const localSessionToken = presence.sessionToken;
 
 						if (!setSessionDataDebounce.current) {
 							setSessionDataDebounce.current = setTimeout(() => {
 								setSessionDataDebounce.current = undefined;
 
 								// Prevent to send updates when navigating to a different page
-								if (presenceRef.current.sessionToken !== localSessionToken) return;
+								if (presence.sessionToken !== localSessionToken) return;
 
-								const data = presenceStoreRef.current?.presenceData.get(presenceRef.current.sessionId);
+								const data = presenceStore?.presenceData.get(presence.sessionId);
 								if (!data) {
-									throw should_never_happen(
-										"PageEditorPresenceSupplier.presenceRef.current.onSetSessionData:" +
-											"Data not found for session id",
-										{
-											sessionId: presenceRef.current.sessionId,
-										},
-									);
+									// This means the session got disconnected before the debounced logic ran.
+									// It can happen while switching tabs.
+									return;
 								}
 
 								setSessionDataMutation({
-									sessionToken: presenceRef.current.sessionToken,
+									sessionToken: presence.sessionToken,
 									data,
 								}).catch((error) => {
 									console.error(error);
@@ -350,7 +316,22 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 				setPresenceStore(presenceStore);
 			}
 		}
-	}, [
+	});
+
+	const handleRoomIdChange = useEffectEvent(() => {
+		if (setSessionDataDebounce.current) {
+			clearTimeout(setSessionDataDebounce.current);
+			setSessionDataDebounce.current = undefined;
+		}
+
+		// Reset on room changes so we don't keep rendering the old store while the new session connects.
+		presenceStore?.dispose();
+		setPresenceStore(null);
+	});
+
+	useEffect(handleRoomIdChange, [roomId]);
+
+	useEffect(handlePresenceStateChange, [
 		presenceSessions,
 		presenceData,
 		presenceSessionsData,
@@ -360,7 +341,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 		setSessionDataMutation,
 	]);
 
-	return presenceStore ? children({ presenceStore }) : <PageEditorSkeleton />;
+	return presenceStore ? children({ presenceStore, onlineUsers }) : <PageEditorSkeleton />;
 }
 
 // #endregion PresenceSupplier
@@ -369,6 +350,54 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 export type PageEditor_Mode = "rich" | "markdown" | "diff";
 
 export type PageEditor_ClassNames = "PageEditor" | "PageEditor-editor-container";
+
+type PageEditor_Inner_Props = {
+	pageId: app_convex_Id<"pages">;
+	threadId?: string;
+	editorMode: PageEditor_Mode;
+	presenceStore: pages_PresenceStore;
+	onlineUsers: Array<{ userId: string; isSelf: boolean; color: string }>;
+	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
+};
+
+function PageEditor_Inner(props: PageEditor_Inner_Props) {
+	const { pageId, editorMode, threadId, presenceStore, onlineUsers, onEditorModeChange } = props;
+
+	const handleDiffExit = () => {
+		onEditorModeChange("rich");
+	};
+
+	return (
+		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
+			<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>
+				{editorMode === "rich" ? (
+					<PageEditorRichText
+						pageId={pageId}
+						presenceStore={presenceStore}
+						headerSlot={
+							<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
+						}
+					/>
+				) : editorMode === "diff" ? (
+					threadId ? (
+						<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
+					) : (
+						<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
+					)
+				) : (
+					<PageEditorPlainText
+						pageId={pageId}
+						presenceStore={presenceStore}
+						onlineUsers={onlineUsers}
+						headerSlot={
+							<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
+						}
+					/>
+				)}
+			</div>
+		</div>
+	);
+}
 
 export type PageEditor_Ref = {
 	requestOpenDiff: (args: { pageId: app_convex_Id<"pages">; modifiedEditorValue: string }) => void;
@@ -401,12 +430,13 @@ export function PageEditor(props: PageEditor_Props) {
 
 	return pageId ? (
 		<PageEditorPresenceSupplier userId={auth.userId} pageId={pageId}>
-			{({ presenceStore }) => (
-				<PageEditorInner
+			{({ presenceStore, onlineUsers }) => (
+				<PageEditor_Inner
 					pageId={pageId}
 					editorMode={editorMode}
 					threadId={threadId}
 					presenceStore={presenceStore}
+					onlineUsers={onlineUsers}
 					onEditorModeChange={setEditorMode}
 				/>
 			)}

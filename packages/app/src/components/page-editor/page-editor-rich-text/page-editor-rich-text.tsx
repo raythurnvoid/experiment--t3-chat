@@ -45,7 +45,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import type { ExtractStrict } from "type-fest";
-import type { pages_Yjs } from "@/hooks/pages-hooks.ts";
+import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 
 type SyncStatus = YjsSyncStatus;
 
@@ -371,34 +371,33 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 }
 // #endregion Bubble
 
-// #region Inner
-type PageEditorRichTextInner_ClassNames =
-	| "PageEditorRichTextInner"
-	| "PageEditorRichTextInner-visible"
-	| "PageEditorRichTextInner-editor-area"
-	| "PageEditorRichTextInner-editor-panels-group"
-	| "PageEditorRichTextInner-editor-content-panel"
-	| "PageEditorRichTextInner-editor-content-root"
-	| "PageEditorRichTextInner-editor-content-container"
-	| "PageEditorRichTextInner-editor-content"
-	| "PageEditorRichTextInner-panel-resize-handle-container"
-	| "PageEditorRichTextInner-panel-resize-handle"
-	| "PageEditorRichTextInner-comments-panel"
-	| "PageEditorRichTextInner-comments-panel-background"
-	| "PageEditorRichTextInner-status-badge"
-	| "PageEditorRichTextInner-word-count-badge"
-	| "PageEditorRichTextInner-word-count-badge-hidden";
+// #region Root
+export type PageEditorRichText_ClassNames =
+	| "PageEditorRichText"
+	| "PageEditorRichText-visible"
+	| "PageEditorRichText-editor-area"
+	| "PageEditorRichText-editor-panels-group"
+	| "PageEditorRichText-editor-content-panel"
+	| "PageEditorRichText-editor-content-root"
+	| "PageEditorRichText-editor-content-container"
+	| "PageEditorRichText-editor-content"
+	| "PageEditorRichText-panel-resize-handle-container"
+	| "PageEditorRichText-panel-resize-handle"
+	| "PageEditorRichText-comments-panel"
+	| "PageEditorRichText-comments-panel-background"
+	| "PageEditorRichText-status-badge"
+	| "PageEditorRichText-word-count-badge"
+	| "PageEditorRichText-word-count-badge-hidden";
 
-type PageEditorRichTextInner_Props = {
-	className?: string;
+type PageEditorRichText_Inner_Props = {
 	pagesYjs: pages_Yjs;
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	headerSlot?: React.ReactNode;
+	headerSlot: React.ReactNode;
 };
 
-function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
-	const { className, pagesYjs, pageId, presenceStore, headerSlot } = props;
+function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
+	const { pagesYjs, pageId, presenceStore, headerSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const editorRef = useLiveRef(editor);
@@ -496,13 +495,12 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		<>
 			<div
 				className={cn(
-					"PageEditorRichTextInner" satisfies PageEditorRichTextInner_ClassNames,
+					"PageEditorRichText" satisfies PageEditorRichText_ClassNames,
 					// Due to some weird combination of things, if the EditorContent component is not rendered
 					// it results in it creating the TipTap Editor instance twice causing issues when
 					// settings the initial content, therefore the componet has to be rendered but
 					// hidden via cSS to prevent incomplete content to show while all the things are loading.
-					isEditorReady && ("PageEditorRichTextInner-visible" satisfies PageEditorRichTextInner_ClassNames),
-					className,
+					isEditorReady && ("PageEditorRichText-visible" satisfies PageEditorRichText_ClassNames),
 				)}
 			>
 				{headerSlot}
@@ -518,35 +516,29 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					/>
 				)}
 
-				<div className={cn("PageEditorRichTextInner-editor-area" satisfies PageEditorRichTextInner_ClassNames)}>
+				<div className={cn("PageEditorRichText-editor-area" satisfies PageEditorRichText_ClassNames)}>
 					<PanelGroup
 						direction="horizontal"
-						className={cn("PageEditorRichTextInner-editor-panels-group" satisfies PageEditorRichTextInner_ClassNames)}
+						className={cn("PageEditorRichText-editor-panels-group" satisfies PageEditorRichText_ClassNames)}
 						style={{
 							height: "max-content",
 							overflow: "initial",
 						}}
 					>
 						<Panel
-							className={cn(
-								"PageEditorRichTextInner-editor-content-panel" satisfies PageEditorRichTextInner_ClassNames,
-							)}
+							className={cn("PageEditorRichText-editor-content-panel" satisfies PageEditorRichText_ClassNames)}
 							collapsible={false}
 							defaultSize={75}
 						>
 							<EditorContent
-								className={cn(
-									"PageEditorRichTextInner-editor-content-root" satisfies PageEditorRichTextInner_ClassNames,
-								)}
+								className={cn("PageEditorRichText-editor-content-root" satisfies PageEditorRichText_ClassNames)}
 								injectCSS={false}
 								editorContainerProps={{
-									className: cn(
-										"PageEditorRichTextInner-editor-content-container" satisfies PageEditorRichTextInner_ClassNames,
-									),
+									className: cn("PageEditorRichText-editor-content-container" satisfies PageEditorRichText_ClassNames),
 								}}
 								editorProps={{
 									attributes: {
-										class: cn("PageEditorRichTextInner-editor-content" satisfies PageEditorRichTextInner_ClassNames),
+										class: cn("PageEditorRichText-editor-content" satisfies PageEditorRichText_ClassNames),
 									},
 									handleDOMEvents: {
 										keydown: (_view, event) => handleCommandNavigation(event),
@@ -571,20 +563,18 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 							></EditorContent>
 						</Panel>
 						<div
-							className={cn(
-								"PageEditorRichTextInner-panel-resize-handle-container" satisfies PageEditorRichTextInner_ClassNames,
-							)}
+							className={cn("PageEditorRichText-panel-resize-handle-container" satisfies PageEditorRichText_ClassNames)}
 						>
 							<PanelResizeHandle
 								className={cn(
-									"PageEditorRichTextInner-panel-resize-handle" satisfies PageEditorRichTextInner_ClassNames,
+									"PageEditorRichText-panel-resize-handle" satisfies PageEditorRichText_ClassNames,
 									"MySeparator" satisfies MySeparator_ClassNames,
 									"MySeparator-vertical" satisfies MySeparator_ClassNames,
 								)}
 							/>
 						</div>
 						<Panel
-							className={cn("PageEditorRichTextInner-comments-panel" satisfies PageEditorRichTextInner_ClassNames)}
+							className={cn("PageEditorRichText-comments-panel" satisfies PageEditorRichText_ClassNames)}
 							collapsible={false}
 							defaultSize={25}
 							style={{
@@ -592,9 +582,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 							}}
 						>
 							<div
-								className={cn(
-									"PageEditorRichTextInner-comments-panel-background" satisfies PageEditorRichTextInner_ClassNames,
-								)}
+								className={cn("PageEditorRichText-comments-panel-background" satisfies PageEditorRichText_ClassNames)}
 							></div>
 							{editor && threadsQuery && (
 								<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
@@ -608,10 +596,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 		</>
 	);
 }
-// #endregion Inner
-
-// #region PageEditorRichText
-export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
 export type PageEditorRichText_CustomAttributes = {
 	"data-app-set-decoration-highlight": "";
@@ -640,26 +624,35 @@ export type PageEditorRichText_FgColorCssVarKeys =
 	| "--PageEditorRichText-text-color-fg-gray";
 
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
-	pagesYjs: pages_Yjs;
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	headerSlot?: React.ReactNode;
+	headerSlot: React.ReactNode;
 };
 
 export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { className, pagesYjs, pageId, presenceStore, headerSlot, ...rest } = props;
+	const { className, pageId, presenceStore, headerSlot, ...rest } = props;
+
+	const pagesYjs = usePagesYjs({
+		pageId: pageId,
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		presenceStore,
+	});
 
 	return (
 		// remount on pageId to prevent stale state on page changes
 		<EditorRoot key={pageId}>
-			<PageEditorRichTextInner
-				className={cn("PageEditorRichText" satisfies PageEditorRichText_ClassNames, className)}
-				pagesYjs={pagesYjs}
-				pageId={pageId}
-				presenceStore={presenceStore}
-				headerSlot={headerSlot}
-				{...rest}
-			/>
+			{pagesYjs ? (
+				<PageEditorRichText_Inner
+					pagesYjs={pagesYjs}
+					pageId={pageId}
+					presenceStore={presenceStore}
+					headerSlot={headerSlot}
+					{...rest}
+				/>
+			) : (
+				<PageEditorSkeleton />
+			)}
 		</EditorRoot>
 	);
 }
@@ -702,4 +695,4 @@ PageEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 		}
 	});
 };
-// #endregion PageEditorRichText
+// #endregion Root

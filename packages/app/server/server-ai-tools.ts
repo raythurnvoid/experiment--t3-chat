@@ -459,7 +459,7 @@ export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { t
 				throw new Error(`Page not found: ${normalizedPath}`);
 			}
 
-			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 				path: normalizedPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -748,7 +748,7 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 
 			for (const item of list.items) {
 				// Read page content
-				const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+				const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 					path: item.path,
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -914,7 +914,7 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 			let exists = !!pageId;
 
 			const oldText = pageId
-				? ((await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+				? ((await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 						path,
 						workspaceId: ai_chat_HARDCODED_ORG_ID,
 						projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -923,6 +923,7 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 					})) ?? "")
 				: "";
 
+			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
 			const newText = args.content;
 			const diff = createPatch(path, oldText, newText);
 
@@ -1011,7 +1012,7 @@ export function ai_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { t
 			}
 
 			const baseText =
-				(await ctx.runQuery(internal.ai_docs_temp.get_page_text_content_by_path, {
+				(await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 					path: normalizedPath,
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -1023,6 +1024,7 @@ export function ai_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { t
 				replaceAll: args.replaceAll,
 				mode: "auto",
 			});
+			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
 
 			const diff = createPatch(normalizedPath, baseText, modifiedText);
 

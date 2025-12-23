@@ -71,6 +71,7 @@
 		"@tanstack/react-router-devtools": "^1.132.51",
 		"@tanstack/zod-adapter": "^1.132.47",
 		"@tiptap/core": "3.8.0",
+		"@tiptap/extension-collaboration": "3.8.0",
 		"@tiptap/extension-collaboration-caret": "3.8.0",
 		"@tiptap/extension-document": "3.8.0",
 		"@tiptap/extension-drag-handle": "3.8.0",

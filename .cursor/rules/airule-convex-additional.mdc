@@ -1,0 +1,19 @@
+---
+description: Adds more Convex guidelines on top of the base Convex rule (`airule-convex.mdc`), specific to this codebase. Topics: migrations.
+globs: packages/app/convex/**/*.ts
+alwaysApply: false
+---
+
+Convex additional guidelines for this codebase.
+
+# Migrations
+
+When the user asks for a Convex migration, you must implement it as an `internalMutation` in [packages/app/convex/migrations.ts](mdc:packages/app/convex/migrations.ts).
+
+Keep migrations safe and repeatable:
+
+- Always include `args` and `returns` validators.
+- Prefer indexes (`withIndex`) over table scans. If you must scan, keep it small and return counts.
+- Delete related records first, then delete the parent record.
+- Do not rely on querying `undefined` from Convex. If you need “missing optional field” logic, collect and filter in JS.
+- Return a small summary object (counts) so the user can verify what changed.

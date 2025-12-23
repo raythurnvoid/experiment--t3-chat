@@ -24,7 +24,21 @@ export function math_clamp(value: number, min: number, max: number) {
 
 export function should_never_happen(message: LiteralUnion<"Missing deps", string>, data: Record<string, any> = {}) {
 	console.error("[should_never_happen]", message, data);
-	if (import.meta.env.DEV) {
+
+	const isDev = ((/* iife */) => {
+		try {
+			// Vite in the browser/dev server.
+			return Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+		} catch {
+			// The runtime does not support `import.meta`.
+			// This can happen in convex functions.
+		}
+
+		const nodeEnv = process.env.NODE_ENV;
+		return nodeEnv != null ? nodeEnv !== "production" : false;
+	})();
+
+	if (isDev) {
 		// eslint-disable-next-line no-debugger
 		debugger;
 	}

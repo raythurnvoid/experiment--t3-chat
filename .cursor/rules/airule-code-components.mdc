@@ -160,6 +160,7 @@ export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 ```
 
 This pattern ensures that:
+
 1. The component has its own identifiable class name (`MyComboboxInputArea`) for debugging
 2. The component inherits styles from the reused component (`MyInputArea`)
 3. Both class names are type-checked using `satisfies` for safety
@@ -316,6 +317,8 @@ export function Thread(props: React.ComponentProps<"aside">) {
 ## className and style utilities
 
 Use `cn` from `@/lib/utils.ts` to merge class names, and `sx` for style objects:
+
+When only a single static class is being used and `className` is not being forwarded/merged, prefer a plain string (optionally with `satisfies`) over wrapping it in `cn(...)`. If you notice existing instances of `cn("SingleClass")`, do not refactor them just to remove `cn`, but also do not introduce new single-class `cn(...)` usages proactively.
 
 ```ts
 import { cn, sx } from "@/lib/utils.ts";

@@ -2,38 +2,33 @@
 	.PageEditorRichText {
 		height: 100%;
 		width: 100%;
-	}
-
-	.PageEditorRichTextInner {
-		height: 100%;
-		width: 100%;
 		display: flex;
 		flex-direction: column;
 
-		&:not(.PageEditorRichTextInner-visible) {
+		&:not(.PageEditorRichText-visible) {
 			display: none;
 		}
 	}
 
-	.PageEditorRichTextInner-editor-area {
+	.PageEditorRichText-editor-area {
 		flex: 1;
 		overflow-y: auto;
 	}
 
-	.PageEditorRichTextInner-editor-panels-group {
+	.PageEditorRichText-editor-panels-group {
 		min-height: 100%;
 	}
 
-	.PageEditorRichTextInner-editor-content-panel {
+	.PageEditorRichText-editor-content-panel {
 		min-height: 100%;
 		height: max-content;
 	}
 
-	.PageEditorRichTextInner-editor-content-root {
+	.PageEditorRichText-editor-content-root {
 		width: 100%;
 	}
 
-	.PageEditorRichTextInner-editor-container {
+	.PageEditorRichText-editor-container {
 		width: 100%;
 
 		/*
@@ -60,7 +55,7 @@
 		}
 	}
 
-	.PageEditorRichTextInner-editor-content {
+	.PageEditorRichText-editor-content {
 		width: 100%;
 		padding-left: 64px;
 		padding-right: 64px;
@@ -96,7 +91,7 @@
 			background-color: transparent;
 		}
 
-		.PageEditorRichTextInner-editor-container:focus-within & .ProseMirror-selectednode {
+		.PageEditorRichText-editor-container:focus-within & .ProseMirror-selectednode {
 			position: relative;
 
 			&::before {
@@ -242,7 +237,7 @@
 		}
 	}
 
-	.PageEditorRichTextInner-panel-resize-handle-container {
+	.PageEditorRichText-panel-resize-handle-container {
 		/*
 		The container makes sure that the even though the handle
 		has an arbitrarily large height, it will not affect the ancestor's
@@ -251,7 +246,7 @@
 		contain: layout style size;
 	}
 
-	.PageEditorRichTextInner-panel-resize-handle {
+	.PageEditorRichText-panel-resize-handle {
 		/*
 		Since the container size depends exclusively on the content of the editor,
 		to ensure the handle spans across the whole page height,
@@ -304,10 +299,10 @@
 		}
 	}
 
-	.PageEditorRichTextInner-comments-panel {
+	.PageEditorRichText-comments-panel {
 		padding: 16px;
 
-		.PageEditorRichTextInner-comments-panel-background {
+		.PageEditorRichText-comments-panel-background {
 			/*
 			Set a container to support position absolute and
 			ensure that the arbitrarily large height of the background

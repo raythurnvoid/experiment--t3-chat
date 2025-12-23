@@ -1,5 +1,5 @@
 import { useRef, useMemo, useState, useEffect } from "react";
-import { create_promise_with_resolvers, tuple } from "../lib/utils.ts";
+import { tuple } from "../lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { Result } from "../lib/errors-as-values-utils.ts";
 
@@ -70,7 +70,7 @@ export function useRenderPromise() {
 	// Create a ref to hold our promise
 	const promiseWithResolversRef = useRef<PromiseWithResolvers<void>>(null);
 	if (promiseWithResolversRef.current === null) {
-		promiseWithResolversRef.current = create_promise_with_resolvers<void>();
+		promiseWithResolversRef.current = Promise.withResolvers<void>();
 	}
 
 	useEffect(() => {
@@ -78,7 +78,7 @@ export function useRenderPromise() {
 		promiseWithResolversRef.current?.resolve();
 
 		// On each render, create a new promise
-		const promiseWithResolvers = create_promise_with_resolvers<void>();
+		const promiseWithResolvers = Promise.withResolvers<void>();
 		promiseWithResolversRef.current = promiseWithResolvers;
 	});
 
@@ -222,7 +222,7 @@ export function useWatchableValue<T>(initialValue?: T) {
 				reject: () => {},
 			};
 		} else {
-			deferred = create_promise_with_resolvers();
+			deferred = Promise.withResolvers();
 		}
 
 		return deferred;

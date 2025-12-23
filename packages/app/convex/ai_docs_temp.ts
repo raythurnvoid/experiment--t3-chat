@@ -27,7 +27,6 @@ import {
 	server_convex_response_error_server,
 	encode_path_segment,
 } from "../server/server-utils.ts";
-import { parsePatch, applyPatches } from "@sanity/diff-match-patch";
 import { v, type Infer } from "convex/values";
 import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
 import {
@@ -41,15 +40,17 @@ import {
 import {
 	pages_FIRST_VERSION,
 	pages_ROOT_ID,
-	pages_YJS_DOC_KEYS,
-	pages_headless_editor_create,
+	pages_headless_tiptap_editor_create,
 	pages_u8_to_array_buffer,
-	pages_headless_editor_set_content_from_markdown,
+	pages_headless_tiptap_editor_set_content_from_markdown,
+	pages_yjs_create_empty_state_update,
+	pages_yjs_create_doc_from_array_buffer_update,
+	pages_yjs_update_from_tiptap_editor,
+	pages_yjs_create_doc_from_tiptap_editor,
 } from "../server/pages.ts";
 import { minimatch } from "minimatch";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { Doc as YDoc, encodeStateVector, encodeStateAsUpdate, applyUpdate, mergeUpdates } from "yjs";
-import { updateYFragment } from "@tiptap/y-tiptap";
+import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import type { Editor } from "@tiptap/core";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
@@ -170,13 +171,13 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string;
 
 	const segments = server_path_extract_segments_from(args.path);
 
-	let docId = null;
+	let pageId = null;
 	let currentNode = pages_ROOT_ID;
 
 	for (const segment of segments) {
 		const page = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+			.withIndex("by_workspace_project_parent_id_and_name", (q) =>
 				q
 					.eq("workspace_id", args.workspace_id)
 					.eq("project_id", args.project_id)
@@ -187,10 +188,10 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string;
 
 		if (!page) return null;
 		currentNode = page.page_id;
-		docId = page._id;
+		pageId = page._id;
 	}
 
-	return docId;
+	return pageId;
 }
 
 async function resolve_page_id_from_path_fn(
@@ -205,7 +206,7 @@ async function resolve_page_id_from_path_fn(
 	for (const segment of segments) {
 		const page = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+			.withIndex("by_workspace_project_parent_id_and_name", (q) =>
 				q
 					.eq("workspace_id", args.workspaceId)
 					.eq("project_id", args.projectId)
@@ -239,7 +240,7 @@ async function resolve_tree_node_id_from_path_fn(
 	for (const segment of segments) {
 		const page = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+			.withIndex("by_workspace_project_parent_id_and_name", (q) =>
 				q
 					.eq("workspace_id", args.workspaceId)
 					.eq("project_id", args.projectId)
@@ -312,6 +313,7 @@ export const get_tree_items_list = query({
 				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId),
 			)
 			.order("asc")
+			.filter((q) => q.and(q.neq(q.field("page_id"), ""), q.neq(q.field("name"), "")))
 			.collect();
 
 		const treeItemsList: pages_TreeItem[] = [
@@ -325,50 +327,49 @@ export const get_tree_items_list = query({
 				updatedAt: Date.now(),
 				updatedBy: "system",
 			},
-			...pages
-				.filter((page) => page.page_id && page.name !== "")
-				.map(
-					(page) =>
-						({
-							type: "page" as const,
-							index: page.page_id,
-							parentId: page.parent_id,
-							title: page.name || "Untitled",
-							content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
-							isArchived: page.is_archived || false,
-							updatedAt: page.updated_at,
-							updatedBy: page.updated_by,
-						}) satisfies pages_TreeItem,
-				),
+			...pages.map(
+				(page) =>
+					({
+						type: "page" as const,
+						index: page.page_id,
+						parentId: page.parent_id,
+						title: page.name || "Untitled",
+						content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
+						isArchived: page.is_archived,
+						updatedAt: page.updated_at,
+						updatedBy: page.updated_by,
+					}) satisfies pages_TreeItem,
+			),
 		];
 
 		return treeItemsList;
 	},
 });
 
-// Shared helper for page insertion
-type CreatePageInsertArgs = {
-	workspace_id: string;
-	project_id: string;
-	page_id: string;
-	parent_id: string;
-	name: string;
-	text_content: string;
-};
-
-async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs) {
+async function do_create_page(
+	ctx: MutationCtx,
+	args: {
+		workspace_id: Doc<"pages">["workspace_id"];
+		project_id: Doc<"pages">["project_id"];
+		page_id: Doc<"pages">["page_id"];
+		parent_id: Doc<"pages">["page_id"];
+		name: Doc<"pages">["name"];
+		markdown_content: Doc<"pages_markdown_content">["content"];
+	},
+) {
 	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 	const now = Date.now();
 
-	const page_id = await ctx.db.insert("pages", {
+	const initialIsArchived = false;
+
+	const pageId = await ctx.db.insert("pages", {
 		workspace_id: args.workspace_id,
 		project_id: args.project_id,
 		page_id: args.page_id,
 		parent_id: args.parent_id,
-		text_content: args.text_content,
 		version: pages_FIRST_VERSION,
 		name: args.name,
-		is_archived: false,
+		is_archived: initialIsArchived,
 		created_by: user.name,
 		updated_by: user.name,
 		updated_at: now,
@@ -376,14 +377,29 @@ async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs) {
 
 	// Create initial Yjs snapshot + sequence tracker with the page.
 	// Important: do NOT store an empty bytes blob; Yjs update decoding may throw on empty payloads.
-	const initialSnapshotUpdate = pages_u8_to_array_buffer(encodeStateAsUpdate(new YDoc()));
-	await Promise.all([
+	const initialYjsSequence = 0;
+
+	let initialYjsSnapshotUpdate;
+	if (args.markdown_content) {
+		const editor = pages_headless_tiptap_editor_create();
+		pages_headless_tiptap_editor_set_content_from_markdown({
+			markdown: args.markdown_content ?? "",
+			mut_editor: editor,
+		});
+		initialYjsSnapshotUpdate = yjs_create_state_update_from_tiptap_editor({
+			tiptapEditor: editor,
+		});
+	} else {
+		initialYjsSnapshotUpdate = pages_yjs_create_empty_state_update();
+	}
+
+	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = await Promise.all([
 		ctx.db.insert("pages_yjs_snapshots", {
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
-			page_id: page_id,
-			sequence: 0,
-			snapshot_update: initialSnapshotUpdate,
+			page_id: pageId,
+			sequence: initialYjsSequence,
+			snapshot_update: pages_u8_to_array_buffer(initialYjsSnapshotUpdate),
 			created_by: user.name,
 			updated_by: user.name,
 			updated_at: now,
@@ -391,12 +407,28 @@ async function create_page_in_db(ctx: MutationCtx, args: CreatePageInsertArgs) {
 		ctx.db.insert("pages_yjs_docs_last_sequences", {
 			workspace_id: args.workspace_id,
 			project_id: args.project_id,
-			page_id: page_id,
-			last_sequence: 0,
+			page_id: pageId,
+			last_sequence: initialYjsSequence,
+		}),
+		ctx.db.insert("pages_markdown_content", {
+			workspace_id: args.workspace_id,
+			project_id: args.project_id,
+			page_id: pageId,
+			content: args.markdown_content,
+			is_archived: initialIsArchived,
+			yjs_sequence: initialYjsSequence,
+			updated_by: user.name,
+			updated_at: now,
 		}),
 	]);
 
-	return page_id;
+	await ctx.db.patch(pageId, {
+		markdown_content_id: markdown_content_id,
+		yjs_last_sequence_id: yjs_last_sequence_id,
+		yjs_snapshot_id: yjs_snapshot_id,
+	});
+
+	return pageId;
 }
 
 export const create_page = mutation({
@@ -408,13 +440,13 @@ export const create_page = mutation({
 		projectId: v.string(),
 	},
 	handler: async (ctx, args) => {
-		await create_page_in_db(ctx, {
+		await do_create_page(ctx, {
 			workspace_id: args.workspaceId,
 			project_id: args.projectId,
 			page_id: args.pageId,
 			parent_id: args.parentId,
 			name: args.name,
-			text_content: "",
+			markdown_content: "",
 		});
 	},
 });
@@ -445,39 +477,39 @@ export const create_page_quick = mutation({
 		// Ensure ".tmp" under root exists
 		const tmp = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+			.withIndex("by_workspace_project_parent_id_and_name", (q) =>
 				q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("parent_id", pages_ROOT_ID).eq("name", ".tmp"),
 			)
 			.first();
 
-		let tmp_page_id = null;
+		let tmpPageId = null;
 
 		if (!tmp) {
-			tmp_page_id = await create_page_in_db(ctx, {
+			tmpPageId = await do_create_page(ctx, {
 				workspace_id: workspaceId,
 				project_id: projectId,
 				page_id: `.tmp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
 				parent_id: pages_ROOT_ID,
 				name: ".tmp",
-				text_content:
+				markdown_content:
 					"Automatically generated temp folder\n\nThis page contains temporary pages generated by the system.",
 			});
 		} else {
-			tmp_page_id = tmp._id;
+			tmpPageId = tmp._id;
 		}
 
 		// Create quick page under ".tmp"
 		const title = `Quick page created at ${new Date().toLocaleString("en-GB", { hour12: false })}`;
-		const page_id = await create_page_in_db(ctx, {
+		const pageId = await do_create_page(ctx, {
 			workspace_id: workspaceId,
 			project_id: projectId,
 			page_id: `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-			parent_id: tmp_page_id,
+			parent_id: tmpPageId,
 			name: title,
-			text_content: "",
+			markdown_content: "",
 		});
 
-		return { page_id };
+		return { page_id: pageId };
 	},
 });
 
@@ -636,63 +668,6 @@ export const unarchive_pages = mutation({
 	},
 });
 
-export const apply_patch_to_page_and_broadcast = mutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.string(),
-		patch: v.string(),
-		threadId: v.optional(v.string()),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-			)
-			.first();
-
-		if (!page) {
-			throw new Error("Page not found");
-		}
-
-		const currentText = page.text_content ?? "";
-		const patches = parsePatch(args.patch);
-		const [newText, results] = applyPatches(patches, currentText);
-
-		if (!results.every(Boolean)) {
-			throw new Error("Failed to apply all patches to the page text");
-		}
-
-		await ctx.db.patch(page._id, {
-			text_content: newText,
-			updated_by: user.name,
-			updated_at: Date.now(),
-		});
-
-		const threadId = args.threadId;
-
-		// If provided, clear the pending edit for this user/thread so future reads use the actual content
-		if (threadId) {
-			const existing = await ctx.db
-				.query("ai_chat_pending_edits")
-				.withIndex("by_user_thread_page", (q) =>
-					q.eq("user_id", user.id).eq("thread_id", threadId).eq("page_id", args.pageId),
-				)
-				.first();
-
-			if (existing) {
-				await ctx.db.delete(existing._id);
-			}
-		}
-
-		return null;
-	},
-});
-
 export const get_page_by_path = query({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(
@@ -706,17 +681,19 @@ export const get_page_by_path = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const docId = await resolve_id_from_path(ctx, {
+		const pageId = await resolve_id_from_path(ctx, {
 			workspace_id: args.workspaceId,
 			project_id: args.projectId,
 			path: args.path,
 		});
 
-		if (!docId) return null;
+		if (!pageId) return null;
 
 		const page = await ctx.db
 			.query("pages")
-			.withIndex("by_id", (q) => q.eq("_id", docId))
+			.withIndex("by_workspace_project_and_page_id", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", pageId),
+			)
 			.first();
 
 		return page
@@ -748,7 +725,13 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_parent_id_and_is_archived", (q) => q.eq("parent_id", nodeId).eq("is_archived", false))
+			.withIndex("by_workspace_project_parent_id_and_is_archived", (q) =>
+				q
+					.eq("workspace_id", args.workspaceId)
+					.eq("project_id", args.projectId)
+					.eq("parent_id", nodeId)
+					.eq("is_archived", false),
+			)
 			.collect();
 
 		// TODO: do not collect
@@ -759,6 +742,8 @@ export const read_dir = internalQuery({
 
 export const get_page_info_for_list_dir_pagination = internalQuery({
 	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
 		parentId: v.string(),
 		cursor: paginationOptsValidator.fields.cursor,
 	},
@@ -766,7 +751,13 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("by_parent_id_and_is_archived", (q) => q.eq("parent_id", args.parentId).eq("is_archived", false))
+			.withIndex("by_workspace_project_parent_id_and_is_archived", (q) =>
+				q
+					.eq("workspace_id", args.workspaceId)
+					.eq("project_id", args.projectId)
+					.eq("parent_id", args.parentId)
+					.eq("is_archived", false),
+			)
 			.paginate({
 				cursor: args.cursor,
 				numItems: 1,
@@ -835,8 +826,12 @@ export const list_pages = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("pages")
-						.withIndex("by_parent_id_and_is_archived", (q) =>
-							q.eq("parent_id", frame.parentId).eq("is_archived", false),
+						.withIndex("by_workspace_project_parent_id_and_is_archived", (q) =>
+							q
+								.eq("workspace_id", args.workspaceId)
+								.eq("project_id", args.projectId)
+								.eq("parent_id", frame.parentId)
+								.eq("is_archived", false),
 						)
 						[Symbol.asyncIterator]();
 
@@ -929,7 +924,7 @@ export const page_exists_by_path = internalQuery({
 	},
 });
 
-export const get_page_text_content_by_path = internalQuery({
+export const get_page_last_available_markdown_content_by_path = internalQuery({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
@@ -939,58 +934,169 @@ export const get_page_text_content_by_path = internalQuery({
 	},
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		const docId = await resolve_id_from_path(ctx, {
+		const pageId = await resolve_id_from_path(ctx, {
 			workspace_id: args.workspaceId,
 			project_id: args.projectId,
 			path: args.path,
 		});
 
-		if (!docId) return null;
+		if (!pageId) return null;
 
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_id", (q) => q.eq("_id", docId))
-			.first();
+		const page = await ctx.db.get("pages", pageId);
 
 		if (!page) return null;
 		if (page.is_archived) return null;
 
-		{
-			const overlay = await ctx.db
-				.query("ai_chat_pending_edits")
-				.withIndex("by_user_thread_page", (q) =>
-					q
-						.eq("user_id", args.userId as string)
-						.eq("thread_id", args.threadId as string)
-						.eq("page_id", page.page_id),
-				)
-				.first();
-			if (overlay) return overlay.modified_content;
+		const overlay = await ctx.db
+			.query("ai_chat_pending_edits")
+			.withIndex("by_user_thread_page", (q) =>
+				q
+					.eq("user_id", args.userId as string)
+					.eq("thread_id", args.threadId as string)
+					.eq("page_id", page.page_id),
+			)
+			.first();
+		if (overlay) return overlay.modified_content;
+
+		if (!page.markdown_content_id) {
+			throw should_never_happen("page.markdown_content_id is not set", {
+				pageId,
+				markdownContentId: page.markdown_content_id,
+			});
 		}
 
-		return page.text_content ?? null;
+		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdown_content_id);
+		if (!markdownContentDoc) return null;
+
+		return markdownContentDoc.content;
 	},
 });
 
-async function do_get_page_text_content_by_page_id(
-	ctx: QueryCtx,
-	args: { workspaceId: string; projectId: string; pageId: string },
-) {
-	const page = await ctx.db
-		.query("pages")
-		.withIndex("by_workspace_project_and_page_id", (q) =>
-			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-		)
-		.first();
-
-	if (!page) return null;
-	return page.text_content ?? null;
-}
 export const get_page_text_content_by_page_id = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.string() },
+	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		return await do_get_page_text_content_by_page_id(ctx, args);
+		return "";
+	},
+});
+
+/**
+ * Returns the "best available" page content without doing any heavy reconstruction work.
+ *
+ * We keep multiple representations of a page:
+ * - `pages_markdown_content` (fast to serve to editors/search)
+ * - Yjs state (`pages_yjs_snapshots` + `pages_yjs_updates`) as the source-of-truth for collaborative editing
+ *
+ * The key is the monotonic Yjs `sequence`:
+ * - `pages_yjs_docs_last_sequences.last_sequence` is the authoritative "latest" sequence for the page
+ * - `pages_markdown_content.yjs_sequence` tells us which Yjs sequence the markdown was derived from
+ * - `pages_yjs_snapshots.sequence` tells us which Yjs sequence a snapshot represents
+ *
+ * Resolution order (stop at the first consistent option):
+ * - If markdown's `yjs_sequence` matches `last_sequence`, we can safely return markdown (cheap and already rendered).
+ * - Otherwise, if the stored Yjs snapshot's `sequence` matches `last_sequence`, return the snapshot (caller can decode).
+ * - Otherwise, return the snapshot plus all incremental Yjs updates so the caller can reconstruct the latest state.
+ *
+ * Any missing/unauthorized docs cause an early `null` return.
+ */
+export const try_get_markdown_content_or_fallback_to_yjs_data = query({
+	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
+	handler: async (ctx, args) => {
+		let result;
+		do {
+			const page = await ctx.db.get("pages", args.pageId).then((page) => {
+				if (!page || page.workspace_id !== args.workspaceId || page.project_id !== args.projectId) return null;
+				return page;
+			});
+
+			if (!page || !page.markdown_content_id || !page.yjs_last_sequence_id) {
+				throw should_never_happen("page.markdown_content_id or page.yjs_last_sequence_id is not set", {
+					pageId: args.pageId,
+					markdownContentId: page?.markdown_content_id,
+					yjsLastSequenceId: page?.yjs_last_sequence_id,
+				});
+			}
+
+			const [lastYjsSequenceDoc, markdownContentDoc] = await Promise.all([
+				ctx.db.get("pages_yjs_docs_last_sequences", page.yjs_last_sequence_id).then((doc) => {
+					if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
+					return doc;
+				}),
+				ctx.db.get("pages_markdown_content", page.markdown_content_id).then((doc) => {
+					if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
+					return doc;
+				}),
+			]);
+
+			if (!lastYjsSequenceDoc || !markdownContentDoc) {
+				throw should_never_happen("lastYjsSequenceDoc or markdownContentDoc is not valorized", {
+					pageId: args.pageId,
+					lastYjsSequenceDoc: lastYjsSequenceDoc,
+					markdownContentDoc: markdownContentDoc,
+				});
+			}
+
+			if (markdownContentDoc.yjs_sequence === lastYjsSequenceDoc.last_sequence) {
+				result = {
+					kind: "markdown_content" as const,
+					markdownContentDoc,
+				};
+				break;
+			}
+
+			if (!page.yjs_snapshot_id) {
+				throw should_never_happen("page.yjs_snapshot_id is not set", {
+					pageId: args.pageId,
+					yjsSnapshotId: page.yjs_snapshot_id,
+				});
+			}
+
+			const yjsSnapshotDoc = await ctx.db.get("pages_yjs_snapshots", page.yjs_snapshot_id).then((doc) => {
+				if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
+				return doc;
+			});
+
+			if (!yjsSnapshotDoc) {
+				throw should_never_happen("yjsSnapshotDoc is not valorized", {
+					pageId: args.pageId,
+					yjsSnapshotDoc: yjsSnapshotDoc,
+				});
+			}
+
+			if (yjsSnapshotDoc.sequence === lastYjsSequenceDoc.last_sequence) {
+				result = {
+					kind: "yjs_snapshot" as const,
+					yjsSnapshotDoc,
+				};
+				break;
+			}
+
+			const yjsUpdatesDocs = await ctx.db
+				.query("pages_yjs_updates")
+				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+				)
+				.order("asc")
+				.collect();
+
+			if (yjsUpdatesDocs.length === 0) {
+				throw should_never_happen(
+					"yjsUpdatesDocs are empty even though the last sequence does not match the snapshot sequence",
+					{
+						pageId: args.pageId,
+						yjsUpdatesDocs: yjsUpdatesDocs,
+					},
+				);
+			}
+
+			result = {
+				kind: "yjs_snapshots_with_incremental_updates" as const,
+				yjsSnapshotDoc,
+				yjsUpdatesDocs,
+			};
+		} while (0);
+
+		return result;
 	},
 });
 
@@ -1013,16 +1119,18 @@ export const text_search_pages = internalQuery({
 	}),
 	handler: async (ctx, args): Promise<{ items: Array<{ path: string; preview: string }> }> => {
 		const matches = await ctx.db
-			.query("pages")
-			.withSearchIndex("search_text_content", (q) =>
-				q.search("text_content", args.query).eq("workspace_id", args.workspaceId).eq("project_id", args.projectId),
+			.query("pages_markdown_content")
+			.withSearchIndex("search_by_content", (q) =>
+				q
+					.search("content", args.query)
+					.eq("workspace_id", args.workspaceId)
+					.eq("project_id", args.projectId)
+					.eq("is_archived", false),
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
 
-		const visibleMatches = matches.filter((page) => !page.is_archived);
-
 		const items: Array<{ path: string; preview: string }> = await Promise.all(
-			visibleMatches.map(async (page): Promise<{ path: string; preview: string }> => {
+			matches.map(async (page): Promise<{ path: string; preview: string }> => {
 				const path: string = await resolve_path_from_page_id(ctx, {
 					workspace_id: args.workspaceId,
 					project_id: args.projectId,
@@ -1034,7 +1142,7 @@ export const text_search_pages = internalQuery({
 						q.eq("user_id", args.userId).eq("thread_id", args.threadId).eq("page_id", page.page_id),
 					)
 					.first();
-				const preview = (pending?.modified_content ?? page.text_content).slice(0, 160);
+				const preview = (pending?.modified_content ?? page.content).slice(0, 160);
 				return { path, preview };
 			}),
 		);
@@ -1065,7 +1173,7 @@ export const create_page_by_path = internalMutation({
 			// Does this segment exist?
 			const existing = await ctx.db
 				.query("pages")
-				.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+				.withIndex("by_workspace_project_parent_id_and_name", (q) =>
 					q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("parent_id", currentParent).eq("name", name),
 				)
 				.unique();
@@ -1073,16 +1181,16 @@ export const create_page_by_path = internalMutation({
 			if (!existing) {
 				// Create missing segment
 				const clientGeneratedPageId = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-				const page_id = await create_page_in_db(ctx, {
+				const pageId = await do_create_page(ctx, {
 					workspace_id: workspaceId,
 					project_id: projectId,
 					page_id: clientGeneratedPageId,
 					parent_id: currentParent,
 					name: name,
-					text_content: "",
+					markdown_content: "",
 				});
-				currentParent = page_id;
-				lastPageId = page_id;
+				currentParent = pageId;
+				lastPageId = pageId;
 			} else {
 				// Continue traversal
 				currentParent = existing._id;
@@ -1113,7 +1221,7 @@ export const ensure_home_page = mutation({
 		// Find homepage (empty name under root)
 		const homepage = await ctx.db
 			.query("pages")
-			.withIndex("by_workspace_project_and_parent_id_and_name", (q) =>
+			.withIndex("by_workspace_project_parent_id_and_name", (q) =>
 				q
 					.eq("workspace_id", args.workspaceId)
 					.eq("project_id", args.projectId)
@@ -1127,17 +1235,17 @@ export const ensure_home_page = mutation({
 		}
 
 		// Create homepage with empty name
-		const page_id = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-		await create_page_in_db(ctx, {
+		const pageId = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+		await do_create_page(ctx, {
 			workspace_id: args.workspaceId,
 			project_id: args.projectId,
-			page_id,
+			page_id: pageId,
 			parent_id: pages_ROOT_ID,
 			name: "",
-			text_content: "",
+			markdown_content: "",
 		});
 
-		return { page_id };
+		return { page_id: pageId };
 	},
 });
 
@@ -1199,28 +1307,27 @@ export const get_page_snapshots_list = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const snapshots = await ctx.db
+		let snapshotsQuery = ctx.db
 			.query("pages_snapshots")
 			.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
-			.order("desc")
-			.collect();
+			.order("desc");
 
-		return snapshots
-			.filter((snapshot) => {
-				if (args.show_archived) {
-					return true;
-				}
-				return !snapshot.is_archived;
-			})
-			.map((snapshot) => ({
-				_id: snapshot._id,
-				_creationTime: snapshot._creationTime,
-				workspace_id: snapshot.workspace_id,
-				project_id: snapshot.project_id,
-				page_id: snapshot.page_id,
-				created_by: snapshot.created_by,
-				is_archived: Boolean(snapshot.is_archived),
-			}));
+		// Filter only not archived snapshots if show_archived is falsy
+		if (!args.show_archived) {
+			snapshotsQuery = snapshotsQuery.filter((q) => q.eq(q.field("is_archived"), false));
+		}
+
+		const snapshots = await snapshotsQuery.collect();
+
+		return snapshots.map((snapshot) => ({
+			_id: snapshot._id,
+			_creationTime: snapshot._creationTime,
+			workspace_id: snapshot.workspace_id,
+			project_id: snapshot.project_id,
+			page_id: snapshot.page_id,
+			created_by: snapshot.created_by,
+			is_archived: Boolean(snapshot.is_archived),
+		}));
 	},
 });
 
@@ -1300,14 +1407,15 @@ export const unarchive_snapshot = mutation({
 	},
 });
 
-function yjs_create_doc_from_yjs_update_data(update: ArrayBuffer) {
-	const yDoc = new YDoc();
-	applyUpdate(yDoc, new Uint8Array(update));
-	return yDoc;
-}
-
 function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
 	return pages_u8_to_array_buffer(mergeUpdates(updates));
+}
+
+function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor }) {
+	const yjsDoc = pages_yjs_create_doc_from_tiptap_editor({
+		tiptapEditor: args.tiptapEditor,
+	});
+	return encodeStateAsUpdate(yjsDoc);
 }
 
 function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
@@ -1315,16 +1423,14 @@ function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
 	headlessEditorWithUpdatedContent: Editor;
 	opKind: "snapshot-restore" | "user-edit";
 }) {
-	const yjsDoc = yjs_create_doc_from_yjs_update_data(args.pageYjsData.snapshot_update);
+	const yjsDoc = pages_yjs_create_doc_from_array_buffer_update(args.pageYjsData.snapshot_update);
 	const yjsBeforeVector = encodeStateVector(yjsDoc);
-	const yjsFragment = yjsDoc.getXmlFragment(pages_YJS_DOC_KEYS.richText);
 
-	yjsDoc.transact(() => {
-		updateYFragment(yjsDoc, yjsFragment, args.headlessEditorWithUpdatedContent.state.doc, {
-			mapping: new Map(),
-			isOMark: new Map(),
-		});
-	}, args.opKind);
+	pages_yjs_update_from_tiptap_editor({
+		mut_yjsDoc: yjsDoc,
+		tiptapEditor: args.headlessEditorWithUpdatedContent,
+		opKind: args.opKind,
+	});
 
 	// TODO: there's a small performance improvement that can be done by listening for updates events from ydoc
 	const diffUpdate = encodeStateAsUpdate(yjsDoc, yjsBeforeVector);
@@ -1358,10 +1464,8 @@ async function write_markdown_to_yjs_sync(
 	}
 
 	// Convert markdown to TipTap JSON
-	const headlessEditor = pages_headless_editor_create();
-	pages_headless_editor_set_content_from_markdown({
-		markdown: args.markdownContent,
-		mut_editor: headlessEditor,
+	const headlessEditor = pages_headless_tiptap_editor_create({
+		initialContent: { markdown: args.markdownContent },
 	});
 
 	const diffUpdate = yjs_compute_diff_update_with_headless_tiptap_editor({
@@ -1638,6 +1742,7 @@ export const restore_snapshot = mutation({
 		pageId: v.id("pages"),
 		pageSnapshotId: v.id("pages_snapshots"),
 		sessionId: v.string(),
+		currentMarkdownContent: v.string(),
 	},
 	returns: v.union(
 		v.object({
@@ -1660,27 +1765,40 @@ export const restore_snapshot = mutation({
 				page_snapshot_id: args.pageSnapshotId,
 			}),
 			ctx.db.get("pages", args.pageId).then((doc) => {
-				if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) {
-					return null;
-				}
-
+				if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
 				return doc;
 			}),
 		]);
 
-		if (!snapshotContent) {
-			const msg = "Snapshot content not found";
-			console.error(msg);
-			return Result({ _nay: { message: msg } });
-		}
-
-		if (!page || page.workspace_id !== args.workspaceId || page.project_id !== args.projectId) {
+		if (
+			!snapshotContent ||
+			!page ||
+			!page.markdown_content_id ||
+			page.workspace_id !== args.workspaceId ||
+			page.project_id !== args.projectId
+		) {
 			const msg = "Page not found";
-			console.error(msg);
-			return Result({ _nay: { message: msg } });
+			console.error(
+				should_never_happen(msg, {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					pageId: args.pageId,
+					snapshotContentNotFound: !snapshotContent,
+					pageNotFound: !page,
+					markdownContentIdNotFound: !page?.markdown_content_id,
+				}),
+			);
+			return Result({
+				_nay: {
+					name: "nay",
+					message: msg,
+				},
+			});
 		}
 
-		const pageTextContent = page.text_content ?? "";
+		const createdBy = user.name;
+		const updatedBy = user.name;
+		const updatedAt = Date.now();
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
@@ -1691,8 +1809,8 @@ export const restore_snapshot = mutation({
 				workspace_id: args.workspaceId,
 				project_id: args.projectId,
 				page_id: args.pageId,
-				content: pageTextContent,
-				created_by: user.name,
+				content: args.currentMarkdownContent,
+				created_by: createdBy,
 			}),
 
 			// Store the restored content as a new snapshot
@@ -1701,13 +1819,18 @@ export const restore_snapshot = mutation({
 				project_id: args.projectId,
 				page_id: args.pageId,
 				content: snapshotContent.content,
-				created_by: user.name,
+				created_by: createdBy,
 			}),
 
 			ctx.db.patch("pages", page._id, {
-				text_content: snapshotContent.content,
-				updated_by: user.name,
-				updated_at: Date.now(),
+				updated_by: updatedBy,
+				updated_at: updatedAt,
+			}),
+
+			ctx.db.patch("pages_markdown_content", page.markdown_content_id, {
+				content: snapshotContent.content,
+				updated_by: updatedBy,
+				updated_at: updatedAt,
 			}),
 
 			write_markdown_to_yjs_sync(ctx, {
@@ -1721,7 +1844,9 @@ export const restore_snapshot = mutation({
 			}),
 		]);
 
-		return Result({ _yay: null });
+		return Result({
+			_yay: null,
+		});
 	},
 });
 
