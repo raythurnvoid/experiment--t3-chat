@@ -4,6 +4,7 @@ import type { MessageStorageEntry } from "@assistant-ui/react";
 import type { UIMessage } from "ai";
 
 const app_convex_schema = defineSchema({
+	// #region AI
 	threads: defineTable({
 		title: v.string(),
 		archived: v.boolean(),
@@ -191,6 +192,34 @@ const app_convex_schema = defineSchema({
 		.index("by_thread_and_parent", ["thread_id", "parent_id"])
 		.index("by_updated_at", ["updated_at"]),
 
+	/**
+	 * Pending edits overlay used to stage AI-written content until user saves.
+	 * Keys by user/thread/page to allow parallel staging across chat threads.
+	 */
+	ai_chat_pending_edits: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		user_id: v.string(),
+		thread_id: v.string(),
+		page_id: v.string(),
+		base_content: v.string(),
+		modified_content: v.string(),
+		updated_at: v.number(),
+	})
+		.index("by_user_thread_page", ["user_id", "thread_id", "page_id"])
+		.index("by_page", ["page_id"]),
+
+	/**
+	 * Tracks scheduled cleanup tasks to remove a user's pending edits.
+	 * One task per user; canceled on heartbeat, executed if user remains offline.
+	 */
+	ai_chat_pending_edits_cleanup_tasks: defineTable({
+		user_id: v.string(),
+		scheduled_function_id: v.id("_scheduled_functions"),
+	}).index("by_user_id", ["user_id"]),
+	// #endregion AI
+
+	// #region Pages
 	pages: defineTable({
 		/** Workspace ID extracted from roomId */
 		workspace_id: v.string(),
@@ -200,8 +229,12 @@ const app_convex_schema = defineSchema({
 		page_id: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
-		/** Plain text content extracted from the editor for search and display */
-		text_content: v.string(),
+		/** ID of the markdown content for the page */
+		markdown_content_id: v.optional(v.id("pages_markdown_content")),
+		/** ID of the last YJS sequence for the page */
+		yjs_last_sequence_id: v.optional(v.id("pages_yjs_docs_last_sequences")),
+		/** ID of the last YJS sequence for the page */
+		yjs_snapshot_id: v.optional(v.id("pages_yjs_snapshots")),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
 		/** Whether document is archived */
@@ -215,25 +248,37 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds when document was last updated */
 		updated_at: v.number(),
 	})
-		.index("by_workspace_project", ["workspace_id", "project_id"])
 		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
-		.index("by_workspace_project_and_parent_id", ["workspace_id", "project_id", "parent_id"])
-		.index("by_workspace_project_and_parent_id_and_name", ["workspace_id", "project_id", "parent_id", "name"])
-		.index("by_workspace_project_and_parent_id_and_name_and_is_archived", [
-			"workspace_id",
-			"project_id",
-			"parent_id",
-			"name",
-			"is_archived",
-		])
-		.index("by_workspace_project_and_name", ["workspace_id", "project_id", "name"])
-		.index("by_parent_id_and_is_archived", ["parent_id", "is_archived"])
-		.index("by_parent_id_and_name", ["parent_id", "name"])
-		.index("by_parent_id", ["parent_id"])
-		.searchIndex("search_text_content", {
-			searchField: "text_content",
-			filterFields: ["workspace_id", "project_id"],
-		}),
+		.index("by_workspace_project_parent_id_and_name", ["workspace_id", "project_id", "parent_id", "name"])
+		.index("by_workspace_project_parent_id_and_is_archived", ["workspace_id", "project_id", "parent_id", "is_archived"])
+		.index("by_workspace_project_and_name", ["workspace_id", "project_id", "name"]),
+	/**
+	 * Table to store markdown content for pages.
+	 */
+	pages_markdown_content: defineTable({
+		workspace_id: v.string(),
+		project_id: v.string(),
+		page_id: v.id("pages"),
+		/** Markdown content */
+		content: v.string(),
+		/** Whether document is archived */
+		is_archived: v.boolean(),
+		/** YJS sequence to know the sync status */
+		yjs_sequence: v.number(),
+		updated_at: v.number(),
+		updated_by: v.string(),
+	}).searchIndex("search_by_content", {
+		searchField: "content",
+		filterFields: ["workspace_id", "project_id", "is_archived"],
+	}),
+
+	/**
+	 * Internal table to track scheduled markdown content updates.
+	 */
+	pages_markdown_content_schedules: defineTable({
+		page_id: v.id("pages"),
+		scheduled_function_id: v.id("_scheduled_functions"),
+	}).index("by_page_id", ["page_id"]),
 
 	pages_yjs_snapshots: defineTable({
 		workspace_id: v.string(),
@@ -280,36 +325,13 @@ const app_convex_schema = defineSchema({
 		last_sequence: v.number(),
 	}).index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"]),
 
+	/**
+	 * Internal table to track scheduled YJS snapshot updates.
+	 */
 	pages_yjs_snapshot_schedules: defineTable({
 		page_id: v.id("pages"),
 		scheduled_function_id: v.id("_scheduled_functions"),
 	}).index("by_page_id", ["page_id"]),
-
-	/**
-	 * Pending edits overlay used to stage AI-written content until user saves.
-	 * Keys by user/thread/page to allow parallel staging across chat threads.
-	 */
-	ai_chat_pending_edits: defineTable({
-		workspace_id: v.string(),
-		project_id: v.string(),
-		user_id: v.string(),
-		thread_id: v.string(),
-		page_id: v.string(),
-		base_content: v.string(),
-		modified_content: v.string(),
-		updated_at: v.number(),
-	})
-		.index("by_user_thread_page", ["user_id", "thread_id", "page_id"])
-		.index("by_page", ["page_id"]),
-
-	/**
-	 * Tracks scheduled cleanup tasks to remove a user's pending edits.
-	 * One task per user; canceled on heartbeat, executed if user remains offline.
-	 */
-	ai_chat_pending_edits_cleanup_tasks: defineTable({
-		user_id: v.string(),
-		scheduled_function_id: v.id("_scheduled_functions"),
-	}).index("by_user_id", ["user_id"]),
 
 	pages_snapshots: defineTable({
 		workspace_id: v.string(),
@@ -329,7 +351,9 @@ const app_convex_schema = defineSchema({
 		content: v.string(),
 		page_id: v.id("pages"),
 	}).index("by_workspace_project_and_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
+	// #endregion Pages
 
+	// #region Human Threads
 	/**
 	 * Human thread messages table - a single table that represents both threads and messages.
 	 * Root messages (thread_id = null) act as thread heads.
@@ -360,12 +384,10 @@ const app_convex_schema = defineSchema({
 		created_by: v.string(),
 		/** Markdown content; produced from TipTap rich text on submit */
 		content: v.string(),
-	})
-		.index("by_workspace_project", ["workspace_id", "project_id"])
-		.index("by_workspace_project_and_is_archived", ["workspace_id", "project_id", "is_archived"])
-		.index("by_thread_id", ["thread_id"])
-		.index("by_parent_id", ["parent_id"]),
+	}),
+	// #endregion Human Threads
 
+	// #region Presence
 	presence_data: defineTable({
 		roomId: v.string(),
 		userId: v.string(),
@@ -373,6 +395,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_room_user", ["roomId", "userId"])
 		.index("by_room", ["roomId"]),
+	// #endregion Presence
 });
 
 export default app_convex_schema;

@@ -162,6 +162,8 @@ async function list_dir(
 		if (!frame) continue;
 
 		const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.get_page_info_for_list_dir_pagination, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
 			parentId: frame.parentId,
 			cursor: frame.cursor,
 		});

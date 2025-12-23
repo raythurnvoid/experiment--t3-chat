@@ -10,6 +10,7 @@ import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
+import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
@@ -200,4 +201,8 @@ export function pages_u8_equals(a: Uint8Array, b: Uint8Array) {
 		if (a[i] !== b[i]) return false;
 	}
 	return true;
+}
+
+export function pages_yjs_create_empty_state_update() {
+	return encodeStateAsUpdate(new YDoc());
 }

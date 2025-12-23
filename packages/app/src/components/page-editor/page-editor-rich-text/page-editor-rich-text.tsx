@@ -610,7 +610,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 }
 // #endregion Inner
 
-// #region PageEditorRichText
+// #region Root
 export type PageEditorRichText_ClassNames = "PageEditorRichText";
 
 export type PageEditorRichText_CustomAttributes = {
@@ -702,4 +702,4 @@ PageEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 		}
 	});
 };
-// #endregion PageEditorRichText
+// #endregion Root

@@ -226,7 +226,6 @@ type MonacoMarkdownDiffEditor_Impl_Props = MonacoMarkdownDiffEditor_Props & {
 
 function MonacoMarkdownDiffEditor_Impl(props: MonacoMarkdownDiffEditor_Impl_Props) {
 	const { ref, className, pageId, threadId, modifiedInitialValue, initialValue, onExit } = props;
-	const applyPatchToPageAndBroadcast = useMutation(api.ai_docs_temp.apply_patch_to_page_and_broadcast);
 
 	const diffEditor = useRef<M.IStandaloneDiffEditor | null>(null);
 
@@ -590,13 +589,13 @@ function MonacoMarkdownDiffEditor_Impl(props: MonacoMarkdownDiffEditor_Impl_Prop
 		try {
 			const patches = makePatches(before, after, { margin: 100 });
 			const patchText = stringifyPatches(patches);
-			await applyPatchToPageAndBroadcast({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: pageId,
-				patch: patchText,
-				threadId: threadId,
-			});
+			// await applyPatchToPageAndBroadcast({
+			// 	workspaceId: ai_chat_HARDCODED_ORG_ID,
+			// 	projectId: ai_chat_HARDCODED_PROJECT_ID,
+			// 	pageId: pageId,
+			// 	patch: patchText,
+			// 	threadId: threadId,
+			// });
 			onExit();
 		} catch (err) {
 			console.error("handleSaveAndExit failed", err);

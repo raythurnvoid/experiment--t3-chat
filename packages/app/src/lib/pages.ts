@@ -47,7 +47,7 @@ export const pages_get_rich_text_initial_content = ((/* iife */) => {
 	};
 })();
 
-// #region PresenceStore
+// #region presence store
 
 export class pages_PresenceStore_Event extends XCustomEvent<{
 	connected: { userId: string; sessionId: string };

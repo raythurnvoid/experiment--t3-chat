@@ -46,12 +46,14 @@
 		cursor: pointer;
 		outline: none;
 		text-align: unset;
+		user-select: none;
 	}
 
 	summary {
 		list-style: none;
 		cursor: pointer;
 		outline: none;
+		user-select: none;
 
 		&::marker {
 			display: none;
@@ -60,6 +62,11 @@
 		&::-webkit-details-marker {
 			display: none;
 		}
+	}
+
+	*:focus-visible {
+		outline: var(--color-base-2-06) solid 2px;
+		border-radius: 4px;
 	}
 }
 

@@ -1,16 +1,16 @@
 @layer components {
-	:where(.MonacoMarkdownEditor) {
-		& :where(.yRemoteSelection) {
+	.MonacoMarkdownEditor {
+		.yRemoteSelection {
 			filter: opacity(0.5);
-			background-color: var(--user-color, hsl(var(--ring) / 0.75));
+			background-color: var(--user-color, var(--color-accent-alt-06));
 		}
 
 		/* Remote caret/selection head decoration */
-		& :where(.yRemoteSelectionHead) {
+		.yRemoteSelectionHead {
 			position: absolute;
 			box-sizing: border-box;
 			height: 100%;
-			border-left: 2px solid var(--user-color, hsl(var(--ring)));
+			border-left: 2px solid var(--user-color, var(--color-accent-alt-06));
 
 			&::after {
 				position: absolute;
@@ -19,8 +19,8 @@
 				top: -1.4em;
 				left: -1px;
 				padding: 0.125rem 0.375rem;
-				background: var(--user-color, hsl(var(--ring)));
-				color: white;
+				background: var(--user-color, var(--color-accent-alt-06));
+				color: var(--color-fg-12);
 				font-size: 12px;
 				line-height: 1;
 				border-radius: 0.25rem;
@@ -28,5 +28,111 @@
 				pointer-events: none;
 			}
 		}
+	}
+
+	.MonacoMarkdownEditorError {
+		box-sizing: border-box;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		height: 100%;
+		width: 100%;
+
+		padding: 16px;
+	}
+
+	.MonacoMarkdownEditorError-content {
+		box-sizing: border-box;
+
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+
+		width: 100%;
+		max-width: 560px;
+
+		padding: 16px;
+		border-radius: 8px;
+		border: 1px solid var(--color-base-1-10);
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-11);
+
+		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+	}
+
+	.MonacoMarkdownEditorError-title {
+		font-size: 1.125rem;
+		font-weight: 600;
+		line-height: 1.25;
+		color: var(--color-fg-12);
+	}
+
+	.MonacoMarkdownEditorError-description {
+		color: var(--color-fg-09);
+		margin-bottom: 20px;
+	}
+
+	.MonacoMarkdownEditorError-actions {
+		display: flex;
+		align-items: center;
+		align-self: center;
+		margin-bottom: 20px;
+	}
+
+	.MonacoMarkdownEditorError-technical-details {
+		width: 100%;
+	}
+
+	.MonacoMarkdownEditorError-technical-details-toggle {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		cursor: pointer;
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+
+		padding: 8px;
+
+		background: var(--color-base-1-04);
+
+		&:hover {
+			color: var(--color-fg-08);
+		}
+	}
+
+	.MonacoMarkdownEditorError-technical-details-toggle-icon {
+		flex-shrink: 0;
+		color: inherit;
+	}
+
+	.MonacoMarkdownEditorError-technical-details[open] .MonacoMarkdownEditorError-technical-details-toggle-icon {
+		transform: rotate(90deg);
+	}
+
+	.MonacoMarkdownEditorError-technical-details-pre {
+		font-size: 0.75rem;
+		line-height: 1.5;
+
+		color: var(--color-fg-09);
+	}
+
+	.MonacoMarkdownEditorError-technical-details-textarea {
+		padding: 12px;
+
+		width: 100%;
+		height: 280px;
+
+		resize: none;
+		border: none;
+
+		background: var(--color-base-1-03);
+
+		overflow: auto;
+
+		white-space: inherit;
 	}
 }

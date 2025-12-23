@@ -1,134 +1,36 @@
 import "./monaco-markdown-editor.css";
 import "@/lib/app-monaco-config.ts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { Editor } from "@monaco-editor/react";
-import type { editor as M } from "monaco-editor";
-import { CatchBoundary } from "@tanstack/react-router";
-import { MonacoBinding } from "y-monaco";
+import type { editor as Monaco } from "monaco-editor";
+import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useConvex } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { cn } from "@/lib/utils.ts";
-import type { Awareness } from "y-protocols/awareness";
+import { MyButton } from "@/components/my-button.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
-import type * as Y from "yjs";
-import type { pages_Yjs } from "@/hooks/pages-hooks.ts";
-import { pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { ChevronRight } from "lucide-react";
+import { MyIcon } from "../my-icon.tsx";
 
-export interface MonacoMarkdownEditor_Props {
+// #region Inner
+type MonacoMarkdownEditorInner_Props = {
 	pageId: app_convex_Id<"pages">;
-	pagesYjs: pages_Yjs;
+	initialValue: Promise<string>;
 	presenceStore: pages_PresenceStore;
-	className?: string;
-}
+};
 
-/**
- * This component is inspired from Liveblocks example: liveblocks/examples/nextjs-yjs-monaco/src/components/CollaborativeEditor.tsx
- */
-function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
-	const { pageId, pagesYjs, presenceStore, className } = props;
+function MonacoMarkdownEditorInner(props: MonacoMarkdownEditorInner_Props) {
+	const { pageId, presenceStore } = props;
+
 	const convex = useConvex();
-	const yProvider = pagesYjs.yjsProvider;
 
-	const [editor, setEditor] = useState<M.IStandaloneCodeEditor | null>(null);
-	const textContentWatchRef = useRef<{ unsubscribe: () => void } | null>(null);
-	const [initialValue, setInitialValue] = useState<string | null | undefined>(undefined);
+	const [editor, setEditor] = useState<Monaco.IStandaloneCodeEditor | null>(null);
 
-	// Approximate useIsEditorReady for Monaco/Yjs: ready when Yjs provider is synchronizing or synchronized
-	const isYjsReady = pagesYjs.syncStatus === "synchronizing" || pagesYjs.syncStatus === "synchronized";
+	const initialValue = use(props.initialValue);
 
-	useEffect(() => {
-		if (!editor) return;
-
-		const yDoc = yProvider.getYDoc();
-		const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
-
-		const model = editor.getModel();
-		const awareness = yProvider.awareness as unknown as Awareness;
-		const binding = ((/* iife */) => {
-			if (model) {
-				return new MonacoBinding(yText, model, new Set([editor]), awareness);
-			}
-		})();
-
-		// Observe YText changes to detect when remote Yjs updates are being applied
-		const handleYTextChange = async (_event: Y.YTextEvent, transaction: Y.Transaction) => {
-			if (transaction.local && transaction.origin !== "monaco-seed") {
-				const value = editor.getValue();
-			}
-		};
-
-		yText.observe(handleYTextChange);
-
-		return () => {
-			binding?.destroy();
-			yText.unobserve(handleYTextChange);
-		};
-	}, [editor, yProvider, pageId]);
-
-	// Listen for updates once
-	useEffect(() => {
-		const watcher = convex.watchQuery(api.ai_docs_temp.get_page_text_content_by_page_id, {
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pageId,
-		});
-
-		const unsubscribe = watcher.onUpdate(() => {
-			if (initialValue === undefined) {
-				const v = watcher.localQueryResult();
-				setInitialValue(typeof v === "string" ? v : "");
-			}
-		});
-
-		textContentWatchRef.current = {
-			unsubscribe: () => {
-				unsubscribe();
-				textContentWatchRef.current = null;
-			},
-		};
-
-		return () => {
-			textContentWatchRef.current?.unsubscribe();
-		};
-	}, [convex, pageId, initialValue]);
-
-	// After editor mounts, fetch latest value once and set initialValue if still undefined
-	useEffect(() => {
-		if (!editor || initialValue !== undefined) return;
-		void (async () => {
-			const fetchedValue = await convex.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: pageId,
-			});
-
-			// Set the initial value if it's not already set
-			if (fetchedValue) {
-				setInitialValue((currentValue) => currentValue ?? fetchedValue);
-			}
-		})();
-	}, [convex, pageId]);
-
-	// Apply initialValue once editor is mounted, then unsubscribe the watch
-	useEffect(() => {
-		if (!editor || !isYjsReady || initialValue === undefined) return;
-		const yDoc = yProvider.getYDoc();
-		const seed = typeof initialValue === "string" ? initialValue : "";
-		if (seed.length > 0) {
-			const yText = yDoc.getText(pages_YJS_DOC_KEYS.plainText);
-			// Use transact with custom origin so the observer can detect this as programmatic seeding
-			yDoc.transact(() => {
-				yText.delete(0, yText.length);
-				yText.insert(0, seed);
-			}, "monaco-seed");
-		}
-		// Unsubscribe the text watcher now that we seeded once
-		textContentWatchRef.current?.unsubscribe();
-	}, [editor, isYjsReady, initialValue, yProvider, pageId]);
-
-	const handleOnMount = (e: M.IStandaloneCodeEditor) => {
+	const handleOnMount = (e: Monaco.IStandaloneCodeEditor) => {
 		setEditor(e);
 	};
 
@@ -170,113 +72,136 @@ function MonacoMarkdownEditor_Impl(props: MonacoMarkdownEditor_Props) {
 			</div>
 			{/* Monaco Editor */}
 			<div className="MonacoMarkdownEditor-editor flex-1">
-				{/* Dynamic cursor styles for remote users (labels & colors) */}
-				{yProvider?.awareness && (
-					<MonacoMarkdownEditor_Cursors awareness={yProvider.awareness as unknown as Awareness} />
-				)}
 				<Editor
 					height="100%"
 					language="markdown"
 					options={{
 						wordWrap: "on",
 					}}
+					defaultValue={initialValue}
 					onMount={handleOnMount}
 				/>
 			</div>
 		</div>
 	);
 }
+// #endregion Inner
 
-function MonacoMarkdownEditor_Error(props: { error: unknown; reset: () => void }) {
+// #region Error
+type MonacoMarkdownEditorError_Props = ErrorComponentProps;
+
+type MonacoMarkdownEditorError_ClassNames =
+	| "MonacoMarkdownEditorError"
+	| "MonacoMarkdownEditorError-content"
+	| "MonacoMarkdownEditorError-title"
+	| "MonacoMarkdownEditorError-description"
+	| "MonacoMarkdownEditorError-actions"
+	| "MonacoMarkdownEditorError-retry-button"
+	| "MonacoMarkdownEditorError-technical-details"
+	| "MonacoMarkdownEditorError-technical-details-toggle"
+	| "MonacoMarkdownEditorError-technical-details-toggle-icon"
+	| "MonacoMarkdownEditorError-technical-details-pre"
+	| "MonacoMarkdownEditorError-technical-details-textarea";
+
+function MonacoMarkdownEditorError(props: MonacoMarkdownEditorError_Props) {
+	const { error, info } = props;
+
+	const technicalDetails = [
+		error.message && `Error message: ${error.message}`,
+		error.stack && `Stack trace:\n${error.stack}`,
+		info?.componentStack && `Component stack:\n${info.componentStack}`,
+	]
+		.filter(Boolean)
+		.join("\n\n");
+
 	return (
-		<div className="MonacoMarkdownEditor-error flex h-full items-center justify-center p-4 text-sm">
-			<div className="flex flex-col items-center gap-2">
-				<div>Editor failed to load.</div>
-				<button onClick={props.reset} className="rounded border px-2 py-1">
-					Try again
-				</button>
+		<div className={cn("MonacoMarkdownEditorError" satisfies MonacoMarkdownEditorError_ClassNames)}>
+			<div className={cn("MonacoMarkdownEditorError-content" satisfies MonacoMarkdownEditorError_ClassNames)}>
+				<div className={cn("MonacoMarkdownEditorError-title" satisfies MonacoMarkdownEditorError_ClassNames)}>
+					Editor failed to load.
+				</div>
+				<div className={cn("MonacoMarkdownEditorError-description" satisfies MonacoMarkdownEditorError_ClassNames)}>
+					Try again, or reload the page if the problem persists.
+				</div>
+				<div className={cn("MonacoMarkdownEditorError-actions" satisfies MonacoMarkdownEditorError_ClassNames)}>
+					<MyButton
+						variant="secondary"
+						className={cn("MonacoMarkdownEditorError-retry-button" satisfies MonacoMarkdownEditorError_ClassNames)}
+						onClick={props.reset}
+					>
+						Try again
+					</MyButton>
+				</div>
+				{technicalDetails && (
+					<details
+						className={cn("MonacoMarkdownEditorError-technical-details" satisfies MonacoMarkdownEditorError_ClassNames)}
+					>
+						<summary
+							className={cn(
+								"MonacoMarkdownEditorError-technical-details-toggle" satisfies MonacoMarkdownEditorError_ClassNames,
+							)}
+						>
+							<span>Technical details</span>
+							<MyIcon
+								className={cn(
+									"MonacoMarkdownEditorError-technical-details-toggle-icon" satisfies MonacoMarkdownEditorError_ClassNames,
+								)}
+							>
+								<ChevronRight />
+							</MyIcon>
+						</summary>
+						<pre
+							className={cn(
+								"MonacoMarkdownEditorError-technical-details-pre" satisfies MonacoMarkdownEditorError_ClassNames,
+							)}
+						>
+							<textarea
+								className={cn(
+									"MonacoMarkdownEditorError-technical-details-textarea" satisfies MonacoMarkdownEditorError_ClassNames,
+								)}
+								readOnly
+							>
+								{technicalDetails}
+							</textarea>
+						</pre>
+					</details>
+				)}
 			</div>
 		</div>
 	);
 }
 
+// #endregion Error
+
+// #region Root
+export type MonacoMarkdownEditor_Props = {
+	pageId: app_convex_Id<"pages">;
+	presenceStore: pages_PresenceStore;
+};
+
 export function MonacoMarkdownEditor(props: MonacoMarkdownEditor_Props) {
+	const { pageId, presenceStore } = props;
+
+	const convex = useConvex();
+
+	const initialValuePromise = convex
+		.query(api.ai_docs_temp.get_page_text_content_by_page_id, {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId,
+		})
+		.then((value) => value ?? "");
+
 	return (
 		<CatchBoundary
 			getResetKey={() => 0}
-			errorComponent={MonacoMarkdownEditor_Error}
+			errorComponent={MonacoMarkdownEditorError}
 			onCatch={(err) => {
-				if (typeof window !== "undefined") {
-					console.error("MonacoMarkdownEditor error:", err);
-				}
+				console.error("MonacoMarkdownEditor:", err);
 			}}
 		>
-			<MonacoMarkdownEditor_Impl {...props} />
+			<MonacoMarkdownEditorInner pageId={pageId} initialValue={initialValuePromise} presenceStore={presenceStore} />
 		</CatchBoundary>
 	);
 }
-
-type MonacoMarkdownEditor_Cursors_Props = {
-	awareness: Awareness;
-};
-
-/**
- * This component is inspired from Liveblocks example: liveblocks/examples/nextjs-yjs-monaco/src/components/Cursors.tsx
- */
-function MonacoMarkdownEditor_Cursors(props: MonacoMarkdownEditor_Cursors_Props) {
-	const { awareness } = props;
-
-	type UserAwareness = { user?: { name?: string; color?: string } };
-	type AwarenessList = Array<[number, UserAwareness | undefined]>;
-	const [awarenessUsers, setAwarenessUsers] = useState<AwarenessList>([]);
-
-	useEffect(() => {
-		function setUsers() {
-			setAwarenessUsers([...(awareness.getStates() as Map<number, UserAwareness>).entries()]);
-		}
-
-		awareness.on("change", setUsers);
-		setUsers();
-
-		return () => {
-			awareness.off("change", setUsers);
-		};
-	}, [awareness]);
-
-	const cssContent = useMemo(() => {
-		const escapeCssContent = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, " ");
-		let styles = "";
-		for (const [clientId, client] of awarenessUsers) {
-			const color = client?.user?.color;
-			const name = client?.user?.name;
-			if (!color && !name) continue;
-
-			if (color) {
-				styles += cursor_styles.replaceAll("{{clientId}}", clientId.toString()).replaceAll("{{color}}", color);
-			}
-
-			if (name) {
-				styles += cursor_styles_name
-					.replaceAll("{{clientId}}", clientId.toString())
-					.replaceAll("{{name}}", escapeCssContent(name));
-			}
-		}
-		return styles;
-	}, [awarenessUsers]);
-
-	if (!cssContent) return null;
-	return <style dangerouslySetInnerHTML={{ __html: cssContent }} />;
-}
-
-const cursor_styles = `\
-.MonacoMarkdownEditor :where(.yRemoteSelection-{{clientId}}),
-.MonacoMarkdownEditor :where(.yRemoteSelectionHead-{{clientId}}) {
-	--user-color: {{color}};
-}
-`;
-
-const cursor_styles_name = `\
-.MonacoMarkdownEditor :where(.yRemoteSelectionHead-{{clientId}})::after {
-	content: "{{name}}";
-}
-`;
+// #endregion Root

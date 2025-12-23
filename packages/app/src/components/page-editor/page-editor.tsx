@@ -229,7 +229,7 @@ function PageEditorInner(props: PageEditorInner_Props) {
 							<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
 						)
 					) : (
-						<MonacoMarkdownEditor pageId={pageId} pagesYjs={pagesYjs} presenceStore={presenceStore} />
+						<MonacoMarkdownEditor pageId={pageId} presenceStore={presenceStore} />
 					)
 				) : (
 					<PageEditorSkeleton />
