@@ -30,14 +30,17 @@ function get_breadcrumb_path(
 ): pages_TreeItem[] {
 	if (!treeItemsList || !pageId) return [];
 
+	const path: pages_TreeItem[] = [];
+	let currentId: string = pages_ROOT_ID;
+
 	// Create a map for quick lookup
 	const itemsMap = new Map<string, pages_TreeItem>();
 	for (const item of treeItemsList) {
 		itemsMap.set(item.index, item);
+		if (item._id === pageId) {
+			currentId = item.index;
+		}
 	}
-
-	const path: pages_TreeItem[] = [];
-	let currentId: string | null = pageId;
 
 	// Navigate up the tree using parentId
 	while (currentId && currentId !== pages_ROOT_ID) {
@@ -45,7 +48,7 @@ function get_breadcrumb_path(
 		if (!item) break;
 
 		path.unshift(item); // Add to beginning of array
-		currentId = item.parentId || null;
+		currentId = item.parentId;
 	}
 
 	return path;

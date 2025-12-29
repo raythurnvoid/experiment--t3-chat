@@ -36,6 +36,7 @@ export function pages_create_tree_root(): pages_TreeItem {
 		isArchived: false,
 		updatedAt: 0,
 		updatedBy: "",
+		_id: null,
 	};
 }
 
@@ -49,6 +50,7 @@ export function pages_create_tree_placeholder_child(itemId: string): pages_TreeI
 		isArchived: false,
 		updatedAt: 0,
 		updatedBy: "",
+		_id: null,
 	};
 }
 

@@ -295,6 +295,7 @@ const get_tree_items_list_validator = v.array(
 		isArchived: v.boolean(),
 		updatedAt: v.number(),
 		updatedBy: v.string(),
+		_id: v.union(v.id("pages"), v.null()),
 	}),
 );
 
@@ -326,6 +327,7 @@ export const get_tree_items_list = query({
 				isArchived: false,
 				updatedAt: Date.now(),
 				updatedBy: "system",
+				_id: null,
 			},
 			...pages.map(
 				(page) =>
@@ -338,6 +340,7 @@ export const get_tree_items_list = query({
 						isArchived: page.is_archived,
 						updatedAt: page.updated_at,
 						updatedBy: page.updated_by,
+						_id: page._id,
 					}) satisfies pages_TreeItem,
 			),
 		];
