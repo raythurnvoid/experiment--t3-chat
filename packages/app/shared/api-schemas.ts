@@ -6,7 +6,7 @@ Schema to store all api types grouped by api path for easy lookup.
 {
     // A string with the format `/api/static/path/{path_param}/rest/of/the/path` (The param can also be camelCase)
     [apiPath]: {
-        // Can be a value among `get`, `post`, `put`, `delete`, `patch`, `options`, `head`
+        // Can be a value among `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`, `HEAD`
         [httpMethod]: {
             searchParams: {
                 [key]: string, string | boolean | number | string[] | boolean[] | number[]
@@ -69,9 +69,10 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 ```
 */
 
-import type { AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
-import type { PrepareSendMessagesRequest, UIMessage } from "ai";
-import z from "zod";
+import type { Promisable } from "type-fest";
+import type { ai_chat_http_routes } from "../convex/ai_chat.ts";
+import type { pages_http_routes } from "../convex/ai_docs_temp.ts";
+import type { users_http_routes } from "../convex/users.ts";
 
 // #region Schema validation
 /*
@@ -81,7 +82,7 @@ If the schema is invalid, it will cause lint errors and the AI will retry to fix
 interface Validate<
 	T extends {
 		[K in keyof T]: {
-			[Method in keyof T[K] & ("get" | "post" | "patch" | "delete" | "put")]: {
+			[Method in keyof T[K] & ("GET" | "POST" | "PATCH" | "DELETE" | "PUT")]: {
 				searchParams: Record<string, string | boolean | number | string[] | boolean[] | number[]>;
 				pathParams: Record<string, string | boolean | number>;
 				body: {};
@@ -103,115 +104,42 @@ type _Validation = //
 
 // #region Main Schema
 
-export const api_schemas_Main_api_chat_body_schema = z.object({
-	// AI SDK fields
-	id: z.string(),
-	messages: z.array(z.any()),
-	trigger: z.enum(["submit-message", "regenerate-message"]),
-	messageId: z.string().optional(),
-
-	// Assistant UI fields
-	system: z.string().optional(),
-	tools: z.record(z.string(), z.unknown()),
-
-	// Custom fields
-	threadId: z.string(),
-	parentId: z.string().optional(),
-});
-
-type api_schemas_Main_api_chat_body_schema = z.infer<typeof api_schemas_Main_api_chat_body_schema>;
-
-export const api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema = z.object({
-	prompt: z.string(),
-	option: z.string().optional(),
-	command: z.string().optional(),
-});
-
-type api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema = z.infer<
-	typeof api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema
->;
-
 export interface api_schemas_Main {
-	"/api/chat": {
-		get: {
-			pathParams: never;
-			searchParams: never;
-			/**
-			 * See {@link PrepareSendMessagesRequest}.
-			 *
-			 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
-			 **/
-			body: {
-				// AI SDK fields
-				id: api_schemas_Main_api_chat_body_schema["id"];
-				messages: UIMessage[];
-				trigger: api_schemas_Main_api_chat_body_schema["trigger"];
-				messageId: api_schemas_Main_api_chat_body_schema["messageId"];
+	"/.well-known/jwks.json": ReturnType<typeof users_http_routes>["/.well-known/jwks.json"];
 
-				// Assistant UI fields
-				system?: api_schemas_Main_api_chat_body_schema["system"];
-				tools: api_schemas_Main_api_chat_body_schema["tools"];
+	"/api/auth/jwks": ReturnType<typeof users_http_routes>["/.well-known/jwks.json"];
 
-				// Custom fields
-				threadId: api_schemas_Main_api_chat_body_schema["threadId"];
-				parentId: api_schemas_Main_api_chat_body_schema["parentId"];
-			};
-			headers: {
-				Authorization: string;
-			};
-			response: {
-				200: {
-					headers: {};
-					body: any;
-				};
-			};
-		};
-	};
+	"/api/auth/anonymous": ReturnType<typeof users_http_routes>["/api/auth/anonymous"];
 
-	"/api/v1/runs/stream": {
-		post: {
-			pathParams: never;
-			searchParams: never;
-			body: {
-				thread_id: string;
-				assistant_id: string;
-				messages: readonly unknown[];
-				response_format?: string;
-			};
-			headers: {
-				Authorization: string;
-			};
-			response: {
-				200: {
-					headers: {};
-					body: any;
-				};
-			};
-		};
-	};
+	"/api/auth/resolve-user": ReturnType<typeof users_http_routes>["/api/auth/resolve-user"];
 
-	"/api/ai-docs-temp/contextual-prompt": {
-		post: {
-			pathParams: never;
-			searchParams: never;
-			body: {
-				prompt: api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema["prompt"];
-				option?: api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema["option"];
-				command?: api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema["command"];
-			};
-			headers: {
-				Authorization: string;
-			};
-			response: {
-				200: {
-					headers: {};
-					body: string; // streaming text response
-				};
-			};
-		};
-	};
+	"/api/chat": ReturnType<typeof ai_chat_http_routes>["/api/chat"];
+
+	"/api/v1/runs/stream": ReturnType<typeof ai_chat_http_routes>["/api/v1/runs/stream"];
+
+	"/api/ai-docs-temp/contextual-prompt": ReturnType<typeof pages_http_routes>["/api/ai-docs-temp/contextual-prompt"];
 }
 
-export type api_schemas_MainPaths = keyof api_schemas_Main;
+export type api_schemas_Main_Path = keyof api_schemas_Main;
+
+// @ts-expect-error
+type AllHandlerStatuses<T> = Awaited<ReturnType<T>>["status"];
+// @ts-expect-error
+type HandlerResponseByStatus<T, S> = Extract<Awaited<ReturnType<T>>, { status: S }>;
+
+export type api_schemas_BuildResponseSpecFromHandler<
+	T extends (...args: any[]) => Promisable<{
+		status: number;
+		body: unknown;
+		headers?: Record<string, string>;
+	}>,
+> = {
+	[status in AllHandlerStatuses<T>]: {
+		headers: HandlerResponseByStatus<T, status>["headers"] extends Record<string, string>
+			? HandlerResponseByStatus<T, status>["headers"]
+			: Record<string, string>;
+		body: HandlerResponseByStatus<T, status>["body"];
+	};
+};
 
 // #endregion Main Schema

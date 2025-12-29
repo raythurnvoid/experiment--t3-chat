@@ -55,6 +55,47 @@ export function delay(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Create a deferred object with a status property.
+ *
+ * @example
+ * ```ts
+ * const deferred = create_deferred<string>();
+ * deferred.status; // "pending"
+ * ```
+ */
+export function create_deferred<T>() {
+	const createDeferred = () => {
+		const deferred = Object.assign(Promise.withResolvers<T>(), {
+			status: "pending" as "pending" | "resolved" | "rejected",
+
+			/**
+			 * If the deferred is not pending, replace the promise and
+			 * set the status to pending.
+			 */
+			reset: () => {
+				if (deferred.status !== "pending") {
+					Object.assign(deferred, createDeferred());
+				}
+			},
+		});
+
+		deferred.promise = deferred.promise
+			.then((value) => {
+				deferred.status = "resolved";
+				return value;
+			})
+			.catch((error) => {
+				deferred.status = "rejected";
+				return error;
+			});
+
+		return deferred;
+	};
+
+	return createDeferred();
+}
+
 export function has_defined_property<O extends object, P extends KeysOfUnion<O>>(
 	obj: O,
 	property: P,
@@ -76,7 +117,7 @@ export function has_defined_property<O extends object, P extends KeysOfUnion<O>>
  * const myTuple = tuple('hello', 'world', 42); // ['hello', 'world', 42]
  * ```
  */
-export function tuple<T extends (Primitive | object)[]>(...args: [...T]): [...T] {
+export function tuple<T extends (Primitive | {})[]>(...args: [...T]): [...T] {
 	return args;
 }
 

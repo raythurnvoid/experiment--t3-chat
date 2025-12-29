@@ -242,11 +242,11 @@ class PagesSidebarTreeDataProvider implements TreeDataProvider<pages_TreeItem> {
 				index: pageId,
 				children: [],
 				data: {
+					_id: null,
 					type: "page",
 					index: pageId,
 					parentId: parentId,
 					title,
-					content: `<h1>${title}</h1><p>Start writing your content here...</p>`,
 					isArchived: false,
 					updatedAt: Date.now(),
 					updatedBy: "user",
@@ -961,41 +961,45 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 				return;
 			}
 
+			// ✅ Use currentItems (tree's live state) as source of truth - EXACTLY like internal drop
+			const currentItems = treeRef.current?.treeEnvironmentContext.items || {};
+
 			try {
 				const provider = dataProvider;
 				const itemIds = draggingItems.map((item: any) => item.index as string);
-
-				// ✅ Use currentItems (tree's live state) as source of truth - EXACTLY like internal drop
-				const currentItems = treeRef.current?.treeEnvironmentContext.items || {};
 
 				// ✅ Follow EXACT same pattern as UncontrolledTreeEnvironment's onDrop
 				const promises: Promise<void>[] = [];
 
 				// Step 1: Remove items from old parents (same logic as internal drop)
-				for (const item of draggingItems) {
-					const parent = Object.values(currentItems).find((potentialParent: any) =>
-						potentialParent?.children?.includes?.((item as any).index),
-					) as any;
+				((/* iife Trick the compiler */) => {
+					for (const item of draggingItems) {
+						const parent = Object.values(currentItems).find((potentialParent: any) =>
+							potentialParent?.children?.includes?.((item as any).index),
+						) as any;
 
-					if (!parent) {
-						continue;
-					}
+						if (!parent) {
+							continue;
+						}
 
-					// Only remove if not already at root (same check as internal drop)
-					if (parent.index !== pages_ROOT_ID) {
-						promises.push(
-							provider.onChangeItemChildren(
-								parent.index,
-								parent.children.filter((child: any) => child !== (item as any).index),
-							),
-						);
+						// Only remove if not already at root (same check as internal drop)
+						if (parent.index !== pages_ROOT_ID) {
+							promises.push(
+								provider.onChangeItemChildren(
+									parent.index,
+									parent.children.filter((child: any) => child !== (item as any).index),
+								),
+							);
+						}
 					}
-				}
+				})();
 
 				// Step 2: Add items to root (same logic as internal drop for targetType === 'root')
 				promises.push(
 					provider.onChangeItemChildren(pages_ROOT_ID, [
-						...(currentItems[pages_ROOT_ID]?.children ?? []).filter((i: any) => !itemIds.includes(i)),
+						...((/* iife trick the compiler */) => currentItems[pages_ROOT_ID]?.children ?? [])().filter(
+							(i: any) => !itemIds.includes(i),
+						),
 						...itemIds,
 					]),
 				);
@@ -1101,6 +1105,8 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 					);
 				}}
 				renderTreeContainer={(props) => {
+					const { children } = props;
+
 					const isDragging = !!treeRef.current?.dragAndDropContext.draggingItems;
 
 					return (
@@ -1114,7 +1120,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 							)}
 							onBlur={handleBlur}
 						>
-							{props.children}
+							{children}
 						</div>
 					);
 				}}

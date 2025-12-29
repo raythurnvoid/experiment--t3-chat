@@ -396,6 +396,17 @@ const app_convex_schema = defineSchema({
 		.index("by_room_user", ["roomId", "userId"])
 		.index("by_room", ["roomId"]),
 	// #endregion Presence
+
+	// #region Users
+	users: defineTable({
+		/** Clerk user ID, null for anonymous users */
+		clerkUserId: v.union(v.string(), v.null()),
+		/** Anonymous auth JWT; null once upgraded */
+		anonymousAuthToken: v.union(v.string(), v.null()),
+		/** Display name, e.g. "anonymous_<uuid>" for anonymous users */
+		displayName: v.string(),
+	}).index("by_clerk_user_id", ["clerkUserId"]),
+	// #endregion Users
 });
 
 export default app_convex_schema;

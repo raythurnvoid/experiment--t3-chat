@@ -1,6 +1,6 @@
 import "./index.css";
 
-import React from "react";
+import React, { Suspense } from "react";
 import { PagesSidebar, type PagesSidebar_Props } from "./-components/pages-sidebar.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
 import { useState, useEffect } from "react";
@@ -10,19 +10,43 @@ import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { useMutation, useQuery } from "convex/react";
+import { useConvexAuth, useMutation } from "convex/react";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { useStableQuery } from "../../hooks/convex-hooks.ts";
 
+const PageEditor = React.lazy(() =>
+	import("../../components/page-editor/page-editor.tsx").then((module) => ({
+		default: module.PageEditor,
+	})),
+);
+
 export const Route = createFileRoute({
-	component: RoutePagesComponent,
+	component: RoutePages,
 	validateSearch: zodValidator(
 		z.object({
 			pageId: z.string().optional().catch(undefined),
 		}),
 	),
 });
+
+type RoutePagesContent_Props = {
+	pageId: app_convex_Id<"pages"> | null | undefined;
+};
+
+function RoutePagesContent(props: RoutePagesContent_Props) {
+	const { pageId } = props;
+
+	return (
+		<Suspense fallback={<PageEditorSkeleton />}>
+			{pageId && (
+				<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
+					<PageEditor pageId={pageId} />
+				</div>
+			)}
+		</Suspense>
+	);
+}
 
 type RoutePages_ClassNames =
 	| "RoutePages-content-area"
@@ -35,31 +59,7 @@ type RoutePages_ClassNames =
 	| "RoutePages-loading-text"
 	| "RoutePages-editor-wrapper";
 
-const PageEditor = React.lazy(() =>
-	import("../../components/page-editor/page-editor.tsx").then((module) => ({
-		default: module.PageEditor,
-	})),
-);
-
-type RoutePagesContent_Props = {
-	pageId: app_convex_Id<"pages"> | null | undefined;
-};
-
-function RoutePagesContent(props: RoutePagesContent_Props) {
-	const { pageId } = props;
-
-	return (
-		<React.Suspense fallback={<PageEditorSkeleton />}>
-			{pageId && (
-				<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
-					<PageEditor pageId={pageId} />
-				</div>
-			)}
-		</React.Suspense>
-	);
-}
-
-function RoutePagesComponent() {
+function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();

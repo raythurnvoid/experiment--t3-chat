@@ -1,12 +1,10 @@
-import type { LiteralUnion } from "react-hook-form";
-
 /**
  * All keys used for `localStorage` values.
  *
  * Avoid generic names. You can use this pattern to make the key descriptive
  * `app_<feature_name>_<some_key>`
  */
-export type storage_local_Key = "app::auth::anonymous_token";
+export type storage_local_Key = "app::auth::anonymous_token" | "app::auth::anonymous_token_user_id";
 
 /**
  * All keys used for `sessionStorage` values.

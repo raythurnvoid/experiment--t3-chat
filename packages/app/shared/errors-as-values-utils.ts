@@ -263,7 +263,7 @@ export type Result<
 > = T extends { _yay: unknown }
 	? {
 			_yay: IsAny<T["_yay"]> extends true ? unknown : T["_yay"];
-			_nay?: never;
+			_nay?: undefined;
 		}
 	: {
 			_nay: IsAny<T["_nay"]> extends true
@@ -287,7 +287,7 @@ export type Result<
 							// @ts-expect-error
 							stack: T["_nay"]["stack"];
 						};
-			_yay?: never;
+			_yay?: undefined;
 		};
 
 /**

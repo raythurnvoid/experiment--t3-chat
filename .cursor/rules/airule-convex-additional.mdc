@@ -6,6 +6,75 @@ alwaysApply: false
 
 Convex additional guidelines for this codebase.
 
+# HTTP routes typing pattern (this repo)
+
+This codebase defines HTTP routes using a “route builder” pattern that keeps runtime behavior and types in one place.
+
+When you add or modify a Convex HTTP endpoint, follow this structure:
+
+- Define routes inside a `*_http_routes(router)` function that **returns an object** shaped like:
+  - `{ [pathLiteral]: { [methodLiteral]: { pathParams, searchParams, headers, body, response } } }`
+- Use a **literal** `path` and **literal** `method` (usually via small IIFEs + `as const`) so TypeScript keeps them as exact strings.
+- Use **computed keys** (`[path]`, `[method]`) so the returned object is keyed by the exact path/method.
+- Implement a local `handler` function that returns `{ status, body, headers? }`.
+- Register the real endpoint with `router.route({ path, method, handler: httpAction(...) })`.
+- For the type schema, return a typed object whose `response` is derived from the handler:
+  - `response: api_schemas_BuildResponseSpecFromHandler<typeof handler>`
+
+Why this is type-safe:
+
+- `api_schemas_Main` is built from `ReturnType<typeof *_http_routes>[path]`, so the schema is inferred from the route definitions.
+- The `response` type is inferred from what the handler can return (status/body/headers), so changing the handler automatically updates the API types.
+
+## Example (template)
+
+```ts
+export function example_http_routes(router: RouterForConvexModules) {
+	return {
+		...((/* iife */ path = "/api/example" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const) => ({
+					[method]: ((/* iife */) => {
+						// 1) Define the request/response types in one place
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = { message: string };
+
+						// 2) Implement the actual handler (runtime behavior)
+						const handler = async (_ctx: ActionCtx, _request: Request) => {
+							return {
+								status: 200,
+								body: { ok: true as const },
+							} as const;
+						};
+
+						// 3) Register the endpoint in Convex
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+								return Response.json(result.body, result);
+							}),
+						});
+
+						// 4) Return a type-only descriptor used by `api_schemas_Main`
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+	};
+}
+```
+
 # Migrations
 
 When the user asks for a Convex migration, you must implement it as an `internalMutation` in [packages/app/convex/migrations.ts](mdc:packages/app/convex/migrations.ts).

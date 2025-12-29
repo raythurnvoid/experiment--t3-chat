@@ -1,8 +1,8 @@
 import { ai_chat_HARDCODED_PROJECT_ID, ai_chat_HARDCODED_ORG_ID } from "../src/lib/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, internalMutation } from "./_generated/server.js";
+import { query, mutation, httpAction, internalMutation, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
-import { paginationOptsValidator } from "convex/server";
+import { paginationOptsValidator, type RouteSpec } from "convex/server";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import {
@@ -19,13 +19,10 @@ import {
 } from "ai";
 import { z } from "zod";
 import { createArtifactArgsSchema } from "../src/types/artifact-schemas.ts";
-import { type api_schemas_Main, api_schemas_Main_api_chat_body_schema } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import {
-	server_convex_headers_cors,
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
-	server_convex_response_error_client,
-	server_convex_response_error_server,
 } from "../server/server-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
@@ -38,6 +35,7 @@ import {
 	ai_tool_create_edit_page,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
+import type { RouterForConvexModules } from "./http.ts";
 
 /**
  * This function exists only becase is not possible to define a type specific enough to make ts happy when using
@@ -280,360 +278,6 @@ export const thread_messages_add = mutation({
 	},
 });
 
-/**
- * HTTP Action for AI chat streaming with tools
- */
-export const chat = httpAction(async (ctx, request) => {
-	try {
-		const requestParseResult = await server_request_json_parse_and_validate(
-			request,
-			api_schemas_Main_api_chat_body_schema,
-		);
-		if (requestParseResult._nay) {
-			return server_convex_response_error_client({
-				body: requestParseResult._nay,
-			});
-		}
-
-		const body = requestParseResult._yay as api_schemas_Main["/api/chat"]["get"]["body"];
-
-		// Validate messages from request
-		if (!Array.isArray(body.messages)) {
-			return server_convex_response_error_client({
-				body: {
-					message: "Invalid messages format",
-				},
-			});
-		}
-
-		const threadId = body.threadId;
-		let messages: ModelMessage[] = [];
-
-		do {
-			if (threadId) {
-				const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
-					threadId: threadId as app_convex_Id<"threads">,
-					order: "asc",
-				});
-
-				if (!threadMessagesResult) {
-					messages = convertToModelMessages(body.messages);
-					break;
-				}
-
-				const messagesMap = new Map<string, app_convex_Doc<"messages">>(
-					threadMessagesResult.messages.map((msg) => [msg._id, msg]),
-				);
-
-				const reconstructedMessages: app_convex_Doc<"messages">[] = [];
-
-				let nextParentId: app_convex_Id<"messages"> | null = null;
-				if (body.parentId) {
-					nextParentId = body.parentId as app_convex_Id<"messages">;
-				}
-
-				while (nextParentId) {
-					const parentMessage = messagesMap.get(nextParentId);
-					if (parentMessage) {
-						// the messages has to be from the oldest to the newest
-						reconstructedMessages.unshift(parentMessage);
-						nextParentId = parentMessage.parent_id;
-					} else {
-						console.warn(`Parent message not found: ${nextParentId}`);
-						break;
-					}
-				}
-
-				messages = convertToModelMessages(
-					reconstructedMessages
-						.map((msg) => convert_convex_db_message_to_aisdk_ui_message(msg))
-						.concat(...body.messages),
-				);
-			} else {
-				return server_convex_response_error_client({
-					body: {
-						message: "Thread ID is required",
-					},
-					headers: server_convex_headers_cors(),
-				});
-			}
-		} while (0);
-
-		console.log("messages", {
-			messages: messages,
-			threadId,
-		});
-
-		const stream = createUIMessageStream({
-			generateId: createIdGenerator({
-				prefix: threadId,
-				separator: "-",
-				size: 16,
-			}),
-			execute: async ({ writer }) => {
-				const result1 = streamText({
-					model: openai("gpt-5-nano"),
-					system:
-						`Either respond directly to the user or use the tools at your disposal.\n` +
-						"If you decide to create an artifact, do not answer and just call the tool or answer with `On it...`.\n",
-					messages,
-					temperature: 0.7,
-					maxOutputTokens: 2000,
-					providerOptions: {
-						openai: {
-							reasoningEffort: "low",
-						},
-					},
-					toolChoice: "auto",
-					stopWhen: stepCountIs(5),
-					tools: {
-						weather: tool({
-							description: "Get the weather in a location (in Celsius)",
-							inputSchema: z.object({
-								location: z.string().describe("The location to get the weather for"),
-							}),
-							execute: async ({ location }) => ({
-								location,
-								temperature: "200°",
-							}),
-						}),
-						request_create_artifact: tool({
-							description:
-								"Request to create a text artifact that should be displayed in a separate panel.\n" +
-								"Use this when the user asks for:\n" +
-								"- Creating documents, articles, or stories\n" +
-								"- Generating markdown content\n" +
-								"- Any substantial text output that would benefit from being editable\n" +
-								"- Writing essays, reports, or long-form content\n",
-							inputSchema: z.object({}),
-							execute: async () => {
-								console.log("🎯 request_create_artifact tool called");
-								return { requested: true };
-							},
-						}),
-						read_page: ai_tool_create_read_page(ctx, { thread_id: threadId ?? "" }),
-						list_pages: ai_tool_create_list_pages(ctx),
-						glob_pages: ai_tool_create_glob_pages(ctx),
-						grep_pages: ai_tool_create_grep_pages(ctx, { thread_id: threadId ?? "" }),
-						text_search_pages: ai_tool_create_text_search_pages(ctx, { thread_id: threadId ?? "" }),
-						write_page: ai_tool_create_write_page(ctx, { thread_id: threadId ?? "" }),
-						edit_page: ai_tool_create_edit_page(ctx, { thread_id: threadId ?? "" }),
-					},
-					experimental_transform: smoothStream({
-						delayInMs: 100,
-					}),
-				});
-
-				writer.merge(
-					result1.toUIMessageStream({
-						sendFinish: false,
-					}),
-				);
-
-				const response1 = await result1.response;
-
-				const should_finish = !response1.messages.some(
-					(msg) =>
-						msg.role === "assistant" &&
-						Array.isArray(msg.content) &&
-						msg.content.some(
-							(content) => content.type === "tool-call" && content.toolName === "request_create_artifact",
-						),
-				);
-
-				if (should_finish) {
-					const finish_reason = await result1.finishReason;
-					const usage = await result1.usage;
-					writer.write({
-						type: "data-finish_message",
-						data: {
-							finishReason: finish_reason,
-							usage,
-						},
-					});
-				} else {
-					const artifact_id = crypto.randomUUID();
-					writer.write({
-						type: "data-artifact-id",
-						data: { id: artifact_id },
-					});
-
-					const result2 = streamText({
-						model: openai("gpt-5-nano"),
-						system: `Generate comprehensive, well-structured content that directly addresses what the user requested. 
-								Format the content as markdown when appropriate.`,
-						messages: [...messages, ...response1.messages],
-						toolChoice: "required",
-						stopWhen: stepCountIs(1),
-						temperature: 0.7,
-						maxOutputTokens: 2000,
-						tools: {
-							create_artifact: tool({
-								description:
-									"Create a text artifact that should be displayed in a separate panel " +
-									"Use this when the user asks for: " +
-									"- Creating documents, articles, or stories " +
-									"- Generating markdown content " +
-									"- Any substantial text output that would benefit from being editable " +
-									"- Writing essays, reports, or long-form content",
-								inputSchema: createArtifactArgsSchema,
-								execute: async (args) => {
-									console.log(`✅ Artifact created: ${args.title}`);
-									return {
-										done: true,
-									};
-								},
-							}),
-						},
-						experimental_transform: smoothStream({
-							delayInMs: 500,
-						}),
-					});
-
-					writer.merge(
-						result2.toUIMessageStream({
-							sendStart: false,
-							sendFinish: false,
-						}),
-					);
-
-					const response2 = await result2.response;
-
-					const result3 = streamText({
-						model: openai("gpt-5-nano"),
-						system: `Send a brief confirmation message to the user that the artifact has been created successfully. 
-								Keep the message concise and friendly.`,
-						messages: [...messages, ...response1.messages, ...response2.messages],
-						temperature: 0.7,
-						maxOutputTokens: 200,
-						toolChoice: "none",
-						stopWhen: stepCountIs(1),
-						experimental_transform: smoothStream({
-							delayInMs: 100,
-						}),
-					});
-
-					writer.merge(
-						result3.toUIMessageStream({
-							sendStart: false,
-						}),
-					);
-				}
-			},
-			onError: (error: unknown) => {
-				console.error("AI chat stream error:", error);
-				return error instanceof Error ? error.message : String(error);
-			},
-			onFinish: async (result) => {},
-		});
-
-		return createUIMessageStreamResponse({
-			stream,
-			headers: server_convex_headers_cors(),
-		});
-	} catch (error: unknown) {
-		console.error("AI chat stream error:", error);
-
-		if (error instanceof Error) {
-			return server_convex_response_error_server({
-				body: {
-					message: error.message,
-				},
-			});
-		}
-
-		return server_convex_response_error_server({
-			body: {
-				message: "Internal server error",
-			},
-		});
-	}
-});
-
-/**
- * HTTP Action for generating thread titles
- */
-export const thread_generate_title = httpAction(async (ctx, request) => {
-	try {
-		const body = await request.json();
-
-		if (body.assistant_id !== "system/thread_title") {
-			return server_convex_response_error_client({
-				body: {
-					message: "Invalid stream ID",
-				},
-			});
-		}
-
-		const messages = body.messages || [];
-		const thread_id = body.thread_id;
-
-		// Extract conversation text from messages for title generation
-		const conversation_text = messages
-			.map((msg: any) =>
-				[`${msg.role}:`, Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content]
-					.filter(Boolean)
-					.join(" "),
-			)
-			.filter(Boolean)
-			.join("\n");
-
-		// Generate title using AI with streaming
-		const result = streamText({
-			model: openai("gpt-4.1-nano"),
-			system: `Generate a concise, descriptive title (max 6 words) for this conversation.
-				The title should capture the main topic or purpose.
-				Respond with ONLY the title, no quotes or extra text.`,
-			messages: [
-				{
-					role: "user",
-					content: `Generate a title for this conversation:\n\n${conversation_text}`,
-				},
-			],
-			stopWhen: stepCountIs(1),
-			temperature: 0.3,
-			maxOutputTokens: 50,
-			experimental_transform: smoothStream({
-				delayInMs: 100,
-			}),
-		});
-
-		// Transform the AI stream to properly encode text chunks
-		let title = "";
-
-		// Trigger mutation when the stream is finished
-		const transform_stream = new TransformStream({
-			transform(chunk, controller) {
-				title += chunk;
-				controller.enqueue(chunk);
-			},
-			flush: async () => {
-				await ctx.runMutation(api.ai_chat.thread_update, {
-					threadId: thread_id,
-					title,
-				});
-			},
-		});
-
-		// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createTextStreamResponse`
-		const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
-
-		void result.consumeStream();
-
-		return new Response(stream, {
-			headers: server_convex_headers_cors(),
-		});
-	} catch (error: unknown) {
-		console.error("Title generation error:", error);
-
-		return server_convex_response_error_server({
-			body: {
-				message: error instanceof Error ? error.message : "Unknown error",
-			},
-		});
-	}
-});
-
 export const upsert_ai_pending_edit = internalMutation({
 	args: {
 		workspaceId: v.string(),
@@ -697,3 +341,471 @@ export const get_ai_pending_edit = query({
 		};
 	},
 });
+
+export function ai_chat_http_routes(router: RouterForConvexModules) {
+	return {
+		...((/* iife */ path = "/api/chat" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						/**
+						 * See {@link PrepareSendMessagesRequest}.
+						 *
+						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
+						 **/
+						const bodyValidator = z.object({
+							// AI SDK fields
+							id: z.string(),
+							messages: z.array(z.any()),
+							trigger: z.enum(["submit-message", "regenerate-message"]),
+							messageId: z.string().optional(),
+
+							// Assistant UI fields
+							system: z.string().optional(),
+							tools: z.record(z.string(), z.unknown()),
+
+							// Custom fields
+							threadId: z.string(),
+							parentId: z.string().optional(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							try {
+								const requestParseResult = await server_request_json_parse_and_validate(request, bodyValidator);
+
+								if (requestParseResult._nay) {
+									return {
+										status: 400,
+										body: requestParseResult._nay,
+									} as const;
+								}
+
+								const body = requestParseResult._yay;
+
+								// Validate messages from request
+								if (!Array.isArray(body.messages)) {
+									return {
+										status: 400,
+										body: {
+											message: "Invalid messages format",
+										},
+									} as const;
+								}
+
+								const threadId = body.threadId;
+								let messages: ModelMessage[] = [];
+
+								do {
+									if (threadId) {
+										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
+											threadId: threadId as app_convex_Id<"threads">,
+											order: "asc",
+										});
+
+										if (!threadMessagesResult) {
+											messages = convertToModelMessages(body.messages);
+											break;
+										}
+
+										const messagesMap = new Map<string, app_convex_Doc<"messages">>(
+											threadMessagesResult.messages.map((msg) => [msg._id, msg]),
+										);
+
+										const reconstructedMessages: app_convex_Doc<"messages">[] = [];
+
+										let nextParentId: app_convex_Id<"messages"> | null = null;
+										if (body.parentId) {
+											nextParentId = body.parentId as app_convex_Id<"messages">;
+										}
+
+										while (nextParentId) {
+											const parentMessage = messagesMap.get(nextParentId);
+											if (parentMessage) {
+												// the messages has to be from the oldest to the newest
+												reconstructedMessages.unshift(parentMessage);
+												nextParentId = parentMessage.parent_id;
+											} else {
+												console.warn(`Parent message not found: ${nextParentId}`);
+												break;
+											}
+										}
+
+										messages = convertToModelMessages(
+											reconstructedMessages
+												.map((msg) => convert_convex_db_message_to_aisdk_ui_message(msg))
+												.concat(...body.messages),
+										);
+									} else {
+										return {
+											status: 400,
+											body: {
+												message: "Thread ID is required",
+											},
+										} as const;
+									}
+								} while (0);
+
+								console.log("messages", {
+									messages: messages,
+									threadId,
+								});
+
+								const stream = createUIMessageStream({
+									generateId: createIdGenerator({
+										prefix: threadId,
+										separator: "-",
+										size: 16,
+									}),
+									execute: async ({ writer }) => {
+										const result1 = streamText({
+											model: openai("gpt-5-nano"),
+											system:
+												`Either respond directly to the user or use the tools at your disposal.\n` +
+												"If you decide to create an artifact, do not answer and just call the tool or answer with `On it...`.\n",
+											messages,
+											temperature: 0.7,
+											maxOutputTokens: 2000,
+											providerOptions: {
+												openai: {
+													reasoningEffort: "low",
+												},
+											},
+											toolChoice: "auto",
+											stopWhen: stepCountIs(5),
+											tools: {
+												weather: tool({
+													description: "Get the weather in a location (in Celsius)",
+													inputSchema: z.object({
+														location: z.string().describe("The location to get the weather for"),
+													}),
+													execute: async ({ location }) => ({
+														location,
+														temperature: "200°",
+													}),
+												}),
+												request_create_artifact: tool({
+													description:
+														"Request to create a text artifact that should be displayed in a separate panel.\n" +
+														"Use this when the user asks for:\n" +
+														"- Creating documents, articles, or stories\n" +
+														"- Generating markdown content\n" +
+														"- Any substantial text output that would benefit from being editable\n" +
+														"- Writing essays, reports, or long-form content\n",
+													inputSchema: z.object({}),
+													execute: async () => {
+														console.log("🎯 request_create_artifact tool called");
+														return { requested: true };
+													},
+												}),
+												read_page: ai_tool_create_read_page(ctx, { thread_id: threadId ?? "" }),
+												list_pages: ai_tool_create_list_pages(ctx),
+												glob_pages: ai_tool_create_glob_pages(ctx),
+												grep_pages: ai_tool_create_grep_pages(ctx, { thread_id: threadId ?? "" }),
+												text_search_pages: ai_tool_create_text_search_pages(ctx, { thread_id: threadId ?? "" }),
+												write_page: ai_tool_create_write_page(ctx, { thread_id: threadId ?? "" }),
+												edit_page: ai_tool_create_edit_page(ctx, { thread_id: threadId ?? "" }),
+											},
+											experimental_transform: smoothStream({
+												delayInMs: 100,
+											}),
+										});
+
+										writer.merge(
+											result1.toUIMessageStream({
+												sendFinish: false,
+											}),
+										);
+
+										const response1 = await result1.response;
+
+										const should_finish = !response1.messages.some(
+											(msg) =>
+												msg.role === "assistant" &&
+												Array.isArray(msg.content) &&
+												msg.content.some(
+													(content) => content.type === "tool-call" && content.toolName === "request_create_artifact",
+												),
+										);
+
+										if (should_finish) {
+											const finish_reason = await result1.finishReason;
+											const usage = await result1.usage;
+											writer.write({
+												type: "data-finish_message",
+												data: {
+													finishReason: finish_reason,
+													usage,
+												},
+											});
+										} else {
+											const artifact_id = crypto.randomUUID();
+											writer.write({
+												type: "data-artifact-id",
+												data: { id: artifact_id },
+											});
+
+											const result2 = streamText({
+												model: openai("gpt-5-nano"),
+												system: `Generate comprehensive, well-structured content that directly addresses what the user requested. 
+															Format the content as markdown when appropriate.`,
+												messages: [...messages, ...response1.messages],
+												toolChoice: "required",
+												stopWhen: stepCountIs(1),
+												temperature: 0.7,
+												maxOutputTokens: 2000,
+												tools: {
+													create_artifact: tool({
+														description:
+															"Create a text artifact that should be displayed in a separate panel " +
+															"Use this when the user asks for: " +
+															"- Creating documents, articles, or stories " +
+															"- Generating markdown content " +
+															"- Any substantial text output that would benefit from being editable " +
+															"- Writing essays, reports, or long-form content",
+														inputSchema: createArtifactArgsSchema,
+														execute: async (args) => {
+															console.log(`✅ Artifact created: ${args.title}`);
+															return {
+																done: true,
+															};
+														},
+													}),
+												},
+												experimental_transform: smoothStream({
+													delayInMs: 500,
+												}),
+											});
+
+											writer.merge(
+												result2.toUIMessageStream({
+													sendStart: false,
+													sendFinish: false,
+												}),
+											);
+
+											const response2 = await result2.response;
+
+											const result3 = streamText({
+												model: openai("gpt-5-nano"),
+												system: `Send a brief confirmation message to the user that the artifact has been created successfully. 
+															Keep the message concise and friendly.`,
+												messages: [...messages, ...response1.messages, ...response2.messages],
+												temperature: 0.7,
+												maxOutputTokens: 200,
+												toolChoice: "none",
+												stopWhen: stepCountIs(1),
+												experimental_transform: smoothStream({
+													delayInMs: 100,
+												}),
+											});
+
+											writer.merge(
+												result3.toUIMessageStream({
+													sendStart: false,
+												}),
+											);
+										}
+									},
+									onError: (error: unknown) => {
+										console.error("AI chat stream error:", error);
+										return error instanceof Error ? error.message : String(error);
+									},
+									onFinish: async (result) => {},
+								});
+
+								return {
+									status: 200,
+									body: stream,
+								} as const;
+							} catch (error: unknown) {
+								console.error("AI chat stream error:", error);
+
+								if (error instanceof Error) {
+									return {
+										status: 500,
+										body: {
+											message: error.message,
+										},
+									} as const;
+								}
+
+								return {
+									status: 500,
+									body: {
+										message: "Internal server error",
+									},
+								} as const;
+							}
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+
+								if (result.status === 200) {
+									return createUIMessageStreamResponse({
+										status: result.status,
+										stream: result.body,
+									});
+								}
+
+								return Response.json(result, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+
+		...((/* iife */ path = "/api/v1/runs/stream" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						/**
+						 * See {@link PrepareSendMessagesRequest}.
+						 *
+						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
+						 **/
+						const bodyValidator = z.object({
+							thread_id: z.string(),
+							assistant_id: z.string(),
+							messages: z.array(z.any()),
+							response_format: z.string().optional(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							try {
+								const body = await request.json();
+
+								if (body.assistant_id !== "system/thread_title") {
+									return {
+										status: 400,
+										body: {
+											message: "Invalid stream ID",
+										},
+									} as const;
+								}
+
+								const messages = body.messages || [];
+								const thread_id = body.thread_id;
+
+								// Extract conversation text from messages for title generation
+								const conversation_text = messages
+									.map((msg: any) =>
+										[
+											`${msg.role}:`,
+											Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content,
+										]
+											.filter(Boolean)
+											.join(" "),
+									)
+									.filter(Boolean)
+									.join("\n");
+
+								// Generate title using AI with streaming
+								const result = streamText({
+									model: openai("gpt-4.1-nano"),
+									system: `Generate a concise, descriptive title (max 6 words) for this conversation.
+										The title should capture the main topic or purpose.
+										Respond with ONLY the title, no quotes or extra text.`,
+									messages: [
+										{
+											role: "user",
+											content: `Generate a title for this conversation:\n\n${conversation_text}`,
+										},
+									],
+									stopWhen: stepCountIs(1),
+									temperature: 0.3,
+									maxOutputTokens: 50,
+									experimental_transform: smoothStream({
+										delayInMs: 100,
+									}),
+								});
+
+								// Transform the AI stream to properly encode text chunks
+								let title = "";
+
+								// Trigger mutation when the stream is finished
+								const transform_stream = new TransformStream({
+									transform(chunk, controller) {
+										title += chunk;
+										controller.enqueue(chunk);
+									},
+									flush: async () => {
+										await ctx.runMutation(api.ai_chat.thread_update, {
+											threadId: thread_id,
+											title,
+										});
+									},
+								});
+
+								// Pipe the AI textStream through the transformer, insprired by ai-sdk's `createTextStreamResponse`
+								const stream = result.textStream.pipeThrough(transform_stream).pipeThrough(new TextEncoderStream());
+
+								void result.consumeStream();
+
+								return {
+									status: 200,
+									body: stream,
+								} as const;
+							} catch (error: unknown) {
+								console.error("Title generation error:", error);
+
+								return {
+									status: 500,
+									body: {
+										message: error instanceof Error ? error.message : "Unknown error",
+									},
+								} as const;
+							}
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+
+								if (result.status === 200) {
+									return new Response(result.body, {
+										status: result.status,
+									});
+								}
+
+								return Response.json(result, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+	};
+}

@@ -1,7 +1,7 @@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.tsx";
 import { cn } from "@/lib/utils.ts";
-import { useAuth } from "@/lib/auth.ts";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
 import { usePresence, usePresenceList } from "../hooks/presence-hooks.ts";
 
@@ -20,17 +20,17 @@ export type OnlinePresenceIndicator_Props = React.ComponentProps<"button"> & {
 export function OnlinePresenceIndicator(props: OnlinePresenceIndicator_Props) {
 	const defaultRoomId = app_presence_GLOBAL_ROOM_ID;
 	const { id, className, roomId = defaultRoomId, children, ...rest } = props;
-	const auth = useAuth();
+	const authenticated = AppAuthProvider.useAuthenticated();
 
 	const presence = usePresence({
 		roomId,
-		userId: auth.userId ?? "",
+		userId: authenticated.userId,
 		disconnectOnDocumentHidden: false,
 	});
 
 	const presenceList = usePresenceList({
 		roomToken: presence.roomToken,
-		userId: auth.userId,
+		userId: authenticated.userId,
 	});
 
 	const users = presenceList ?? [];

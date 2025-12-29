@@ -1,4 +1,4 @@
-import { useRef, useMemo, useState, useEffect } from "react";
+import { useRef, useState, useEffect } from "react";
 import { tuple } from "../lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { Result } from "../lib/errors-as-values-utils.ts";
@@ -29,20 +29,27 @@ function is_update_function<T>(value: T | ((oldValue: T) => T)): value is (oldVa
  * @returns A tuple containing the state and the function to update it.
  */
 export function useLiveState<T>(initialValue: T) {
-	const [, setState] = useState(initialValue);
 	const ref = useRef(initialValue);
+	const [state, setState] = useState(initialValue);
 
-	return useMemo(
-		() =>
-			// eslint-disable-next-line react-hooks/refs
-			tuple(ref, (value: T | ((oldValue: T) => T)) => {
+	const [res] = useState(() =>
+		tuple(
+			ref,
+
+			(value: T | ((oldValue: T) => T)) => {
 				if (ref.current === value) return;
 				const newValue = is_update_function(value) ? value(ref.current) : value;
 				setState(newValue);
 				ref.current = newValue;
-			}),
-		[],
+			},
+			state,
+		),
 	);
+
+	// eslint-disable-next-line react-hooks/immutability
+	res[2] = state;
+
+	return res;
 }
 
 /**

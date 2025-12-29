@@ -1,5 +1,5 @@
 import "./page-editor.css";
-import { useAuth } from "@/lib/auth.ts";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
@@ -416,7 +416,7 @@ export type PageEditor_Props = {
 export function PageEditor(props: PageEditor_Props) {
 	const { ref: refProp, pageId, threadId } = props;
 
-	const auth = useAuth();
+	const authenticated = AppAuthProvider.useAuthenticated();
 
 	const [editorMode, setEditorMode] = useState<PageEditor_Mode>("rich");
 
@@ -432,7 +432,7 @@ export function PageEditor(props: PageEditor_Props) {
 	);
 
 	return pageId ? (
-		<PageEditorPresenceSupplier userId={auth.userId} pageId={pageId}>
+		<PageEditorPresenceSupplier userId={authenticated.userId} pageId={pageId}>
 			{({ presenceStore, onlineUsers }) => (
 				<PageEditor_Inner
 					pageId={pageId}

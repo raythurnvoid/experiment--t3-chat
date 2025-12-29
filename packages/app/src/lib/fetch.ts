@@ -1,6 +1,6 @@
 import type { api_schemas_MainPaths, api_schemas_Main } from "./api-schemas.ts";
 import type { LiteralUnion } from "type-fest";
-import { auth_get_token } from "./auth.ts";
+import { AppAuthProvider } from "../components/app-auth.tsx";
 import { delay, should_never_happen } from "./utils.ts";
 import { Result } from "./errors-as-values-utils.ts";
 
@@ -12,9 +12,43 @@ if (!convex_http_url) {
 	throw new Error("`VITE_CONVEX_HTTP_URL` env var is not set");
 }
 
+export async function app_fetch_auth_anonymous(
+	args?: api_schemas_Main["/api/auth/anonymous"]["POST"]["body"] & { signal?: AbortSignal },
+) {
+	const url = app_fetch_main_api_url("/api/auth/anonymous");
+
+	return await app_fetch_json<api_schemas_Main["/api/auth/anonymous"]["POST"]["response"][200]["body"]>({
+		url,
+		method: "POST",
+		auth: false,
+		body: args?.token ? { token: args.token } : {},
+		signal: args?.signal,
+	});
+}
+
+export async function app_fetch_auth_resolve_user(
+	args: api_schemas_Main["/api/auth/resolve-user"]["POST"]["body"] & {
+		token: string;
+		signal?: AbortSignal;
+	},
+) {
+	const url = app_fetch_main_api_url("/api/auth/resolve-user");
+
+	return await app_fetch_json<api_schemas_Main["/api/auth/resolve-user"]["POST"]["response"][200]["body"]>({
+		url,
+		method: "POST",
+		auth: false,
+		headers: {
+			Authorization: `Bearer ${args.token}`,
+		},
+		body: args.anonymousUserToken ? { anonymousUserToken: args.anonymousUserToken } : {},
+		signal: args.signal,
+	});
+}
+
 export async function app_fetch_main_chat(
 	args: app_fetch_StreamArgs & {
-		input: api_schemas_Main["/api/chat"]["get"]["body"];
+		input: api_schemas_Main["/api/chat"]["POST"]["body"];
 	},
 ) {
 	const url = app_fetch_main_api_url("/api/chat");
@@ -28,7 +62,7 @@ export async function app_fetch_main_chat(
 
 export async function app_fetch_stream_runs(
 	args: app_fetch_StreamArgs & {
-		input: api_schemas_Main["/api/v1/runs/stream"]["post"]["body"];
+		input: api_schemas_Main["/api/v1/runs/stream"]["POST"]["body"];
 	},
 ) {
 	const url = app_fetch_main_api_url("/api/v1/runs/stream");
@@ -115,7 +149,7 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 	}
 
 	if (auth) {
-		const token = await auth_get_token();
+		const token = await AppAuthProvider.getToken();
 
 		if (token) {
 			headers.set("Authorization", `Bearer ${token}`);
@@ -240,7 +274,7 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 	}
 
 	if (auth) {
-		const token = await auth_get_token();
+		const token = await AppAuthProvider.getToken();
 
 		if (token) {
 			headers.set("Authorization", `Bearer ${token}`);

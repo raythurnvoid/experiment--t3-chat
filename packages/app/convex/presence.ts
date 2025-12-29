@@ -29,12 +29,22 @@ export const heartbeat = mutation({
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
 
 		if (result.isNewSession) {
-			await ctx.runMutation(components.presence.public.setSessionData, {
-				sessionToken: result.sessionToken,
-				data: {
-					color: "#" + Math.floor(Math.random() * 16777215).toString(16),
-				},
-			});
+			await Promise.all([
+				ctx.runMutation(components.presence.public.setSessionData, {
+					sessionToken: result.sessionToken,
+					data: {
+						color: "#" + Math.floor(Math.random() * 16777215).toString(16),
+					},
+				}),
+				ctx.runMutation(components.presence.public.setUserData, {
+					userId: user.id,
+					roomToken: result.roomToken,
+					data: {
+						name: user.name,
+						image: user.avatar,
+					},
+				}),
+			]);
 		}
 
 		return result;
@@ -48,8 +58,6 @@ export const list = query({
 			userId: v.string(),
 			online: v.boolean(),
 			lastDisconnected: v.number(),
-			name: v.string(),
-			image: v.string(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -59,8 +67,6 @@ export const list = query({
 			userId: user.userId,
 			online: user.online,
 			lastDisconnected: user.lastDisconnected,
-			name: "",
-			image: "",
 		}));
 	},
 });

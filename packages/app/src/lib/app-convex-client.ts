@@ -22,7 +22,17 @@ if (!app_convex_deployment_url) {
 	throw new Error("`VITE_CONVEX_URL` env var is not set");
 }
 
-export const app_convex = new ConvexReactClient(app_convex_deployment_url);
+export const app_convex = new ConvexReactClient(app_convex_deployment_url, {
+	logger: {
+		error: console.error,
+		warn: console.warn,
+		log: console.info,
+		logVerbose: () => {}, // console.debug
+	},
+	onServerDisconnectError: (message) => {
+		console.error("app_convex: Convex server disconnected:", message);
+	},
+});
 
 export { api as app_convex_api } from "../../convex/_generated/api.js";
 

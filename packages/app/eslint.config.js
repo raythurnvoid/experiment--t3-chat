@@ -193,10 +193,39 @@ export default defineConfig(
 		rules: {
 			"react-refresh/only-export-components": ["error", { allowConstantExport: true }],
 
-			// React Hooks rules - customize as needed for your project
+			// React Hooks rules
 			"react-hooks/exhaustive-deps": "off",
-			"react-hooks/set-state-in-effect": "off",
 			"react-hooks/no-unused-directives": "off",
+			"react-hooks/rules-of-hooks": "error",
+
+			// React Compiler
+			"react-hooks/automatic-effect-dependencies": "error",
+			"react-hooks/capitalized-calls": "error",
+			"react-hooks/config": "error",
+			"react-hooks/error-boundaries": "error",
+			"react-hooks/component-hook-factories": "error",
+			"react-hooks/fbt": "error",
+			"react-hooks/fire": "error",
+			"react-hooks/gating": "error",
+			"react-hooks/globals": "error",
+			"react-hooks/hooks": "error",
+			"react-hooks/immutability": "error",
+			"react-hooks/invariant": "error",
+			"react-hooks/memoized-effect-dependencies": "error",
+			"react-hooks/no-deriving-state-in-effects": "error",
+			"react-hooks/preserve-manual-memoization": "error",
+			"react-hooks/purity": "error",
+			"react-hooks/refs": "error",
+			"react-hooks/rule-suppression": "error",
+			"react-hooks/set-state-in-effect": "off",
+			"react-hooks/set-state-in-render": "error",
+			"react-hooks/static-components": "error",
+			"react-hooks/syntax": "error",
+			"react-hooks/unsupported-syntax": "error",
+			"react-hooks/todo": "error",
+			"react-hooks/use-memo": "error",
+			"react-hooks/void-use-memo": "error",
+			"react-hooks/incompatible-library": "warn",
 		},
 	},
 

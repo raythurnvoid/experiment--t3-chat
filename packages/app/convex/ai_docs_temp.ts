@@ -12,23 +12,21 @@ import {
 	query,
 	type QueryCtx,
 	type MutationCtx,
+	type ActionCtx,
 	internalMutation,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { paginationOptsValidator } from "convex/server";
+import { paginationOptsValidator, type RouteSpec } from "convex/server";
 import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
 	server_path_extract_segments_from,
 	server_convex_get_user_fallback_to_anonymous,
-	server_convex_headers_cors,
 	server_request_json_parse_and_validate,
-	server_convex_response_error_client,
-	server_convex_response_error_server,
 	encode_path_segment,
 } from "../server/server-utils.ts";
 import { v, type Infer } from "convex/values";
-import { api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -56,115 +54,8 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
-
-export const contextual_prompt = httpAction(async (ctx, request) => {
-	try {
-		const bodyResult = await server_request_json_parse_and_validate(
-			request,
-			api_schemas_Main_api_ai_docs_temp_contextual_prompt_body_schema,
-		);
-		if (bodyResult._nay) {
-			return server_convex_response_error_client({
-				body: bodyResult._nay,
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		const { prompt, option, command } = bodyResult._yay;
-
-		if (!prompt || typeof prompt !== "string") {
-			return server_convex_response_error_client({
-				body: {
-					message: "Invalid prompt",
-				},
-				headers: server_convex_headers_cors(),
-			});
-		}
-
-		// Create appropriate system and user prompts based on option (matching liveblocks pattern)
-		let systemPrompt = "";
-		let userPrompt = "";
-
-		switch (option) {
-			case "continue":
-				systemPrompt =
-					"You are an AI writing assistant that continues existing text based on context from prior text. " +
-					"Give more weight/priority to the later characters than the beginning ones. " +
-					"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
-					"Use Markdown formatting when appropriate.";
-				userPrompt = prompt;
-				break;
-			case "improve":
-				systemPrompt =
-					"You are an AI writing assistant that improves existing text. " +
-					"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
-					"Use Markdown formatting when appropriate.";
-				userPrompt = `The existing text is: ${prompt}`;
-				break;
-			case "shorter":
-				systemPrompt =
-					"You are an AI writing assistant that shortens existing text. " + "Use Markdown formatting when appropriate.";
-				userPrompt = `The existing text is: ${prompt}`;
-				break;
-			case "longer":
-				systemPrompt =
-					"You are an AI writing assistant that lengthens existing text. " +
-					"Use Markdown formatting when appropriate.";
-				userPrompt = `The existing text is: ${prompt}`;
-				break;
-			case "fix":
-				systemPrompt =
-					"You are an AI writing assistant that fixes grammar and spelling errors in existing text. " +
-					"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
-					"Use Markdown formatting when appropriate.";
-				userPrompt = `The existing text is: ${prompt}`;
-				break;
-			case "zap":
-				systemPrompt =
-					"You area an AI writing assistant that generates text based on a prompt. " +
-					"You take an input from the user and a command for manipulating the text. " +
-					"Use Markdown formatting when appropriate.";
-				userPrompt = `For this text: ${prompt}. You have to respect the command: ${command}`;
-				break;
-			default:
-				systemPrompt = "You are an AI writing assistant. Help with the given text based on the user's needs.";
-				userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
-		}
-
-		// Generate streaming completion using AI SDK v5 UI message stream response
-		const result = streamText({
-			model: openai("gpt-5-mini"),
-			system: systemPrompt,
-			messages: [
-				{
-					role: "user",
-					content: userPrompt,
-				},
-			],
-			temperature: 0.7,
-			maxOutputTokens: 500,
-			experimental_transform: smoothStream({
-				delayInMs: 100,
-			}),
-		});
-
-		return result.toUIMessageStreamResponse({
-			onError: (error) => {
-				console.error("AI generation error:", error);
-				return error instanceof Error ? error.message : String(error);
-			},
-			headers: server_convex_headers_cors(),
-		});
-	} catch (error: unknown) {
-		console.error("AI generation error:", error);
-		return server_convex_response_error_server({
-			body: {
-				message: error instanceof Error ? error.message : "Internal server error",
-			},
-			headers: server_convex_headers_cors(),
-		});
-	}
-});
+import { z } from "zod";
+import type { RouterForConvexModules } from "./http.ts";
 
 async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string; project_id: string; path: string }) {
 	if (args.path === "/") return null;
@@ -291,7 +182,6 @@ const get_tree_items_list_validator = v.array(
 		index: v.string(),
 		parentId: v.string(),
 		title: v.string(),
-		content: v.string(),
 		isArchived: v.boolean(),
 		updatedAt: v.number(),
 		updatedBy: v.string(),
@@ -323,7 +213,6 @@ export const get_tree_items_list = query({
 				index: pages_ROOT_ID,
 				parentId: "",
 				title: "Pages",
-				content: "",
 				isArchived: false,
 				updatedAt: Date.now(),
 				updatedBy: "system",
@@ -336,7 +225,6 @@ export const get_tree_items_list = query({
 						index: page.page_id,
 						parentId: page.parent_id,
 						title: page.name || "Untitled",
-						content: `<h1>${page.name || "Untitled"}</h1><p>Start writing your content here...</p>`,
 						isArchived: page.is_archived,
 						updatedAt: page.updated_at,
 						updatedBy: page.updated_by,
@@ -1928,3 +1816,158 @@ export const cleanup_old_snapshots = internalMutation({
 		return null;
 	},
 });
+
+export function pages_http_routes(router: RouterForConvexModules) {
+	return {
+		...((/* iife */ path = "/api/ai-docs-temp/contextual-prompt" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							prompt: z.string(),
+							option: z.string().optional(),
+							command: z.string().optional(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							try {
+								const bodyResult = await server_request_json_parse_and_validate(request, bodyValidator);
+								if (bodyResult._nay) {
+									return {
+										status: 400,
+										body: bodyResult._nay,
+									} as const;
+								}
+
+								const { prompt, option, command } = bodyResult._yay;
+
+								if (!prompt || typeof prompt !== "string") {
+									return {
+										status: 400,
+										body: {
+											message: "Invalid prompt",
+										},
+									} as const;
+								}
+
+								// Create appropriate system and user prompts based on option (matching liveblocks pattern)
+								let systemPrompt = "";
+								let userPrompt = "";
+
+								switch (option) {
+									case "continue":
+										systemPrompt =
+											"You are an AI writing assistant that continues existing text based on context from prior text. " +
+											"Give more weight/priority to the later characters than the beginning ones. " +
+											"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+											"Use Markdown formatting when appropriate.";
+										userPrompt = prompt;
+										break;
+									case "improve":
+										systemPrompt =
+											"You are an AI writing assistant that improves existing text. " +
+											"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+											"Use Markdown formatting when appropriate.";
+										userPrompt = `The existing text is: ${prompt}`;
+										break;
+									case "shorter":
+										systemPrompt =
+											"You are an AI writing assistant that shortens existing text. " +
+											"Use Markdown formatting when appropriate.";
+										userPrompt = `The existing text is: ${prompt}`;
+										break;
+									case "longer":
+										systemPrompt =
+											"You are an AI writing assistant that lengthens existing text. " +
+											"Use Markdown formatting when appropriate.";
+										userPrompt = `The existing text is: ${prompt}`;
+										break;
+									case "fix":
+										systemPrompt =
+											"You are an AI writing assistant that fixes grammar and spelling errors in existing text. " +
+											"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+											"Use Markdown formatting when appropriate.";
+										userPrompt = `The existing text is: ${prompt}`;
+										break;
+									case "zap":
+										systemPrompt =
+											"You area an AI writing assistant that generates text based on a prompt. " +
+											"You take an input from the user and a command for manipulating the text. " +
+											"Use Markdown formatting when appropriate.";
+										userPrompt = `For this text: ${prompt}. You have to respect the command: ${command}`;
+										break;
+									default:
+										systemPrompt =
+											"You are an AI writing assistant. Help with the given text based on the user's needs.";
+										userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
+								}
+
+								// Generate streaming completion using AI SDK v5 UI message stream response
+								const result = streamText({
+									model: openai("gpt-5-mini"),
+									system: systemPrompt,
+									messages: [
+										{
+											role: "user",
+											content: userPrompt,
+										},
+									],
+									temperature: 0.7,
+									maxOutputTokens: 500,
+									experimental_transform: smoothStream({
+										delayInMs: 100,
+									}),
+								});
+
+								return {
+									status: 200,
+									body: result,
+								} as const;
+							} catch (error: unknown) {
+								console.error("AI generation error:", error);
+								return {
+									status: 500,
+									body: {
+										message: error instanceof Error ? error.message : "Internal server error",
+									},
+								} as const;
+							}
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+
+								if (result.status === 200) {
+									return result.body.toUIMessageStreamResponse({
+										onError: (error) => {
+											console.error("AI generation error:", error);
+											return error instanceof Error ? error.message : String(error);
+										},
+									});
+								}
+
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+	};
+}

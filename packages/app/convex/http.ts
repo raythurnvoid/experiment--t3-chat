@@ -1,71 +1,33 @@
-import { httpRouter } from "convex/server";
-import { chat, thread_generate_title } from "./ai_chat.ts";
-import type { api_schemas_MainPaths } from "../shared/api-schemas.ts";
+import { HttpRouter, httpRouter } from "convex/server";
+import { ai_chat_http_routes } from "./ai_chat.ts";
 import { httpAction } from "./_generated/server.js";
-import { server_convex_headers_preflight_cors } from "../server/server-utils.ts";
-import { contextual_prompt } from "./ai_docs_temp.ts";
+import { pages_http_routes } from "./ai_docs_temp.ts";
+import { users_http_routes } from "./users.ts";
+import { corsRouter } from "convex-helpers/server/cors";
+
+if (!process.env.ALLOWED_ORIGINS) {
+	throw new Error("`ALLOWED_ORIGINS` env var is not set in Convex env");
+}
+
+/** Comma separated list of allowed origins for CORS */
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS;
 
 const http = httpRouter();
 
-// AI chat streaming endpoint
-http.route({
-	path: "/api/chat" satisfies api_schemas_MainPaths,
-	method: "POST",
-	handler: chat,
-});
-http.route({
-	path: "/api/chat" satisfies api_schemas_MainPaths,
-	method: "OPTIONS",
-	handler: httpAction(async () => {
-		return new Response(null, {
-			headers: server_convex_headers_preflight_cors(),
-		});
-	}),
+const appCors = corsRouter(http, {
+	allowedOrigins: ALLOWED_ORIGINS.split(","),
+	allowedHeaders: ["Authorization", "Content-Type"],
 });
 
-// Thread title generation endpoint
-http.route({
-	path: "/api/v1/runs/stream" satisfies api_schemas_MainPaths,
-	method: "POST",
-	handler: thread_generate_title,
-});
-http.route({
-	path: "/api/v1/runs/stream" satisfies api_schemas_MainPaths,
-	method: "OPTIONS",
-	handler: httpAction(async () => {
-		return new Response(null, {
-			headers: server_convex_headers_preflight_cors(),
-		});
-	}),
-});
+export type RouterForConvexModules = {
+	route: HttpRouter["route"];
+};
 
-// AI Docs Temp endpoints
-http.route({
-	path: "/api/ai-docs-temp/contextual-prompt",
-	method: "POST",
-	handler: contextual_prompt,
-});
-http.route({
-	path: "/api/ai-docs-temp/contextual-prompt",
-	method: "OPTIONS",
-	handler: httpAction(async () => {
-		return new Response(null, {
-			headers: server_convex_headers_preflight_cors(),
-		});
-	}),
-});
+users_http_routes(appCors);
+ai_chat_http_routes(appCors);
+pages_http_routes(appCors);
 
-http.route({
-	path: "/api/ai-docs-temp/users",
-	method: "OPTIONS",
-	handler: httpAction(async () => {
-		return new Response(null, {
-			headers: server_convex_headers_preflight_cors(),
-		});
-	}),
-});
-
-http.route({
+appCors.route({
 	path: "/getMessagesByAuthor",
 	method: "GET",
 	handler: httpAction(async () => {

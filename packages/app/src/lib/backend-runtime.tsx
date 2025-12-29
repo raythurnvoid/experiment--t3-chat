@@ -4,7 +4,7 @@ import { api } from "../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_PROJECT_ID } from "./ai-chat.ts";
 import { app_convex } from "./app-convex-client.ts";
 import { app_fetch_main_api_url } from "./fetch.ts";
-import { auth_get_token } from "./auth.ts";
+import { AppAuthProvider } from "../components/app-auth.tsx";
 import type { api_schemas_Main } from "./api-schemas.ts";
 import type { Tool as assistant_ui_Tool, AssistantRuntime } from "@assistant-ui/react";
 
@@ -44,7 +44,7 @@ export const useBackendRuntime = () => {
 	// 	cloud: assistant_cloud,
 	// 	credentials: "omit",
 	// 	headers: async () => {
-	// 		const token = await auth_get_token();
+	// 		const token = await AppAuthProvider.auth_get_token();
 
 	// 		const headers = new Headers();
 	// 		if (token) {
@@ -73,7 +73,7 @@ export const useBackendRuntime = () => {
 				const headers = new Headers(options.headers);
 				headers.set("Accept", "text/event-stream");
 
-				const token = await auth_get_token();
+				const token = await AppAuthProvider.getToken();
 				if (token) {
 					headers.set("Authorization", `Bearer ${token}`);
 				}

@@ -1,14 +1,14 @@
+import "./app.css";
+// Import the generated route tree
+import { routeTree } from "./routeTree.gen.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { app_convex } from "./lib/app-convex-client.ts";
-import { ClerkProvider, useAuth } from "@clerk/clerk-react";
-import { ConvexProviderWithClerk } from "convex/react-clerk";
+import { ClerkProvider } from "@clerk/clerk-react";
 import { ThemeProvider } from "./components/theme-provider.tsx";
-import "./app.css";
-
-// Import the generated route tree
-import { routeTree } from "./routeTree.gen.ts";
+import { ConvexProviderWithAuth } from "convex/react";
+import { AppAuthProvider } from "./components/app-auth.tsx";
 
 // Create a new router instance
 const router = createRouter({ routeTree });
@@ -31,9 +31,11 @@ createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ThemeProvider>
 			<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
-				<ConvexProviderWithClerk client={app_convex} useAuth={useAuth}>
-					<RouterProvider router={router} />
-				</ConvexProviderWithClerk>
+				<AppAuthProvider>
+					<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useAuth}>
+						<RouterProvider router={router} />
+					</ConvexProviderWithAuth>
+				</AppAuthProvider>
 			</ClerkProvider>
 		</ThemeProvider>
 	</StrictMode>,

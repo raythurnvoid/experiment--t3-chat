@@ -1,29 +1,11 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
-import { auth_ANONYMOUS_USER_ID } from "../shared/shared-auth-constants.ts";
 import { Result, Result_try_promise } from "../shared/errors-as-values-utils.ts";
 import type z from "zod";
+import type { Id } from "../convex/_generated/dataModel";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
 if (!ALLOWED_ORIGINS) {
 	throw new Error("`ALLOWED_ORIGINS` env var is not set");
-}
-
-export function server_convex_headers_preflight_cors() {
-	const headers = new Headers();
-	headers_append_cors_preflight_headers(headers);
-	return headers;
-}
-
-export function server_convex_headers_cors() {
-	const headers = new Headers();
-	headers_append_cors_headers(headers);
-	return headers;
-}
-
-export function server_convex_headers_error_response() {
-	const headers = new Headers();
-	headers_append_error_response_headers(headers);
-	return headers;
 }
 
 type ConvexCtx = GenericMutationCtx<any> | GenericQueryCtx<any> | GenericActionCtx<any>;
@@ -34,83 +16,31 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 		throw new Error("Failed to get user identity", { cause: userIdentityResult._nay });
 	}
 
-	if (userIdentityResult._yay) {
-		const sub = userIdentityResult._yay.tokenIdentifier.slice(userIdentityResult._yay.tokenIdentifier.indexOf("|") + 1);
-		const userId = sub.slice(sub.indexOf("_") + 1);
-
-		return {
-			isAnonymous: false,
-			id: userIdentityResult._yay.tokenIdentifier,
-			name: userIdentityResult._yay.name || userIdentityResult._yay.nickname || `User ${userId}`,
-			avatar: userIdentityResult._yay.pictureUrl || "https://via.placeholder.com/32",
-		};
-	} else {
-		// TODO: this should be randomized once per session
-		const randomId = "randomId";
-
-		return {
-			isAnonymous: true,
-			id: `${auth_ANONYMOUS_USER_ID}_${randomId}`,
-			name: `Anonymous User ${randomId}`,
-			avatar: "https://via.placeholder.com/32",
-		};
+	if (!userIdentityResult._yay) {
+		throw new Error("Unauthenticated");
 	}
-}
 
-function headers_append_cors_preflight_headers(headers: Headers) {
-	headers_append_cors_headers(headers);
-	headers.append("Access-Control-Allow-Headers", "Authorization, Content-Type");
-}
+	const isAnonymous = userIdentityResult._yay.issuer === process.env.VITE_CONVEX_HTTP_URL;
 
-function headers_append_cors_headers(headers: Headers) {
-	headers.append("Access-Control-Allow-Origin", ALLOWED_ORIGINS);
-}
+	let userId;
 
-function headers_append_error_response_headers(headers: Headers) {
-	headers_append_cors_headers(headers);
-	headers.append("Content-Type", "application/json; charset=utf-8");
-}
-
-export function server_convex_response_error(args: {
-	body: Result<{ _nay: any }>["_nay"];
-	status?: number;
-	headers?: Record<string, string> | Headers;
-}) {
-	const headers = server_convex_headers_error_response();
-	if (args?.headers) {
-		for (const [key, value] of Object.entries(args.headers)) {
-			headers.append(key, value);
+	if (isAnonymous) {
+		// For anonymous users, the subject is the Convex user id
+		userId = userIdentityResult._yay.subject as Id<"users">;
+	} else {
+		// For Clerk users, the external_id is the Clerk user id
+		userId = userIdentityResult._yay["external_id"] as Id<"users">;
+		if (!userId) {
+			throw new Error("Missing `external_id` in signed-in user JWT");
 		}
 	}
 
-	return new Response(JSON.stringify(args.body), {
-		headers,
-		status: args?.status ?? 500,
-	});
-}
-
-export function server_convex_response_error_server(args: {
-	body: Result<{ _nay: any }>["_nay"];
-	headers?: Record<string, string> | Headers;
-}) {
-	return server_convex_response_error({ body: args.body, status: 500 });
-}
-
-export function server_convex_response_error_client(args: {
-	body: Result<{ _nay: any }>["_nay"];
-	headers?: Record<string, string> | Headers;
-}) {
-	return server_convex_response_error({ body: args.body, status: 400 });
-}
-
-export function server_convex_response_success_json(args: {
-	body: Result<{ _yay: any }>["_yay"];
-	headers?: Record<string, string> | Headers;
-}) {
-	return new Response(JSON.stringify(args.body), {
-		headers: args.headers,
-		status: 200,
-	});
+	return {
+		isAnonymous,
+		id: userId,
+		name: isAnonymous ? `Anonymous user ${userId}` : userIdentityResult._yay.name || `User ${userId}`,
+		avatar: userIdentityResult._yay.pictureUrl || "https://via.placeholder.com/32",
+	};
 }
 
 export function server_path_extract_segments_from(path: string): string[] {
@@ -162,7 +92,7 @@ export async function server_request_json_parse_and_validate<T>(request: Request
 			});
 		}
 
-		return Result({ _yay: schema.parse(json) });
+		return Result({ _yay: parseResult.data });
 	} catch (error) {
 		return Result({
 			_nay: {

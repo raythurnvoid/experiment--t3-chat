@@ -223,14 +223,18 @@ type pages_PresenceStore_SessionData = {
 		[key: string]: unknown;
 	} | null;
 	yjs_clientId?: number;
-	name: string;
 	color: string;
+};
+
+type pages_PresenceStore_UserData = {
+	name: string;
 };
 
 export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Event["__map"]> {
 	sessionIdUserIdMap = new Map<string, string>();
 	sessionIds = new Set<string>();
 	presenceData = new Map<string, pages_PresenceStore_SessionData>();
+	usersData = new Map<string, pages_PresenceStore_UserData>();
 	localSessionId: string;
 	localSessionToken: string;
 
@@ -252,8 +256,11 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 			this.sessionIdUserIdMap.set(session.sessionId, session.userId);
 			this.sessionIds.add(session.sessionId);
 
+			this.usersData.set(session.userId, {
+				name: args.data.usersRoomData[session.userId]?.name,
+			});
+
 			this.presenceData.set(session.sessionId, {
-				name: session.userId,
 				color: args.data.sessionsData[session.sessionId]?.color,
 				yjs_data: args.data.sessionsData[session.sessionId]?.yjs_data,
 				yjs_clientId: args.data.sessionsData[session.sessionId]?.yjs_clientId,
@@ -286,7 +293,6 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 			const setData = () => {
 				this.localSessionToken = newData.sessionToken;
 				this.presenceData.set(newSession.sessionId, {
-					name: newSession.userId,
 					color: newData.sessionsData[newSession.sessionId]?.color,
 					yjs_data: newData.sessionsData[newSession.sessionId]?.yjs_data,
 					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
@@ -301,7 +307,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 				if (!oldPresenceData) throw should_never_happen("oldData is undefined");
 
 				const newPresenceData = {
-					name: newData.sessionsData[newSession.sessionId]?.name,
+					name: newData.usersRoomData[newSession.userId]?.name,
 					color: newData.sessionsData[newSession.sessionId]?.color,
 					yjs_data: newData.sessionsData[newSession.sessionId]?.yjs_data,
 					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
