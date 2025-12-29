@@ -13,10 +13,7 @@ function Layout() {
 	useEffect(() => {
 		auth_set_token_manager({
 			is_authenticated: () => auth.isAuthenticated ?? false,
-			get_token_for_convex: () =>
-				auth.getToken({
-					template: "convex",
-				}),
+			get_token_for_convex: () => auth.getToken(),
 		});
 	}, [auth]);
 

@@ -1,4 +1,6 @@
 import { useAuth as useClerkAuth } from "@clerk/clerk-react";
+import { useEffect, useEffectEvent, useRef } from "react";
+import { Result } from "./errors-as-values-utils.ts";
 
 interface AuthTokenManager {
 	is_authenticated: () => boolean;
@@ -49,15 +51,92 @@ export function auth_set_token_manager(retriever: AuthTokenManager) {
 	auth_token_manager.resolve(retriever);
 }
 
-export type useAuth_Value = ReturnType<typeof useAuth>;
+async function auth_get_anonymous_convex_token(args?: { skipCache?: boolean }) {
+	// TODO: implement (custom-jwt flow). Must NOT require Clerk auth.
+	// Return a JWT string or null on failure.
+	return null;
+}
 
 export function useAuth() {
-	const clerk_auth = useClerkAuth();
+	const clerkAuth = useClerkAuth();
+
+	const clerkAuthIsLoadedDeferred = useRef(
+		Promise.withResolvers<
+			| Result<{ _yay: null }>
+			| Result<{ _nay: { name: "nay_abort"; message: "Clerk auth is not loaded after 10 seconds" } }>
+		>(),
+	);
+	const clerkAuthIsLoadedTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+	useEffect(() => {
+		if (clerkAuth.isLoaded) {
+			clerkAuthIsLoadedDeferred.current.resolve(Result({ _yay: null }));
+		}
+	}, [clerkAuth.isLoaded]);
+
+	async function getToken(options?: { skipCache?: boolean }) {
+		const clerkAuthIsLoadedResult = await clerkAuthIsLoadedDeferred.current.promise;
+
+		if (clerkAuthIsLoadedResult._nay) {
+			throw new Error(clerkAuthIsLoadedResult._nay.message);
+		}
+
+		let result;
+
+		if (clerkAuth.isSignedIn) {
+			result = await clerkAuth.getToken({
+				template: "convex",
+				skipCache: options?.skipCache,
+			});
+		} else {
+			result = await auth_get_anonymous_convex_token({ skipCache: options?.skipCache });
+		}
+
+		return result;
+	}
+
+	/**
+	 * Same as `getToken` but in convex auth format.
+	 */
+	function fetchAccessToken(options: { forceRefreshToken: boolean }) {
+		return getToken({ skipCache: options.forceRefreshToken });
+	}
+
+	const handleMount = useEffectEvent(() => {
+		clerkAuthIsLoadedTimeout.current = setTimeout(() => {
+			clerkAuthIsLoadedDeferred.current.resolve(
+				Result({ _nay: { name: "nay_abort", message: "Clerk auth is not loaded after 10 seconds" } }),
+			);
+		}, 10_000);
+
+		return () => {
+			if (clerkAuthIsLoadedTimeout.current) {
+				clearTimeout(clerkAuthIsLoadedTimeout.current);
+			}
+		};
+	});
+
+	const handleClerkIsLoadedChange = useEffectEvent(() => {
+		if (clerkAuth.isLoaded) {
+			clerkAuthIsLoadedDeferred.current.resolve(Result({ _yay: null }));
+			if (clerkAuthIsLoadedTimeout.current) {
+				clearTimeout(clerkAuthIsLoadedTimeout.current);
+			}
+		}
+	});
+
+	useEffect(handleMount, []);
+	useEffect(handleClerkIsLoadedChange, [clerkAuth.isLoaded]);
 
 	return {
-		userId: clerk_auth.userId,
-		isAuthenticated: clerk_auth.isSignedIn,
-		isLoaded: clerk_auth.isLoaded,
-		getToken: clerk_auth.getToken,
+		userId: clerkAuth.userId,
+		isAuthenticated: clerkAuth.isSignedIn,
+		isLoading: !clerkAuth.isLoaded,
+		isLoaded: clerkAuth.isLoaded,
+		getToken,
+		/**
+		 * Same as `getToken` but in convex auth format.
+		 */
+		fetchAccessToken,
 	};
 }
