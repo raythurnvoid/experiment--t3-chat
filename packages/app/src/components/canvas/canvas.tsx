@@ -1,11 +1,7 @@
 import { useRef } from "react";
 import { QuickStart } from "./quick-start.tsx";
 import { PageEditor, type PageEditor_Ref } from "../page-editor/page-editor.tsx";
-import {
-	global_event_ai_chat_open_canvas,
-	global_event_ai_chat_open_canvas_by_path,
-	useGlobalEvent,
-} from "@/lib/global-events.tsx";
+import { useGlobalEvent } from "@/lib/global-event.tsx";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
@@ -22,7 +18,9 @@ export function Canvas() {
 
 	const renderPromise = useRenderPromise();
 
-	useGlobalEvent(global_event_ai_chat_open_canvas.listen, (payload) => {
+	useGlobalEvent("ai_chat::open_canvas", (e) => {
+		const payload = e.detail;
+
 		// Debounce the event handling to prevent concurrent calls to create issues.
 		clearTimeout(openCanvasGlobalEventDebounce.current);
 
@@ -58,7 +56,9 @@ export function Canvas() {
 		});
 	});
 
-	useGlobalEvent(global_event_ai_chat_open_canvas_by_path.listen, (payload) => {
+	useGlobalEvent("ai_chat::open_canvas_by_path", (e) => {
+		const payload = e.detail;
+
 		clearTimeout(openCanvasGlobalEventDebounce.current);
 		openCanvasGlobalEventDebounce.current = globalThis.setTimeout(async () => {
 			try {

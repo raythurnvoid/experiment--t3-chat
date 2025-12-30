@@ -1,156 +1,125 @@
 ---
 description: Guidelines for creating and using global events in the application. These events enable cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application. To be used when creating new global events, modifying existing ones or when you need to use (listen and dispatch) global events in a React component but also outside of React components.
 globs:
+  - packages/app/src/lib/global-event.tsx
+  - packages/app/src/components/**/*.tsx
 alwaysApply: false
 ---
 
-# Global Events Guidelines
+Global Events Guidelines
 
 Global events are used for cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application.
 
-## Core Patterns
+# Overview
 
-The global events system lives at `packages/app/src/lib/global-events.tsx` and exposes:
+The global events system lives at [global-event.tsx](mdc:packages/app/src/lib/global-event.tsx) and is built on a typed `Event` subclass (`XCustomEvent`).
 
-- `global_event`: Core namespace with `dispatch` and `listen`
-- `useGlobalEvent`: React hook that safely subscribes with fresh handlers via `useLiveRef`
-- Per-event namespaces (e.g., `global_event_ai_chat_open_canvas`) that wrap `global_event`
+It exposes:
 
-### Core API
+- `global_event_Event`: the canonical type map of event keys → `detail` payload types
+- `global_event_dispatch(event, payload)`: dispatch a typed event (works outside React)
+- `global_event_listen(event, handler, options?)`: listen with typed handler (works outside React)
+- `useGlobalEvent(event, handler)`: React hook for subscriptions with stale-closure protection
 
-```typescript
-// packages/app/src/lib/global-events.tsx
-type Key = "module::event_name"; // Union of all event keys defined centrally
+# Event key naming
 
-type GlobalEventOptions = {
-	signal?: AbortSignal;
-};
+Event keys are string literals using the pattern:
 
-export namespace global_event {
-	export function dispatch(eventName: Key, payload?: unknown) {
-		const domEvent = new CustomEvent(eventName, { detail: payload });
-		window.dispatchEvent(domEvent);
-	}
+\(`module::event_name`\), for example `ai_chat::open_canvas`.
 
-	export function listen(eventName: Key, handler: (payload?: unknown) => void, options?: GlobalEventOptions) {
-		function listener(e: Event) {
-			const event = e as CustomEvent<unknown>;
-			handler(event.detail);
-		}
+# How to add or modify an event
 
-		window.addEventListener(eventName, listener, options);
+When the user requests a new global event, you must:
 
-		return function cleanup() {
-			window.removeEventListener(eventName, listener);
-		};
-	}
-}
+# Update the event map
 
-export function useGlobalEvent<Handler extends (...args: any[]) => void>(
-	listenFn: (handler: Handler) => () => void,
-	handler: Handler,
-) {
-	const handlerRef = useLiveRef(handler);
+Add the new event key to the `global_event_Event` map in [global-event.tsx](mdc:packages/app/src/lib/global-event.tsx).
 
-	useEffect(() => {
-		const cleanup = listenFn(((...args) => {
-			handlerRef.current(...args);
-		}) as Handler);
-		return cleanup;
-	}, []);
-}
-```
+Example:
 
-### Event Family Namespaces
-
-Define a small wrapper namespace for each event to strongly type the payload and centralize the event key:
-
-```typescript
-// Example: ai_chat::open_canvas
-type AiChatOpenCanvas_Payload = { pageId: string };
-
-export namespace global_event_ai_chat_open_canvas {
-	export function listen(handler: (payload: AiChatOpenCanvas_Payload) => void, options?: GlobalEventOptions) {
-		return global_event.listen("ai_chat::open_canvas", handler, options);
-	}
-
-	export function dispatch(payload: AiChatOpenCanvas_Payload) {
-		return global_event.dispatch("ai_chat::open_canvas", payload);
-	}
-}
-```
-
-### Naming Rules
-
-- **Event keys**: `module::event_name` (e.g., `ai_chat::open_canvas`)
-- **Namespaces**: Root-level exports use snake_case per repository conventions
-  - Core: `global_event`
-  - Per-event: `global_event_<module>_<event_name>`
-- **Functions** inside per-event namespaces: `listen(payloadHandler, options?)`, `dispatch(payload)`
-
-### Types
-
-- Create a `Key` union in `global-events.tsx` with all supported event strings
-- For each event namespace, strongly type the `payload`
-- `GlobalEventOptions = { signal?: AbortSignal }`
-
-## Usage in React Components
-
-Preferred pattern uses `useGlobalEvent` to avoid stale closures and ensure cleanup:
-
-```typescript
-import { useState } from "react";
-import { useGlobalEvent, global_event_ai_chat_open_canvas } from "@/src/lib/global-events";
-
-function Canvas(props: {}) {
-	const [editorPageId, setEditorPageId] = useState<string | null>(null);
-
-	useGlobalEvent(global_event_ai_chat_open_canvas.listen, (payload) => {
-		setEditorPageId(payload.pageId);
-	});
-
-	// ...render
-}
-```
-
-Alternate direct `listen` usage with manual cleanup is still valid when you need AbortController control:
-
-```typescript
-useEffect(() => {
-	const controller = new AbortController();
-
-	const cleanup = global_event_ai_chat_open_canvas.listen(
-		(payload) => {
-			// handle payload
-		},
-		{ signal: controller.signal },
-	);
-
-	return () => {
-		controller.abort();
-		cleanup();
+```ts
+export class global_event_Event extends XCustomEvent<{
+	"ai_chat::open_canvas": {
+		pageId: app_convex_Id<"pages">;
+		mode: "diff" | "editor";
+		modifiedContent?: string;
+		threadId: string;
 	};
-}, []);
+	"ai_chat::open_canvas_by_path": {
+		path: string;
+	};
+	"docs::focus_path": {
+		path: string;
+	};
+}> {}
 ```
 
-## Dispatching Events (Anywhere)
+# Keep all event keys centralized
 
-Dispatch from React components, utilities, or other client-side code:
+All supported global event keys must be declared in that `global_event_Event` type map. Do not introduce ad-hoc stringly-typed events elsewhere.
 
-```typescript
-import { global_event_ai_chat_open_canvas } from "@/src/lib/global-events";
+# Use the exported helpers
 
-global_event_ai_chat_open_canvas.dispatch({ pageId: "abc123" });
+Prefer `global_event_dispatch` / `global_event_listen` / `useGlobalEvent` rather than calling `window.dispatchEvent(new CustomEvent(...))` directly.
+
+# Usage patterns
+
+## React components
+
+Use `useGlobalEvent(eventName, handler)` to subscribe. The handler receives a typed event object, and the payload is on `event.detail`.
+
+Example (from [canvas.tsx](mdc:packages/app/src/components/canvas/canvas.tsx)):
+
+```ts
+useGlobalEvent("ai_chat::open_canvas", (e) => {
+	const payload = e.detail;
+	// payload.pageId, payload.mode, payload.modifiedContent, payload.threadId
+});
 ```
 
-## Options Parameter
+## Non-React code (or manual lifecycle control)
 
-The `options` parameter supports:
+Use `global_event_listen` directly when you need to wire AbortController, or you are outside React.
 
-- **signal**: `AbortSignal` — enables automatic listener removal when aborted
+```ts
+const controller = new AbortController();
 
-## File Locations and Imports
+const cleanup = global_event_listen(
+	"ai_chat::open_canvas_by_path",
+	(e) => {
+		console.info("path:", e.detail.path);
+	},
+	{ signal: controller.signal },
+);
 
-- Core implementation: `packages/app/src/lib/global-events.tsx`
-- Live ref utility: `packages/app/src/hooks/utils-hooks.ts` (`useLiveRef`)
-- Example consumer: `packages/app/src/components/canvas/canvas.tsx`
+// later:
+controller.abort();
+cleanup();
+```
+
+## Dispatching
+
+Use `global_event_dispatch(eventName, payload)` from anywhere client-side.
+
+Example (from [app-ai-chat.tsx](mdc:packages/app/src/components/app-ai-chat.tsx)):
+
+```ts
+global_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
+```
+
+# Handler typing and payload access
+
+Handlers receive the typed event object, not the payload directly:
+
+```ts
+useGlobalEvent("ai_chat::open_canvas", (e) => {
+	const payload = e.detail;
+});
+```
+
+# Files and references
+
+- Core implementation: [global-event.tsx](mdc:packages/app/src/lib/global-event.tsx)
+- Typed event base: `XCustomEvent` in [utils.ts](mdc:packages/app/src/lib/utils.ts)
+- Hook helper: `useLiveRef` in [utils-hooks.ts](mdc:packages/app/src/hooks/utils-hooks.ts)
+- Example consumers: [app-ai-chat.tsx](mdc:packages/app/src/components/app-ai-chat.tsx), [canvas.tsx](mdc:packages/app/src/components/canvas/canvas.tsx)
