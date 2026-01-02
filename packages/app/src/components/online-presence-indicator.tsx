@@ -47,14 +47,9 @@ export function OnlinePresenceIndicator() {
 	return (
 		<MyTooltip timeout={0} placement="bottom-start">
 			<MyTooltipTrigger>
-				<button
-					className={cn(
-						"OnlinePresenceIndicator" satisfies OnlinePresenceIndicator_ClassNames,
-						"OnlinePresenceIndicator-button" satisfies OnlinePresenceIndicator_ClassNames,
-					)}
-				>
+				<span className={cn("OnlinePresenceIndicator" satisfies OnlinePresenceIndicator_ClassNames)}>
 					online: {users.length}
-				</button>
+				</span>
 			</MyTooltipTrigger>
 			<MyTooltipContent gutter={4}>
 				<MyTooltipArrow />

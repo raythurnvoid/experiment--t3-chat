@@ -21,13 +21,6 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ChevronRight } from "lucide-react";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { Await } from "@/components/await.tsx";
-import {
-	MyAvatar,
-	MyAvatarFallback,
-	MyAvatarImage,
-	MyAvatarSkeleton,
-	MyAvatarLoading,
-} from "@/components/my-avatar.tsx";
 import { Doc as YDoc } from "yjs";
 
 // #region Error
@@ -156,23 +149,17 @@ async function fetch_page_markdown_content_and_yjs_doc(
 }
 
 // #region Root
-type PageEditorPlainText_ClassNames =
-	| "PageEditorPlainText"
-	| "PageEditorPlainText-avatars"
-	| "PageEditorPlainText-avatar"
-	| "PageEditorPlainText-avatar-border"
-	| "PageEditorPlainText-editor";
+type PageEditorPlainText_ClassNames = "PageEditorPlainText" | "PageEditorPlainText-editor";
 
 type PageEditorPlainText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
 	initialValue: string;
 	presenceStore: pages_PresenceStore;
-	onlineUsers: Array<{ userId: string; isSelf: boolean; color: string }>;
 	headerSlot: React.ReactNode;
 };
 
 function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
-	const { initialValue, onlineUsers, headerSlot, pageId: _pageId, presenceStore: _presenceStore } = props;
+	const { initialValue, headerSlot, pageId: _pageId, presenceStore: _presenceStore } = props;
 
 	const [_editor, setEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 
@@ -193,19 +180,6 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		<div className={"PageEditorPlainText" satisfies PageEditorPlainText_ClassNames}>
 			{headerSlot}
 
-			<div className={"PageEditorPlainText-avatars" satisfies PageEditorPlainText_ClassNames}>
-				{onlineUsers.map((user) => (
-					<MyAvatar key={user.userId} className={"PageEditorPlainText-avatar" satisfies PageEditorPlainText_ClassNames}>
-						<MyAvatarImage />
-						<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
-						<MyAvatarLoading>
-							<MyAvatarSkeleton />
-						</MyAvatarLoading>
-						<span className={"PageEditorPlainText-avatar-border" satisfies PageEditorPlainText_ClassNames}></span>
-					</MyAvatar>
-				))}
-			</div>
-
 			<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
 				<Editor
 					height="100%"
@@ -224,12 +198,11 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 export type PageEditorPlainText_Props = {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	onlineUsers: Array<{ userId: string; isSelf: boolean; color: string }>;
 	headerSlot: React.ReactNode;
 };
 
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {
-	const { pageId, presenceStore, onlineUsers, headerSlot } = props;
+	const { pageId, presenceStore, headerSlot } = props;
 
 	const convex = useConvex();
 
@@ -254,7 +227,6 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 							pageId={pageId}
 							initialValue={pageContentData.markdown}
 							presenceStore={presenceStore}
-							onlineUsers={onlineUsers}
 							headerSlot={headerSlot}
 						/>
 					)}

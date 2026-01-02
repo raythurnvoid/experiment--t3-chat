@@ -3,39 +3,6 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
-
-		.PageEditorPlainText-avatars {
-			height: 44px;
-			background: var(--color-base-alt-1-05);
-
-			gap: 4px;
-
-			flex-direction: row;
-			align-items: center;
-			display: flex;
-
-			padding: 4px 8px;
-
-			overflow-x: auto;
-			overflow-y: hidden;
-			contain: content;
-
-			scrollbar-width: initial;
-
-			min-width: 0;
-
-			position: relative;
-			z-index: 1;
-		}
-
-		.PageEditorPlainText-avatar-border {
-			position: absolute;
-			inset: 0;
-
-			color: var(--color-fg-11);
-			border: 2px solid currentColor;
-			border-radius: 50%;
-		}
 	}
 
 	.PageEditorPlainText-editor {

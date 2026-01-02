@@ -16,6 +16,7 @@ import { pages_ROOT_ID, pages_create_room_id, type pages_TreeItem, pages_Presenc
 import { Home } from "lucide-react";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
+import { PageEditorPresence } from "./page-editor-presence.tsx";
 import {
 	usePresence,
 	usePresenceList,
@@ -73,10 +74,11 @@ type PageEditorHeader_Props = {
 	pageId: app_convex_Id<"pages"> | null | undefined;
 	editorMode: "rich" | "markdown" | "diff";
 	onEditorModeChange: (mode: "rich" | "markdown" | "diff") => void;
+	onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
 };
 
 function PageEditorHeader(props: PageEditorHeader_Props) {
-	const { pageId, editorMode, onEditorModeChange } = props;
+	const { pageId, editorMode, onEditorModeChange, onlineUsers } = props;
 
 	// Query tree items to build breadcrumb path
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
@@ -158,8 +160,9 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 				)}
 			</ol>
 
-			{/* Right: Both switches in a container */}
+			{/* Right: Presence indicator and switches */}
 			<div className={cn("PageEditorHeader-switch-group" satisfies PageEditorHeader_ClassNames)}>
+				<PageEditorPresence users={onlineUsers} />
 				{/* Diff switch (only in markdown mode) */}
 				<div
 					className={cn(
@@ -196,7 +199,7 @@ type PageEditorPresenceSupplier_Props = {
 
 	children: (props: {
 		presenceStore: PageEditor_Inner_Props["presenceStore"];
-		onlineUsers: Array<{ userId: string; isSelf: boolean; color: string }>;
+		onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
 	}) => React.ReactNode;
 };
 
@@ -248,11 +251,16 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 	const onlineUsers =
 		presenceList
 			?.filter((user) => user.online)
-			.map((user) => ({
-				userId: user.userId,
-				isSelf: user.userId === userId,
-				color: userIdToColorMap.get(user.userId) ?? "#808080", // fallback gray if no color found
-			})) ?? [];
+			.map((user) => {
+				const userData = presenceData?.[user.userId];
+				return {
+					userId: user.userId,
+					isSelf: user.userId === userId,
+					name: userData?.name,
+					image: userData?.image,
+					color: userIdToColorMap.get(user.userId) ?? "var(--color-base-1-10)", // fallback to CSS var
+				};
+			}) ?? [];
 
 	const handlePresenceStateChange = useEffectEvent(() => {
 		if (
@@ -359,7 +367,7 @@ type PageEditor_Inner_Props = {
 	threadId?: string;
 	editorMode: PageEditor_Mode;
 	presenceStore: pages_PresenceStore;
-	onlineUsers: Array<{ userId: string; isSelf: boolean; color: string }>;
+	onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
 	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 };
 
@@ -378,7 +386,12 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 						pageId={pageId}
 						presenceStore={presenceStore}
 						headerSlot={
-							<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
+							<PageEditorHeader
+								pageId={pageId}
+								editorMode={editorMode}
+								onEditorModeChange={onEditorModeChange}
+								onlineUsers={onlineUsers}
+							/>
 						}
 					/>
 				) : editorMode === "diff" ? (
@@ -391,9 +404,13 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 					<PageEditorPlainText
 						pageId={pageId}
 						presenceStore={presenceStore}
-						onlineUsers={onlineUsers}
 						headerSlot={
-							<PageEditorHeader pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
+							<PageEditorHeader
+								pageId={pageId}
+								editorMode={editorMode}
+								onEditorModeChange={onEditorModeChange}
+								onlineUsers={onlineUsers}
+							/>
 						}
 					/>
 				)}
