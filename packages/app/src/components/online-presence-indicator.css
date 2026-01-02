@@ -1,0 +1,57 @@
+@layer common_components {
+	.OnlinePresenceIndicator {
+		box-sizing: border-box;
+	}
+
+	.OnlinePresenceIndicator-button {
+		padding: 4px 8px;
+
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+
+		color: var(--color-fg-11);
+
+		border-radius: 6px;
+
+		transition:
+			background-color 150ms ease,
+			color 150ms ease;
+
+		&:hover {
+			background: var(--color-base-1-06);
+			color: var(--color-fg-12);
+		}
+	}
+
+	.OnlinePresenceIndicator-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		max-height: 320px;
+		min-width: 224px;
+		overflow: auto;
+
+		padding: 4px;
+	}
+
+	.OnlinePresenceIndicator-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.OnlinePresenceIndicator-item-avatar {
+		flex: 0 0 auto;
+	}
+
+	.OnlinePresenceIndicator-item-name {
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+
+		min-width: 0;
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+}

@@ -208,7 +208,7 @@ export const MainAppSidebar = ((/* iife */) => {
 					<SidebarHeader>
 						<SidebarTrigger />
 						<div className="ml-auto pr-2">
-							<OnlinePresenceIndicator className="text-xs opacity-80" />
+							<OnlinePresenceIndicator />
 						</div>
 					</SidebarHeader>
 

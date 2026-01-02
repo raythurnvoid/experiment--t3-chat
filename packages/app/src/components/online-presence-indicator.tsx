@@ -1,29 +1,24 @@
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip.tsx";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.tsx";
+import "./online-presence-indicator.css";
 import { cn } from "@/lib/utils.ts";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
-import { usePresence, usePresenceList } from "../hooks/presence-hooks.ts";
+import { usePresence, usePresenceList, usePresenceUsersData } from "../hooks/presence-hooks.ts";
+import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "./my-avatar.tsx";
+import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "./my-tooltip.tsx";
 
-const CLASS_NAMES = {
-	root: "OnlinePresenceIndicator",
-	button: "OnlinePresenceIndicator-button",
-	tooltip: "OnlinePresenceIndicator-tooltip",
-	list: "OnlinePresenceIndicator-list",
-	item: "OnlinePresenceIndicator-item",
-} as const;
+export type OnlinePresenceIndicator_ClassNames =
+	| "OnlinePresenceIndicator"
+	| "OnlinePresenceIndicator-button"
+	| "OnlinePresenceIndicator-list"
+	| "OnlinePresenceIndicator-item"
+	| "OnlinePresenceIndicator-item-avatar"
+	| "OnlinePresenceIndicator-item-name";
 
-export type OnlinePresenceIndicator_Props = React.ComponentProps<"button"> & {
-	roomId?: string;
-};
-
-export function OnlinePresenceIndicator(props: OnlinePresenceIndicator_Props) {
-	const defaultRoomId = app_presence_GLOBAL_ROOM_ID;
-	const { id, className, roomId = defaultRoomId, children, ...rest } = props;
+export function OnlinePresenceIndicator() {
 	const authenticated = AppAuthProvider.useAuthenticated();
 
 	const presence = usePresence({
-		roomId,
+		roomId: app_presence_GLOBAL_ROOM_ID,
 		userId: authenticated.userId,
 		disconnectOnDocumentHidden: false,
 	});
@@ -33,35 +28,56 @@ export function OnlinePresenceIndicator(props: OnlinePresenceIndicator_Props) {
 		userId: authenticated.userId,
 	});
 
-	const users = presenceList ?? [];
-	const count = users.filter((u) => u.online).length;
+	const presenceUsersData = usePresenceUsersData({
+		roomToken: presence.roomToken,
+	});
+
+	const users = (presenceList ?? [])
+		.map((user) => {
+			const data = presenceUsersData?.[user.userId];
+
+			if (!data || user.online === false) {
+				return null;
+			}
+
+			return { ...user, data };
+		})
+		.filter((user) => user != null);
 
 	return (
-		<TooltipProvider>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						id={id}
-						className={cn(CLASS_NAMES.root, CLASS_NAMES.button, "px-2 py-1 text-sm", className)}
-						{...rest}
-					>
-						online: {count}
-					</button>
-				</TooltipTrigger>
-				<TooltipContent className={cn(CLASS_NAMES.tooltip)} side="bottom" align="start">
-					<div className={cn(CLASS_NAMES.list, "flex max-h-80 min-w-56 flex-col gap-2 overflow-auto p-1")}>
-						{users.map((u) => (
-							<div key={u.userId} className={cn(CLASS_NAMES.item, "flex items-center gap-2 opacity-100")}>
-								<Avatar className="h-6 w-6">
-									<AvatarImage src={u.image ?? ""} alt={u.name ?? "Anonymous"} />
-									<AvatarFallback>{(u.name ?? "AN").slice(0, 2).toUpperCase()}</AvatarFallback>
-								</Avatar>
-								<span className="text-sm">{u.name ?? u.userId}</span>
-							</div>
-						))}
-					</div>
-				</TooltipContent>
-			</Tooltip>
-		</TooltipProvider>
+		<MyTooltip timeout={0} placement="bottom-start">
+			<MyTooltipTrigger>
+				<button
+					className={cn(
+						"OnlinePresenceIndicator" satisfies OnlinePresenceIndicator_ClassNames,
+						"OnlinePresenceIndicator-button" satisfies OnlinePresenceIndicator_ClassNames,
+					)}
+				>
+					online: {users.length}
+				</button>
+			</MyTooltipTrigger>
+			<MyTooltipContent gutter={4}>
+				<MyTooltipArrow />
+				<div className={cn("OnlinePresenceIndicator-list" satisfies OnlinePresenceIndicator_ClassNames)}>
+					{users.map((user) => (
+						<div
+							key={user.userId}
+							className={cn("OnlinePresenceIndicator-item" satisfies OnlinePresenceIndicator_ClassNames)}
+						>
+							<MyAvatar
+								className={cn("OnlinePresenceIndicator-item-avatar" satisfies OnlinePresenceIndicator_ClassNames)}
+								size="24px"
+							>
+								<MyAvatarImage src={user.data?.image ?? undefined} alt={user.data?.name ?? "Anonymous"} />
+								<MyAvatarFallback>{(user.data?.name ?? "AN").slice(0, 2).toUpperCase()}</MyAvatarFallback>
+							</MyAvatar>
+							<span className={cn("OnlinePresenceIndicator-item-name" satisfies OnlinePresenceIndicator_ClassNames)}>
+								{user.data?.name ?? user.userId}
+							</span>
+						</div>
+					))}
+				</div>
+			</MyTooltipContent>
+		</MyTooltip>
 	);
 }
