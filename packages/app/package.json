@@ -9,6 +9,7 @@
 		"lint": "pnpm lint:tsc && pnpm lint:eslint",
 		"lint:tsc": "tsc-silent --project tsconfig.app.json --suppress @vendor @node_modules",
 		"lint:eslint": "eslint --cache src",
+		"patch:typescript-hover": "tsx src/script/patch-typescript-hover.ts",
 		"preview": "vite preview",
 		"format": "prettier --write .",
 		"test": "vitest",
