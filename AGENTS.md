@@ -1,10 +1,3 @@
----
-description: Global project guidelines covering package management, terminal usage, code quality, code organization, casing conventions, and complete application architecture
-alwaysApply: true
----
-
-Global rules for the project.
-
 # Package manager
 
 This repository uses `pnpm` do not use `npm`.
@@ -25,39 +18,39 @@ You can run linting commands only if the user explicitly requests it.
 
 This is a monorepo project with the following essential structure that you must always be aware of:
 
-- [package.json](mdc:package.json) - Root package configuration
-- [pnpm-workspace.yaml](mdc:pnpm-workspace.yaml) - Workspace configuration for the monorepo
-- [pnpm-lock.yaml](mdc:pnpm-lock.yaml) - Lockfile for all dependencies
+- [package.json](package.json) - Root package configuration
+- [pnpm-workspace.yaml](pnpm-workspace.yaml) - Workspace configuration for the monorepo
+- [pnpm-lock.yaml](pnpm-lock.yaml) - Lockfile for all dependencies
 
 ## Folders organization
 
-- [packages/app/](mdc:packages/app) - MAIN APPLICATION ROOT
+- [packages/app/](packages/app) - MAIN APPLICATION ROOT
 
-  - [src/](mdc:packages/app/src) - React frontend application code
-    - [src/components/](mdc:packages/app/src/components) - React components (UI, assistant-ui, canvas)
-    - [src/routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
-    - [src/lib/](mdc:packages/app/src/lib) - Shared utilities and helpers
-    - [src/hooks/](mdc:packages/app/src/hooks) - Custom React hooks
-    - [src/stores/](mdc:packages/app/src/stores) - State management (Zustand stores)
-    - [src/types/](mdc:packages/app/src/types) - TypeScript type definitions
-    - [src/app.css](mdc:packages/app/src/app.css) - Main CSS file with Tailwind 4 configuration
-  - [convex/](mdc:packages/app/convex) - Convex backend code and functions
-  - [shared/](mdc:packages/app/shared) - Shared code between frontend and backend
-  - [vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui) - Assistant UI submodule (full repo for reference)
-  - [vendor/liveblocks/](mdc:packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
-  - [vendor/ai/](mdc:packages/app/vendor/ai) - AI SDK submodule (full repo for reference)
-  - [vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
-  - [vendor/novel/](mdc:packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
+  - [src/](packages/app/src) - React frontend application code
+    - [src/components/](packages/app/src/components) - React components (UI, assistant-ui, canvas)
+    - [src/routes/](packages/app/src/routes) - TanStack Router route definitions
+    - [src/lib/](packages/app/src/lib) - Shared utilities and helpers
+    - [src/hooks/](packages/app/src/hooks) - Custom React hooks
+    - [src/stores/](packages/app/src/stores) - State management (Zustand stores)
+    - [src/types/](packages/app/src/types) - TypeScript type definitions
+    - [src/app.css](packages/app/src/app.css) - Main CSS file with Tailwind 4 configuration
+  - [convex/](packages/app/convex) - Convex backend code and functions
+  - [shared/](packages/app/shared) - Shared code between frontend and backend
+  - [vendor/assistant-ui/](packages/app/vendor/assistant-ui) - Assistant UI submodule (full repo for reference)
+  - [vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
+  - [vendor/ai/](packages/app/vendor/ai) - AI SDK submodule (full repo for reference)
+  - [vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
+  - [vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
 
-- [+personal/](mdc:+personal) - DOCUMENTATION & RESEARCH FOLDER
-  - [+personal/+ai/](mdc:+personal/+ai) - Only writable subfolder for AI-generated content
-  - [+personal/sources/](mdc:+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes
-  - [+personal/sources/README.md](mdc:+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the [+personal/sources/](mdc:+personal/sources) folder to have an idea of what the packages are
+- [+personal/](+personal) - DOCUMENTATION & RESEARCH FOLDER
+  - [+personal/+ai/](+personal/+ai) - Only writable subfolder for AI-generated content
+  - [+personal/sources/](+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes
+  - [+personal/sources/README.md](+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the [+personal/sources/](+personal/sources) folder to have an idea of what the packages are
   - DO NOT MODIFY other files in +personal/ - they are reference material only
 
 ## Submodules (Special Import Handling)
 
-- [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui) - Assistant UI submodule with custom overrides
+- [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui) - Assistant UI submodule with custom overrides
 
   - Importing: Import directly from the submodule (NOT from node_modules)
     - Correct:
@@ -66,11 +59,11 @@ This is a monorepo project with the following essential structure that you must 
       import { ThreadWelcome } from "@/vendor/assistant-ui/packages/react/src/ui/thread-welcome";
       ```
   - Documentation folders:
-    - [apps/docs/](mdc:packages/app/vendor/assistant-ui/apps/docs)
+    - [apps/docs/](packages/app/vendor/assistant-ui/apps/docs)
   - Examples folders:
-    - [examples/](mdc:packages/app/vendor/assistant-ui/examples)
+    - [examples/](packages/app/vendor/assistant-ui/examples)
 
-- [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks) - Liveblocks submodule
+- [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule
 
   - Importing: Use standard node_modules imports in the app, submodule is for reference
     - Correct:
@@ -78,43 +71,43 @@ This is a monorepo project with the following essential structure that you must 
       import { LiveblocksProvider } from "@liveblocks/react";
       ```
   - Documentation folders:
-    - [docs/](mdc:packages/app/vendor/liveblocks/docs)
-    - [guides/](mdc:packages/app/vendor/liveblocks/guides)
-    - [tutorial/](mdc:packages/app/vendor/liveblocks/tutorial)
+    - [docs/](packages/app/vendor/liveblocks/docs)
+    - [guides/](packages/app/vendor/liveblocks/guides)
+    - [tutorial/](packages/app/vendor/liveblocks/tutorial)
   - Examples folders:
-    - [examples/](mdc:packages/app/vendor/liveblocks/examples)
-    - [starter-kits/](mdc:packages/app/vendor/liveblocks/starter-kits)
+    - [examples/](packages/app/vendor/liveblocks/examples)
+    - [starter-kits/](packages/app/vendor/liveblocks/starter-kits)
 
-- [packages/app/vendor/ai/](mdc:packages/app/vendor/ai) - AI SDK repository
+- [packages/app/vendor/ai/](packages/app/vendor/ai) - AI SDK repository
 
   - Importing: Use standard node_modules imports in the app, submodule is for reference
   - Documentation folders:
-    - [content/docs/](mdc:packages/app/vendor/ai/content/docs)
-    - [content/providers/](mdc:packages/app/vendor/ai/content/providers)
+    - [content/docs/](packages/app/vendor/ai/content/docs)
+    - [content/providers/](packages/app/vendor/ai/content/providers)
   - Examples folders:
-    - [examples/](mdc:packages/app/vendor/ai/examples)
+    - [examples/](packages/app/vendor/ai/examples)
 
-- [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode) - OpenCode development platform submodule
+- [packages/app/vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule
 
   - Importing: Use standard node_modules imports in the app, submodule is for reference
   - Documentation folders:
-    - [README.md](mdc:packages/app/vendor/opencode/README.md)
-    - [AGENTS.md](mdc:packages/app/vendor/opencode/AGENTS.md)
+    - [README.md](packages/app/vendor/opencode/README.md)
+    - [AGENTS.md](packages/app/vendor/opencode/AGENTS.md)
   - Package folders:
-    - [packages/](mdc:packages/app/vendor/opencode/packages)
+    - [packages/](packages/app/vendor/opencode/packages)
 
-- [packages/app/vendor/novel/](mdc:packages/app/vendor/novel) - Novel rich text editor submodule
+- [packages/app/vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule
   - Importing: Use standard node_modules imports in the app, submodule is for reference
     - Correct:
       ```ts
       import { useEditor } from "novel";
       ```
   - Documentation folders:
-    - [README.md](mdc:packages/app/vendor/novel/README.md)
+    - [README.md](packages/app/vendor/novel/README.md)
   - Examples folders:
-    - [apps/web/](mdc:packages/app/vendor/novel/apps/web) - Example implementation
+    - [apps/web/](packages/app/vendor/novel/apps/web) - Example implementation
   - Package folders:
-    - [packages/headless/](mdc:packages/app/vendor/novel/packages/headless) - Core editor package
+    - [packages/headless/](packages/app/vendor/novel/packages/headless) - Core editor package
 
 ## 3rd Party Documentation Research
 
@@ -122,8 +115,8 @@ When users ask about 3rd party libraries or request implementations using extern
 
 Documentation Sources
 
-- [+personal/sources](mdc:+personal/sources) - read [+personal/sources/README.md](mdc:+personal/sources/README.md) when reading inside the folder
-- Submodules - [packages/app/vendor/assistant-ui/](mdc:packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](mdc:packages/app/vendor/liveblocks), [packages/app/vendor/ai/](mdc:packages/app/vendor/ai), [packages/app/vendor/opencode/](mdc:packages/app/vendor/opencode), and [packages/app/vendor/novel/](mdc:packages/app/vendor/novel) have full repos for reference
+- [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
+- Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [packages/app/vendor/ai/](packages/app/vendor/ai), [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 
 Research Process
@@ -138,11 +131,11 @@ Quality Standard: Understanding should be deep enough to explain concepts confid
 
 ### Configuration Files
 
-- [packages/app/convex.json](mdc:packages/app/convex.json) - Convex configuration
-- [packages/app/components.json](mdc:packages/app/components.json) - shadcn/ui component library configuration
-- [packages/app/tsconfig.json](mdc:packages/app/tsconfig.json) - TypeScript configuration for the app
-- [packages/app/index.html](mdc:packages/app/index.html) - HTML entry point for Vite
-- [packages/app/vite.config.ts](mdc:packages/app/vite.config.ts) - Vite development server configuration
+- [packages/app/convex.json](packages/app/convex.json) - Convex configuration
+- [packages/app/components.json](packages/app/components.json) - shadcn/ui component library configuration
+- [packages/app/tsconfig.json](packages/app/tsconfig.json) - TypeScript configuration for the app
+- [packages/app/index.html](packages/app/index.html) - HTML entry point for Vite
+- [packages/app/vite.config.ts](packages/app/vite.config.ts) - Vite development server configuration
 
 ## Import Guidelines
 
@@ -354,12 +347,12 @@ This app is an AI chatbot that allows users to chat with AI, call tools, and pro
 
 ## Backend Architecture
 
-The backend uses Convex as the primary backend platform, located in [packages/app/convex/](mdc:packages/app/convex):
+The backend uses Convex as the primary backend platform, located in [packages/app/convex/](packages/app/convex):
 
-- [ai_chat.ts](mdc:packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming, tool calling, and artifact creation
-- [schema.ts](mdc:packages/app/convex/schema.ts) - Database schema for threads and messages
-- [auth.ts](mdc:packages/app/convex/auth.ts) - Authentication with Clerk integration
-- [http.ts](mdc:packages/app/convex/http.ts) - HTTP routing for API endpoints
+- [ai_chat.ts](packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming, tool calling, and artifact creation
+- [schema.ts](packages/app/convex/schema.ts) - Database schema for threads and messages
+- [auth.ts](packages/app/convex/auth.ts) - Authentication with Clerk integration
+- [http.ts](packages/app/convex/http.ts) - HTTP routing for API endpoints
 
 The Convex backend handles:
 
@@ -371,17 +364,17 @@ The Convex backend handles:
 
 ## Frontend Architecture
 
-The frontend is a React 19 application located in [packages/app/src/](mdc:packages/app/src):
+The frontend is a React 19 application located in [packages/app/src/](packages/app/src):
 
-- [main.tsx](mdc:packages/app/src/main.tsx) - Application entry point with providers
-- [routes/](mdc:packages/app/src/routes) - TanStack Router route definitions
-  - [\_\_root.tsx](mdc:packages/app/src/routes/__root.tsx) - Root layout with auth setup
-  - [index.tsx](mdc:packages/app/src/routes/index.tsx) - Home page
-  - [chat.tsx](mdc:packages/app/src/routes/chat.tsx) - Main chat interface with canvas
-- [components/](mdc:packages/app/src/components) - React components organized by feature
-  - [assistant-ui/](mdc:packages/app/src/components/assistant-ui) - Chat interface components
-  - [canvas/](mdc:packages/app/src/components/canvas) - Canvas/artifact editing components
-  - [ui/](mdc:packages/app/src/components/ui) - Shared UI components
+- [main.tsx](packages/app/src/main.tsx) - Application entry point with providers
+- [routes/](packages/app/src/routes) - TanStack Router route definitions
+  - [\_\_root.tsx](packages/app/src/routes/__root.tsx) - Root layout with auth setup
+  - [index.tsx](packages/app/src/routes/index.tsx) - Home page
+  - [chat.tsx](packages/app/src/routes/chat.tsx) - Main chat interface with canvas
+- [components/](packages/app/src/components) - React components organized by feature
+  - [assistant-ui/](packages/app/src/components/assistant-ui) - Chat interface components
+  - [canvas/](packages/app/src/components/canvas) - Canvas/artifact editing components
+  - [ui/](packages/app/src/components/ui) - Shared UI components
 
 ## Key Technologies
 
@@ -418,7 +411,7 @@ The app runs at http://localhost:5173/ during development.
 
 ## HTTP Request Configuration
 
-Use centralized fetch utilities from [packages/app/src/lib/fetch.ts](mdc:packages/app/src/lib/fetch.ts) for internal HTTP requests.
+Use centralized fetch utilities from [packages/app/src/lib/fetch.ts](packages/app/src/lib/fetch.ts) for internal HTTP requests.
 
 For third-party integrations, construct URLs manually using `VITE_CONVEX_HTTP_URL`.
 

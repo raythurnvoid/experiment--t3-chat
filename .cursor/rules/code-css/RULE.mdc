@@ -1,5 +1,4 @@
 ---
-description: Guidelines for creating and styling CSS files for React components using modern CSS practices
 globs: packages/app/src/**/*.css
 alwaysApply: false
 ---

@@ -1,12 +1,11 @@
 ---
-description: Complete implementation guide for the React Complex Tree sidebar with Convex, Liveblocks, and AI features
-globs:
-  - packages/app/src/components/docs-sidebar-v2.tsx
-  - packages/app/src/stores/docs-store.ts
-  - packages/app/convex/ai_docs_temp.ts
-  - packages/app/src/routes/docs.tsx
-alwaysApply: false
+name: pages-explorer-tree
+description: Complete implementation guide for the DocsSidebar v2 (React Complex Tree + Convex + Liveblocks + AI).
 ---
+
+# Overview
+
+Complete implementation guide for the React Complex Tree sidebar with Convex, Liveblocks, and AI features.
 
 # DocsSidebar v2 - Complete Implementation Guide
 
@@ -37,7 +36,7 @@ The DocsSidebar v2 component is a sophisticated Notion-like file explorer for an
 
 ## Core Implementation Files
 
-### 1. Main Component (`packages/app/src/components/docs-sidebar-v2.tsx`)
+### 1. Main Component (`../../../packages/app/src/components/docs-sidebar-v2.tsx`)
 
 The main sidebar component with the following structure:
 
@@ -60,7 +59,7 @@ export function DocsSidebar(props: DocsSidebar_Props) {
 }
 ```
 
-### 2. Data Store (`packages/app/src/stores/docs-store.ts`)
+### 2. Data Store (`../../../packages/app/src/stores/docs-store.ts`)
 
 Manages document data:
 
@@ -81,7 +80,7 @@ class PagesSidebarTreeDataProvider implements TreeDataProvider<DocData> {
 }
 ```
 
-### 3. Convex Backend (`packages/app/convex/ai_docs_temp.ts`)
+### 3. Convex Backend (`../../../packages/app/convex/ai_docs_temp.ts`)
 
 Backend integration for persistence and AI:
 

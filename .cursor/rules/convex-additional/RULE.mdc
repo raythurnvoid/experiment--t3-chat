@@ -1,5 +1,4 @@
 ---
-description: Adds more Convex guidelines on top of the base Convex rule (`airule-convex.mdc`), specific to this codebase. Topics: migrations.
 globs: packages/app/convex/**/*.ts
 alwaysApply: false
 ---
@@ -77,7 +76,7 @@ export function example_http_routes(router: RouterForConvexModules) {
 
 # Migrations
 
-When the user asks for a Convex migration, you must implement it as an `internalMutation` in [packages/app/convex/migrations.ts](mdc:packages/app/convex/migrations.ts).
+When the user asks for a Convex migration, you must implement it as an `internalMutation` in [../../../packages/app/convex/migrations.ts](../../../packages/app/convex/migrations.ts).
 
 Keep migrations safe and repeatable:
 

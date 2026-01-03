@@ -1,6 +1,5 @@
 ---
-description: Meta-guidelines for writing effective cursor rule files, covering document structure, formatting best practices, and clear AI-user communication patterns to ensure rules are scannable and maintainable.
-globs: .cursor/rules/*.mdc
+globs: .cursor/rules/**/RULE.mdc
 alwaysApply: false
 ---
 
@@ -176,7 +175,7 @@ Reserve `alwaysApply: true` for fundamental rules that affect all interactions. 
 When referencing files or directories in rule files, use the MDC link format to create navigable links:
 
 ```markdown
-[descriptive-link-text](mdc:relative/path/from/root)
+[descriptive-link-text](relative/path/from/root)
 ```
 
 ## Link Guidelines
@@ -186,9 +185,9 @@ Write descriptive link text that identifies the file's purpose or content. Ensur
 ### Examples of Proper MDC Links
 
 ```markdown
-[Button component](mdc:src/components/ui/button.tsx)
-[CSS guidelines](mdc:.cursor/rules/airule-code-css.mdc)
-[Components directory](mdc:src/components)
+[Button component](src/components/ui/button.tsx)
+[CSS guidelines](.cursor/rules/code-css/RULE.md)
+[Components directory](src/components)
 ```
 
 # Content Organization Best Practices

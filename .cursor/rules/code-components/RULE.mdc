@@ -1,5 +1,4 @@
 ---
-description: Guidelines for creating and styling React components, including class naming patterns, semantic classnames, and component organization
 globs: packages/**/src/**/*.tsx, packages/**/src/**/*-hooks.ts, packages/**/src/**/use-*.ts
 alwaysApply: false
 ---
@@ -226,7 +225,7 @@ export function ThreadMenuButton(props: ThreadMenuButton_Props) {
 }
 ```
 
-- Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer component-prefixed classes validated by the `_ClassNames` type and follow the CSS rules in [airule-code-css.mdc](mdc:.cursor/rules/airule-code-css.mdc).
+- Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer component-prefixed classes validated by the `_ClassNames` type and follow the CSS rules in [airule-code-css](.cursor/rules/code-css/RULE.md).
 
 - Variants and sizes must be represented directly in each component's `_ClassNames` type. Use conditional adds with `satisfies` for validation.
 

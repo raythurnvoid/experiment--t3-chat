@@ -1,18 +1,19 @@
 ---
-description: Guidelines for creating and using global events in the application. These events enable cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application. To be used when creating new global events, modifying existing ones or when you need to use (listen and dispatch) global events in a React component but also outside of React components.
-globs:
-  - packages/app/src/lib/global-event.tsx
-  - packages/app/src/components/**/*.tsx
-alwaysApply: false
+name: custom-global-events
+description: Guidelines for creating/using the app’s typed global events system.
 ---
 
-Global Events Guidelines
+# Overview
+
+Global events are used for cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application.
+
+# Global Events Guidelines
 
 Global events are used for cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application.
 
 # Overview
 
-The global events system lives at [global-event.tsx](mdc:packages/app/src/lib/global-event.tsx) and is built on a typed `Event` subclass (`XCustomEvent`).
+The global events system lives at [global-event.tsx](../../../packages/app/src/lib/global-event.tsx) and is built on a typed `Event` subclass (`XCustomEvent`).
 
 It exposes:
 
@@ -25,7 +26,7 @@ It exposes:
 
 Event keys are string literals using the pattern:
 
-\(`module::event_name`\), for example `ai_chat::open_canvas`.
+(`module::event_name`), for example `ai_chat::open_canvas`.
 
 # How to add or modify an event
 
@@ -33,7 +34,7 @@ When the user requests a new global event, you must:
 
 # Update the event map
 
-Add the new event key to the `global_event_Event` map in [global-event.tsx](mdc:packages/app/src/lib/global-event.tsx).
+Add the new event key to the `global_event_Event` map in [global-event.tsx](../../../packages/app/src/lib/global-event.tsx).
 
 Example:
 
@@ -68,7 +69,7 @@ Prefer `global_event_dispatch` / `global_event_listen` / `useGlobalEvent` rather
 
 Use `useGlobalEvent(eventName, handler)` to subscribe. The handler receives a typed event object, and the payload is on `event.detail`.
 
-Example (from [canvas.tsx](mdc:packages/app/src/components/canvas/canvas.tsx)):
+Example (from [canvas.tsx](../../../packages/app/src/components/canvas/canvas.tsx)):
 
 ```ts
 useGlobalEvent("ai_chat::open_canvas", (e) => {
@@ -101,7 +102,7 @@ cleanup();
 
 Use `global_event_dispatch(eventName, payload)` from anywhere client-side.
 
-Example (from [app-ai-chat.tsx](mdc:packages/app/src/components/app-ai-chat.tsx)):
+Example (from [app-ai-chat.tsx](../../../packages/app/src/components/app-ai-chat.tsx)):
 
 ```ts
 global_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
@@ -119,7 +120,7 @@ useGlobalEvent("ai_chat::open_canvas", (e) => {
 
 # Files and references
 
-- Core implementation: [global-event.tsx](mdc:packages/app/src/lib/global-event.tsx)
-- Typed event base: `XCustomEvent` in [utils.ts](mdc:packages/app/src/lib/utils.ts)
-- Hook helper: `useLiveRef` in [utils-hooks.ts](mdc:packages/app/src/hooks/utils-hooks.ts)
-- Example consumers: [app-ai-chat.tsx](mdc:packages/app/src/components/app-ai-chat.tsx), [canvas.tsx](mdc:packages/app/src/components/canvas/canvas.tsx)
+- Core implementation: [global-event.tsx](../../../packages/app/src/lib/global-event.tsx)
+- Typed event base: `XCustomEvent` in [utils.ts](../../../packages/app/src/lib/utils.ts)
+- Hook helper: `useLiveRef` in [utils-hooks.ts](../../../packages/app/src/hooks/utils-hooks.ts)
+- Example consumers: [app-ai-chat.tsx](../../../packages/app/src/components/app-ai-chat.tsx), [canvas.tsx](../../../packages/app/src/components/canvas/canvas.tsx)

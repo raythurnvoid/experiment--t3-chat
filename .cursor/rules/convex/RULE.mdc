@@ -1,6 +1,5 @@
 ---
-description: Guidelines and best practices for building Convex projects, including database schema design, queries, mutations, and real-world examples. Use whenever the user asks to create or use a convex function. Convex functions are located under convex/ folder.
-globs: convex/**/*.ts
+globs: packages/app/convex/**/*.ts
 alwaysApply: false
 ---
 
