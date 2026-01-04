@@ -629,3 +629,21 @@ function ComponentName(props: ComponentName_Props) {
 }
 // #endregion ComponentName
 ```
+
+# Find the right place to insert new code
+
+When editing an existing `.tsx` file, you must first understand the file’s structure and place changes in the most appropriate location.
+
+## Required pre-scan
+
+Before inserting code, you must scan the file for (at minimum):
+
+- Existing `// #region ...` / `// #endregion ...` markers
+- Imports/exports and any module-level constants
+- Existing ordering patterns (types → helpers → handlers → components, etc.)
+
+## Placement rules
+
+- If the file uses regions, you must add new code **inside the most relevant existing region**, adjacent to similar code (do not create a new region unless the file already does so as a pattern).
+- If there are no regions, insert immediately above/below the nearest similar symbol or first call-site.
+- Avoid dumping new helpers/types at the very top or bottom; match the file’s local organization.
