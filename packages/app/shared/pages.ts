@@ -11,8 +11,8 @@ import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
 import { Doc as YDoc, encodeStateAsUpdate, applyUpdate } from "yjs";
-import { Editor } from "@tiptap/core";
-import type { Extension, JSONContent as TiptapJSONContent } from "@tiptap/core";
+import { Editor, Extension } from "@tiptap/core";
+import type { MarkdownParseResult, JSONContent as TiptapJSONContent } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -249,6 +249,8 @@ export function pages_yjs_doc_create_from_markdown(args: { markdown: string }) {
  * Shared with client and server code.
  */
 export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
+	const trailingNewLinesRegex = /^\n+$/;
+
 	function value() {
 		return {
 			starterKit: StarterKit.configure({
@@ -276,6 +278,69 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			markdown: Markdown.configure({
 				// Tiptap expects another version of marked but this should do fine
 				marked: pages_marked(),
+			}),
+			// Preserve trailing empty lines at EOF without affecting spacing between blocks
+			// when parsing markdown to JSON.
+			appMarkdownTrailingNewLinesToken: Extension.create({
+				name: "appMarkdownTrailingNewLinesToken",
+				// Only handle our custom token, not Marked's built-in `space` token.
+				markdownTokenName: "app_trailing_new_lines",
+				markdownTokenizer: {
+					name: "appTrailingNewLines",
+					level: "block",
+					start(src: string) {
+						return trailingNewLinesRegex.test(src) ? 0 : -1;
+					},
+					tokenize(src: string) {
+						if (!trailingNewLinesRegex.test(src)) {
+							return undefined;
+						}
+
+						return {
+							type: "appTrailingNewLines",
+							raw: src,
+						};
+					},
+				},
+				parseMarkdown: (token, helpers) => {
+					const raw = token.raw ?? "";
+					const newlineCount = raw.length > 0 ? raw.split("\n").length - 1 : 0;
+					// Odd counts can happen; we round up to avoid losing an intentional blank line.
+					const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
+
+					const result: MarkdownParseResult[] = [];
+					for (let i = 0; i < paragraphCount; i++) {
+						result.push(helpers.createNode("paragraph", undefined, []));
+					}
+					return result;
+				},
+			}),
+			// Preserve empty paragraphs between blocks when parsing markdown to JSON.
+			appMarkdownSpaceToken: Extension.create({
+				name: "appMarkdownSpaceToken",
+				// Marked emits `space` tokens for blank lines.
+				markdownTokenName: "space",
+				parseMarkdown: (token, helpers) => {
+					const raw = token.raw ?? "";
+					const newlineCount = raw.length > 0 ? raw.split("\n").length - 1 : 0;
+
+					// `\n\n` between blocks is expected and should not create an empty paragraph.
+					// For additional blank lines, create empty paragraphs:
+					// - 2 newlines => 0 empty paragraphs
+					// - 4 newlines => 1 empty paragraph
+					// - 6 newlines => 2 empty paragraphs
+					// Odd counts can happen; we round up to avoid losing an intentional blank line.
+					const paragraphCount = Math.max(0, Math.ceil(newlineCount / 2) - 1);
+					if (paragraphCount === 0) {
+						return [];
+					}
+
+					const result: MarkdownParseResult[] = [];
+					for (let i = 0; i < paragraphCount; i++) {
+						result.push(helpers.createNode("paragraph", undefined, []));
+					}
+					return result;
+				},
 			}),
 			highlight: Highlight.extend({
 				renderMarkdown: (node, helpers, ctx) => {
