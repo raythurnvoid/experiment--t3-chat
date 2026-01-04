@@ -1524,6 +1524,7 @@ async function yjs_increment_or_create_last_sequence(
 	// Update or create last_sequence tracking
 	if (lastSequenceData) {
 		await ctx.db.patch(lastSequenceData._id, { last_sequence: newSequence });
+		lastSequenceData.last_sequence = newSequence;
 	} else {
 		const lastSequenceDataId = await ctx.db.insert("pages_yjs_docs_last_sequences", {
 			workspace_id: args.workspaceId,
