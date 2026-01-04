@@ -314,7 +314,7 @@ async function do_create_page(
 		}),
 	]);
 
-	await ctx.db.patch(pageId, {
+	await ctx.db.patch("pages", pageId, {
 		markdown_content_id: markdown_content_id,
 		yjs_last_sequence_id: yjs_last_sequence_id,
 		yjs_snapshot_id: yjs_snapshot_id,
@@ -435,7 +435,7 @@ export const rename_page = mutation({
 			.first();
 
 		if (page) {
-			await ctx.db.patch(page._id, {
+			await ctx.db.patch("pages", page._id, {
 				name: args.name,
 				updated_by: user.name,
 				updated_at: Date.now(),
@@ -473,7 +473,7 @@ export const move_pages = mutation({
 				.first();
 
 			if (page) {
-				await ctx.db.patch(page._id, {
+				await ctx.db.patch("pages", page._id, {
 					workspace_id: args.workspaceId,
 					project_id: args.projectId,
 					parent_id: args.targetParentId,
@@ -513,7 +513,7 @@ export const archive_pages = mutation({
 			.first();
 
 		if (page) {
-			await ctx.db.patch(page._id, {
+			await ctx.db.patch("pages", page._id, {
 				is_archived: true,
 				updated_by: user.name,
 				updated_at: Date.now(),
@@ -551,7 +551,7 @@ export const unarchive_pages = mutation({
 			.first();
 
 		if (page) {
-			await ctx.db.patch(page._id, {
+			await ctx.db.patch("pages", page._id, {
 				is_archived: false,
 				updated_by: user.name,
 				updated_at: Date.now(),
@@ -1185,7 +1185,7 @@ const store_version_snapshot_args_schema = v.object({
 	project_id: v.string(),
 	page_id: v.id("pages"),
 	content: v.string(),
-	created_by: v.string(),
+	created_by: v.id("users"),
 });
 
 async function do_store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
@@ -1225,17 +1225,16 @@ export const get_page_snapshots_list = query({
 		page_id: v.id("pages"),
 		show_archived: v.boolean(),
 	},
-	returns: v.array(
-		v.object({
-			_id: v.id("pages_snapshots"),
-			_creationTime: v.number(),
-			workspace_id: v.string(),
-			project_id: v.string(),
-			page_id: v.id("pages"),
-			created_by: v.string(),
-			is_archived: v.optional(v.boolean()),
-		}),
-	),
+	returns: v.object({
+		snapshots: v.array(doc(app_convex_schema, "pages_snapshots")),
+		usersDict: v.record(
+			v.id("users"),
+			v.object({
+				_id: v.id("users"),
+				displayName: v.string(),
+			}),
+		),
+	}),
 	handler: async (ctx, args) => {
 		let snapshotsQuery = ctx.db
 			.query("pages_snapshots")
@@ -1249,15 +1248,20 @@ export const get_page_snapshots_list = query({
 
 		const snapshots = await snapshotsQuery.collect();
 
-		return snapshots.map((snapshot) => ({
-			_id: snapshot._id,
-			_creationTime: snapshot._creationTime,
-			workspace_id: snapshot.workspace_id,
-			project_id: snapshot.project_id,
-			page_id: snapshot.page_id,
-			created_by: snapshot.created_by,
-			is_archived: Boolean(snapshot.is_archived),
-		}));
+		const usersDict: Record<Id<"users">, { _id: Id<"users">; displayName: string }> = {};
+
+		const uniqueUserIds = Array.from(new Set(snapshots.map((s) => s.created_by)));
+		const users = await Promise.all(uniqueUserIds.map((userId) => ctx.db.get("users", userId)));
+
+		for (const user of users) {
+			if (!user) continue;
+			usersDict[user._id] = { _id: user._id, displayName: user.displayName };
+		}
+
+		return {
+			snapshots,
+			usersDict,
+		};
 	},
 });
 
@@ -1279,9 +1283,15 @@ async function do_get_page_snapshot_content(
 		return null;
 	}
 
-	const snapshot = await ctx.db.get(args.page_snapshot_id);
+	const snapshot = await ctx.db.get("pages_snapshots", args.page_snapshot_id);
 	if (!snapshot) {
 		return null;
+	}
+
+	const usersDict: Record<Id<"users">, { _id: Id<"users">; displayName: string }> = {};
+	const user = await ctx.db.get("users", snapshot.created_by);
+	if (user) {
+		usersDict[user._id] = { _id: user._id, displayName: user.displayName };
 	}
 
 	return {
@@ -1289,6 +1299,7 @@ async function do_get_page_snapshot_content(
 		page_snapshot_id: content.page_snapshot_id,
 		_creationTime: content._creationTime,
 		created_by: snapshot.created_by,
+		usersDict,
 	};
 }
 
@@ -1304,7 +1315,14 @@ export const get_page_snapshot_content = query({
 			content: v.string(),
 			page_snapshot_id: v.id("pages_snapshots"),
 			_creationTime: v.number(),
-			created_by: v.string(),
+			created_by: v.id("users"),
+			usersDict: v.record(
+				v.id("users"),
+				v.object({
+					_id: v.id("users"),
+					displayName: v.string(),
+				}),
+			),
 		}),
 		v.null(),
 	),
@@ -1318,7 +1336,7 @@ export const archive_snapshot = mutation({
 		page_snapshot_id: v.id("pages_snapshots"),
 	},
 	handler: async (ctx, args) => {
-		await ctx.db.patch(args.page_snapshot_id, {
+		await ctx.db.patch("pages_snapshots", args.page_snapshot_id, {
 			is_archived: true,
 		});
 	},
@@ -1331,7 +1349,7 @@ export const unarchive_snapshot = mutation({
 		page_snapshot_id: v.id("pages_snapshots"),
 	},
 	handler: async (ctx, args) => {
-		await ctx.db.patch(args.page_snapshot_id, {
+		await ctx.db.patch("pages_snapshots", args.page_snapshot_id, {
 			is_archived: false,
 		});
 	},
@@ -1434,7 +1452,7 @@ async function write_markdown_to_yjs_sync(
 			created_at: Date.now(),
 		}),
 
-		ctx.db.patch(pageYjsData._id, {
+		ctx.db.patch("pages_yjs_snapshots", pageYjsData._id, {
 			sequence: newSequenceData.last_sequence,
 			snapshot_update: newSnapshotUpdate,
 			updated_at: Date.now(),
@@ -1534,13 +1552,13 @@ export const yjs_snapshot_updates = internalMutation({
 				}),
 
 				// Prune compacted updates
-				...updateDataList.map((updateData) => ctx.db.delete(updateData._id)),
+				...updateDataList.map((updateData) => ctx.db.delete("pages_yjs_updates", updateData._id)),
 			]);
 
 			return null;
 		} finally {
 			for (const lock of scheduleLocks) {
-				await ctx.db.delete(lock._id);
+				await ctx.db.delete("pages_yjs_snapshot_schedules", lock._id);
 			}
 		}
 	},
@@ -1562,7 +1580,7 @@ async function yjs_increment_or_create_last_sequence(
 
 	// Update or create last_sequence tracking
 	if (lastSequenceData) {
-		await ctx.db.patch(lastSequenceData._id, { last_sequence: newSequence });
+		await ctx.db.patch("pages_yjs_docs_last_sequences", lastSequenceData._id, { last_sequence: newSequence });
 		lastSequenceData.last_sequence = newSequence;
 	} else {
 		const lastSequenceDataId = await ctx.db.insert("pages_yjs_docs_last_sequences", {
@@ -1571,7 +1589,7 @@ async function yjs_increment_or_create_last_sequence(
 			page_id: args.pageId,
 			last_sequence: 0,
 		});
-		lastSequenceData = (await ctx.db.get(lastSequenceDataId))!;
+		lastSequenceData = (await ctx.db.get("pages_yjs_docs_last_sequences", lastSequenceDataId))!;
 	}
 
 	return lastSequenceData;
@@ -1735,7 +1753,7 @@ export const restore_snapshot = mutation({
 			});
 		}
 
-		const createdBy = user.name;
+		const createdBy = user.id;
 		const updatedBy = user.name;
 		const updatedAt = Date.now();
 
@@ -1853,8 +1871,8 @@ export const cleanup_old_snapshots = internalMutation({
 								.eq("page_snapshot_id", snapshot._id),
 						)
 						.first()
-						.then((content) => content && ctx.db.delete(content._id)),
-					ctx.db.delete(snapshot._id),
+						.then((content) => content && ctx.db.delete("pages_snapshots_contents", content._id)),
+					ctx.db.delete("pages_snapshots", snapshot._id),
 				);
 			}
 		}

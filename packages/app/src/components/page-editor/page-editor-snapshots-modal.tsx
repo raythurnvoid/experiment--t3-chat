@@ -2,7 +2,7 @@ import "./page-editor-snapshots-modal.css";
 import { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { cn } from "@/lib/utils.ts";
+import { cn, should_never_happen } from "@/lib/utils.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import {
 	MyModal,
@@ -72,7 +72,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showArchived, setShowArchived] = useState(false);
 
-	const snapshots = useQuery(app_convex_api.ai_docs_temp.get_page_snapshots_list, {
+	const snapshotsQueryResult = useQuery(app_convex_api.ai_docs_temp.get_page_snapshots_list, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
 		project_id: ai_chat_HARDCODED_PROJECT_ID,
 		page_id: pageId,
@@ -143,18 +143,34 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	};
 
 	const handlePreviousSnapshot = () => {
-		if (!snapshots || !selectedSnapshotId) return;
-		const currentIndex = snapshots.findIndex((s) => s._id === selectedSnapshotId);
+		if (!snapshotsQueryResult || !selectedSnapshotId) {
+			const error = should_never_happen("[PageEditorSnapshotsModal.handlePreviousSnapshot]: missing deps", {
+				snapshotsQueryResult,
+				selectedSnapshotId,
+			});
+			console.error(error);
+			throw error;
+		}
+
+		const currentIndex = snapshotsQueryResult.snapshots.findIndex((s) => s._id === selectedSnapshotId);
 		if (currentIndex > 0) {
-			setSelectedSnapshotId(snapshots[currentIndex - 1]._id);
+			setSelectedSnapshotId(snapshotsQueryResult.snapshots[currentIndex - 1]._id);
 		}
 	};
 
 	const handleNextSnapshot = () => {
-		if (!snapshots || !selectedSnapshotId) return;
-		const currentIndex = snapshots.findIndex((s) => s._id === selectedSnapshotId);
-		if (currentIndex < snapshots.length - 1) {
-			setSelectedSnapshotId(snapshots[currentIndex + 1]._id);
+		if (!snapshotsQueryResult || !selectedSnapshotId) {
+			const error = should_never_happen("[PageEditorSnapshotsModal.handleNextSnapshot]: missing deps", {
+				snapshotsQueryResult,
+				selectedSnapshotId,
+			});
+			console.error(error);
+			throw error;
+		}
+
+		const currentIndex = snapshotsQueryResult.snapshots.findIndex((s) => s._id === selectedSnapshotId);
+		if (currentIndex < snapshotsQueryResult.snapshots.length - 1) {
+			setSelectedSnapshotId(snapshotsQueryResult.snapshots[currentIndex + 1]._id);
 		}
 	};
 
@@ -185,12 +201,18 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		handleSnapshotClick(snapshotId);
 	};
 
-	const currentIndex = snapshots && selectedSnapshotId ? snapshots.findIndex((s) => s._id === selectedSnapshotId) : -1;
-	const previousSnapshot = currentIndex > 0 ? snapshots?.[currentIndex - 1] : null;
+	const currentIndex =
+		snapshotsQueryResult && selectedSnapshotId
+			? snapshotsQueryResult.snapshots.findIndex((s) => s._id === selectedSnapshotId)
+			: -1;
+	const previousSnapshot = currentIndex > 0 ? snapshotsQueryResult?.snapshots[currentIndex - 1] : null;
 	const nextSnapshot =
-		currentIndex >= 0 && currentIndex < (snapshots?.length ?? 0) - 1 ? snapshots?.[currentIndex + 1] : null;
-	const isPreviousDisabled = !snapshots || !selectedSnapshotId || currentIndex === 0;
-	const isNextDisabled = !snapshots || !selectedSnapshotId || currentIndex === (snapshots?.length ?? 0) - 1;
+		currentIndex >= 0 && currentIndex < (snapshotsQueryResult?.snapshots.length ?? 0) - 1
+			? snapshotsQueryResult?.snapshots[currentIndex + 1]
+			: null;
+	const isPreviousDisabled = !snapshotsQueryResult || !selectedSnapshotId || currentIndex === 0;
+	const isNextDisabled =
+		!snapshotsQueryResult || !selectedSnapshotId || currentIndex === (snapshotsQueryResult?.snapshots.length ?? 0) - 1;
 
 	return (
 		<>
@@ -212,7 +234,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 					</div>
 
 					<MyModalScrollableArea>
-						{snapshots === undefined ? (
+						{snapshotsQueryResult === undefined ? (
 							<div className="PageEditorSnapshotsModal-skeleton-list">
 								{Array.from({ length: 10 }, (_, index) => (
 									<MySkeleton
@@ -223,7 +245,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 									/>
 								))}
 							</div>
-						) : snapshots.length === 0 ? (
+						) : snapshotsQueryResult.snapshots.length === 0 ? (
 							<div
 								className={cn(
 									"PageEditorSnapshotsModal-empty-message-container" satisfies PageEditorSnapshotsModal_ClassNames,
@@ -237,7 +259,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 							</div>
 						) : (
 							<div className="space-y-2">
-								{snapshots.map((snapshot) => (
+								{snapshotsQueryResult.snapshots.map((snapshot) => (
 									<div
 										key={snapshot._id}
 										className={cn(
@@ -277,7 +299,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 												"PageEditorSnapshotsModal-snapshot-support-text" satisfies PageEditorSnapshotsModal_ClassNames,
 											)}
 										>
-											{snapshot.created_by}
+											{snapshotsQueryResult.usersDict[snapshot.created_by]?.displayName ?? "Unknown"}
 										</span>
 										<div
 											className={cn(
@@ -361,7 +383,8 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 															"PageEditorSnapshotsModal-preview-snapshot-data-author" satisfies PageEditorSnapshotsModal_ClassNames,
 														)}
 													>
-														{selectedSnapshotContent.created_by}
+														{selectedSnapshotContent.usersDict?.[selectedSnapshotContent.created_by]?.displayName ??
+															"Unknown"}
 													</div>
 													<div
 														className={cn(
@@ -388,7 +411,10 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																<TooltipContent>
 																	<div>
 																		<div>{format_relative_time(previousSnapshot._creationTime)}</div>
-																		<div>{previousSnapshot.created_by}</div>
+																		<div>
+																			{snapshotsQueryResult.usersDict[previousSnapshot.created_by]?.displayName ??
+																				"Unknown"}
+																		</div>
 																	</div>
 																</TooltipContent>
 															)}
@@ -414,7 +440,10 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																<TooltipContent>
 																	<div>
 																		<div>{format_relative_time(nextSnapshot._creationTime)}</div>
-																		<div>{nextSnapshot.created_by}</div>
+																		<div>
+																			{snapshotsQueryResult.usersDict[nextSnapshot.created_by]?.displayName ??
+																				"Unknown"}
+																		</div>
 																	</div>
 																</TooltipContent>
 															)}
