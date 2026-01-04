@@ -167,6 +167,14 @@ You must not use `any` to bypass typescript errors unless the user is asking for
 
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
+## React Compiler: avoid try/catch/finally blocks
+
+The React Compiler currently has issues lowering `try { ... } catch { ... } finally { ... }` (especially with a `finally` clause) inside components/handlers. Prefer the existing pattern used in this repo:
+
+- Wrap async logic in an `async (/* iife */) => { ... }` IIFE
+- Handle errors with `.catch(...)`
+- Do cleanup/state resets with `.finally(...)`
+
 ## Object.assign instead of spread operator
 
 When conditionally assigning properties to an object, use `Object.assign` instead of the spread operator to keep a cleaner syntax.
