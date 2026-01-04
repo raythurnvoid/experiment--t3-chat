@@ -119,7 +119,7 @@ export const users_set_anonymous_auth_token = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		await ctx.db.patch(args.userId, {
+		await ctx.db.patch("users", args.userId, {
 			anonymousAuthToken: args.token,
 		});
 		return null;
@@ -136,7 +136,7 @@ export const get = internalQuery({
 		if (!userId) {
 			return null;
 		}
-		return await ctx.db.get(userId);
+		return await ctx.db.get("users", userId);
 	},
 });
 
@@ -176,7 +176,7 @@ export const users_upsert_clerk_user = internalMutation({
 		if (existing.length > 0) {
 			const user = existing[0]!;
 			if (args.displayName && !user.displayName) {
-				await ctx.db.patch(user._id, { displayName: args.displayName });
+				await ctx.db.patch("users", user._id, { displayName: args.displayName });
 			}
 			return user._id;
 		}
@@ -189,7 +189,7 @@ export const users_upsert_clerk_user = internalMutation({
 		});
 
 		if (!displayName) {
-			await ctx.db.patch(userId, { displayName: `User ${userId}` });
+			await ctx.db.patch("users", userId, { displayName: `User ${userId}` });
 		}
 
 		return userId;
@@ -223,7 +223,7 @@ export const resolve_user = internalMutation({
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`" } });
 			}
 
-			const user = await ctx.db.get(userId);
+			const user = await ctx.db.get("users", userId);
 			if (!user) {
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`" } });
 			}
@@ -237,7 +237,7 @@ export const resolve_user = internalMutation({
 					.collect();
 				for (const existingUser of existingClerkUsers) {
 					if (existingUser._id !== user._id) {
-						await ctx.db.delete(existingUser._id);
+						await ctx.db.delete("users", existingUser._id);
 					}
 				}
 
@@ -245,7 +245,7 @@ export const resolve_user = internalMutation({
 					return Result({ _nay: { message: "Invalid `anonymousUserToken`, cannot link to Clerk account" } });
 				}
 
-				await ctx.db.patch(user._id, {
+				await ctx.db.patch("users", user._id, {
 					clerkUserId: args.clerkUserId,
 					anonymousAuthToken: null,
 					displayName: args.displayName,
@@ -449,14 +449,16 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							const clerkUserId = identity.subject;
-							const userId = identity.external_id as Id<"users"> | undefined;
-
-							// TODO: we should call resolve_user to recreate the new user if it got deleted from the DB
-							if (userId) {
-								return {
-									status: 200,
-									body: Result({ _yay: { userId: userId } }),
-								} as const;
+							if (identity.external_id) {
+								const user = await ctx.runQuery(internal.users.get, {
+									userId: identity.external_id,
+								});
+								if (user) {
+									return {
+										status: 200,
+										body: Result({ _yay: { userId: user._id } }),
+									} as const;
+								}
 							}
 
 							const resolveUserResult = await ctx.runMutation(internal.users.resolve_user, {
@@ -511,4 +513,16 @@ export function users_http_routes(router: RouterForConvexModules) {
 			},
 		}))(),
 	};
+}
+
+// Override default convex auth types
+declare module "convex/server" {
+	interface UserIdentity {
+		/**
+		 * Official Clerk JWT claim, not directly supported by convex.
+		 *
+		 * We use this to store the Convex user id for Clerk users.
+		 */
+		external_id?: Id<"users">;
+	}
 }
