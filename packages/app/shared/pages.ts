@@ -10,7 +10,7 @@ import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
-import { Doc as YDoc, encodeStateAsUpdate, applyUpdate } from "yjs";
+import { Doc as YDoc, encodeStateAsUpdate, applyUpdate, encodeStateVector } from "yjs";
 import { Editor, Extension } from "@tiptap/core";
 import type { MarkdownParseResult, JSONContent as TiptapJSONContent } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
@@ -133,15 +133,15 @@ export function pages_yjs_create_empty_state_update() {
 /**
  * Applies incremental Yjs updates to an existing Y.Doc.
  *
- * @param mut_yDoc - The Y.Doc instance to apply updates to (mutated in place)
+ * @param mut_yjsDoc - The Y.Doc instance to apply updates to (mutated in place)
  * @param incrementalUpdates - Array of incremental Yjs updates (ArrayBuffer) to apply
  */
-export function pages_yjs_apply_incremental_array_buffer_updates(
-	mut_yDoc: YDoc,
+export function pages_yjs_doc_apply_incremental_array_buffer_updates(
+	mut_yjsDoc: YDoc,
 	incrementalUpdates: Array<ArrayBuffer>,
 ): void {
 	for (const incrementalUpdate of incrementalUpdates) {
-		applyUpdate(mut_yDoc, new Uint8Array(incrementalUpdate));
+		applyUpdate(mut_yjsDoc, new Uint8Array(incrementalUpdate));
 	}
 }
 
@@ -158,21 +158,21 @@ export function pages_yjs_apply_incremental_array_buffer_updates(
  * to apply after the initial update
  * @returns A new Y.Doc instance with all updates applied
  */
-export function pages_yjs_create_doc_from_array_buffer_update(
+export function pages_yjs_doc_create_from_array_buffer_update(
 	update: ArrayBuffer,
 	args?: { additionalIncrementalArrayBufferUpdates?: Array<ArrayBuffer> },
 ): YDoc {
-	const yDoc = new YDoc();
-	applyUpdate(yDoc, new Uint8Array(update));
+	const yjsDoc = new YDoc();
+	applyUpdate(yjsDoc, new Uint8Array(update));
 
 	if (args?.additionalIncrementalArrayBufferUpdates) {
-		pages_yjs_apply_incremental_array_buffer_updates(yDoc, args.additionalIncrementalArrayBufferUpdates);
+		pages_yjs_doc_apply_incremental_array_buffer_updates(yjsDoc, args.additionalIncrementalArrayBufferUpdates);
 	}
 
-	return yDoc;
+	return yjsDoc;
 }
 
-export function pages_yjs_update_from_tiptap_editor(args: {
+export function pages_yjs_doc_update_from_tiptap_editor(args: {
 	mut_yjsDoc: YDoc;
 	tiptapEditor: Editor;
 	opKind: "snapshot-restore" | "user-edit";
@@ -187,9 +187,9 @@ export function pages_yjs_update_from_tiptap_editor(args: {
 	}, args.opKind);
 }
 
-export function pages_yjs_create_doc_from_tiptap_editor(args: { tiptapEditor: Editor }) {
+export function pages_yjs_doc_create_from_tiptap_editor(args: { tiptapEditor: Editor }) {
 	const yjsDoc = new YDoc();
-	pages_yjs_update_from_tiptap_editor({
+	pages_yjs_doc_update_from_tiptap_editor({
 		mut_yjsDoc: yjsDoc,
 		tiptapEditor: args.tiptapEditor,
 		opKind: "snapshot-restore",
@@ -214,13 +214,13 @@ export function pages_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
 	}
 }
 
-export function pages_yjs_doc_update_rich_text_from_markdown(args: { markdown: string; mut_yjsDoc: YDoc }) {
+export function pages_yjs_doc_update_from_markdown(args: { markdown: string; mut_yjsDoc: YDoc }) {
 	const editor = pages_headless_tiptap_editor_create({
 		initialContent: { markdown: args.markdown },
 	});
 
 	try {
-		pages_yjs_update_from_tiptap_editor({
+		pages_yjs_doc_update_from_tiptap_editor({
 			mut_yjsDoc: args.mut_yjsDoc,
 			tiptapEditor: editor,
 			opKind: "user-edit",
@@ -235,12 +235,33 @@ export function pages_yjs_doc_update_rich_text_from_markdown(args: { markdown: s
 export function pages_yjs_doc_create_from_markdown(args: { markdown: string }) {
 	const editor = pages_headless_tiptap_editor_create({ initialContent: { markdown: args.markdown } });
 	try {
-		const yjsDoc = pages_yjs_create_doc_from_tiptap_editor({ tiptapEditor: editor });
+		const yjsDoc = pages_yjs_doc_create_from_tiptap_editor({ tiptapEditor: editor });
 		return yjsDoc;
 	} finally {
 		editor.destroy();
 	}
 }
+
+export function pages_yjs_doc_clone(args: { yjsDoc: YDoc }) {
+	const clonedDoc = new YDoc();
+	applyUpdate(clonedDoc, encodeStateAsUpdate(args.yjsDoc));
+	return clonedDoc;
+}
+
+export function pages_yjs_compute_diff_update_from_state_vector(args: {
+	yjsDoc: YDoc;
+	yjsBeforeStateVector: Uint8Array;
+}) {
+	const diffUpdate = encodeStateAsUpdate(args.yjsDoc, args.yjsBeforeStateVector);
+	return diffUpdate.byteLength === 0 ? null : diffUpdate;
+}
+
+export function pages_yjs_compute_diff_update_from_yjs_doc(args: { yjsDoc: YDoc; yjsBeforeDoc: YDoc }) {
+	const yjsBeforeStateVector = encodeStateVector(args.yjsBeforeDoc);
+	return pages_yjs_compute_diff_update_from_state_vector({ yjsDoc: args.yjsDoc, yjsBeforeStateVector });
+}
+
+// #endregion yjs
 
 // #region tiptap editor
 /**
@@ -297,7 +318,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 						}
 
 						return {
-							type: "appTrailingNewLines",
+							type: "app_trailing_new_lines",
 							raw: src,
 						};
 					},

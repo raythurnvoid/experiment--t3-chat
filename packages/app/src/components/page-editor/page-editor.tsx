@@ -307,7 +307,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 								// Prevent to send updates when navigating to a different page
 								if (presence.sessionToken !== localSessionToken) return;
 
-								const data = presenceStore?.presenceData.get(presence.sessionId);
+								const data = presenceStore?.sessionsData.get(presence.sessionId);
 								if (!data) {
 									// This means the session got disconnected before the debounced logic ran.
 									// It can happen while switching tabs.

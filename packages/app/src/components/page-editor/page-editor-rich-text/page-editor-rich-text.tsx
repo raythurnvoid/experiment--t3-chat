@@ -486,7 +486,6 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 
 	useEffect(() => {
 		if (editor && isEditorReady) {
-			console.debug("[PageEditorRichText] Editor is ready");
 			currentMarkdownContent.current = editor.getMarkdown();
 		}
 	}, [isEditorReady]);

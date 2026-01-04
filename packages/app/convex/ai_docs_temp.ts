@@ -42,9 +42,10 @@ import {
 	pages_u8_to_array_buffer,
 	pages_headless_tiptap_editor_set_content_from_markdown,
 	pages_yjs_create_empty_state_update,
-	pages_yjs_create_doc_from_array_buffer_update,
-	pages_yjs_update_from_tiptap_editor,
-	pages_yjs_create_doc_from_tiptap_editor,
+	pages_yjs_doc_create_from_array_buffer_update,
+	pages_yjs_doc_update_from_tiptap_editor,
+	pages_yjs_doc_create_from_tiptap_editor,
+	pages_yjs_compute_diff_update_from_state_vector,
 } from "../server/pages.ts";
 import { minimatch } from "minimatch";
 import { Result } from "../shared/errors-as-values-utils.ts";
@@ -991,6 +992,44 @@ export const try_get_markdown_content_or_fallback_to_yjs_data = query({
 	},
 });
 
+export const get_page_last_yjs_sequence = query({
+	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
+	returns: v.union(v.object({ last_sequence: v.number() }), v.null()),
+	handler: async (ctx, args) => {
+		const page = await ctx.db.get("pages", args.pageId).then((page) => {
+			if (!page || page.workspace_id !== args.workspaceId || page.project_id !== args.projectId) return null;
+			return page;
+		});
+
+		if (!page) {
+			return null;
+		}
+
+		if (!page.yjs_last_sequence_id) {
+			throw should_never_happen("page.yjs_last_sequence_id is not set", {
+				pageId: args.pageId,
+				yjsLastSequenceId: page.yjs_last_sequence_id,
+			});
+		}
+
+		const lastYjsSequenceDoc = await ctx.db
+			.get("pages_yjs_docs_last_sequences", page.yjs_last_sequence_id)
+			.then((doc) => {
+				if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
+				return doc;
+			});
+
+		if (!lastYjsSequenceDoc) {
+			throw should_never_happen("lastYjsSequenceDoc is not valorized", {
+				pageId: args.pageId,
+				yjsLastSequenceId: page.yjs_last_sequence_id,
+			});
+		}
+
+		return { last_sequence: lastYjsSequenceDoc.last_sequence };
+	},
+});
+
 export const text_search_pages = internalQuery({
 	args: {
 		workspaceId: v.string(),
@@ -1303,7 +1342,7 @@ function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
 }
 
 function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor }) {
-	const yjsDoc = pages_yjs_create_doc_from_tiptap_editor({
+	const yjsDoc = pages_yjs_doc_create_from_tiptap_editor({
 		tiptapEditor: args.tiptapEditor,
 	});
 	return encodeStateAsUpdate(yjsDoc);
@@ -1314,19 +1353,19 @@ function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
 	headlessEditorWithUpdatedContent: Editor;
 	opKind: "snapshot-restore" | "user-edit";
 }) {
-	const yjsDoc = pages_yjs_create_doc_from_array_buffer_update(args.pageYjsData.snapshot_update);
-	const yjsBeforeVector = encodeStateVector(yjsDoc);
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.pageYjsData.snapshot_update);
+	const yjsBeforeStateVector = encodeStateVector(yjsDoc);
 
-	pages_yjs_update_from_tiptap_editor({
+	pages_yjs_doc_update_from_tiptap_editor({
 		mut_yjsDoc: yjsDoc,
 		tiptapEditor: args.headlessEditorWithUpdatedContent,
 		opKind: args.opKind,
 	});
 
-	// TODO: there's a small performance improvement that can be done by listening for updates events from ydoc
-	const diffUpdate = encodeStateAsUpdate(yjsDoc, yjsBeforeVector);
+	// TODO: there's a small performance improvement that can be achieved by listening for updates events from ydoc
+	const diffUpdate = pages_yjs_compute_diff_update_from_state_vector({ yjsDoc, yjsBeforeStateVector });
 
-	return diffUpdate.byteLength === 0 ? null : diffUpdate;
+	return diffUpdate;
 }
 
 async function write_markdown_to_yjs_sync(
@@ -1546,6 +1585,12 @@ export const yjs_push_update = mutation({
 		update: v.bytes(),
 		sessionId: v.string(),
 	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			newSequence: v.number(),
+		}),
+	),
 	handler: async (ctx, args) => {
 		const pageId = ctx.db.normalizeId("pages", args.pageId);
 		if (!pageId) {
@@ -1595,6 +1640,8 @@ export const yjs_push_update = mutation({
 				});
 			}
 		}
+
+		return { newSequence: newSequenceData.last_sequence };
 	},
 });
 

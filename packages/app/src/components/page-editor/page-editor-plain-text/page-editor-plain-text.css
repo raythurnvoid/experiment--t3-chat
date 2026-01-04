@@ -5,6 +5,43 @@
 		height: 100%;
 	}
 
+	.PageEditorPlainTextToolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: relative;
+		z-index: 1;
+	}
+
+	.PageEditorPlainTextToolbar-scrollable-area {
+		gap: 4px;
+
+		flex-direction: row;
+		align-items: center;
+		display: flex;
+
+		padding: 4px 8px;
+
+		overflow-x: auto;
+		overflow-y: hidden;
+		contain: content;
+
+		scrollbar-width: initial;
+
+		min-width: 0;
+	}
+
+	.PageEditorPlainTextToolbar-button {
+		gap: 4px;
+	}
+
+	.PageEditorPlainTextToolbar-icon {
+		width: 20px;
+		height: 20px;
+	}
+
 	.PageEditorPlainText-editor {
 		flex: 1;
 

@@ -28,7 +28,7 @@ function is_update_function<T>(value: T | ((oldValue: T) => T)): value is (oldVa
  *
  * @returns A tuple containing the state and the function to update it.
  */
-export function useLiveState<T>(initialValue: T) {
+export function useStateRef<T>(initialValue: T) {
 	const ref = useRef(initialValue);
 	const [state, setState] = useState(initialValue);
 

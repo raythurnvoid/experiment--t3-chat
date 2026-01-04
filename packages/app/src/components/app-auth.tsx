@@ -6,7 +6,7 @@ import { type app_convex_Id } from "../lib/app-convex-client.ts";
 import { app_fetch_auth_anonymous, app_fetch_auth_resolve_user } from "../lib/fetch.ts";
 import { storage_local } from "../lib/storage.ts";
 import { create_deferred, delay } from "../lib/utils.ts";
-import { useAsyncEffect, useLiveState } from "../hooks/utils-hooks.ts";
+import { useAsyncEffect, useStateRef } from "../hooks/utils-hooks.ts";
 
 function jwt_read_payload_claim_string(jwt: string, key: string): string | null {
 	const parts = jwt.split(".");
@@ -174,7 +174,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 	const tokenFlowAbortControllerRef = useRef(new AbortController());
 
-	const [authStatusRef, setAuthStatus, authStatus] = useLiveState<{
+	const [authStatusRef, setAuthStatus, authStatus] = useStateRef<{
 		isAnonymous: boolean | undefined;
 		isLoading: boolean;
 		isLoaded: boolean;

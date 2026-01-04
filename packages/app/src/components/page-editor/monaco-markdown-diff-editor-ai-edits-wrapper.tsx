@@ -3,7 +3,7 @@ import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { MonacoMarkdownDiffEditor, type MonacoMarkdownDiffEditor_Ref } from "./monaco-markdown-diff-editor.tsx";
 import { cn } from "../../lib/utils.ts";
-import { useLiveState } from "../../hooks/utils-hooks.ts";
+import { useStateRef } from "../../hooks/utils-hooks.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 export interface MonacoMarkdownDiffEditorAiEditsWrapper_Props {
@@ -19,7 +19,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 	const { ref, id, className, pageId, threadId, onExit } = props;
 	const convex = useConvex();
 
-	const [initialModified, setInitialModified] = useLiveState<string | undefined>(undefined);
+	const [initialModified, setInitialModified] = useStateRef<string | undefined>(undefined);
 
 	const diffEditorRef = useRef<MonacoMarkdownDiffEditor_Ref>(null);
 	useImperativeHandle(ref, () => diffEditorRef.current!, []);
