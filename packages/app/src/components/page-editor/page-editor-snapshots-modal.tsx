@@ -12,18 +12,17 @@ import {
 	MyModalFooter,
 	MyModalCloseTrigger,
 	MyModalHeading,
-} from "../../my-modal.tsx";
-import { MyButton, MyButtonIcon } from "../../my-button.tsx";
-import { MyIconButton, MyIconButtonIcon } from "../../my-icon-button.tsx";
-import { MySkeleton } from "../../ui/my-skeleton.tsx";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip.tsx";
-import { Switch } from "../../ui/switch.tsx";
-import { Label } from "../../ui/label.tsx";
+} from "../my-modal.tsx";
+import { MyButton, MyButtonIcon } from "../my-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "../my-icon-button.tsx";
+import { MySkeleton } from "../ui/my-skeleton.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
+import { Switch } from "../ui/switch.tsx";
+import { Label } from "../ui/label.tsx";
 import { Clock, FileText, ChevronLeft, ChevronRight, Archive, ArchiveRestore } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../../lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { diffWordsWithSpace } from "diff";
-import type { Editor } from "@tiptap/react";
 
 export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal"
@@ -59,13 +58,14 @@ export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal-navigation-action";
 
 export type PageEditorSnapshotsModal_Props = {
-	editor: Editor | null;
+	getCurrentMarkdown: () => string;
+	onApplySnapshotMarkdown?: (markdown: string) => void;
 	pageId: app_convex_Id<"pages">;
 	sessionId: string;
 };
 
 export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {
-	const { pageId, editor, sessionId } = props;
+	const { getCurrentMarkdown, onApplySnapshotMarkdown, pageId, sessionId } = props;
 	const [isListOpen, setIsListOpen] = useState(false);
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
@@ -95,13 +95,8 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	const archiveSnapshot = useMutation(app_convex_api.ai_docs_temp.archive_snapshot);
 	const unarchiveSnapshot = useMutation(app_convex_api.ai_docs_temp.unarchive_snapshot);
 
-	const getCurrentEditorContent = () => {
-		if (!editor) return "";
-		return editor.getMarkdown();
-	};
-
 	const createDiff = (snapshotContent: string) => {
-		return diffWordsWithSpace(getCurrentEditorContent(), snapshotContent);
+		return diffWordsWithSpace(getCurrentMarkdown(), snapshotContent);
 	};
 
 	const handleSnapshotClick = (snapshotId: app_convex_Id<"pages_snapshots">) => {
@@ -109,27 +104,37 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 		setIsPreviewOpen(true);
 	};
 
-	const handleConfirm = async () => {
+	const handleConfirm = () => {
 		if (!selectedSnapshotId) return;
+		const snapshotMarkdown =
+			selectedSnapshotContent && "content" in selectedSnapshotContent ? selectedSnapshotContent.content : null;
+		if (snapshotMarkdown == null) return;
 
 		setIsRestoring(true);
-		try {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
 			await restoreSnapshot({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageSnapshotId: selectedSnapshotId,
 				pageId: pageId,
 				sessionId: sessionId,
+				currentMarkdownContent: getCurrentMarkdown(),
 			});
 			console.debug("Snapshot restored:", selectedSnapshotId);
+
+			onApplySnapshotMarkdown?.(snapshotMarkdown);
+
 			setIsPreviewOpen(false);
 			setIsListOpen(false);
 			setSelectedSnapshotId(null);
-		} catch (err) {
-			console.error("Failed to restore snapshot:", err);
-		} finally {
-			setIsRestoring(false);
-		}
+		})()
+			.catch((err) => {
+				console.error("Failed to restore snapshot:", err);
+			})
+			.finally(() => {
+				setIsRestoring(false);
+			});
 	};
 
 	const handleCancel = () => {
@@ -154,7 +159,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	};
 
 	const handleArchiveClick = async (
-		e: React.MouseEvent,
+		_e: React.MouseEvent,
 		snapshotId: app_convex_Id<"pages_snapshots">,
 		isArchived: boolean | undefined,
 	) => {
@@ -190,7 +195,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	return (
 		<>
 			{/* Snapshots Button */}
-			<MyIconButton variant="ghost" tooltip="Snapshots" disabled={!editor} onClick={() => setIsListOpen(true)}>
+			<MyIconButton variant="ghost" tooltip="Snapshots" onClick={() => setIsListOpen(true)}>
 				<Clock />
 			</MyIconButton>
 

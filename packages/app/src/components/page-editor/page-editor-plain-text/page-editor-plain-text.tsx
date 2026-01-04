@@ -25,6 +25,7 @@ import { Await } from "@/components/await.tsx";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { useLiveRef, useStateRef } from "../../../hooks/utils-hooks.ts";
 import { toast } from "sonner";
+import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 
 // #region Error
 type PageEditorPlainTextError_Props = ErrorComponentProps;
@@ -160,12 +161,25 @@ export type PageEditorPlainTextToolbar_ClassNames =
 export type PageEditorPlainTextToolbar_Props = {
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
+	pageId: app_convex_Id<"pages">;
+	sessionId: string;
+	getCurrentMarkdown: () => string;
+	onApplySnapshotMarkdown: (markdown: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
 };
 
 function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
-	const { isSaveDisabled, isSyncDisabled, onClickSave, onClickSync } = props;
+	const {
+		isSaveDisabled,
+		isSyncDisabled,
+		pageId,
+		sessionId,
+		getCurrentMarkdown,
+		onApplySnapshotMarkdown,
+		onClickSave,
+		onClickSync,
+	} = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
@@ -207,6 +221,12 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 						</MyButtonIcon>
 						Sync
 					</MyButton>
+					<PageEditorSnapshotsModal
+						pageId={pageId}
+						sessionId={sessionId}
+						getCurrentMarkdown={getCurrentMarkdown}
+						onApplySnapshotMarkdown={onApplySnapshotMarkdown}
+					/>
 				</div>
 			)}
 		</div>
@@ -343,6 +363,31 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		editorRef.current.pushUndoStop();
 		setIsDirty(true);
 	}
+
+	const getCurrentMarkdown = () => {
+		return editorRef.current?.getModel()?.getValue() ?? initialData.markdown;
+	};
+
+	const handleApplySnapshotMarkdown = () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
+			const remoteData = await fetch_page_yjs_state_and_markdown(convex, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
+			});
+
+			resetToNewBaseline(remoteData.markdown);
+			baselineYjsDocRef.current = remoteData.mut_yjsDoc;
+			workingYjsDocRef.current = pages_yjs_doc_clone({ yjsDoc: remoteData.mut_yjsDoc });
+			setWorkingYjsSequence(remoteData.yjsSequence);
+		})()
+			.catch((err) => {
+				console.error("[PageEditorPlainText] Failed to apply snapshot restore", err);
+				toast.error(err instanceof Error ? err.message : "Failed to restore snapshot");
+			})
+			.finally(() => {});
+	};
 
 	const handleOnMount: EditorProps["onMount"] = (editor, monaco) => {
 		editorRef.current = editor;
@@ -550,6 +595,10 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			<PageEditorPlainTextToolbar
 				isSaveDisabled={isSaveDisabled}
 				isSyncDisabled={isSyncDisabled}
+				pageId={pageId}
+				sessionId={presenceStore.localSessionId}
+				getCurrentMarkdown={getCurrentMarkdown}
+				onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
 				onClickSave={handleClickSave}
 				onClickSync={handleClickSync}
 			/>

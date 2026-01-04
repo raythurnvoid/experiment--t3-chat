@@ -25,7 +25,7 @@ import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-t
 import { MySeparator, type MySeparator_ClassNames } from "@/components/my-separator.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
-import PageEditorSnapshotsModal from "./page-editor-snapshots-modal.tsx";
+import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { cn, type AppElementId } from "@/lib/utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
@@ -113,7 +113,11 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 					>
 						{charsCount} Words
 					</MyBadge>
-					<PageEditorSnapshotsModal pageId={pageId} editor={editor} sessionId={sessionId} />
+					<PageEditorSnapshotsModal
+						pageId={pageId}
+						sessionId={sessionId}
+						getCurrentMarkdown={() => editor.getMarkdown()}
+					/>
 				</div>
 			)}
 		</div>
