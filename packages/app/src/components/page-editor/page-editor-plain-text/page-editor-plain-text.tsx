@@ -610,6 +610,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 					theme={app_monaco_THEME_NAME_DARK}
 					options={{
 						wordWrap: "on",
+						scrollBeyondLastLine: false,
 						model: initialEditorModel,
 					}}
 					onMount={handleOnMount}
