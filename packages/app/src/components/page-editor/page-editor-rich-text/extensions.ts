@@ -99,6 +99,7 @@ export const defaultExtensions = [
 	sharedExtensions.textStyle,
 	Color,
 	sharedExtensions.underline,
+	sharedExtensions.liveblocksComments,
 	CustomKeymap,
 	DragHandle,
 	sharedExtensions.textAlign,

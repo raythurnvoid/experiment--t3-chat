@@ -5,17 +5,20 @@ import { TaskList } from "@tiptap/extension-task-list";
 import { TaskItem } from "@tiptap/extension-task-item";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { Typography } from "@tiptap/extension-typography";
-import { TextStyle } from "@tiptap/extension-text-style";
+import { TextStyle, Color } from "@tiptap/extension-text-style";
 import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
 import { Doc as YDoc, encodeStateAsUpdate, applyUpdate, encodeStateVector } from "yjs";
-import { Editor, Extension } from "@tiptap/core";
-import type { MarkdownParseResult, JSONContent as TiptapJSONContent } from "@tiptap/core";
+import { Editor, Extension, type Extensions } from "@tiptap/core";
+import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { CommentsExtension } from "@liveblocks/react-tiptap";
+import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
+import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
@@ -84,8 +87,17 @@ const pages_marked = ((/* iife */) => {
 export const pages_parse_markdown_to_html = ((/* iife */) => {
 	function value(markdown: string) {
 		const markedInstance = pages_marked();
-		const result = markedInstance.parse(markdown, { async: false });
-		return result;
+		const html = markedInstance.parse(markdown, { async: false });
+
+		// Preserve trailing empty lines at EOF (Markdown usually ignores them).
+		// - every 2 `\n` => 1 empty paragraph
+		// - odd counts round up
+		const trailing = /\n+$/.exec(markdown)?.[0] ?? "";
+		const newlineCount = trailing.length > 0 ? trailing.split("\n").length - 1 : 0;
+		if (newlineCount === 0) return html;
+
+		const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
+		return html + "<p></p>".repeat(paragraphCount);
 	}
 
 	const cache = new Map<Parameters<typeof value>[0], ReturnType<typeof value>>();
@@ -101,6 +113,23 @@ export const pages_parse_markdown_to_html = ((/* iife */) => {
 		return result;
 	};
 })();
+
+export function pages_tiptap_html_to_json(args: { html: string; extensions?: Extensions }) {
+	const extensions = args.extensions ?? Object.values(pages_get_tiptap_shared_extensions());
+	const json =
+		typeof window === "undefined"
+			? tiptap_generateJSON_server(args.html, extensions)
+			: tiptap_generateJSON_browser(args.html, extensions);
+	return json;
+}
+
+export function pages_tiptap_markdown_to_json(args: { markdown: string; extensions?: Extensions }) {
+	const html = pages_parse_markdown_to_html(args.markdown);
+	return pages_tiptap_html_to_json({
+		html,
+		extensions: args.extensions,
+	});
+}
 
 /**
  * Convert a Uint8Array to an ArrayBuffer.
@@ -270,8 +299,6 @@ export function pages_yjs_compute_diff_update_from_yjs_doc(args: { yjsDoc: YDoc;
  * Shared with client and server code.
  */
 export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
-	const trailingNewLinesRegex = /^\n+$/;
-
 	function value() {
 		return {
 			starterKit: StarterKit.configure({
@@ -296,75 +323,9 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			}),
 			textAlign: TextAlign,
 			typography: Typography,
-			markdown: Markdown.configure({
-				// Tiptap expects another version of marked but this should do fine
-				marked: pages_marked(),
-			}),
-			// Preserve trailing empty lines at EOF without affecting spacing between blocks
-			// when parsing markdown to JSON.
-			appMarkdownTrailingNewLinesToken: Extension.create({
-				name: "appMarkdownTrailingNewLinesToken",
-				// Only handle our custom token, not Marked's built-in `space` token.
-				markdownTokenName: "app_trailing_new_lines",
-				markdownTokenizer: {
-					name: "appTrailingNewLines",
-					level: "block",
-					start(src: string) {
-						return trailingNewLinesRegex.test(src) ? 0 : -1;
-					},
-					tokenize(src: string) {
-						if (!trailingNewLinesRegex.test(src)) {
-							return undefined;
-						}
-
-						return {
-							type: "app_trailing_new_lines",
-							raw: src,
-						};
-					},
-				},
-				parseMarkdown: (token, helpers) => {
-					const raw = token.raw ?? "";
-					const newlineCount = raw.length > 0 ? raw.split("\n").length - 1 : 0;
-					// Odd counts can happen; we round up to avoid losing an intentional blank line.
-					const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
-
-					const result: MarkdownParseResult[] = [];
-					for (let i = 0; i < paragraphCount; i++) {
-						result.push(helpers.createNode("paragraph", undefined, []));
-					}
-					return result;
-				},
-			}),
-			// Preserve empty paragraphs between blocks when parsing markdown to JSON.
-			appMarkdownSpaceToken: Extension.create({
-				name: "appMarkdownSpaceToken",
-				// Marked emits `space` tokens for blank lines.
-				markdownTokenName: "space",
-				parseMarkdown: (token, helpers) => {
-					const raw = token.raw ?? "";
-					const newlineCount = raw.length > 0 ? raw.split("\n").length - 1 : 0;
-
-					// `\n\n` between blocks is expected and should not create an empty paragraph.
-					// For additional blank lines, create empty paragraphs:
-					// - 2 newlines => 0 empty paragraphs
-					// - 4 newlines => 1 empty paragraph
-					// - 6 newlines => 2 empty paragraphs
-					// Odd counts can happen; we round up to avoid losing an intentional blank line.
-					const paragraphCount = Math.max(0, Math.ceil(newlineCount / 2) - 1);
-					if (paragraphCount === 0) {
-						return [];
-					}
-
-					const result: MarkdownParseResult[] = [];
-					for (let i = 0; i < paragraphCount; i++) {
-						result.push(helpers.createNode("paragraph", undefined, []));
-					}
-					return result;
-				},
-			}),
+			markdown: Markdown.configure({}),
 			highlight: Highlight.extend({
-				renderMarkdown: (node, helpers, ctx) => {
+				renderMarkdown: (node: TiptapJSONContent, helpers: MarkdownRendererHelpers, ctx: RenderContext) => {
 					const color = node.attrs?.color;
 
 					if (!color) {
@@ -379,7 +340,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 				multicolor: true,
 			}),
 			textStyle: TextStyle.extend({
-				renderMarkdown: (node, helpers, ctx) => {
+				renderMarkdown: (node: TiptapJSONContent, helpers: MarkdownRendererHelpers, ctx: RenderContext) => {
 					const color = node.attrs?.color;
 
 					if (!color) {
@@ -389,6 +350,9 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 					const content = helpers.renderChildren(node.content || []);
 					return `<span style="color: ${color}">${content}</span>`;
 				},
+			}),
+			color: Color.configure({
+				types: ["textStyle"],
 			}),
 			underline: Underline.extend({
 				renderMarkdown: (node, helpers, ctx) => {
@@ -402,6 +366,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 					class: "mt-4 mb-6 border-t border-muted-foreground",
 				},
 			}),
+			liveblocksComments: CommentsExtension,
 		};
 	}
 
@@ -440,6 +405,15 @@ export function pages_headless_tiptap_editor_create(args?: {
 		},
 	});
 
+	// In Tiptap's core, extension ProseMirror plugins are normally installed during `createView()`.
+	// Headless editors never create a DOM view, so we must explicitly install plugins by
+	// reconfiguring the state and updating via the headless `view` proxy.
+	editor.view.updateState(
+		editor.state.reconfigure({
+			plugins: editor.extensionManager.plugins,
+		}),
+	);
+
 	if (args?.initialContent?.markdown) {
 		pages_headless_tiptap_editor_set_content_from_markdown({
 			markdown: args.initialContent.markdown,
@@ -469,8 +443,10 @@ export function pages_headless_tiptap_editor_create(args?: {
  */
 export function pages_headless_tiptap_editor_set_content_from_markdown(args: { markdown: string; mut_editor: Editor }) {
 	const editor = args.mut_editor;
-	if (!editor.markdown) throw should_never_happen("editor.markdown is not set");
-	const json = editor.markdown.parse(args.markdown);
+	const json = pages_tiptap_markdown_to_json({
+		markdown: args.markdown,
+		extensions: editor.options.extensions,
+	});
 	editor.commands.setContent(json);
 	return json;
 }

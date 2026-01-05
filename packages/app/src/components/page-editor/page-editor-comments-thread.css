@@ -1,0 +1,142 @@
+@layer components {
+	.PageEditorCommentsThreadMessage {
+		display: grid;
+		grid-template:
+			"avatar header" auto
+			"avatar content" 1fr
+			/ auto 1fr;
+		gap: 4px;
+
+		&:has(.PageEditorCommentsThreadMessage-actions) {
+			grid-template:
+				"avatar header actions" auto
+				"avatar content content" 1fr
+				/ auto 1fr auto;
+		}
+	}
+
+	.PageEditorCommentsThreadMessage-avatar {
+		grid-area: avatar;
+	}
+
+	.PageEditorCommentsThreadMessage-header {
+		grid-area: header;
+		font-size: 14px;
+
+		small {
+			color: var(--color-fg-07);
+		}
+	}
+
+	.PageEditorCommentsThreadMessage-actions {
+		grid-area: actions;
+
+		display: flex;
+		justify-content: flex-end;
+		align-items: flex-start;
+	}
+
+	.PageEditorCommentsThreadMessageContent {
+		grid-area: content;
+		line-height: 1.5;
+	}
+
+	.PageEditorCommentsThreadForm {
+		margin: -1px -1px 0 -1px;
+	}
+
+	.PageEditorCommentsThreadForm-input {
+		position: relative;
+
+		display: flex;
+		gap: 4px;
+
+		padding: 4px;
+	}
+
+	.PageEditorCommentsThreadForm-submit-button {
+		align-self: end;
+	}
+
+	.PageEditorCommentsThreadSkeleton {
+		display: grid;
+		grid-template:
+			"avatar header" auto
+			"avatar content" 1fr
+			/ auto 1fr;
+		gap: 4px;
+		height: 49px;
+	}
+
+	.PageEditorCommentsThreadSkeleton-avatar {
+		grid-area: avatar;
+		width: 32px;
+		height: 32px;
+		border-radius: 16px;
+	}
+
+	.PageEditorCommentsThreadSkeleton-header {
+		grid-area: header;
+		height: 21px;
+		width: 150px;
+	}
+
+	.PageEditorCommentsThreadSkeleton-content {
+		grid-area: content;
+		height: 24px;
+		width: 80%;
+	}
+
+	.PageEditorCommentsThread,
+	.PageEditorCommentsThread-summary {
+		border-radius: 8px;
+	}
+
+	.PageEditorCommentsThread {
+		background-color: var(--color-base-1-01);
+		border: 1px solid var(--color-fg-02);
+		filter: opacity(0.8);
+		contain: content;
+	}
+
+	.PageEditorCommentsThread-summary {
+		padding: 11px;
+		border: 2px solid transparent;
+		margin: -1px;
+
+		&:focus-visible {
+			border-color: var(--color-fg-12);
+		}
+	}
+
+	.PageEditorCommentsThread-content {
+		padding: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.PageEditorCommentsThread:hover,
+	.PageEditorCommentsThread-active {
+		background-color: var(--color-base-1-02);
+		filter: opacity(1);
+	}
+
+	.PageEditorCommentsThread-active {
+		border-color: var(--color-accent-01);
+	}
+
+	.PageEditorCommentsThread-messages {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.PageEditorCommentsThread-no-messages-placeholder {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+}

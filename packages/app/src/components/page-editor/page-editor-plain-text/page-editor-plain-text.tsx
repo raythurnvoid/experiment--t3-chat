@@ -7,8 +7,9 @@ import {
 	pages_u8_to_array_buffer,
 	pages_yjs_doc_clone,
 	pages_yjs_compute_diff_update_from_yjs_doc,
+	pages_headless_tiptap_editor_create,
 } from "@/lib/pages.ts";
-import React, { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
@@ -18,7 +19,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ChevronRight, RefreshCcw, Save } from "lucide-react";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { Await } from "@/components/await.tsx";
@@ -26,6 +27,15 @@ import { Doc as YDoc, applyUpdate } from "yjs";
 import { useLiveRef, useStateRef } from "../../../hooks/utils-hooks.ts";
 import { toast } from "sonner";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
+import {
+	page_editor_fetch_page_yjs_state_and_markdown,
+	type PageEditorYjsLoad_InitialData,
+} from "../page-editor-yjs-load.ts";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useStableQuery } from "@/hooks/convex-hooks.ts";
+import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
+import type { human_thread_messages_Thread } from "@/lib/human-thread-messages.ts";
+import { PageEditorCommentsThread, type PageEditorCommentsThread_Props } from "../page-editor-comments-thread.tsx";
 
 // #region Error
 type PageEditorPlainTextError_Props = ErrorComponentProps;
@@ -234,6 +244,126 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 }
 // #endregion Toolbar
 
+// #region CommentsSidebar
+type PageEditorPlainTextCommentsSidebarThread_Props = {
+	thread: human_thread_messages_Thread;
+};
+
+function PageEditorPlainTextCommentsSidebarThread(props: PageEditorPlainTextCommentsSidebarThread_Props) {
+	const { thread } = props;
+
+	const [isOpen, setIsOpen] = useState(false);
+
+	const handleToggle: PageEditorCommentsThread_Props["onToggle"] = (e) => {
+		setIsOpen(e.currentTarget.open);
+	};
+
+	return <PageEditorCommentsThread thread={thread} isOpen={isOpen} onToggle={handleToggle} />;
+}
+
+export type PageEditorPlainTextCommentsSidebar_ClassNames =
+	| "PageEditorPlainTextCommentsSidebar"
+	| "PageEditorPlainTextCommentsSidebar-header"
+	| "PageEditorPlainTextCommentsSidebar-filter"
+	| "PageEditorPlainTextCommentsSidebar-filter-mode"
+	| "PageEditorPlainTextCommentsSidebar-filter-input"
+	| "PageEditorPlainTextCommentsSidebar-list"
+	| "PageEditorPlainTextCommentsSidebar-empty";
+
+export type PageEditorPlainTextCommentsSidebar_Props = {
+	threadIds: string[];
+};
+
+function PageEditorPlainTextCommentsSidebar(props: PageEditorPlainTextCommentsSidebar_Props) {
+	const { threadIds } = props;
+
+	const [filterMode, setFilterMode] = useState<"text" | "id">("text");
+	const [filterValue, setFilterValue] = useState("");
+
+	const threadsQuery = useStableQuery(
+		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
+		threadIds.length > 0
+			? {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					threadIds,
+					isArchived: false,
+				}
+			: "skip",
+	);
+
+	const filteredThreads = useMemo(() => {
+		const threads = threadsQuery?.threads ?? [];
+
+		const sortedThreads = [...threads].sort((a, b) => b.last_message_at - a.last_message_at);
+
+		const q = filterValue.trim().toLowerCase();
+		if (!q) return sortedThreads;
+
+		return sortedThreads.filter((thread) => {
+			if (filterMode === "id") {
+				return `${thread.id}`.toLowerCase().includes(q);
+			}
+			return thread.content.toLowerCase().includes(q);
+		});
+	}, [filterMode, filterValue, threadsQuery?.threads]);
+
+	return (
+		<aside className={"PageEditorPlainTextCommentsSidebar" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}>
+			<div
+				className={"PageEditorPlainTextCommentsSidebar-header" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}
+			>
+				<b>Comments</b> <small>({threadIds.length})</small>
+			</div>
+
+			<div
+				className={"PageEditorPlainTextCommentsSidebar-filter" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}
+			>
+				<div
+					className={
+						"PageEditorPlainTextCommentsSidebar-filter-mode" satisfies PageEditorPlainTextCommentsSidebar_ClassNames
+					}
+				>
+					<MyButton variant="ghost" aria-pressed={filterMode === "text"} onClick={() => setFilterMode("text")}>
+						Text
+					</MyButton>
+					<MyButton variant="ghost" aria-pressed={filterMode === "id"} onClick={() => setFilterMode("id")}>
+						ID
+					</MyButton>
+				</div>
+
+				<input
+					className={
+						"PageEditorPlainTextCommentsSidebar-filter-input" satisfies PageEditorPlainTextCommentsSidebar_ClassNames
+					}
+					placeholder={filterMode === "id" ? "Search by thread id…" : "Search by first message…"}
+					value={filterValue}
+					onChange={(e) => setFilterValue(e.target.value)}
+				/>
+			</div>
+
+			<div
+				className={"PageEditorPlainTextCommentsSidebar-list" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}
+			>
+				{filteredThreads.length === 0 ? (
+					<div
+						className={
+							"PageEditorPlainTextCommentsSidebar-empty" satisfies PageEditorPlainTextCommentsSidebar_ClassNames
+						}
+					>
+						<i>No threads</i>
+					</div>
+				) : (
+					filteredThreads.map((thread) => (
+						<PageEditorPlainTextCommentsSidebarThread key={`${thread.id}`} thread={thread} />
+					))
+				)}
+			</div>
+		</aside>
+	);
+}
+// #endregion CommentsSidebar
+
 // #region Root
 type PageEditorPlainText_ClassNames = "PageEditorPlainText" | "PageEditorPlainText-editor";
 
@@ -241,7 +371,7 @@ type PageEditorPlainText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
 	initialData: PageEditorPlainText_InitialData;
 	presenceStore: pages_PresenceStore;
-	headerSlot: React.ReactNode;
+	headerSlot: ReactNode;
 };
 
 function create_editor_model(markdown: string) {
@@ -269,6 +399,9 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 	const baselineYjsDocRef = useRef<YDoc>(initialData.mut_yjsDoc);
 	const workingYjsDocRef = useRef<YDoc>(pages_yjs_doc_clone({ yjsDoc: initialData.mut_yjsDoc }));
 
+	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
+	const commentThreadIdsKeyRef = useRef<string>("");
+
 	const [isDirtyRef, setIsDirty, isDirty] = useStateRef(false);
 	const baselineAltVersionIdRef = useRef<number>(0);
 
@@ -281,6 +414,20 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 	const serverSequence = serverSequenceData?.last_sequence;
 	const serverSequenceRef = useLiveRef(serverSequence);
 	const isSyncDisabled = isSyncing || isSaving || serverSequence == null || workingYjsDocSequence === serverSequence;
+
+	function updateThreadIds(markdown: string) {
+		const headlessEditor = pages_headless_tiptap_editor_create({ initialContent: { markdown } });
+		debugger;
+		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor.state).toSorted();
+		headlessEditor.destroy();
+
+		const nextKey = nextThreadIds.join("\n");
+		if (nextKey === commentThreadIdsKeyRef.current) {
+			return;
+		}
+		commentThreadIdsKeyRef.current = nextKey;
+		setCommentThreadIds(nextThreadIds);
+	}
 
 	function updateDirtyBaseline() {
 		if (!editorRef.current) {
@@ -330,6 +477,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		editorRef.current.setModel(model);
 		prevModel.dispose();
 		updateDirtyBaseline();
+		updateThreadIds(markdown);
 		return model;
 	}
 
@@ -389,9 +537,11 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			.finally(() => {});
 	};
 
-	const handleOnMount: EditorProps["onMount"] = (editor, monaco) => {
+	const handleOnMount: EditorProps["onMount"] = (editor) => {
 		editorRef.current = editor;
 		updateDirtyBaseline();
+		debugger;
+		updateThreadIds(initialData.markdown);
 
 		editor.onDidChangeModelContent(() => {
 			const model = editor.getModel();
@@ -435,6 +585,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 			const workingMarkdown = editorModel.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
+			debugger;
 			pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
@@ -469,6 +620,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 			workingYjsDocRef.current = workingYjsDoc;
 			updateDirtyBaseline();
+			updateThreadIds(workingMarkdown);
 		})()
 			.catch((err) => {
 				console.error("[PageEditorPlainText] Save failed", err);
@@ -572,6 +724,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				pushChangeToEditor(mergedMarkdown);
 			}
 
+			updateThreadIds(remoteMarkdown);
 			setWorkingYjsSequence(remoteYjsDocSequence);
 		})()
 			.catch((err) => {
@@ -603,19 +756,29 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				onClickSync={handleClickSync}
 			/>
 
-			<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
-				<Editor
-					height="100%"
-					language="markdown"
-					theme={app_monaco_THEME_NAME_DARK}
-					options={{
-						wordWrap: "on",
-						scrollBeyondLastLine: false,
-						model: initialEditorModel,
-					}}
-					onMount={handleOnMount}
-				/>
-			</div>
+			<PanelGroup direction="horizontal" className={"PageEditorPlainText-panels-group"}>
+				<Panel defaultSize={75} className={"PageEditorPlainText-editor-panel"}>
+					<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
+						<Editor
+							height="100%"
+							language="markdown"
+							theme={app_monaco_THEME_NAME_DARK}
+							options={{
+								wordWrap: "on",
+								scrollBeyondLastLine: false,
+								model: initialEditorModel,
+							}}
+							onMount={handleOnMount}
+						/>
+					</div>
+				</Panel>
+				<div className={"PageEditorPlainText-panel-resize-handle-container"}>
+					<PanelResizeHandle className={"PageEditorPlainText-panel-resize-handle"} />
+				</div>
+				<Panel defaultSize={25} className={"PageEditorPlainText-comments-panel"}>
+					<PageEditorPlainTextCommentsSidebar threadIds={commentThreadIds} />
+				</Panel>
+			</PanelGroup>
 		</div>
 	);
 }
@@ -623,7 +786,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 export type PageEditorPlainText_Props = {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	headerSlot: React.ReactNode;
+	headerSlot: ReactNode;
 };
 
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {

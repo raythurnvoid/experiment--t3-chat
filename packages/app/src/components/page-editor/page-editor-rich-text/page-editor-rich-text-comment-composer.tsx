@@ -8,7 +8,7 @@ import { Text } from "@tiptap/extension-text";
 import { useEffect, useState, useImperativeHandle, type Ref } from "react";
 import { cn } from "@/lib/utils.ts";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
-import { pages_get_tiptap_shared_extensions } from "../../../lib/pages.ts";
+import { pages_get_tiptap_shared_extensions, pages_tiptap_markdown_to_json } from "../../../lib/pages.ts";
 import type { MyInputTextAreaControl_ClassNames } from "../../my-input.tsx";
 
 export type PageEditorRichTextCommentComposer_ClassNames =
@@ -50,41 +50,43 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 	const onEnterRef = useLiveRef(onEnter);
 
 	const [editorProps] = useState<Parameters<typeof useEditor>[0]>(() => {
+		const extensions = [
+			Document,
+			Text,
+			Paragraph.extend({
+				addKeyboardShortcuts() {
+					return {
+						// Prevent Enter to create a new paragraph
+						Enter: () => {
+							onEnterRef.current?.();
+							return true;
+						},
+
+						// Add new paragraph on Shift + Enter
+						"Shift-Enter": ({ editor }: { editor: Editor }) => {
+							// Implementation from tiptap's Keymap extension
+							editor.commands.first(({ commands }) => [
+								() => commands.newlineInCode(),
+								() => commands.createParagraphNear(),
+								() => commands.liftEmptyBlock(),
+								() => commands.splitBlock(),
+							]);
+
+							return true;
+						},
+					};
+				},
+			}),
+			pages_get_tiptap_shared_extensions().markdown,
+			Placeholder.configure({
+				placeholder,
+				emptyEditorClass:
+					"PageEditorRichTextCommentComposer-empty-editor" satisfies PageEditorRichTextCommentComposer_ClassNames,
+			}),
+		];
+
 		return {
-			extensions: [
-				Document,
-				Text,
-				Paragraph.extend({
-					addKeyboardShortcuts() {
-						return {
-							// Prevent Enter to create a new paragraph
-							Enter: () => {
-								onEnterRef.current?.();
-								return true;
-							},
-
-							// Add new paragraph on Shift + Enter
-							"Shift-Enter": ({ editor }: { editor: Editor }) => {
-								// Implementation from tiptap's Keymap extension
-								editor.commands.first(({ commands }) => [
-									() => commands.newlineInCode(),
-									() => commands.createParagraphNear(),
-									() => commands.liftEmptyBlock(),
-									() => commands.splitBlock(),
-								]);
-
-								return true;
-							},
-						};
-					},
-				}),
-				pages_get_tiptap_shared_extensions().markdown,
-				Placeholder.configure({
-					placeholder,
-					emptyEditorClass:
-						"PageEditorRichTextCommentComposer-empty-editor" satisfies PageEditorRichTextCommentComposer_ClassNames,
-				}),
-			],
+			extensions,
 			injectCSS: false,
 			immediatelyRender: false,
 			autofocus: autoFocus,
@@ -103,11 +105,14 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 			},
 			onCreate: ({ editor }) => {
 				try {
-					if (!initialValue || !editor.markdown) return;
-					editor.commands.setContent(editor.markdown.parse(initialValue));
+					if (!initialValue) return;
+					const json = pages_tiptap_markdown_to_json({
+						markdown: initialValue,
+						extensions,
+					});
+					editor.commands.setContent(json);
 				} catch (error) {
-					console.error("Failed to parse initialValue markdown:", error);
-					return undefined;
+					console.error("Failed to set initialValue markdown:", error);
 				}
 			},
 		};

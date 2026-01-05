@@ -11,7 +11,7 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor } from "@tiptap/react";
-import { useLiveblocksExtension, CommentsExtension } from "@liveblocks/react-tiptap";
+import { useLiveblocksExtension } from "@liveblocks/react-tiptap";
 import type { YjsSyncStatus } from "@liveblocks/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { defaultExtensions } from "./extensions.ts";
@@ -46,6 +46,7 @@ import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import type { ExtractStrict } from "type-fest";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
+import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 
 type SyncStatus = YjsSyncStatus;
 
@@ -409,6 +410,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 	const [charsCount, setCharsCount] = useState<number>(0);
 
 	const [threadIds, setThreadIds] = useState<string[]>([]);
+	const threadIdsKeyRef = useRef<string>("");
 
 	const isEditorReady = pagesYjs.syncStatus === "synchronizing" || pagesYjs.syncStatus === "synchronized";
 
@@ -434,14 +436,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 		},
 	});
 
-	const extensions = [
-		...defaultExtensions,
-		PageEditorRichTextToolsSlashCommand.slashCommand,
-		liveblocks,
-		CommentsExtension.configure({
-			onThreadsChange: setThreadIds,
-		}),
-	];
+	const extensions = [...defaultExtensions, PageEditorRichTextToolsSlashCommand.slashCommand, liveblocks];
 
 	const threadsQuery = useStableQuery(
 		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
@@ -456,6 +451,16 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 	);
 
 	const currentMarkdownContent = useRef<string | null>(null);
+
+	function updateThreadIds(editor: Editor) {
+		const nextThreadIds = getThreadIdsFromEditorState(editor.state).toSorted();
+		const nextKey = nextThreadIds.join("\n");
+
+		if (nextKey === threadIdsKeyRef.current) return;
+
+		threadIdsKeyRef.current = nextKey;
+		setThreadIds(nextThreadIds);
+	}
 
 	const handleThreadsQuery = useEffectEvent(() => {
 		if (!editor || !isEditorReady || !threadsQuery || threadIds.length === 0) {
@@ -480,10 +485,14 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 
 	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
 		setEditor(editor);
+
+		updateThreadIds(editor);
 	};
 
 	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor }) => {
 		setCharsCount(editor.storage.characterCount.words());
+
+		updateThreadIds(editor);
 	};
 
 	useEffect(handleThreadsQuery, [editor, isEditorReady, threadsQuery]);

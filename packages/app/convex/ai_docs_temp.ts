@@ -1610,12 +1610,6 @@ export const yjs_push_update = mutation({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const pageId = ctx.db.normalizeId("pages", args.pageId);
-		if (!pageId) {
-			console.error("Invalid pageId", args.pageId);
-			return null;
-		}
-
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {

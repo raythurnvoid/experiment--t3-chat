@@ -52,7 +52,7 @@ export const human_thread_messages_add = mutation({
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		// Load the root message
-		const root = await ctx.db.get(args.rootId);
+		const root = await ctx.db.get("human_thread_messages", args.rootId);
 		if (!root) {
 			throw new Error("Root message not found");
 		}
@@ -78,7 +78,7 @@ export const human_thread_messages_add = mutation({
 		});
 
 		// Update the root's last_child_id to point to the new message
-		await ctx.db.patch(args.rootId, {
+		await ctx.db.patch("human_thread_messages", args.rootId, {
 			last_child_id: messageId,
 		});
 
@@ -100,7 +100,7 @@ export const human_thread_messages_list = query({
 	},
 	handler: async (ctx, args) => {
 		// Load the root message
-		const root = await ctx.db.get(args.threadId);
+		const root = await ctx.db.get("human_thread_messages", args.threadId);
 		if (!root || root.is_archived) {
 			return { messages: [] };
 		}
@@ -128,7 +128,7 @@ export const human_thread_messages_list = query({
 		let count = 0;
 
 		while (currentId !== null && count < args.limit - 1) {
-			const message = await ctx.db.get(currentId);
+			const message = await ctx.db.get("human_thread_messages", currentId);
 			if (!message || message.is_archived) {
 				break;
 			}
@@ -164,12 +164,12 @@ export const human_thread_messages_archive = mutation({
 		messageId: v.id("human_thread_messages"),
 	},
 	handler: async (ctx, args) => {
-		const message = await ctx.db.get(args.messageId);
+		const message = await ctx.db.get("human_thread_messages", args.messageId);
 		if (!message) {
 			throw new Error("Message not found");
 		}
 
-		await ctx.db.patch(args.messageId, {
+		await ctx.db.patch("human_thread_messages", args.messageId, {
 			is_archived: true,
 		});
 
@@ -185,7 +185,7 @@ export const human_thread_messages_get = query({
 		messageId: v.id("human_thread_messages"),
 	},
 	handler: async (ctx, args) => {
-		return await ctx.db.get(args.messageId);
+		return await ctx.db.get("human_thread_messages", args.messageId);
 	},
 });
 
@@ -210,6 +210,7 @@ export const human_thread_messages_threads_list = query({
 			v.object({
 				id: v.id("human_thread_messages"),
 				created_at: v.number(),
+				last_message_at: v.number(),
 				content: v.string(),
 				created_by: v.string(),
 				is_archived: v.boolean(),
@@ -222,45 +223,59 @@ export const human_thread_messages_threads_list = query({
 			.map((threadId) => ctx.db.normalizeId("human_thread_messages", threadId))
 			.filter((threadId) => threadId != null);
 
-		// Fetch all threads by ID using Promise.all (cannot index by _id)
-		const messages = await Promise.all(threadIds.map((threadId) => ctx.db.get(threadId)));
+		const threads = await Promise.all(threadIds.map((threadId) => ctx.db.get("human_thread_messages", threadId))).then(
+			(messages) =>
+				messages.filter((message): message is NonNullable<typeof message> => {
+					// Skip if message doesn't exist
+					if (!message) {
+						return false;
+					}
 
-		// Filter by workspace_id, project_id, is_archived, and ensure root messages only
-		const threads = messages.filter((message): message is NonNullable<typeof message> => {
-			// Skip if message doesn't exist
-			if (!message) {
-				return false;
-			}
+					// Access control: filter by workspace_id and project_id
+					if (message.workspace_id !== args.workspaceId || message.project_id !== args.projectId) {
+						return false;
+					}
 
-			// Access control: filter by workspace_id and project_id
-			if (message.workspace_id !== args.workspaceId || message.project_id !== args.projectId) {
-				return false;
-			}
+					// Only return root messages (thread_id = null)
+					if (message.thread_id !== null) {
+						return false;
+					}
 
-			// Only return root messages (thread_id = null)
-			if (message.thread_id !== null) {
-				return false;
-			}
+					// Apply is_archived filter if provided (not null/undefined)
+					if (args.isArchived !== undefined && args.isArchived !== null) {
+						if (message.is_archived !== args.isArchived) {
+							return false;
+						}
+					}
 
-			// Apply is_archived filter if provided (not null/undefined)
-			if (args.isArchived !== undefined && args.isArchived !== null) {
-				if (message.is_archived !== args.isArchived) {
-					return false;
+					return true;
+				}),
+		);
+
+		const lastChildMessages = await Promise.all(
+			threads.map(async (thread) => {
+				if (!thread.last_child_id) {
+					return null;
 				}
-			}
-
-			return true;
-		});
+				return await ctx.db.get("human_thread_messages", thread.last_child_id);
+			}),
+		);
 
 		return {
-			threads: threads.map((thread) => ({
-				id: thread._id,
-				created_at: thread._creationTime,
-				content: thread.content,
-				created_by: thread.created_by,
-				is_archived: thread.is_archived,
-				last_child_id: thread.last_child_id,
-			})),
+			threads: threads.map((thread, index) => {
+				const lastChildMessage = lastChildMessages[index];
+				const lastMessageAt = lastChildMessage?._creationTime ?? thread._creationTime;
+
+				return {
+					id: thread._id,
+					created_at: thread._creationTime,
+					last_message_at: lastMessageAt,
+					content: thread.content,
+					created_by: thread.created_by,
+					is_archived: thread.is_archived,
+					last_child_id: thread.last_child_id,
+				};
+			}),
 		};
 	},
 });
