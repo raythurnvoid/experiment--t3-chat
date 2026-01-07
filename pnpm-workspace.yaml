@@ -5,5 +5,7 @@ packages:
   - "packages/app/vendor/liveblocks/packages/*"
   - "packages/app/vendor/liveblocks/shared/*"
   - "packages/app/vendor/remix/packages/*"
+  - "packages/app/vendor/tiptap/packages/*"
+  - "packages/app/vendor/tiptap/packages-deprecated/*"
   - "packages/app/vendor/opencode"
   - "packages/app/vendor/presence"

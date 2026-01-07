@@ -43,7 +43,8 @@ export default defineConfig({
 							sources: (filename: string) => {
 								return (
 									filename.startsWith(path.resolve(__dirname, "src")) ||
-									filename.startsWith(path.resolve(__dirname, "vendor/novel"))
+									filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
+									filename.startsWith(path.resolve(__dirname, "vendor/tiptap"))
 								);
 							},
 						},
@@ -93,6 +94,38 @@ export default defineConfig({
 			"@liveblocks/node",
 
 			"@remix-run/interaction",
+
+			"@tiptap/core",
+			"@tiptap/react",
+			"@tiptap/pm",
+			"@tiptap/starter-kit",
+			"@tiptap/markdown",
+			"@tiptap/html",
+			"@tiptap/extension-collaboration",
+			"@tiptap/extension-collaboration-caret",
+			"@tiptap/extension-document",
+			"@tiptap/extension-drag-handle",
+			"@tiptap/extension-highlight",
+			"@tiptap/extension-horizontal-rule",
+			"@tiptap/extension-paragraph",
+			"@tiptap/extension-placeholder",
+			"@tiptap/extension-task-item",
+			"@tiptap/extension-task-list",
+			"@tiptap/extension-text",
+			"@tiptap/extension-text-align",
+			"@tiptap/extension-text-style",
+			"@tiptap/extension-typography",
+			"@tiptap/extension-underline",
+			"@tiptap/extension-dropcursor",
+			"@tiptap/extension-gapcursor",
+			"@tiptap/extension-history",
+			"@tiptap/extension-list-item",
+			"@tiptap/extension-list-keymap",
+			"@tiptap/extension-character-count",
+			"@tiptap/extension-focus",
+			"@tiptap/extension-table-cell",
+			"@tiptap/extension-table-header",
+			"@tiptap/extension-table-row",
 		],
 	},
 });

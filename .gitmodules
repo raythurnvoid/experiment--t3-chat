@@ -25,3 +25,6 @@
 [submodule "remix"]
 	path = packages/app/vendor/remix
 	url = https://github.com/remix-run/remix.git
+[submodule "packages/app/vendor/tiptap"]
+	path = packages/app/vendor/tiptap
+	url = https://github.com/raythurnvoid/tiptap.git
