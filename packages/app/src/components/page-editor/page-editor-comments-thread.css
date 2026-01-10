@@ -21,10 +21,30 @@
 
 	.PageEditorCommentsThreadMessage-header {
 		grid-area: header;
+
 		font-size: 14px;
+
+		display: flex;
+		min-width: 0;
+		contain: content;
+		align-items: end;
+
+		align-self: center;
+
+		b {
+			display: inline-block;
+
+			min-width: 0;
+			contain: content;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
 
 		small {
 			color: var(--color-fg-07);
+
+			margin-left: 0.5em;
+			white-space: nowrap;
 		}
 	}
 

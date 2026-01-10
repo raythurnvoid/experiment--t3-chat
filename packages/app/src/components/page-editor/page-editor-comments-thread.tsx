@@ -84,7 +84,8 @@ function PageEditorCommentsThreadMessage(props: PageEditorCommentsThreadMessage_
 				</MyAvatar>
 			</div>
 			<div className={"PageEditorCommentsThreadMessage-header" satisfies PageEditorCommentsThreadMessage_ClassNames}>
-				<b>{createdBy}</b> <small>{format_relative_time(createdAt)}</small>
+				<b>{createdBy}</b>
+				<small>{format_relative_time(createdAt)}</small>
 			</div>
 			{actionsSlot && (
 				<div className={"PageEditorCommentsThreadMessage-actions" satisfies PageEditorCommentsThreadMessage_ClassNames}>
