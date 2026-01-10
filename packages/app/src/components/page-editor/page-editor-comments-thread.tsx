@@ -17,7 +17,7 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { ArrowUp, Check } from "lucide-react";
 import { toast } from "sonner";
-import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import { MySkeleton } from "@/components/ui/my-skeleton.tsx";
 import {
 	PageEditorRichTextCommentComposer,
@@ -26,6 +26,82 @@ import {
 } from "./page-editor-rich-text/page-editor-rich-text-comment-composer.tsx";
 import { useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
+
+const comment_id_pattern = /^[a-z0-9]{32}$/;
+
+// #region filter input
+export type PageEditorCommentsFilterInput_ClassNames = "PageEditorCommentsFilterInput";
+
+export type PageEditorCommentsFilterInput_Props = {
+	id?: string;
+	className?: string;
+	value: string;
+	onValueChange: (value: string) => void;
+	placeholder?: string;
+	ariaLabel?: string;
+};
+
+export const PageEditorCommentsFilterInput = ((/* iife */) => {
+	function PageEditorCommentsFilterInput(props: PageEditorCommentsFilterInput_Props) {
+		const {
+			id,
+			className,
+			value,
+			onValueChange,
+			placeholder = "Search comments…",
+			ariaLabel = "Search comments",
+		} = props;
+
+		return (
+			<MyInput
+				id={id}
+				className={cn("PageEditorCommentsFilterInput" satisfies PageEditorCommentsFilterInput_ClassNames, className)}
+			>
+				<MyInputArea>
+					<MyInputBox />
+					<MyInputControl
+						aria-label={ariaLabel}
+						placeholder={placeholder}
+						value={value}
+						type="search"
+						onChange={(e) => onValueChange(e.target.value)}
+					/>
+				</MyInputArea>
+			</MyInput>
+		);
+	}
+
+	function normalizeQuery(query: string) {
+		return query.trim().toLowerCase();
+	}
+
+	function filterThreads<TThread extends { id: string; content: string }>(threads: readonly TThread[], query: string) {
+		const normalizedQuery = normalizeQuery(query);
+		if (!normalizedQuery) return threads.slice();
+
+		const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+		const isIdQuery = tokens.length > 0 && tokens.every((t) => comment_id_pattern.test(t));
+		const idSet = isIdQuery ? new Set(tokens) : null;
+
+		return threads.filter((thread) => {
+			const contentLower = thread.content.toLowerCase();
+
+			if (isIdQuery && idSet) {
+				const matchesId = idSet.has(thread.id);
+				const matchesContent = contentLower.includes(normalizedQuery) || tokens.some((t) => contentLower.includes(t));
+				return matchesId || matchesContent;
+			}
+
+			return contentLower.includes(normalizedQuery);
+		});
+	}
+
+	return Object.assign(PageEditorCommentsFilterInput, {
+		normalizeQuery,
+		filterThreads,
+	});
+})();
+// #endregion filter input
 
 // #region message content
 type PageEditorCommentsThreadMessageContent_ClassNames = "PageEditorCommentsThreadMessageContent";
@@ -270,15 +346,18 @@ type PageEditorCommentsThread_ClassNames =
 	| "PageEditorCommentsThread-messages"
 	| "PageEditorCommentsThread-no-messages-placeholder";
 
-export type PageEditorCommentsThread_Props = ComponentProps<"details"> & {
+export type PageEditorCommentsThread_Props = {
+	ref?: Ref<HTMLDetailsElement>;
+	className?: string;
 	thread: human_thread_messages_Thread;
-	isOpen: boolean;
+	open: boolean;
+	hidden: boolean;
 	onToggle?: ComponentProps<"details">["onToggle"];
 	onClick?: React.MouseEventHandler<HTMLElement>;
 };
 
 export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) {
-	const { thread, isOpen, onToggle, onClick, className, ...rest } = props;
+	const { ref, className, thread, open, hidden, onToggle, onClick } = props;
 
 	const renderPromise = useRenderPromise();
 
@@ -290,7 +369,7 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 
 	const messagesQuery = useQuery(
 		app_convex_api.human_thread_messages.human_thread_messages_list,
-		isOpen
+		open
 			? {
 					threadId: thread.id,
 					limit: 100,
@@ -305,7 +384,7 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 		onToggle?.(e);
 
 		// If opening and wasn't already open, focus the composer
-		if (willBeOpen && !isOpen) {
+		if (willBeOpen && !open) {
 			renderPromise
 				.wait()
 				.then(() => {
@@ -339,19 +418,20 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 
 	return (
 		<details
+			ref={ref}
 			className={cn(
 				"PageEditorCommentsThread" satisfies PageEditorCommentsThread_ClassNames,
-				isOpen && ("PageEditorCommentsThread-active" satisfies PageEditorCommentsThread_ClassNames),
+				open && ("PageEditorCommentsThread-active" satisfies PageEditorCommentsThread_ClassNames),
 				className,
 			)}
-			open={isOpen}
+			open={open}
+			hidden={hidden}
 			onToggle={handleToggle}
-			{...rest}
 		>
 			{/* When not active, show the thread's content from props */}
 			<summary
 				className={"PageEditorCommentsThread-summary" satisfies PageEditorCommentsThread_ClassNames}
-				hidden={isOpen}
+				hidden={open}
 				aria-description={"Open comments thread"}
 			>
 				<PageEditorCommentsThreadMessage
@@ -370,7 +450,7 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 				<div className={"PageEditorCommentsThread-messages" satisfies PageEditorCommentsThread_ClassNames}>
 					{
 						// When active but query is still loading, show skeleton + thread content
-						isOpen &&
+						open &&
 							(messagesQuery === undefined ? (
 								<>
 									<PageEditorCommentsThreadMessage
@@ -420,7 +500,7 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 					}
 				</div>
 
-				{isOpen && thread.id && <PageEditorCommentsThreadForm composerRef={composerRef} threadId={thread.id} />}
+				{open && thread.id && <PageEditorCommentsThreadForm composerRef={composerRef} threadId={thread.id} />}
 			</div>
 		</details>
 	);

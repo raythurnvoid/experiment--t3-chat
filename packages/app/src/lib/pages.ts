@@ -1,9 +1,15 @@
 import type { JSONContent } from "@tiptap/core";
-import { pages_tiptap_markdown_to_json } from "../../shared/pages.ts";
+import {
+	pages_tiptap_markdown_to_json,
+	pages_yjs_doc_create_from_array_buffer_update,
+	pages_yjs_doc_get_markdown,
+} from "../../shared/pages.ts";
 import { TypedEventTarget } from "@remix-run/interaction";
 import { should_never_happen, XCustomEvent } from "./utils.ts";
 import type { usePresenceSessions, usePresenceSessionsData, usePresenceUsersData } from "../hooks/presence-hooks.ts";
 import { objects_equal_deep } from "./object.ts";
+import { editor as monaco_editor } from "monaco-editor";
+import { app_convex, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
 
 export * from "../../shared/pages.ts";
 
@@ -27,8 +33,36 @@ export const pages_get_rich_text_initial_content = ((/* iife */) => {
 	};
 })();
 
-// #region presence store
+export async function pages_fetch_page_yjs_state_and_markdown(args: {
+	workspaceId: string;
+	projectId: string;
+	pageId: app_convex_Id<"pages">;
+}) {
+	const [snapshotDoc, updatesData, lastSequenceData] = await Promise.all([
+		app_convex.query(app_convex_api.ai_docs_temp.yjs_get_doc_last_snapshot, args),
+		app_convex
+			.query(app_convex_api.ai_docs_temp.yjs_get_incremental_updates, args)
+			.then((updatesData) => updatesData?.updates ?? []),
+		app_convex.query(app_convex_api.ai_docs_temp.get_page_last_yjs_sequence, args),
+	]);
 
+	if (snapshotDoc == null) return null;
+
+	// By default the API returns updates in descending order; normalize to ascending and filter
+	// to only include updates that are after the snapshot.
+	const filteredIncrementalUpdates = updatesData.filter((u) => u.sequence > snapshotDoc.sequence).reverse();
+
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshotDoc.snapshot_update, {
+		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
+	});
+	const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
+
+	const yjsSequence = lastSequenceData?.last_sequence ?? snapshotDoc.sequence;
+
+	return { markdown, yjsDoc, yjsSequence };
+}
+
+// #region presence store
 export class pages_PresenceStore_Event extends XCustomEvent<{
 	connected: { userId: string; sessionId: string };
 	disconnected: { userId: string; sessionId: string };
@@ -230,3 +264,11 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 	}
 }
 // #endregion PresenceStore
+
+// #region monaco
+export function pages_monaco_create_editor_model(markdown: string) {
+	const model = monaco_editor.createModel(markdown, "markdown");
+	model.setEOL(monaco_editor.EndOfLineSequence.LF);
+	return model;
+}
+// #endregion monaco

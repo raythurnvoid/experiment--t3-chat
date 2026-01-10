@@ -1,36 +1,211 @@
 @layer components {
-	/* Monaco Markdown Diff Editor - Accept/Discard widget styles */
 	:where(.MonacoMarkdownDiffEditor) {
-		/* Floating content widget container */
-		:where(.MonacoMarkdownDiffEditor-widget) {
-			position: absolute;
-			display: inline-flex;
+		display: flex;
+		flex-direction: column;
+
+		height: 100%;
+		min-height: 0;
+
+		/* Matches PageEditorPlainText behavior so the Monaco container can shrink/grow correctly */
+		:where(.MonacoMarkdownDiffEditorToolbar) {
+			height: 44px;
+			background: var(--color-base-alt-1-05);
+
+			contain: inline-size layout style;
+
+			position: relative;
+			z-index: 1;
+		}
+
+		:where(.MonacoMarkdownDiffEditorToolbar-scrollable-area) {
 			gap: 4px;
+
+			flex-direction: row;
 			align-items: center;
-			white-space: nowrap;
-			z-index: 10;
+			display: flex;
+
+			padding: 4px 8px;
+
+			overflow-x: auto;
+			overflow-y: hidden;
+			contain: content;
+
+			scrollbar-width: initial;
+
+			min-width: 0;
 		}
 
-		/* Accept and discard button styles */
-		:where(.MonacoMarkdownDiffEditor-widget-accept),
-		:where(.MonacoMarkdownDiffEditor-widget-discard) {
-			/* Base button properties */
-			width: 24px;
-			height: 24px;
-			border: 1px solid hsl(var(--border));
-			border-radius: 4px;
-			cursor: pointer;
+		:where(.MonacoMarkdownDiffEditorToolbar-button) {
+			gap: 4px;
+		}
+
+		:where(.MonacoMarkdownDiffEditorToolbar-button-accept-all) {
+			&:not(:disabled) {
+				color: var(--color-green-11);
+
+				&:hover,
+				&:active {
+					color: var(--color-green-12);
+				}
+			}
+		}
+
+		:where(.MonacoMarkdownDiffEditorToolbar-button-accept-all-and-save) {
+			&:not(:disabled) {
+				color: var(--color-green-10);
+
+				&:hover,
+				&:active {
+					color: var(--color-green-12);
+				}
+			}
+		}
+
+		:where(.MonacoMarkdownDiffEditorToolbar-button-discard-all) {
+			&:not(:disabled) {
+				color: var(--color-red-10);
+
+				&:hover,
+				&:active {
+					color: var(--color-red-12);
+				}
+			}
+		}
+
+		:where(.MonacoMarkdownDiffEditorToolbar-icon) {
+			width: 20px;
+			height: 20px;
+		}
+
+		:where(.MonacoMarkdownDiffEditor-editor) {
+			height: 100%;
+			min-height: 0;
+			contain: strict;
+			anchor-name: var(--MonacoMarkdownDiffEditor-anchor-name);
+		}
+
+		:where(.MonacoMarkdownDiffEditor-panels-group) {
+			flex: 1;
+			min-height: 0;
+		}
+
+		:where(.MonacoMarkdownDiffEditor-editor-panel) {
+			min-width: 0;
+		}
+
+		:where(.MonacoMarkdownDiffEditor-panel-resize-handle-container) {
+			/*
+			The container makes sure that the even though the handle
+			has an arbitrarily large height, it will not affect the ancestor's
+			scrollable area size.
+			*/
+			contain: layout style size;
+		}
+
+		:where(.MonacoMarkdownDiffEditor-panel-resize-handle) {
+			/*
+			Since the container size depends exclusively on the content of the editor,
+			to ensure the handle spans across the whole page height,
+			we set an arbitrarily large height to handle.
+			*/
+			height: 9999px;
+
+			contain: layout style;
+
+			&::after {
+				content: "";
+
+				position: absolute;
+				inset: 0;
+				background-color: inherit;
+			}
+
+			&::before {
+				content: "";
+				position: absolute;
+				inset: 0;
+			}
+
+			&[data-resize-handle-state="drag"] {
+				&::after {
+					background-color: var(--color-base-alt-2-10);
+				}
+
+				&::before {
+					display: flex;
+					background-color: var(--color-base-alt-2-10);
+
+					left: -2px;
+					right: -2px;
+				}
+			}
+
+			&[data-resize-handle-state="hover"] {
+				&::before {
+					display: flex;
+					background-color: var(--color-base-alt-1-05);
+
+					left: -6px;
+					right: -6px;
+				}
+			}
+		}
+
+		:where(.MonacoMarkdownDiffEditor-comments-panel) {
+			min-width: 0;
+			background-color: var(--color-base-1-02);
+		}
+
+		:where(.MonacoMarkdownDiffEditor-editor) :where(.monaco-editor),
+		:where(.MonacoMarkdownDiffEditor-editor) :where(.monaco-diff-editor),
+		:where(.MonacoMarkdownDiffEditor-editor) :where(.monaco-editor-container) {
+			height: 100%;
+		}
+
+		:where(.PageEditorPlainTextCommentsSidebar) {
 			box-sizing: border-box;
+			height: 100%;
+
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+
+			padding: 12px;
+
+			overflow: auto;
+			contain: content;
 		}
 
-		/* Accept button variant */
-		:where(.MonacoMarkdownDiffEditor-widget-accept) {
-			background: hsl(var(--success, 142 76% 36%));
+		:where(.PageEditorPlainTextCommentsSidebar-header) {
+			display: flex;
+			align-items: baseline;
+			justify-content: space-between;
+			gap: 8px;
 		}
 
-		/* Discard button variant */
-		:where(.MonacoMarkdownDiffEditor-widget-discard) {
-			background: #000;
+		:where(.PageEditorPlainTextCommentsSidebar-filter) {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		:where(.PageEditorPlainTextCommentsSidebar-filter-mode) {
+			display: flex;
+			gap: 4px;
+		}
+
+		:where(.PageEditorPlainTextCommentsSidebar-list) {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+		}
+
+		:where(.PageEditorPlainTextCommentsSidebar-empty) {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: var(--color-fg-07);
+			height: 49px;
 		}
 	}
 }

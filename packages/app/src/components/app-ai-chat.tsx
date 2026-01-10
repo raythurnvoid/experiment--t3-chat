@@ -10,7 +10,7 @@ import { CodeBlock } from "./ai-elements/code-block.tsx";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
 import { Thread } from "@/components/assistant-ui/thread.tsx";
 import { useEffect } from "react";
-import { global_event_dispatch } from "../lib/global-event.tsx";
+import { global_custom_event_dispatch } from "../lib/global-event.tsx";
 import type {
 	ai_tool_create_read_page_ToolInput,
 	ai_tool_create_read_page_ToolOutput,
@@ -154,7 +154,7 @@ function ReadPageToolUiComponent(
 	const toolState = mapStatusToToolState(status);
 
 	const handleOpenCanvas = () => {
-		global_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
+		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
 	};
 
 	return (
@@ -354,7 +354,7 @@ function WritePageToolUiComponent(
 					}
 
 					// Existing page preview: open diff mode, seed modified with proposed content
-					global_event_dispatch("ai_chat::open_canvas", {
+					global_custom_event_dispatch("ai_chat::open_canvas", {
 						pageId,
 						mode: "diff",
 						modifiedContent: args.content,
@@ -368,7 +368,7 @@ function WritePageToolUiComponent(
 	}, [status]);
 
 	const handleOpenCanvas = () => {
-		global_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
+		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
 	};
 
 	return (
@@ -428,7 +428,7 @@ function EditPageToolUiComponent(
 					const result = state.result as ai_tool_create_edit_page_ToolOutput;
 					const pageId = result.metadata.pageId;
 					if (!pageId) return;
-					global_event_dispatch("ai_chat::open_canvas", {
+					global_custom_event_dispatch("ai_chat::open_canvas", {
 						pageId,
 						mode: "diff",
 						threadId,
@@ -441,7 +441,7 @@ function EditPageToolUiComponent(
 	}, [status]);
 
 	const handleOpenCanvas = () => {
-		global_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
+		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
 	};
 
 	return (

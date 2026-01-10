@@ -223,59 +223,51 @@ export const human_thread_messages_threads_list = query({
 			.map((threadId) => ctx.db.normalizeId("human_thread_messages", threadId))
 			.filter((threadId) => threadId != null);
 
-		const threads = await Promise.all(threadIds.map((threadId) => ctx.db.get("human_thread_messages", threadId))).then(
-			(messages) =>
-				messages.filter((message): message is NonNullable<typeof message> => {
-					// Skip if message doesn't exist
+		const threads = await Promise.all(
+			threadIds.map((threadId) =>
+				ctx.db.get("human_thread_messages", threadId).then(async (message) => {
 					if (!message) {
-						return false;
+						return null;
 					}
 
 					// Access control: filter by workspace_id and project_id
 					if (message.workspace_id !== args.workspaceId || message.project_id !== args.projectId) {
-						return false;
+						return null;
 					}
 
 					// Only return root messages (thread_id = null)
 					if (message.thread_id !== null) {
-						return false;
+						return null;
 					}
 
 					// Apply is_archived filter if provided (not null/undefined)
 					if (args.isArchived !== undefined && args.isArchived !== null) {
 						if (message.is_archived !== args.isArchived) {
-							return false;
+							return null;
 						}
 					}
 
-					return true;
+					// The message is a thread head
+					const thread = message;
+
+					const lastChildMessage = thread.last_child_id
+						? await ctx.db.get("human_thread_messages", thread.last_child_id)
+						: null;
+					const lastMessageAt = lastChildMessage?._creationTime ?? thread._creationTime;
+
+					return {
+						id: thread._id,
+						created_at: thread._creationTime,
+						last_message_at: lastMessageAt,
+						content: thread.content,
+						created_by: thread.created_by,
+						is_archived: thread.is_archived,
+						last_child_id: thread.last_child_id,
+					};
 				}),
-		);
+			),
+		).then((threads) => threads.filter((v) => v != null));
 
-		const lastChildMessages = await Promise.all(
-			threads.map(async (thread) => {
-				if (!thread.last_child_id) {
-					return null;
-				}
-				return await ctx.db.get("human_thread_messages", thread.last_child_id);
-			}),
-		);
-
-		return {
-			threads: threads.map((thread, index) => {
-				const lastChildMessage = lastChildMessages[index];
-				const lastMessageAt = lastChildMessage?._creationTime ?? thread._creationTime;
-
-				return {
-					id: thread._id,
-					created_at: thread._creationTime,
-					last_message_at: lastMessageAt,
-					content: thread.content,
-					created_by: thread.created_by,
-					is_archived: thread.is_archived,
-					last_child_id: thread.last_child_id,
-				};
-			}),
-		};
+		return { threads };
 	},
 });

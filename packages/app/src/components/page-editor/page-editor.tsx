@@ -371,14 +371,25 @@ type PageEditor_Inner_Props = {
 	presenceStore: pages_PresenceStore;
 	onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
 	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
+	diffModifiedInitialValue?: string;
 };
 
 function PageEditor_Inner(props: PageEditor_Inner_Props) {
-	const { pageId, editorMode, threadId, presenceStore, onlineUsers, onEditorModeChange } = props;
+	const { pageId, editorMode, threadId, presenceStore, onlineUsers, onEditorModeChange, diffModifiedInitialValue } =
+		props;
 
 	const handleDiffExit = () => {
 		onEditorModeChange("rich");
 	};
+
+	const headerSlot = (
+		<PageEditorHeader
+			pageId={pageId}
+			editorMode={editorMode}
+			onEditorModeChange={onEditorModeChange}
+			onlineUsers={onlineUsers}
+		/>
+	);
 
 	return (
 		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
@@ -391,37 +402,21 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 					}}
 				>
 					{editorMode === "rich" ? (
-						<PageEditorRichText
-							pageId={pageId}
-							presenceStore={presenceStore}
-							headerSlot={
-								<PageEditorHeader
-									pageId={pageId}
-									editorMode={editorMode}
-									onEditorModeChange={onEditorModeChange}
-									onlineUsers={onlineUsers}
-								/>
-							}
-						/>
+						<PageEditorRichText pageId={pageId} presenceStore={presenceStore} headerSlot={headerSlot} />
 					) : editorMode === "diff" ? (
 						threadId ? (
 							<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
 						) : (
-							<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
+							<MonacoMarkdownDiffEditor
+								pageId={pageId}
+								presenceStore={presenceStore}
+								headerSlot={headerSlot}
+								modifiedInitialValue={diffModifiedInitialValue}
+								onExit={handleDiffExit}
+							/>
 						)
 					) : (
-						<PageEditorPlainText
-							pageId={pageId}
-							presenceStore={presenceStore}
-							headerSlot={
-								<PageEditorHeader
-									pageId={pageId}
-									editorMode={editorMode}
-									onEditorModeChange={onEditorModeChange}
-									onlineUsers={onlineUsers}
-								/>
-							}
-						/>
+						<PageEditorPlainText pageId={pageId} presenceStore={presenceStore} headerSlot={headerSlot} />
 					)}
 				</CatchBoundary>
 			</div>
@@ -446,11 +441,20 @@ export function PageEditor(props: PageEditor_Props) {
 	const authenticated = AppAuthProvider.useAuthenticated();
 
 	const [editorMode, setEditorMode] = useState<PageEditor_Mode>("rich");
+	const [diffModifiedInitialValue, setDiffModifiedInitialValue] = useState<string | undefined>(undefined);
+	const [diffModifiedInitialValuePageId, setDiffModifiedInitialValuePageId] = useState<app_convex_Id<"pages"> | null>(
+		null,
+	);
+
+	const diffModifiedInitialValueForPage =
+		pageId && diffModifiedInitialValuePageId === pageId ? diffModifiedInitialValue : undefined;
 
 	useImperativeHandle(
 		refProp,
 		() => ({
 			requestOpenDiff: (_args: { pageId: app_convex_Id<"pages">; modifiedEditorValue: string }) => {
+				setDiffModifiedInitialValuePageId(_args.pageId);
+				setDiffModifiedInitialValue(_args.modifiedEditorValue);
 				setEditorMode("diff");
 			},
 			getMode: () => editorMode,
@@ -467,6 +471,7 @@ export function PageEditor(props: PageEditor_Props) {
 					threadId={threadId}
 					presenceStore={presenceStore}
 					onlineUsers={onlineUsers}
+					diffModifiedInitialValue={diffModifiedInitialValueForPage}
 					onEditorModeChange={setEditorMode}
 				/>
 			)}

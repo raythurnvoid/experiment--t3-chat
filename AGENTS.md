@@ -116,6 +116,7 @@ When users ask about 3rd party libraries or request implementations using extern
 Documentation Sources
 
 - [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
+- You may assume `+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
 - Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [packages/app/vendor/ai/](packages/app/vendor/ai), [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 

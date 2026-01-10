@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { QuickStart } from "./quick-start.tsx";
 import { PageEditor, type PageEditor_Ref } from "../page-editor/page-editor.tsx";
-import { useGlobalEvent } from "@/lib/global-event.tsx";
+import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
@@ -18,7 +18,7 @@ export function Canvas() {
 
 	const renderPromise = useRenderPromise();
 
-	useGlobalEvent("ai_chat::open_canvas", (e) => {
+	useGlobalCustomEvent("ai_chat::open_canvas", (e) => {
 		const payload = e.detail;
 
 		// Debounce the event handling to prevent concurrent calls to create issues.
@@ -56,7 +56,7 @@ export function Canvas() {
 		});
 	});
 
-	useGlobalEvent("ai_chat::open_canvas_by_path", (e) => {
+	useGlobalCustomEvent("ai_chat::open_canvas_by_path", (e) => {
 		const payload = e.detail;
 
 		clearTimeout(openCanvasGlobalEventDebounce.current);

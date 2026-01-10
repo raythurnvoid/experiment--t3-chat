@@ -10,7 +10,8 @@ import { useLiveRef } from "../hooks/utils-hooks.ts";
 import type { app_convex_Id } from "./app-convex-client.ts";
 import { XCustomEvent } from "./utils.ts";
 
-export class global_event_Event extends XCustomEvent<{
+// #region custom events
+export class global_custom_event_Event extends XCustomEvent<{
 	"ai_chat::open_canvas": {
 		pageId: app_convex_Id<"pages">;
 		mode: "diff" | "editor";
@@ -24,30 +25,30 @@ export class global_event_Event extends XCustomEvent<{
 
 declare global {
 	interface Window {
-		addEventListener<K extends keyof global_event_Event["__map"]>(
+		addEventListener<K extends keyof global_custom_event_Event["__map"]>(
 			event: K,
-			listener: (event: global_event_Event["__map"][K]) => void,
+			listener: (event: global_custom_event_Event["__map"][K]) => void,
 			options?: AddEventListenerOptions,
 		): void;
 
-		removeEventListener<K extends keyof global_event_Event["__map"]>(
+		removeEventListener<K extends keyof global_custom_event_Event["__map"]>(
 			event: K,
-			listener: (event: global_event_Event["__map"][K]) => void,
+			listener: (event: global_custom_event_Event["__map"][K]) => void,
 			options?: EventListenerOptions,
 		): void;
 	}
 }
 
-export function global_event_dispatch<K extends keyof global_event_Event["__map"]>(
+export function global_custom_event_dispatch<K extends keyof global_custom_event_Event["__map"]>(
 	event: K,
-	payload: global_event_Event["__map"][K]["detail"],
+	payload: global_custom_event_Event["__map"][K]["detail"],
 ) {
-	window.dispatchEvent(new global_event_Event(event, { detail: payload }));
+	window.dispatchEvent(new global_custom_event_Event(event, { detail: payload }));
 }
 
-export function global_event_listen<K extends keyof global_event_Event["__map"]>(
+export function global_custom_event_listen<K extends keyof global_custom_event_Event["__map"]>(
 	event: K,
-	handler: (event: global_event_Event["__map"][K]) => void,
+	handler: (event: global_custom_event_Event["__map"][K]) => void,
 	options?: { signal?: AbortSignal },
 ) {
 	window.addEventListener(event, handler, options);
@@ -57,14 +58,71 @@ export function global_event_listen<K extends keyof global_event_Event["__map"]>
 	};
 }
 
-export function useGlobalEvent<K extends keyof global_event_Event["__map"]>(
+export function useGlobalCustomEvent<K extends keyof global_custom_event_Event["__map"]>(
 	name: K,
-	handler: (event: global_event_Event["__map"][K]) => void,
+	handler: (event: global_custom_event_Event["__map"][K]) => void,
 ) {
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		const cleanup = global_event_listen(name, handlerRef.current);
+		const cleanup = global_custom_event_listen(name, handlerRef.current);
 		return cleanup;
 	}, [name]);
 }
+// #endregion custom events
+
+// #region global events
+export function global_event_listen<K extends keyof GlobalEventHandlersEventMap>(
+	event: K,
+	handler: (event: GlobalEventHandlersEventMap[K]) => void,
+	options?: AddEventListenerOptions,
+) {
+	window.addEventListener(event, handler, options);
+
+	return function cleanup() {
+		window.removeEventListener(event, handler);
+	};
+}
+
+export function global_event_listen_all<K extends keyof GlobalEventHandlersEventMap>(
+	events: K[],
+	handler: (event: GlobalEventHandlersEventMap[K]) => void,
+	options?: AddEventListenerOptions,
+) {
+	events.forEach((event) => {
+		window.addEventListener(event, handler, options);
+	});
+
+	return function cleanup() {
+		events.forEach((event) => {
+			window.removeEventListener(event, handler);
+		});
+	};
+}
+
+export function useGlobalEvent<K extends keyof GlobalEventHandlersEventMap>(
+	event: K,
+	handler: (event: GlobalEventHandlersEventMap[K]) => void,
+	options?: AddEventListenerOptions,
+) {
+	const handlerRef = useLiveRef(handler);
+
+	useEffect(() => {
+		const cleanup = global_event_listen(event, handlerRef.current, options);
+		return cleanup;
+	}, [event]);
+}
+
+export function useGlobalEventList<K extends keyof GlobalEventHandlersEventMap>(
+	events: K[],
+	handler: (event: GlobalEventHandlersEventMap[K]) => void,
+	options?: AddEventListenerOptions,
+) {
+	const handlerRef = useLiveRef(handler);
+
+	useEffect(() => {
+		const cleanup = global_event_listen_all(events, handlerRef.current, options);
+		return cleanup;
+	}, [events]);
+}
+// #endregion global events

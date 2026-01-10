@@ -18,8 +18,8 @@
 	body {
 		margin: 0;
 		min-width: 320px;
-		height: 100vh;
-		overflow: hidden;
+		/* height: 100vh;
+		overflow: hidden; */
 	}
 
 	a {
@@ -223,11 +223,13 @@
 	--color-green-03: oklch(0.401 0.114 147);
 	--color-green-04: oklch(0.474 0.135 147);
 	--color-green-05: oklch(0.546 0.156 147);
-	--color-green-06: oklch(0.619 0.176 147);
-	--color-green-07: oklch(0.692 0.197 147);
-	--color-green-08: oklch(0.765 0.218 147);
-	--color-green-09: oklch(0.837 0.238 147);
-	--color-green-10: oklch(0.9 0.127 147);
+	--color-green-06: oklch(0.546 0.156 147);
+	--color-green-07: oklch(0.619 0.176 147);
+	--color-green-08: oklch(0.692 0.19 147);
+	--color-green-09: oklch(0.765 0.19 147);
+	--color-green-10: oklch(0.837 0.19 147);
+	--color-green-11: oklch(0.85 0.12 147);
+	--color-green-12: oklch(0.9 0.08 147);
 
 	--color-red-01: oklch(0.117 0.048 29.2);
 	--color-red-02: oklch(0.183 0.075 29.2);
@@ -392,8 +394,8 @@
 	}
 
 	#root {
-		height: 100vh;
-		overflow: hidden;
+		/* height: 100vh;
+		overflow: hidden; */
 		isolation: isolate;
 	}
 

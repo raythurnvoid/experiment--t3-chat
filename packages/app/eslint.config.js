@@ -100,7 +100,7 @@ export default defineConfig(
 			"@typescript-eslint/ban-ts-comment": "off",
 			"@typescript-eslint/no-array-constructor": "off",
 			"@typescript-eslint/no-array-delete": "off",
-			"@typescript-eslint/await-thenable": "érror",
+			"@typescript-eslint/await-thenable": "error",
 			"@typescript-eslint/no-base-to-string": "off",
 			"@typescript-eslint/no-duplicate-type-constituents": "error",
 			"@typescript-eslint/no-empty-object-type": "off",

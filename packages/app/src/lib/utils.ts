@@ -277,4 +277,4 @@ export class XCustomEvent<T extends { [key: string]: any }> extends Event {
 	}
 }
 
-export type AppElementId = "root" | "app_tiptap_hoisting_container";
+export type AppElementId = "root" | "app_tiptap_hoisting_container" | "app_monaco_hoisting_container";

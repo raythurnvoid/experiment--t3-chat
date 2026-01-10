@@ -2,75 +2,35 @@ import "./page-editor-plain-text.css";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import {
 	pages_yjs_doc_get_markdown,
-	pages_yjs_doc_create_from_array_buffer_update,
 	pages_yjs_doc_update_from_markdown,
 	pages_u8_to_array_buffer,
 	pages_yjs_doc_clone,
 	pages_yjs_compute_diff_update_from_yjs_doc,
 	pages_headless_tiptap_editor_create,
+	pages_monaco_create_editor_model,
+	pages_fetch_page_yjs_state_and_markdown,
 } from "@/lib/pages.ts";
-import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
-import { useConvex, useQuery, useMutation, ConvexReactClient } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
-import { cn, should_never_happen } from "@/lib/utils.ts";
+import { cn, should_never_happen, type AppElementId } from "@/lib/utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { RefreshCcw, Save } from "lucide-react";
 import { Await } from "@/components/await.tsx";
 import { Doc as YDoc, applyUpdate } from "yjs";
-import { useLiveRef, useStateRef } from "../../../hooks/utils-hooks.ts";
 import { toast } from "sonner";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
-import type { human_thread_messages_Thread } from "@/lib/human-thread-messages.ts";
-import { PageEditorCommentsThread, type PageEditorCommentsThread_Props } from "../page-editor-comments-thread.tsx";
+import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 
-type PageEditorPlainText_InitialData = {
-	markdown: string;
-	mut_yjsDoc: YDoc;
-	yjsSequence: number;
-};
-
-async function fetch_page_yjs_state_and_markdown(
-	convex: ConvexReactClient,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		pageId: app_convex_Id<"pages">;
-	},
-): Promise<PageEditorPlainText_InitialData> {
-	const [snapshotDoc, updatesData, lastSequenceData] = await Promise.all([
-		convex.query(api.ai_docs_temp.yjs_get_doc_last_snapshot, args),
-		convex.query(api.ai_docs_temp.yjs_get_incremental_updates, args).then((updatesData) => updatesData?.updates ?? []),
-		convex.query(api.ai_docs_temp.get_page_last_yjs_sequence, args),
-	]);
-
-	if (snapshotDoc == null) {
-		// Return empty state
-		const emptyYjsDoc = new YDoc();
-		return { markdown: "", mut_yjsDoc: emptyYjsDoc, yjsSequence: 0 };
-	}
-
-	// By default the API returns updates in descending order; normalize to ascending and filter
-	// to only include updates that are after the snapshot.
-	const filteredIncrementalUpdates = updatesData.filter((u) => u.sequence > snapshotDoc.sequence).reverse();
-
-	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshotDoc.snapshot_update, {
-		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
-	});
-	const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
-
-	const yjsSequence = lastSequenceData?.last_sequence ?? snapshotDoc.sequence;
-	return { markdown, mut_yjsDoc: yjsDoc, yjsSequence };
-}
-
-// #region Toolbar
+// #region toolbar
 export type PageEditorPlainTextToolbar_ClassNames =
 	| "PageEditorPlainTextToolbar"
 	| "PageEditorPlainTextToolbar-scrollable-area"
@@ -80,6 +40,7 @@ export type PageEditorPlainTextToolbar_ClassNames =
 export type PageEditorPlainTextToolbar_Props = {
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
+	isSaveDebouncing: boolean;
 	pageId: app_convex_Id<"pages">;
 	sessionId: string;
 	getCurrentMarkdown: () => string;
@@ -92,6 +53,7 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 	const {
 		isSaveDisabled,
 		isSyncDisabled,
+		isSaveDebouncing,
 		pageId,
 		sessionId,
 		getCurrentMarkdown,
@@ -118,12 +80,13 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 						variant="ghost"
 						className={cn("PageEditorPlainTextToolbar-button" satisfies PageEditorPlainTextToolbar_ClassNames)}
 						disabled={isSaveDisabled}
+						aria-busy={isSaveDebouncing}
 						onClick={onClickSave}
 					>
 						<MyButtonIcon
 							className={cn("PageEditorPlainTextToolbar-icon" satisfies PageEditorPlainTextToolbar_ClassNames)}
 						>
-							<Save />
+							{isSaveDebouncing ? <MySpinner aria-label="Checking" /> : <Save />}
 						</MyButtonIcon>
 						Save
 					</MyButton>
@@ -151,148 +114,31 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 		</div>
 	);
 }
-// #endregion Toolbar
+// #endregion toolbar
 
-// #region CommentsSidebar
-type PageEditorPlainTextCommentsSidebarThread_Props = {
-	thread: human_thread_messages_Thread;
-};
-
-function PageEditorPlainTextCommentsSidebarThread(props: PageEditorPlainTextCommentsSidebarThread_Props) {
-	const { thread } = props;
-
-	const [isOpen, setIsOpen] = useState(false);
-
-	const handleToggle: PageEditorCommentsThread_Props["onToggle"] = (e) => {
-		setIsOpen(e.currentTarget.open);
-	};
-
-	return <PageEditorCommentsThread thread={thread} isOpen={isOpen} onToggle={handleToggle} />;
-}
-
-export type PageEditorPlainTextCommentsSidebar_ClassNames =
-	| "PageEditorPlainTextCommentsSidebar"
-	| "PageEditorPlainTextCommentsSidebar-header"
-	| "PageEditorPlainTextCommentsSidebar-filter"
-	| "PageEditorPlainTextCommentsSidebar-filter-mode"
-	| "PageEditorPlainTextCommentsSidebar-filter-input"
-	| "PageEditorPlainTextCommentsSidebar-list"
-	| "PageEditorPlainTextCommentsSidebar-empty";
-
-export type PageEditorPlainTextCommentsSidebar_Props = {
-	threadIds: string[];
-};
-
-function PageEditorPlainTextCommentsSidebar(props: PageEditorPlainTextCommentsSidebar_Props) {
-	const { threadIds } = props;
-
-	const [filterMode, setFilterMode] = useState<"text" | "id">("text");
-	const [filterValue, setFilterValue] = useState("");
-
-	const threadsQuery = useStableQuery(
-		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
-		threadIds.length > 0
-			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					threadIds,
-					isArchived: false,
-				}
-			: "skip",
-	);
-
-	const filteredThreads = useMemo(() => {
-		const threads = threadsQuery?.threads ?? [];
-
-		const sortedThreads = [...threads].sort((a, b) => b.last_message_at - a.last_message_at);
-
-		const q = filterValue.trim().toLowerCase();
-		if (!q) return sortedThreads;
-
-		return sortedThreads.filter((thread) => {
-			if (filterMode === "id") {
-				return `${thread.id}`.toLowerCase().includes(q);
-			}
-			return thread.content.toLowerCase().includes(q);
-		});
-	}, [filterMode, filterValue, threadsQuery?.threads]);
-
-	return (
-		<aside className={"PageEditorPlainTextCommentsSidebar" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}>
-			<div
-				className={"PageEditorPlainTextCommentsSidebar-header" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}
-			>
-				<b>Comments</b> <small>({threadIds.length})</small>
-			</div>
-
-			<div
-				className={"PageEditorPlainTextCommentsSidebar-filter" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}
-			>
-				<div
-					className={
-						"PageEditorPlainTextCommentsSidebar-filter-mode" satisfies PageEditorPlainTextCommentsSidebar_ClassNames
-					}
-				>
-					<MyButton variant="ghost" aria-pressed={filterMode === "text"} onClick={() => setFilterMode("text")}>
-						Text
-					</MyButton>
-					<MyButton variant="ghost" aria-pressed={filterMode === "id"} onClick={() => setFilterMode("id")}>
-						ID
-					</MyButton>
-				</div>
-
-				<input
-					className={
-						"PageEditorPlainTextCommentsSidebar-filter-input" satisfies PageEditorPlainTextCommentsSidebar_ClassNames
-					}
-					placeholder={filterMode === "id" ? "Search by thread id…" : "Search by first message…"}
-					value={filterValue}
-					onChange={(e) => setFilterValue(e.target.value)}
-				/>
-			</div>
-
-			<div
-				className={"PageEditorPlainTextCommentsSidebar-list" satisfies PageEditorPlainTextCommentsSidebar_ClassNames}
-			>
-				{filteredThreads.length === 0 ? (
-					<div
-						className={
-							"PageEditorPlainTextCommentsSidebar-empty" satisfies PageEditorPlainTextCommentsSidebar_ClassNames
-						}
-					>
-						<i>No threads</i>
-					</div>
-				) : (
-					filteredThreads.map((thread) => (
-						<PageEditorPlainTextCommentsSidebarThread key={`${thread.id}`} thread={thread} />
-					))
-				)}
-			</div>
-		</aside>
-	);
-}
-// #endregion CommentsSidebar
-
-// #region Root
-type PageEditorPlainText_ClassNames = "PageEditorPlainText" | "PageEditorPlainText-editor";
+// #region root
+type PageEditorPlainText_ClassNames =
+	| "PageEditorPlainText"
+	| "PageEditorPlainText-editor"
+	| "PageEditorPlainText-panels-group"
+	| "PageEditorPlainText-editor-panel"
+	| "PageEditorPlainText-panel-resize-handle-container"
+	| "PageEditorPlainText-panel-resize-handle"
+	| "PageEditorPlainText-comments-panel";
 
 type PageEditorPlainText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
-	initialData: PageEditorPlainText_InitialData;
+	initialData: {
+		markdown: string;
+		mut_yjsDoc: YDoc;
+		yjsSequence: number;
+	};
 	presenceStore: pages_PresenceStore;
 	headerSlot: ReactNode;
 };
 
-function create_editor_model(markdown: string) {
-	const model = monaco_editor.createModel(markdown, "markdown");
-	model.setEOL(monaco_editor.EndOfLineSequence.LF);
-	return model;
-}
-
 function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 	const { initialData, headerSlot, pageId, presenceStore } = props;
-
-	const convex = useConvex();
 
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
 
@@ -302,31 +148,33 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		pageId,
 	});
 
-	const [initialEditorModel] = useState(() => create_editor_model(initialData.markdown));
+	const [initialEditorModel] = useState(() => pages_monaco_create_editor_model(initialData.markdown));
 
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
+	const modelRef = useRef<monaco_editor.ITextModel | null>(initialEditorModel);
 	const baselineYjsDocRef = useRef<YDoc>(initialData.mut_yjsDoc);
-	const workingYjsDocRef = useRef<YDoc>(pages_yjs_doc_clone({ yjsDoc: initialData.mut_yjsDoc }));
+	const baselineMarkdownRef = useRef<string>(initialData.markdown);
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
 	const commentThreadIdsKeyRef = useRef<string>("");
 
-	const [isDirtyRef, setIsDirty, isDirty] = useStateRef(false);
-	const baselineAltVersionIdRef = useRef<number>(0);
+	const [dirtyCheckState, setDirtyCheckState] = useState<"clean" | "checking" | "dirty">("clean");
+	const dirtyCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
 	const [workingYjsDocSequence, setWorkingYjsSequence] = useState(initialData.yjsSequence);
 
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
 
-	const isSaveDisabled = isSaving || isSyncing || !isDirty;
+	const isSaveDebouncing = dirtyCheckState === "checking";
+	const isSaveDisabled = isSaving || isSyncing || dirtyCheckState !== "dirty";
 	const serverSequence = serverSequenceData?.last_sequence;
-	const serverSequenceRef = useLiveRef(serverSequence);
 	const isSyncDisabled = isSyncing || isSaving || serverSequence == null || workingYjsDocSequence === serverSequence;
 
-	function updateThreadIds(markdown: string) {
+	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
+
+	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = pages_headless_tiptap_editor_create({ initialContent: { markdown } });
-		debugger;
 		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor.state).toSorted();
 		headlessEditor.destroy();
 
@@ -336,33 +184,46 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		}
 		commentThreadIdsKeyRef.current = nextKey;
 		setCommentThreadIds(nextThreadIds);
-	}
+	};
 
-	function updateDirtyBaseline() {
-		if (!editorRef.current) {
-			const error = should_never_happen("[PageEditorPlainText.updateDirtyBaseline] Missing editor ref", {
-				editor: editorRef.current,
-			});
-			console.error(error);
-			throw error;
+	const updateDirtyBaseline = (newBaselineMarkdown: string) => {
+		baselineMarkdownRef.current = newBaselineMarkdown;
+
+		if (dirtyCheckTimeoutRef.current) {
+			clearTimeout(dirtyCheckTimeoutRef.current);
+			dirtyCheckTimeoutRef.current = undefined;
+		}
+		setDirtyCheckState("clean");
+	};
+
+	const scheduleDirtyCheck = () => {
+		if (!editorRef.current) return;
+
+		setDirtyCheckState("checking");
+
+		if (dirtyCheckTimeoutRef.current) {
+			clearTimeout(dirtyCheckTimeoutRef.current);
 		}
 
-		const model = editorRef.current.getModel();
+		dirtyCheckTimeoutRef.current = setTimeout(() => {
+			dirtyCheckTimeoutRef.current = undefined;
 
-		if (!model) {
-			const error = should_never_happen("[PageEditorPlainText.updateDirtyBaseline] Missing model", {
-				editor: editorRef.current,
-				model,
-			});
-			console.error(error);
-			throw error;
-		}
+			const model = modelRef.current;
+			if (!model) {
+				const error = should_never_happen("[PageEditorPlainText.scheduleDirtyCheck] Missing `model`", {
+					editor: editorRef.current,
+					model,
+				});
+				console.error(error);
+				return;
+			}
 
-		baselineAltVersionIdRef.current = model.getAlternativeVersionId();
-		setIsDirty(false);
-	}
+			const isDirty = model.getValue() !== baselineMarkdownRef.current;
+			setDirtyCheckState(isDirty ? "dirty" : "clean");
+		}, 250);
+	};
 
-	function resetToNewBaseline(markdown: string) {
+	const resetToNewBaseline = (markdown: string) => {
 		if (!editorRef.current) {
 			const error = should_never_happen("[PageEditorPlainText.resetToNewBaseline] Missing editor ref", {
 				editor: editorRef.current,
@@ -371,38 +232,29 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			throw error;
 		}
 
-		const prevModel = editorRef.current.getModel();
-
-		if (!prevModel) {
-			const error = should_never_happen("[PageEditorPlainText.resetToNewBaseline] Missing prevModel", {
-				editor: editorRef.current,
-				prevModel: prevModel,
-			});
-			console.error(error);
-			throw error;
-		}
-
-		const model = create_editor_model(markdown);
+		const prevModel = modelRef.current;
+		const model = pages_monaco_create_editor_model(markdown);
 		editorRef.current.setModel(model);
-		prevModel.dispose();
-		updateDirtyBaseline();
+		modelRef.current = model;
+		prevModel?.dispose();
+		updateDirtyBaseline(markdown);
 		updateThreadIds(markdown);
 		return model;
-	}
+	};
 
-	function pushChangeToEditor(newMarkdown: string) {
+	const pushChangeToEditor = (newMarkdown: string) => {
 		if (!editorRef.current) {
-			const error = should_never_happen("[PageEditorPlainText.pushChangeToEditor] Missing editor ref", {
+			const error = should_never_happen("[PageEditorPlainText.pushChangeToEditor] Missing `editorRef.current`", {
 				editor: editorRef.current,
 			});
 			console.error(error);
 			throw error;
 		}
 
-		const model = editorRef.current.getModel();
+		const model = modelRef.current;
 
 		if (!model) {
-			const error = should_never_happen("[PageEditorPlainText.pushChangeToEditor] Missing model", {
+			const error = should_never_happen("[PageEditorPlainText.pushChangeToEditor] `model`", {
 				editor: editorRef.current,
 				model,
 			});
@@ -418,25 +270,33 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			},
 		]);
 		editorRef.current.pushUndoStop();
-		setIsDirty(true);
-	}
+		setDirtyCheckState("dirty");
+	};
 
 	const getCurrentMarkdown = () => {
-		return editorRef.current?.getModel()?.getValue() ?? initialData.markdown;
+		return modelRef.current?.getValue() ?? initialData.markdown;
 	};
 
 	const handleApplySnapshotMarkdown = () => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const remoteData = await fetch_page_yjs_state_and_markdown(convex, {
+			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
 			});
 
+			if (!remoteData) {
+				console.error(
+					should_never_happen("[PageEditorPlainText.handleApplySnapshotMarkdown] Missing `remoteData`", {
+						remoteData,
+					}),
+				);
+				return;
+			}
+
 			resetToNewBaseline(remoteData.markdown);
-			baselineYjsDocRef.current = remoteData.mut_yjsDoc;
-			workingYjsDocRef.current = pages_yjs_doc_clone({ yjsDoc: remoteData.mut_yjsDoc });
+			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 		})()
 			.catch((err) => {
@@ -446,35 +306,8 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			.finally(() => {});
 	};
 
-	const handleOnMount: EditorProps["onMount"] = (editor) => {
-		editorRef.current = editor;
-		updateDirtyBaseline();
-		debugger;
-		updateThreadIds(initialData.markdown);
-
-		editor.onDidChangeModelContent(() => {
-			const model = editor.getModel();
-			if (!model) {
-				const error = should_never_happen(
-					"[PageEditorPlainText.handleOnMount editor.onDidChangeModelContent] Missing model",
-					{
-						editor,
-						model,
-					},
-				);
-				console.error(error);
-				return;
-			}
-
-			const nextDirty = model.getAlternativeVersionId() !== baselineAltVersionIdRef.current;
-			if (nextDirty === isDirtyRef.current) return;
-
-			setIsDirty(nextDirty);
-		});
-	};
-
 	const handleClickSave = () => {
-		const editorModel = editorRef.current?.getModel();
+		const editorModel = modelRef.current;
 		if (!editorModel) {
 			const error = should_never_happen("[PageEditorPlainText.handleClickSave] Missing editorModel", {
 				editor: editorRef.current,
@@ -484,7 +317,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			throw error;
 		}
 
-		if (isSaving || isSyncing || !isDirty) return;
+		if (isSaving || isSyncing || dirtyCheckState !== "dirty") return;
 
 		setIsSaving(true);
 
@@ -494,7 +327,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 			const workingMarkdown = editorModel.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
-			debugger;
+
 			pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
@@ -527,12 +360,11 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				}
 			}
 
-			workingYjsDocRef.current = workingYjsDoc;
-			updateDirtyBaseline();
+			updateDirtyBaseline(workingMarkdown);
 			updateThreadIds(workingMarkdown);
 		})()
 			.catch((err) => {
-				console.error("[PageEditorPlainText] Save failed", err);
+				console.error("[PageEditorPlainText.handleClickSave] Save failed", err);
 				toast.error(err?.message ?? "Failed to save");
 			})
 			.finally(() => {
@@ -541,17 +373,18 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 	};
 
 	const handleClickSync = () => {
-		if (isSyncing) return;
+		if (isSyncing || isSaving) return;
 
-		const editor = editorRef.current?.getModel();
-		const workingYjsDoc = workingYjsDocRef.current;
+		setDirtyCheckState("checking");
+		clearTimeout(dirtyCheckTimeoutRef.current);
+		dirtyCheckTimeoutRef.current = undefined;
 
-		if (!editor || !workingYjsDoc) {
+		const model = modelRef.current;
+
+		if (!model) {
 			console.error(
-				should_never_happen("[PageEditorPlainText.handleClickSync] Missing deps", {
-					editor,
-					workingYjsDoc,
-					serverSequence: serverSequenceRef.current,
+				should_never_happen("[PageEditorPlainText.handleClickSync] Missing `model`", {
+					model,
 				}),
 			);
 			return;
@@ -561,59 +394,31 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const workingMarkdown = editor.getValue();
+			const workingMarkdown = model.getValue();
+			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
 			pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
 			});
 
-			const [snapshotDoc, updatesData] = await Promise.all([
-				convex.query(api.ai_docs_temp.yjs_get_doc_last_snapshot, {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					pageId,
-				}),
-				convex
-					.query(api.ai_docs_temp.yjs_get_incremental_updates, {
-						workspaceId: ai_chat_HARDCODED_ORG_ID,
-						projectId: ai_chat_HARDCODED_PROJECT_ID,
-						pageId,
-					})
-					.then((updatesData) => updatesData?.updates ?? []),
-			]);
-
-			if (!snapshotDoc) {
-				console.error(
-					should_never_happen("[PageEditorPlainText.handleClickSync] Missing snapshotDoc", {
-						snapshotDoc,
-					}),
-				);
-				return;
-			}
-
-			// By default the API returns updates in descending order; normalize to ascending and filter
-			// to only include updates that are after the snapshot.
-			const filteredIncrementalUpdates = updatesData.filter((u) => u.sequence > snapshotDoc.sequence).reverse();
-			const remoteYjsDocSequence = filteredIncrementalUpdates.at(-1)?.sequence ?? snapshotDoc?.sequence;
-
-			if (remoteYjsDocSequence == null) {
-				console.error(
-					should_never_happen("[PageEditorPlainText.handleClickSync] Missing serverSequence", {
-						serverSequence: remoteYjsDocSequence,
-					}),
-				);
-				return;
-			}
-
-			const remoteYjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshotDoc.snapshot_update, {
-				additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
+			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
 			});
 
-			const remoteMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: remoteYjsDoc });
+			if (!remoteData) {
+				console.error(
+					should_never_happen("[PageEditorPlainText.handleClickSync] Missing `remoteData`", {
+						remoteData,
+					}),
+				);
+				return;
+			}
 
 			// Diff update from working to remote.
 			const diffUpdate = pages_yjs_compute_diff_update_from_yjs_doc({
-				yjsDoc: remoteYjsDoc,
+				yjsDoc: remoteData.yjsDoc,
 				yjsBeforeDoc: workingYjsDoc,
 			});
 
@@ -623,30 +428,43 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			const mergedMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: workingYjsDoc });
 
 			// Reset the Monaco model to a clean server baseline.
-			resetToNewBaseline(remoteMarkdown);
-			baselineYjsDocRef.current = remoteYjsDoc;
+			resetToNewBaseline(remoteData.markdown);
+			baselineYjsDocRef.current = remoteData.yjsDoc;
+			setWorkingYjsSequence(remoteData.yjsSequence);
 
 			// Apply the merged content as a single undoable edit so the user can at least undo back to the
 			// new server baseline (v0) after a sync.
 			// TODO: if we save the local edits as incremental updates we can let the user undo granularly.
-			if (mergedMarkdown !== remoteMarkdown) {
+			if (mergedMarkdown !== remoteData.markdown) {
 				pushChangeToEditor(mergedMarkdown);
 			}
 
-			updateThreadIds(remoteMarkdown);
-			setWorkingYjsSequence(remoteYjsDocSequence);
+			updateThreadIds(remoteData.markdown);
 		})()
 			.catch((err) => {
-				console.error("[PageEditorPlainText] Sync failed", err);
+				console.error("[PageEditorPlainText.handleClickSync] Sync failed", err);
 			})
 			.finally(() => {
 				setIsSyncing(false);
 			});
 	};
 
+	const handleOnMount: EditorProps["onMount"] = (editor) => {
+		editorRef.current = editor;
+		modelRef.current = initialEditorModel;
+		updateDirtyBaseline(initialData.markdown);
+		updateThreadIds(initialData.markdown);
+
+		editor.onDidChangeModelContent(() => {
+			scheduleDirtyCheck();
+		});
+	};
+
 	useEffect(() => {
 		return () => {
-			editorRef.current?.getModel()?.dispose();
+			clearTimeout(dirtyCheckTimeoutRef.current);
+			dirtyCheckTimeoutRef.current = undefined;
+			modelRef.current = null;
 		};
 	}, []);
 
@@ -657,6 +475,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			<PageEditorPlainTextToolbar
 				isSaveDisabled={isSaveDisabled}
 				isSyncDisabled={isSyncDisabled}
+				isSaveDebouncing={isSaveDebouncing}
 				pageId={pageId}
 				sessionId={presenceStore.localSessionId}
 				getCurrentMarkdown={getCurrentMarkdown}
@@ -665,27 +484,39 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				onClickSync={handleClickSync}
 			/>
 
-			<PanelGroup direction="horizontal" className={"PageEditorPlainText-panels-group"}>
-				<Panel defaultSize={75} className={"PageEditorPlainText-editor-panel"}>
+			<PanelGroup
+				direction="horizontal"
+				className={"PageEditorPlainText-panels-group" satisfies PageEditorPlainText_ClassNames}
+			>
+				<Panel defaultSize={75} className={"PageEditorPlainText-editor-panel" satisfies PageEditorPlainText_ClassNames}>
 					<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
-						<Editor
-							height="100%"
-							language="markdown"
-							theme={app_monaco_THEME_NAME_DARK}
-							options={{
-								wordWrap: "on",
-								scrollBeyondLastLine: false,
-								model: initialEditorModel,
-							}}
-							onMount={handleOnMount}
-						/>
+						{hoistingContainer && (
+							<Editor
+								height="100%"
+								language="markdown"
+								theme={app_monaco_THEME_NAME_DARK}
+								options={{
+									overflowWidgetsDomNode: hoistingContainer,
+									fixedOverflowWidgets: true,
+									wordWrap: "on",
+									scrollBeyondLastLine: false,
+									model: initialEditorModel,
+								}}
+								onMount={handleOnMount}
+							/>
+						)}
 					</div>
 				</Panel>
-				<div className={"PageEditorPlainText-panel-resize-handle-container"}>
-					<PanelResizeHandle className={"PageEditorPlainText-panel-resize-handle"} />
+				<div className={"PageEditorPlainText-panel-resize-handle-container" satisfies PageEditorPlainText_ClassNames}>
+					<PanelResizeHandle
+						className={"PageEditorPlainText-panel-resize-handle" satisfies PageEditorPlainText_ClassNames}
+					/>
 				</div>
-				<Panel defaultSize={25} className={"PageEditorPlainText-comments-panel"}>
-					<PageEditorPlainTextCommentsSidebar threadIds={commentThreadIds} />
+				<Panel
+					defaultSize={25}
+					className={"PageEditorPlainText-comments-panel" satisfies PageEditorPlainText_ClassNames}
+				>
+					<PageEditorCommentsSidebar threadIds={commentThreadIds} />
 				</Panel>
 			</PanelGroup>
 		</div>
@@ -701,9 +532,7 @@ export type PageEditorPlainText_Props = {
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	const { pageId, presenceStore, headerSlot } = props;
 
-	const convex = useConvex();
-
-	const pageContentData = fetch_page_yjs_state_and_markdown(convex, {
+	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
@@ -716,7 +545,15 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 					<PageEditorPlainText_Inner
 						key={pageId}
 						pageId={pageId}
-						initialData={pageContentData}
+						initialData={
+							pageContentData
+								? {
+										markdown: pageContentData.markdown,
+										mut_yjsDoc: pageContentData.yjsDoc,
+										yjsSequence: pageContentData.yjsSequence,
+									}
+								: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
+						}
 						presenceStore={presenceStore}
 						headerSlot={headerSlot}
 					/>
@@ -725,4 +562,4 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 		</Suspense>
 	);
 }
-// #endregion Root
+// #endregion root

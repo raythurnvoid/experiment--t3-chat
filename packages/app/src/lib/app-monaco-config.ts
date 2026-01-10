@@ -110,9 +110,10 @@ const fg = css_var_to_hex("--color-fg-11", "#d4d4d4");
 const fgMuted = css_var_to_hex("--color-fg-07", "#858585");
 const fgStrong = css_var_to_hex("--color-fg-12", "#ffffff");
 
-const accent1 = css_var_to_hex("--color-accent-01", "#264f78");
 const accent6 = css_var_to_hex("--color-accent-06", "#3b8eea");
 const accent7 = css_var_to_hex("--color-accent-07", "#4aa3ff");
+const accent8 = css_var_to_hex("--color-accent-08", "#5db3ff");
+const accent9 = css_var_to_hex("--color-accent-09", "#6fc0ff");
 
 try {
 	monaco.editor.defineTheme(app_monaco_THEME_NAME_DARK, {
@@ -127,8 +128,8 @@ try {
 			"editorLineNumber.activeForeground": fg,
 			"editorCursor.foreground": fgStrong,
 
-			"editor.selectionBackground": hex_with_alpha(accent1, 0.35),
-			"editor.inactiveSelectionBackground": hex_with_alpha(accent1, 0.22),
+			"editor.selectionBackground": hex_with_alpha(accent9, 0.55),
+			"editor.inactiveSelectionBackground": hex_with_alpha(accent8, 0.35),
 
 			"editor.findMatchBackground": hex_with_alpha(accent7, 0.35),
 			"editor.findMatchHighlightBackground": hex_with_alpha(accent6, 0.25),

@@ -20,6 +20,7 @@ The following rules are mandatory across this codebase:
 - Keep `...rest` last and forward DOM-compatible props as needed.
 - Prefix all CSS classes with the component name.
 - Use camelCase for props and all local symbols.
+- Inside components, use arrow functions for all helpers/handlers (avoid hoisted `function` declarations).
 - Use React 19 ref patterns: accept `ref` as a regular prop; prefer a callback ref with `forward_ref` to forward refs to children or multiple targets; use `useImperativeHandle` only to expose a custom imperative API.
 
 ## Don't
@@ -28,6 +29,7 @@ The following rules are mandatory across this codebase:
 - Wrap components with `React.memo`.
 - Destructure props in the function signature.
 - Export anonymous arrow component expressions for top-level components.
+- Use `function foo()` declarations inside components (they are hoisted; prefer `const foo = () => {}`).
 
 ## Prop Ordering
 
@@ -569,7 +571,7 @@ export function MyComponent(props: MyComponent_Props) {
 
 	const timerRef = useRef<ReturnType<typeof setTimeout>>(null);
 
-	function startTimer() {
+	const startTimer = () => {
 		if (timerRef.current) {
 			clearTimeout(timerRef.current);
 		}
@@ -577,7 +579,7 @@ export function MyComponent(props: MyComponent_Props) {
 		timerRef.current = setTimeout(() => {
 			// ... task implementation
 		}, 1000);
-	}
+	};
 
 	// ... rest of the component
 }
@@ -612,26 +614,53 @@ export function Example(props: { value: string }) {
 
 # Component Static Properties
 
-## Object.assign with IIFE Pattern
+## Dot notation (recommended)
 
-When adding static properties to React components using `Object.assign`, wrap the component in an IIFE (Immediately Invoked Function Expression) to let the compiler detect and optimize the component.
-
-The IIFE is necessary to allow the React compiler to detect and optimize the component.
+When attaching helper functions or static properties to a component function, prefer **dot notation**. TypeScript supports this pattern, and it keeps the component definition straightforward.
 
 ```tsx
-export const ComponentName = ((/* iife */) => {
-	function ComponentName(props: ComponentName_Props) {
-		const { children, ...rest } = props;
+export function ComponentName(props: ComponentName_Props) {
+	const { children, ...rest } = props;
+	return <div {...rest}>{children}</div>;
+}
 
-		return <div {...rest}>{children}</div>;
+ComponentName.staticMethod = function staticMethod() {
+	// static method implementation
+};
+```
+
+## Dot notation with types (namespace merge)
+
+If you want the static members to be fully type-checked at the call-site without casts, use a `namespace` merge with the same name as the component:
+
+```tsx
+export function ComponentName(props: ComponentName_Props) {
+	const { children, ...rest } = props;
+	return <div {...rest}>{children}</div>;
+}
+
+export namespace ComponentName {
+	export function staticMethod() {
+		// static method implementation
 	}
+}
+```
 
-	return Object.assign(ComponentName, {
-		staticMethod() {
-			// static method implementation
-		},
-	});
-})();
+## Object.assign (optional)
+
+If you prefer to attach multiple properties in one place, `Object.assign` is fine, but it is **not required**.
+
+```tsx
+export function ComponentName(props: ComponentName_Props) {
+	const { children, ...rest } = props;
+	return <div {...rest}>{children}</div>;
+}
+
+Object.assign(ComponentName, {
+	staticMethod() {
+		// static method implementation
+	},
+});
 ```
 
 # Component Region Wrapping

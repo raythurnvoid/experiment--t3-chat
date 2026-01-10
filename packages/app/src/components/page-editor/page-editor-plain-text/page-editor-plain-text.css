@@ -45,6 +45,7 @@
 	.PageEditorPlainText-editor {
 		height: 100%;
 		flex: 1;
+		contain: strict;
 
 		/* Container fallback only; Monaco theme controls internal colors */
 		background-color: var(--color-base-1-03);
@@ -152,21 +153,6 @@
 	.PageEditorPlainTextCommentsSidebar-filter-mode {
 		display: flex;
 		gap: 4px;
-	}
-
-	.PageEditorPlainTextCommentsSidebar-filter-input {
-		height: 32px;
-		padding: 0 10px;
-		border-radius: 8px;
-		border: 1px solid var(--color-fg-03);
-
-		background: var(--color-base-1-01);
-		color: var(--color-fg-12);
-
-		&:focus-visible {
-			outline: none;
-			border-color: var(--color-fg-12);
-		}
 	}
 
 	.PageEditorPlainTextCommentsSidebar-list {

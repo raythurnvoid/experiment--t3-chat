@@ -20,6 +20,8 @@ function LayoutInner() {
 			</MainAppSidebar>
 			<AppTanStackRouterDevTools />
 			<div id={"app_tiptap_hoisting_container" satisfies AppElementId}></div>
+			{/* The monaco hoisting container requires the monaco-editor class to style the widgets */}
+			<div id={"app_monaco_hoisting_container" satisfies AppElementId} className="monaco-editor"></div>
 		</div>
 	);
 }

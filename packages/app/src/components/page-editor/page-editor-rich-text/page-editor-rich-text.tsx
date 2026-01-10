@@ -156,6 +156,16 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	const renderPromise = useRenderPromise();
 
+	/**
+	 * The container for the tiptap hoisted elements.
+	 * Used by the bubble to allow it to close when clicking on
+	 * focusable elements in the page because it checks for the parent
+	 * element to contain the focus relatedTarget and if the bubble
+	 * is hoisted in the body, the body will always contain the focus relatedTarget
+	 * preventing the bubble from closing.
+	 */
+	const hoistingContainer = document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
+
 	function updateBubbleMenuPosition() {
 		editor.view.dispatch(editor.state.tr.setMeta("bubbleMenu", "updatePosition"));
 	}
@@ -291,16 +301,6 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		setOpenComment(false);
 		setRendered(false);
 	};
-
-	/**
-	 * The container for the tiptap hoisted elements.
-	 * Used by the bubble to allow it to close when clicking on
-	 * focusable elements in the page because it checks for the parent
-	 * element to contain the focus relatedTarget and if the bubble
-	 * is hoisted in the body, the body will always contain the focus relatedTarget
-	 * preventing the bubble from closing.
-	 */
-	const hoistingContainer = document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
 
 	useEffect(handleMount, []);
 

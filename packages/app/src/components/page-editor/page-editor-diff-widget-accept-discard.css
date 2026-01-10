@@ -1,0 +1,88 @@
+@layer components {
+	/* Page Editor Diff Widget Accept Discard - Widget container */
+	.PageEditorDiffWidgetAcceptDiscard {
+		position: absolute;
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		white-space: nowrap;
+		z-index: 10;
+
+		/*
+		Save monaco a bit of work by specifying a fixed size
+		so it doesn't have to measure the widget's size in the render path.
+		*/
+		width: 52px;
+		height: 24px;
+	}
+
+	/* Accept and discard button base styles */
+	.PageEditorDiffWidgetAcceptDiscard-accept-button,
+	.PageEditorDiffWidgetAcceptDiscard-discard-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		width: 24px;
+		height: 24px;
+		border: 1px solid var(--color-base-alt-1-10);
+		border-radius: 4px;
+
+		cursor: pointer;
+		box-sizing: border-box;
+
+		background: var(--color-base-alt-1-04);
+		color: var(--color-fg-11);
+
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.25);
+
+		&:hover {
+			background: var(--color-base-alt-1-05);
+		}
+
+		&:active {
+			background: var(--color-base-alt-1-06);
+		}
+	}
+
+	/* Accept button variant */
+	.PageEditorDiffWidgetAcceptDiscard-accept-button {
+		color: var(--color-green-10);
+
+		&:hover {
+			background: var(--color-green-02);
+			border-color: var(--color-green-04);
+			color: var(--color-green-10);
+		}
+
+		&:active {
+			background: var(--color-green-03);
+			border-color: var(--color-green-05);
+			color: var(--color-green-10);
+		}
+	}
+
+	/* Discard button variant */
+	.PageEditorDiffWidgetAcceptDiscard-discard-button {
+		color: var(--color-red-10);
+
+		&:hover {
+			background: var(--color-red-02);
+			border-color: var(--color-red-04);
+			color: var(--color-red-10);
+		}
+
+		&:active {
+			background: var(--color-red-03);
+			border-color: var(--color-red-05);
+			color: var(--color-red-10);
+		}
+	}
+
+	.PageEditorDiffWidgetAcceptDiscard-icon {
+		width: 16px;
+		height: 16px;
+
+		pointer-events: none;
+	}
+}
