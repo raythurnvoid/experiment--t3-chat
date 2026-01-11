@@ -12,115 +12,24 @@ import {
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
-import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
-import { useConvex, useQuery, type ConvexReactClient, useMutation } from "convex/react";
+import { useConvex, useQuery, useMutation, ConvexReactClient } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ChevronRight, RefreshCcw, Save } from "lucide-react";
-import { MyIcon } from "@/components/my-icon.tsx";
+import { RefreshCcw, Save } from "lucide-react";
 import { Await } from "@/components/await.tsx";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { useLiveRef, useStateRef } from "../../../hooks/utils-hooks.ts";
 import { toast } from "sonner";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
-import {
-	page_editor_fetch_page_yjs_state_and_markdown,
-	type PageEditorYjsLoad_InitialData,
-} from "../page-editor-yjs-load.ts";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import type { human_thread_messages_Thread } from "@/lib/human-thread-messages.ts";
 import { PageEditorCommentsThread, type PageEditorCommentsThread_Props } from "../page-editor-comments-thread.tsx";
-
-// #region Error
-type PageEditorPlainTextError_Props = ErrorComponentProps;
-
-type PageEditorPlainTextError_ClassNames =
-	| "PageEditorPlainTextError"
-	| "PageEditorPlainTextError-content"
-	| "PageEditorPlainTextError-title"
-	| "PageEditorPlainTextError-description"
-	| "PageEditorPlainTextError-actions"
-	| "PageEditorPlainTextError-retry-button"
-	| "PageEditorPlainTextError-technical-details"
-	| "PageEditorPlainTextError-technical-details-toggle"
-	| "PageEditorPlainTextError-technical-details-toggle-icon"
-	| "PageEditorPlainTextError-technical-details-pre"
-	| "PageEditorPlainTextError-technical-details-textarea";
-
-function PageEditorPlainTextError(props: PageEditorPlainTextError_Props) {
-	const { error, info } = props;
-
-	const technicalDetails = [
-		error.message && `Error message: ${error.message}`,
-		error.stack && `Stack trace:\n${error.stack}`,
-		info?.componentStack && `Component stack:\n${info.componentStack}`,
-	]
-		.filter(Boolean)
-		.join("\n\n");
-
-	return (
-		<div className={cn("PageEditorPlainTextError" satisfies PageEditorPlainTextError_ClassNames)}>
-			<div className={cn("PageEditorPlainTextError-content" satisfies PageEditorPlainTextError_ClassNames)}>
-				<div className={cn("PageEditorPlainTextError-title" satisfies PageEditorPlainTextError_ClassNames)}>
-					Editor failed to load.
-				</div>
-				<div className={cn("PageEditorPlainTextError-description" satisfies PageEditorPlainTextError_ClassNames)}>
-					Try again, or reload the page if the problem persists.
-				</div>
-				<div className={cn("PageEditorPlainTextError-actions" satisfies PageEditorPlainTextError_ClassNames)}>
-					<MyButton
-						variant="secondary"
-						className={cn("PageEditorPlainTextError-retry-button" satisfies PageEditorPlainTextError_ClassNames)}
-						onClick={props.reset}
-					>
-						Try again
-					</MyButton>
-				</div>
-				{technicalDetails && (
-					<details
-						className={cn("PageEditorPlainTextError-technical-details" satisfies PageEditorPlainTextError_ClassNames)}
-					>
-						<summary
-							className={cn(
-								"PageEditorPlainTextError-technical-details-toggle" satisfies PageEditorPlainTextError_ClassNames,
-							)}
-						>
-							<span>Technical details</span>
-							<MyIcon
-								className={cn(
-									"PageEditorPlainTextError-technical-details-toggle-icon" satisfies PageEditorPlainTextError_ClassNames,
-								)}
-							>
-								<ChevronRight />
-							</MyIcon>
-						</summary>
-						<pre
-							className={cn(
-								"PageEditorPlainTextError-technical-details-pre" satisfies PageEditorPlainTextError_ClassNames,
-							)}
-						>
-							<textarea
-								className={cn(
-									"PageEditorPlainTextError-technical-details-textarea" satisfies PageEditorPlainTextError_ClassNames,
-								)}
-								readOnly
-								value={technicalDetails}
-							></textarea>
-						</pre>
-					</details>
-				)}
-			</div>
-		</div>
-	);
-}
-
-// #endregion Error
 
 type PageEditorPlainText_InitialData = {
 	markdown: string;
@@ -801,27 +710,19 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	});
 
 	return (
-		<CatchBoundary
-			getResetKey={() => 0}
-			errorComponent={PageEditorPlainTextError}
-			onCatch={(err) => {
-				console.error("PageEditorPlainText:", err);
-			}}
-		>
-			<Suspense fallback={<>Loading</>}>
-				<Await promise={pageContentData}>
-					{(pageContentData) => (
-						<PageEditorPlainText_Inner
-							key={pageId}
-							pageId={pageId}
-							initialData={pageContentData}
-							presenceStore={presenceStore}
-							headerSlot={headerSlot}
-						/>
-					)}
-				</Await>
-			</Suspense>
-		</CatchBoundary>
+		<Suspense fallback={<>Loading</>}>
+			<Await promise={pageContentData}>
+				{(pageContentData) => (
+					<PageEditorPlainText_Inner
+						key={pageId}
+						pageId={pageId}
+						initialData={pageContentData}
+						presenceStore={presenceStore}
+						headerSlot={headerSlot}
+					/>
+				)}
+			</Await>
+		</Suspense>
 	);
 }
 // #endregion Root

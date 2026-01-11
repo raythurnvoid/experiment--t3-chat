@@ -583,6 +583,33 @@ export function MyComponent(props: MyComponent_Props) {
 }
 ```
 
+# React effect event patterns (useEffectEvent)
+
+Use `useEffectEvent` when you need a stable callback that can read the latest state/props without forcing effects, subscriptions, or observers to re-run on every render.
+
+## Use it for freshness without deps/ref churn
+
+- Use `useEffectEvent` for handlers passed into observers/subscriptions/timers where you do not want to re-subscribe on every render.\n- Do not add refs purely for freshness; the event callback reads the latest values.\n- Still use `useRef` for imperative handles (DOM nodes, timers, observers).
+
+```tsx
+import { useEffect, useEffectEvent } from "react";
+
+export function Example(props: { value: string }) {
+	const { value } = props;
+
+	const logLatest = useEffectEvent(() => {
+		console.log("latest value:", value);
+	});
+
+	useEffect(() => {
+		const id = setInterval(() => logLatest(), 1000);
+		return () => clearInterval(id);
+	}, [logLatest]);
+
+	return null;
+}
+```
+
 # Component Static Properties
 
 ## Object.assign with IIFE Pattern

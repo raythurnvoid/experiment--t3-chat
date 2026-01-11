@@ -24,6 +24,8 @@ import {
 	usePresenceSessionsData,
 	usePresenceUsersData,
 } from "../../hooks/presence-hooks.ts";
+import { CatchBoundary } from "@tanstack/react-router";
+import { PageEditorError } from "./page-editor-error.tsx";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -381,39 +383,47 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	return (
 		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
 			<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>
-				{editorMode === "rich" ? (
-					<PageEditorRichText
-						pageId={pageId}
-						presenceStore={presenceStore}
-						headerSlot={
-							<PageEditorHeader
-								pageId={pageId}
-								editorMode={editorMode}
-								onEditorModeChange={onEditorModeChange}
-								onlineUsers={onlineUsers}
-							/>
-						}
-					/>
-				) : editorMode === "diff" ? (
-					threadId ? (
-						<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
+				<CatchBoundary
+					getResetKey={() => 0}
+					errorComponent={PageEditorError}
+					onCatch={(err) => {
+						console.error("[PageEditor_Inner]", err);
+					}}
+				>
+					{editorMode === "rich" ? (
+						<PageEditorRichText
+							pageId={pageId}
+							presenceStore={presenceStore}
+							headerSlot={
+								<PageEditorHeader
+									pageId={pageId}
+									editorMode={editorMode}
+									onEditorModeChange={onEditorModeChange}
+									onlineUsers={onlineUsers}
+								/>
+							}
+						/>
+					) : editorMode === "diff" ? (
+						threadId ? (
+							<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
+						) : (
+							<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
+						)
 					) : (
-						<MonacoMarkdownDiffEditor pageId={pageId} onExit={handleDiffExit} />
-					)
-				) : (
-					<PageEditorPlainText
-						pageId={pageId}
-						presenceStore={presenceStore}
-						headerSlot={
-							<PageEditorHeader
-								pageId={pageId}
-								editorMode={editorMode}
-								onEditorModeChange={onEditorModeChange}
-								onlineUsers={onlineUsers}
-							/>
-						}
-					/>
-				)}
+						<PageEditorPlainText
+							pageId={pageId}
+							presenceStore={presenceStore}
+							headerSlot={
+								<PageEditorHeader
+									pageId={pageId}
+									editorMode={editorMode}
+									onEditorModeChange={onEditorModeChange}
+									onlineUsers={onlineUsers}
+								/>
+							}
+						/>
+					)}
+				</CatchBoundary>
 			</div>
 		</div>
 	);
