@@ -2,6 +2,7 @@
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import { app_colors_css_vars } from "@/assets/ts/app-colors-css-vars.ts";
 
 // If you later need other languages, add these:
 // import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
@@ -29,91 +30,41 @@ self.MonacoEnvironment = {
 	},
 };
 
-function css_color_to_hex(cssColor: string) {
-	const canvas = document.createElement("canvas");
-	const ctx = canvas.getContext("2d");
-	if (!ctx) {
-		return null;
-	}
-
-	// Normalize via canvas
-	ctx.fillStyle = "#000";
-	ctx.fillStyle = cssColor;
-
-	const normalized = ctx.fillStyle;
-	// Usually: "#rrggbb" or "rgba(r, g, b, a)"
-	if (typeof normalized !== "string") {
-		return null;
-	}
-
-	if (normalized.startsWith("#")) {
-		const hex = normalized.toLowerCase();
-		if (hex.length === 7 || hex.length === 9) {
-			return hex;
-		}
-		return null;
-	}
-
-	const rgbaMatch = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([0-9.]+)\s*)?\)$/.exec(normalized);
-	if (!rgbaMatch) {
-		return null;
-	}
-
-	const r = Math.max(0, Math.min(255, Number(rgbaMatch[1])));
-	const g = Math.max(0, Math.min(255, Number(rgbaMatch[2])));
-	const b = Math.max(0, Math.min(255, Number(rgbaMatch[3])));
-	const a = rgbaMatch[4] == null ? 1 : Math.max(0, Math.min(1, Number(rgbaMatch[4])));
-
-	const toHex2 = (n: number) => n.toString(16).padStart(2, "0");
-	const rrggbb = `#${toHex2(r)}${toHex2(g)}${toHex2(b)}`;
-	if (a === 1) {
-		return rrggbb;
-	}
-
-	const alpha = Math.round(a * 255);
-	return `${rrggbb}${toHex2(alpha)}`;
-}
-
 function hex_with_alpha(hex: string, alpha01: number) {
-	// Accepts "#rrggbb" or "#rrggbbaa"
-	const m = /^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(hex);
-	if (!m) {
-		return hex;
-	}
-
 	const clamped = Math.max(0, Math.min(1, alpha01));
 	const alpha = Math.round(clamped * 255)
 		.toString(16)
 		.padStart(2, "0");
-	return `#${m[1]}${alpha}`;
+
+	const normalized = hex.startsWith("#") ? hex.slice(1) : hex;
+	const rrggbb = normalized.slice(0, 6);
+	return `#${rrggbb}${alpha}`;
 }
 
-function css_var_to_hex(varName: string, fallbackHex: string) {
-	const raw = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-	if (!raw) {
-		return fallbackHex;
+type app_monaco_ColorKey = keyof typeof app_colors_css_vars;
+
+const app_monaco_get_color_hex = ((/* iife */) => {
+	function value(key: app_monaco_ColorKey, fallbackHex: string) {
+		return app_colors_css_vars[key]?.hex ?? fallbackHex;
 	}
 
-	const converted = css_color_to_hex(raw);
-	return converted ?? fallbackHex;
-}
+	const cache = new Map<string, string>();
+
+	return function app_monaco_get_color_hex(key: app_monaco_ColorKey, fallbackHex: string) {
+		const cacheKey = `${key}|${fallbackHex}`;
+		const cachedValue = cache.get(cacheKey);
+		if (cachedValue) {
+			return cachedValue;
+		}
+
+		const result = value(key, fallbackHex);
+		cache.set(cacheKey, result);
+		return result;
+	};
+})();
 
 // Monaco requires: /^[a-z0-9\-]+$/i (no underscores)
 export const app_monaco_THEME_NAME_DARK = "app-pages-monaco-theme-dark";
-
-const bg = css_var_to_hex("--color-base-1-03", "#1e1e1e");
-const gutterBg = css_var_to_hex("--color-base-1-02", "#1a1a1a");
-const surface = css_var_to_hex("--color-base-1-05", "#252526");
-const border = css_var_to_hex("--color-base-1-10", "#3c3c3c");
-
-const fg = css_var_to_hex("--color-fg-11", "#d4d4d4");
-const fgMuted = css_var_to_hex("--color-fg-07", "#858585");
-const fgStrong = css_var_to_hex("--color-fg-12", "#ffffff");
-
-const accent6 = css_var_to_hex("--color-accent-06", "#3b8eea");
-const accent7 = css_var_to_hex("--color-accent-07", "#4aa3ff");
-const accent8 = css_var_to_hex("--color-accent-08", "#5db3ff");
-const accent9 = css_var_to_hex("--color-accent-09", "#6fc0ff");
 
 try {
 	monaco.editor.defineTheme(app_monaco_THEME_NAME_DARK, {
@@ -121,47 +72,56 @@ try {
 		inherit: true,
 		rules: [],
 		colors: {
-			"editor.background": bg,
-			"editor.foreground": fg,
+			"editor.background": app_monaco_get_color_hex("color-base-1-03", "#1e1e1e"),
+			"editor.foreground": app_monaco_get_color_hex("color-fg-11", "#d4d4d4"),
 
-			"editorLineNumber.foreground": fgMuted,
-			"editorLineNumber.activeForeground": fg,
-			"editorCursor.foreground": fgStrong,
+			"editorLineNumber.foreground": app_monaco_get_color_hex("color-fg-07", "#858585"),
+			"editorLineNumber.activeForeground": app_monaco_get_color_hex("color-fg-11", "#d4d4d4"),
+			"editorCursor.foreground": app_monaco_get_color_hex("color-fg-12", "#ffffff"),
 
-			"editor.selectionBackground": hex_with_alpha(accent9, 0.55),
-			"editor.inactiveSelectionBackground": hex_with_alpha(accent8, 0.35),
+			"editor.selectionBackground": hex_with_alpha(app_monaco_get_color_hex("color-accent-09", "#6fc0ff"), 0.55),
+			"editor.inactiveSelectionBackground": hex_with_alpha(
+				app_monaco_get_color_hex("color-accent-08", "#5db3ff"),
+				0.35,
+			),
 
-			"editor.findMatchBackground": hex_with_alpha(accent7, 0.35),
-			"editor.findMatchHighlightBackground": hex_with_alpha(accent6, 0.25),
-			"editor.findRangeHighlightBackground": hex_with_alpha(accent6, 0.18),
+			"editor.findMatchBackground": hex_with_alpha(app_monaco_get_color_hex("color-accent-07", "#4aa3ff"), 0.35),
+			"editor.findMatchHighlightBackground": hex_with_alpha(
+				app_monaco_get_color_hex("color-accent-06", "#3b8eea"),
+				0.25,
+			),
+			"editor.findRangeHighlightBackground": hex_with_alpha(
+				app_monaco_get_color_hex("color-accent-06", "#3b8eea"),
+				0.18,
+			),
 
-			"editor.lineHighlightBackground": hex_with_alpha(surface, 0.65),
+			"editor.lineHighlightBackground": hex_with_alpha(app_monaco_get_color_hex("color-base-1-05", "#252526"), 0.65),
 			"editor.lineHighlightBorder": "#00000000",
 
-			"editorGutter.background": gutterBg,
+			"editorGutter.background": app_monaco_get_color_hex("color-base-1-02", "#1a1a1a"),
 
-			"editorIndentGuide.background1": hex_with_alpha(border, 0.55),
-			"editorIndentGuide.activeBackground1": hex_with_alpha(fgMuted, 0.55),
+			"editorIndentGuide.background1": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.55),
+			"editorIndentGuide.activeBackground1": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.55),
 
-			"editorBracketMatch.background": hex_with_alpha(css_var_to_hex("--color-base-1-08", "#2d2d2d"), 0.9),
-			"editorBracketMatch.border": border,
+			"editorBracketMatch.background": hex_with_alpha(app_monaco_get_color_hex("color-base-1-08", "#2d2d2d"), 0.9),
+			"editorBracketMatch.border": app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"),
 
-			"editorRuler.foreground": css_var_to_hex("--color-base-1-07", "#2a2a2a"),
+			"editorRuler.foreground": app_monaco_get_color_hex("color-base-1-07", "#2a2a2a"),
 
-			"editorHoverWidget.background": surface,
-			"editorHoverWidget.border": border,
-			"editorSuggestWidget.background": surface,
-			"editorSuggestWidget.border": border,
-			"editorWidget.background": surface,
-			"editorWidget.border": border,
+			"editorHoverWidget.background": app_monaco_get_color_hex("color-base-1-05", "#252526"),
+			"editorHoverWidget.border": app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"),
+			"editorSuggestWidget.background": app_monaco_get_color_hex("color-base-1-05", "#252526"),
+			"editorSuggestWidget.border": app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"),
+			"editorWidget.background": app_monaco_get_color_hex("color-base-1-05", "#252526"),
+			"editorWidget.border": app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"),
 
-			"scrollbarSlider.background": hex_with_alpha(border, 0.45),
-			"scrollbarSlider.hoverBackground": hex_with_alpha(border, 0.65),
-			"scrollbarSlider.activeBackground": hex_with_alpha(fgMuted, 0.55),
+			"scrollbarSlider.background": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.45),
+			"scrollbarSlider.hoverBackground": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.65),
+			"scrollbarSlider.activeBackground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.55),
 
-			"editorWhitespace.foreground": hex_with_alpha(fgMuted, 0.35),
+			"editorWhitespace.foreground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.35),
 
-			"minimap.background": bg,
+			"minimap.background": app_monaco_get_color_hex("color-base-1-03", "#1e1e1e"),
 		},
 	});
 	monaco.editor.setTheme(app_monaco_THEME_NAME_DARK);
