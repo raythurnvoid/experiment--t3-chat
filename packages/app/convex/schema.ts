@@ -395,9 +395,16 @@ const app_convex_schema = defineSchema({
 		clerkUserId: v.union(v.string(), v.null()),
 		/** Anonymous auth JWT; null once upgraded */
 		anonymousAuthToken: v.union(v.string(), v.null()),
-		/** Display name, e.g. "anonymous_<uuid>" for anonymous users */
-		displayName: v.string(),
+		anagraphic: v.optional(v.id("users_anagraphics")),
 	}).index("by_clerk_user_id", ["clerkUserId"]),
+
+	users_anagraphics: defineTable({
+		userId: v.id("users"),
+		/** Display name, e.g. "anonymous_<id>" for anonymous users */
+		displayName: v.string(),
+		avatarUrl: v.optional(v.string()),
+		updatedAt: v.number(),
+	}).index("by_user_id", ["userId"]),
 	// #endregion Users
 });
 

@@ -57,7 +57,6 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 					ref={diffEditorRef}
 					className={className}
 					pageId={pageId}
-					threadId={threadId}
 					modifiedInitialValue={initialModified.current}
 					onExit={onExit}
 				/>

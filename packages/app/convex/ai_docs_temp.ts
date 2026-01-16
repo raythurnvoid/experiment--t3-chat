@@ -1222,11 +1222,17 @@ export const get_page_snapshots_list = query({
 		const usersDict: Record<Id<"users">, { _id: Id<"users">; displayName: string }> = {};
 
 		const uniqueUserIds = Array.from(new Set(snapshots.map((s) => s.created_by)));
-		const users = await Promise.all(uniqueUserIds.map((userId) => ctx.db.get("users", userId)));
+		const usersWithAnagraphics = await Promise.all(
+			uniqueUserIds.map((userId) => ctx.runQuery(internal.users.get_with_anagraphic, { userId })),
+		);
 
-		for (const user of users) {
-			if (!user) continue;
-			usersDict[user._id] = { _id: user._id, displayName: user.displayName };
+		for (const userWithAnagraphic of usersWithAnagraphics) {
+			if (!userWithAnagraphic || !userWithAnagraphic.anagraphic) continue;
+
+			usersDict[userWithAnagraphic.user._id] = {
+				_id: userWithAnagraphic.user._id,
+				displayName: userWithAnagraphic.anagraphic.displayName,
+			};
 		}
 
 		return {
@@ -1261,8 +1267,9 @@ async function do_get_page_snapshot_content(
 
 	const usersDict: Record<Id<"users">, { _id: Id<"users">; displayName: string }> = {};
 	const user = await ctx.db.get("users", snapshot.created_by);
-	if (user) {
-		usersDict[user._id] = { _id: user._id, displayName: user.displayName };
+	const anagraphic = user?.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
+	if (user && anagraphic) {
+		usersDict[user._id] = { _id: user._id, displayName: anagraphic.displayName };
 	}
 
 	return {

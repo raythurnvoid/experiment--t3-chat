@@ -81,12 +81,12 @@ const get_anonymous_users_jwt_private_key = ((/* iife */) => {
 	};
 })();
 
-async function sign_anonymous_users_jwt(args: { subject: string; name: string; picture: string }) {
+async function sign_anonymous_users_jwt(args: { subject: string; name: string; avatarUrl?: string }) {
 	const key = await get_anonymous_users_jwt_private_key();
 
 	return await new SignJWT({
 		name: args.name,
-		picture: args.picture,
+		...(args.avatarUrl ? { avatarUrl: args.avatarUrl } : null),
 	})
 		.setProtectedHeader({ alg: "ES256", kid: ANONYMOUS_USERS_JWT_KID_LIST[0], typ: "JWT" })
 		.setIssuer(ANONYMOUS_USERS_JWT_ISSUER)
@@ -98,16 +98,24 @@ async function sign_anonymous_users_jwt(args: { subject: string; name: string; p
 }
 
 export const users_create_anonymous_user = internalMutation({
-	args: {
-		uuid: v.string(),
-	},
+	args: {},
 	returns: v.id("users"),
 	handler: async (ctx, args) => {
 		const userId = await ctx.db.insert("users", {
 			clerkUserId: null,
 			anonymousAuthToken: null,
-			displayName: `anonymous_${args.uuid}`,
 		});
+
+		const anagraphicId = await ctx.db.insert("users_anagraphics", {
+			userId: userId,
+			displayName: `anonymous_${userId}`,
+			updatedAt: Date.now(),
+		});
+
+		await ctx.db.patch("users", userId, {
+			anagraphic: anagraphicId,
+		});
+
 		return userId;
 	},
 });
@@ -140,17 +148,59 @@ export const get = internalQuery({
 	},
 });
 
-async function users_mint_anonymous_jwt(ctx: ActionCtx) {
-	const uuid = crypto.randomUUID();
+export const get_with_anagraphic = internalQuery({
+	args: {
+		userId: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			user: doc(app_convex_schema, "users"),
+			anagraphic: v.union(doc(app_convex_schema, "users_anagraphics"), v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userId = ctx.db.normalizeId("users", args.userId);
+		if (!userId) {
+			return null;
+		}
 
-	const userId = await ctx.runMutation(internal.users.users_create_anonymous_user, {
-		uuid,
-	});
+		const user = await ctx.db.get("users", userId);
+
+		if (!user || !user.anagraphic) {
+			return null;
+		}
+
+		const anagraphic = await ctx.db.get("users_anagraphics", user.anagraphic);
+
+		return {
+			user,
+			anagraphic,
+		};
+	},
+});
+
+export const get_anagraphic = internalQuery({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.union(doc(app_convex_schema, "users_anagraphics"), v.null()),
+	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user || !user.anagraphic) {
+			return null;
+		}
+
+		return await ctx.db.get("users_anagraphics", user.anagraphic);
+	},
+});
+
+async function users_mint_anonymous_jwt(ctx: ActionCtx) {
+	const userId = await ctx.runMutation(internal.users.users_create_anonymous_user);
 
 	const jwt = await sign_anonymous_users_jwt({
 		subject: userId,
-		name: `Anonymous ${uuid.slice(0, 8)}`,
-		picture: "https://via.placeholder.com/32",
+		name: `Anonymous ${userId}`,
 	});
 
 	await ctx.runMutation(internal.users.users_set_anonymous_auth_token, {
@@ -160,41 +210,6 @@ async function users_mint_anonymous_jwt(ctx: ActionCtx) {
 
 	return { jwt, userId };
 }
-
-export const users_upsert_clerk_user = internalMutation({
-	args: {
-		clerkUserId: v.string(),
-		displayName: v.optional(v.string()),
-	},
-	returns: v.id("users"),
-	handler: async (ctx, args) => {
-		const existing = await ctx.db
-			.query("users")
-			.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", args.clerkUserId))
-			.take(2);
-
-		if (existing.length > 0) {
-			const user = existing[0]!;
-			if (args.displayName && !user.displayName) {
-				await ctx.db.patch("users", user._id, { displayName: args.displayName });
-			}
-			return user._id;
-		}
-
-		const displayName = args.displayName ?? "";
-		const userId = await ctx.db.insert("users", {
-			clerkUserId: args.clerkUserId,
-			anonymousAuthToken: null,
-			displayName: displayName,
-		});
-
-		if (!displayName) {
-			await ctx.db.patch("users", userId, { displayName: `User ${userId}` });
-		}
-
-		return userId;
-	},
-});
 
 export const resolve_user = internalMutation({
 	args: {
@@ -208,6 +223,8 @@ export const resolve_user = internalMutation({
 	),
 	handler: async (ctx, args) => {
 		let resultUserId: Id<"users"> | undefined;
+
+		const now = Date.now();
 
 		// Case 1: Token provided - link anonymous user to Clerk
 		if (args.anonymousUserToken) {
@@ -237,7 +254,10 @@ export const resolve_user = internalMutation({
 					.collect();
 				for (const existingUser of existingClerkUsers) {
 					if (existingUser._id !== user._id) {
-						await ctx.db.delete("users", existingUser._id);
+						await Promise.all([
+							existingUser.anagraphic ? ctx.db.delete("users_anagraphics", existingUser.anagraphic) : undefined,
+							ctx.db.delete("users", existingUser._id),
+						]);
 					}
 				}
 
@@ -248,8 +268,21 @@ export const resolve_user = internalMutation({
 				await ctx.db.patch("users", user._id, {
 					clerkUserId: args.clerkUserId,
 					anonymousAuthToken: null,
-					displayName: args.displayName,
 				});
+
+				if (user.anagraphic) {
+					await ctx.db.patch("users_anagraphics", user.anagraphic, {
+						displayName: args.displayName,
+						updatedAt: now,
+					});
+				} else {
+					const anagraphicId = await ctx.db.insert("users_anagraphics", {
+						userId: user._id,
+						displayName: args.displayName,
+						updatedAt: now,
+					});
+					await ctx.db.patch("users", user._id, { anagraphic: anagraphicId });
+				}
 			}
 			// The user is already linked to another Clerk account, this should never happen
 			else if (user.clerkUserId !== args.clerkUserId) {
@@ -271,8 +304,15 @@ export const resolve_user = internalMutation({
 				const userId = await ctx.db.insert("users", {
 					clerkUserId: args.clerkUserId,
 					anonymousAuthToken: null,
-					displayName: args.displayName,
 				});
+
+				const anagraphicId = await ctx.db.insert("users_anagraphics", {
+					userId: userId,
+					displayName: args.displayName,
+					updatedAt: Date.now(),
+				});
+
+				await ctx.db.patch("users", userId, { anagraphic: anagraphicId });
 
 				resultUserId = userId;
 			}
@@ -375,25 +415,25 @@ export function users_http_routes(router: RouterForConvexModules) {
 									return { status: 400, body: { message: "Invalid token subject" } } as const;
 								}
 
-								const user = await ctx.runQuery(internal.users.get, {
+								const userWithAnagraphic = await ctx.runQuery(internal.users.get_with_anagraphic, {
 									userId: sub,
 								});
-								if (!user || user.anonymousAuthToken !== body.token) {
+
+								if (!userWithAnagraphic || userWithAnagraphic.user.anonymousAuthToken !== body.token) {
 									return { status: 401, body: { message: "Invalid token" } } as const;
 								}
 
 								const newJwt = await sign_anonymous_users_jwt({
-									subject: user._id,
-									name: user.displayName,
-									picture: "https://via.placeholder.com/32",
+									subject: userWithAnagraphic.user._id,
+									name: userWithAnagraphic.anagraphic?.displayName ?? `anonymous_${userWithAnagraphic.user._id}`,
 								});
 
 								await ctx.runMutation(internal.users.users_set_anonymous_auth_token, {
-									userId: user._id,
+									userId: userWithAnagraphic.user._id,
 									token: newJwt,
 								});
 
-								return { status: 200, body: { token: newJwt, userId: user._id } } as const;
+								return { status: 200, body: { token: newJwt, userId: userWithAnagraphic.user._id } } as const;
 							}
 
 							// Create path: no token provided, create new anonymous user

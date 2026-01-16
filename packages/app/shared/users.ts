@@ -16,8 +16,10 @@ const users_decode_jwt = ((/* iife */) => {
 
 export function users_get_user_id_from_jwt(jwt: string) {
 	const payload = users_decode_jwt(jwt);
+
 	if (!payload.sub) {
 		throw should_never_happen("users_get_user_id_from_jwt: no sub in JWT, failed to extract user ID");
 	}
+
 	return payload.sub;
 }
