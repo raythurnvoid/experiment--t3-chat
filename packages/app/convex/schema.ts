@@ -272,14 +272,6 @@ const app_convex_schema = defineSchema({
 		filterFields: ["workspace_id", "project_id", "is_archived"],
 	}),
 
-	/**
-	 * Internal table to track scheduled markdown content updates.
-	 */
-	pages_markdown_content_schedules: defineTable({
-		page_id: v.id("pages"),
-		scheduled_function_id: v.id("_scheduled_functions"),
-	}).index("by_page_id", ["page_id"]),
-
 	pages_yjs_snapshots: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),

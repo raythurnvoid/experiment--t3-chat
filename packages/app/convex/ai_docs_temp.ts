@@ -43,6 +43,7 @@ import {
 	pages_headless_tiptap_editor_set_content_from_markdown,
 	pages_yjs_create_empty_state_update,
 	pages_yjs_doc_create_from_array_buffer_update,
+	pages_yjs_doc_get_markdown,
 	pages_yjs_doc_update_from_tiptap_editor,
 	pages_yjs_doc_create_from_tiptap_editor,
 	pages_yjs_compute_diff_update_from_state_vector,
@@ -1188,36 +1189,6 @@ const store_version_snapshot_args_schema = v.object({
 	created_by: v.id("users"),
 });
 
-async function do_store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
-	// Create snapshot entry
-	const snapshotId = await ctx.db.insert("pages_snapshots", {
-		workspace_id: args.workspace_id,
-		project_id: args.project_id,
-		page_id: args.page_id,
-		created_by: args.created_by,
-		is_archived: false,
-	});
-
-	// Create content entry
-	await ctx.db.insert("pages_snapshots_contents", {
-		workspace_id: args.workspace_id,
-		project_id: args.project_id,
-		page_snapshot_id: snapshotId,
-		content: args.content,
-		page_id: args.page_id,
-	});
-
-	return snapshotId;
-}
-
-export const store_version_snapshot = internalMutation({
-	args: store_version_snapshot_args_schema,
-	returns: v.id("pages_snapshots"),
-	handler: async (ctx, args) => {
-		return await do_store_version_snapshot(ctx, args);
-	},
-});
-
 export const get_page_snapshots_list = query({
 	args: {
 		workspace_id: v.string(),
@@ -1481,18 +1452,37 @@ export const yjs_get_doc_last_snapshot = query({
 
 export const yjs_snapshot_updates = internalMutation({
 	args: {
+		userId: v.id("users"),
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const scheduleLocks = await ctx.db
+		const now = Date.now();
+
+		const scheduleLocksPromise = ctx.db
 			.query("pages_yjs_snapshot_schedules")
 			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
 			.collect();
 
 		try {
+			const page = await ctx.db.get("pages", args.pageId);
+			if (
+				!page ||
+				page.workspace_id !== args.workspaceId ||
+				page.project_id !== args.projectId ||
+				!page.markdown_content_id
+			) {
+				throw should_never_happen("page not found", {
+					pageId: args.pageId,
+					page: page,
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					markdownContentId: page?.markdown_content_id,
+				});
+			}
+
 			// Load latest snapshot
 			const yjsSnapshotData = await ctx.db
 				.query("pages_yjs_snapshots")
@@ -1520,32 +1510,22 @@ export const yjs_snapshot_updates = internalMutation({
 				.order("asc")
 				.collect();
 
-			if (updateDataList.length === 0) {
-				throw should_never_happen(
-					"No updates found since the last snapshot.\n" + //
-						"The job should start only if there are updates to compact",
-				);
-			}
-
-			const lastUpdate = updateDataList.at(-1)!;
-			const updatesSincsLastSnapshot = [];
-			for (const updateData of updateDataList) {
-				if (updateData.sequence > yjsSnapshotData.sequence) {
-					updatesSincsLastSnapshot.push(new Uint8Array(updateData.update));
-				}
-			}
+			const lastUpdate = updateDataList.at(-1);
+			const sequence = lastUpdate ? lastUpdate.sequence : yjsSnapshotData.sequence;
 
 			// merge last snapshot update with all incremental updates into a single update blob
 			const snapshotUpdate = yjs_merge_updates_to_array_buffer([
 				new Uint8Array(yjsSnapshotData.snapshot_update),
 				...updateDataList.map((u) => new Uint8Array(u.update)),
 			]);
-			const now = Date.now();
+
+			const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshotUpdate);
+			const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
 
 			await Promise.all([
 				// Write new snapshot row (append-only)
 				ctx.db.patch("pages_yjs_snapshots", yjsSnapshotData._id, {
-					sequence: lastUpdate.sequence,
+					sequence,
 					snapshot_update: snapshotUpdate,
 					updated_by: "system",
 					updated_at: now,
@@ -1553,13 +1533,28 @@ export const yjs_snapshot_updates = internalMutation({
 
 				// Prune compacted updates
 				...updateDataList.map((updateData) => ctx.db.delete("pages_yjs_updates", updateData._id)),
+
+				ctx.db.patch("pages_markdown_content", page.markdown_content_id, {
+					content: markdown,
+					yjs_sequence: sequence,
+					updated_by: "system",
+					updated_at: now,
+				}),
+
+				store_version_snapshot(ctx, {
+					workspace_id: args.workspaceId,
+					project_id: args.projectId,
+					page_id: args.pageId,
+					content: markdown,
+					created_by: args.userId,
+				}),
 			]);
 
 			return null;
 		} finally {
-			for (const lock of scheduleLocks) {
-				await ctx.db.delete("pages_yjs_snapshot_schedules", lock._id);
-			}
+			await scheduleLocksPromise.then((scheduleLocks) =>
+				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id))),
+			);
 		}
 	},
 });
@@ -1611,6 +1606,7 @@ export const yjs_push_update = mutation({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const now = Date.now();
 
 		const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
 			workspaceId: args.workspaceId,
@@ -1629,29 +1625,34 @@ export const yjs_push_update = mutation({
 				session_id: args.sessionId,
 			},
 			created_by: user.name,
-			created_at: Date.now(),
+			created_at: now,
 		});
 
-		// Schedule compaction every 50 updates (at seq 50, 100, 150, etc.)
-		if (newSequenceData.last_sequence > 0 && newSequenceData.last_sequence % 50 === 0) {
-			const existingSchedule = await ctx.db
-				.query("pages_yjs_snapshot_schedules")
-				.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
-				.first();
+		const snapshotScheduleDelayMs =
+			newSequenceData.last_sequence > 0 && newSequenceData.last_sequence % 50 === 0 ? 0 : 30_000;
 
-			if (!existingSchedule) {
-				const scheduledId = await ctx.scheduler.runAfter(0, internal.ai_docs_temp.yjs_snapshot_updates, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					pageId: args.pageId,
-				});
+		const schedules = await ctx.db
+			.query("pages_yjs_snapshot_schedules")
+			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
+			.collect();
 
-				await ctx.db.insert("pages_yjs_snapshot_schedules", {
-					page_id: args.pageId,
-					scheduled_function_id: scheduledId,
-				});
-			}
-		}
+		const scheduledId = await ctx.scheduler.runAfter(
+			snapshotScheduleDelayMs,
+			internal.ai_docs_temp.yjs_snapshot_updates,
+			{
+				userId: user.id,
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			},
+		);
+
+		await Promise.all([
+			schedules[0]
+				? ctx.db.patch("pages_yjs_snapshot_schedules", schedules[0]._id, { scheduled_function_id: scheduledId })
+				: ctx.db.insert("pages_yjs_snapshot_schedules", { page_id: args.pageId, scheduled_function_id: scheduledId }),
+			...schedules.slice(1).map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id)),
+		]);
 
 		return { newSequence: newSequenceData.last_sequence };
 	},
@@ -1685,6 +1686,28 @@ export const yjs_get_incremental_updates = query({
 		return { updates };
 	},
 });
+
+async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
+	// Create snapshot entry
+	const snapshotId = await ctx.db.insert("pages_snapshots", {
+		workspace_id: args.workspace_id,
+		project_id: args.project_id,
+		page_id: args.page_id,
+		created_by: args.created_by,
+		is_archived: false,
+	});
+
+	// Create content entry
+	await ctx.db.insert("pages_snapshots_contents", {
+		workspace_id: args.workspace_id,
+		project_id: args.project_id,
+		page_snapshot_id: snapshotId,
+		content: args.content,
+		page_id: args.page_id,
+	});
+
+	return snapshotId;
+}
 
 export const restore_snapshot = mutation({
 	args: {
@@ -1756,7 +1779,7 @@ export const restore_snapshot = mutation({
 		// so the user can revert to it if needed.
 		await Promise.all([
 			// Store current state as a backup snapshot
-			do_store_version_snapshot(ctx, {
+			store_version_snapshot(ctx, {
 				workspace_id: args.workspaceId,
 				project_id: args.projectId,
 				page_id: args.pageId,
@@ -1765,7 +1788,7 @@ export const restore_snapshot = mutation({
 			}),
 
 			// Store the restored content as a new snapshot
-			do_store_version_snapshot(ctx, {
+			store_version_snapshot(ctx, {
 				workspace_id: args.workspaceId,
 				project_id: args.projectId,
 				page_id: args.pageId,
