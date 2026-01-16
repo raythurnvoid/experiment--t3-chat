@@ -323,7 +323,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			}),
 			textAlign: TextAlign,
 			typography: Typography,
-			markdown: Markdown.configure({}),
+			markdown: Markdown.configure({ marked: pages_marked() }),
 			highlight: Highlight.extend({
 				renderMarkdown: (node: TiptapJSONContent, helpers: MarkdownRendererHelpers, ctx: RenderContext) => {
 					const color = node.attrs?.color;
