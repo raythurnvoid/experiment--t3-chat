@@ -1,0 +1,269 @@
+---
+description: Fast map + mental model for the Pages editors (TipTap/Yjs rich text, Monaco markdown plain/diff), Convex-backed Yjs provider, comments, and CSS anchor widgets.
+globs: packages/app/src/components/page-editor/**/*, packages/app/src/lib/pages.ts, packages/app/shared/pages.ts, packages/app/src/hooks/pages-hooks.ts, packages/app/convex/ai_docs_temp.ts, packages/app/convex/schema.ts, packages/app/vendor/liveblocks/packages/liveblocks-yjs/src/**/*.ts
+alwaysApply: false
+---
+
+Page editors — fast understanding guide
+
+# Start here (file map)
+
+When the user asks anything about page editing, you should start by opening these files in this order (most questions are answered in the first 3–5):
+
+- Rich text (primary editor): [`page-editor-rich-text.tsx`](mdc:packages/app/src/components/page-editor/page-editor-rich-text/page-editor-rich-text.tsx)
+- Plain text (markdown, non-collab): [`page-editor-plain-text.tsx`](mdc:packages/app/src/components/page-editor/page-editor-plain-text/page-editor-plain-text.tsx)
+- Diff editor (review/apply changes, especially AI edits): [`page-editor-diff.tsx`](mdc:packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx)
+- Plain/diff comments sidebar: [`page-editor-comments-sidebar.tsx`](mdc:packages/app/src/components/page-editor/page-editor-comments-sidebar.tsx)
+- Client helpers (fetch snapshot+updates, Monaco models, presence): [`pages.ts`](mdc:packages/app/src/lib/pages.ts)
+- Shared conversions (headless TipTap, Yjs encode/apply, markdown↔TipTap↔Yjs): [`shared/pages.ts`](mdc:packages/app/shared/pages.ts)
+- Convex pages backend (Yjs updates/snapshots, sequences, snapshot restore): [`ai_docs_temp.ts`](mdc:packages/app/convex/ai_docs_temp.ts)
+- Convex schema (tables and indexes): [`schema.ts`](mdc:packages/app/convex/schema.ts)
+- Forked provider used by rich text (Convex-backed “Liveblocks” Yjs provider): [`provider.ts`](mdc:packages/app/vendor/liveblocks/packages/liveblocks-yjs/src/provider.ts)
+- Provider hook wrapper (wires editor to provider): [`pages-hooks.ts`](mdc:packages/app/src/hooks/pages-hooks.ts)
+
+# Mental model (what exists and why)
+
+The page editor has multiple surfaces over the same page:
+
+- Rich text editor is the primary user experience. It is collaborative and should reflect remote changes quickly.
+- Plain text editor is a power-user view over Markdown. It is intentionally non-collaborative to avoid intermediate invalid Markdown states from affecting rich text users.
+- Diff editor is for fine-grained review and apply/discard of changes. Its main future use case is reviewing AI agent edits.
+- Comments are “Notion-like”: thread IDs are embedded/anchored in the rich text document; actual thread content lives in Convex.
+
+Yjs is used as the collaboration data model, but persistence/subscription is done through Convex tables (not a typical Yjs websocket server).
+
+# Dataflow (rich text vs plain/diff)
+
+## Rich text collaborative flow
+
+Rich text uses TipTap + Yjs with a provider that looks like Liveblocks, but is backed by Convex tables:
+
+- TipTap editor produces Yjs updates as the user edits.
+- The provider merges/debounces local Yjs updates and pushes them to Convex via `ai_docs_temp.yjs_push_update`.
+- All clients subscribe to `ai_docs_temp.yjs_get_incremental_updates` (Convex query). Incoming packets are applied to the local Y.Doc.
+- Periodically, Convex compacts incremental updates into a snapshot (`ai_docs_temp.yjs_snapshot_updates`) to reduce download cost.
+
+## Plain text + diff flow (non-collab)
+
+Plain text and diff editors operate over Markdown in Monaco:
+
+- They fetch a baseline from Convex: latest Yjs snapshot + incremental updates → reconstruct a Y.Doc → convert to Markdown.
+- Editing happens locally in Monaco. Nothing is pushed until the user chooses to save/apply.
+- On save, they build a “working” Y.Doc from Markdown and compute a minimal diff update against the baseline Y.Doc, then push that update via `ai_docs_temp.yjs_push_update`.
+- Sync (plain/diff) merges the user’s unsaved local edits with remote changes by reconstructing/patching Yjs and then applying a single undoable edit back into Monaco.
+
+## Diagram
+
+```mermaid
+flowchart TD
+UserRichText[User_edit_rich_text] --> TipTap[TipTap_editor]
+TipTap --> YDocRich[YDoc_richText_fragment]
+YDocRich --> Provider[LiveblocksYjsProvider_fork]
+Provider --> ConvexPush[Convex_yjs_push_update]
+ConvexPush --> UpdatesTable[pages_yjs_updates]
+UpdatesTable --> Provider
+
+ConvexSnap[pages_yjs_snapshots] --> Provider
+SeqTable[pages_yjs_docs_last_sequences] --> Provider
+
+UserPlain[User_edit_markdown_plain_or_diff] --> Monaco[Monaco_model]
+Monaco --> Headless[Headless_TipTap_markdown_to_Yjs]
+Headless --> DiffUpdate[Yjs_diff_update]
+DiffUpdate --> ConvexPush
+```
+
+# Storage model & invariants (sequence is the backbone)
+
+## Tables (Convex)
+
+The page’s collaborative state is tracked with a monotonic `sequence` counter:
+
+- `pages_yjs_docs_last_sequences.last_sequence` is the authoritative “latest sequence”.
+- `pages_yjs_snapshots` stores the compacted Yjs “state update” blob at a specific `sequence`.
+- `pages_yjs_updates` stores incremental Yjs updates at increasing `sequence`.
+
+Other page representations:
+
+- `pages_markdown_content` stores a Markdown string plus a `yjs_sequence` that indicates which Yjs sequence it corresponds to (used for search/fast read).
+- `pages_snapshots` + `pages_snapshots_contents` store “restorable versions” of page content as Markdown (user-facing history/restore, not necessarily every edit).
+
+## Reconstruction rule (client-side)
+
+When you need to reconstruct the current Y.Doc:
+
+- Load the latest snapshot for the page.
+- Load incremental updates.
+- Apply only updates where `update.sequence > snapshot.sequence` (and apply in ascending sequence order).
+
+This reconstruction logic is implemented in:
+
+- [`pages_fetch_page_yjs_state_and_markdown`](mdc:packages/app/src/lib/pages.ts)
+- Yjs decode helpers: [`pages_yjs_doc_create_from_array_buffer_update`](mdc:packages/app/shared/pages.ts)
+
+## Provider (fork) invariants you must respect
+
+The forked provider behaves like a “room provider”, but is actually Convex-driven:
+
+- The provider watches `ai_docs_temp.yjs_get_incremental_updates` via a Convex watch query.
+- It treats `USER_EDIT` packets from the same `session_id` as “local ack-only” and does not re-apply them to the doc (it already applied them optimistically). Everything else is “remote” and is applied.
+- Provider `sync()` merges snapshot + relevant incremental updates and applies them atomically to the Y.Doc, then sets `appliedSeq` to the last applied sequence.
+- Outgoing updates are merged and debounced (~500ms) before calling `yjs_push_update`.
+
+The key implementation to read is:
+
+- `PagesConvexYjsStream` + `LiveblocksYjsProvider` in [`provider.ts`](mdc:packages/app/vendor/liveblocks/packages/liveblocks-yjs/src/provider.ts)
+
+# Markdown representations (and the current gap)
+
+There are three Markdown-related concepts:
+
+## 1) Rich text “what the user sees”
+
+This is the TipTap/Yjs document (source-of-truth for collaboration).
+
+## 2) Version snapshots (restorable history)
+
+`pages_snapshots` + `pages_snapshots_contents` store Markdown snapshots for user restore/versioning. Snapshot restore also writes into Yjs by computing a diff update and pushing it.
+
+Snapshot restore path is in:
+
+- [`restore_snapshot`](mdc:packages/app/convex/ai_docs_temp.ts)
+
+## 3) Search/fast read content (`pages_markdown_content`)
+
+`pages_markdown_content` exists so you can:
+
+- Serve the “agent view” cheaply (Markdown string).
+- Search page content efficiently (`searchIndex("search_by_content")` in schema).
+
+Intended behavior:
+
+- `pages_markdown_content` should be updated during/after Yjs snapshot compaction (e.g. when `yjs_snapshot_updates` runs) so it stays reasonably fresh without doing expensive work on every keystroke.
+
+Current state you must verify before relying on it:
+
+- `pages_markdown_content` is created on page creation and updated on snapshot restore.
+- It is not currently updated on each `yjs_push_update`.
+- If you need “latest content”, you must reconstruct from Yjs snapshot+updates (or add/update the compaction job to also update markdown content).
+
+If the user asks “why search is stale” or “why agent sees old content”, you should immediately check whether markdown rebuild on compaction is implemented.
+
+# Comments (“Notion-like” threads anchored in the editor)
+
+## Storage split
+
+- The thread ID is embedded in the TipTap document via Liveblocks’ comments extension.
+- The thread’s messages/content live in Convex `human_thread_messages`.
+
+## Thread ID lifecycle
+
+- Rich text discovers relevant threads from the editor state via `getThreadIdsFromEditorState` and queries the thread rows from Convex.
+- Plain text/diff discover threads by parsing markdown through a headless TipTap editor (so they can extract the same thread IDs).
+
+Files to read:
+
+- Rich text adds comments: [`page-editor-rich-text-tools-comment.tsx`](mdc:packages/app/src/components/page-editor/page-editor-rich-text/page-editor-rich-text-tools-comment.tsx)
+- Rich text anchored sidebar: [`page-editor-rich-text-comments.tsx`](mdc:packages/app/src/components/page-editor/page-editor-rich-text/page-editor-rich-text-comments.tsx)
+- Anchored sidebar CSS positioning: [`page-editor-rich-text-comments.css`](mdc:packages/app/src/components/page-editor/page-editor-rich-text/page-editor-rich-text-comments.css)
+- Plain/diff sidebar and searching: [`page-editor-comments-sidebar.tsx`](mdc:packages/app/src/components/page-editor/page-editor-comments-sidebar.tsx)
+
+## Anchoring model
+
+Anchored threads are positioned by the Liveblocks `AnchoredThreads` component and a CSS transform based on the custom property `--lb-tiptap-anchored-threads-top`.
+
+If the user reports “comments move weirdly” or “comments overlap”, check:
+
+- Whether `AnchoredThreads` is receiving the correct `threads` list.
+- Whether the CSS transform/container rules are correct and not overridden.
+
+# Diff editor + CSS anchor widgets
+
+The diff editor renders inline “accept/discard” widgets next to diff hunks with CSS anchors, not manual absolute positioning.
+
+## Key pattern
+
+- The editor container defines a CSS `anchor-name` (set via a CSS variable) so widgets can anchor to it.
+- Monaco content widgets set `position-anchor` to that anchor name and use CSS `anchor(...)` functions to place themselves.
+
+Files to read:
+
+- Monaco widget implementation (`IContentWidget`) and anchor wiring: [`page-editor-diff.tsx`](mdc:packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx)
+- CSS anchor declaration: [`page-editor-diff.css`](mdc:packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.css)
+
+If the user reports “accept/discard buttons are misplaced”, first check that the browser supports CSS anchor positioning and that the editor container’s `anchor-name` is being applied correctly.
+
+# Hoisting containers (important for focus/portals)
+
+The editors use dedicated “hoisting containers” in the DOM to keep popovers/widgets within a managed subtree (focus handling, clicking outside, etc.).
+
+If the user reports “popover won’t close” or “focus is weird”, locate these in code:
+
+- TipTap hoisting: `app_tiptap_hoisting_container` usage in rich text.
+- Monaco hoisting: `app_monaco_hoisting_container` usage in plain/diff.
+
+# When the user asks X, you should read Y (fast checklist)
+
+## Collaboration is out of sync / missing remote edits
+
+You should read:
+
+- Provider sync logic + ack handling: [`provider.ts`](mdc:packages/app/vendor/liveblocks/packages/liveblocks-yjs/src/provider.ts)
+- Snapshot + incremental updates queries: [`ai_docs_temp.ts`](mdc:packages/app/convex/ai_docs_temp.ts)
+- Client reconstruction helper: [`pages_fetch_page_yjs_state_and_markdown`](mdc:packages/app/src/lib/pages.ts)
+
+Common failure modes:
+
+- Sequence mismatch (snapshot not compacted, large update list).
+- Local session incorrectly classified (ack-only vs remote apply).
+
+## Plain text “Save” doesn’t reflect for others / conflicts with rich text
+
+You should read:
+
+- Baseline Yjs doc handling + diff update computation: [`page-editor-plain-text.tsx`](mdc:packages/app/src/components/page-editor/page-editor-plain-text/page-editor-plain-text.tsx)
+- Diff update computation helpers: [`pages_yjs_compute_diff_update_from_yjs_doc`](mdc:packages/app/shared/pages.ts)
+- Convex `yjs_push_update` sequence behavior: [`ai_docs_temp.ts`](mdc:packages/app/convex/ai_docs_temp.ts)
+
+Important constraint:
+
+- Plain text is intentionally non-collab to avoid intermediate invalid Markdown states affecting rich text users.
+
+## Comments not anchored / wrong order / missing threads
+
+You should read:
+
+- Anchored threads component + CSS: [`page-editor-rich-text-comments.tsx`](mdc:packages/app/src/components/page-editor/page-editor-rich-text/page-editor-rich-text-comments.tsx) and [`page-editor-rich-text-comments.css`](mdc:packages/app/src/components/page-editor/page-editor-rich-text/page-editor-rich-text-comments.css)
+- Thread ID extraction callsites: search for `getThreadIdsFromEditorState` in the page editor components.
+- Thread list query: Convex `human_thread_messages_threads_list` callsites (from the editor components).
+
+## Diff widgets misplaced / not clickable
+
+You should read:
+
+- Monaco content widget implementation + CSS anchors: [`page-editor-diff.tsx`](mdc:packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx) and [`page-editor-diff.css`](mdc:packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.css)
+- Monaco hoisting container usage (overflow widgets).
+
+## “Agent view” or search results are stale
+
+You should read:
+
+- `pages_markdown_content` update paths in Convex (creation + snapshot restore).
+- The intended markdown rebuild point: `yjs_snapshot_updates` compaction.
+
+If markdown rebuild is not wired yet, the correct behavior is:
+
+- Treat `pages_markdown_content` as potentially stale.
+- Reconstruct latest state from Yjs snapshot + incremental updates when correctness matters.
+
+# Quick “search strings” (to jump to the right place)
+
+When you’re lost, search for these exact strings:
+
+- `yjs_push_update`
+- `yjs_get_doc_last_snapshot`
+- `yjs_get_incremental_updates`
+- `pages_yjs_snapshot_updates` / `yjs_snapshot_updates`
+- `getThreadIdsFromEditorState`
+- `AnchoredThreads`
+- `anchor-name` / `position-anchor` / `anchor(left)`
+- `app_tiptap_hoisting_container` / `app_monaco_hoisting_container`
