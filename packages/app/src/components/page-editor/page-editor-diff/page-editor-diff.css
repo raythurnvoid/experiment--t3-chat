@@ -1,5 +1,5 @@
 @layer components {
-	:where(.MonacoMarkdownDiffEditor) {
+	:where(.PageEditorDiff) {
 		display: flex;
 		flex-direction: column;
 
@@ -7,7 +7,7 @@
 		min-height: 0;
 
 		/* Matches PageEditorPlainText behavior so the Monaco container can shrink/grow correctly */
-		:where(.MonacoMarkdownDiffEditorToolbar) {
+		:where(.PageEditorDiffToolbar) {
 			height: 44px;
 			background: var(--color-base-alt-1-05);
 
@@ -17,7 +17,7 @@
 			z-index: 1;
 		}
 
-		:where(.MonacoMarkdownDiffEditorToolbar-scrollable-area) {
+		:where(.PageEditorDiffToolbar-scrollable-area) {
 			gap: 4px;
 
 			flex-direction: row;
@@ -35,11 +35,11 @@
 			min-width: 0;
 		}
 
-		:where(.MonacoMarkdownDiffEditorToolbar-button) {
+		:where(.PageEditorDiffToolbar-button) {
 			gap: 4px;
 		}
 
-		:where(.MonacoMarkdownDiffEditorToolbar-button-accept-all) {
+		:where(.PageEditorDiffToolbar-button-accept-all) {
 			&:not(:disabled) {
 				color: var(--color-green-11);
 
@@ -50,7 +50,7 @@
 			}
 		}
 
-		:where(.MonacoMarkdownDiffEditorToolbar-button-accept-all-and-save) {
+		:where(.PageEditorDiffToolbar-button-accept-all-and-save) {
 			&:not(:disabled) {
 				color: var(--color-green-10);
 
@@ -61,7 +61,7 @@
 			}
 		}
 
-		:where(.MonacoMarkdownDiffEditorToolbar-button-discard-all) {
+		:where(.PageEditorDiffToolbar-button-discard-all) {
 			&:not(:disabled) {
 				color: var(--color-red-10);
 
@@ -72,28 +72,28 @@
 			}
 		}
 
-		:where(.MonacoMarkdownDiffEditorToolbar-icon) {
+		:where(.PageEditorDiffToolbar-icon) {
 			width: 20px;
 			height: 20px;
 		}
 
-		:where(.MonacoMarkdownDiffEditor-editor) {
+		:where(.PageEditorDiff-editor) {
 			height: 100%;
 			min-height: 0;
 			contain: strict;
-			anchor-name: var(--MonacoMarkdownDiffEditor-anchor-name);
+			anchor-name: var(--PageEditorDiff-anchor-name);
 		}
 
-		:where(.MonacoMarkdownDiffEditor-panels-group) {
+		:where(.PageEditorDiff-panels-group) {
 			flex: 1;
 			min-height: 0;
 		}
 
-		:where(.MonacoMarkdownDiffEditor-editor-panel) {
+		:where(.PageEditorDiff-editor-panel) {
 			min-width: 0;
 		}
 
-		:where(.MonacoMarkdownDiffEditor-panel-resize-handle-container) {
+		:where(.PageEditorDiff-panel-resize-handle-container) {
 			/*
 			The container makes sure that the even though the handle
 			has an arbitrarily large height, it will not affect the ancestor's
@@ -102,7 +102,7 @@
 			contain: layout style size;
 		}
 
-		:where(.MonacoMarkdownDiffEditor-panel-resize-handle) {
+		:where(.PageEditorDiff-panel-resize-handle) {
 			/*
 			Since the container size depends exclusively on the content of the editor,
 			to ensure the handle spans across the whole page height,
@@ -151,14 +151,14 @@
 			}
 		}
 
-		:where(.MonacoMarkdownDiffEditor-comments-panel) {
+		:where(.PageEditorDiff-comments-panel) {
 			min-width: 0;
 			background-color: var(--color-base-1-02);
 		}
 
-		:where(.MonacoMarkdownDiffEditor-editor) :where(.monaco-editor),
-		:where(.MonacoMarkdownDiffEditor-editor) :where(.monaco-diff-editor),
-		:where(.MonacoMarkdownDiffEditor-editor) :where(.monaco-editor-container) {
+		:where(.PageEditorDiff-editor) :where(.monaco-editor),
+		:where(.PageEditorDiff-editor) :where(.monaco-diff-editor),
+		:where(.PageEditorDiff-editor) :where(.monaco-editor-container) {
 			height: 100%;
 		}
 
@@ -207,5 +207,92 @@
 			color: var(--color-fg-07);
 			height: 49px;
 		}
+	}
+
+	/* Page Editor Diff Widget Accept Discard - Widget container */
+	.PageEditorDiffWidgetAcceptDiscard {
+		position: absolute;
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		white-space: nowrap;
+		z-index: 10;
+
+		/*
+			Save monaco a bit of work by specifying a fixed size
+			so it doesn't have to measure the widget's size in the render path.
+			*/
+		width: 52px;
+		height: 24px;
+	}
+
+	/* Accept and discard button base styles */
+	.PageEditorDiffWidgetAcceptDiscard-accept-button,
+	.PageEditorDiffWidgetAcceptDiscard-discard-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		width: 24px;
+		height: 24px;
+		border: 1px solid var(--color-base-alt-1-10);
+		border-radius: 4px;
+
+		cursor: pointer;
+		box-sizing: border-box;
+
+		background: var(--color-base-alt-1-04);
+		color: var(--color-fg-11);
+
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.25);
+
+		&:hover {
+			background: var(--color-base-alt-1-05);
+		}
+
+		&:active {
+			background: var(--color-base-alt-1-06);
+		}
+	}
+
+	/* Accept button variant */
+	.PageEditorDiffWidgetAcceptDiscard-accept-button {
+		color: var(--color-green-10);
+
+		&:hover {
+			background: var(--color-green-02);
+			border-color: var(--color-green-04);
+			color: var(--color-green-10);
+		}
+
+		&:active {
+			background: var(--color-green-03);
+			border-color: var(--color-green-05);
+			color: var(--color-green-10);
+		}
+	}
+
+	/* Discard button variant */
+	.PageEditorDiffWidgetAcceptDiscard-discard-button {
+		color: var(--color-red-10);
+
+		&:hover {
+			background: var(--color-red-02);
+			border-color: var(--color-red-04);
+			color: var(--color-red-10);
+		}
+
+		&:active {
+			background: var(--color-red-03);
+			border-color: var(--color-red-05);
+			color: var(--color-red-10);
+		}
+	}
+
+	.PageEditorDiffWidgetAcceptDiscard-icon {
+		width: 16px;
+		height: 16px;
+
+		pointer-events: none;
 	}
 }

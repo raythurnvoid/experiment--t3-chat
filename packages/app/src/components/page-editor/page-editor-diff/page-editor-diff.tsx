@@ -1,4 +1,6 @@
-import "./monaco-markdown-diff-editor.css";
+import "./page-editor-diff.css";
+import { Check, Undo2 } from "lucide-react";
+import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import React, { Suspense, useEffect, useId, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
@@ -28,25 +30,29 @@ import {
 	pages_fetch_page_yjs_state_and_markdown,
 } from "@/lib/pages.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
-import { PageEditorCommentsSidebar } from "./page-editor-comments-sidebar.tsx";
-import { PageEditorDiffWidgetAcceptDiscard } from "./page-editor-diff-widget-accept-discard.tsx";
+import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
+import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 
 // #region toolbar
-export type MonacoMarkdownDiffEditorToolbar_ClassNames =
-	| "MonacoMarkdownDiffEditorToolbar"
-	| "MonacoMarkdownDiffEditorToolbar-scrollable-area"
-	| "MonacoMarkdownDiffEditorToolbar-button"
-	| "MonacoMarkdownDiffEditorToolbar-button-accept-all"
-	| "MonacoMarkdownDiffEditorToolbar-button-accept-all-and-save"
-	| "MonacoMarkdownDiffEditorToolbar-button-discard-all"
-	| "MonacoMarkdownDiffEditorToolbar-icon";
+export type PageEditorDiffToolbar_ClassNames =
+	| "PageEditorDiffToolbar"
+	| "PageEditorDiffToolbar-scrollable-area"
+	| "PageEditorDiffToolbar-button"
+	| "PageEditorDiffToolbar-button-accept-all"
+	| "PageEditorDiffToolbar-button-accept-all-and-save"
+	| "PageEditorDiffToolbar-button-discard-all"
+	| "PageEditorDiffToolbar-icon";
 
-export type MonacoMarkdownDiffEditorToolbar_Props = {
+export type PageEditorDiffToolbar_Props = {
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isAcceptAllDisabled: boolean;
 	isAcceptAllAndSaveDisabled: boolean;
 	isDiscardAllDisabled: boolean;
+	pageId: app_convex_Id<"pages">;
+	sessionId: string;
+	getCurrentMarkdown: () => string;
+	onApplySnapshotMarkdown: (markdown: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
 	onClickAcceptAll: () => void;
@@ -54,13 +60,17 @@ export type MonacoMarkdownDiffEditorToolbar_Props = {
 	onClickDiscardAll: () => void;
 };
 
-function MonacoMarkdownDiffEditorToolbar(props: MonacoMarkdownDiffEditorToolbar_Props) {
+function PageEditorDiffToolbar(props: PageEditorDiffToolbar_Props) {
 	const {
 		isSaveDisabled,
 		isSyncDisabled,
 		isAcceptAllDisabled,
 		isAcceptAllAndSaveDisabled,
 		isDiscardAllDisabled,
+		pageId,
+		sessionId,
+		getCurrentMarkdown,
+		onApplySnapshotMarkdown,
 		onClickSave,
 		onClickSync,
 		onClickAcceptAll,
@@ -76,44 +86,28 @@ function MonacoMarkdownDiffEditorToolbar(props: MonacoMarkdownDiffEditorToolbar_
 			role="toolbar"
 			aria-label="Toolbar"
 			aria-orientation="horizontal"
-			className={cn("MonacoMarkdownDiffEditorToolbar" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames)}
+			className={cn("PageEditorDiffToolbar" satisfies PageEditorDiffToolbar_ClassNames)}
 		>
 			{portalElement && (
-				<div
-					className={cn(
-						"MonacoMarkdownDiffEditorToolbar-scrollable-area" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-					)}
-				>
+				<div className={cn("PageEditorDiffToolbar-scrollable-area" satisfies PageEditorDiffToolbar_ClassNames)}>
 					<MyButton
 						variant="ghost"
-						className={cn(
-							"MonacoMarkdownDiffEditorToolbar-button" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-						)}
+						className={cn("PageEditorDiffToolbar-button" satisfies PageEditorDiffToolbar_ClassNames)}
 						disabled={isSaveDisabled}
 						onClick={onClickSave}
 					>
-						<MyButtonIcon
-							className={cn(
-								"MonacoMarkdownDiffEditorToolbar-icon" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							)}
-						>
+						<MyButtonIcon className={cn("PageEditorDiffToolbar-icon" satisfies PageEditorDiffToolbar_ClassNames)}>
 							<Save />
 						</MyButtonIcon>
 						Save
 					</MyButton>
 					<MyButton
 						variant="ghost"
-						className={cn(
-							"MonacoMarkdownDiffEditorToolbar-button" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-						)}
+						className={cn("PageEditorDiffToolbar-button" satisfies PageEditorDiffToolbar_ClassNames)}
 						disabled={isSyncDisabled}
 						onClick={onClickSync}
 					>
-						<MyButtonIcon
-							className={cn(
-								"MonacoMarkdownDiffEditorToolbar-icon" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							)}
-						>
+						<MyButtonIcon className={cn("PageEditorDiffToolbar-icon" satisfies PageEditorDiffToolbar_ClassNames)}>
 							<RefreshCcw />
 						</MyButtonIcon>
 						Sync
@@ -121,17 +115,13 @@ function MonacoMarkdownDiffEditorToolbar(props: MonacoMarkdownDiffEditorToolbar_
 					<MyButton
 						variant="ghost"
 						className={cn(
-							"MonacoMarkdownDiffEditorToolbar-button" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							"MonacoMarkdownDiffEditorToolbar-button-accept-all" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
+							"PageEditorDiffToolbar-button" satisfies PageEditorDiffToolbar_ClassNames,
+							"PageEditorDiffToolbar-button-accept-all" satisfies PageEditorDiffToolbar_ClassNames,
 						)}
 						disabled={isAcceptAllDisabled}
 						onClick={onClickAcceptAll}
 					>
-						<MyButtonIcon
-							className={cn(
-								"MonacoMarkdownDiffEditorToolbar-icon" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							)}
-						>
+						<MyButtonIcon className={cn("PageEditorDiffToolbar-icon" satisfies PageEditorDiffToolbar_ClassNames)}>
 							<CheckCheck />
 						</MyButtonIcon>
 						Accept all
@@ -139,17 +129,13 @@ function MonacoMarkdownDiffEditorToolbar(props: MonacoMarkdownDiffEditorToolbar_
 					<MyButton
 						variant="ghost"
 						className={cn(
-							"MonacoMarkdownDiffEditorToolbar-button" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							"MonacoMarkdownDiffEditorToolbar-button-accept-all-and-save" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
+							"PageEditorDiffToolbar-button" satisfies PageEditorDiffToolbar_ClassNames,
+							"PageEditorDiffToolbar-button-accept-all-and-save" satisfies PageEditorDiffToolbar_ClassNames,
 						)}
 						disabled={isAcceptAllAndSaveDisabled}
 						onClick={onClickAcceptAllAndSave}
 					>
-						<MyButtonIcon
-							className={cn(
-								"MonacoMarkdownDiffEditorToolbar-icon" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							)}
-						>
+						<MyButtonIcon className={cn("PageEditorDiffToolbar-icon" satisfies PageEditorDiffToolbar_ClassNames)}>
 							<SaveAll />
 						</MyButtonIcon>
 						Accept all + save
@@ -157,21 +143,23 @@ function MonacoMarkdownDiffEditorToolbar(props: MonacoMarkdownDiffEditorToolbar_
 					<MyButton
 						variant="ghost"
 						className={cn(
-							"MonacoMarkdownDiffEditorToolbar-button" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							"MonacoMarkdownDiffEditorToolbar-button-discard-all" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
+							"PageEditorDiffToolbar-button" satisfies PageEditorDiffToolbar_ClassNames,
+							"PageEditorDiffToolbar-button-discard-all" satisfies PageEditorDiffToolbar_ClassNames,
 						)}
 						disabled={isDiscardAllDisabled}
 						onClick={onClickDiscardAll}
 					>
-						<MyButtonIcon
-							className={cn(
-								"MonacoMarkdownDiffEditorToolbar-icon" satisfies MonacoMarkdownDiffEditorToolbar_ClassNames,
-							)}
-						>
+						<MyButtonIcon className={cn("PageEditorDiffToolbar-icon" satisfies PageEditorDiffToolbar_ClassNames)}>
 							<Trash2 />
 						</MyButtonIcon>
 						Discard all
 					</MyButton>
+					<PageEditorSnapshotsModal
+						pageId={pageId}
+						sessionId={sessionId}
+						getCurrentMarkdown={getCurrentMarkdown}
+						onApplySnapshotMarkdown={onApplySnapshotMarkdown}
+					/>
 				</div>
 			)}
 		</div>
@@ -179,10 +167,21 @@ function MonacoMarkdownDiffEditorToolbar(props: MonacoMarkdownDiffEditorToolbar_
 }
 // #endregion toolbar
 
-// #region root
-type AcceptDiscardContentWidget_ClassNames = "AcceptDiscardContentWidget";
+// #region PageEditorDiffWidgetAcceptDiscard
+export type PageEditorDiffWidgetAcceptDiscard_ClassNames =
+	| "PageEditorDiffWidgetAcceptDiscard"
+	| "PageEditorDiffWidgetAcceptDiscard-moanco-widget-container"
+	| "PageEditorDiffWidgetAcceptDiscard-monaco-decoration"
+	| "PageEditorDiffWidgetAcceptDiscard-accept-button"
+	| "PageEditorDiffWidgetAcceptDiscard-discard-button"
+	| "PageEditorDiffWidgetAcceptDiscard-icon";
 
-class AcceptDiscardContentWidget implements monaco_editor.IContentWidget {
+export type PageEditorDiffWidgetAcceptDiscard_Props = {
+	onAccept: () => void;
+	onDiscard: () => void;
+};
+
+class PageEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContentWidget {
 	allowEditorOverflow: monaco_editor.IContentWidget["allowEditorOverflow"] = true;
 
 	args: {
@@ -204,7 +203,9 @@ class AcceptDiscardContentWidget implements monaco_editor.IContentWidget {
 		this.id = `PageEditorDiffWidgetAcceptDiscard-${this.args.index}`;
 
 		this.node = document.createElement("div");
-		this.node.classList.add("AcceptDiscardContentWidget" satisfies AcceptDiscardContentWidget_ClassNames);
+		this.node.classList.add(
+			"PageEditorDiffWidgetAcceptDiscard-moanco-widget-container" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
+		);
 
 		this.decorations = this.args.editor.createDecorationsCollection([this.createDecoration(this.args.lineNumber)]);
 
@@ -266,6 +267,8 @@ class AcceptDiscardContentWidget implements monaco_editor.IContentWidget {
 		return {
 			range: new monaco_Range(lineNumber, 1, lineNumber, 1),
 			options: {
+				className:
+					"PageEditorDiffWidgetAcceptDiscard-monaco-decoration" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
 				stickiness: monaco_editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
 				isWholeLine: false,
 			},
@@ -288,21 +291,94 @@ class AcceptDiscardContentWidget implements monaco_editor.IContentWidget {
 	}
 }
 
-type MonacoMarkdownDiffEditor_ClassNames =
-	| "MonacoMarkdownDiffEditor"
-	| "MonacoMarkdownDiffEditor-editor"
-	| "MonacoMarkdownDiffEditor-panels-group"
-	| "MonacoMarkdownDiffEditor-editor-panel"
-	| "MonacoMarkdownDiffEditor-panel-resize-handle-container"
-	| "MonacoMarkdownDiffEditor-panel-resize-handle"
-	| "MonacoMarkdownDiffEditor-comments-panel"
-	| "MonacoMarkdownDiffEditor-anchor";
+export function PageEditorDiffWidgetAcceptDiscard(props: PageEditorDiffWidgetAcceptDiscard_Props) {
+	const { onAccept, onDiscard } = props;
 
-type MonacoMarkdownDiffEditor_CssVars = {
-	"--MonacoMarkdownDiffEditor-anchor-name": string;
+	const handleMouseDown = (e: React.MouseEvent) => {
+		e.preventDefault();
+	};
+
+	const handleClickAccept = (e: React.MouseEvent) => {
+		e.preventDefault();
+		onAccept();
+	};
+
+	const handleClickDiscard = (e: React.MouseEvent) => {
+		e.preventDefault();
+		onDiscard();
+	};
+
+	return (
+		<>
+			<MyTooltip timeout={0} placement="top">
+				<MyTooltipTrigger>
+					<button
+						type="button"
+						className={cn(
+							"PageEditorDiffWidgetAcceptDiscard-accept-button" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
+						)}
+						aria-label="Accept change"
+						onMouseDown={handleMouseDown}
+						onClick={handleClickAccept}
+					>
+						<Check
+							className={cn(
+								"PageEditorDiffWidgetAcceptDiscard-icon" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
+							)}
+						/>
+					</button>
+				</MyTooltipTrigger>
+				<MyTooltipContent gutter={6}>
+					<MyTooltipArrow />
+					Accept change
+				</MyTooltipContent>
+			</MyTooltip>
+
+			<MyTooltip timeout={0} placement="top">
+				<MyTooltipTrigger>
+					<button
+						type="button"
+						className={cn(
+							"PageEditorDiffWidgetAcceptDiscard-discard-button" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
+						)}
+						aria-label="Discard change"
+						onMouseDown={handleMouseDown}
+						onClick={handleClickDiscard}
+					>
+						<Undo2
+							className={cn(
+								"PageEditorDiffWidgetAcceptDiscard-icon" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
+							)}
+						/>
+					</button>
+				</MyTooltipTrigger>
+				<MyTooltipContent gutter={6}>
+					<MyTooltipArrow />
+					Discard change
+				</MyTooltipContent>
+			</MyTooltip>
+		</>
+	);
+}
+// #endregion PageEditorDiffWidgetAcceptDiscard
+
+// #region root
+
+type PageEditorDiff_ClassNames =
+	| "PageEditorDiff"
+	| "PageEditorDiff-editor"
+	| "PageEditorDiff-panels-group"
+	| "PageEditorDiff-editor-panel"
+	| "PageEditorDiff-panel-resize-handle-container"
+	| "PageEditorDiff-panel-resize-handle"
+	| "PageEditorDiff-comments-panel"
+	| "PageEditorDiff-anchor";
+
+type PageEditorDiff_CssVars = {
+	"--PageEditorDiff-anchor-name": string;
 };
 
-type MonacoMarkdownDiffEditor_Inner_Props = MonacoMarkdownDiffEditor_Props & {
+type PageEditorDiff_Inner_Props = PageEditorDiff_Props & {
 	hoistingContainer: HTMLElement;
 	initialData: {
 		markdown: string;
@@ -311,12 +387,12 @@ type MonacoMarkdownDiffEditor_Inner_Props = MonacoMarkdownDiffEditor_Props & {
 	};
 };
 
-function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Props) {
+function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	const { ref, className, pageId, presenceStore, modifiedInitialValue, headerSlot, hoistingContainer, initialData } =
 		props;
 
 	const id = useId();
-	const anchorName = `${"--MonacoMarkdownDiffEditor-anchor-name" satisfies keyof MonacoMarkdownDiffEditor_CssVars}-${id}`;
+	const anchorName = `${"--PageEditorDiff-anchor-name" satisfies keyof PageEditorDiff_CssVars}-${id}`;
 
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
 
@@ -343,7 +419,9 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 	const commentThreadIdsKeyRef = useRef<string>("");
 
 	/** Content widgets for per-change actions (accept/discard) */
-	const [contentWidgetsRef, setContentWidgets, contentWidgets] = useStateRef<AcceptDiscardContentWidget[]>([]);
+	const [contentWidgetsRef, setContentWidgets, contentWidgets] = useStateRef<
+		PageEditorDiffWidgetAcceptDiscard_Monaco[]
+	>([]);
 	const isUnmountingRef = useRef(false);
 
 	const serverSequence = serverSequenceData?.last_sequence;
@@ -384,7 +462,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 	const applyDiffs = (diffs: ReadonlyArray<monaco_editor.ILineChange>): string => {
 		const editorModels = modelsRef.current;
 		if (!editorModels) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.applyDiffs] Missing `editorModels`", {
+			const error = should_never_happen("[PageEditorDiff.applyDiffs] Missing `editorModels`", {
 				editorModels,
 			});
 			console.error(error);
@@ -452,7 +530,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 	const pushChangeToWorkingEditor = (newMarkdown: string) => {
 		const editorModels = modelsRef.current;
 		if (!editorModels) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.pushChangeToWorkingEditor] Missing `editorModels`", {
+			const error = should_never_happen("[PageEditorDiff.pushChangeToWorkingEditor] Missing `editorModels`", {
 				editor: editorRef.current,
 				editorModels,
 			});
@@ -469,25 +547,19 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 	const pushChangeToUnstagedEditor = (newMarkdown: string) => {
 		if (!editorRef.current) {
-			const error = should_never_happen(
-				"[MonacoMarkdownDiffEditor.pushChangeToUnstagedEditor] Missing `editorRef.current`",
-				{
-					editor: editorRef.current,
-				},
-			);
+			const error = should_never_happen("[PageEditorDiff.pushChangeToUnstagedEditor] Missing `editorRef.current`", {
+				editor: editorRef.current,
+			});
 			console.error(error);
 			throw error;
 		}
 
 		const editorModels = modelsRef.current;
 		if (!editorModels) {
-			const error = should_never_happen(
-				"[MonacoMarkdownDiffEditor.pushChangeToUnstagedEditor] Missing `editorModels`",
-				{
-					editor: editorRef.current,
-					editorModels,
-				},
-			);
+			const error = should_never_happen("[PageEditorDiff.pushChangeToUnstagedEditor] Missing `editorModels`", {
+				editor: editorRef.current,
+				editorModels,
+			});
 			console.error(error);
 			throw error;
 		}
@@ -510,7 +582,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 	const discardAllDiffs = () => {
 		if (!editorRef.current) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.discardAllDiffs] Missing `editorRef.current`", {
+			const error = should_never_happen("[PageEditorDiff.discardAllDiffs] Missing `editorRef.current`", {
 				editor: editorRef.current,
 			});
 			console.error(error);
@@ -520,7 +592,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 		const editorModels = modelsRef.current;
 		if (!editorModels) {
 			console.error(
-				should_never_happen("[MonacoMarkdownDiffEditor.discardAllDiffs] Missing `editorModels`", {
+				should_never_happen("[PageEditorDiff.discardAllDiffs] Missing `editorModels`", {
 					editorModels,
 				}),
 			);
@@ -533,7 +605,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 	const acceptAllDiffs = () => {
 		if (!editorRef.current) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.acceptAllDiffs] Missing `editorRef.current`", {
+			const error = should_never_happen("[PageEditorDiff.acceptAllDiffs] Missing `editorRef.current`", {
 				editor: editorRef.current,
 			});
 			console.error(error);
@@ -551,7 +623,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 	const doSave = () => {
 		const originalEditorModel = modelsRef.current?.original;
 		if (!originalEditorModel) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.handleClickSave] Missing editorModel", {
+			const error = should_never_happen("[PageEditorDiff.handleClickSave] Missing editorModel", {
 				editor: editorRef.current,
 				originalEditorModel,
 			});
@@ -606,12 +678,56 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 			updateThreadIds(workingMarkdown);
 		})()
 			.catch((err) => {
-				console.error("[MonacoMarkdownDiffEditor.handleClickSave] Save failed", err);
+				console.error("[PageEditorDiff.handleClickSave] Save failed", err);
 				toast.error(err?.message ?? "Failed to save");
 			})
 			.finally(() => {
 				setIsSaving(false);
 			});
+	};
+
+	const getCurrentMarkdown = () => {
+		return modelsRef.current?.original.getValue() ?? initialData.markdown;
+	};
+
+	const handleApplySnapshotMarkdown = () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
+			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
+			});
+
+			if (!remoteData) {
+				console.error(
+					should_never_happen("[PageEditorDiff.handleApplySnapshotMarkdown] Missing `remoteData`", {
+						remoteData,
+					}),
+				);
+				return;
+			}
+
+			// Reset baselines and sequences
+			baselineYjsDocRef.current = remoteData.yjsDoc;
+			setWorkingYjsSequence(remoteData.yjsSequence);
+			updateDirtyBaseline(remoteData.markdown);
+
+			// Apply the restored content to both Monaco models
+			pushChangeToWorkingEditor(remoteData.markdown);
+			pushChangeToUnstagedEditor(remoteData.markdown);
+
+			// Update thread IDs based on the new baseline
+			updateThreadIds(remoteData.markdown);
+
+			// Ensure hasDiffs is false since both models now have the same content
+			setHasDiffs(false);
+		})()
+			.catch((err) => {
+				console.error("[PageEditorDiff] Failed to apply snapshot restore", err);
+				toast.error(err instanceof Error ? err.message : "Failed to restore snapshot");
+			})
+			.finally(() => {});
 	};
 
 	const handleClickSave = () => {
@@ -626,7 +742,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 		if (!editorModels) {
 			console.error(
-				should_never_happen("[MonacoMarkdownDiffEditor.handleClickSync] Missing `editorModels`", {
+				should_never_happen("[PageEditorDiff.handleClickSync] Missing `editorModels`", {
 					editorModels,
 				}),
 			);
@@ -701,7 +817,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 			updateThreadIds(remoteData.markdown);
 		})()
 			.catch((err) => {
-				console.error("[MonacoMarkdownDiffEditor.handleClickSync] Sync failed", err);
+				console.error("[PageEditorDiff.handleClickSync] Sync failed", err);
 				toast.error(err?.message ?? "Failed to sync");
 			})
 			.finally(() => {
@@ -727,19 +843,16 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 	const handleClickWidgetAccept = (index: number) => {
 		if (!editorRef.current) {
-			const error = should_never_happen(
-				"[MonacoMarkdownDiffEditor.handleClickWidgetAccept] Missing `editorRef.current`",
-				{
-					editor: editorRef.current,
-				},
-			);
+			const error = should_never_happen("[PageEditorDiff.handleClickWidgetAccept] Missing `editorRef.current`", {
+				editor: editorRef.current,
+			});
 			console.error(error);
 			return;
 		}
 
 		const diffToApply = editorRef.current.getLineChanges()?.at(index);
 		if (!diffToApply) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.handleClickWidgetAccept] Missing `diff`", {
+			const error = should_never_happen("[PageEditorDiff.handleClickWidgetAccept] Missing `diff`", {
 				editor: editorRef.current,
 				index,
 			});
@@ -756,19 +869,16 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 	const handleClickWidgetDiscard = (index: number) => {
 		if (!editorRef.current) {
-			const error = should_never_happen(
-				"[MonacoMarkdownDiffEditor.handleClickWidgetDiscard] Missing `editorRef.current`",
-				{
-					editor: editorRef.current,
-				},
-			);
+			const error = should_never_happen("[PageEditorDiff.handleClickWidgetDiscard] Missing `editorRef.current`", {
+				editor: editorRef.current,
+			});
 			console.error(error);
 			return;
 		}
 
 		const diffs = editorRef.current.getLineChanges();
 		if (!diffs) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.handleClickWidgetDiscard] Missing `diffs`", {
+			const error = should_never_happen("[PageEditorDiff.handleClickWidgetDiscard] Missing `diffs`", {
 				editor: editorRef.current,
 				index,
 			});
@@ -778,7 +888,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 		const diffsToKeep = diffs.filter((_, i) => i !== index);
 		if (diffsToKeep.length === diffs.length) {
-			const error = should_never_happen("[MonacoMarkdownDiffEditor.handleClickWidgetDiscard] No diff removed", {
+			const error = should_never_happen("[PageEditorDiff.handleClickWidgetDiscard] No diff removed", {
 				editor: editorRef.current,
 				diffs,
 				index,
@@ -885,7 +995,7 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 						existingWidget.dispose();
 					}
 
-					const newWidget = new AcceptDiscardContentWidget({
+					const newWidget = new PageEditorDiffWidgetAcceptDiscard_Monaco({
 						editor: targetEditor,
 						anchorName,
 						index: i,
@@ -948,21 +1058,25 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 
 	return (
 		<div
-			className={cn("MonacoMarkdownDiffEditor" satisfies MonacoMarkdownDiffEditor_ClassNames, className)}
+			className={cn("PageEditorDiff" satisfies PageEditorDiff_ClassNames, className)}
 			style={{
 				...({
-					"--MonacoMarkdownDiffEditor-anchor-name": anchorName,
-				} satisfies Partial<MonacoMarkdownDiffEditor_CssVars> as CSSPropertiesX),
+					"--PageEditorDiff-anchor-name": anchorName,
+				} satisfies Partial<PageEditorDiff_CssVars> as CSSPropertiesX),
 			}}
 		>
 			{headerSlot}
 
-			<MonacoMarkdownDiffEditorToolbar
+			<PageEditorDiffToolbar
 				isSaveDisabled={isSaveDisabled}
 				isSyncDisabled={isSyncDisabled}
 				isAcceptAllDisabled={isAcceptAllDisabled}
 				isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
 				isDiscardAllDisabled={isDiscardAllDisabled}
+				pageId={pageId}
+				sessionId={presenceStore.localSessionId}
+				getCurrentMarkdown={getCurrentMarkdown}
+				onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
 				onClickSave={handleClickSave}
 				onClickSync={handleClickSync}
 				onClickAcceptAll={handleClickAcceptAll}
@@ -970,15 +1084,9 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 				onClickDiscardAll={handleClickDiscardAll}
 			/>
 
-			<PanelGroup
-				direction="horizontal"
-				className={"MonacoMarkdownDiffEditor-panels-group" satisfies MonacoMarkdownDiffEditor_ClassNames}
-			>
-				<Panel
-					defaultSize={75}
-					className={"MonacoMarkdownDiffEditor-editor-panel" satisfies MonacoMarkdownDiffEditor_ClassNames}
-				>
-					<div className={"MonacoMarkdownDiffEditor-editor" satisfies MonacoMarkdownDiffEditor_ClassNames}>
+			<PanelGroup direction="horizontal" className={"PageEditorDiff-panels-group" satisfies PageEditorDiff_ClassNames}>
+				<Panel defaultSize={75} className={"PageEditorDiff-editor-panel" satisfies PageEditorDiff_ClassNames}>
+					<div className={"PageEditorDiff-editor" satisfies PageEditorDiff_ClassNames}>
 						<DiffEditor
 							height="100%"
 							theme={app_monaco_THEME_NAME_DARK}
@@ -1011,19 +1119,10 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 						/>
 					</div>
 				</Panel>
-				<div
-					className={
-						"MonacoMarkdownDiffEditor-panel-resize-handle-container" satisfies MonacoMarkdownDiffEditor_ClassNames
-					}
-				>
-					<PanelResizeHandle
-						className={"MonacoMarkdownDiffEditor-panel-resize-handle" satisfies MonacoMarkdownDiffEditor_ClassNames}
-					/>
+				<div className={"PageEditorDiff-panel-resize-handle-container" satisfies PageEditorDiff_ClassNames}>
+					<PanelResizeHandle className={"PageEditorDiff-panel-resize-handle" satisfies PageEditorDiff_ClassNames} />
 				</div>
-				<Panel
-					defaultSize={25}
-					className={"MonacoMarkdownDiffEditor-comments-panel" satisfies MonacoMarkdownDiffEditor_ClassNames}
-				>
+				<Panel defaultSize={25} className={"PageEditorDiff-comments-panel" satisfies PageEditorDiff_ClassNames}>
 					<PageEditorCommentsSidebar threadIds={commentThreadIds} />
 				</Panel>
 			</PanelGroup>
@@ -1042,12 +1141,12 @@ function MonacoMarkdownDiffEditor_Inner(props: MonacoMarkdownDiffEditor_Inner_Pr
 	);
 }
 
-export type MonacoMarkdownDiffEditor_Ref = {
+export type PageEditorDiff_Ref = {
 	setModifiedContent: (value: string) => void;
 };
 
-export type MonacoMarkdownDiffEditor_Props = {
-	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
+export type PageEditorDiff_Props = {
+	ref?: Ref<PageEditorDiff_Ref>;
 	className?: string;
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
@@ -1057,7 +1156,7 @@ export type MonacoMarkdownDiffEditor_Props = {
 	headerSlot: React.ReactNode;
 };
 
-export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) {
+export function PageEditorDiff(props: PageEditorDiff_Props) {
 	const { pageId, presenceStore, modifiedInitialValue, headerSlot, className } = props;
 
 	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
@@ -1081,7 +1180,7 @@ export function MonacoMarkdownDiffEditor(props: MonacoMarkdownDiffEditor_Props) 
 			<Suspense fallback={<>Loading</>}>
 				<Await promise={pageContentData}>
 					{(pageContentData) => (
-						<MonacoMarkdownDiffEditor_Inner
+						<PageEditorDiff_Inner
 							key={pageId}
 							{...props}
 							className={className}

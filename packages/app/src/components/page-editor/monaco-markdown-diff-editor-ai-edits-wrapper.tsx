@@ -1,13 +1,13 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
-import { MonacoMarkdownDiffEditor, type MonacoMarkdownDiffEditor_Ref } from "./monaco-markdown-diff-editor.tsx";
+import { PageEditorDiff, type PageEditorDiff_Ref } from "./page-editor-diff/page-editor-diff.tsx";
 import { cn } from "../../lib/utils.ts";
 import { useStateRef } from "../../hooks/utils-hooks.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 export interface MonacoMarkdownDiffEditorAiEditsWrapper_Props {
-	ref?: Ref<MonacoMarkdownDiffEditor_Ref>;
+	ref?: Ref<PageEditorDiff_Ref>;
 	id?: string;
 	className?: string;
 	pageId: app_convex_Id<"pages">;
@@ -21,7 +21,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 
 	const [initialModified, setInitialModified] = useStateRef<string | undefined>(undefined);
 
-	const diffEditorRef = useRef<MonacoMarkdownDiffEditor_Ref>(null);
+	const diffEditorRef = useRef<PageEditorDiff_Ref>(null);
 	useImperativeHandle(ref, () => diffEditorRef.current!, []);
 
 	// Watch pending edits only if we have a threadId
@@ -53,7 +53,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 	return (
 		<div id={id} className={cn("MonacoMarkdownDiffEditorAiEditsWrapper h-full w-full", className)}>
 			{initialModified.current && (
-				<MonacoMarkdownDiffEditor
+				<PageEditorDiff
 					ref={diffEditorRef}
 					className={className}
 					pageId={pageId}

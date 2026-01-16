@@ -8,7 +8,7 @@ import { Switch } from "../ui/switch.tsx";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
-import { MonacoMarkdownDiffEditor } from "./monaco-markdown-diff-editor.tsx";
+import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -407,7 +407,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 						threadId ? (
 							<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
 						) : (
-							<MonacoMarkdownDiffEditor
+							<PageEditorDiff
 								pageId={pageId}
 								presenceStore={presenceStore}
 								headerSlot={headerSlot}
