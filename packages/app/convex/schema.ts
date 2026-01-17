@@ -379,16 +379,6 @@ const app_convex_schema = defineSchema({
 	}),
 	// #endregion Human Threads
 
-	// #region Presence
-	presence_data: defineTable({
-		roomId: v.string(),
-		userId: v.string(),
-		data: v.any(),
-	})
-		.index("by_room_user", ["roomId", "userId"])
-		.index("by_room", ["roomId"]),
-	// #endregion Presence
-
 	// #region Users
 	users: defineTable({
 		/** Clerk user ID, null for anonymous users */
@@ -404,7 +394,7 @@ const app_convex_schema = defineSchema({
 		displayName: v.string(),
 		avatarUrl: v.optional(v.string()),
 		updatedAt: v.number(),
-	}).index("by_user_id", ["userId"]),
+	}),
 	// #endregion Users
 });
 

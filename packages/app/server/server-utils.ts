@@ -42,7 +42,6 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 		name: isAnonymous
 			? users_create_anonymouse_user_display_name(userId)
 			: userIdentityResult._yay.name || users_create_fallback_display_name(userId),
-		avatar: userIdentityResult._yay.pictureUrl || "https://via.placeholder.com/32",
 	};
 }
 

@@ -1,8 +1,8 @@
 import "./online-presence-indicator.css";
-import { cn } from "@/lib/utils.ts";
+import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
-import { usePresence, usePresenceList, usePresenceUsersData } from "../hooks/presence-hooks.ts";
+import { usePresence, usePresenceList } from "../hooks/presence-hooks.ts";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "./my-avatar.tsx";
 import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "./my-tooltip.tsx";
 
@@ -28,19 +28,13 @@ export function OnlinePresenceIndicator() {
 		userId: authenticated.userId,
 	});
 
-	const presenceUsersData = usePresenceUsersData({
-		roomToken: presence.roomToken,
-	});
-
-	const users = (presenceList ?? [])
+	const users = (presenceList?.users ?? [])
 		.map((user) => {
-			const data = presenceUsersData?.[user.userId];
-
-			if (!data || user.online === false) {
+			if (user.online === false) {
 				return null;
 			}
 
-			return { ...user, data };
+			return user;
 		})
 		.filter((user) => user != null);
 
@@ -63,11 +57,11 @@ export function OnlinePresenceIndicator() {
 								className={cn("OnlinePresenceIndicator-item-avatar" satisfies OnlinePresenceIndicator_ClassNames)}
 								size="24px"
 							>
-								<MyAvatarImage src={user.data?.image ?? undefined} alt={user.data?.name ?? "Anonymous"} />
-								<MyAvatarFallback>{(user.data?.name ?? "AN").slice(0, 2).toUpperCase()}</MyAvatarFallback>
+								<MyAvatarImage src={user.anagraphic.avatarUrl} alt={user.anagraphic.displayName} />
+								<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
 							</MyAvatar>
 							<span className={cn("OnlinePresenceIndicator-item-name" satisfies OnlinePresenceIndicator_ClassNames)}>
-								{user.data?.name ?? user.userId}
+								{user.anagraphic.displayName}
 							</span>
 						</div>
 					))}

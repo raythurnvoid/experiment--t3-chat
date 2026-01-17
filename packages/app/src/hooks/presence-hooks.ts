@@ -45,11 +45,16 @@ export function usePresenceList(props: usePresenceList_Props) {
 
 	const list = useQuery(app_convex_api.presence.list, roomToken ? { roomToken } : "skip");
 
-	return list?.slice().sort((a, b) => {
-		if (a.userId === userId) return -1;
-		if (b.userId === userId) return 1;
-		return 0;
-	});
+	if (!list) return list;
+
+	return {
+		users: list.users.slice().sort((a, b) => {
+			if (a.userId === userId) return -1;
+			if (b.userId === userId) return 1;
+			return 0;
+		}),
+		usersAnagraphics: list.usersAnagraphics,
+	};
 }
 
 export type usePresenceSessions_Props = {
@@ -85,35 +90,6 @@ export function usePresenceSessions(props: usePresenceSessions_Props) {
 		if (b.userId === userId) return 1;
 		return 0;
 	});
-}
-
-export type usePresenceUsersData_Props = {
-	roomToken: string | null | undefined;
-};
-
-/**
- * Hook to access and manage user data in a room.
- *
- * @returns a records object with userId as key and data as value, along with helper functions.
- *
- * @example
- * ```tsx
- * function MyComponent() {
- *   const presence = usePresence({
- *     presence: app_convex_api.presence,
- *     roomToken: "room-token",
- *     userId: "user-id",
- *   });
- *
- *   const presenceUsersData = usePresenceUsersData({ roomToken: "room-token" });
- *
- *   // ...
- * }
- * ```
- */
-export function usePresenceUsersData(props: usePresenceUsersData_Props) {
-	const { roomToken } = props;
-	return useQuery(app_convex_api.presence.getUserData, roomToken ? { roomToken } : "skip");
 }
 
 export type usePresenceSessionsData_Props = {

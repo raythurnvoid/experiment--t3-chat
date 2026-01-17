@@ -248,6 +248,28 @@ export const example_query = query({
 - When using the `Record` type, make sure to always define your records as `const record: Record<KeyType, ValueType> = {...};`
 - Always add `@types/node` to your `package.json` when using any Node.js built-in modules.
 
+### Prefer `doc(app_convex_schema, "...")` for DB document shapes
+
+When a Convex function returns documents fetched from `ctx.db` (or objects that embed full documents), **avoid re-defining the whole schema with `v.object({...})`**.
+
+- **Use the schema-backed doc validator**:
+
+  - Import the schema: `import app_convex_schema from "./schema.ts";`
+  - Import the helper: `import { doc } from "convex-helpers/validators";`
+  - Then use: `returns: doc(app_convex_schema, "table_name")`
+
+- **Use id validators for document ids**:
+
+  - Prefer `v.id("table_name")` over `v.string()` for `_id`-like fields you control.
+  - If you receive ids as strings (e.g. from URL params), normalize first:
+    - `const id = ctx.db.normalizeId("table_name", args.idString);`
+    - Return `null` (or drop the item) if normalization fails, instead of widening validators back to `v.string()`.
+
+- **Records keyed by ids**:
+  - Prefer `v.record(v.id("users"), doc(app_convex_schema, "users_anagraphics"))` (and the matching TS type `Record<Id<"users">, Doc<"users_anagraphics">>`).
+
+Use `v.object({...})` only when you intentionally return a **subset** or a **derived shape** that is not the full document.
+
 ## Full text search guidelines
 
 - A query for "10 messages in channel '#general' that best match the query 'hello hi' in their body" would look like:
@@ -265,6 +287,52 @@ q.search("body", "hello hi").eq("channel", "#general"),
 - Convex queries do NOT support `.delete()`. Instead, `.collect()` the results, iterate over them, and call `ctx.db.delete(row._id)` on each result.
 - Use `.unique()` to get a single document from a query. This method will throw an error if there are multiple documents that match the query.
 - When using async iteration, don't use `.collect()` or `.take(n)` on the result of a query. Instead, use the `for await (const row of query)` syntax.
+
+## Performance: fetching many related documents
+
+When the user requests code that needs to fetch _many_ related documents (e.g. per item in a list), you must **avoid `await ctx.db...` inside a `for` loop**. Sequential awaits can be much slower.
+
+✅ Prefer concurrent fetches with `Promise.all`:
+
+```ts
+const results = await Promise.all(
+	items.map(async (item) => {
+		const doc = await ctx.db
+			.query("someTable")
+			.withIndex("by_foreign_key", (q) => q.eq("foreignKey", item.foreignKey))
+			.unique();
+
+		if (!doc) return null;
+		return { item, doc };
+	}),
+);
+
+const joined = results.filter((r): r is NonNullable<typeof r> => r !== null);
+```
+
+✅ Prefer “batch then join” when there are duplicates / large lists:
+
+- Query the related table using an index to fetch all needed rows (or a superset).
+- Build a `Map`/`Record` keyed by the join key.
+- Map your original list to the joined result using that in-memory map.
+
+This reduces repeated queries for the same key and keeps read patterns predictable.
+
+## Performance: prefer `ctx.db.get` over `ctx.db.query` when you have ids
+
+When the user requests fetching documents by id, you should prefer `ctx.db.get(...)` because it is an **\(O(1)\)** lookup by primary key.
+
+This is especially useful for “follow the reference” patterns where a parent document stores the id of a related document. For example:
+
+```ts
+const user = await ctx.db.get("users", userId);
+if (!user?.anagraphic) return null;
+
+const anagraphic = await ctx.db.get("users_anagraphics", user.anagraphic);
+if (!anagraphic) return null;
+```
+
+If your code always resolves the relationship via stored ids (rather than querying by a foreign key), you often do **not** need a secondary index for that relationship.
 
 ### Ordering
 

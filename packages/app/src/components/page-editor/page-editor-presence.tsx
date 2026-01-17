@@ -29,8 +29,7 @@ export type PageEditorPresence_CssVars = {
 export type PageEditorPresence_User = {
 	userId: string;
 	isSelf: boolean;
-	name?: string;
-	image?: string;
+	anagraphic: { displayName: string; avatarUrl?: string };
 	color: string;
 };
 
@@ -61,7 +60,10 @@ export function PageEditorPresence(props: PageEditorPresence_Props) {
 								"--PageEditorPresence-avatar-z-index": String(visibleUsers.length - index),
 							} satisfies Partial<PageEditorPresence_CssVars>)}
 						>
-							<MyAvatarImage src={user.image ?? undefined} alt={user.name ?? "Anonymous"} />
+							<MyAvatarImage
+								src={user.anagraphic.avatarUrl ?? undefined}
+								alt={user.anagraphic.displayName ?? "Anonymous"}
+							/>
 							<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
 							<MyAvatarLoading>
 								<MyAvatarSkeleton />
@@ -102,14 +104,17 @@ export function PageEditorPresence(props: PageEditorPresence_Props) {
 								className={cn("PageEditorPresence-tooltip-item-avatar" satisfies PageEditorPresence_ClassNames)}
 								size="24px"
 							>
-								<MyAvatarImage src={user.image ?? undefined} alt={user.name ?? "Anonymous"} />
+								<MyAvatarImage
+									src={user.anagraphic.avatarUrl ?? undefined}
+									alt={user.anagraphic.displayName ?? "Anonymous"}
+								/>
 								<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
 								<MyAvatarLoading>
 									<MyAvatarSkeleton />
 								</MyAvatarLoading>
 							</MyAvatar>
 							<span className={cn("PageEditorPresence-tooltip-item-name" satisfies PageEditorPresence_ClassNames)}>
-								{user.name ?? user.userId}
+								{user.anagraphic.displayName ?? user.userId}
 							</span>
 						</div>
 					))}

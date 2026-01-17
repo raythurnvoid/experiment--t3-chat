@@ -6,7 +6,7 @@ import {
 } from "../../shared/pages.ts";
 import { TypedEventTarget } from "@remix-run/interaction";
 import { should_never_happen, XCustomEvent } from "./utils.ts";
-import type { usePresenceSessions, usePresenceSessionsData, usePresenceUsersData } from "../hooks/presence-hooks.ts";
+import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
 import { objects_equal_deep } from "./object.ts";
 import { editor as monaco_editor } from "monaco-editor";
 import { app_convex, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
@@ -78,7 +78,7 @@ type pages_PresenceStore_Data = {
 	sessionToken: string;
 	sessions: NonNullable<ReturnType<typeof usePresenceSessions>>;
 	sessionsData: NonNullable<ReturnType<typeof usePresenceSessionsData>>;
-	usersRoomData: NonNullable<ReturnType<typeof usePresenceUsersData>>;
+	usersAnagraphics: NonNullable<ReturnType<typeof usePresenceList>>["usersAnagraphics"];
 };
 
 type pages_PresenceStore_SessionData = {
@@ -92,7 +92,7 @@ type pages_PresenceStore_SessionData = {
 };
 
 type pages_PresenceStore_UserData = {
-	name: string;
+	displayName: string;
 };
 
 export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Event["__map"]> {
@@ -122,7 +122,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 			this.sessionIds.add(session.sessionId);
 
 			this.usersData.set(session.userId, {
-				name: args.data.usersRoomData[session.userId]?.name,
+				displayName: args.data.usersAnagraphics[session.userId].displayName,
 			});
 
 			this.sessionsData.set(session.sessionId, {
@@ -163,7 +163,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
 				});
 				this.usersData.set(newSession.userId, {
-					name: newData.usersRoomData[newSession.userId]?.name,
+					displayName: newData.usersAnagraphics[newSession.userId].displayName,
 				});
 			};
 
@@ -189,7 +189,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 				};
 
 				const newUserData = {
-					name: newData.usersRoomData[newSession.userId]?.name,
+					displayName: newData.usersAnagraphics[newSession.userId].displayName,
 				};
 
 				if (

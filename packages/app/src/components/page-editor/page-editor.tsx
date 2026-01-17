@@ -22,7 +22,6 @@ import {
 	usePresenceList,
 	usePresenceSessions,
 	usePresenceSessionsData,
-	usePresenceUsersData,
 } from "../../hooks/presence-hooks.ts";
 import { CatchBoundary } from "@tanstack/react-router";
 import { PageEditorError } from "./page-editor-error.tsx";
@@ -76,7 +75,12 @@ type PageEditorHeader_Props = {
 	pageId: app_convex_Id<"pages"> | null | undefined;
 	editorMode: "rich" | "markdown" | "diff";
 	onEditorModeChange: (mode: "rich" | "markdown" | "diff") => void;
-	onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
+	onlineUsers: Array<{
+		userId: string;
+		isSelf: boolean;
+		anagraphic: { displayName: string; avatarUrl?: string };
+		color: string;
+	}>;
 };
 
 function PageEditorHeader(props: PageEditorHeader_Props) {
@@ -201,7 +205,12 @@ type PageEditorPresenceSupplier_Props = {
 
 	children: (props: {
 		presenceStore: PageEditor_Inner_Props["presenceStore"];
-		onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
+		onlineUsers: Array<{
+			userId: string;
+			isSelf: boolean;
+			anagraphic: { displayName: string; avatarUrl?: string };
+			color: string;
+		}>;
 	}) => React.ReactNode;
 };
 
@@ -218,10 +227,6 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 	const presenceSessions = usePresenceSessions({
 		roomToken: presence.roomToken,
 		userId: userId,
-	});
-
-	const presenceData = usePresenceUsersData({
-		roomToken: presence.roomToken,
 	});
 
 	const presenceSessionsData = usePresenceSessionsData({
@@ -251,15 +256,13 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 	}
 
 	const onlineUsers =
-		presenceList
-			?.filter((user) => user.online)
+		presenceList?.users
+			.filter((user) => user.online)
 			.map((user) => {
-				const userData = presenceData?.[user.userId];
 				return {
 					userId: user.userId,
 					isSelf: user.userId === userId,
-					name: userData?.name,
-					image: userData?.image,
+					anagraphic: user.anagraphic,
 					color: userIdToColorMap.get(user.userId) ?? "var(--color-base-1-10)", // fallback to CSS var
 				};
 			}) ?? [];
@@ -267,7 +270,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 	const handlePresenceStateChange = useEffectEvent(() => {
 		if (
 			presenceSessions &&
-			presenceData &&
+			presenceList &&
 			presenceSessionsData &&
 			presence.sessionId &&
 			presence.roomToken &&
@@ -278,7 +281,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 					sessionToken: presence.sessionToken,
 					sessions: presenceSessions,
 					sessionsData: presenceSessionsData,
-					usersRoomData: presenceData,
+					usersAnagraphics: presenceList.usersAnagraphics,
 				});
 			} else {
 				if (Object.values(presenceSessions).length === 0) {
@@ -290,7 +293,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 						sessionToken: presence.sessionToken,
 						sessions: presenceSessions,
 						sessionsData: presenceSessionsData,
-						usersRoomData: presenceData,
+						usersAnagraphics: presenceList.usersAnagraphics,
 					},
 					localSessionId: presence.sessionId,
 					onSetSessionData: () => {
@@ -346,7 +349,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 
 	useEffect(handlePresenceStateChange, [
 		presenceSessions,
-		presenceData,
+		presenceList,
 		presenceSessionsData,
 		presence.sessionId,
 		presence.roomToken,
@@ -369,7 +372,12 @@ type PageEditor_Inner_Props = {
 	threadId?: string;
 	editorMode: PageEditor_Mode;
 	presenceStore: pages_PresenceStore;
-	onlineUsers: Array<{ userId: string; isSelf: boolean; name?: string; image?: string; color: string }>;
+	onlineUsers: Array<{
+		userId: string;
+		isSelf: boolean;
+		anagraphic: { displayName: string; avatarUrl?: string };
+		color: string;
+	}>;
 	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 	diffModifiedInitialValue?: string;
 };
