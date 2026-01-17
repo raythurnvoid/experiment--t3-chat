@@ -305,7 +305,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 
 		if (!setSessionDataDebounce.current) {
 			setSessionDataDebounce.current = setTimeout(() => {
-				handlePresenceStoreSetSessionDataDebounced(localSessionToken)
+				handlePresenceStoreSetSessionDataDebounced(localSessionToken);
 			}, 550);
 		}
 	});

@@ -166,9 +166,9 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 	 */
 	const hoistingContainer = document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
 
-	function updateBubbleMenuPosition() {
+	const updateBubbleMenuPosition = () => {
 		editor.view.dispatch(editor.state.tr.setMeta("bubbleMenu", "updatePosition"));
-	}
+	};
 
 	const handleMount = useEffectEvent(() => {
 		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
@@ -204,7 +204,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 		// Global event listeners
 
-		function isElContainedInManagedAreas(el: EventTarget | null) {
+		const isElContainedInManagedAreas = (el: EventTarget | null) => {
 			const elAsNode = el as Node;
 			const isInBubble = bubbleSurfaceRef.current?.contains(elAsNode) == true;
 			const isInEditor = editor.view.dom.contains(elAsNode) == true;
@@ -212,7 +212,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			const isProbablyHoisted = document.getElementById("root" satisfies AppElementId)?.contains(elAsNode) == false;
 
 			return isInBubble || isInEditor || isProbablyHoisted;
-		}
+		};
 
 		const ac = new AbortController();
 		window.addEventListener(
@@ -452,7 +452,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 
 	const currentMarkdownContent = useRef<string | null>(null);
 
-	function updateThreadIds(editor: Editor) {
+	const updateThreadIds = (editor: Editor) => {
 		const nextThreadIds = getThreadIdsFromEditorState(editor.state).toSorted();
 		const nextKey = nextThreadIds.join("\n");
 
@@ -460,7 +460,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 
 		threadIdsKeyRef.current = nextKey;
 		setThreadIds(nextThreadIds);
-	}
+	};
 
 	const handleThreadsQuery = useEffectEvent(() => {
 		if (!editor || !isEditorReady || !threadsQuery || threadIds.length === 0) {

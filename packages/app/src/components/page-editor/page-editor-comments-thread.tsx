@@ -41,66 +41,62 @@ export type PageEditorCommentsFilterInput_Props = {
 	ariaLabel?: string;
 };
 
-export const PageEditorCommentsFilterInput = ((/* iife */) => {
-	function PageEditorCommentsFilterInput(props: PageEditorCommentsFilterInput_Props) {
-		const {
-			id,
-			className,
-			value,
-			onValueChange,
-			placeholder = "Search comments…",
-			ariaLabel = "Search comments",
-		} = props;
+export function PageEditorCommentsFilterInput(props: PageEditorCommentsFilterInput_Props) {
+	const {
+		id,
+		className,
+		value,
+		onValueChange,
+		placeholder = "Search comments…",
+		ariaLabel = "Search comments",
+	} = props;
 
-		return (
-			<MyInput
-				id={id}
-				className={cn("PageEditorCommentsFilterInput" satisfies PageEditorCommentsFilterInput_ClassNames, className)}
-			>
-				<MyInputArea>
-					<MyInputBox />
-					<MyInputControl
-						aria-label={ariaLabel}
-						placeholder={placeholder}
-						value={value}
-						type="search"
-						onChange={(e) => onValueChange(e.target.value)}
-					/>
-				</MyInputArea>
-			</MyInput>
-		);
-	}
+	return (
+		<MyInput
+			id={id}
+			className={cn("PageEditorCommentsFilterInput" satisfies PageEditorCommentsFilterInput_ClassNames, className)}
+		>
+			<MyInputArea>
+				<MyInputBox />
+				<MyInputControl
+					aria-label={ariaLabel}
+					placeholder={placeholder}
+					value={value}
+					type="search"
+					onChange={(e) => onValueChange(e.target.value)}
+				/>
+			</MyInputArea>
+		</MyInput>
+	);
+}
 
-	function normalizeQuery(query: string) {
-		return query.trim().toLowerCase();
-	}
+function normalizeQuery(query: string) {
+	return query.trim().toLowerCase();
+}
 
-	function filterThreads<TThread extends { id: string; content: string }>(threads: readonly TThread[], query: string) {
-		const normalizedQuery = normalizeQuery(query);
-		if (!normalizedQuery) return threads.slice();
+PageEditorCommentsFilterInput.filterThreads = <TThread extends { id: string; content: string }>(
+	threads: readonly TThread[],
+	query: string,
+) => {
+	const normalizedQuery = normalizeQuery(query);
+	if (!normalizedQuery) return threads.slice();
 
-		const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-		const isIdQuery = tokens.length > 0 && tokens.every((t) => comment_id_pattern.test(t));
-		const idSet = isIdQuery ? new Set(tokens) : null;
+	const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+	const isIdQuery = tokens.length > 0 && tokens.every((t) => comment_id_pattern.test(t));
+	const idSet = isIdQuery ? new Set(tokens) : null;
 
-		return threads.filter((thread) => {
-			const contentLower = thread.content.toLowerCase();
+	return threads.filter((thread) => {
+		const contentLower = thread.content.toLowerCase();
 
-			if (isIdQuery && idSet) {
-				const matchesId = idSet.has(thread.id);
-				const matchesContent = contentLower.includes(normalizedQuery) || tokens.some((t) => contentLower.includes(t));
-				return matchesId || matchesContent;
-			}
+		if (isIdQuery && idSet) {
+			const matchesId = idSet.has(thread.id);
+			const matchesContent = contentLower.includes(normalizedQuery) || tokens.some((t) => contentLower.includes(t));
+			return matchesId || matchesContent;
+		}
 
-			return contentLower.includes(normalizedQuery);
-		});
-	}
-
-	return Object.assign(PageEditorCommentsFilterInput, {
-		normalizeQuery,
-		filterThreads,
+		return contentLower.includes(normalizedQuery);
 	});
-})();
+};
 // #endregion filter input
 
 // #region message content
@@ -229,24 +225,25 @@ function PageEditorCommentsThreadForm(props: PageEditorCommentsThreadForm_Props)
 
 		setIsSubmitting(true);
 
-		try {
-			// Add new message to thread
-			await addMessage({
-				rootId: threadId,
-				content: markdownContent.trim(),
-			});
-
+		// Add new message to thread
+		addMessage({
+			rootId: threadId,
+			content: markdownContent.trim(),
+		})
 			// Clear the composer
-			composerRef.current?.clear();
-			setIsEmpty(true);
-			onSubmit?.();
-		} catch (e) {
-			const error = e as Error;
-			console.error(error);
-			toast.error(error?.message ?? "Failed to add comment");
-		} finally {
-			setIsSubmitting(false);
-		}
+			.then(() => {
+				composerRef.current?.clear();
+				setIsEmpty(true);
+				onSubmit?.();
+			})
+			.catch((e) => {
+				const error = e as Error;
+				console.error(error);
+				toast.error(error?.message ?? "Failed to add comment");
+			})
+			.finally(() => {
+				setIsSubmitting(false);
+			});
 	};
 
 	return (
@@ -404,16 +401,19 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 		}
 
 		setIsArchiving(true);
-		try {
-			await archiveThread({ messageId: thread.id });
-			toast.success("Marked as resolved");
-		} catch (error) {
-			const err = error as Error;
-			console.error(err);
-			toast.error(err?.message ?? "Failed to resolve comment");
-		} finally {
-			setIsArchiving(false);
-		}
+
+		archiveThread({ messageId: thread.id })
+			.then(() => {
+				toast.success("Marked as resolved");
+			})
+			.catch((e) => {
+				const error = e as Error;
+				console.error(error);
+				toast.error(error?.message ?? "Failed to resolve comment");
+			})
+			.finally(() => {
+				setIsArchiving(false);
+			});
 	};
 
 	return (

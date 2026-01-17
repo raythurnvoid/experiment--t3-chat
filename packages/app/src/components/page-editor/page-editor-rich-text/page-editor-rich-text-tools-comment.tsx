@@ -74,26 +74,27 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 
 		setIsSubmitting(true);
 
-		try {
-			// Create a new root message (thread) in Convex
-			const result = await createCommentsThread({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				content: markdownContent.trim(),
+		// Create a new root message (thread) in Convex
+		createCommentsThread({
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			content: markdownContent.trim(),
+		})
+			.then((result) => {
+				editor.chain().focus().addComment(result.thread_id).run();
+
+				composerRef.current?.clear();
+				setIsEmpty(true);
+
+				onClose();
+			})
+			.catch((err) => {
+				console.error(err);
+				toast.error(err?.message ?? "Failed to create comment");
+			})
+			.finally(() => {
+				setIsSubmitting(false);
 			});
-
-			editor.chain().focus().addComment(result.thread_id).run();
-
-			composerRef.current?.clear();
-			setIsEmpty(true);
-
-			onClose();
-		} catch (err: any) {
-			console.error(err);
-			toast.error(err?.message ?? "Failed to create comment");
-		} finally {
-			setIsSubmitting(false);
-		}
 	};
 
 	// Auto-close if selection becomes empty
