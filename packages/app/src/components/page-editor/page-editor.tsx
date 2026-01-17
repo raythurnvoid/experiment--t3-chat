@@ -267,7 +267,61 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 				};
 			}) ?? [];
 
-	const handlePresenceStateChange = useEffectEvent(() => {
+	/**
+	 * Must be a effect event in order to access the current value of `presence`
+	 */
+	const handlePresenceStoreSetSessionDataDebounced = useEffectEvent((localSessionToken: string) => {
+		setSessionDataDebounce.current = undefined;
+
+		// Prevent to send updates when navigating to a different page
+		if (presence.sessionToken !== localSessionToken) return;
+
+		const data = presenceStore?.sessionsData.get(presence.sessionId);
+		if (!data) {
+			// This means the session got disconnected before the debounced logic ran.
+			// It can happen while switching tabs.
+			return;
+		}
+
+		setSessionDataMutation({
+			sessionToken: presence.sessionToken,
+			data,
+		}).catch((error) => {
+			console.error(error);
+		});
+	});
+
+	/**
+	 * Must be a effect event in order to access the current value of `presence`
+	 */
+	const handlePresenceStoreSetSessionData = useEffectEvent(() => {
+		if (!presence.sessionToken) {
+			throw should_never_happen("Missing deps", {
+				sessionToken: presence.sessionToken,
+			});
+		}
+
+		const localSessionToken = presence.sessionToken;
+
+		if (!setSessionDataDebounce.current) {
+			setSessionDataDebounce.current = setTimeout(() => {
+				handlePresenceStoreSetSessionDataDebounced(localSessionToken)
+			}, 550);
+		}
+	});
+
+	useEffect(() => {
+		if (setSessionDataDebounce.current) {
+			clearTimeout(setSessionDataDebounce.current);
+			setSessionDataDebounce.current = undefined;
+		}
+
+		// Reset on room changes so we don't keep rendering the old store while the new session connects.
+		presenceStore?.dispose();
+		setPresenceStore(null);
+	}, [roomId]);
+
+	useEffect(() => {
 		if (
 			presenceSessions &&
 			presenceList &&
@@ -297,57 +351,13 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 					},
 					localSessionId: presence.sessionId,
 					onSetSessionData: () => {
-						if (!presence.sessionToken) {
-							throw should_never_happen("Missing deps", {
-								sessionToken: presence.sessionToken,
-							});
-						}
-
-						const localSessionToken = presence.sessionToken;
-
-						if (!setSessionDataDebounce.current) {
-							setSessionDataDebounce.current = setTimeout(() => {
-								setSessionDataDebounce.current = undefined;
-
-								// Prevent to send updates when navigating to a different page
-								if (presence.sessionToken !== localSessionToken) return;
-
-								const data = presenceStore?.sessionsData.get(presence.sessionId);
-								if (!data) {
-									// This means the session got disconnected before the debounced logic ran.
-									// It can happen while switching tabs.
-									return;
-								}
-
-								setSessionDataMutation({
-									sessionToken: presence.sessionToken,
-									data,
-								}).catch((error) => {
-									console.error(error);
-								});
-							}, 550);
-						}
+						handlePresenceStoreSetSessionData();
 					},
 				});
 				setPresenceStore(presenceStore);
 			}
 		}
-	});
-
-	const handleRoomIdChange = useEffectEvent(() => {
-		if (setSessionDataDebounce.current) {
-			clearTimeout(setSessionDataDebounce.current);
-			setSessionDataDebounce.current = undefined;
-		}
-
-		// Reset on room changes so we don't keep rendering the old store while the new session connects.
-		presenceStore?.dispose();
-		setPresenceStore(null);
-	});
-
-	useEffect(handleRoomIdChange, [roomId]);
-
-	useEffect(handlePresenceStateChange, [
+	}, [
 		presenceSessions,
 		presenceList,
 		presenceSessionsData,
