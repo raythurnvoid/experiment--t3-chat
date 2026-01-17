@@ -23,3 +23,11 @@ export function users_get_user_id_from_jwt(jwt: string) {
 
 	return payload.sub;
 }
+
+export function users_create_anonymouse_user_display_name(userId: string) {
+	return `Anonymous user ${userId}`;
+}
+
+export function users_create_fallback_display_name(userId: string) {
+	return `User ${userId}`;
+}

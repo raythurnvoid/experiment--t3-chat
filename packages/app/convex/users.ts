@@ -9,7 +9,11 @@ import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Pa
 import type { RouterForConvexModules } from "./http.ts";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
-import { users_get_user_id_from_jwt } from "../shared/users.ts";
+import {
+	users_get_user_id_from_jwt,
+	users_create_anonymouse_user_display_name,
+	users_create_fallback_display_name,
+} from "../shared/users.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { Id } from "./_generated/dataModel";
 
@@ -108,7 +112,7 @@ export const users_create_anonymous_user = internalMutation({
 
 		const anagraphicId = await ctx.db.insert("users_anagraphics", {
 			userId: userId,
-			displayName: `anonymous_${userId}`,
+			displayName: users_create_anonymouse_user_display_name(userId),
 			updatedAt: Date.now(),
 		});
 
@@ -200,7 +204,7 @@ async function users_mint_anonymous_jwt(ctx: ActionCtx) {
 
 	const jwt = await sign_anonymous_users_jwt({
 		subject: userId,
-		name: `Anonymous ${userId}`,
+		name: users_create_anonymouse_user_display_name(userId),
 	});
 
 	await ctx.runMutation(internal.users.users_set_anonymous_auth_token, {
@@ -425,7 +429,9 @@ export function users_http_routes(router: RouterForConvexModules) {
 
 								const newJwt = await sign_anonymous_users_jwt({
 									subject: userWithAnagraphic.user._id,
-									name: userWithAnagraphic.anagraphic?.displayName ?? `anonymous_${userWithAnagraphic.user._id}`,
+									name:
+										userWithAnagraphic.anagraphic?.displayName ??
+										users_create_anonymouse_user_display_name(userWithAnagraphic.user._id),
 								});
 
 								await ctx.runMutation(internal.users.users_set_anonymous_auth_token, {
@@ -504,7 +510,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 							const resolveUserResult = await ctx.runMutation(internal.users.resolve_user, {
 								clerkUserId: clerkUserId,
 								anonymousUserToken: body?.anonymousUserToken,
-								displayName: identity.name || identity.nickname || `User ${clerkUserId}`,
+								displayName: identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId),
 							});
 
 							if (resolveUserResult._nay) {

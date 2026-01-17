@@ -2,6 +2,7 @@ import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "conv
 import { Result, Result_try_promise } from "../shared/errors-as-values-utils.ts";
 import type z from "zod";
 import type { Id } from "../convex/_generated/dataModel";
+import { users_create_anonymouse_user_display_name, users_create_fallback_display_name } from "../shared/users.ts";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
 if (!ALLOWED_ORIGINS) {
@@ -38,7 +39,9 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 	return {
 		isAnonymous,
 		id: userId,
-		name: isAnonymous ? `Anonymous user ${userId}` : userIdentityResult._yay.name || `User ${userId}`,
+		name: isAnonymous
+			? users_create_anonymouse_user_display_name(userId)
+			: userIdentityResult._yay.name || users_create_fallback_display_name(userId),
 		avatar: userIdentityResult._yay.pictureUrl || "https://via.placeholder.com/32",
 	};
 }

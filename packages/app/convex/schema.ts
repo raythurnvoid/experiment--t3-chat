@@ -400,7 +400,7 @@ const app_convex_schema = defineSchema({
 
 	users_anagraphics: defineTable({
 		userId: v.id("users"),
-		/** Display name, e.g. "anonymous_<id>" for anonymous users */
+		/** Display name, e.g. "Anonymous user <id>" for anonymous users */
 		displayName: v.string(),
 		avatarUrl: v.optional(v.string()),
 		updatedAt: v.number(),
