@@ -307,6 +307,7 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 				underline: false,
 				dropcursor: false, // DOM-only, disabled for server
 				gapcursor: false,
+				listKeymap: false,
 
 				horizontalRule: false,
 			}),
@@ -398,6 +399,7 @@ export function pages_headless_tiptap_editor_create(args?: {
 		element: null, // REQUIRED for headless (no DOM mounting)
 		content: { type: "doc", content: [] },
 		extensions,
+		enableCoreExtensions: false,
 		enableInputRules: false,
 		enablePasteRules: false,
 		coreExtensionOptions: {
