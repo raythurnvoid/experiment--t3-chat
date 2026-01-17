@@ -1,6 +1,7 @@
 import { useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { usePresence as usePresenceBase } from "@convex-dev/presence/react";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 
 type usePresenceBase_Props = Parameters<typeof usePresenceBase>[0];
 
@@ -15,6 +16,7 @@ export function usePresence(props: usePresence_Props) {
 	return usePresenceBase({
 		...props,
 		presence: app_convex_api.presence,
+		getAuthToken: () => AppAuthProvider.getToken_sync() ?? null,
 	});
 }
 

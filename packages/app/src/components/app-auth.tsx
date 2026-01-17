@@ -110,26 +110,18 @@ type AnonymousTokenDeferred = ReturnType<typeof create_deferred<AnonymousTokenRe
  * Uses Clerk internally and manages anonymous token flow.
  */
 interface AuthTokenManager {
+	lastToken: string | null | undefined;
 	isAuthenticated: () => boolean;
 	getToken: () => Promise<string | null>;
 }
 
 function init_auth_token_manager() {
-	const auth_token_manager = Object.assign(Promise.withResolvers<AuthTokenManager>(), {
-		// Track if the token manager is set
-		resolved: false,
+	return Object.assign(create_deferred<AuthTokenManager>(), {
+		/**
+		 * Used to track if resolved as been called to guard again React strict
+		 */
+		resolvedCalled: false,
 	});
-
-	auth_token_manager.promise
-		.then((manager) => {
-			auth_token_manager.resolved = true;
-			return manager;
-		})
-		.catch((error) => {
-			auth_token_manager.reject(error);
-		});
-
-	return auth_token_manager;
 }
 
 /**
@@ -209,6 +201,10 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 			.then((result) => {
 				if (result) {
 					if (!signal.aborted) {
+						if (auth_token_manager.value) {
+							auth_token_manager.value.lastToken = result.token;
+						}
+
 						setAuthStatus({
 							isAnonymous: true,
 							isLoading: false,
@@ -253,6 +249,21 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		return deferred.promise;
 	});
 
+	const callClerkAuthGetToken = async (args: { skipCache: boolean }) => {
+		return await clerkAuth
+			.getToken({ template: "convex", skipCache: args.skipCache })
+			.then((token) => {
+				if (auth_token_manager.value) {
+					auth_token_manager.value.lastToken = token;
+				}
+				return token;
+			})
+			.catch((error) => {
+				console.error("[AppAuthProvider.callClerkAuthGetToken] Clerk getToken failed", error);
+				return null;
+			});
+	};
+
 	/**
 	 * Fetch the token either from Clerk for signed in users or fetch a token for anonymous users.
 	 *
@@ -272,32 +283,30 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		tokenFlowAbortControllerRef.current.abort();
 		tokenFlowAbortControllerRef.current = new AbortController();
 
-		if (!authStatusRef.current.isAnonymous) {
+		if (authStatusRef.current.isAnonymous) {
 			try {
-				return await clerkAuth.getToken({
-					template: "convex",
-					skipCache,
-				});
+				return await fetchAnonymousToken(options);
 			} catch (error) {
-				console.error("AppAuthProvider.getToken: Clerk getToken failed", error);
+				console.error("AppAuthProvider.getToken: Failed to get anonymous user token", error);
 				return null;
 			}
 		}
 
 		try {
-			return await fetchAnonymousToken(options);
+			return await callClerkAuthGetToken({
+				skipCache,
+			});
 		} catch (error) {
-			console.error("AppAuthProvider.getToken: Failed to get anonymous user token", error);
+			console.error("AppAuthProvider.getToken: Clerk getToken failed", error);
 			return null;
 		}
 	});
 
 	const [fetchAccessToken] = useState(() => (options: { forceRefreshToken: boolean }) => {
-		console.debug("AppAuthProvider.fetchAccessToken", options);
 		return getToken({ skipCache: options.forceRefreshToken });
 	});
 
-	async function fetchClerkToken(args: { retryUntileUserIdIsSet: boolean; signal: AbortSignal }) {
+	const fetchClerkToken = async (args: { retryUntileUserIdIsSet: boolean; signal: AbortSignal }) => {
 		const maxAttempts = 20;
 		const delayMs = 500;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -308,10 +317,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 			if (args.signal.aborted) return;
 
-			const token = await clerkAuth.getToken({ template: "convex", skipCache: attempt > 1 }).catch((error) => {
-				console.error("AppAuthProvider: Clerk getToken failed", error);
-				return null;
-			});
+			const token = await callClerkAuthGetToken({ skipCache: attempt > 1 });
 
 			if (args.signal.aborted) return;
 
@@ -325,7 +331,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 				return { userId, token };
 			}
 		}
-	}
+	};
 
 	useAsyncEffect(
 		async (signal) => {
@@ -443,11 +449,20 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 	// Set token manager for Convex auth
 	useEffect(() => {
-		AppAuthProvider.setTokenManager({
-			isAuthenticated: () => authStatusRef.current.isAuthenticated ?? false,
+		if (auth_token_manager.status !== "pending") {
+			auth_token_manager = init_auth_token_manager();
+		}
+
+		if (auth_token_manager.resolvedCalled) return;
+
+		// Set the token manager
+		auth_token_manager.resolve({
+			lastToken: undefined,
+			isAuthenticated: () => authStatusRef.current?.isAuthenticated ?? false,
 			getToken: () => getToken(),
 		});
-	});
+		auth_token_manager.resolvedCalled = true;
+	}, []);
 
 	return (
 		<AppAuthContext.Provider
@@ -470,18 +485,12 @@ AppAuthProvider.getToken = () => {
 	return auth_token_manager.promise.then((manager) => manager.getToken());
 };
 
-AppAuthProvider.getIsAuthenticated = () => {
-	return auth_token_manager.promise.then((manager) => manager.isAuthenticated());
+AppAuthProvider.getToken_sync = () => {
+	return auth_token_manager.value?.lastToken;
 };
 
-AppAuthProvider.setTokenManager = (manager: AuthTokenManager) => {
-	// Replace the token manager if is already set
-	if (auth_token_manager.resolved) {
-		auth_token_manager = init_auth_token_manager();
-	}
-
-	// Set the token manager
-	auth_token_manager.resolve(manager);
+AppAuthProvider.getIsAuthenticated = () => {
+	return auth_token_manager.promise.then((manager) => manager.isAuthenticated());
 };
 
 /**
