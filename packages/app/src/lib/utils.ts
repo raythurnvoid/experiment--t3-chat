@@ -69,6 +69,9 @@ export function create_deferred<T>() {
 		const deferred = Object.assign(Promise.withResolvers<T>(), {
 			status: "pending" as "pending" | "resolved" | "rejected",
 
+			value: undefined as T | undefined,
+			error: undefined as unknown,
+
 			/**
 			 * If the deferred is not pending, replace the promise and
 			 * set the status to pending.
@@ -83,10 +86,14 @@ export function create_deferred<T>() {
 		deferred.promise = deferred.promise
 			.then((value) => {
 				deferred.status = "resolved";
+				deferred.value = value;
+				deferred.error = undefined;
 				return value;
 			})
 			.catch((error) => {
 				deferred.status = "rejected";
+				deferred.error = error;
+				deferred.value = undefined;
 				return error;
 			});
 
