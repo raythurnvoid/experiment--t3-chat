@@ -1,5 +1,5 @@
 import "./app-ai-chat.css";
-import { makeAssistantToolUI, useMessage, useMessagePartRuntime, useThreadListItemRuntime } from "@assistant-ui/react";
+import { makeAssistantToolUI, useAssistantState } from "@assistant-ui/react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import { CopyIcon, FileText, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -9,7 +9,7 @@ import { Actions, Action } from "./ai-elements/actions.tsx";
 import { CodeBlock } from "./ai-elements/code-block.tsx";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
 import { Thread } from "@/components/assistant-ui/thread.tsx";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { global_custom_event_dispatch } from "../lib/global-event.tsx";
 import type {
 	ai_tool_create_read_page_ToolInput,
@@ -84,8 +84,7 @@ function CreateArtifactToolUiComponent(props: ToolCallMessagePartProps<CreateArt
 	const { args, status } = props;
 	// Safely parse arguments using Zod
 	const argsParseResult = parseCreateArtifactArgs(args);
-	const message = useMessage();
-	const artifactId = (message.metadata.unstable_data?.[0] as any)?.id;
+	const artifactId = useAssistantState(({ message }) => (message.metadata.unstable_data?.[0] as any)?.id);
 
 	// Show loading state while tool is executing
 	if (status.type === "running") {
@@ -326,46 +325,47 @@ function WritePageToolUiComponent(
 	props: ToolCallMessagePartProps<ai_tool_create_write_page_ToolInput, ai_tool_create_write_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
-	const threadListItemRuntime = useThreadListItemRuntime();
-	const partRuntime = useMessagePartRuntime();
+	const handledRef = useRef(false);
+	const threadRemoteId = useAssistantState(({ threads }) => {
+		const mainThreadId = threads.mainThreadId;
+		return threads.threadItems.find((item) => item.id === mainThreadId)?.remoteId;
+	});
 
 	// Handle tool complete
 	useEffect(() => {
-		let handled = false;
-
 		if (status.type !== "complete") {
-			const cleanup = partRuntime.subscribe(() => {
-				if (handled) return;
-				const state = partRuntime.getState();
-				if (state.type === "tool-call" && state.status.type === "complete" && !(state.result as any)?.error) {
-					handled = true;
-
-					if (!state.result) return;
-					const threadId = threadListItemRuntime.getState().remoteId;
-					if (!threadId) return;
-
-					const result = state.result as ai_tool_create_write_page_ToolOutput;
-					const args = state.args as ai_tool_create_write_page_ToolInput;
-
-					const pageId = result.metadata.pageId;
-					if (!pageId) {
-						console.warn("write_page: page id missing in tool result for path", args.path);
-						return;
-					}
-
-					// Existing page preview: open diff mode, seed modified with proposed content
-					global_custom_event_dispatch("ai_chat::open_canvas", {
-						pageId,
-						mode: "diff",
-						modifiedContent: args.content,
-						threadId,
-					});
-				}
-			});
-
-			return cleanup;
+			return;
 		}
-	}, [status]);
+
+		if (handledRef.current) {
+			return;
+		}
+
+		if (!result || (result as any)?.error) {
+			return;
+		}
+
+		const threadId = threadRemoteId ?? window.rt0_chat_current_thread_id;
+		if (!threadId) {
+			return;
+		}
+
+		const pageId = result.metadata.pageId;
+		if (!pageId) {
+			console.warn("write_page: page id missing in tool result for path", args.path);
+			return;
+		}
+
+		handledRef.current = true;
+
+		// Existing page preview: open diff mode, seed modified with proposed content
+		global_custom_event_dispatch("ai_chat::open_canvas", {
+			pageId,
+			mode: "diff",
+			modifiedContent: args.content,
+			threadId,
+		});
+	}, [status.type, result, args.content, args.path, threadRemoteId]);
 
 	const handleOpenCanvas = () => {
 		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
@@ -411,34 +411,44 @@ function EditPageToolUiComponent(
 	props: ToolCallMessagePartProps<ai_tool_create_edit_page_ToolInput, ai_tool_create_edit_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
-	const threadListItemRuntime = useThreadListItemRuntime();
-	const partRuntime = useMessagePartRuntime();
+	const handledRef = useRef(false);
+	const threadRemoteId = useAssistantState(({ threads }) => {
+		const mainThreadId = threads.mainThreadId;
+		return threads.threadItems.find((item) => item.id === mainThreadId)?.remoteId;
+	});
 
 	useEffect(() => {
-		let handled = false;
 		if (status.type !== "complete") {
-			const cleanup = partRuntime.subscribe(() => {
-				if (handled) return;
-				const state = partRuntime.getState();
-				if (state.type === "tool-call" && state.status.type === "complete" && !(state.result as any)?.error) {
-					handled = true;
-					if (!state.result) return;
-					const threadId = threadListItemRuntime.getState().remoteId;
-					if (!threadId) return;
-					const result = state.result as ai_tool_create_edit_page_ToolOutput;
-					const pageId = result.metadata.pageId;
-					if (!pageId) return;
-					global_custom_event_dispatch("ai_chat::open_canvas", {
-						pageId,
-						mode: "diff",
-						threadId,
-						modifiedContent: result.metadata.modifiedContent,
-					});
-				}
-			});
-			return cleanup;
+			return;
 		}
-	}, [status]);
+
+		if (handledRef.current) {
+			return;
+		}
+
+		if (!result || (result as any)?.error) {
+			return;
+		}
+
+		const threadId = threadRemoteId ?? window.rt0_chat_current_thread_id;
+		if (!threadId) {
+			return;
+		}
+
+		const pageId = result.metadata.pageId;
+		if (!pageId) {
+			return;
+		}
+
+		handledRef.current = true;
+
+		global_custom_event_dispatch("ai_chat::open_canvas", {
+			pageId,
+			mode: "diff",
+			threadId,
+			modifiedContent: result.metadata.modifiedContent,
+		});
+	}, [status.type, result, threadRemoteId]);
 
 	const handleOpenCanvas = () => {
 		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });

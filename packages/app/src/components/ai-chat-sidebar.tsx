@@ -3,7 +3,7 @@ import { MessageSquare, Plus, Search, X, ArchiveIcon, ArchiveRestoreIcon, Star, 
 import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider } from "@/components/ui/sidebar.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { ThreadListPrimitive, ThreadListItemPrimitive, useThreadListItem } from "@assistant-ui/react";
+import { ThreadListPrimitive, ThreadListItemPrimitive, useAssistantState } from "@assistant-ui/react";
 import { useState, createContext, use } from "react";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { TooltipIconButton } from "./assistant-ui/tooltip-icon-button.tsx";
@@ -67,8 +67,8 @@ function ShowArchivedCheckbox({ checked, onCheckedChange, className }: ShowArchi
 function ThreadListItemAlt() {
 	const trigger_id = React.useId();
 	const { search_query } = useSearchContext();
-	const thread_title = useThreadListItem((t) => t.title) || "New Chat";
-	const thread_id = useThreadListItem((t) => t.remoteId);
+	const thread_title = useAssistantState(({ threadListItem }) => threadListItem.title) || "New Chat";
+	const thread_id = useAssistantState(({ threadListItem }) => threadListItem.remoteId);
 
 	// Check if thread matches search query
 	const matches_search = !search_query || thread_title.toLowerCase().includes(search_query.toLowerCase());
@@ -189,7 +189,7 @@ interface ArchiveToggle_Props {
 }
 
 function ArchiveToggle({ className }: ArchiveToggle_Props) {
-	const is_archived = useThreadListItem((t) => t.status === "archived");
+	const is_archived = useAssistantState(({ threadListItem }) => threadListItem.status === "archived");
 
 	if (is_archived) {
 		return (

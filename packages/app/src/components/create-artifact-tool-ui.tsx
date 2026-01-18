@@ -1,5 +1,5 @@
 import { memo, useEffect } from "react";
-import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
+import { makeAssistantToolUI, useAssistantState } from "@assistant-ui/react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import { useCanvasStore } from "../stores/canvas-store.ts";
 import type { ArtifactTextContent, Artifact } from "../types/canvas.ts";
@@ -16,9 +16,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	// Safely parse arguments and result using Zod
 	const argsParseResult = parseCreateArtifactArgs(args);
 
-	const message = useMessage();
-
-	const artifactId = (message.metadata.unstable_data?.[0] as any)?.id;
+	const artifactId = useAssistantState(({ message }) => (message.metadata.unstable_data?.[0] as any)?.id);
 
 	useEffect(() => {
 		if (!argsParseResult.success) {
@@ -27,9 +25,13 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 
 		const { type, title, markdown } = argsParseResult.data;
 
-		try {
-			// Create artifact with initial empty content - content will be populated via streaming
-			if (type === "text") {
+		Promise.resolve()
+			.then(() => {
+				// Create artifact with initial empty content - content will be populated via streaming
+				if (type !== "text") {
+					return;
+				}
+
 				const textContent: ArtifactTextContent = {
 					index: 1,
 					type: "text",
@@ -45,10 +47,10 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 				};
 
 				setArtifact(newArtifact);
-			}
-		} catch (error) {
-			console.error("❌ Error updating canvas store:", error);
-		}
+			})
+			.catch((error) => {
+				console.error("❌ Error updating canvas store:", error);
+			});
 	}, [result, args, status.type]);
 
 	const handleViewArtifact = () => {
@@ -128,7 +130,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 
 export const CreateArtifactToolUI = memo(
 	makeAssistantToolUI<CreateArtifactArgs, void>({
-		toolName: "createArtifact",
+		toolName: "create_artifact",
 		render: (args) => {
 			return CreateArtifactToolRender(args);
 		},

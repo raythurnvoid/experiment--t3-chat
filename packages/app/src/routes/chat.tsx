@@ -1,8 +1,8 @@
-import { AssistantRuntimeProvider, useThreadListItem } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, useAssistantState } from "@assistant-ui/react";
 import { Canvas } from "../components/canvas/canvas.tsx";
 import { AppAiChat } from "../components/app-ai-chat.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { PanelLeft, Menu } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -18,9 +18,13 @@ function ChatContent() {
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
-	useThreadListItem((list_item) => {
-		window.rt0_chat_current_thread_id = list_item.remoteId;
-	});
+	const mainThreadId = useAssistantState(({ threads }) => threads.mainThreadId);
+	const threadItems = useAssistantState(({ threads }) => threads.threadItems);
+
+	useEffect(() => {
+		const mainItem = threadItems.find((item) => item.id === mainThreadId);
+		window.rt0_chat_current_thread_id = mainItem?.remoteId;
+	}, [mainThreadId, threadItems]);
 
 	return (
 		<div className={cn("Chat-content-area", "flex h-full w-full")}>
