@@ -121,9 +121,9 @@
 		padding: 0;
 		cursor: pointer;
 		transition:
-			background 150ms ease,
-			color 150ms ease,
-			transform 150ms ease;
+			background 0.15s ease,
+			color 0.15s ease,
+			transform 0.15s ease;
 	}
 
 	.MySidebarGroupAction:hover,
@@ -169,9 +169,9 @@
 		text-align: left;
 		cursor: pointer;
 		transition:
-			background 150ms ease,
-			color 150ms ease,
-			box-shadow 150ms ease;
+			background 0.15s ease,
+			color 0.15s ease,
+			box-shadow 0.15s ease;
 		font: inherit;
 	}
 
@@ -238,9 +238,9 @@
 		cursor: pointer;
 		padding: 0;
 		transition:
-			background 150ms ease,
-			color 150ms ease,
-			opacity 150ms ease;
+			background 0.15s ease,
+			color 0.15s ease,
+			opacity 0.15s ease;
 	}
 
 	.MySidebarMenuAction:hover,
@@ -252,7 +252,7 @@
 
 	.MySidebarMenuAction-show-on-hover {
 		opacity: 0;
-		transition: opacity 150ms ease;
+		transition: opacity 0.15s ease;
 	}
 
 	.MySidebarMenuItem:hover .MySidebarMenuAction-show-on-hover,
@@ -330,7 +330,7 @@
 		background: transparent;
 		color: inherit;
 		cursor: pointer;
-		transition: background 150ms ease;
+		transition: background 0.15s ease;
 	}
 
 	.MySidebarTrigger:hover,

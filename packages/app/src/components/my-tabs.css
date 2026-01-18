@@ -1,0 +1,72 @@
+@layer common_components {
+	.MyTabs {
+		box-sizing: border-box;
+		position: relative;
+
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.MyTabsList {
+		box-sizing: border-box;
+		position: relative;
+
+		display: flex;
+		gap: 4px;
+	}
+
+	.MyTabsTab {
+		box-sizing: border-box;
+		position: relative;
+
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+
+		height: 36px;
+		padding: 8px 10px;
+		border-radius: 6px;
+		border: 2px solid transparent;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1;
+
+		background: transparent;
+		color: var(--color-fg-06);
+
+		cursor: pointer;
+		user-select: none;
+		outline: none;
+
+		transition:
+			background-color 0.15s ease,
+			color 0.15s ease;
+
+		&:hover {
+			background: var(--color-base-alt-1-07);
+			color: var(--color-fg-08);
+		}
+
+		&:focus-visible,
+		&[data-focus-visible] {
+			border-color: var(--color-fg-12);
+		}
+
+		&:active,
+		&[aria-selected="true"] {
+			background: var(--color-base-alt-1-07);
+			color: var(--color-fg-10);
+		}
+
+		&[aria-selected="true"] {
+			cursor: default;
+		}
+
+		&[aria-disabled="true"] {
+			cursor: default;
+		}
+	}
+}

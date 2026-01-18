@@ -31,6 +31,7 @@ import { cn, type AppElementId } from "@/lib/utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
+import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -47,6 +48,7 @@ import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import type { ExtractStrict } from "type-fest";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
+import type { AppDomId } from "../../../lib/app-dom-id.ts";
 
 type SyncStatus = YjsSyncStatus;
 
@@ -376,6 +378,72 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 }
 // #endregion Bubble
 
+// #region Sidebar
+export type PageEditorRichTextSidebar_ClassNames =
+	| "PageEditorRichTextSidebar"
+	| "PageEditorRichTextSidebar-background"
+	| "PageEditorRichTextSidebar-toolbar"
+	| "PageEditorRichTextSidebar-toolbar-scrollable-area"
+	| "PageEditorRichTextSidebar-tabs-list"
+	| "PageEditorRichTextSidebar-tabs-panels"
+	| "PageEditorRichTextSidebar-panel"
+	| "PageEditorRichTextSidebar-agent";
+
+export type PageEditorRichTextSidebar_Props = {
+	editor: Editor;
+	threadsQuery: ReturnType<
+		typeof useStableQuery<typeof app_convex_api.human_thread_messages.human_thread_messages_threads_list>
+	>;
+};
+
+function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
+	const { editor, threadsQuery } = props;
+
+	return (
+		<>
+			<div className={cn("PageEditorRichTextSidebar-background" satisfies PageEditorRichTextSidebar_ClassNames)}></div>
+			<MyTabs defaultSelectedId={"app-page-editor-rich-text-sidebar-tabs-comments" satisfies AppDomId}>
+				<div className={cn("PageEditorRichTextSidebar-toolbar" satisfies PageEditorRichTextSidebar_ClassNames)}>
+					<div
+						className={cn(
+							"PageEditorRichTextSidebar-toolbar-scrollable-area" satisfies PageEditorRichTextSidebar_ClassNames,
+						)}
+					>
+						<MyTabsList
+							className={cn("PageEditorRichTextSidebar-tabs-list" satisfies PageEditorRichTextSidebar_ClassNames)}
+							aria-label="Sidebar tabs"
+						>
+							<MyTabsTab id={"app-page-editor-rich-text-sidebar-tabs-comments" satisfies AppDomId}>Comments</MyTabsTab>
+							<MyTabsTab id={"app-page-editor-rich-text-sidebar-tabs-agent" satisfies AppDomId}>Agent</MyTabsTab>
+						</MyTabsList>
+					</div>
+				</div>
+				<MyTabsPanels
+					className={cn("PageEditorRichTextSidebar-tabs-panels" satisfies PageEditorRichTextSidebar_ClassNames)}
+				>
+					<MyTabsPanel
+						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
+						tabId={"app-page-editor-rich-text-sidebar-tabs-comments" satisfies AppDomId}
+					>
+						{editor && threadsQuery && (
+							<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
+						)}
+					</MyTabsPanel>
+					<MyTabsPanel
+						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
+						tabId={"app-page-editor-rich-text-sidebar-tabs-agent" satisfies AppDomId}
+					>
+						<div className={cn("PageEditorRichTextSidebar-agent" satisfies PageEditorRichTextSidebar_ClassNames)}>
+							Agent tools will appear here.
+						</div>
+					</MyTabsPanel>
+				</MyTabsPanels>
+			</MyTabs>
+		</>
+	);
+}
+// #endregion Sidebar
+
 // #region Root
 export type PageEditorRichText_ClassNames =
 	| "PageEditorRichText"
@@ -388,8 +456,6 @@ export type PageEditorRichText_ClassNames =
 	| "PageEditorRichText-editor-content"
 	| "PageEditorRichText-panel-resize-handle-container"
 	| "PageEditorRichText-panel-resize-handle"
-	| "PageEditorRichText-comments-panel"
-	| "PageEditorRichText-comments-panel-background"
 	| "PageEditorRichText-status-badge"
 	| "PageEditorRichText-word-count-badge"
 	| "PageEditorRichText-word-count-badge-hidden";
@@ -517,31 +583,35 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 			>
 				{headerSlot}
 
-				{editor && (
-					<PageEditorRichTextToolbar
-						editor={editor}
-						charsCount={charsCount}
-						syncStatus={pagesYjs.syncStatus}
-						syncChanged={pagesYjs.syncChanged}
-						pageId={pageId}
-						sessionId={presenceStore.localSessionId}
-					/>
-				)}
-
 				<div className={cn("PageEditorRichText-editor-area" satisfies PageEditorRichText_ClassNames)}>
 					<PanelGroup
 						direction="horizontal"
 						className={cn("PageEditorRichText-editor-panels-group" satisfies PageEditorRichText_ClassNames)}
 						style={{
 							height: "max-content",
-							overflow: "initial",
+							/** required for sticky descendants to work */
+							overflow: "visible",
 						}}
 					>
 						<Panel
 							className={cn("PageEditorRichText-editor-content-panel" satisfies PageEditorRichText_ClassNames)}
 							collapsible={false}
 							defaultSize={75}
+							style={{
+								/** required for sticky descendants to work */
+								overflow: "visible",
+							}}
 						>
+							{editor && (
+								<PageEditorRichTextToolbar
+									editor={editor}
+									charsCount={charsCount}
+									syncStatus={pagesYjs.syncStatus}
+									syncChanged={pagesYjs.syncChanged}
+									pageId={pageId}
+									sessionId={presenceStore.localSessionId}
+								/>
+							)}
 							<EditorContent
 								className={cn("PageEditorRichText-editor-content-root" satisfies PageEditorRichText_ClassNames)}
 								injectCSS={false}
@@ -586,19 +656,14 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 							/>
 						</div>
 						<Panel
-							className={cn("PageEditorRichText-comments-panel" satisfies PageEditorRichText_ClassNames)}
+							className={cn("PageEditorRichTextSidebar" satisfies PageEditorRichTextSidebar_ClassNames)}
 							collapsible={false}
 							defaultSize={25}
 							style={{
 								overflow: "initial",
 							}}
 						>
-							<div
-								className={cn("PageEditorRichText-comments-panel-background" satisfies PageEditorRichText_ClassNames)}
-							></div>
-							{editor && threadsQuery && (
-								<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
-							)}
+							{editor && threadsQuery && <PageEditorRichTextSidebar editor={editor} threadsQuery={threadsQuery} />}
 						</Panel>
 					</PanelGroup>
 				</div>
