@@ -58,7 +58,7 @@ test("Can infer data by discriminating on message", () => {
 	const result = doSomethingNay(2);
 	if (result._nay) {
 		if (result._nay.message === "failure with data") {
-			expectTypeOf(result._nay.data).toEqualTypeOf({ foo: "bar" });
+			expectTypeOf(result._nay.data).toEqualTypeOf<{ foo: "bar" }>();
 		} else {
 			expectTypeOf(result._nay.data).toBeNever();
 		}

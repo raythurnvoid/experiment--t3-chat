@@ -94,8 +94,23 @@ function UserProfileButton() {
 		return null;
 	}
 
-	const display_name = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.username || "User";
-	const email_address = user.primaryEmailAddress?.emailAddress || "";
+	const displayName = ((/* iife */) => {
+		const firstName = user.firstName ? user.firstName : "";
+		const lastName = user.lastName ? user.lastName : "";
+		const fullName = `${firstName} ${lastName}`.trim();
+
+		if (fullName !== "") {
+			return fullName;
+		}
+
+		if (user.username) {
+			return user.username;
+		}
+
+		return "User";
+	})();
+
+	const emailAddress = user.primaryEmailAddress?.emailAddress ? user.primaryEmailAddress.emailAddress : "";
 
 	const handleCustomButtonClick = () => {
 		// Trigger the hidden UserButton
@@ -118,7 +133,7 @@ function UserProfileButton() {
 				<div className={cn("main-app-sidebar-user-profile-avatar", "flex-shrink-0")}>
 					<img
 						src={user.imageUrl}
-						alt={display_name}
+						alt={displayName}
 						className={cn("main-app-sidebar-user-profile-avatar-image", "h-8 w-8 rounded-full")}
 					/>
 				</div>
@@ -129,16 +144,16 @@ function UserProfileButton() {
 							"w-full truncate text-left text-sm font-medium text-sidebar-foreground",
 						)}
 					>
-						{display_name}
+						{displayName}
 					</span>
-					{email_address && (
+					{emailAddress && (
 						<span
 							className={cn(
 								"main-app-sidebar-user-profile-email",
 								"w-full truncate text-left text-xs text-sidebar-foreground/70",
 							)}
 						>
-							{email_address}
+							{emailAddress}
 						</span>
 					)}
 				</div>

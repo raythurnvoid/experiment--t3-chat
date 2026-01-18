@@ -124,7 +124,7 @@ describe("Result", () => {
 		}
 
 		const successResult = Result({ _yay: "it worked" });
-		const failureResult = Result({ _nay: { message: "it failed" } });
+		const failureResult = Result({ _nay: { name: "nay", message: "it failed" } });
 
 		expect(processResult(successResult)).toBe("Success: it worked");
 		expect(processResult(failureResult)).toBe("Error: it failed");

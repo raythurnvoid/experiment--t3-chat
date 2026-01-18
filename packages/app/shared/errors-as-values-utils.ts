@@ -1,4 +1,4 @@
-import type { IsAny, LiteralUnion } from "type-fest";
+import type { IsAny, LiteralUnion, Writable } from "type-fest";
 
 /**
  * By default when calling `AbortController.abort` the reason is an instance of `DOMException` with a name `AbortError`.
@@ -283,9 +283,8 @@ export type Result<
 							// @ts-expect-error
 							cause: T["_nay"]["cause"];
 							// @ts-expect-error
-							data: T["_nay"]["data"];
-							// @ts-expect-error
-							stack: T["_nay"]["stack"];
+							data: Writable<T["_nay"]["data"]>;
+							stack?: string;
 						};
 			_yay?: undefined;
 		};

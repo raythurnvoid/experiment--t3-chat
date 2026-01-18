@@ -10,7 +10,7 @@ import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { useConvexAuth, useMutation } from "convex/react";
+import { useMutation } from "convex/react";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { useStableQuery } from "../../hooks/convex-hooks.ts";
@@ -94,7 +94,7 @@ function RoutePages() {
 	}, [searchParams.pageId]);
 
 	// Navigation function to update URL with selected page
-	const navigateToPage = (pageId: string | null) => {
+	const navigateToPage = (pageId?: string) => {
 		navigate({
 			to: "/pages",
 			search: { pageId },
@@ -104,7 +104,7 @@ function RoutePages() {
 	const handleArchive = (itemId: string) => {
 		// When a page is archived, clear selection if it was the selected one
 		if (effectivePageId === itemId) {
-			navigateToPage(null);
+			navigateToPage();
 		}
 	};
 

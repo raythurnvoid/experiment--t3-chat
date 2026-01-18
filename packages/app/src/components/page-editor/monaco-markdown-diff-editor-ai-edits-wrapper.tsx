@@ -53,6 +53,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 	return (
 		<div id={id} className={cn("MonacoMarkdownDiffEditorAiEditsWrapper h-full w-full", className)}>
 			{initialModified.current && (
+				// @ts-expect-error
 				<PageEditorDiff
 					ref={diffEditorRef}
 					className={className}

@@ -103,13 +103,6 @@ export const test_mocks = {
 					min: 1,
 					max: 3,
 				}),
-				text_content: faker.lorem.paragraphs(
-					{
-						min: 1,
-						max: 3,
-					},
-					"\n\n",
-				),
 				version: pages_FIRST_VERSION,
 				is_archived: false,
 			});
@@ -125,6 +118,7 @@ export const test_mocks_fill_db_with = {
 	nested_pages: async (ctx: MutationCtx) => {
 		/** /root_1 */
 		const page_root_1 = await ctx.db.get(
+			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1.page_id,
@@ -136,6 +130,7 @@ export const test_mocks_fill_db_with = {
 
 		/** /root_1/child_1 */
 		const page_root_1_child_1 = await ctx.db.get(
+			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1_child_1.page_id,
@@ -147,6 +142,7 @@ export const test_mocks_fill_db_with = {
 
 		/** /root_1/child_1/deep_1 */
 		const page_root_1_child_1_deep_1 = await ctx.db.get(
+			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.page_id,
@@ -158,6 +154,7 @@ export const test_mocks_fill_db_with = {
 
 		/** /root_1/child_2 */
 		const page_root_1_child_2 = await ctx.db.get(
+			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_1_child_2.page_id,
@@ -169,6 +166,7 @@ export const test_mocks_fill_db_with = {
 
 		/** /root_2 */
 		const page_root_2 = await ctx.db.get(
+			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
 				page_id: test_mocks_hardcoded.page.page_root_2.page_id,

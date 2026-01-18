@@ -14,6 +14,7 @@ export function useStableQuery<Query extends FunctionReference<"query">>(
 	query: Query,
 	...queryArgs: OptionalRestArgsOrSkip<Query>
 ) {
+	// eslint-disable-next-line react-hooks/todo
 	const result = useQuery(query, ...queryArgs);
 	const stored = useRef(result);
 
@@ -53,11 +54,10 @@ export function useSingleFlight<F extends (...args: any[]) => Promise<any>>(fn: 
 			flightStatus.current.inFlight = true;
 			const firstReq = fn(...args) as ReturnType<F>;
 			void (async () => {
-				try {
-					await firstReq;
-				} finally {
+				await firstReq.finally(() => {
 					// continue
-				}
+				});
+
 				while (flightStatus.current.upNext) {
 					const cur = flightStatus.current.upNext;
 					flightStatus.current.upNext = null;

@@ -116,7 +116,7 @@ export const useBackendRuntime = () => {
 
 						threadId,
 						parentId: remoteParentId,
-					} satisfies api_schemas_Main["/api/chat"]["get"]["body"],
+					} satisfies api_schemas_Main["/api/chat"]["POST"]["body"],
 					credentials: "omit",
 					headers,
 				};
