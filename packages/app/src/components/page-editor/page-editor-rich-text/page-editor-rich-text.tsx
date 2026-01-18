@@ -402,7 +402,7 @@ function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
 	return (
 		<>
 			<div className={cn("PageEditorRichTextSidebar-background" satisfies PageEditorRichTextSidebar_ClassNames)}></div>
-			<MyTabs defaultSelectedId={"app-page-editor-rich-text-sidebar-tabs-comments" satisfies AppDomId}>
+			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>
 				<div className={cn("PageEditorRichTextSidebar-toolbar" satisfies PageEditorRichTextSidebar_ClassNames)}>
 					<div
 						className={cn(
@@ -413,8 +413,8 @@ function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
 							className={cn("PageEditorRichTextSidebar-tabs-list" satisfies PageEditorRichTextSidebar_ClassNames)}
 							aria-label="Sidebar tabs"
 						>
-							<MyTabsTab id={"app-page-editor-rich-text-sidebar-tabs-comments" satisfies AppDomId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app-page-editor-rich-text-sidebar-tabs-agent" satisfies AppDomId}>Agent</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>Comments</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}>Agent</MyTabsTab>
 						</MyTabsList>
 					</div>
 				</div>
@@ -423,7 +423,7 @@ function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
 				>
 					<MyTabsPanel
 						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
-						tabId={"app-page-editor-rich-text-sidebar-tabs-comments" satisfies AppDomId}
+						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}
 					>
 						{editor && threadsQuery && (
 							<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
@@ -431,7 +431,7 @@ function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
-						tabId={"app-page-editor-rich-text-sidebar-tabs-agent" satisfies AppDomId}
+						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}
 					>
 						<div className={cn("PageEditorRichTextSidebar-agent" satisfies PageEditorRichTextSidebar_ClassNames)}>
 							Agent tools will appear here.

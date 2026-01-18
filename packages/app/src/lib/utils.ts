@@ -2,6 +2,7 @@ import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
 import type { KeysOfUnion, Primitive } from "type-fest";
+import type { AppDomId } from "./app-dom-id.ts";
 
 export * from "../../shared/shared-utils.ts";
 
@@ -284,4 +285,4 @@ export class XCustomEvent<T extends { [key: string]: any }> extends Event {
 	}
 }
 
-export type AppElementId = "root" | "app_tiptap_hoisting_container" | "app_monaco_hoisting_container";
+export type AppElementId = AppDomId;

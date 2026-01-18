@@ -32,6 +32,8 @@ import {
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
+import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
+import type { AppDomId } from "@/lib/app-dom-id.ts";
 
 // #region toolbar
 export type PageEditorDiffToolbar_ClassNames =
@@ -166,6 +168,63 @@ function PageEditorDiffToolbar(props: PageEditorDiffToolbar_Props) {
 	);
 }
 // #endregion toolbar
+
+// #region sidebar
+export type PageEditorDiffSidebar_ClassNames =
+	| "PageEditorDiffSidebar"
+	| "PageEditorDiffSidebar-background"
+	| "PageEditorDiffSidebar-toolbar"
+	| "PageEditorDiffSidebar-toolbar-scrollable-area"
+	| "PageEditorDiffSidebar-tabs-list"
+	| "PageEditorDiffSidebar-tabs-panels"
+	| "PageEditorDiffSidebar-panel"
+	| "PageEditorDiffSidebar-agent";
+
+export type PageEditorDiffSidebar_Props = {
+	threadIds: string[];
+};
+
+function PageEditorDiffSidebar(props: PageEditorDiffSidebar_Props) {
+	const { threadIds } = props;
+
+	return (
+		<>
+			<div className={cn("PageEditorDiffSidebar-background" satisfies PageEditorDiffSidebar_ClassNames)}></div>
+			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>
+				<div className={cn("PageEditorDiffSidebar-toolbar" satisfies PageEditorDiffSidebar_ClassNames)}>
+					<div
+						className={cn("PageEditorDiffSidebar-toolbar-scrollable-area" satisfies PageEditorDiffSidebar_ClassNames)}
+					>
+						<MyTabsList
+							className={cn("PageEditorDiffSidebar-tabs-list" satisfies PageEditorDiffSidebar_ClassNames)}
+							aria-label="Sidebar tabs"
+						>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>Comments</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}>Agent</MyTabsTab>
+						</MyTabsList>
+					</div>
+				</div>
+				<MyTabsPanels className={cn("PageEditorDiffSidebar-tabs-panels" satisfies PageEditorDiffSidebar_ClassNames)}>
+					<MyTabsPanel
+						className={cn("PageEditorDiffSidebar-panel" satisfies PageEditorDiffSidebar_ClassNames)}
+						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}
+					>
+						<PageEditorCommentsSidebar threadIds={threadIds} />
+					</MyTabsPanel>
+					<MyTabsPanel
+						className={cn("PageEditorDiffSidebar-panel" satisfies PageEditorDiffSidebar_ClassNames)}
+						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}
+					>
+						<div className={cn("PageEditorDiffSidebar-agent" satisfies PageEditorDiffSidebar_ClassNames)}>
+							Agent tools will appear here.
+						</div>
+					</MyTabsPanel>
+				</MyTabsPanels>
+			</MyTabs>
+		</>
+	);
+}
+// #endregion sidebar
 
 // #region PageEditorDiffWidgetAcceptDiscard
 export type PageEditorDiffWidgetAcceptDiscard_ClassNames =
@@ -371,7 +430,6 @@ type PageEditorDiff_ClassNames =
 	| "PageEditorDiff-editor-panel"
 	| "PageEditorDiff-panel-resize-handle-container"
 	| "PageEditorDiff-panel-resize-handle"
-	| "PageEditorDiff-comments-panel"
 	| "PageEditorDiff-anchor";
 
 type PageEditorDiff_CssVars = {
@@ -1067,25 +1125,24 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		>
 			{headerSlot}
 
-			<PageEditorDiffToolbar
-				isSaveDisabled={isSaveDisabled}
-				isSyncDisabled={isSyncDisabled}
-				isAcceptAllDisabled={isAcceptAllDisabled}
-				isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
-				isDiscardAllDisabled={isDiscardAllDisabled}
-				pageId={pageId}
-				sessionId={presenceStore.localSessionId}
-				getCurrentMarkdown={getCurrentMarkdown}
-				onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
-				onClickSave={handleClickSave}
-				onClickSync={handleClickSync}
-				onClickAcceptAll={handleClickAcceptAll}
-				onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
-				onClickDiscardAll={handleClickDiscardAll}
-			/>
-
 			<PanelGroup direction="horizontal" className={"PageEditorDiff-panels-group" satisfies PageEditorDiff_ClassNames}>
 				<Panel defaultSize={75} className={"PageEditorDiff-editor-panel" satisfies PageEditorDiff_ClassNames}>
+					<PageEditorDiffToolbar
+						isSaveDisabled={isSaveDisabled}
+						isSyncDisabled={isSyncDisabled}
+						isAcceptAllDisabled={isAcceptAllDisabled}
+						isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
+						isDiscardAllDisabled={isDiscardAllDisabled}
+						pageId={pageId}
+						sessionId={presenceStore.localSessionId}
+						getCurrentMarkdown={getCurrentMarkdown}
+						onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
+						onClickSave={handleClickSave}
+						onClickSync={handleClickSync}
+						onClickAcceptAll={handleClickAcceptAll}
+						onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
+						onClickDiscardAll={handleClickDiscardAll}
+					/>
 					<div className={"PageEditorDiff-editor" satisfies PageEditorDiff_ClassNames}>
 						<DiffEditor
 							height="100%"
@@ -1122,8 +1179,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 				<div className={"PageEditorDiff-panel-resize-handle-container" satisfies PageEditorDiff_ClassNames}>
 					<PanelResizeHandle className={"PageEditorDiff-panel-resize-handle" satisfies PageEditorDiff_ClassNames} />
 				</div>
-				<Panel defaultSize={25} className={"PageEditorDiff-comments-panel" satisfies PageEditorDiff_ClassNames}>
-					<PageEditorCommentsSidebar threadIds={commentThreadIds} />
+				<Panel defaultSize={25} className={cn("PageEditorDiffSidebar" satisfies PageEditorDiffSidebar_ClassNames)}>
+					<PageEditorDiffSidebar threadIds={commentThreadIds} />
 				</Panel>
 			</PanelGroup>
 

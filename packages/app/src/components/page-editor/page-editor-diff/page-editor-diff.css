@@ -1,4 +1,5 @@
 @layer components {
+	/* #region root */
 	:where(.PageEditorDiff) {
 		display: flex;
 		flex-direction: column;
@@ -6,6 +7,7 @@
 		height: 100%;
 		min-height: 0;
 
+		/* #region toolbar */
 		/* Matches PageEditorPlainText behavior so the Monaco container can shrink/grow correctly */
 		:where(.PageEditorDiffToolbar) {
 			height: 44px;
@@ -76,14 +78,18 @@
 			width: 20px;
 			height: 20px;
 		}
+		/* #endregion toolbar */
 
+		/* #region editor */
 		:where(.PageEditorDiff-editor) {
 			height: 100%;
 			min-height: 0;
 			contain: strict;
 			anchor-name: var(--PageEditorDiff-anchor-name);
 		}
+		/* #endregion editor */
 
+		/* #region panels */
 		:where(.PageEditorDiff-panels-group) {
 			flex: 1;
 			min-height: 0;
@@ -91,8 +97,14 @@
 
 		:where(.PageEditorDiff-editor-panel) {
 			min-width: 0;
-		}
+			min-height: 0;
 
+			display: flex;
+			flex-direction: column;
+		}
+		/* #endregion panels */
+
+		/* #region resize handle */
 		:where(.PageEditorDiff-panel-resize-handle-container) {
 			/*
 			The container makes sure that the even though the handle
@@ -100,6 +112,11 @@
 			scrollable area size.
 			*/
 			contain: layout style size;
+			width: 0;
+			z-index: 2;
+
+			display: flex;
+			justify-content: center;
 		}
 
 		:where(.PageEditorDiff-panel-resize-handle) {
@@ -109,59 +126,132 @@
 			we set an arbitrarily large height to handle.
 			*/
 			height: 9999px;
+			width: 24px;
 
+			display: flex;
+			justify-content: center;
+
+			position: absolute;
+
+			/* Set a container to support position absolute children */
 			contain: layout style;
+			touch-action: none;
 
-			&::after {
-				content: "";
+			background-color: transparent;
 
-				position: absolute;
-				inset: 0;
-				background-color: inherit;
+			&[data-resize-handle-state="drag"] {
+				background-color: var(--color-base-alt-2-10);
+			}
+
+			&[data-resize-handle-state="hover"] {
+				background-color: var(--color-base-alt-1-07);
 			}
 
 			&::before {
 				content: "";
 				position: absolute;
-				inset: 0;
+				height: 100%;
+
+				width: 2px;
 			}
 
-			&[data-resize-handle-state="drag"] {
-				&::after {
-					background-color: var(--color-base-alt-2-10);
-				}
-
-				&::before {
-					display: flex;
-					background-color: var(--color-base-alt-2-10);
-
-					left: -2px;
-					right: -2px;
-				}
-			}
-
-			&[data-resize-handle-state="hover"] {
-				&::before {
-					display: flex;
-					background-color: var(--color-base-alt-1-05);
-
-					left: -6px;
-					right: -6px;
-				}
+			&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+				background-color: var(--color-base-alt-1-07);
 			}
 		}
+		/* #endregion resize handle */
 
-		:where(.PageEditorDiff-comments-panel) {
+		/* #region sidebar */
+		:where(.PageEditorDiffSidebar) {
+			display: flex;
+			flex-direction: column;
+		}
+
+		:where(.PageEditorDiffSidebar-toolbar) {
+			height: 44px;
+			background: var(--color-base-alt-1-05);
+
+			contain: inline-size layout style;
+
+			position: sticky;
+			top: 0;
+			z-index: 1;
+		}
+
+		:where(.PageEditorDiffSidebar-toolbar-scrollable-area) {
+			min-height: 44px;
+			max-height: calc(44px + var(--app-scrollbar-w));
+
+			display: flex;
+			flex-direction: row;
+			align-items: center;
+			gap: 4px;
+
+			padding: 4px 16px;
+
+			overflow: auto hidden;
+			contain: content;
+
 			min-width: 0;
-			background-color: var(--color-base-1-02);
 		}
 
+		:where(.PageEditorDiffSidebar-tabs-list) {
+			width: 500px;
+		}
+
+		:where(.PageEditorDiffSidebar-tabs-panels) {
+			flex: 1;
+		}
+
+		:where(.PageEditorDiffSidebar-panel) {
+			padding: 16px;
+		}
+
+		:where(.PageEditorDiffSidebar-agent) {
+			color: var(--color-fg-07);
+		}
+
+		:where(.PageEditorDiffSidebar-background) {
+			/*
+			Set a container to support position absolute and
+			ensure that the arbitrarily large height of the background
+			does not affect the ancestor's scrollable area size.
+			*/
+			contain: layout style size;
+			z-index: -1;
+
+			&:before {
+				content: "";
+				display: block;
+				position: absolute;
+
+				/*
+				Negative inset matches the padding of the container while
+				allows the element to grow vertically.
+				*/
+				inset: 0 0 auto 0;
+
+				background-color: var(--color-base-1-04);
+				pointer-events: none;
+
+				/*
+				Arbitrarily large height to ensure the background 
+				spans across the whole page height.
+				*/
+				height: 9999px;
+			}
+		}
+		/* #endregion sidebar */
+
+		/* #region monaco internals */
 		:where(.PageEditorDiff-editor) :where(.monaco-editor),
 		:where(.PageEditorDiff-editor) :where(.monaco-diff-editor),
 		:where(.PageEditorDiff-editor) :where(.monaco-editor-container) {
 			height: 100%;
 		}
+		/* #endregion monaco internals */
 
+		/* #region comments sidebar (shared) */
 		:where(.PageEditorPlainTextCommentsSidebar) {
 			box-sizing: border-box;
 			height: 100%;
@@ -207,8 +297,11 @@
 			color: var(--color-fg-07);
 			height: 49px;
 		}
+		/* #endregion comments sidebar (shared) */
 	}
+	/* #endregion root */
 
+	/* #region widgets */
 	/* Page Editor Diff Widget Accept Discard - Widget container */
 	.PageEditorDiffWidgetAcceptDiscard {
 		position: absolute;
@@ -295,4 +388,5 @@
 
 		pointer-events: none;
 	}
+	/* #endregion widgets */
 }

@@ -29,6 +29,8 @@ import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
+import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
+import type { AppDomId } from "@/lib/app-dom-id.ts";
 
 // #region toolbar
 export type PageEditorPlainTextToolbar_ClassNames =
@@ -116,6 +118,69 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 }
 // #endregion toolbar
 
+// #region sidebar
+export type PageEditorPlainTextSidebar_ClassNames =
+	| "PageEditorPlainTextSidebar"
+	| "PageEditorPlainTextSidebar-background"
+	| "PageEditorPlainTextSidebar-toolbar"
+	| "PageEditorPlainTextSidebar-toolbar-scrollable-area"
+	| "PageEditorPlainTextSidebar-tabs-list"
+	| "PageEditorPlainTextSidebar-tabs-panels"
+	| "PageEditorPlainTextSidebar-panel"
+	| "PageEditorPlainTextSidebar-agent";
+
+export type PageEditorPlainTextSidebar_Props = {
+	threadIds: string[];
+};
+
+function PageEditorPlainTextSidebar(props: PageEditorPlainTextSidebar_Props) {
+	const { threadIds } = props;
+
+	return (
+		<>
+			<div
+				className={cn("PageEditorPlainTextSidebar-background" satisfies PageEditorPlainTextSidebar_ClassNames)}
+			></div>
+			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>
+				<div className={cn("PageEditorPlainTextSidebar-toolbar" satisfies PageEditorPlainTextSidebar_ClassNames)}>
+					<div
+						className={cn(
+							"PageEditorPlainTextSidebar-toolbar-scrollable-area" satisfies PageEditorPlainTextSidebar_ClassNames,
+						)}
+					>
+						<MyTabsList
+							className={cn("PageEditorPlainTextSidebar-tabs-list" satisfies PageEditorPlainTextSidebar_ClassNames)}
+							aria-label="Sidebar tabs"
+						>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>Comments</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}>Agent</MyTabsTab>
+						</MyTabsList>
+					</div>
+				</div>
+				<MyTabsPanels
+					className={cn("PageEditorPlainTextSidebar-tabs-panels" satisfies PageEditorPlainTextSidebar_ClassNames)}
+				>
+					<MyTabsPanel
+						className={cn("PageEditorPlainTextSidebar-panel" satisfies PageEditorPlainTextSidebar_ClassNames)}
+						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}
+					>
+						<PageEditorCommentsSidebar threadIds={threadIds} />
+					</MyTabsPanel>
+					<MyTabsPanel
+						className={cn("PageEditorPlainTextSidebar-panel" satisfies PageEditorPlainTextSidebar_ClassNames)}
+						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}
+					>
+						<div className={cn("PageEditorPlainTextSidebar-agent" satisfies PageEditorPlainTextSidebar_ClassNames)}>
+							Agent tools will appear here.
+						</div>
+					</MyTabsPanel>
+				</MyTabsPanels>
+			</MyTabs>
+		</>
+	);
+}
+// #endregion sidebar
+
 // #region root
 type PageEditorPlainText_ClassNames =
 	| "PageEditorPlainText"
@@ -123,8 +188,7 @@ type PageEditorPlainText_ClassNames =
 	| "PageEditorPlainText-panels-group"
 	| "PageEditorPlainText-editor-panel"
 	| "PageEditorPlainText-panel-resize-handle-container"
-	| "PageEditorPlainText-panel-resize-handle"
-	| "PageEditorPlainText-comments-panel";
+	| "PageEditorPlainText-panel-resize-handle";
 
 type PageEditorPlainText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
@@ -472,23 +536,22 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		<div className={"PageEditorPlainText" satisfies PageEditorPlainText_ClassNames}>
 			{headerSlot}
 
-			<PageEditorPlainTextToolbar
-				isSaveDisabled={isSaveDisabled}
-				isSyncDisabled={isSyncDisabled}
-				isSaveDebouncing={isSaveDebouncing}
-				pageId={pageId}
-				sessionId={presenceStore.localSessionId}
-				getCurrentMarkdown={getCurrentMarkdown}
-				onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
-				onClickSave={handleClickSave}
-				onClickSync={handleClickSync}
-			/>
-
 			<PanelGroup
 				direction="horizontal"
 				className={"PageEditorPlainText-panels-group" satisfies PageEditorPlainText_ClassNames}
 			>
 				<Panel defaultSize={75} className={"PageEditorPlainText-editor-panel" satisfies PageEditorPlainText_ClassNames}>
+					<PageEditorPlainTextToolbar
+						isSaveDisabled={isSaveDisabled}
+						isSyncDisabled={isSyncDisabled}
+						isSaveDebouncing={isSaveDebouncing}
+						pageId={pageId}
+						sessionId={presenceStore.localSessionId}
+						getCurrentMarkdown={getCurrentMarkdown}
+						onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
+						onClickSave={handleClickSave}
+						onClickSync={handleClickSync}
+					/>
 					<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
 						{hoistingContainer && (
 							<Editor
@@ -514,9 +577,9 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				</div>
 				<Panel
 					defaultSize={25}
-					className={"PageEditorPlainText-comments-panel" satisfies PageEditorPlainText_ClassNames}
+					className={cn("PageEditorPlainTextSidebar" satisfies PageEditorPlainTextSidebar_ClassNames)}
 				>
-					<PageEditorCommentsSidebar threadIds={commentThreadIds} />
+					<PageEditorPlainTextSidebar threadIds={commentThreadIds} />
 				</Panel>
 			</PanelGroup>
 		</div>
