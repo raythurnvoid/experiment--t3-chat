@@ -38,9 +38,10 @@ This is a monorepo project with the following essential structure that you must 
   - [shared/](packages/app/shared) - Shared code between frontend and backend
   - [vendor/assistant-ui/](packages/app/vendor/assistant-ui) - Assistant UI submodule (full repo for reference)
   - [vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
-  - [vendor/ai/](packages/app/vendor/ai) - AI SDK submodule (full repo for reference)
   - [vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
   - [vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
+
+- [references-submodules/](references-submodules) - Reference-only git submodules (docs + source scraping)
 
 - [+personal/](+personal) - DOCUMENTATION & RESEARCH FOLDER
   - [+personal/+ai/](+personal/+ai) - Only writable subfolder for AI-generated content
@@ -78,14 +79,14 @@ This is a monorepo project with the following essential structure that you must 
     - [examples/](packages/app/vendor/liveblocks/examples)
     - [starter-kits/](packages/app/vendor/liveblocks/starter-kits)
 
-- [packages/app/vendor/ai/](packages/app/vendor/ai) - AI SDK repository
+- [references-submodules/ai/](references-submodules/ai) - AI SDK repository
 
   - Importing: Use standard node_modules imports in the app, submodule is for reference
   - Documentation folders:
-    - [content/docs/](packages/app/vendor/ai/content/docs)
-    - [content/providers/](packages/app/vendor/ai/content/providers)
+    - [content/docs/](references-submodules/ai/content/docs)
+    - [content/providers/](references-submodules/ai/content/providers)
   - Examples folders:
-    - [examples/](packages/app/vendor/ai/examples)
+    - [examples/](references-submodules/ai/examples)
 
 - [packages/app/vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule
 
@@ -117,7 +118,7 @@ Documentation Sources
 
 - [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
 - You may assume `+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
-- Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [packages/app/vendor/ai/](packages/app/vendor/ai), [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
+- Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [references-submodules/ai/](references-submodules/ai), [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 
 Research Process

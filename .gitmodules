@@ -9,7 +9,7 @@
 	path = packages/app/vendor/opencode
 	url = https://github.com/sst/opencode
 [submodule "packages/app/ai"]
-	path = packages/app/vendor/ai
+	path = references-submodules/ai
 	url = https://github.com/vercel/ai.git
 [submodule "packages/app/vendor/presence"]
 	path = packages/app/vendor/presence
@@ -28,3 +28,6 @@
 [submodule "packages/app/vendor/tiptap"]
 	path = packages/app/vendor/tiptap
 	url = https://github.com/raythurnvoid/tiptap.git
+[submodule "references-submodules/ai"]
+	path = references-submodules/ai
+	url = ../../vercel/ai.git
