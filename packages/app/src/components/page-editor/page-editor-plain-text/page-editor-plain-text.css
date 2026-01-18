@@ -51,9 +51,6 @@
 		height: 100%;
 		flex: 1;
 		contain: strict;
-
-		/* Container fallback only; Monaco theme controls internal colors */
-		background-color: var(--color-base-1-03);
 	}
 	/* #endregion editor */
 

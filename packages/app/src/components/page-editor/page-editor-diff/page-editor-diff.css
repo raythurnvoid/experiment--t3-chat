@@ -1,305 +1,302 @@
 @layer components {
 	/* #region root */
-	:where(.PageEditorDiff) {
+	.PageEditorDiff {
 		display: flex;
 		flex-direction: column;
 
 		height: 100%;
-		min-height: 0;
-
-		/* #region toolbar */
-		/* Matches PageEditorPlainText behavior so the Monaco container can shrink/grow correctly */
-		:where(.PageEditorDiffToolbar) {
-			height: 44px;
-			background: var(--color-base-alt-1-05);
-
-			contain: inline-size layout style;
-
-			position: relative;
-			z-index: 1;
-		}
-
-		:where(.PageEditorDiffToolbar-scrollable-area) {
-			gap: 4px;
-
-			flex-direction: row;
-			align-items: center;
-			display: flex;
-
-			padding: 4px 8px;
-
-			overflow-x: auto;
-			overflow-y: hidden;
-			contain: content;
-
-			scrollbar-width: initial;
-
-			min-width: 0;
-		}
-
-		:where(.PageEditorDiffToolbar-button) {
-			gap: 4px;
-		}
-
-		:where(.PageEditorDiffToolbar-button-accept-all) {
-			&:not(:disabled) {
-				color: var(--color-green-11);
-
-				&:hover,
-				&:active {
-					color: var(--color-green-12);
-				}
-			}
-		}
-
-		:where(.PageEditorDiffToolbar-button-accept-all-and-save) {
-			&:not(:disabled) {
-				color: var(--color-green-10);
-
-				&:hover,
-				&:active {
-					color: var(--color-green-12);
-				}
-			}
-		}
-
-		:where(.PageEditorDiffToolbar-button-discard-all) {
-			&:not(:disabled) {
-				color: var(--color-red-10);
-
-				&:hover,
-				&:active {
-					color: var(--color-red-12);
-				}
-			}
-		}
-
-		:where(.PageEditorDiffToolbar-icon) {
-			width: 20px;
-			height: 20px;
-		}
-		/* #endregion toolbar */
-
-		/* #region editor */
-		:where(.PageEditorDiff-editor) {
-			height: 100%;
-			min-height: 0;
-			contain: strict;
-			anchor-name: var(--PageEditorDiff-anchor-name);
-		}
-		/* #endregion editor */
-
-		/* #region panels */
-		:where(.PageEditorDiff-panels-group) {
-			flex: 1;
-			min-height: 0;
-		}
-
-		:where(.PageEditorDiff-editor-panel) {
-			min-width: 0;
-			min-height: 0;
-
-			display: flex;
-			flex-direction: column;
-		}
-		/* #endregion panels */
-
-		/* #region resize handle */
-		:where(.PageEditorDiff-panel-resize-handle-container) {
-			/*
-			The container makes sure that the even though the handle
-			has an arbitrarily large height, it will not affect the ancestor's
-			scrollable area size.
-			*/
-			contain: layout style size;
-			width: 0;
-			z-index: 2;
-
-			display: flex;
-			justify-content: center;
-		}
-
-		:where(.PageEditorDiff-panel-resize-handle) {
-			/*
-			Since the container size depends exclusively on the content of the editor,
-			to ensure the handle spans across the whole page height,
-			we set an arbitrarily large height to handle.
-			*/
-			height: 9999px;
-			width: 24px;
-
-			display: flex;
-			justify-content: center;
-
-			position: absolute;
-
-			/* Set a container to support position absolute children */
-			contain: layout style;
-			touch-action: none;
-
-			background-color: transparent;
-
-			&[data-resize-handle-state="drag"] {
-				background-color: var(--color-base-alt-2-10);
-			}
-
-			&[data-resize-handle-state="hover"] {
-				background-color: var(--color-base-alt-1-07);
-			}
-
-			&::before {
-				content: "";
-				position: absolute;
-				height: 100%;
-
-				width: 2px;
-			}
-
-			&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
-				background-color: var(--color-base-alt-1-07);
-			}
-		}
-		/* #endregion resize handle */
-
-		/* #region sidebar */
-		:where(.PageEditorDiffSidebar) {
-			display: flex;
-			flex-direction: column;
-		}
-
-		:where(.PageEditorDiffSidebar-toolbar) {
-			height: 44px;
-			background: var(--color-base-alt-1-05);
-
-			contain: inline-size layout style;
-
-			position: sticky;
-			top: 0;
-			z-index: 1;
-		}
-
-		:where(.PageEditorDiffSidebar-toolbar-scrollable-area) {
-			min-height: 44px;
-			max-height: calc(44px + var(--app-scrollbar-w));
-
-			display: flex;
-			flex-direction: row;
-			align-items: center;
-			gap: 4px;
-
-			padding: 4px 16px;
-
-			overflow: auto hidden;
-			contain: content;
-
-			min-width: 0;
-		}
-
-		:where(.PageEditorDiffSidebar-tabs-list) {
-			width: 500px;
-		}
-
-		:where(.PageEditorDiffSidebar-tabs-panels) {
-			flex: 1;
-		}
-
-		:where(.PageEditorDiffSidebar-panel) {
-			padding: 16px;
-		}
-
-		:where(.PageEditorDiffSidebar-agent) {
-			color: var(--color-fg-07);
-		}
-
-		:where(.PageEditorDiffSidebar-background) {
-			/*
-			Set a container to support position absolute and
-			ensure that the arbitrarily large height of the background
-			does not affect the ancestor's scrollable area size.
-			*/
-			contain: layout style size;
-			z-index: -1;
-
-			&:before {
-				content: "";
-				display: block;
-				position: absolute;
-
-				/*
-				Negative inset matches the padding of the container while
-				allows the element to grow vertically.
-				*/
-				inset: 0 0 auto 0;
-
-				background-color: var(--color-base-1-04);
-				pointer-events: none;
-
-				/*
-				Arbitrarily large height to ensure the background 
-				spans across the whole page height.
-				*/
-				height: 9999px;
-			}
-		}
-		/* #endregion sidebar */
-
-		/* #region monaco internals */
-		:where(.PageEditorDiff-editor) :where(.monaco-editor),
-		:where(.PageEditorDiff-editor) :where(.monaco-diff-editor),
-		:where(.PageEditorDiff-editor) :where(.monaco-editor-container) {
-			height: 100%;
-		}
-		/* #endregion monaco internals */
-
-		/* #region comments sidebar (shared) */
-		:where(.PageEditorPlainTextCommentsSidebar) {
-			box-sizing: border-box;
-			height: 100%;
-
-			display: flex;
-			flex-direction: column;
-			gap: 12px;
-
-			padding: 12px;
-
-			overflow: auto;
-			contain: content;
-		}
-
-		:where(.PageEditorPlainTextCommentsSidebar-header) {
-			display: flex;
-			align-items: baseline;
-			justify-content: space-between;
-			gap: 8px;
-		}
-
-		:where(.PageEditorPlainTextCommentsSidebar-filter) {
-			display: flex;
-			flex-direction: column;
-			gap: 8px;
-		}
-
-		:where(.PageEditorPlainTextCommentsSidebar-filter-mode) {
-			display: flex;
-			gap: 4px;
-		}
-
-		:where(.PageEditorPlainTextCommentsSidebar-list) {
-			display: flex;
-			flex-direction: column;
-			gap: 12px;
-		}
-
-		:where(.PageEditorPlainTextCommentsSidebar-empty) {
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			color: var(--color-fg-07);
-			height: 49px;
-		}
-		/* #endregion comments sidebar (shared) */
 	}
 	/* #endregion root */
+
+	/* #region toolbar */
+	.PageEditorDiffToolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: relative;
+		z-index: 1;
+	}
+
+	.PageEditorDiffToolbar-scrollable-area {
+		gap: 4px;
+
+		flex-direction: row;
+		align-items: center;
+		display: flex;
+
+		padding: 4px 8px;
+
+		overflow-x: auto;
+		overflow-y: hidden;
+		contain: content;
+
+		scrollbar-width: initial;
+
+		min-width: 0;
+	}
+
+	.PageEditorDiffToolbar-button {
+		gap: 4px;
+	}
+
+	.PageEditorDiffToolbar-button-accept-all {
+		&:not(:disabled) {
+			color: var(--color-green-11);
+
+			&:hover,
+			&:active {
+				color: var(--color-green-12);
+			}
+		}
+	}
+
+	.PageEditorDiffToolbar-button-accept-all-and-save {
+		&:not(:disabled) {
+			color: var(--color-green-10);
+
+			&:hover,
+			&:active {
+				color: var(--color-green-12);
+			}
+		}
+	}
+
+	.PageEditorDiffToolbar-button-discard-all {
+		&:not(:disabled) {
+			color: var(--color-red-10);
+
+			&:hover,
+			&:active {
+				color: var(--color-red-12);
+			}
+		}
+	}
+
+	.PageEditorDiffToolbar-icon {
+		width: 20px;
+		height: 20px;
+	}
+	/* #endregion toolbar */
+
+	/* #region editor */
+	.PageEditorDiff-editor {
+		height: 100%;
+		flex: 1;
+		contain: strict;
+
+		anchor-name: var(--PageEditorDiff-anchor-name);
+	}
+
+	.PageEditorDiff-editor .monaco-editor,
+	.PageEditorDiff-editor .monaco-diff-editor,
+	.PageEditorDiff-editor .monaco-editor-container {
+		height: 100%;
+	}
+	/* #endregion editor */
+
+	/* #region panels */
+	.PageEditorDiff-panels-group {
+		flex: 1;
+		min-height: 0;
+	}
+
+	.PageEditorDiff-editor-panel {
+		min-width: 0;
+		min-height: 0;
+
+		display: flex;
+		flex-direction: column;
+	}
+	/* #endregion panels */
+
+	/* #region resize handle */
+	.PageEditorDiff-panel-resize-handle-container {
+		/*
+		The container makes sure that the even though the handle
+		has an arbitrarily large height, it will not affect the ancestor's
+		scrollable area size.
+		*/
+		contain: layout style size;
+		width: 0;
+		z-index: 2;
+
+		display: flex;
+		justify-content: center;
+	}
+
+	.PageEditorDiff-panel-resize-handle {
+		/*
+		Since the container size depends exclusively on the content of the editor,
+		to ensure the handle spans across the whole page height,
+		we set an arbitrarily large height to handle.
+		*/
+		height: 9999px;
+		width: 24px;
+
+		display: flex;
+		justify-content: center;
+
+		position: absolute;
+
+		/* Set a container to support position absolute children */
+		contain: layout style;
+		touch-action: none;
+
+		background-color: transparent;
+
+		&[data-resize-handle-state="drag"] {
+			background-color: var(--color-base-alt-2-10);
+		}
+
+		&[data-resize-handle-state="hover"] {
+			background-color: var(--color-base-alt-1-07);
+		}
+
+		&::before {
+			content: "";
+			position: absolute;
+			height: 100%;
+
+			width: 2px;
+		}
+
+		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+			background-color: var(--color-base-alt-1-07);
+		}
+	}
+	/* #endregion resize handle */
+
+	/* #region sidebar */
+	.PageEditorDiffSidebar {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.PageEditorDiffSidebar-toolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.PageEditorDiffSidebar-toolbar-scrollable-area {
+		min-height: 44px;
+		max-height: calc(44px + var(--app-scrollbar-w));
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 4px 16px;
+
+		overflow: auto hidden;
+		contain: content;
+
+		min-width: 0;
+	}
+
+	.PageEditorDiffSidebar-tabs-list {
+		width: 500px;
+	}
+
+	.PageEditorDiffSidebar-tabs-panels {
+		flex: 1;
+	}
+
+	.PageEditorDiffSidebar-panel {
+		padding: 16px;
+	}
+
+	.PageEditorDiffSidebar-agent {
+		color: var(--color-fg-07);
+	}
+
+	.PageEditorDiffSidebar-background {
+		/*
+		Set a container to support position absolute and
+		ensure that the arbitrarily large height of the background
+		does not affect the ancestor's scrollable area size.
+		*/
+		contain: layout style size;
+		z-index: -1;
+
+		&:before {
+			content: "";
+			display: block;
+			position: absolute;
+
+			/*
+			Negative inset matches the padding of the container while
+			allows the element to grow vertically.
+			*/
+			inset: 0 0 auto 0;
+
+			background-color: var(--color-base-1-04);
+			pointer-events: none;
+
+			/*
+			Arbitrarily large height to ensure the background 
+			spans across the whole page height.
+			*/
+			height: 9999px;
+		}
+	}
+	/* #endregion sidebar */
+
+	/* #region comments sidebar */
+	.PageEditorPlainTextCommentsSidebar {
+		box-sizing: border-box;
+		height: 100%;
+
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 12px;
+
+		overflow: auto;
+		contain: content;
+	}
+
+	.PageEditorPlainTextCommentsSidebar-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.PageEditorPlainTextCommentsSidebar-filter {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.PageEditorPlainTextCommentsSidebar-filter-mode {
+		display: flex;
+		gap: 4px;
+	}
+
+	.PageEditorPlainTextCommentsSidebar-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.PageEditorPlainTextCommentsSidebar-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+	/* #endregion comments sidebar */
 
 	/* #region widgets */
 	/* Page Editor Diff Widget Accept Discard - Widget container */
@@ -312,9 +309,9 @@
 		z-index: 10;
 
 		/*
-			Save monaco a bit of work by specifying a fixed size
-			so it doesn't have to measure the widget's size in the render path.
-			*/
+		Save monaco a bit of work by specifying a fixed size
+		so it doesn't have to measure the widget's size in the render path.
+		*/
 		width: 52px;
 		height: 24px;
 	}
