@@ -80,7 +80,7 @@ export function global_event_listen<K extends keyof GlobalEventHandlersEventMap>
 	window.addEventListener(event, handler, options);
 
 	return function cleanup() {
-		window.removeEventListener(event, handler);
+		window.removeEventListener(event, handler, options);
 	};
 }
 
@@ -95,7 +95,7 @@ export function global_event_listen_all<K extends keyof GlobalEventHandlersEvent
 
 	return function cleanup() {
 		events.forEach((event) => {
-			window.removeEventListener(event, handler);
+			window.removeEventListener(event, handler, options);
 		});
 	};
 }
