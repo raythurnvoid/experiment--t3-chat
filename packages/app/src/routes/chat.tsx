@@ -1,4 +1,4 @@
-import { AssistantRuntimeProvider, useAssistantState } from "@assistant-ui/react";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { Canvas } from "../components/canvas/canvas.tsx";
 import { AppAiChat } from "../components/app-ai-chat.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -6,8 +6,9 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { PanelLeft, Menu } from "lucide-react";
 import { cn } from "../lib/utils.ts";
-import { useBackendRuntime } from "@/lib/backend-runtime.tsx";
-import { AiChatSidebar } from "@/components/ai-chat-sidebar.tsx";
+import { useAiChatRuntime } from "@/lib/ai-chat/use-ai-chat-runtime.tsx";
+import { useAiChatThreadStore } from "@/stores/ai-chat-thread-store.ts";
+import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 
 export const Route = createFileRoute({
@@ -17,14 +18,11 @@ export const Route = createFileRoute({
 function ChatContent() {
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
-
-	const mainThreadId = useAssistantState(({ threads }) => threads.mainThreadId);
-	const threadItems = useAssistantState(({ threads }) => threads.threadItems);
+	const selectedThreadId = useAiChatThreadStore((state) => state.selectedThreadId);
 
 	useEffect(() => {
-		const mainItem = threadItems.find((item) => item.id === mainThreadId);
-		window.rt0_chat_current_thread_id = mainItem?.remoteId;
-	}, [mainThreadId, threadItems]);
+		window.rt0_chat_current_thread_id = selectedThreadId ?? undefined;
+	}, [selectedThreadId]);
 
 	return (
 		<div className={cn("Chat-content-area", "flex h-full w-full")}>
@@ -36,7 +34,7 @@ function ChatContent() {
 					aiChatSidebarOpen ? "w-80 opacity-100" : "w-0 opacity-0",
 				)}
 			>
-				<AiChatSidebar onClose={() => setAiChatSidebarOpen(false)} />
+				<AiChatThreads onClose={() => setAiChatSidebarOpen(false)} />
 			</div>
 
 			{/* Main Content Area - takes remaining space */}
@@ -95,10 +93,11 @@ function ChatContent() {
 
 function Chat() {
 	// Use the backend runtime with multi-thread support
-	const runtime = useBackendRuntime();
+	const runtime = useAiChatRuntime();
+	const selectedThreadId = useAiChatThreadStore((state) => state.selectedThreadId);
 
 	return (
-		<AssistantRuntimeProvider runtime={runtime}>
+		<AssistantRuntimeProvider key={selectedThreadId ?? "unselected"} runtime={runtime}>
 			<ChatContent />
 		</AssistantRuntimeProvider>
 	);

@@ -97,7 +97,7 @@ export const thread_get = query({
 			return null;
 		}
 
-		const thread = await ctx.db.get(id_normalized);
+		const thread = await ctx.db.get("threads", id_normalized);
 
 		// Verify the thread belongs to the current workspace
 		if (thread && thread.workspace_id !== ai_chat_HARDCODED_ORG_ID) {
@@ -156,6 +156,7 @@ export const thread_update = mutation({
 		const updated_by = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		await ctx.db.patch(
+			"threads",
 			args.threadId,
 			Object.assign(
 				{
@@ -194,7 +195,7 @@ export const thread_archive = mutation({
 
 		const now = Date.now();
 
-		await ctx.db.patch(args.threadId, {
+		await ctx.db.patch("threads", args.threadId, {
 			archived: true,
 			updated_by: updated_by.name,
 			updated_at: now,
@@ -222,11 +223,24 @@ export const thread_messages_list = query({
 			return null;
 		}
 
-		const messages = await ctx.db
+		const messagesRaw = await ctx.db
 			.query("messages")
 			.withIndex("by_thread", (q) => q.eq("thread_id", thread_id_normalized))
 			.order(args.order ?? "desc")
 			.collect();
+
+		const format = args.query?.format;
+		const messagesFiltered = format ? messagesRaw.filter((message) => message.format === format) : messagesRaw;
+
+		// De-duplicate by client-generated message id (or fallback to _id).
+		// This prevents assistant-ui crashes if duplicates were inserted previously.
+		const seen = new Set<string>();
+		const messages = messagesFiltered.filter((message) => {
+			const id = message.client_generated_message_id ?? message._id;
+			if (seen.has(id)) return false;
+			seen.add(id);
+			return true;
+		});
 
 		return { messages };
 	},
@@ -265,7 +279,7 @@ export const thread_messages_add = mutation({
 
 		// Update the thread's lastMessageAt timestamp
 		try {
-			await ctx.db.patch(args.threadId, {
+			await ctx.db.patch("threads", args.threadId, {
 				last_message_at: now,
 				updated_at: now,
 				updated_by: created_by.name,
@@ -275,6 +289,86 @@ export const thread_messages_add = mutation({
 		}
 
 		return { message_id };
+	},
+});
+
+/**
+ * Mutation to add multiple messages to a thread.
+ */
+export const thread_messages_add_many = mutation({
+	args: {
+		threadId: v.id("threads"),
+		parentId: v.union(v.id("messages"), v.null()),
+		messages: v.array(
+			v.object({
+				id: v.string(),
+				format: v.string(),
+				content: v.object({
+					role: app_convex_schema.tables.messages.validator.fields.content.fields.role,
+					parts: app_convex_schema.tables.messages.validator.fields.content.fields.parts,
+					metadata: app_convex_schema.tables.messages.validator.fields.content.fields.metadata,
+				}),
+			}),
+		),
+	},
+	returns: v.object({
+		messageIds: v.array(v.id("messages")),
+		idMap: v.record(v.string(), v.id("messages")),
+	}),
+	handler: async (ctx, args) => {
+		const created_by = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const now = Date.now();
+
+		const messageIds: Array<app_convex_Id<"messages">> = [];
+		const idMap: Record<string, app_convex_Id<"messages">> = {};
+
+		let nextParentId = args.parentId;
+
+		for (const message of args.messages) {
+			const existingWithClientId = await ctx.db
+				.query("messages")
+				.withIndex("by_client_generated_message_id", (q) => q.eq("client_generated_message_id", message.id))
+				.order("asc")
+				.collect();
+
+			const existingForThread = existingWithClientId.find((doc) => doc.thread_id === args.threadId);
+			if (existingForThread) {
+				messageIds.push(existingForThread._id);
+				idMap[message.id] = existingForThread._id;
+				nextParentId = existingForThread._id;
+				continue;
+			}
+
+			const messageId = await ctx.db.insert("messages", {
+				parent_id: nextParentId,
+				thread_id: args.threadId,
+				created_by: created_by.name,
+				updated_by: created_by.name,
+				updated_at: now,
+				format: message.format,
+				height: 1,
+				client_generated_message_id: message.id,
+				content: message.content,
+			});
+
+			messageIds.push(messageId);
+			idMap[message.id] = messageId;
+			nextParentId = messageId;
+		}
+
+		if (messageIds.length > 0) {
+			try {
+				await ctx.db.patch("threads", args.threadId, {
+					last_message_at: now,
+					updated_at: now,
+					updated_by: created_by.name,
+				});
+			} catch (error) {
+				console.error("Failed to update thread when adding messages", error);
+			}
+		}
+
+		return { messageIds, idMap };
 	},
 });
 
@@ -310,7 +404,7 @@ export const upsert_ai_pending_edit = internalMutation({
 				updated_at: now,
 			});
 		} else {
-			await ctx.db.patch(existing._id, {
+			await ctx.db.patch("ai_chat_pending_edits", existing._id, {
 				modified_content: args.modifiedContent,
 				updated_at: now,
 			});

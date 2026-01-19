@@ -1,13 +1,14 @@
 import "./chat-v2.css";
-import { AssistantRuntimeProvider, useAssistantState } from "@assistant-ui/react";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useEffect, useState } from "react";
 import { PanelLeft, Menu } from "lucide-react";
 import { cn } from "../lib/utils.ts";
-import { useBackendRuntime } from "@/lib/backend-runtime.tsx";
+import { useAiChatRuntime } from "@/lib/ai-chat/use-ai-chat-runtime.tsx";
 import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { AppAiChat } from "../components/app-ai-chat.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { useAiChatThreadStore } from "@/stores/ai-chat-thread-store.ts";
 
 type ChatV2_ClassNames =
 	| "ChatV2"
@@ -28,14 +29,11 @@ export const Route = createFileRoute({
 function ChatContent() {
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
-
-	const mainThreadId = useAssistantState(({ threads }) => threads.mainThreadId);
-	const threadItems = useAssistantState(({ threads }) => threads.threadItems);
+	const selectedThreadId = useAiChatThreadStore((state) => state.selectedThreadId);
 
 	useEffect(() => {
-		const mainItem = threadItems.find((item) => item.id === mainThreadId);
-		window.rt0_chat_current_thread_id = mainItem?.remoteId;
-	}, [mainThreadId, threadItems]);
+		window.rt0_chat_current_thread_id = selectedThreadId ?? undefined;
+	}, [selectedThreadId]);
 
 	return (
 		<div className={cn("ChatV2" satisfies ChatV2_ClassNames)}>
@@ -86,10 +84,11 @@ function ChatContent() {
 
 function Chat() {
 	// Use the backend runtime with multi-thread support
-	const runtime = useBackendRuntime();
+	const runtime = useAiChatRuntime();
+	const selectedThreadId = useAiChatThreadStore((state) => state.selectedThreadId);
 
 	return (
-		<AssistantRuntimeProvider runtime={runtime}>
+		<AssistantRuntimeProvider key={selectedThreadId ?? "unselected"} runtime={runtime}>
 			<ChatContent />
 		</AssistantRuntimeProvider>
 	);

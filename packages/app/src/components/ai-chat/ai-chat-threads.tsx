@@ -7,7 +7,7 @@ import { useMutation, useQuery } from "convex/react";
 
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Doc } from "@/lib/app-convex-client.ts";
-import { ThreadListItemByIndexProvider, useAssistantApi, useAssistantState } from "@assistant-ui/react";
+import { useAiChatThreadStore } from "@/stores/ai-chat-thread-store.ts";
 
 // #region header
 type AiChatThreadsHeader_ClassNames =
@@ -155,62 +155,44 @@ type AiChatThreadsListItem_ClassNames =
 	| "AiChatThreadsListItem-action-icon";
 
 type AiChatThreadsListItem_Props = {
-	index: number;
-	archived: boolean;
+	thread: app_convex_Doc<"threads">;
 	searchQuery: string;
-	threadsById: Map<string, app_convex_Doc<"threads">>;
+	activeThreadId: string;
 };
 
 function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
-	const { index, archived, searchQuery, threadsById } = props;
-
-	return (
-		<ThreadListItemByIndexProvider index={index} archived={archived}>
-			<AiChatThreadsListItemInner searchQuery={searchQuery} threadsById={threadsById} />
-		</ThreadListItemByIndexProvider>
-	);
-}
-
-type AiChatThreadsListItemInner_Props = {
-	searchQuery: string;
-	threadsById: Map<string, app_convex_Doc<"threads">>;
-};
-
-function AiChatThreadsListItemInner(props: AiChatThreadsListItemInner_Props) {
-	const { searchQuery, threadsById } = props;
-	const api = useAssistantApi();
-	const isMain = useAssistantState(({ threads, threadListItem }) => threads.mainThreadId === threadListItem.id);
-	const threadTitle = useAssistantState(({ threadListItem }) => threadListItem.title) || "New Chat";
-	const threadRemoteId = useAssistantState(({ threadListItem }) => threadListItem.remoteId);
-	const isArchived = useAssistantState(({ threadListItem }) => threadListItem.status === "archived");
+	const { thread, searchQuery, activeThreadId } = props;
+	const selectThread = useAiChatThreadStore((state) => state.selectThread);
+	const isMain = activeThreadId === thread._id;
+	const threadTitle = thread.title || "New Chat";
+	const isArchived = thread.archived === true;
 	const matchesSearch = !searchQuery || threadTitle.toLowerCase().includes(searchQuery.toLowerCase());
-
-	const threadDoc = threadRemoteId ? threadsById.get(threadRemoteId) : undefined;
 	const threadUpdateMutation = useMutation(app_convex_api.ai_chat.thread_update);
 
 	const handleSelect = () => {
-		api.threadListItem().switchTo();
+		selectThread(thread._id);
 	};
 
 	const handleStarToggle = () => {
-		if (!threadDoc) return;
+		const isStarred = thread.starred === true;
 		threadUpdateMutation({
-			threadId: threadDoc._id,
-			starred: !threadDoc.starred,
+			threadId: thread._id,
+			starred: !isStarred,
 		}).catch((error) => {
 			console.error("Failed to update thread starred status:", error);
 		});
 	};
 
 	const handleArchiveToggle = () => {
-		if (isArchived) {
-			api.threadListItem().unarchive();
-		} else {
-			api.threadListItem().archive();
-		}
+		threadUpdateMutation({
+			threadId: thread._id,
+			isArchived: !isArchived,
+		}).catch((error) => {
+			console.error("Failed to update thread archived status:", error);
+		});
 	};
 
-	const isStarred = threadDoc?.starred === true;
+	const isStarred = thread.starred === true;
 	const starButtonLabel = isStarred ? "Remove from favorites" : "Add to favorites";
 	const archiveButtonLabel = isArchived ? "Unarchive thread" : "Archive thread";
 
@@ -241,7 +223,6 @@ function AiChatThreadsListItemInner(props: AiChatThreadsListItemInner_Props) {
 					aria-label={starButtonLabel}
 					aria-pressed={isStarred}
 					title={starButtonLabel}
-					disabled={!threadDoc}
 				>
 					<Star
 						className={cn("AiChatThreadsListItem-action-icon" satisfies AiChatThreadsListItem_ClassNames)}
@@ -277,25 +258,24 @@ type AiChatThreadsListList_ClassNames = "AiChatThreadsListList";
 type AiChatThreadsListList_Props = {
 	archived: boolean;
 	searchQuery: string;
-	threadsById: Map<string, app_convex_Doc<"threads">>;
+	threads: app_convex_Doc<"threads">[];
 };
 
 function AiChatThreadsListList(props: AiChatThreadsListList_Props) {
-	const { archived, searchQuery, threadsById } = props;
-	const threadIds = useAssistantState(({ threads }) => threads.threadIds);
-	const archivedThreadIds = useAssistantState(({ threads }) => threads.archivedThreadIds);
-	const itemCount = archived ? archivedThreadIds.length : threadIds.length;
-	const itemIndices = useMemo(() => Array.from({ length: itemCount }, (_, index) => index), [itemCount]);
+	const { archived, searchQuery, threads } = props;
+	const activeThreadId = useAiChatThreadStore((state) => state.selectedThreadId ?? "");
+	const visibleThreads = useMemo(() => {
+		return threads.filter((thread) => thread.archived === archived);
+	}, [threads, archived]);
 
 	return (
 		<div className={cn("AiChatThreadsListList" satisfies AiChatThreadsListList_ClassNames)}>
-			{itemIndices.map((index) => (
+			{visibleThreads.map((thread) => (
 				<AiChatThreadsListItem
-					key={`${archived ? "archived" : "active"}-${index}`}
-					index={index}
-					archived={archived}
+					key={thread._id}
+					thread={thread}
 					searchQuery={searchQuery}
-					threadsById={threadsById}
+					activeThreadId={activeThreadId}
 				/>
 			))}
 		</div>
@@ -312,11 +292,11 @@ type AiChatThreadsList_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
 	archived: boolean;
 	searchQuery: string;
-	threadsById: Map<string, app_convex_Doc<"threads">>;
+	threads: app_convex_Doc<"threads">[];
 };
 
 function AiChatThreadsList(props: AiChatThreadsList_Props) {
-	const { ref, id, className, archived, searchQuery, threadsById, ...rest } = props;
+	const { ref, id, className, archived, searchQuery, threads, ...rest } = props;
 
 	return (
 		<div
@@ -325,7 +305,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 			className={cn("AiChatThreadsList" satisfies AiChatThreadsList_ClassNames, className)}
 			{...rest}
 		>
-			<AiChatThreadsListList archived={archived} searchQuery={searchQuery} threadsById={threadsById} />
+			<AiChatThreadsListList archived={archived} searchQuery={searchQuery} threads={threads} />
 		</div>
 	);
 }
@@ -345,7 +325,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 	const { ref, id, className, onClose, ...rest } = props;
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
-	const api = useAssistantApi();
+	const startNewThread = useAiChatThreadStore((state) => state.startNewThread);
 	const threadsList = useQuery(app_convex_api.ai_chat.threads_list, {
 		paginationOpts: {
 			numItems: 20,
@@ -353,14 +333,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 		},
 		includeArchived: true,
 	});
-	const threadsPage = threadsList?.page?.threads;
-	const threadsById = useMemo(() => {
-		if (!threadsPage) {
-			return new Map<string, app_convex_Doc<"threads">>();
-		}
-
-		return new Map<string, app_convex_Doc<"threads">>(threadsPage.map((thread) => [thread._id, thread]));
-	}, [threadsPage]);
+	const threadsPage = threadsList?.page?.threads ?? [];
 
 	const handleSearchChange = (event: ChangeEvent<HTMLInputElement>) => {
 		setSearchQuery(event.target.value);
@@ -371,7 +344,9 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 	};
 
 	const handleNewChat = () => {
-		api.threads().switchToNewThread();
+		startNewThread().catch((error) => {
+			console.error("Failed to create new chat thread:", error);
+		});
 	};
 
 	return (
@@ -384,7 +359,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 				onShowArchivedChange={handleArchivedChange}
 				onNewChat={handleNewChat}
 			/>
-			<AiChatThreadsList archived={showArchived} searchQuery={searchQuery} threadsById={threadsById} />
+			<AiChatThreadsList archived={showArchived} searchQuery={searchQuery} threads={threadsPage} />
 		</div>
 	);
 }

@@ -1,4 +1,4 @@
-@layer common_components {
+@layer components {
 	/* #region root */
 	.AiChat {
 		display: flex;
@@ -260,27 +260,22 @@
 
 	/* #region composer */
 	.AiChatComposer {
-		position: relative;
+		contain: content;
+
 		display: flex;
-		flex-direction: column;
-		gap: 8px;
+		gap: 4px;
+		padding: 4px;
+
+		align-items: center;
 	}
 
 	.AiChatComposer-input {
-		position: relative;
-	}
-
-	.AiChatComposer-area {
-		display: flex;
-		flex-direction: column;
-		align-items: stretch;
-		gap: 8px;
-		padding: 12px;
+		flex: 1;
+		contain: style;
 	}
 
 	.AiChatComposer-textarea {
 		resize: none;
-		min-height: 44px;
 		max-height: 160px;
 		overflow-y: auto;
 	}
@@ -288,28 +283,8 @@
 	.AiChatComposer-actions {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-	}
-
-	.AiChatComposer-actions-left,
-	.AiChatComposer-actions-right {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.AiChatComposer-send-button {
-		width: 34px;
-		height: 34px;
-		padding: 0;
-		border-radius: 999px;
-	}
-
-	.AiChatComposer-send-icon,
-	.AiChatComposer-cancel-icon {
-		width: 16px;
-		height: 16px;
+		align-self: end;
+		gap: 4px;
 	}
 	/* #endregion composer */
 

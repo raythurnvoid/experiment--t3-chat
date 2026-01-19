@@ -234,6 +234,10 @@ const MessageComposer_class_names = {
 }
 ```
 
+# Flex alignment keywords
+
+- Prefer logical keywords `start` / `end` over `flex-start` / `flex-end` (e.g. `align-self: end`, `justify-content: start`) so alignment stays consistent across writing modes.
+
 # Size Units: Avoid rem for Sizing
 
 **Avoid using `rem` or `em` units for sizing properties** (padding, width, height, margin) unless explicitly requested by the user.

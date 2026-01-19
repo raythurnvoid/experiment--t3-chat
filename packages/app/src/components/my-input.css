@@ -1,4 +1,8 @@
 @layer common_components {
+	.MyInput {
+		contain: content;
+	}
+
 	.MyInputBox {
 		position: absolute;
 		z-index: -1;

@@ -1,6 +1,6 @@
 import "./ai-chat.css";
 
-import type { ChangeEvent, ComponentPropsWithRef, KeyboardEvent, MouseEvent, Ref } from "react";
+import type { ChangeEvent, ComponentPropsWithRef, FormEvent, KeyboardEvent, MouseEvent, Ref } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
 	ComposerAttachmentByIndexProvider,
@@ -144,7 +144,7 @@ function AiChatComposerAttachmentAddButton(props: AiChatComposerAttachmentAddBut
 			)}
 			{...rest}
 		>
-			<MyIconButton variant="ghost" tooltip="Add attachment" onClick={handleSelectFiles}>
+			<MyIconButton type="button" variant="ghost" tooltip="Add attachment" onClick={handleSelectFiles}>
 				<Paperclip
 					className={cn(
 						"AiChatComposerAttachmentAddButton-icon" satisfies AiChatComposerAttachmentAddButton_ClassNames,
@@ -329,14 +329,11 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-area"
 	| "AiChatComposer-textarea"
 	| "AiChatComposer-actions"
-	| "AiChatComposer-actions-left"
-	| "AiChatComposer-actions-right"
-	| "AiChatComposer-send-button"
 	| "AiChatComposer-send-icon"
 	| "AiChatComposer-cancel-icon";
 
-export type AiChatComposer_Props = ComponentPropsWithRef<"div"> & {
-	ref?: Ref<HTMLDivElement>;
+export type AiChatComposer_Props = ComponentPropsWithRef<"form"> & {
+	ref?: Ref<HTMLFormElement>;
 	id?: string;
 	className?: string;
 };
@@ -377,6 +374,11 @@ function AiChatComposer(props: AiChatComposer_Props) {
 		handleSend();
 	};
 
+	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		handleSend();
+	};
+
 	useEffect(() => {
 		const node = textareaRef.current;
 		if (!node) {
@@ -388,7 +390,13 @@ function AiChatComposer(props: AiChatComposer_Props) {
 	}, [text]);
 
 	return (
-		<div ref={ref} id={id} className={cn("AiChatComposer" satisfies AiChatComposer_ClassNames, className)} {...rest}>
+		<form
+			ref={ref}
+			id={id}
+			className={cn("AiChatComposer" satisfies AiChatComposer_ClassNames, className)}
+			onSubmit={handleSubmit}
+			{...rest}
+		>
 			<MyInput variant="surface" className={cn("AiChatComposer-input" satisfies AiChatComposer_ClassNames)}>
 				<MyInputBox />
 				<MyInputArea className={cn("AiChatComposer-area" satisfies AiChatComposer_ClassNames)}>
@@ -402,31 +410,27 @@ function AiChatComposer(props: AiChatComposer_Props) {
 						onChange={(event) => api.composer().setText(event.target.value)}
 						onKeyDown={handleKeyDown}
 					/>
-					<div className={cn("AiChatComposer-actions" satisfies AiChatComposer_ClassNames)}>
-						<div className={cn("AiChatComposer-actions-left" satisfies AiChatComposer_ClassNames)}>
-							<AiChatComposerAttachmentAddButton />
-						</div>
-						<div className={cn("AiChatComposer-actions-right" satisfies AiChatComposer_ClassNames)}>
-							{isRunning ? (
-								<MyIconButton variant="outline" tooltip="Stop generating" onClick={handleCancel} disabled={!canCancel}>
-									<Square className={cn("AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames)} />
-								</MyIconButton>
-							) : (
-								<MyIconButton
-									variant="default"
-									tooltip="Send message"
-									onClick={handleSend}
-									disabled={!canSend}
-									className={cn("AiChatComposer-send-button" satisfies AiChatComposer_ClassNames)}
-								>
-									<ArrowUp className={cn("AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames)} />
-								</MyIconButton>
-							)}
-						</div>
-					</div>
 				</MyInputArea>
 			</MyInput>
-		</div>
+			<div className={cn("AiChatComposer-actions" satisfies AiChatComposer_ClassNames)}>
+				<AiChatComposerAttachmentAddButton />
+				{isRunning ? (
+					<MyIconButton
+						type="button"
+						variant="outline"
+						tooltip="Stop generating"
+						onClick={handleCancel}
+						disabled={!canCancel}
+					>
+						<Square className={cn("AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames)} />
+					</MyIconButton>
+				) : (
+					<MyIconButton type="submit" variant="default" tooltip="Send message" disabled={!canSend}>
+						<ArrowUp className={cn("AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames)} />
+					</MyIconButton>
+				)}
+			</div>
+		</form>
 	);
 }
 // #endregion composer

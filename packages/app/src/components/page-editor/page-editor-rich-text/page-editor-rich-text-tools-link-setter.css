@@ -24,5 +24,6 @@
 
 	.PageEditorRichTextToolsLinkSetter-input {
 		flex: 1;
+		contain: style;
 	}
 }
