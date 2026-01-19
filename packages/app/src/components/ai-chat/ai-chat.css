@@ -258,36 +258,6 @@
 	}
 	/* #endregion message */
 
-	/* #region composer */
-	.AiChatComposer {
-		contain: content;
-
-		display: flex;
-		gap: 4px;
-		padding: 4px;
-
-		align-items: center;
-	}
-
-	.AiChatComposer-input {
-		flex: 1;
-		contain: style;
-	}
-
-	.AiChatComposer-textarea {
-		resize: none;
-		max-height: 160px;
-		overflow-y: auto;
-	}
-
-	.AiChatComposer-actions {
-		display: flex;
-		align-items: center;
-		align-self: end;
-		gap: 4px;
-	}
-	/* #endregion composer */
-
 	/* #region attachments */
 	.AiChatComposerAttachments {
 		display: flex;

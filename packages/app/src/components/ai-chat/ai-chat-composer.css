@@ -1,0 +1,55 @@
+@layer components {
+	.AiChatComposer {
+		contain: content;
+
+		display: flex;
+		gap: 4px;
+		padding: 4px;
+
+		align-items: center;
+	}
+
+	.AiChatComposer-input {
+		flex: 1;
+		contain: style;
+	}
+
+	.AiChatComposer-editor {
+		position: relative;
+
+		display: flex;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.AiChatComposer-editor-content {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.AiChatComposer-placeholder {
+		position: absolute;
+		top: 0;
+		left: 0;
+
+		color: var(--muted-foreground);
+		pointer-events: none;
+	}
+
+	.AiChatComposer-textarea {
+		resize: none;
+		max-height: 160px;
+		overflow-y: auto;
+
+		& p {
+			margin: 0;
+		}
+	}
+
+	.AiChatComposer-actions {
+		display: flex;
+		align-items: center;
+		align-self: end;
+		gap: 4px;
+	}
+}
