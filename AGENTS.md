@@ -53,16 +53,21 @@ This is a monorepo project with the following essential structure that you must 
 
 - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui) - Assistant UI submodule with custom overrides
 
-  - Importing: Import directly from the submodule (NOT from node_modules)
-    - Correct:
-      ```ts
-      import { useAssistantTool } from "@/vendor/assistant-ui/packages/react/src/runtime";
-      import { ThreadWelcome } from "@/vendor/assistant-ui/packages/react/src/ui/thread-welcome";
-      ```
-  - Documentation folders:
-    - [apps/docs/](packages/app/vendor/assistant-ui/apps/docs)
-  - Examples folders:
-    - [examples/](packages/app/vendor/assistant-ui/examples)
+- Importing: Import Assistant UI via normal node_modules package imports (the submodule is vendored/symlinked into node_modules for development)
+  - ✅ Correct:
+    ```ts
+    import { useAssistantState, useAssistantApi } from "@assistant-ui/react";
+    import { AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
+    ```
+  - ❌ Wrong: do not import from `@/vendor/...` paths
+    ```ts
+    import { useAssistantState } from "@/vendor/assistant-ui/packages/react/src/context/react/hooks/useAssistantState";
+    ```
+- Documentation folders:
+  - [apps/docs/](packages/app/vendor/assistant-ui/apps/docs)
+- Examples folders:
+
+  - [examples/](packages/app/vendor/assistant-ui/examples)
 
 - [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule
 
@@ -87,6 +92,24 @@ This is a monorepo project with the following essential structure that you must 
     - [content/providers/](references-submodules/ai/content/providers)
   - Examples folders:
     - [examples/](references-submodules/ai/examples)
+
+- Convex reference repositories (submodules under [references-submodules/](references-submodules))
+
+  - Importing: Use standard node_modules imports in the app, submodules are for reference only
+  - Back-end + docs source:
+    - [references-submodules/convex-backend/](references-submodules/convex-backend)
+    - [docs source](references-submodules/convex-backend/npm-packages/docs/docs)
+  - TypeScript/JS SDK + CLI:
+    - [references-submodules/convex-js/](references-submodules/convex-js)
+  - Helpers:
+    - [references-submodules/convex-helpers/](references-submodules/convex-helpers)
+    - [package docs](references-submodules/convex-helpers/packages/convex-helpers/README.md)
+  - Example apps / templates:
+    - [references-submodules/convex-demos/](references-submodules/convex-demos)
+    - [references-submodules/convex-tutorial/](references-submodules/convex-tutorial)
+    - [references-submodules/convex-tour-chat/](references-submodules/convex-tour-chat)
+    - [references-submodules/convex-auth-with-role-based-permissions/](references-submodules/convex-auth-with-role-based-permissions)
+    - [references-submodules/convex-tanstack-start/](references-submodules/convex-tanstack-start)
 
 - [packages/app/vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule
 
@@ -118,7 +141,7 @@ Documentation Sources
 
 - [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
 - You may assume `+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
-- Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [references-submodules/ai/](references-submodules/ai), [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
+- Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [references-submodules/ai/](references-submodules/ai), [references-submodules/convex-backend/](references-submodules/convex-backend), [references-submodules/convex-helpers/](references-submodules/convex-helpers), [references-submodules/convex-js/](references-submodules/convex-js), and [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 
 Research Process
@@ -143,15 +166,14 @@ Quality Standard: Understanding should be deep enough to explain concepts confid
 
 ### Assistant UI Imports
 
-When importing assistant-ui components or utilities, ALWAYS import directly from the submodule:
+When importing assistant-ui components or utilities, ALWAYS use normal package imports (node_modules):
 
 ```ts
-// ✅ CORRECT - Import from submodule
-import { useAssistantTool } from "@/vendor/assistant-ui/packages/react/src/runtime";
-import { ThreadWelcome } from "@/vendor/assistant-ui/packages/react/src/ui/thread-welcome";
-
-// ❌ WRONG - Do not import from node_modules
+// ✅ CORRECT
 import { useAssistantTool } from "@assistant-ui/react";
+
+// ❌ WRONG - do not import from `@/vendor/...`
+import { useAssistantTool } from "@/vendor/assistant-ui/packages/react/src/runtime";
 ```
 
 ### Standard Library Imports

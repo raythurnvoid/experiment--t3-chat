@@ -8,9 +8,7 @@ import { Tool, ToolHeader, ToolContent, ToolInput, ToolOutput } from "./ai-eleme
 import { Actions, Action } from "./ai-elements/actions.tsx";
 import { CodeBlock } from "./ai-elements/code-block.tsx";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
-import { Thread } from "@/components/assistant-ui/thread.tsx";
-import { useEffect, useRef } from "react";
-import { global_custom_event_dispatch } from "../lib/global-event.tsx";
+import { AiChat } from "@/components/ai-chat/ai-chat.tsx";
 import type {
 	ai_tool_create_read_page_ToolInput,
 	ai_tool_create_read_page_ToolOutput,
@@ -152,10 +150,6 @@ function ReadPageToolUiComponent(
 	const { args, result, status } = props;
 	const toolState = mapStatusToToolState(status);
 
-	const handleOpenCanvas = () => {
-		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
-	};
-
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-read-page-tool">
 			<ToolHeader type="tool-read_page" state={toolState} />
@@ -165,9 +159,6 @@ function ReadPageToolUiComponent(
 					<Actions className="AppAiChat-tool-actions">
 						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
 							<CopyIcon className="size-4" />
-						</Action>
-						<Action tooltip="Open canvas" label="Open canvas" onClick={handleOpenCanvas}>
-							<FileText className="size-4" />
 						</Action>
 					</Actions>
 				</div>
@@ -325,51 +316,6 @@ function WritePageToolUiComponent(
 	props: ToolCallMessagePartProps<ai_tool_create_write_page_ToolInput, ai_tool_create_write_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
-	const handledRef = useRef(false);
-	const threadRemoteId = useAssistantState(({ threads }) => {
-		const mainThreadId = threads.mainThreadId;
-		return threads.threadItems.find((item) => item.id === mainThreadId)?.remoteId;
-	});
-
-	// Handle tool complete
-	useEffect(() => {
-		if (status.type !== "complete") {
-			return;
-		}
-
-		if (handledRef.current) {
-			return;
-		}
-
-		if (!result || (result as any)?.error) {
-			return;
-		}
-
-		const threadId = threadRemoteId ?? window.rt0_chat_current_thread_id;
-		if (!threadId) {
-			return;
-		}
-
-		const pageId = result.metadata.pageId;
-		if (!pageId) {
-			console.warn("write_page: page id missing in tool result for path", args.path);
-			return;
-		}
-
-		handledRef.current = true;
-
-		// Existing page preview: open diff mode, seed modified with proposed content
-		global_custom_event_dispatch("ai_chat::open_canvas", {
-			pageId,
-			mode: "diff",
-			modifiedContent: args.content,
-			threadId,
-		});
-	}, [status.type, result, args.content, args.path, threadRemoteId]);
-
-	const handleOpenCanvas = () => {
-		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
-	};
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-write-page-tool">
@@ -380,9 +326,6 @@ function WritePageToolUiComponent(
 					<Actions className="AppAiChat-tool-actions">
 						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
 							<CopyIcon className="size-4" />
-						</Action>
-						<Action tooltip="Open canvas" label="Open canvas" onClick={handleOpenCanvas}>
-							<FileText className="size-4" />
 						</Action>
 					</Actions>
 				</div>
@@ -411,48 +354,6 @@ function EditPageToolUiComponent(
 	props: ToolCallMessagePartProps<ai_tool_create_edit_page_ToolInput, ai_tool_create_edit_page_ToolOutput>,
 ) {
 	const { args, result, status } = props;
-	const handledRef = useRef(false);
-	const threadRemoteId = useAssistantState(({ threads }) => {
-		const mainThreadId = threads.mainThreadId;
-		return threads.threadItems.find((item) => item.id === mainThreadId)?.remoteId;
-	});
-
-	useEffect(() => {
-		if (status.type !== "complete") {
-			return;
-		}
-
-		if (handledRef.current) {
-			return;
-		}
-
-		if (!result || (result as any)?.error) {
-			return;
-		}
-
-		const threadId = threadRemoteId ?? window.rt0_chat_current_thread_id;
-		if (!threadId) {
-			return;
-		}
-
-		const pageId = result.metadata.pageId;
-		if (!pageId) {
-			return;
-		}
-
-		handledRef.current = true;
-
-		global_custom_event_dispatch("ai_chat::open_canvas", {
-			pageId,
-			mode: "diff",
-			threadId,
-			modifiedContent: result.metadata.modifiedContent,
-		});
-	}, [status.type, result, threadRemoteId]);
-
-	const handleOpenCanvas = () => {
-		global_custom_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
-	};
 
 	return (
 		<Tool defaultOpen={false} className="AppAiChat-edit-page-tool">
@@ -463,9 +364,6 @@ function EditPageToolUiComponent(
 					<Actions className="AppAiChat-tool-actions">
 						<Action tooltip="Copy result" label="Copy result" onClick={() => handleCopyOutput(result?.output)}>
 							<CopyIcon className="size-4" />
-						</Action>
-						<Action tooltip="Open canvas" label="Open canvas" onClick={handleOpenCanvas}>
-							<FileText className="size-4" />
 						</Action>
 					</Actions>
 				</div>
@@ -499,7 +397,7 @@ export function AppAiChat(props: AppAiChat_Props) {
 
 	return (
 		<div className={cn("AppAiChat", className)}>
-			<Thread />
+			<AiChat />
 			<CreateArtifactToolUi />
 			<ReadPageToolUI />
 			<ListPagesToolUi />

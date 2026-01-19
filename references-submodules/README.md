@@ -11,3 +11,19 @@ It is used for scraping/reading documentation and source code during development
 - Documentation: `references-submodules/ai/content/docs/` - Official documentation
 - Examples: `references-submodules/ai/examples/` - Usage examples and patterns
 - Packages: `references-submodules/ai/packages/` - Core SDK packages
+
+# Convex
+
+The Convex repositories are checked out here as submodules so they can be updated easily when needed.
+They are used for scraping/reading documentation and source code during development.
+
+- Convex backend (OSS): `references-submodules/convex-backend`
+  - Docs source: `references-submodules/convex-backend/npm-packages/docs/docs/`
+- Convex TypeScript/JS SDK + CLI: `references-submodules/convex-js`
+- Convex helpers (community utilities): `references-submodules/convex-helpers`
+  - Package docs: `references-submodules/convex-helpers/packages/convex-helpers/README.md`
+- Convex demos: `references-submodules/convex-demos`
+- Convex tutorial starter: `references-submodules/convex-tutorial`
+- Convex tour chat sample: `references-submodules/convex-tour-chat`
+- Convex Auth + role-based permissions template: `references-submodules/convex-auth-with-role-based-permissions`
+- Convex + TanStack Start template: `references-submodules/convex-tanstack-start` (no top-level README; start at `src/` and `convex/`)

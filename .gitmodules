@@ -31,3 +31,27 @@
 [submodule "references-submodules/ai"]
 	path = references-submodules/ai
 	url = ../../vercel/ai.git
+[submodule "references-submodules/convex-backend"]
+	path = references-submodules/convex-backend
+	url = https://github.com/get-convex/convex-backend.git
+[submodule "references-submodules/convex-helpers"]
+	path = references-submodules/convex-helpers
+	url = https://github.com/get-convex/convex-helpers.git
+[submodule "references-submodules/convex-js"]
+	path = references-submodules/convex-js
+	url = https://github.com/get-convex/convex-js.git
+[submodule "references-submodules/convex-tour-chat"]
+	path = references-submodules/convex-tour-chat
+	url = https://github.com/get-convex/convex-tour-chat.git
+[submodule "references-submodules/convex-tutorial"]
+	path = references-submodules/convex-tutorial
+	url = https://github.com/get-convex/convex-tutorial.git
+[submodule "references-submodules/convex-demos"]
+	path = references-submodules/convex-demos
+	url = https://github.com/get-convex/convex-demos.git
+[submodule "references-submodules/convex-auth-with-role-based-permissions"]
+	path = references-submodules/convex-auth-with-role-based-permissions
+	url = https://github.com/get-convex/convex-auth-with-role-based-permissions.git
+[submodule "references-submodules/convex-tanstack-start"]
+	path = references-submodules/convex-tanstack-start
+	url = https://github.com/get-convex/convex-tanstack-start.git

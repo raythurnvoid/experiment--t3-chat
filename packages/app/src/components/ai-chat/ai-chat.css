@@ -1,0 +1,445 @@
+@layer common_components {
+	/* #region root */
+	.AiChat {
+		display: flex;
+		height: 100%;
+		width: 100%;
+		flex-direction: column;
+	}
+
+	.AiChat-scroll-area {
+		position: relative;
+		display: flex;
+		flex: 1;
+		min-height: 0;
+		flex-direction: column;
+		overflow-y: auto;
+		overflow-x: hidden;
+		padding: 24px 20px 0;
+	}
+
+	.AiChat-scroll-area-inner {
+		display: flex;
+		flex: 1;
+		min-height: 100%;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.AiChat-scroll-to-bottom {
+		position: sticky;
+		bottom: 16px;
+		display: flex;
+		justify-content: center;
+		padding-bottom: 16px;
+	}
+
+	.AiChat-scroll-to-bottom-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.AiChat-composer {
+		border-top: 1px solid hsl(var(--border));
+		background: hsl(var(--background));
+		padding: 16px 20px;
+	}
+	/* #endregion root */
+
+	/* #region message list */
+	.AiChatMessageList {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.AiChatMessageList-empty {
+		display: flex;
+		min-height: 100%;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		text-align: center;
+		padding: 24px;
+		gap: 12px;
+	}
+
+	.AiChatMessageList-empty-title {
+		font-size: 1.5rem;
+		font-weight: 600;
+		color: hsl(var(--foreground));
+	}
+
+	.AiChatMessageList-empty-subtitle {
+		font-size: 1.25rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.AiChatMessageList-suggestions {
+		margin-top: 20px;
+		display: grid;
+		gap: 12px;
+		width: 100%;
+		max-width: 520px;
+		grid-template-columns: repeat(1, minmax(0, 1fr));
+
+		@media (min-width: 768px) {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+
+	.AiChatMessageList-suggestion {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		justify-content: flex-start;
+		text-align: left;
+		gap: 4px;
+		padding: 12px 16px;
+		height: auto;
+	}
+
+	.AiChatMessageList-suggestion-title {
+		font-weight: 600;
+		font-size: 0.875rem;
+		color: hsl(var(--foreground));
+	}
+
+	.AiChatMessageList-suggestion-label {
+		font-size: 0.875rem;
+		color: hsl(var(--muted-foreground));
+	}
+	/* #endregion message list */
+
+	/* #region message */
+	.AiChatMessage {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.AiChatMessage-role-user {
+		align-items: flex-end;
+	}
+
+	.AiChatMessage-role-assistant,
+	.AiChatMessage-role-system {
+		align-items: flex-start;
+	}
+
+	.AiChatMessage-content {
+		width: 100%;
+		max-width: 720px;
+	}
+
+	.AiChatMessage-role-user .AiChatMessage-content {
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	.AiChatMessage-bubble {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 12px 16px;
+		border-radius: 16px;
+		background: hsl(var(--muted));
+		color: hsl(var(--foreground));
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+	}
+
+	.AiChatMessage-role-user .AiChatMessage-bubble {
+		max-width: 520px;
+	}
+
+	.AiChatMessage-role-assistant .AiChatMessage-bubble,
+	.AiChatMessage-role-system .AiChatMessage-bubble {
+		padding: 0;
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.AiChatMessage-text {
+		margin: 0;
+		white-space: pre-wrap;
+		line-height: 1.6;
+		font-size: 0.95rem;
+	}
+
+	.AiChatMessage-markdown {
+		font-size: 0.95rem;
+		line-height: 1.7;
+		color: hsl(var(--foreground));
+
+		& :where(p) {
+			margin: 0 0 12px;
+		}
+
+		& :where(h1, h2, h3, h4) {
+			margin: 20px 0 8px;
+			font-weight: 600;
+		}
+
+		& :where(ul, ol) {
+			margin: 0 0 12px 20px;
+			padding: 0;
+		}
+
+		& :where(code) {
+			background: hsl(var(--muted));
+			border-radius: 6px;
+			padding: 2px 6px;
+			font-size: 0.85rem;
+		}
+
+		& :where(pre) {
+			background: hsl(var(--muted-foreground) / 0.1);
+			border-radius: 10px;
+			padding: 12px 14px;
+			overflow-x: auto;
+		}
+
+		& :where(a) {
+			color: hsl(var(--primary));
+			text-decoration: underline;
+			text-underline-offset: 3px;
+		}
+	}
+
+	.AiChatMessage-actions {
+		display: flex;
+		gap: 8px;
+	}
+
+	.AiChatMessage-action-button {
+		height: 28px;
+		width: 28px;
+		padding: 0;
+	}
+
+	.AiChatMessage-action-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.AiChatMessage-part {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.AiChatMessage-image {
+		max-width: 100%;
+		border-radius: 12px;
+		border: 1px solid hsl(var(--border));
+	}
+
+	.AiChatMessage-file {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px 12px;
+		border-radius: 10px;
+		border: 1px solid hsl(var(--border));
+		background: hsl(var(--background));
+	}
+
+	.AiChatMessage-file-name {
+		font-size: 0.875rem;
+		color: hsl(var(--foreground));
+	}
+
+	.AiChatMessage-source {
+		color: hsl(var(--primary));
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		font-size: 0.875rem;
+	}
+	/* #endregion message */
+
+	/* #region composer */
+	.AiChatComposer {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.AiChatComposer-input {
+		position: relative;
+	}
+
+	.AiChatComposer-area {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 8px;
+		padding: 12px;
+	}
+
+	.AiChatComposer-textarea {
+		resize: none;
+		min-height: 44px;
+		max-height: 160px;
+		overflow-y: auto;
+	}
+
+	.AiChatComposer-actions {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.AiChatComposer-actions-left,
+	.AiChatComposer-actions-right {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.AiChatComposer-send-button {
+		width: 34px;
+		height: 34px;
+		padding: 0;
+		border-radius: 999px;
+	}
+
+	.AiChatComposer-send-icon,
+	.AiChatComposer-cancel-icon {
+		width: 16px;
+		height: 16px;
+	}
+	/* #endregion composer */
+
+	/* #region attachments */
+	.AiChatComposerAttachments {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding-bottom: 4px;
+		overflow-x: auto;
+	}
+
+	.AiChatComposerAttachments-item {
+		flex-shrink: 0;
+	}
+
+	.AiChatComposerAttachmentAddButton {
+		position: relative;
+		display: inline-flex;
+	}
+
+	.AiChatComposerAttachmentAddButton-input {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		border: 0;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.AiChatComposerAttachmentAddButton-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.AiChatMessageAttachments {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+
+	.AiChatMessageAttachments-item {
+		flex-shrink: 0;
+	}
+
+	.AiChatAttachmentTile {
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 12px;
+		border-radius: 12px;
+		border: 1px solid hsl(var(--border));
+		background: hsl(var(--background));
+		min-width: 160px;
+	}
+
+	.AiChatAttachmentTile-preview {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		cursor: pointer;
+	}
+
+	.AiChatAttachmentTile-avatar {
+		flex-shrink: 0;
+	}
+
+	.AiChatAttachmentTile-fallback-icon {
+		width: 18px;
+		height: 18px;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.AiChatAttachmentTile-name {
+		font-size: 0.875rem;
+		color: hsl(var(--foreground));
+		max-width: 180px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.AiChatAttachmentTile-spinner {
+		margin-left: auto;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.AiChatAttachmentTile-remove {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+	}
+
+	.AiChatAttachmentTile-remove-icon {
+		width: 12px;
+		height: 12px;
+	}
+
+	.AiChatAttachmentTile-modal {
+		width: min(90vw, 720px);
+	}
+
+	.AiChatAttachmentTile-modal-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 12px 16px;
+		border-bottom: 1px solid hsl(var(--border));
+	}
+
+	.AiChatAttachmentTile-modal-title {
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: hsl(var(--foreground));
+	}
+
+	.AiChatAttachmentTile-modal-image {
+		display: block;
+		width: 100%;
+		height: auto;
+		margin: 0 auto;
+	}
+	/* #endregion attachments */
+}

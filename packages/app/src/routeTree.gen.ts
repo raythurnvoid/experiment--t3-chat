@@ -11,10 +11,16 @@
 import type { CreateFileRoute, FileRoutesByPath } from '@tanstack/react-router'
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ChatV2RouteImport } from './routes/chat-v2'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PagesIndexRouteImport } from './routes/pages/index'
 
+const ChatV2Route = ChatV2RouteImport.update({
+  id: '/chat-v2',
+  path: '/chat-v2',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChatRoute = ChatRouteImport.update({
   id: '/chat',
   path: '/chat',
@@ -34,35 +40,46 @@ const PagesIndexRoute = PagesIndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
+  '/chat-v2': typeof ChatV2Route
   '/pages': typeof PagesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
+  '/chat-v2': typeof ChatV2Route
   '/pages': typeof PagesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
+  '/chat-v2': typeof ChatV2Route
   '/pages/': typeof PagesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/chat' | '/pages'
+  fullPaths: '/' | '/chat' | '/chat-v2' | '/pages'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/chat' | '/pages'
-  id: '__root__' | '/' | '/chat' | '/pages/'
+  to: '/' | '/chat' | '/chat-v2' | '/pages'
+  id: '__root__' | '/' | '/chat' | '/chat-v2' | '/pages/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ChatRoute: typeof ChatRoute
+  ChatV2Route: typeof ChatV2Route
   PagesIndexRoute: typeof PagesIndexRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/chat-v2': {
+      id: '/chat-v2'
+      path: '/chat-v2'
+      fullPath: '/chat-v2'
+      preLoaderRoute: typeof ChatV2RouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/chat': {
       id: '/chat'
       path: '/chat'
@@ -105,6 +122,15 @@ declare module './routes/chat' {
     FileRoutesByPath['/chat']['fullPath']
   >
 }
+declare module './routes/chat-v2' {
+  const createFileRoute: CreateFileRoute<
+    '/chat-v2',
+    FileRoutesByPath['/chat-v2']['parentRoute'],
+    FileRoutesByPath['/chat-v2']['id'],
+    FileRoutesByPath['/chat-v2']['path'],
+    FileRoutesByPath['/chat-v2']['fullPath']
+  >
+}
 declare module './routes/pages/index' {
   const createFileRoute: CreateFileRoute<
     '/pages/',
@@ -118,6 +144,7 @@ declare module './routes/pages/index' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ChatRoute: ChatRoute,
+  ChatV2Route: ChatV2Route,
   PagesIndexRoute: PagesIndexRoute,
 }
 export const routeTree = rootRouteImport

@@ -2,9 +2,9 @@ import "./my-icon-button.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
 
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export type MyIconButton_ClassNames = "MyIconButton";
@@ -35,10 +35,10 @@ export function MyIconButton(props: MyIconButton_Props) {
 	}
 
 	return (
-		<Tooltip>
-			<TooltipTrigger asChild>{buttonElement}</TooltipTrigger>
-			<TooltipContent side={side}>{tooltip}</TooltipContent>
-		</Tooltip>
+		<MyTooltip placement={side}>
+			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
+			<MyTooltipContent>{tooltip}</MyTooltipContent>
+		</MyTooltip>
 	);
 }
 
