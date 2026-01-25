@@ -4,7 +4,7 @@ import { PageEditor, type PageEditor_Ref } from "../page-editor/page-editor.tsx"
 import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 import { useStateRef, useRenderPromise } from "@/hooks/utils-hooks.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 

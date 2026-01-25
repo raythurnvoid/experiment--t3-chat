@@ -5,6 +5,60 @@ alwaysApply: false
 
 React Components Guidelines
 
+# React Compiler (this project)
+
+This project uses the React Compiler.
+
+## Core mental model
+
+When you are writing components/hooks, you must assume:
+
+- Values computed inside a component are memoized and reused until their automatically tracked dependencies change.
+- Functions/closures created inside a component are memoized and reused until their automatically tracked dependencies change.
+- You must not assume "everything is recomputed every render".
+
+## Practical guidelines
+
+### Avoid premature memoization
+
+Do not add `useMemo` / `useCallback` just to avoid recomputation or to stabilize identities. Prefer plain expressions and inline callbacks.
+
+Only add `useMemo` / `useCallback` when there is a concrete semantic requirement that cannot rely on the compiler (e.g. bridging to non-React APIs that store identities and must not be re-registered), and include a short comment explaining why it is required.
+
+### Avoid derived-state effects
+
+Do not use `useEffect` to keep derived state in sync.
+
+Prefer computing derived values during render and returning them directly.
+
+### Effects are still valid for real side-effects
+
+Use `useEffect` (or other effect hooks) only for real side effects such as:
+
+- Subscriptions/unsubscriptions to external systems
+- Timers/intervals
+- Imperative DOM APIs
+- Bridging to non-React code
+
+When you need a stable callback that can read the latest values without causing re-subscribe churn, prefer patterns like `useEffectEvent` or a "live ref" helper (as used in this codebase).
+
+## Review checklist
+
+When reviewing or proposing changes, you must question any newly introduced:
+
+- `useEffect` (is this a real side effect, or derived state?)
+- `useMemo` / `useCallback` (is this actually required, given React Compiler memoization?)
+
+# Event-driven, centralized UI logic (preferred)
+
+Prefer an **event-driven** style where data flows down and events flow up, keeping components linear and predictable.
+
+- **Prefer explicit events over sync effects**: update state as a direct result of user/actions/events (e.g. `onSubmit`, `onSelect`, `onToggle`) rather than `useEffect`-based syncing.
+- **Centralize side effects and integrations**: keep data fetching, mutations, and other side-effectful work in a stable “owner” layer (route/container/controller hook). Leaf components should be mostly presentational.
+- **Prop-drill state + handlers**: children receive derived values and callbacks; avoid reintroducing contexts/hooks in leaves that duplicate wiring and hide dependencies.
+- **Don’t leak query arguments to leaves**: for Convex (and similar), prefer that leaf components receive _data_, not the parameters used to fetch it; this reduces surprising cache/lifecycle issues when leaves unmount.
+- **Prefer reset via re-mount over effect syncing**: when a leaf needs to “reset” on a key change (e.g. thread switch), prefer keying/remounting or passing an `initialValue`, not a store→leaf `useEffect` sync.
+
 # Component Declaration
 
 ## Props Parameter Pattern
@@ -16,7 +70,8 @@ The following rules are mandatory across this codebase:
 ## Do
 
 - Use named function declarations for components.
-- Accept a single `props` parameter; destructure on the first line inside the function body.
+- For components that accept props: accept a single `props` parameter; destructure on the first line inside the function body.
+- For propsless components: do not add an empty `props` arg or empty props type; omit the parameter.
 - Keep `...rest` last and forward DOM-compatible props as needed.
 - Prefix all CSS classes with the component name.
 - Use camelCase for props and all local symbols.
@@ -46,9 +101,36 @@ When destructuring component props, follow this exact order for named props, the
 
 `...rest` must always be the final destructured item.
 
+# Strict props by default (feature components)
+
+When the user requests a new component, or when you edit an existing component, you must use a **strict API** by default.
+
+## Required by default
+
+Props must be required unless you have a clear reason to make them optional.
+
+- Do not use `prop?: ...` unless the component works correctly when the prop is not provided.
+- Do not “hide” required behavior with defaults in destructuring (for example `const { foo = "bar" } = props`) unless the user asked for that default.
+
+## Model “absence” explicitly
+
+If “missing” is part of the intended behavior, prefer `prop: T | null` (or a discriminated union) instead of `prop?: T | null`.
+
+This makes the call-site explicit and avoids silent defaults.
+
+## Exception: low-level reusable / technical components
+
+Optional props are allowed when the component is a low-level reusable / technical building block used in many places (for example: a sentinel, a UI primitive, or shared infrastructure).
+
+In those components:
+
+- Optional props should have clear defaults.
+- Keep the API small and stable across many use cases.
+
 ## Props Argument and Spread
 
-- The component function must accept a single argument named `props`.
+- For components that accept props: the component function must accept a single argument named `props`.
+- For propsless components: omit the parameter.
 - Destructure at the top of the function; keep `...rest` last and spread it to the root DOM element when appropriate.
 
 ### Also applies to `_Props` type declarations
@@ -71,18 +153,6 @@ export type Example_Props = React.ComponentProps<"div"> & {
 	// Children last
 	children?: React.ReactNode;
 };
-```
-
-# Propsless Components
-
-For components that don't accept any props, define an empty props type with the `_Props` suffix:
-
-```ts
-export type MyComponent_Props = {};
-
-export function MyComponent(props: MyComponent_Props) {
-	// Component implementation
-}
 ```
 
 ## Example
@@ -124,10 +194,26 @@ export function Toolbar(props: Toolbar_Props) {
 type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 ```
 
-- Use TypeScript's `satisfies` operator to validate class string literals at call sites:
+- **MANDATORY**: Use TypeScript's `satisfies` operator to validate component-owned class string literals at call sites.
 
 ```ts
 <div className={cn("Thread" satisfies Thread_ClassNames)} />
+```
+
+- **MANDATORY**: Extend the same “typed string literal contract” approach beyond `className`:
+  - **DOM ids**
+    - When referencing DOM elements by id, validate the string with the app’s id types (e.g. `AppElementId`, `AppDomId`) using `satisfies`.
+  - **`data-*` attributes**
+    - Model component-owned `data-*` attributes as a `ComponentName_CustomAttributes` type and validate both the attribute usage and key access using `satisfies` / `ExtractStrict` as needed.
+
+```ts
+// DOM ids
+document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
+
+// data-* attributes (example pattern)
+type MyComponent_CustomAttributes = { "data-my-flag": "" };
+
+el?.getAttribute("data-my-flag" satisfies ExtractStrict<keyof MyComponent_CustomAttributes, "data-my-flag">);
 ```
 
 ## Grouped \_ClassNames by Compound Component
@@ -339,6 +425,74 @@ import { cn, sx } from "@/lib/utils.ts";
 />
 ```
 
+# Advanced interactive components patterns
+
+## List rows: primary action + secondary actions (overlay grid + subgrid)
+
+Use this pattern for list rows where:
+
+- The row should be clickable as a single **primary action** (open/select).
+- The row also has **secondary icon actions** (star/archive/rename, etc.).
+- The row highlight on hover should match the primary click target (no “dead” padding).
+- The primary label must never go underneath the actions (proper truncation).
+
+### Core idea
+
+- The row container is a 2-column grid: `1fr auto` (content + actions).
+- The **primary action element** spans the full row and uses `subgrid` so it “inherits” the same column layout as the row.
+- The **actions container** sits in the right column and intercepts clicks in the actions area, so clicking between action buttons does not trigger the primary action.
+
+### CSS template
+
+```css
+.Row {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	align-items: center;
+
+	border: 1px solid transparent; /* enables :focus-within border affordance */
+}
+
+.Row-primary {
+	grid-column: 1 / -1;
+	grid-row: 1;
+
+	display: grid;
+	grid-template-columns: subgrid;
+	align-items: center;
+
+	height: 36px; /* match action button height */
+	padding: 0 12px; /* row padding belongs here */
+}
+
+.Row-title {
+	grid-column: 1;
+	min-width: 0;
+
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.Row-actions {
+	grid-column: 2;
+	grid-row: 1;
+
+	display: flex;
+	align-items: center;
+	gap: 4px;
+
+	/* Keep pointer-events enabled so clicks in this zone don't hit .Row-primary */
+	pointer-events: auto;
+}
+```
+
+### Interaction guidance
+
+- Prefer a single row-level focus affordance: `.Row:focus-within { border-color: ... }` so the whole row reads as “focused”.
+- Apply hover/selected backgrounds to `.Row` (not the primary button) so the visual highlight includes the actions area too.
+- Use a shared icon button component for secondary actions (e.g. `MyIconButton`/`MyIconButtonIcon`) to keep hover/focus colors consistent.
+
 # React 19 Context Patterns
 
 ## Modern Context with use Hook
@@ -461,6 +615,19 @@ function Parent(props: { ref?: React.Ref<any> }) {
 			}}
 		/>
 	);
+}
+```
+
+You can also use `forward_ref` to forward the same instance to a `setState` function (for example, store a DOM node in state so you can pass it as an `IntersectionObserver` root).
+
+```tsx
+import { forward_ref } from "@/lib/utils.ts";
+
+function Example() {
+	const divRef = useRef<HTMLDivElement | null>(null);
+	const [root, setRoot] = useState<HTMLDivElement | null>(null);
+
+	return <div ref={(node) => forward_ref(node, divRef, setRoot)} />;
 }
 ```
 
@@ -612,61 +779,59 @@ export function Example(props: { value: string }) {
 }
 ```
 
-# Component Static Properties
+# Component attached exports (Fast Refresh / HMR-friendly)
 
-## Dot notation (recommended)
+Sometimes we want a “single module” that conceptually exports multiple symbols (component, hooks, constants), but React Fast Refresh / HMR can behave poorly with extra top-level exports.
 
-When attaching helper functions or static properties to a component function, prefer **dot notation**. TypeScript supports this pattern, and it keeps the component definition straightforward.
+In those cases, **attach the extra symbols as properties on the component** via dot-notation assignments. This keeps leaf imports ergonomic and avoids scattering context/hooks across multiple modules.
+
+- Prefer `MyContextProvider.useContext` over a separate `export function useMyContext()`.
+- Attach only _stable_ helpers/hooks/constants that are conceptually owned by the component.
 
 ```tsx
-export function ComponentName(props: ComponentName_Props) {
-	const { children, ...rest } = props;
-	return <div {...rest}>{children}</div>;
+export function MyContextProvider(props: MyContextProvider_Props) {
+	// ...
+	return props.children;
 }
 
-ComponentName.staticMethod = function staticMethod() {
-	// static method implementation
+MyContextProvider.useContext = function useContext() {
+	// ... read context ...
+	return {};
 };
+
+MyContextProvider.DEFAULTS = {
+	// ... constants ...
+} as const;
 ```
 
-## Dot notation with types (namespace merge)
+If TypeScript complains about missing properties on the function, add a **type-only** declaration for the attached fields (no runtime export):
 
-If you want the static members to be fully type-checked at the call-site without casts, use a `namespace` merge with the same name as the component:
-
-```tsx
-export function ComponentName(props: ComponentName_Props) {
-	const { children, ...rest } = props;
-	return <div {...rest}>{children}</div>;
+```ts
+declare namespace MyContextProvider {
+	export const DEFAULTS: typeof MyContextProvider.DEFAULTS;
+	export const useContext: typeof MyContextProvider.useContext;
 }
-
-export namespace ComponentName {
-	export function staticMethod() {
-		// static method implementation
-	}
-}
-```
-
-## Object.assign (optional)
-
-If you prefer to attach multiple properties in one place, `Object.assign` is fine, but it is **not required**.
-
-```tsx
-export function ComponentName(props: ComponentName_Props) {
-	const { children, ...rest } = props;
-	return <div {...rest}>{children}</div>;
-}
-
-Object.assign(ComponentName, {
-	staticMethod() {
-		// static method implementation
-	},
-});
 ```
 
 # Component Region Wrapping
 
-Wrap each component and its related types in VS Code region markers. Place `#region ComponentName` before all
-type definitions and other symbols related to the component, and `#endregion ComponentName` after the component function.
+Region wrapping is recommended for large modules (especially multi-component modules) but is not a strict requirement.
+If the user requests regions for a module, wrap each component and its related types in VS Code region markers.
+
+## Region label style must match the module
+
+You must use the same region label style already used in that module.
+
+- If the module uses topic-based, lowercase labels (example: `message`, `message list`, `thread`, `root`), keep using that style.
+- Do not introduce PascalCase region labels (example: `ComponentName`) into modules that use lowercase topic labels.
+
+## Keep TSX and CSS region names aligned
+
+If a `.tsx` module has a paired `.css` file, the `/* #region ... */` labels in the CSS must match the `// #region ...` labels in the TSX.
+
+## Placement
+
+Place `// #region <label>` before the types/helpers for that section, and `// #endregion <label>` after the related component/function body.
 
 Many modules include several compound components that already share an obvious prefix (for example, `PageEditorRichTextInner`,
 `PageEditorRichTextToolbar`, `PageEditorRichTextBubble`). Repeating the full prefix in every region label adds noise without

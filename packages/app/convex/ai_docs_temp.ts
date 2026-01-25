@@ -52,7 +52,7 @@ import { minimatch } from "minimatch";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import type { Editor } from "@tiptap/core";
-import { should_never_happen } from "../shared/shared-utils.ts";
+import { generate_id, should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
@@ -396,7 +396,7 @@ export const create_page_quick = mutation({
 		const pageId = await do_create_page(ctx, {
 			workspace_id: workspaceId,
 			project_id: projectId,
-			page_id: `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+			page_id: generate_id("page"),
 			parent_id: tmpPageId,
 			name: title,
 			markdown_content: "",
@@ -1111,7 +1111,7 @@ export const create_page_by_path = internalMutation({
 
 			if (!existing) {
 				// Create missing segment
-				const clientGeneratedPageId = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+				const clientGeneratedPageId = generate_id("page");
 				const pageId = await do_create_page(ctx, {
 					workspace_id: workspaceId,
 					project_id: projectId,

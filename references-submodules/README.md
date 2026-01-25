@@ -11,6 +11,7 @@ It is used for scraping/reading documentation and source code during development
 - Documentation: `references-submodules/ai/content/docs/` - Official documentation
 - Examples: `references-submodules/ai/examples/` - Usage examples and patterns
 - Packages: `references-submodules/ai/packages/` - Core SDK packages
+- AI chatbot template: `references-submodules/ai-chatbot` - Vercel AI Chatbot reference app/template
 
 # Convex
 

@@ -50,37 +50,22 @@ importers:
     dependencies:
       '@ai-sdk/anthropic':
         specifier: 2.0.57
-        version: 2.0.57(zod@4.1.12)
+        version: 2.0.57(zod@4.3.5)
       '@ai-sdk/openai':
         specifier: 2.0.89
-        version: 2.0.89(zod@4.1.12)
+        version: 2.0.89(zod@4.3.5)
       '@ai-sdk/openai-compatible':
         specifier: 1.0.30
-        version: 1.0.30(zod@4.1.12)
+        version: 1.0.30(zod@4.3.5)
       '@ai-sdk/react':
         specifier: 2.0.123
-        version: 2.0.123(react@19.2.3)(zod@4.1.12)
+        version: 2.0.123(react@19.2.3)(zod@4.3.5)
       '@ariakit/react':
         specifier: ^0.4.19
         version: 0.4.20(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@assistant-ui/assistant-stream':
-        specifier: workspace:assistant-stream@*
-        version: link:vendor/assistant-ui/packages/assistant-stream
-      '@assistant-ui/cloud':
-        specifier: workspace:assistant-cloud@*
-        version: link:vendor/assistant-ui/packages/cloud
-      '@assistant-ui/react':
-        specifier: workspace:*
-        version: link:vendor/assistant-ui/packages/react
-      '@assistant-ui/react-ai-sdk':
-        specifier: workspace:*
-        version: link:vendor/assistant-ui/packages/react-ai-sdk
       '@assistant-ui/react-markdown':
         specifier: workspace:*
         version: link:vendor/assistant-ui/packages/react-markdown
-      '@assistant-ui/styles':
-        specifier: workspace:*
-        version: link:vendor/assistant-ui/packages/styles
       '@clerk/backend':
         specifier: ^2.17.2
         version: 2.29.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -143,7 +128,7 @@ importers:
         version: 1.8.0
       '@openrouter/ai-sdk-provider':
         specifier: 1.2.0
-        version: 1.2.0(ai@5.0.121(zod@4.1.12))(zod@4.1.12)
+        version: 1.2.0(ai@5.0.121(zod@4.3.5))(zod@4.3.5)
       '@radix-ui/react-avatar':
         specifier: ^1.1.10
         version: 1.1.11(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -206,7 +191,7 @@ importers:
         version: 1.144.0(@tanstack/react-router@1.144.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(@tanstack/router-core@1.144.0)(csstype@3.2.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(solid-js@1.9.10)
       '@tanstack/zod-adapter':
         specifier: ^1.132.47
-        version: 1.144.0(@tanstack/react-router@1.144.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(zod@4.1.12)
+        version: 1.144.0(@tanstack/react-router@1.144.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(zod@4.3.5)
       '@tiptap/core':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/core
@@ -222,6 +207,9 @@ importers:
       '@tiptap/extension-drag-handle':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-drag-handle
+      '@tiptap/extension-hard-break':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-hard-break
       '@tiptap/extension-highlight':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-highlight
@@ -275,7 +263,7 @@ importers:
         version: 3.0.0(prosemirror-model@1.25.4)(prosemirror-state@1.4.4)(prosemirror-view@1.41.4)(y-protocols@1.0.7(yjs@13.6.29))(yjs@13.6.29)
       ai:
         specifier: 5.0.121
-        version: 5.0.121(zod@4.1.12)
+        version: 5.0.121(zod@4.3.5)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -290,7 +278,7 @@ importers:
         version: 1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
       convex-helpers:
         specifier: ^0.1.106
-        version: 0.1.108(@standard-schema/spec@1.1.0)(convex@1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3))(hono@4.11.3)(react@19.2.3)(typescript@5.9.3)(zod@4.1.12)
+        version: 0.1.108(@standard-schema/spec@1.1.0)(convex@1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3))(hono@4.11.3)(react@19.2.3)(typescript@5.9.3)(zod@4.3.5)
       dedent:
         specifier: ^1.7.0
         version: 1.7.1
@@ -427,11 +415,11 @@ importers:
         specifier: ^13.6.27
         version: 13.6.29
       zod:
-        specifier: 4.1.12
-        version: 4.1.12
+        specifier: 4.3.5
+        version: 4.3.5
       zod-to-json-schema:
         specifier: ^3.24.6
-        version: 3.25.1(zod@4.1.12)
+        version: 3.25.1(zod@4.3.5)
       zustand:
         specifier: ^5.0.8
         version: 5.0.9(@types/react@19.2.7)(immer@11.1.3)(react@19.2.3)(use-sync-external-store@1.6.0(react@19.2.3))
@@ -11969,9 +11957,6 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.1.12:
-    resolution: {integrity: sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ==}
-
   zod@4.3.5:
     resolution: {integrity: sha512-k7Nwx6vuWx1IJ9Bjuf4Zt1PEllcwe7cls3VNzm4CQ1/hgtFUK2bRNG3rvnpPUhFjmqJKAKtjV576KnUkHocg/g==}
 
@@ -12046,18 +12031,11 @@ snapshots:
       '@bufbuild/protobuf': 2.10.2
       '@protobuf-ts/protoc': 2.11.1
 
-  '@ai-sdk/anthropic@2.0.57(zod@4.1.12)':
+  '@ai-sdk/anthropic@2.0.57(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 2.0.1
-      '@ai-sdk/provider-utils': 3.0.20(zod@4.1.12)
-      zod: 4.1.12
-
-  '@ai-sdk/gateway@2.0.27(zod@4.1.12)':
-    dependencies:
-      '@ai-sdk/provider': 2.0.1
-      '@ai-sdk/provider-utils': 3.0.20(zod@4.1.12)
-      '@vercel/oidc': 3.1.0
-      zod: 4.1.12
+      '@ai-sdk/provider-utils': 3.0.20(zod@4.3.5)
+      zod: 4.3.5
 
   '@ai-sdk/gateway@2.0.27(zod@4.3.5)':
     dependencies:
@@ -12066,24 +12044,17 @@ snapshots:
       '@vercel/oidc': 3.1.0
       zod: 4.3.5
 
-  '@ai-sdk/openai-compatible@1.0.30(zod@4.1.12)':
+  '@ai-sdk/openai-compatible@1.0.30(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 2.0.1
-      '@ai-sdk/provider-utils': 3.0.20(zod@4.1.12)
-      zod: 4.1.12
+      '@ai-sdk/provider-utils': 3.0.20(zod@4.3.5)
+      zod: 4.3.5
 
-  '@ai-sdk/openai@2.0.89(zod@4.1.12)':
+  '@ai-sdk/openai@2.0.89(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 2.0.1
-      '@ai-sdk/provider-utils': 3.0.20(zod@4.1.12)
-      zod: 4.1.12
-
-  '@ai-sdk/provider-utils@3.0.20(zod@4.1.12)':
-    dependencies:
-      '@ai-sdk/provider': 2.0.1
-      '@standard-schema/spec': 1.1.0
-      eventsource-parser: 3.0.6
-      zod: 4.1.12
+      '@ai-sdk/provider-utils': 3.0.20(zod@4.3.5)
+      zod: 4.3.5
 
   '@ai-sdk/provider-utils@3.0.20(zod@4.3.5)':
     dependencies:
@@ -12099,16 +12070,6 @@ snapshots:
   '@ai-sdk/provider@2.0.1':
     dependencies:
       json-schema: 0.4.0
-
-  '@ai-sdk/react@2.0.123(react@19.2.3)(zod@4.1.12)':
-    dependencies:
-      '@ai-sdk/provider-utils': 3.0.20(zod@4.1.12)
-      ai: 5.0.121(zod@4.1.12)
-      react: 19.2.3
-      swr: 2.3.8(react@19.2.3)
-      throttleit: 2.1.0
-    optionalDependencies:
-      zod: 4.1.12
 
   '@ai-sdk/react@2.0.123(react@19.2.3)(zod@4.3.5)':
     dependencies:
@@ -13773,10 +13734,10 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
-  '@openrouter/ai-sdk-provider@1.2.0(ai@5.0.121(zod@4.1.12))(zod@4.1.12)':
+  '@openrouter/ai-sdk-provider@1.2.0(ai@5.0.121(zod@4.3.5))(zod@4.3.5)':
     dependencies:
-      ai: 5.0.121(zod@4.1.12)
-      zod: 4.1.12
+      ai: 5.0.121(zod@4.3.5)
+      zod: 4.3.5
 
   '@opentelemetry/api@1.9.0': {}
 
@@ -14685,10 +14646,10 @@ snapshots:
 
   '@tanstack/virtual-file-routes@1.141.0': {}
 
-  '@tanstack/zod-adapter@1.144.0(@tanstack/react-router@1.144.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(zod@4.1.12)':
+  '@tanstack/zod-adapter@1.144.0(@tanstack/react-router@1.144.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(zod@4.3.5)':
     dependencies:
       '@tanstack/react-router': 1.144.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      zod: 4.1.12
+      zod: 4.3.5
 
   '@testing-library/dom@10.4.1':
     dependencies:
@@ -15699,14 +15660,6 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@5.0.121(zod@4.1.12):
-    dependencies:
-      '@ai-sdk/gateway': 2.0.27(zod@4.1.12)
-      '@ai-sdk/provider': 2.0.1
-      '@ai-sdk/provider-utils': 3.0.20(zod@4.1.12)
-      '@opentelemetry/api': 1.9.0
-      zod: 4.1.12
-
   ai@5.0.121(zod@4.3.5):
     dependencies:
       '@ai-sdk/gateway': 2.0.27(zod@4.3.5)
@@ -16254,7 +16207,7 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
-  convex-helpers@0.1.108(@standard-schema/spec@1.1.0)(convex@1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3))(hono@4.11.3)(react@19.2.3)(typescript@5.9.3)(zod@4.1.12):
+  convex-helpers@0.1.108(@standard-schema/spec@1.1.0)(convex@1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3))(hono@4.11.3)(react@19.2.3)(typescript@5.9.3)(zod@4.3.5):
     dependencies:
       convex: 1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
     optionalDependencies:
@@ -16262,7 +16215,7 @@ snapshots:
       hono: 4.11.3
       react: 19.2.3
       typescript: 5.9.3
-      zod: 4.1.12
+      zod: 4.3.5
 
   convex-test@0.0.41(convex@1.31.2(@clerk/clerk-react@5.59.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)):
     dependencies:
@@ -22519,10 +22472,6 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.1(zod@4.1.12):
-    dependencies:
-      zod: 4.1.12
-
   zod-to-json-schema@3.25.1(zod@4.3.5):
     dependencies:
       zod: 4.3.5
@@ -22534,8 +22483,6 @@ snapshots:
   zod@3.24.2: {}
 
   zod@3.25.76: {}
-
-  zod@4.1.12: {}
 
   zod@4.3.5: {}
 

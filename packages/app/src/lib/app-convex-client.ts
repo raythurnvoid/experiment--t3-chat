@@ -1,5 +1,5 @@
 import { ConvexReactClient } from "convex/react";
-import type { ai_chat_Message, ai_chat_Thread } from "./ai-chat.ts";
+import type { ai_chat_AuiMessage, ai_chat_AuiThread } from "./ai-chat.ts";
 import type { Doc as app_convex_Doc, Id as app_convex_Id } from "../../convex/_generated/dataModel.js";
 import type convex_schema from "../../convex/schema.ts";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
@@ -60,12 +60,12 @@ while it is necessary to ensure our types are compatible with Assistant UI.
  * Converts a Convex thread meta to an App thread.
  *
  * @param convex_thread
- * @returns The adapted thread meta: {@link ai_chat_Thread}
+ * @returns The adapted thread meta: {@link ai_chat_AuiThread}
  */
-export function app_convex_adapt_convex_to_app_thread(convex_thread: ConvexThread): ai_chat_Thread {
+export function app_convex_adapt_convex_to_app_thread(convex_thread: ConvexThread): ai_chat_AuiThread {
 	return {
 		id: convex_thread._id,
-		title: convex_thread.title,
+		title: convex_thread.title ?? "",
 		last_message_at: new Date(convex_thread.last_message_at),
 		external_id: convex_thread.external_id,
 		project_id: convex_thread.project_id,
@@ -83,9 +83,9 @@ export function app_convex_adapt_convex_to_app_thread(convex_thread: ConvexThrea
  * Converts a Convex message to an App message.
  *
  * @param convex_message
- * @returns The adapted message: {@link ai_chat_Message}
+ * @returns The adapted message: {@link ai_chat_AuiMessage}
  */
-export function app_convex_adapt_convex_to_app_message(convex_message: ConvexMessage): ai_chat_Message {
+export function app_convex_adapt_convex_to_app_message(convex_message: ConvexMessage): ai_chat_AuiMessage {
 	return {
 		id: convex_message._id,
 		parent_id: convex_message.parent_id,

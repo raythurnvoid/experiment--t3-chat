@@ -1,10 +1,36 @@
-import type { LiteralUnion } from "type-fest";
+import { createIdGenerator } from "ai";
+import type { KeysOfUnion, LiteralUnion } from "type-fest";
 
 export const ai_chat_HARDCODED_ORG_ID = "app_workspace_local_dev";
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
 
-export function generate_timestamp_uuid<T extends string>(snakeCasePrefix: T): `${T}-${number}-${string}` {
-	return `${snakeCasePrefix}-${Date.now()}-${crypto.randomUUID()}`;
+export const get_id_generator = ((/* iife */) => {
+	function value(snakeCasePrefix: string) {
+		return createIdGenerator({
+			prefix: snakeCasePrefix,
+			separator: "-",
+			size: 32,
+		});
+	}
+
+	const cache = new Map<string, ReturnType<typeof value>>();
+
+	return function get_id_generator(snakeCasePrefix: string) {
+		const cacheKey = snakeCasePrefix;
+		const cachedValue = cache.get(cacheKey);
+		if (cachedValue) {
+			return cachedValue;
+		}
+
+		const result = value(snakeCasePrefix);
+		cache.set(cacheKey, result);
+		return result;
+	};
+})();
+
+export function generate_id<T extends "page" | "ai_thread" | "ai_message">(snakeCasePrefix: T) {
+	const idGenerator = get_id_generator(snakeCasePrefix);
+	return idGenerator();
 }
 
 /**
@@ -47,5 +73,25 @@ export function should_never_happen(message: LiteralUnion<"Missing deps", string
 			message +
 			"\n\t" +
 			JSON.stringify(data, (_key, value) => (value === undefined ? "<undefined>" : value), "\t"),
+	);
+}
+
+type ExtractTypeByProperty<O extends object, P extends KeysOfUnion<O>> = Extract<O, { [K in P]?: any }>;
+
+type ExtractTypeByPropertyAndAssertNotUndefined<O extends object, P extends KeysOfUnion<O>> = ExtractTypeByProperty<
+	O,
+	P
+> & {
+	[K in P]: Exclude<ExtractTypeByProperty<O, K>[K], undefined>;
+};
+
+export function has_defined_property<O extends object, P extends KeysOfUnion<O>>(
+	obj: O,
+	property: P,
+): obj is ExtractTypeByPropertyAndAssertNotUndefined<O, P> {
+	return (
+		property in obj &&
+		/* @ts-expect-error */
+		obj[property] !== undefined
 	);
 }

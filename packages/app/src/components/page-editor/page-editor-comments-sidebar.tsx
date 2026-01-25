@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useGlobalEvent, useGlobalEventList } from "@/lib/global-event.tsx";

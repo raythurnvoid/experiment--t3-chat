@@ -93,6 +93,8 @@ This is a monorepo project with the following essential structure that you must 
   - Examples folders:
     - [examples/](references-submodules/ai/examples)
 
+- [references-submodules/ai-chatbot/](references-submodules/ai-chatbot) - Vercel AI Chatbot reference app/template
+
 - Convex reference repositories (submodules under [references-submodules/](references-submodules))
 
   - Importing: Use standard node_modules imports in the app, submodules are for reference only
@@ -198,40 +200,6 @@ The React Compiler currently has issues lowering `try { ... } catch { ... } fina
 - Wrap async logic in an `async (/* iife */) => { ... }` IIFE
 - Handle errors with `.catch(...)`
 - Do cleanup/state resets with `.finally(...)`
-
-## Object.assign instead of spread operator
-
-When conditionally assigning properties to an object, use `Object.assign` instead of the spread operator to keep a cleaner syntax.
-
-Check values for non undefined-ness to avoid appending undefined properties to the object.
-
-✅ Correct Pattern
-
-```ts
-Object.assign(
-	{
-		updated_by: updated_by,
-		updated_at: Date.now(),
-	},
-	args.title !== undefined ? { title: args.title } : null,
-	args.is_archived !== undefined ? { archived: args.is_archived } : null,
-);
-```
-
-❌ Problematic Pattern
-
-```ts
-Object.assign(
-	{
-		updated_by: updated_by,
-		updated_at: Date.now(),
-	},
-	{
-		title: args.title, // Could be undefined
-		archived: args.is_archived, // Could be undefined
-	},
-);
-```
 
 ## Casing
 

@@ -12,7 +12,7 @@ import { zodValidator } from "@tanstack/zod-adapter";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { useMutation } from "convex/react";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 import { useStableQuery } from "../../hooks/convex-hooks.ts";
 
 const PageEditor = React.lazy(() =>

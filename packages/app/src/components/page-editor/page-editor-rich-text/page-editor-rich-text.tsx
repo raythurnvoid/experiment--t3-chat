@@ -27,9 +27,8 @@ import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
-import { cn, type AppElementId } from "@/lib/utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, type AppElementId } from "@/lib/utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
@@ -241,63 +240,6 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		return true;
 	};
 
-	const handleMount = useEffectEvent(() => {
-		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
-		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
-		const plugin = new Plugin({
-			props: {
-				handleKeyDown: (_view, event) => {
-					if (event.key !== "Escape") {
-						return false;
-					}
-
-					setRendered(false);
-					editor.commands.focus();
-
-					return true;
-				},
-			},
-		});
-		editor.registerPlugin(plugin);
-
-		// Listen for selection updates and reapply the decoration highlight if the bubble menu is shown
-		const handleSelectionUpdate = () => {
-			if (
-				isShownRef.current &&
-				rendered &&
-				!editor.state.selection.empty &&
-				editor.state.selection.from !== editor.state.selection.to
-			) {
-				editor.chain().clearDecorationHighlight().setDecorationHighlight().run();
-			}
-		};
-		editor.on("selectionUpdate", handleSelectionUpdate);
-
-		// Global event listeners
-
-		const clearEventListeners = global_event_listen_all(
-			["keydown", "pointerdown"],
-			(event) => {
-				const isInManagedAreas = isElContainedInManagedAreas(event.target);
-
-				if (
-					(event instanceof KeyboardEvent && event.key === "Escape" && isInManagedAreas === false) ||
-					(event instanceof PointerEvent && isInManagedAreas === false)
-				) {
-					setRendered(false);
-					PageEditorRichText.clearDecorationHighlightProperly(editor);
-				}
-			},
-			{ capture: true },
-		);
-
-		return () => {
-			editor.unregisterPlugin(bubbleEscPluginKey);
-			editor.off("selectionUpdate", handleSelectionUpdate);
-			clearEventListeners();
-		};
-	});
-
 	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
 		isShownRef.current = false;
 
@@ -357,7 +299,63 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		setRendered(false);
 	};
 
-	useEffect(handleMount, []);
+	// On mount
+	useEffect(() => {
+		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
+		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
+		const plugin = new Plugin({
+			props: {
+				handleKeyDown: (_view, event) => {
+					if (event.key !== "Escape") {
+						return false;
+					}
+
+					setRendered(false);
+					editor.commands.focus();
+
+					return true;
+				},
+			},
+		});
+		editor.registerPlugin(plugin);
+
+		// Listen for selection updates and reapply the decoration highlight if the bubble menu is shown
+		const handleSelectionUpdate = () => {
+			if (
+				isShownRef.current &&
+				rendered &&
+				!editor.state.selection.empty &&
+				editor.state.selection.from !== editor.state.selection.to
+			) {
+				editor.chain().clearDecorationHighlight().setDecorationHighlight().run();
+			}
+		};
+		editor.on("selectionUpdate", handleSelectionUpdate);
+
+		// Global event listeners
+
+		const clearEventListeners = global_event_listen_all(
+			["keydown", "pointerdown"],
+			(event) => {
+				const isInManagedAreas = isElContainedInManagedAreas(event.target);
+
+				if (
+					(event instanceof KeyboardEvent && event.key === "Escape" && isInManagedAreas === false) ||
+					(event instanceof PointerEvent && isInManagedAreas === false)
+				) {
+					setRendered(false);
+					PageEditorRichText.clearDecorationHighlightProperly(editor);
+				}
+			},
+			{ capture: true },
+		);
+
+		return () => {
+			editor.unregisterPlugin(bubbleEscPluginKey);
+			editor.off("selectionUpdate", handleSelectionUpdate);
+			clearEventListeners();
+		};
+	}, []);
 
 	return hoistingContainer ? (
 		<EditorBubble

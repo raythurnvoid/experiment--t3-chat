@@ -55,3 +55,6 @@
 [submodule "references-submodules/convex-tanstack-start"]
 	path = references-submodules/convex-tanstack-start
 	url = https://github.com/get-convex/convex-tanstack-start.git
+[submodule "references-submodules/ai-chatbot"]
+	path = references-submodules/ai-chatbot
+	url = https://github.com/vercel/ai-chatbot.git

@@ -41,10 +41,60 @@ The guidelines below apply **only when creating vanilla CSS files**, not when us
 # Layering
 
 ```css
+@layer components {
+	/* Feature-level / context-specific component styles (e.g. ai-chat, page-editor, routes) */
+}
+
 @layer common_components {
-	/* All component styles must be wrapped in this layer */
+	/* Reusable app “primitives” used across many contexts (e.g. MyButton, MyInput, MyModal, MyIconButton) */
 }
 ```
+
+## Which layer should I use?
+
+- Use `@layer components` for **high-level, feature/context styles** (routes, ai-chat, page-editor, sidebars specific to a page/feature).
+- Use `@layer common_components` for **shared/reusable UI components** (the `My*` component CSS files, small primitives used broadly).
+
+# Grouping Style (Required for module CSS)
+
+When a `.css` file is paired with a `.tsx` module (same feature/module, imported by that module), the CSS must be structured to make it obvious how it maps to the TSX file.
+
+## Regions: keep TSX and CSS aligned
+
+- If the TSX module uses `// #region ...` markers, the paired CSS file must use matching `/* #region ... */` markers.
+- **Region label text must match exactly** (including spacing/casing).
+- Prefer reading top-down: **`root` → deeper sections**. If both TSX and CSS use regions, it’s ideal for both files to use the same top-down order, but the **required** constraint is matching region labels (not identical ordering).
+- Do not add “extra” regions in the paired CSS that don’t exist in the TSX module.
+
+```css
+@layer components {
+	/* #region root */
+	.MyModule {
+		/* ... */
+	}
+	/* #endregion root */
+
+	/* #region toolbar */
+	.MyModuleToolbar {
+		/* ... */
+	}
+	/* #endregion toolbar */
+}
+```
+
+## Group selectors by component, then by role
+
+- Keep each component’s selectors contiguous (don’t interleave other components).
+- For each component, prefer this adjacency:
+  - Base selector (e.g. `.MyThing`)
+  - Direct children / slots (e.g. `.MyThing-title`, `.MyThing-actions`)
+  - Modifiers/states (e.g. `.MyThing-state-open`, `.MyThing-variant-...`)
+  - Contextual overrides (e.g. `.MyThing-state-open .MyThing-title`)
+
+## One module per file
+
+- A module `.css` file should primarily contain styles for components defined in the paired TSX module.
+- If a separate TSX module/component needs styles, it should generally have its own `.css` file imported by that module (instead of “parking” styles in an unrelated file).
 
 # Class Naming Convention
 
@@ -419,7 +469,7 @@ Prefer `contain: content` for container components (e.g., sidebars) instead of `
 # Example Complete Component
 
 ```css
-@layer common_components {
+@layer components {
 	.Card {
 		box-sizing: border-box;
 		position: relative;
@@ -463,7 +513,5 @@ Prefer `contain: content` for container components (e.g., sidebars) instead of `
 - **Low specificity**: Easy to override styles when needed
 - **Modern CSS**: Uses latest nesting and selector features
 - **Maintainable**: Clear naming convention and organization
-- **Performance**: Efficient CSS with minimal specificity conflicts
-- **Scalable**: Consistent patterns across all components
 - **Performance**: Efficient CSS with minimal specificity conflicts
 - **Scalable**: Consistent patterns across all components
