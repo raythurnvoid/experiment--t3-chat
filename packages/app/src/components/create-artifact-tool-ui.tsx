@@ -1,22 +1,26 @@
-import { memo, useEffect } from "react";
-import { makeAssistantToolUI, useAssistantState } from "@assistant-ui/react";
-import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { useEffect } from "react";
 import { useCanvasStore } from "../stores/canvas-store.ts";
 import type { ArtifactTextContent, Artifact } from "../types/canvas.ts";
 import { parseCreateArtifactArgs, type CreateArtifactArgs } from "../types/artifact-schemas.ts";
 import { Button } from "./ui/button.tsx";
 import { FileText, Eye, AlertCircle, Loader2 } from "lucide-react";
 
-// Define props interface for better typing
-type CreateArtifactToolProps = ToolCallMessagePartProps<CreateArtifactArgs, void>;
+type CreateArtifactToolUI_Props = {
+	args: CreateArtifactArgs | undefined;
+	toolState: "input-streaming" | "input-available" | "output-available" | "output-error";
+	artifactId?: string | undefined;
+	errorText?: string | undefined;
+};
 
-function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolProps) {
+export function CreateArtifactToolUI(props: CreateArtifactToolUI_Props) {
+	const { args, toolState, artifactId, errorText } = props;
 	const { setArtifact, setCurrentArtifactId, getArtifactById } = useCanvasStore();
 
 	// Safely parse arguments and result using Zod
 	const argsParseResult = parseCreateArtifactArgs(args);
-
-	const artifactId = useAssistantState(({ message }) => (message.metadata.unstable_data?.[0] as any)?.id);
+	const isRunning = toolState === "input-streaming" || toolState === "input-available";
+	const isComplete = toolState === "output-available";
+	const isError = toolState === "output-error" || Boolean(errorText);
 
 	useEffect(() => {
 		if (!argsParseResult.success) {
@@ -24,6 +28,9 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 		}
 
 		const { type, title, markdown } = argsParseResult.data;
+		if (!artifactId) {
+			return;
+		}
 
 		Promise.resolve()
 			.then(() => {
@@ -51,7 +58,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 			.catch((error) => {
 				console.error("❌ Error updating canvas store:", error);
 			});
-	}, [result, args, status.type]);
+	}, [argsParseResult.success, argsParseResult.data, artifactId, setArtifact]);
 
 	const handleViewArtifact = () => {
 		if (argsParseResult.success && artifactId !== undefined) {
@@ -63,13 +70,13 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	};
 
 	// Show loading state while tool is executing
-	if (status.type === "running") {
+	if (isRunning) {
 		return (
 			<div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
 				<Loader2 className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
 				<div className="flex flex-col">
 					<span className="text-sm text-blue-800 dark:text-blue-200">
-						{status.type === "running" ? "Generating artifact content..." : "Creating artifact..."}
+						Generating artifact content...
 					</span>
 					{argsParseResult.success && (
 						<span className="text-xs text-blue-600 dark:text-blue-400">
@@ -82,7 +89,7 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 	}
 
 	// Show error state if parsing failed
-	if (status.type === "complete" && argsParseResult.error) {
+	if (isError && argsParseResult.error) {
 		return (
 			<div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
 				<AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
@@ -93,8 +100,17 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 		);
 	}
 
+	if (isError && errorText) {
+		return (
+			<div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
+				<AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+				<span className="text-sm text-red-800 dark:text-red-200">{errorText}</span>
+			</div>
+		);
+	}
+
 	// Show success state with view button
-	if (status.type === "complete" && argsParseResult.success) {
+	if (isComplete && argsParseResult.success) {
 		return (
 			<div className="flex items-center justify-between gap-3 rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
 				<div className="flex items-center gap-2">
@@ -127,12 +143,3 @@ function CreateArtifactToolRender({ args, result, status }: CreateArtifactToolPr
 		</div>
 	);
 }
-
-export const CreateArtifactToolUI = memo(
-	makeAssistantToolUI<CreateArtifactArgs, void>({
-		toolName: "create_artifact",
-		render: (args) => {
-			return CreateArtifactToolRender(args);
-		},
-	}),
-);

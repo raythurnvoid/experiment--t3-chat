@@ -1,10 +1,35 @@
+import { createIdGenerator } from "ai";
 import type { LiteralUnion } from "type-fest";
 
 export const ai_chat_HARDCODED_ORG_ID = "app_workspace_local_dev";
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
 
-export function generate_timestamp_uuid<T extends string>(snakeCasePrefix: T): `${T}-${number}-${string}` {
-	return `${snakeCasePrefix}-${Date.now()}-${crypto.randomUUID()}`;
+const get_id_generator = ((/* iife */) => {
+	function value(snakeCasePrefix: string) {
+		return createIdGenerator({
+			prefix: snakeCasePrefix,
+			separator: "-",
+			size: 32,
+		});
+	}
+
+	const cache = new Map<string, ReturnType<typeof value>>();
+
+	return function get_id_generator(snakeCasePrefix: string) {
+		const cachedValue = cache.get(snakeCasePrefix);
+		if (cachedValue) {
+			return cachedValue;
+		}
+
+		const result = value(snakeCasePrefix);
+		cache.set(snakeCasePrefix, result);
+		return result;
+	};
+})();
+
+export function generate_id<T extends "page" | "ai_thread">(snakeCasePrefix: T) {
+	const idGenerator = get_id_generator(snakeCasePrefix);
+	return idGenerator();
 }
 
 /**

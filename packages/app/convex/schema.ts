@@ -1,12 +1,11 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import type { MessageStorageEntry } from "@assistant-ui/react";
 import type { UIMessage } from "ai";
 
 const app_convex_schema = defineSchema({
 	// #region AI
 	threads: defineTable({
-		title: v.string(),
+		title: v.union(v.string(), v.null()),
 		archived: v.boolean(),
 		/** timestamp in milliseconds */
 		last_message_at: v.number(),
@@ -27,7 +26,7 @@ const app_convex_schema = defineSchema({
 		.index("by_workspace_and_archived", ["workspace_id", "archived"]),
 
 	/**
-	 * Each doc should be compatible with {@link MessageStorageEntry} from `@assistant-ui/react`
+	 * Each doc should be compatible with `UIMessage` from `ai`.
 	 */
 	messages: defineTable({
 		parent_id: v.union(v.id("messages"), v.null()),
@@ -403,5 +402,4 @@ export default app_convex_schema;
 export { app_convex_schema };
 
 // @ts-expect-error unused type
-type _ = //
-	MessageStorageEntry<any> | UIMessage;
+type _ = UIMessage;

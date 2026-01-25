@@ -223,6 +223,19 @@
 		height: 16px;
 	}
 
+	.AiChatMessage-branch-controls {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.AiChatMessage-branch-label {
+		min-width: 32px;
+		text-align: center;
+		font-size: 0.75rem;
+		color: hsl(var(--muted-foreground));
+	}
+
 	.AiChatMessage-part {
 		display: flex;
 		flex-direction: column;

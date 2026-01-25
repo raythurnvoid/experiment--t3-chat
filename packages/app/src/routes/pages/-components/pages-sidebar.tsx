@@ -34,7 +34,7 @@ import {
 } from "react-complex-tree";
 import { useQuery, useMutation } from "convex/react";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
-import { generate_timestamp_uuid } from "@/lib/utils.ts";
+import { generate_id } from "@/lib/utils.ts";
 import { app_convex_api, app_convex_wait_new_query_value } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -234,7 +234,7 @@ class PagesSidebarTreeDataProvider implements TreeDataProvider<pages_TreeItem> {
 	}
 
 	createNewItem(parentId: string, title: string = "Untitled"): string {
-		const pageId = generate_timestamp_uuid("page");
+		const pageId = generate_id("page");
 		const parentItem = this.data[parentId];
 
 		if (parentItem) {

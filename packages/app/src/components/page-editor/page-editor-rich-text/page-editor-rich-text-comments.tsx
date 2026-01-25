@@ -8,7 +8,7 @@ import {
 	PageEditorCommentsThread,
 	type PageEditorCommentsThread_Props,
 } from "../page-editor-comments-thread.tsx";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 // #region thread
 type PageEditorRichTextAnchoredCommentsThread_Props = {
@@ -76,9 +76,7 @@ export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnch
 
 	const [query, setQuery] = useState("");
 
-	const filteredThreads = useMemo(() => {
-		return PageEditorCommentsFilterInput.filterThreads(threads, query);
-	}, [query, threads]);
+	const filteredThreads = PageEditorCommentsFilterInput.filterThreads(threads, query);
 
 	const handleThreadClick = (threadId: string) => {
 		editor.commands.selectThread(threadId);

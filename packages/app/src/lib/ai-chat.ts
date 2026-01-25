@@ -1,5 +1,23 @@
 export { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../shared/shared-utils.ts";
 
+// eslint-disable-next-line no-restricted-imports
+export type {
+	ai_tool_create_read_page_ToolInput,
+	ai_tool_create_read_page_ToolOutput,
+	ai_tool_create_list_pages_ToolInput,
+	ai_tool_create_list_pages_ToolOutput,
+	ai_tool_create_glob_pages_ToolInput,
+	ai_tool_create_glob_pages_ToolOutput,
+	ai_tool_create_grep_pages_ToolInput,
+	ai_tool_create_grep_pages_ToolOutput,
+	ai_tool_create_text_search_pages_ToolInput,
+	ai_tool_create_text_search_pages_ToolOutput,
+	ai_tool_create_write_page_ToolInput,
+	ai_tool_create_write_page_ToolOutput,
+	ai_tool_create_edit_page_ToolInput,
+	ai_tool_create_edit_page_ToolOutput,
+} from "../../server/server-ai-tools.ts";
+
 /**
  * Assistant UI compatible thread meta.
  *
@@ -7,7 +25,7 @@ export { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../../sh
  */
 export interface ai_chat_Thread {
 	// aui/v0 fields
-	title: string;
+	title: string | null;
 	last_message_at: Date;
 	external_id: string | null;
 	id: string;
@@ -174,20 +192,3 @@ export type ai_chat_MessageContentPartFile = {
 	mimeType: string;
 };
 
-// eslint-disable-next-line no-restricted-imports
-export type {
-	ai_tool_create_read_page_ToolInput,
-	ai_tool_create_read_page_ToolOutput,
-	ai_tool_create_list_pages_ToolInput,
-	ai_tool_create_list_pages_ToolOutput,
-	ai_tool_create_glob_pages_ToolInput,
-	ai_tool_create_glob_pages_ToolOutput,
-	ai_tool_create_grep_pages_ToolInput,
-	ai_tool_create_grep_pages_ToolOutput,
-	ai_tool_create_text_search_pages_ToolInput,
-	ai_tool_create_text_search_pages_ToolOutput,
-	ai_tool_create_write_page_ToolInput,
-	ai_tool_create_write_page_ToolOutput,
-	ai_tool_create_edit_page_ToolInput,
-	ai_tool_create_edit_page_ToolOutput,
-} from "../../server/server-ai-tools.ts";
