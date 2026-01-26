@@ -1,9 +1,9 @@
 import "../convex/setup.test.ts";
 import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
-import { ai_tool_create_list_pages } from "./server-ai-tools.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../src/lib/ai-chat.ts";
-import { has_defined_property } from "../src/lib/utils.ts";
+import { ai_chat_tool_create_list_pages } from "./server-ai-tools.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
+import { has_defined_property } from "../shared/shared-utils.ts";
 
 const makeCtx = (
 	runQueryImpl: (ref: any, args: any) => Promise<any>,
@@ -19,7 +19,7 @@ function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
 
 test("list_pages tool: inputSchema defaults", () => {
 	const { ctx } = makeCtx(async () => ({ items: [], truncated: false }));
-	const tool = ai_tool_create_list_pages(ctx);
+	const tool = ai_chat_tool_create_list_pages(ctx);
 
 	const parsed = has_defined_property(tool.inputSchema, "parse") ? tool.inputSchema.parse({}) : undefined;
 	expect(parsed).toEqual({ path: "/", maxDepth: 5, limit: 100 });
@@ -42,7 +42,7 @@ test("list_pages tool: execute renders tree, applies ignore, and calls convex wi
 		return listReturn;
 	});
 
-	const tool = ai_tool_create_list_pages(ctx);
+	const tool = ai_chat_tool_create_list_pages(ctx);
 	const result = await tool.execute?.(
 		{ path: "/", maxDepth: 10, limit: 100, ignore: ["**/Play"] },
 		{ toolCallId: "test", messages: [] },

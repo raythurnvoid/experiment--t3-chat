@@ -59,7 +59,7 @@ function levenshtein(a: string, b: string): number {
  * Cons:
  * - Brittle to whitespace/escaping/indentation changes
  */
-function* ai_tool_edit_page_replacer_simple(_content: string, find: string): Generator<string, void, unknown> {
+function* ai_chat_tool_edit_page_replacer_simple(_content: string, find: string): Generator<string, void, unknown> {
 	yield find;
 }
 
@@ -76,7 +76,7 @@ function* ai_tool_edit_page_replacer_simple(_content: string, find: string): Gen
  * Cons:
  * - Can collide when multiple blocks are equal after per-line trim
  */
-function* ai_tool_edit_page_replacer_line_trimmed(content: string, find: string): Generator<string, void, unknown> {
+function* ai_chat_tool_edit_page_replacer_line_trimmed(content: string, find: string): Generator<string, void, unknown> {
 	const originalLines = content.split("\n");
 	const searchLines = find.split("\n");
 	if (searchLines[searchLines.length - 1] === "") searchLines.pop();
@@ -114,7 +114,7 @@ function* ai_tool_edit_page_replacer_line_trimmed(content: string, find: string)
  * - Heuristic thresholds; slower on large files
  * - Possible false positives
  */
-function* ai_tool_edit_page_replacer_block_anchor(content: string, find: string): Generator<string, void, unknown> {
+function* ai_chat_tool_edit_page_replacer_block_anchor(content: string, find: string): Generator<string, void, unknown> {
 	const originalLines = content.split("\n");
 	const searchLines = find.split("\n");
 	if (searchLines.length < 3) return;
@@ -214,7 +214,7 @@ function* ai_tool_edit_page_replacer_block_anchor(content: string, find: string)
  * Cons:
  * - Risky when whitespace is semantically meaningful (tables, YAML, code)
  */
-function* ai_tool_edit_page_replacer_whitespace_normalized(
+function* ai_chat_tool_edit_page_replacer_whitespace_normalized(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -264,7 +264,7 @@ function* ai_tool_edit_page_replacer_whitespace_normalized(
  * Cons:
  * - Can over-match the same block at multiple indents
  */
-function* ai_tool_edit_page_replacer_indentation_flexible(
+function* ai_chat_tool_edit_page_replacer_indentation_flexible(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -301,7 +301,7 @@ function* ai_tool_edit_page_replacer_indentation_flexible(
  * Cons:
  * - May over-match in files with many similar string literals
  */
-function* ai_tool_edit_page_replacer_escape_normalized(
+function* ai_chat_tool_edit_page_replacer_escape_normalized(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -352,22 +352,22 @@ function replace_once_or_all(
 
 	const replaceAll = !!opts?.replaceAll;
 	const activePipeline: Replacer[] = [
-		ai_tool_edit_page_replacer_simple,
-		ai_tool_edit_page_replacer_line_trimmed,
-		ai_tool_edit_page_replacer_block_anchor,
-		ai_tool_edit_page_replacer_whitespace_normalized,
-		ai_tool_edit_page_replacer_indentation_flexible,
-		ai_tool_edit_page_replacer_escape_normalized,
+		ai_chat_tool_edit_page_replacer_simple,
+		ai_chat_tool_edit_page_replacer_line_trimmed,
+		ai_chat_tool_edit_page_replacer_block_anchor,
+		ai_chat_tool_edit_page_replacer_whitespace_normalized,
+		ai_chat_tool_edit_page_replacer_indentation_flexible,
+		ai_chat_tool_edit_page_replacer_escape_normalized,
 		// Optional (disabled) replacers:
-		// - ai_tool_edit_page_replacer_trimmed_boundary
+		// - ai_chat_tool_edit_page_replacer_trimmed_boundary
 		//   Source: OpenCode TrimmedBoundaryReplacer (packages/app/vendor/opencode/packages/opencode/src/tool/edit.ts)
 		//   Pros: tolerant when only outer whitespace differs
 		//   Cons: high collision risk; enable only as last fallback
-		// - ai_tool_edit_page_replacer_context_aware
+		// - ai_chat_tool_edit_page_replacer_context_aware
 		//   Source: OpenCode ContextAwareReplacer
 		//   Pros: first/last anchors + middle-line equality ratio
 		//   Cons: heuristic, slower; keep last if enabled
-		// - ai_tool_edit_page_replacer_multi_occurrence
+		// - ai_chat_tool_edit_page_replacer_multi_occurrence
 		//   Source: OpenCode MultiOccurrenceReplacer
 		//   Pros: enumerate all exact hits for custom global replace flows
 		//   Cons: redundant with replaceAll; usually unnecessary here
@@ -396,7 +396,7 @@ function replace_once_or_all(
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
  */
-export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Reads a page from the DB. You can access any page directly by using this tool.
@@ -515,14 +515,14 @@ export function ai_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { t
 	});
 }
 
-type ai_tool_create_read_page_Tool = ReturnType<typeof ai_tool_create_read_page>;
-export type ai_tool_create_read_page_ToolInput = InferToolInput<ai_tool_create_read_page_Tool>;
-export type ai_tool_create_read_page_ToolOutput = InferToolOutput<ai_tool_create_read_page_Tool>;
+type ai_chat_tool_create_read_page_Tool = ReturnType<typeof ai_chat_tool_create_read_page>;
+export type ai_chat_tool_create_read_page_ToolInput = InferToolInput<ai_chat_tool_create_read_page_Tool>;
+export type ai_chat_tool_create_read_page_ToolOutput = InferToolOutput<ai_chat_tool_create_read_page_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
-export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: { thread_id: string }) {
+export function ai_chat_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Lists descendants pages in a given path. \
@@ -613,14 +613,14 @@ export function ai_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: {
 	});
 }
 
-type ai_tool_create_list_pages_Tool = ReturnType<typeof ai_tool_create_list_pages>;
-export type ai_tool_create_list_pages_ToolInput = InferToolInput<ai_tool_create_list_pages_Tool>;
-export type ai_tool_create_list_pages_ToolOutput = InferToolOutput<ai_tool_create_list_pages_Tool>;
+type ai_chat_tool_create_list_pages_Tool = ReturnType<typeof ai_chat_tool_create_list_pages>;
+export type ai_chat_tool_create_list_pages_ToolInput = InferToolInput<ai_chat_tool_create_list_pages_Tool>;
+export type ai_chat_tool_create_list_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_list_pages_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
  */
-export function ai_tool_create_glob_pages(ctx: ActionCtx) {
+export function ai_chat_tool_create_glob_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Fast page pattern matching tool that works with any database size. \
@@ -680,16 +680,16 @@ export function ai_tool_create_glob_pages(ctx: ActionCtx) {
 	});
 }
 
-type ai_tool_create_glob_pages_Tool = ReturnType<typeof ai_tool_create_glob_pages>;
-export type ai_tool_create_glob_pages_ToolInput = InferToolInput<ai_tool_create_glob_pages_Tool>;
-export type ai_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_tool_create_glob_pages_Tool>;
+type ai_chat_tool_create_glob_pages_Tool = ReturnType<typeof ai_chat_tool_create_glob_pages>;
+export type ai_chat_tool_create_glob_pages_ToolInput = InferToolInput<ai_chat_tool_create_glob_pages_Tool>;
+export type ai_chat_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_glob_pages_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/grep.ts`
  *
  * Search pages by applying a regex pattern against page name + text_content
  */
-export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
       Fast content search over pages using regular expressions.\
@@ -810,11 +810,11 @@ export function ai_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { 
 	});
 }
 
-type ai_tool_create_grep_pages_Tool = ReturnType<typeof ai_tool_create_grep_pages>;
-export type ai_tool_create_grep_pages_ToolInput = InferToolInput<ai_tool_create_grep_pages_Tool>;
-export type ai_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_tool_create_grep_pages_Tool>;
+type ai_chat_tool_create_grep_pages_Tool = ReturnType<typeof ai_chat_tool_create_grep_pages>;
+export type ai_chat_tool_create_grep_pages_ToolInput = InferToolInput<ai_chat_tool_create_grep_pages_Tool>;
+export type ai_chat_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_pages_Tool>;
 
-export function ai_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Ultra-fast text search over page content using the database search index.\
@@ -865,16 +865,16 @@ export function ai_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_
 	});
 }
 
-type ai_tool_create_text_search_pages_Tool = ReturnType<typeof ai_tool_create_text_search_pages>;
-export type ai_tool_create_text_search_pages_ToolInput = InferToolInput<ai_tool_create_text_search_pages_Tool>;
-export type ai_tool_create_text_search_pages_ToolOutput = InferToolOutput<ai_tool_create_text_search_pages_Tool>;
+type ai_chat_tool_create_text_search_pages_Tool = ReturnType<typeof ai_chat_tool_create_text_search_pages>;
+export type ai_chat_tool_create_text_search_pages_ToolInput = InferToolInput<ai_chat_tool_create_text_search_pages_Tool>;
+export type ai_chat_tool_create_text_search_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_text_search_pages_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`
  *
  * Tool for proposing page content with preview diff (no direct apply)
  */
-export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Writes a page in the system.
@@ -960,9 +960,9 @@ export function ai_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { 
 	});
 }
 
-type ai_tool_create_write_page_Tool = ReturnType<typeof ai_tool_create_write_page>;
-export type ai_tool_create_write_page_ToolInput = InferToolInput<ai_tool_create_write_page_Tool>;
-export type ai_tool_create_write_page_ToolOutput = InferToolOutput<ai_tool_create_write_page_Tool>;
+type ai_chat_tool_create_write_page_Tool = ReturnType<typeof ai_chat_tool_create_write_page>;
+export type ai_chat_tool_create_write_page_ToolInput = InferToolInput<ai_chat_tool_create_write_page_Tool>;
+export type ai_chat_tool_create_write_page_ToolOutput = InferToolOutput<ai_chat_tool_create_write_page_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/edit.ts`
@@ -971,7 +971,7 @@ export type ai_tool_create_write_page_ToolOutput = InferToolOutput<ai_tool_creat
  * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on DB pages,
  * and stores a pending edit for human-in-the-loop review.
  */
-export function ai_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
 	return tool({
 		description: dedent`\
 			Edits an existing page by replacing text and returns a preview diff.
@@ -1046,6 +1046,6 @@ export function ai_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { t
 	});
 }
 
-type ai_tool_create_edit_page_Tool = ReturnType<typeof ai_tool_create_edit_page>;
-export type ai_tool_create_edit_page_ToolInput = InferToolInput<ai_tool_create_edit_page_Tool>;
-export type ai_tool_create_edit_page_ToolOutput = InferToolOutput<ai_tool_create_edit_page_Tool>;
+type ai_chat_tool_create_edit_page_Tool = ReturnType<typeof ai_chat_tool_create_edit_page>;
+export type ai_chat_tool_create_edit_page_ToolInput = InferToolInput<ai_chat_tool_create_edit_page_Tool>;
+export type ai_chat_tool_create_edit_page_ToolOutput = InferToolOutput<ai_chat_tool_create_edit_page_Tool>;

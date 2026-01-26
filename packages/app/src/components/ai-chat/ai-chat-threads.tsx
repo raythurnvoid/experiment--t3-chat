@@ -2,10 +2,16 @@ import "./ai-chat-threads.css";
 
 import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
 import { useState } from "react";
-import { ArchiveIcon, ArchiveRestoreIcon, MessageSquare, Plus, Search, Star, X } from "lucide-react";
+import { ArchiveIcon, ArchiveRestoreIcon, Plus, Search, Star, X } from "lucide-react";
 
+import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { AiChatController } from "@/lib/ai-chat/use-ai-chat-controller.tsx";
+import { ai_chat_is_optimistic_thread } from "@/lib/ai-chat/use-ai-chat-controller.tsx";
+
+const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
 
 // #region header
 type AiChatThreadsHeader_ClassNames =
@@ -68,19 +74,21 @@ function AiChatThreadsSearch(props: AiChatThreadsSearch_Props) {
 	const { searchQuery, onSearchChange } = props;
 
 	return (
-		<div className={cn("AiChatThreadsSearch" satisfies AiChatThreadsSearch_ClassNames)}>
+		<form className={cn("AiChatThreadsSearch" satisfies AiChatThreadsSearch_ClassNames)} role="search">
 			<div className={cn("AiChatThreadsSearch-label" satisfies AiChatThreadsSearch_ClassNames)}>Search chats</div>
 			<div className={cn("AiChatThreadsSearch-field" satisfies AiChatThreadsSearch_ClassNames)}>
 				<Search className={cn("AiChatThreadsSearch-icon" satisfies AiChatThreadsSearch_ClassNames)} />
 				<input
+					type="search"
 					className={cn("AiChatThreadsSearch-input" satisfies AiChatThreadsSearch_ClassNames)}
 					placeholder="Search chats..."
 					value={searchQuery}
 					autoComplete={ui_create_auto_complete_off_value()}
+					aria-controls={ai_chat_threads_RESULTS_LIST_ID}
 					onChange={onSearchChange}
 				/>
 			</div>
-		</div>
+		</form>
 	);
 }
 // #endregion search
@@ -146,11 +154,9 @@ type AiChatThreadsListItem_ClassNames =
 	| "AiChatThreadsListItem"
 	| "AiChatThreadsListItem-state-hidden"
 	| "AiChatThreadsListItem-trigger"
-	| "AiChatThreadsListItem-icon"
 	| "AiChatThreadsListItem-title"
 	| "AiChatThreadsListItem-actions"
-	| "AiChatThreadsListItem-action"
-	| "AiChatThreadsListItem-action-icon";
+	| "AiChatThreadsListItem-action";
 
 type AiChatThreadsListItem_Props = {
 	thread: app_convex_Doc<"threads">;
@@ -197,7 +203,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 	const archiveButtonLabel = isArchived ? "Unarchive thread" : "Archive thread";
 
 	return (
-		<div
+		<li
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
@@ -210,44 +216,32 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 				className={cn("AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames)}
 				onClick={handleSelect}
 			>
-				<MessageSquare className={cn("AiChatThreadsListItem-icon" satisfies AiChatThreadsListItem_ClassNames)} />
 				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
 					{threadTitle}
 				</span>
 			</button>
 			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
-				<button
-					type="button"
+				<MyIconButton
 					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
+					variant="ghost-secondary"
 					onClick={handleStarToggle}
-					aria-label={starButtonLabel}
 					aria-pressed={isStarred}
-					title={starButtonLabel}
+					tooltip={starButtonLabel}
 				>
-					<Star
-						className={cn("AiChatThreadsListItem-action-icon" satisfies AiChatThreadsListItem_ClassNames)}
-						fill={isStarred ? "currentColor" : "none"}
-					/>
-				</button>
-				<button
-					type="button"
+					<MyIconButtonIcon>
+						<Star fill={isStarred ? "currentColor" : "none"} />
+					</MyIconButtonIcon>
+				</MyIconButton>
+				<MyIconButton
 					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
+					variant="ghost-secondary"
 					onClick={handleArchiveToggle}
-					aria-label={archiveButtonLabel}
-					title={archiveButtonLabel}
+					tooltip={archiveButtonLabel}
 				>
-					{isArchived ? (
-						<ArchiveIcon
-							className={cn("AiChatThreadsListItem-action-icon" satisfies AiChatThreadsListItem_ClassNames)}
-						/>
-					) : (
-						<ArchiveRestoreIcon
-							className={cn("AiChatThreadsListItem-action-icon" satisfies AiChatThreadsListItem_ClassNames)}
-						/>
-					)}
-				</button>
+					<MyIconButtonIcon>{isArchived ? <ArchiveIcon /> : <ArchiveRestoreIcon />}</MyIconButtonIcon>
+				</MyIconButton>
 			</div>
-		</div>
+		</li>
 	);
 }
 // #endregion list item
@@ -279,7 +273,7 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 	const archiveButtonLabel = "Archive thread";
 
 	return (
-		<div
+		<li
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
@@ -292,103 +286,39 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 				className={cn("AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames)}
 				onClick={handleSelect}
 			>
-				<MessageSquare className={cn("AiChatThreadsListItem-icon" satisfies AiChatThreadsListItem_ClassNames)} />
 				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
 					{threadTitle}
 				</span>
 			</button>
 			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
-				<button
-					type="button"
+				<MyIconButton
 					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
+					variant="ghost-secondary"
 					onClick={handleDelete}
-					aria-label={archiveButtonLabel}
-					title={archiveButtonLabel}
+					tooltip={archiveButtonLabel}
 				>
-					<ArchiveRestoreIcon
-						className={cn("AiChatThreadsListItem-action-icon" satisfies AiChatThreadsListItem_ClassNames)}
-					/>
-				</button>
+					<MyIconButtonIcon>
+						<ArchiveRestoreIcon />
+					</MyIconButtonIcon>
+				</MyIconButton>
 			</div>
-		</div>
+		</li>
 	);
 }
 // #endregion optimistic list item
 
-// #region list list
-type AiChatThreadsListList_ClassNames = "AiChatThreadsListList";
-
-type AiChatThreadsListList_Props = {
-	archived: boolean;
-	searchQuery: string;
-	threads: app_convex_Doc<"threads">[];
-	streamingTitleByThreadId: Record<string, string | undefined>;
-	selectedThreadId: string | null;
-	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
-	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavouriteThread"];
-	onArchiveThread: AiChatThreadsListItem_Props["onArchiveThread"];
-};
-
-function AiChatThreadsListList(props: AiChatThreadsListList_Props) {
-	const {
-		archived,
-		searchQuery,
-		threads,
-		streamingTitleByThreadId,
-		selectedThreadId,
-		onSelectThread,
-		onToggleFavouriteThread,
-		onArchiveThread,
-	} = props;
-
-	const sortedThreads = threads
-		.filter((thread) => thread.archived === archived)
-		.sort((a, b) => b.last_message_at - a.last_message_at);
-
-	return (
-		<div className={cn("AiChatThreadsListList" satisfies AiChatThreadsListList_ClassNames)}>
-			{sortedThreads.map((thread) => {
-				if (thread._id !== thread.external_id) {
-					return (
-						<AiChatThreadsListItem
-							key={thread._id}
-							thread={thread}
-							searchQuery={searchQuery}
-							streamingTitleByThreadId={streamingTitleByThreadId}
-							selectedThreadId={selectedThreadId}
-							onSelectThread={onSelectThread}
-							onToggleFavouriteThread={onToggleFavouriteThread}
-							onArchiveThread={onArchiveThread}
-						/>
-					);
-				}
-
-				return (
-					<AiChatThreadsOptimisticListItem
-						key={thread.external_id ?? thread._id}
-						thread={thread}
-						searchQuery={searchQuery}
-						selectedThreadId={selectedThreadId}
-						onSelectThread={onSelectThread}
-						onArchiveThread={onArchiveThread}
-					/>
-				);
-			})}
-		</div>
-	);
-}
-// #endregion list list
-
 // #region list
-type AiChatThreadsList_ClassNames = "AiChatThreadsList";
+type AiChatThreadsList_ClassNames = "AiChatThreadsResults" | "AiChatThreadsList" | "AiChatThreadsList-sentinel";
 
-type AiChatThreadsList_Props = ComponentPropsWithRef<"div"> & {
-	ref?: Ref<HTMLDivElement>;
+type AiChatThreadsList_Props = ComponentPropsWithRef<"section"> & {
+	ref?: Ref<HTMLElement>;
 	id?: string;
 	className?: string;
-	archived: boolean;
 	searchQuery: string;
-	threads: app_convex_Doc<"threads">[];
+	paginatedThreads:
+		| AiChatController["paginatedThreads"]["unarchived"]
+		| AiChatController["paginatedThreads"]["archived"]
+		| null;
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
 	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
@@ -401,9 +331,8 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 		ref,
 		id,
 		className,
-		archived,
 		searchQuery,
-		threads,
+		paginatedThreads,
 		streamingTitleByThreadId,
 		selectedThreadId,
 		onSelectThread,
@@ -412,24 +341,72 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 		...rest
 	} = props;
 
+	const [scrollRoot, setScrollRoot] = useState<HTMLUListElement | null>(null);
+
+	const threads = paginatedThreads?.results ?? [];
+	const sortedThreads = threads.sort((a, b) => b.last_message_at - a.last_message_at);
+
+	const canLoadMore = paginatedThreads?.status === "CanLoadMore";
+
+	const handleIntersection = (args: { entry: IntersectionObserverEntry; observer: IntersectionObserver }) => {
+		const { entry } = args;
+		if (!entry.isIntersecting) {
+			return;
+		}
+		if (!paginatedThreads || !canLoadMore) {
+			return;
+		}
+		paginatedThreads.loadMore(100);
+	};
+
 	return (
-		<div
+		<section
 			ref={ref}
 			id={id}
-			className={cn("AiChatThreadsList" satisfies AiChatThreadsList_ClassNames, className)}
+			className={cn("AiChatThreadsResults" satisfies AiChatThreadsList_ClassNames, className)}
+			aria-label="Search results"
 			{...rest}
 		>
-			<AiChatThreadsListList
-				archived={archived}
-				searchQuery={searchQuery}
-				threads={threads}
-				streamingTitleByThreadId={streamingTitleByThreadId}
-				selectedThreadId={selectedThreadId}
-				onSelectThread={onSelectThread}
-				onToggleFavouriteThread={onToggleFavouriteThread}
-				onArchiveThread={onArchiveThread}
-			/>
-		</div>
+			<ul
+				ref={setScrollRoot}
+				id={ai_chat_threads_RESULTS_LIST_ID}
+				className={cn("AiChatThreadsList" satisfies AiChatThreadsList_ClassNames)}
+			>
+				{sortedThreads.map((thread) => {
+					if (ai_chat_is_optimistic_thread(thread)) {
+						return (
+							<AiChatThreadsOptimisticListItem
+								key={thread.external_id ?? thread._id}
+								thread={thread}
+								searchQuery={searchQuery}
+								selectedThreadId={selectedThreadId}
+								onSelectThread={onSelectThread}
+								onArchiveThread={onArchiveThread}
+							/>
+						);
+					}
+
+					return (
+						<AiChatThreadsListItem
+							key={thread._id}
+							thread={thread}
+							searchQuery={searchQuery}
+							streamingTitleByThreadId={streamingTitleByThreadId}
+							selectedThreadId={selectedThreadId}
+							onSelectThread={onSelectThread}
+							onToggleFavouriteThread={onToggleFavouriteThread}
+							onArchiveThread={onArchiveThread}
+						/>
+					);
+				})}
+
+				{paginatedThreads ? (
+					<li aria-hidden="true" className={cn("AiChatThreadsList-sentinel" satisfies AiChatThreadsList_ClassNames)}>
+						<InfiniteScrollSentinel root={scrollRoot} rootMargin="400px 0px" onIntersection={handleIntersection} />
+					</li>
+				) : null}
+			</ul>
+		</section>
 	);
 }
 // #endregion list
@@ -441,7 +418,7 @@ export type AiChatThreads_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
-	threads: app_convex_Doc<"threads">[];
+	paginatedThreads: AiChatController["paginatedThreads"];
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
 	onClose?: (() => void) | undefined;
@@ -456,7 +433,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 		ref,
 		id,
 		className,
-		threads,
+		paginatedThreads,
 		streamingTitleByThreadId,
 		selectedThreadId,
 		onClose,
@@ -492,9 +469,8 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 				onNewChat={handleNewChat}
 			/>
 			<AiChatThreadsList
-				archived={showArchived}
 				searchQuery={searchQuery}
-				threads={threads}
+				paginatedThreads={showArchived ? paginatedThreads.archived : paginatedThreads.unarchived}
 				streamingTitleByThreadId={streamingTitleByThreadId}
 				selectedThreadId={selectedThreadId}
 				onSelectThread={onSelectThread}

@@ -383,6 +383,11 @@
 		@apply border-border outline-ring/50;
 	}
 
+	html {
+		max-height: 100dvh;
+		max-width: 100dvw;
+	}
+
 	html.dark {
 		color-scheme: dark;
 	}

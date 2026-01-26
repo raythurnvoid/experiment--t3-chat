@@ -1,13 +1,17 @@
-@layer common_components {
+@layer components {
 	/* #region root */
 	.AiChatThreads {
 		box-sizing: border-box;
+
 		display: flex;
 		flex-direction: column;
+
 		height: 100%;
 		width: 100%;
+
 		background: var(--background);
 		color: var(--foreground);
+
 		border-right: 1px solid var(--border);
 	}
 	/* #endregion root */
@@ -17,7 +21,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+
 		padding: 16px;
+
 		border-bottom: 1px solid var(--border);
 	}
 
@@ -30,12 +36,16 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+
 		width: 32px;
 		height: 32px;
+
 		border-radius: 6px;
 		border: 1px solid var(--border);
+
 		background: var(--background);
 		color: var(--foreground);
+
 		transition: background-color 0.15s ease-in-out;
 
 		&:hover {
@@ -63,18 +73,23 @@
 	.AiChatThreadsSearch-label {
 		font-size: 0.75rem;
 		font-weight: 500;
+
 		color: var(--muted-foreground);
 	}
 
 	.AiChatThreadsSearch-field {
 		position: relative;
+
 		display: flex;
 		align-items: center;
 		gap: 8px;
+
 		height: 32px;
 		padding: 0 10px;
+
 		border-radius: 6px;
 		border: 1px solid var(--input);
+
 		background: var(--background);
 
 		&:focus-within {
@@ -85,17 +100,22 @@
 	.AiChatThreadsSearch-icon {
 		width: 16px;
 		height: 16px;
+
 		color: var(--muted-foreground);
 	}
 
 	.AiChatThreadsSearch-input {
 		flex: 1;
 		min-width: 0;
+
 		height: 100%;
+
 		border: none;
 		background: transparent;
+
 		color: inherit;
 		font-size: 0.875rem;
+
 		outline: none;
 
 		&::placeholder {
@@ -109,6 +129,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+
 		font-size: 0.875rem;
 		color: var(--foreground);
 	}
@@ -116,8 +137,10 @@
 	.AiChatThreadsArchivedToggle-input {
 		width: 16px;
 		height: 16px;
+
 		border-radius: 4px;
 		border: 1px solid var(--border);
+
 		accent-color: var(--primary);
 	}
 
@@ -131,14 +154,19 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 8px;
+
 		height: 32px;
 		padding: 0 10px;
+
 		border-radius: 6px;
 		border: 1px solid var(--border);
+
 		background: var(--background);
 		color: var(--foreground);
+
 		font-size: 0.875rem;
 		font-weight: 500;
+
 		transition: background-color 0.15s ease-in-out;
 
 		&:hover {
@@ -161,39 +189,90 @@
 	/* #endregion new button */
 
 	/* #region list */
-	.AiChatThreadsList {
+	.AiChatThreadsResults {
 		flex: 1;
+
 		display: flex;
 		flex-direction: column;
+
 		min-height: 0;
 	}
 
-	.AiChatThreadsListList {
+	.AiChatThreadsList {
 		flex: 1;
+
 		display: flex;
 		flex-direction: column;
+
+		min-height: 0;
+		contain: size;
+
+		margin: 0;
+
 		gap: 4px;
 		padding: 8px;
+
+		list-style: none;
+
 		overflow-y: auto;
 	}
 	/* #endregion list */
 
 	/* #region list item */
 	.AiChatThreadsListItem {
-		display: flex;
+		display: grid;
+		grid-template-columns: 1fr auto;
 		align-items: center;
-		gap: 8px;
-		padding: 4px;
+
+		padding: 0;
+
 		border-radius: 8px;
+		border: 1px solid transparent;
+
 		color: inherit;
+
 		transition: background-color 0.15s ease-in-out;
 
+		&:focus-within {
+			border-color: var(--color-fg-03);
+
+			@media (prefers-color-scheme: dark) {
+				border-color: var(--color-fg-10);
+			}
+		}
+
 		&:hover {
-			background: var(--color-base-1-05);
+			background-color: var(--color-base-alt-2-12);
+
+			@media (prefers-color-scheme: dark) {
+				background-color: var(--color-base-alt-1-09);
+			}
 		}
 
 		&[data-active="true"] {
-			background: var(--color-base-1-06);
+			background-color: var(--color-base-alt-2-12);
+			border-color: var(--color-fg-04);
+
+			&:hover {
+				background-color: var(--color-base-alt-2-12);
+			}
+
+			@media (prefers-color-scheme: dark) {
+				background-color: var(--color-base-alt-1-07);
+				border-color: var(--color-fg-07);
+
+				&:hover {
+					background-color: var(--color-base-alt-2-07);
+				}
+			}
+
+			&:focus-within {
+				border-color: var(--color-fg-03);
+
+				@media (prefers-color-scheme: dark) {
+					border-color: var(--color-fg-10);
+				}
+			}
 		}
 	}
 
@@ -202,76 +281,47 @@
 	}
 
 	.AiChatThreadsListItem-trigger {
-		display: flex;
+		display: grid;
+		grid-template-columns: subgrid;
 		align-items: center;
-		gap: 8px;
-		flex: 1;
+		column-gap: 8px;
+
+		grid-column: 1 / -1;
+		grid-row: 1;
+
 		min-width: 0;
-		padding: 6px 8px;
-		border-radius: 6px;
+
+		height: 36px;
+		padding: 0 12px;
+
+		border-radius: 8px;
+
 		color: inherit;
 		font-size: 0.875rem;
+
 		transition: background-color 0.15s ease-in-out;
 
 		&:focus-visible {
-			box-shadow: 0 0 0 2px var(--color-fg-12);
+			outline: none;
 		}
 	}
 
-	.AiChatThreadsListItem-icon {
-		width: 16px;
-		height: 16px;
-		color: var(--muted-foreground);
-	}
-
 	.AiChatThreadsListItem-title {
-		flex: 1;
+		grid-column: 1;
+
 		min-width: 0;
+
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
 	.AiChatThreadsListItem-actions {
+		grid-column: 2;
+		grid-row: 1;
+
 		display: flex;
-		align-items: center;
-		gap: 4px;
 	}
 
-	.AiChatThreadsListItem-action {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		border-radius: 6px;
-		color: var(--muted-foreground);
-		transition:
-			background-color 0.15s ease-in-out,
-			color 0.15s ease-in-out;
-
-		&:hover {
-			background: var(--color-base-1-05);
-			color: var(--foreground);
-		}
-
-		&:focus-visible {
-			box-shadow: 0 0 0 2px var(--color-fg-12);
-		}
-
-		&[aria-pressed="true"] {
-			color: var(--primary);
-		}
-
-		&:disabled {
-			cursor: default;
-			opacity: 0.5;
-		}
-	}
-
-	.AiChatThreadsListItem-action-icon {
-		width: 16px;
-		height: 16px;
-	}
 	/* #endregion list item */
 }

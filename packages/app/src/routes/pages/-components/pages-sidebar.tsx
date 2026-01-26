@@ -18,7 +18,7 @@ import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } fr
 import { MyInput, MyInputBox, MyInputArea, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { cn, forward_ref, sx } from "@/lib/utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, forward_ref, generate_id, sx } from "@/lib/utils.ts";
 import {
 	UncontrolledTreeEnvironment,
 	Tree,
@@ -33,8 +33,6 @@ import {
 	useTreeEnvironment,
 } from "react-complex-tree";
 import { useQuery, useMutation } from "convex/react";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
-import { generate_id } from "@/lib/utils.ts";
 import { app_convex_api, app_convex_wait_new_query_value } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";

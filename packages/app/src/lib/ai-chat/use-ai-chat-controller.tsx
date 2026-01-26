@@ -1,48 +1,33 @@
-import { Chat, useChat, type UIMessage } from "@ai-sdk/react";
+import { Chat, useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
 import { useEffect, useMemo } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { create } from "zustand";
 
 import type { api_schemas_Main } from "@/lib/api-schemas.ts";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
-import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { should_never_happen } from "@/lib/utils.ts";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import {
+	ai_chat_HARDCODED_ORG_ID,
+	ai_chat_HARDCODED_PROJECT_ID,
+	get_id_generator,
+	should_never_happen,
+} from "@/lib/utils.ts";
 import { useLiveRef, useRenderPromise } from "../../hooks/utils-hooks.ts";
 import { generate_id } from "../utils.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { type ai_chat_AiSdkUiMessage, type ai_chat_Message, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
-export type ai_chat_UiMessageMetadata = {
-	ai_chat: {
-		convexId?: string | undefined;
-		convexParentId?: string | null | undefined;
-	};
-};
-
-type DataPart = {
-	type: string;
-	id?: string | undefined;
-	data?: unknown;
-};
-
-type TitlePartData = {
-	title?: string | null;
-};
-
-type ThreadIdPartData = {
-	threadId?: string | null;
-	clientThreadId?: string | null;
-};
+export type ai_chat_UiMessageMetadata = NonNullable<ai_chat_AiSdkUiMessage["metadata"]>;
 
 type ThreadChatArgs = {
 	chatId: string | null;
-	initialMessages?: UIMessage[] | undefined;
-	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<UIMessage>["prepareSendMessagesRequest"]>;
+	initialMessages?: ai_chat_AiSdkUiMessage[] | undefined;
+	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdkUiMessage>["prepareSendMessagesRequest"]>;
 };
 
 type ThreadSession = {
-	chat: Chat<UIMessage> | null;
+	chat: Chat<ai_chat_AiSdkUiMessage> | null;
 	draftComposerText: string;
 	/**
 	 * Optional branch anchor (Convex message id).
@@ -51,8 +36,8 @@ type ThreadSession = {
 	 * When null, we default to the latest Convex message in the thread.
 	 */
 	anchorId: string | null;
-	streamingTitle?: string | undefined;
-	optimisticThread?: app_convex_Doc<"threads"> | undefined;
+	streamingTitle?: string;
+	optimisticThread?: ai_chat_Thread;
 };
 
 type ThreadStore = {
@@ -100,7 +85,7 @@ const useAiChatStore = ((/* iife */) => {
 	});
 })();
 
-function create_optimistic_thread(): app_convex_Doc<"threads"> {
+function create_optimistic_thread(): ai_chat_Thread {
 	const clientId = generate_id("ai_thread");
 	const now = Date.now();
 	return {
@@ -119,9 +104,21 @@ function create_optimistic_thread(): app_convex_Doc<"threads"> {
 	};
 }
 
+export function ai_chat_parent_id_or_root(parentId?: string | null) {
+	return parentId ?? "_root";
+}
+
+export function ai_chat_is_optimistic_thread(thread?: ai_chat_Thread | null) {
+	const externalId = thread?.external_id;
+	if (!externalId) {
+		return false;
+	}
+	return thread._id === externalId;
+}
+
 const thread_session_create = (args?: {
-	optimisticThread?: app_convex_Doc<"threads">;
-	chat?: Chat<UIMessage> | null;
+	optimisticThread?: ai_chat_Thread;
+	chat?: Chat<ai_chat_AiSdkUiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
 }) => {
 	return {
@@ -141,107 +138,91 @@ function merge_metadata(base: Record<string, unknown> | undefined, overlay: Reco
 	return { ...base, ...overlay };
 }
 
-function convex_message_to_ui_message(
-	message: app_convex_Doc<"messages">,
-	metadata?: ai_chat_UiMessageMetadata,
-): UIMessage {
+function convex_message_to_ui_message(message: ai_chat_Message, metadata?: ai_chat_UiMessageMetadata) {
 	const mergedMetadata = merge_metadata(message.content.metadata, metadata);
 
 	return {
 		id: message._id,
 		role: message.content.role,
-		parts: message.content.parts as UIMessage["parts"],
+		// TODO: improve types
+		parts: message.content.parts as ai_chat_AiSdkUiMessage["parts"],
 		...(mergedMetadata !== undefined ? { metadata: mergedMetadata } : {}),
-	};
+	} satisfies ai_chat_AiSdkUiMessage;
 }
 
 function create_chat_instance(args: {
 	chatId: string | null;
-	initialMessages?: UIMessage[] | undefined;
-	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<UIMessage>["prepareSendMessagesRequest"]>;
+	initialMessages?: ai_chat_AiSdkUiMessage[] | undefined;
+	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdkUiMessage>["prepareSendMessagesRequest"]>;
 }) {
-	const handleDataPart = (part: DataPart) => {
-		if (!part.type?.startsWith("data-")) {
-			return;
-		}
-
-		const partName = part.type.slice("data-".length);
-
-		// TODO(ai-chat): Handle a server-emitted "persist-first" mapping part (e.g. `data-message-ids`).
-		// Goal: when the backend persists the user message up front + allocates the assistant message doc,
-		// it can emit a transient mapping from client UIMessage ids -> Convex message ids.
-		// The client can then:
-		// - rewrite/remove optimistic `chat.messages` entries deterministically (no DB `client_generated_message_id`)
-		// - optionally treat a `persisted` barrier as the signal to drop all optimistic messages for this request.
-		if (partName === "thread-id") {
-			// The server emits `data-thread-id` *during the stream* when it created a new thread.
-			//
-			// We start in an "optimistic thread" (client-generated id) to let the UI show a New Chat entry instantly.
-			// Once the server returns the real Convex thread id, we:
-			// - create / update a "persisted session" keyed by the real id
-			// - keep the optimistic session selected while streaming (avoid mid-stream `Chat` recreation)
-			// - schedule a "selection swap" to the real thread after streaming ends
-			//
-			// Sidebar dedupe (see below) ensures we don't show BOTH optimistic + persisted entries.
-			const data = part.data as ThreadIdPartData | string | null | undefined;
-			const threadId = typeof data === "string" ? data : typeof data?.threadId === "string" ? data.threadId : null;
-			const optimisticThreadId = typeof data === "string" ? null : (data?.clientThreadId ?? null);
-
-			if (!threadId || !optimisticThreadId) {
-				should_never_happen("[useAiChatController] Missing thread id on data-thread-id part", {
-					part,
-				});
+	const chat = new Chat<ai_chat_AiSdkUiMessage>({
+		id: args.chatId ?? generate_id("ai_thread"),
+		generateId: get_id_generator("ai_message"),
+		...(args.initialMessages ? { messages: args.initialMessages } : {}),
+		transport: new DefaultChatTransport({
+			api: app_fetch_main_api_url("/api/chat"),
+			prepareSendMessagesRequest: args.prepareSendMessagesRequest,
+		}),
+		sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+		onData: (part) => {
+			if (!part.type?.startsWith("data-")) {
 				return;
 			}
 
-			// @ts-expect-error: Overwrite the readonly chat id to the persisted thread id.
-			chat.id = threadId;
+			// TODO(ai-chat): Handle a server-emitted "persist-first" mapping part (e.g. `data-message-ids`).
+			// Goal: when the backend persists the user message up front + allocates the assistant message doc,
+			// it can emit a transient mapping from client UIMessage ids -> Convex message ids.
+			// The client can then:
+			// - rewrite/remove optimistic `chat.messages` entries deterministically (no DB `client_generated_message_id`)
+			// - optionally treat a `persisted` barrier as the signal to drop all optimistic messages for this request.
+			switch (part.type) {
+				case "data-thread-id": {
+					// The server emits `data-thread-id` *during the stream* when it created a new thread.
+					//
+					// We start in an "optimistic thread" (client-generated id) to let the UI show a New Chat entry instantly.
+					// Once the server returns the real Convex thread id, we:
+					// - create / update a "persisted session" keyed by the real id
+					// - keep the optimistic session selected while streaming (avoid mid-stream `Chat` recreation)
+					// - schedule a "selection swap" to the real thread after streaming ends
+					//
+					// Sidebar dedupe (see below) ensures we don't show BOTH optimistic + persisted entries.
 
-			return;
-		}
+					// @ts-expect-error: Overwrite the readonly chat id to the persisted thread id.
+					chat.id = part.data.threadId;
 
-		if (partName === "chat-title") {
-			const data = part.data as TitlePartData | string | null | undefined;
-			const title = typeof data === "string" ? data : typeof data?.title === "string" ? data.title : null;
-			if (!title) {
-				return;
-			}
-			if (chat.id) {
-				if (useAiChatStore.getState().threadById.get(chat.id)?.optimisticThread) {
 					return;
 				}
-				useAiChatStore.actions.setSession(chat.id, (prev) => {
-					if (!prev) {
-						return;
-					}
+				case "data-chat-title": {
+					useAiChatStore.actions.setSession(chat.id, (prev) => {
+						if (!prev) {
+							return;
+						}
 
-					return {
-						...prev,
-						streamingTitle: title,
-					};
-				});
+						return {
+							...prev,
+							streamingTitle: part.data.title,
+						};
+					});
+					return;
+				}
+				default: {
+					return;
+				}
 			}
-		}
-	};
-
-	const transport = new DefaultChatTransport({
-		api: app_fetch_main_api_url("/api/chat"),
-		prepareSendMessagesRequest: args.prepareSendMessagesRequest,
-	});
-
-	const chat = new Chat({
-		id: args.chatId ?? generate_id("ai_thread"),
-		...(args.initialMessages ? { messages: args.initialMessages } : {}),
-		transport,
-		sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-		onData: handleDataPart,
+		},
 	});
 
 	return chat;
 }
 
-export const useAiChatController = () => {
+export type useAiChatController_Props = {
+	includeArchived?: boolean;
+};
+
+export const useAiChatController = (props?: useAiChatController_Props) => {
 	useRenderPromise();
+
+	const includeArchived = props?.includeArchived ?? true;
 
 	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
 	const threadById = useAiChatStore((state) => state.threadById);
@@ -250,20 +231,23 @@ export const useAiChatController = () => {
 		selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
 	);
 
-	const persistedThreads = useQuery(app_convex_api.ai_chat.threads_list, {
-		paginationOpts: {
-			numItems: 20,
-			cursor: null,
-		},
-		includeArchived: true,
-	});
+	const unarchivedThreads = usePaginatedQuery(
+		app_convex_api.ai_chat.threads_list,
+		{ archived: false },
+		{ initialNumItems: 100 },
+	);
+	const archivedThreads = usePaginatedQuery(
+		app_convex_api.ai_chat.threads_list,
+		includeArchived ? { archived: true } : "skip",
+		{ initialNumItems: 100 },
+	);
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 
 	const persistedThreadMessages = useQuery(
 		app_convex_api.ai_chat.thread_messages_list,
 		selectedThreadId && session && !session.optimisticThread
 			? {
-					threadId: selectedThreadId as app_convex_Id<"threads">,
+					threadId: selectedThreadId,
 					order: "desc",
 				}
 			: "skip",
@@ -272,7 +256,7 @@ export const useAiChatController = () => {
 	/** Necessary to manage optimistic threads and their swtch to persisted threads. */
 	const threadIdByExternalId = ((/* iife */) => {
 		const result = new Map<string, string>();
-		for (const thread of persistedThreads ? persistedThreads.page.threads : []) {
+		for (const thread of unarchivedThreads.results) {
 			if (thread.external_id) {
 				result.set(thread.external_id, thread._id);
 			}
@@ -280,14 +264,33 @@ export const useAiChatController = () => {
 		return result;
 	})();
 
-	const threads = ((/* iife */) => {
-		const result = persistedThreads ? [...persistedThreads.page.threads] : [];
+	const optimisticThreads = ((/* iife */) => {
+		const result: Array<ai_chat_Thread> = [];
 		for (const session of threadById.values()) {
 			if (session.optimisticThread && !threadIdByExternalId.has(session.optimisticThread._id)) {
 				result.push(session.optimisticThread);
 			}
 		}
 		return result;
+	})();
+
+	const paginatedThreads = ((/* iife */) => {
+		const unarchived = {
+			...unarchivedThreads,
+			results: [...optimisticThreads, ...unarchivedThreads.results],
+		};
+
+		const archived = includeArchived
+			? {
+					...archivedThreads,
+					results: archivedThreads.results,
+				}
+			: null;
+
+		return {
+			unarchived,
+			archived,
+		} as const;
 	})();
 
 	const streamingTitleByThreadId = useMemo(() => {
@@ -304,23 +307,21 @@ export const useAiChatController = () => {
 		if (!persistedThreadMessages) return undefined;
 
 		const result = {
-			mapById: new Map<string, UIMessage>(),
-			childrenByParentId: new Map<string, UIMessage[]>(),
+			mapById: new Map<string, ai_chat_AiSdkUiMessage>(),
+			childrenByParentId: new Map<string, ai_chat_AiSdkUiMessage[]>(),
 			clientGeneratedIds: new Set<string>(),
-			list: [] as UIMessage[],
+			list: [] as ai_chat_AiSdkUiMessage[],
 		};
 
 		for (const message of persistedThreadMessages.messages) {
 			const uiMessage = convex_message_to_ui_message(message, {
-				ai_chat: {
-					convexId: message._id,
-					convexParentId: message.parent_id,
-				},
+				convexId: message._id,
+				convexParentId: message.parent_id,
 			});
 
 			result.mapById.set(message._id, uiMessage);
 
-			const parentIdOrRoot = message.parent_id ?? "_root";
+			const parentIdOrRoot = ai_chat_parent_id_or_root(message.parent_id);
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
 				result.childrenByParentId.get(parentIdOrRoot)?.push(uiMessage);
 			} else {
@@ -338,7 +339,7 @@ export const useAiChatController = () => {
 	})();
 
 	const prepareSendMessagesRequest = useLiveRef<
-		NonNullable<DefaultChatTransport<UIMessage>["prepareSendMessagesRequest"]>
+		NonNullable<DefaultChatTransport<ai_chat_AiSdkUiMessage>["prepareSendMessagesRequest"]>
 	>(async (options) => {
 		const headers = new Headers(options.headers);
 		headers.set("Accept", "text/event-stream");
@@ -356,9 +357,7 @@ export const useAiChatController = () => {
 
 		const isRegenerate = options.trigger === "regenerate-message";
 		const regenMessage =
-			isRegenerate && options.messageId
-				? (persistedMessagesData?.mapById.get(options.messageId as app_convex_Id<"messages">) ?? null)
-				: null;
+			isRegenerate && options.messageId ? (persistedMessagesData?.mapById.get(options.messageId) ?? null) : null;
 		if (isRegenerate && !options.messageId) {
 			should_never_happen("[useAiChatController] Missing messageId for regenerate request", { chatId });
 		}
@@ -369,8 +368,7 @@ export const useAiChatController = () => {
 			});
 		}
 
-		const metadata = regenMessage?.metadata as ai_chat_UiMessageMetadata | undefined;
-		const regenParentId = metadata?.ai_chat.convexParentId ?? null;
+		const regenParentId = regenMessage?.metadata?.convexParentId ?? null;
 		const resolvedParentId = ((/* iife */) => {
 			if (isRegenerate) {
 				return regenParentId ?? undefined;
@@ -380,7 +378,7 @@ export const useAiChatController = () => {
 			}
 			const anchorId = session?.anchorId ?? null;
 			const base = anchorId
-				? (persistedMessagesData?.mapById.get(anchorId as app_convex_Id<"messages">) ?? null)
+				? (persistedMessagesData?.mapById.get(anchorId) ?? null)
 				: (persistedMessagesData?.list.at(0) ?? null);
 			if (!base) {
 				return undefined;
@@ -414,7 +412,7 @@ export const useAiChatController = () => {
 		return {
 			api: options.api,
 			body: requestBody,
-			credentials: "omit" as RequestCredentials,
+			credentials: "omit" satisfies RequestCredentials,
 			headers,
 		};
 	});
@@ -451,12 +449,12 @@ export const useAiChatController = () => {
 		return unselectedChatInstance;
 	})();
 
-	const chat = useChat({ chat: activeChatInstance });
+	const chat = useChat<ai_chat_AiSdkUiMessage>({ chat: activeChatInstance });
 
 	const pendingMessagesData = ((/* iife */) => {
 		const result = {
-			list: [] as UIMessage[],
-			childrenByParentId: new Map<string, UIMessage[]>(),
+			list: [] as ai_chat_AiSdkUiMessage[],
+			childrenByParentId: new Map<string, ai_chat_AiSdkUiMessage[]>(),
 		};
 
 		// Read messages from the newest to the oldest.
@@ -470,8 +468,7 @@ export const useAiChatController = () => {
 				result.list.push(message);
 			}
 
-			const metadata = message.metadata as ai_chat_UiMessageMetadata | undefined;
-			const parentIdOrRoot = metadata?.ai_chat.convexParentId ?? "_root";
+			const parentIdOrRoot = ai_chat_parent_id_or_root(message.metadata?.convexParentId);
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
 				result.childrenByParentId.get(parentIdOrRoot)?.push(message);
 			} else {
@@ -501,8 +498,7 @@ export const useAiChatController = () => {
 			let current = anchorMessage ?? persistedMessagesData.list.at(0);
 			while (current) {
 				tail.push(current);
-				const metadata = current.metadata as ai_chat_UiMessageMetadata | undefined;
-				const parentIdOrRoot = metadata?.ai_chat.convexParentId ?? "_root";
+				const parentIdOrRoot = ai_chat_parent_id_or_root(current.metadata?.convexParentId);
 				current = persistedMessagesData.mapById.get(parentIdOrRoot);
 			}
 		}
@@ -529,7 +525,7 @@ export const useAiChatController = () => {
 	})();
 
 	const messagesChildrenByParentId = ((/* iife */) => {
-		const result = new Map<string, UIMessage[]>();
+		const result = new Map<string, ai_chat_AiSdkUiMessage[]>();
 
 		if (persistedMessagesData) {
 			for (const [parentId, children] of persistedMessagesData.childrenByParentId.entries()) {
@@ -559,9 +555,7 @@ export const useAiChatController = () => {
 			optimisticChat.sendMessage({
 				role: "user",
 				parts: [{ type: "text", text: message }],
-				metadata: {
-					ai_chat: {},
-				} satisfies Partial<ai_chat_UiMessageMetadata>,
+				metadata: {} satisfies ai_chat_UiMessageMetadata,
 			});
 		}
 	};
@@ -605,7 +599,7 @@ export const useAiChatController = () => {
 	};
 
 	const setThreadStarred = (threadId: string, starred: boolean) => {
-		updateThread({ threadId: threadId as app_convex_Id<"threads">, starred }).catch(console.error);
+		updateThread({ threadId, starred }).catch(console.error);
 	};
 
 	const archiveThread = (threadId: string, isArchived: boolean) => {
@@ -628,7 +622,7 @@ export const useAiChatController = () => {
 			useAiChatStore.setState(() => ({ selectedThreadId: null }));
 		}
 
-		updateThread({ threadId: threadId as app_convex_Id<"threads">, isArchived }).catch(console.error);
+		updateThread({ threadId, isArchived }).catch(console.error);
 	};
 
 	const regenerate = (threadId: string, messageId: string) => {
@@ -654,8 +648,7 @@ export const useAiChatController = () => {
 		}
 
 		useAiChatStore.actions.setSession(threadId, (prev) => {
-			const metadata = messageToRegenerate.metadata as ai_chat_UiMessageMetadata | undefined;
-			const parentIdOrRoot = metadata?.ai_chat.convexParentId ?? "_root";
+			const parentIdOrRoot = ai_chat_parent_id_or_root(messageToRegenerate.metadata?.convexParentId);
 
 			const base = prev ?? thread_session_create();
 			return {
@@ -695,9 +688,7 @@ export const useAiChatController = () => {
 			role: "user",
 			parts: [{ type: "text", text: value }],
 			metadata: {
-				ai_chat: {
-					convexParentId,
-				},
+				convexParentId,
 			} satisfies Partial<ai_chat_UiMessageMetadata>,
 		});
 
@@ -746,13 +737,13 @@ export const useAiChatController = () => {
 				});
 			}
 		}
-	}, [persistedThreads]);
+	}, [unarchivedThreads.results]);
 
 	return {
 		selectedThreadId,
 		session,
 
-		threads,
+		paginatedThreads,
 		streamingTitleByThreadId,
 
 		status: chat.status,

@@ -3,7 +3,7 @@ import { FileText, Sparkles } from "lucide-react";
 import { cn } from "../../lib/utils.ts";
 import { useMutation } from "convex/react";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 
 export interface QuickStart_Props {
 	onOpenEditor: (pageId: app_convex_Id<"pages">) => void;

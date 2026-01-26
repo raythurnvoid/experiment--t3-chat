@@ -1,13 +1,12 @@
 import "./page-editor.css";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref, useEffect, useRef, useEffectEvent } from "react";
 import { Switch } from "../ui/switch.tsx";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
-import { cn, should_never_happen } from "@/lib/utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
 import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";

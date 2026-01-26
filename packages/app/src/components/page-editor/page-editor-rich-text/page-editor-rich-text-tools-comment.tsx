@@ -9,8 +9,7 @@ import { useMutation } from "convex/react";
 import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { ArrowUp } from "lucide-react";
-import { cn } from "@/lib/utils.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	PageEditorRichTextCommentComposer,

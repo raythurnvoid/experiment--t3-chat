@@ -104,17 +104,6 @@ export function create_deferred<T>() {
 	return createDeferred();
 }
 
-export function has_defined_property<O extends object, P extends KeysOfUnion<O>>(
-	obj: O,
-	property: P,
-): obj is ExtractTypeByPropertyAndAssertNotUndefined<O, P> {
-	return (
-		property in obj &&
-		/* @ts-expect-error */
-		obj[property] !== undefined
-	);
-}
-
 /**
  * At runtime tuples are just arrays, but for TS the type will be a tuple with well defined literal types.
  *
@@ -128,15 +117,6 @@ export function has_defined_property<O extends object, P extends KeysOfUnion<O>>
 export function tuple<T extends (Primitive | {})[]>(...args: [...T]): [...T] {
 	return args;
 }
-
-type ExtractTypeByProperty<O extends object, P extends KeysOfUnion<O>> = Extract<O, { [K in P]?: any }>;
-
-type ExtractTypeByPropertyAndAssertNotUndefined<O extends object, P extends KeysOfUnion<O>> = ExtractTypeByProperty<
-	O,
-	P
-> & {
-	[K in P]: Exclude<ExtractTypeByProperty<O, K>[K], undefined>;
-};
 
 /**
  * Chromium do not adhere to the standard and does not support `autocomplete="off"` forcing developers to resort to workarounds.

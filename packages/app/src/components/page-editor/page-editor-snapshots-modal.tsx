@@ -2,7 +2,7 @@ import "./page-editor-snapshots-modal.css";
 import { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { cn, should_never_happen } from "@/lib/utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import {
 	MyModal,
@@ -21,7 +21,6 @@ import { Switch } from "../ui/switch.tsx";
 import { Label } from "../ui/label.tsx";
 import { Clock, FileText, ChevronLeft, ChevronRight, Archive, ArchiveRestore } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ai-chat.ts";
 import { diffWordsWithSpace } from "diff";
 
 export type PageEditorSnapshotsModal_ClassNames =

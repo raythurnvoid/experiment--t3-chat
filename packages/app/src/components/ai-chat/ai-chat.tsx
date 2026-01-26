@@ -1,18 +1,18 @@
 import "./ai-chat.css";
-import "../../routes/chat-v2.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Check, ChevronLeft, ChevronRight, Copy, RefreshCw, Menu, PanelLeft } from "lucide-react";
-import type { UIMessage } from "@ai-sdk/react";
+import { ArrowDown, Check, ChevronLeft, ChevronRight, Copy, Menu, PanelLeft, RefreshCw } from "lucide-react";
+import type { ai_chat_AiSdkUiMessage } from "@/lib/ai-chat.ts";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { cn } from "@/lib/utils.ts";
+import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
+import { cn, forward_ref } from "@/lib/utils.ts";
 import type { ai_chat_UiMessageMetadata, AiChatController } from "@/lib/ai-chat/use-ai-chat-controller.tsx";
-import { useAiChatController } from "@/lib/ai-chat/use-ai-chat-controller.tsx";
+import { ai_chat_parent_id_or_root, useAiChatController } from "@/lib/ai-chat/use-ai-chat-controller.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { ai_chat_render_tool_part } from "@/components/ai-chat/ai-chat-tool-renderers.tsx";
@@ -73,7 +73,7 @@ type AiChatMessage_ToolActions = {
 	stop: AiChatController["stop"];
 };
 
-const ai_chat_get_copy_text = (message: UIMessage) => {
+const ai_chat_get_copy_text = (message: ai_chat_AiSdkUiMessage) => {
 	const parts = message.parts ?? [];
 	const textParts = parts.filter((part) => part.type === "text" || part.type === "reasoning") as Array<{
 		text?: string;
@@ -85,7 +85,7 @@ const ai_chat_get_copy_text = (message: UIMessage) => {
 	return text.length > 0 ? text : null;
 };
 
-const ai_chat_find_artifact_id = (message: UIMessage) => {
+const ai_chat_find_artifact_id = (message: ai_chat_AiSdkUiMessage) => {
 	const parts = message.parts ?? [];
 	for (const part of parts) {
 		if (!part || typeof part !== "object") {
@@ -118,7 +118,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 
-	message: UIMessage;
+	message: ai_chat_AiSdkUiMessage;
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	messagesChildrenByParentId: ReturnType<typeof useAiChatController>["messagesChildrenByParentId"];
@@ -151,7 +151,7 @@ function AiChatMessage(props: AiChatMessage_Props) {
 	const messageId = message.id;
 	const branchMetadata = ((/* iife */) => {
 		const metadata = message.metadata as ai_chat_UiMessageMetadata | undefined;
-		const parentIdOrRoot = metadata?.ai_chat.convexParentId ?? "_root";
+		const parentIdOrRoot = ai_chat_parent_id_or_root(metadata?.convexParentId);
 		const siblings = messagesChildrenByParentId.get(parentIdOrRoot) ?? [];
 
 		const currentIndex = siblings.indexOf(message);
@@ -316,8 +316,8 @@ function AiChatMessage(props: AiChatMessage_Props) {
 // #region message part
 type AiChatMessagePart_Props = {
 	role: "assistant" | "user" | "system";
-	part: UIMessage["parts"][number];
-	message: UIMessage;
+	part: ai_chat_AiSdkUiMessage["parts"][number];
+	message: ai_chat_AiSdkUiMessage;
 	artifactId: string | null;
 	toolActions: AiChatMessage_ToolActions;
 };
@@ -340,8 +340,8 @@ function AiChatMessagePart(props: AiChatMessagePart_Props) {
 // #region message part inner
 type AiChatMessagePartInner_Props = {
 	role: "assistant" | "user" | "system";
-	part: UIMessage["parts"][number];
-	message: UIMessage;
+	part: ai_chat_AiSdkUiMessage["parts"][number];
+	message: ai_chat_AiSdkUiMessage;
 	artifactId: string | null;
 	toolActions: AiChatMessage_ToolActions;
 };
@@ -548,32 +548,14 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 }
 // #endregion message list
 
-// #region root
-type ChatV2_ClassNames =
-	| "ChatV2"
-	| "ChatV2-ai-sidebar"
-	| "ChatV2-ai-sidebar-state-open"
-	| "ChatV2-ai-sidebar-state-closed"
-	| "ChatV2-main"
-	| "ChatV2-thread-panel"
-	| "ChatV2-thread-controls"
-	| "ChatV2-thread-control-button"
-	| "ChatV2-thread-control-icon"
-	| "ChatV2-thread-content";
-
-export type AiChat_ClassNames =
-	| "AiChat"
-	| "AiChat-scroll-area"
-	| "AiChat-scroll-area-inner"
-	| "AiChat-scroll-to-bottom"
-	| "AiChat-scroll-to-bottom-icon"
-	| "AiChat-composer";
-
-export type AiChat_Props = ComponentPropsWithRef<"div"> & {
-	ref?: Ref<HTMLDivElement>;
-	id?: string;
-	className?: string;
-};
+// #region thread
+type AiChatThread_ClassNames =
+	| "AiChatThread"
+	| "AiChatThread-scroll-area"
+	| "AiChatThread-scroll-area-inner"
+	| "AiChatThread-scroll-to-bottom"
+	| "AiChatThread-scroll-to-bottom-icon"
+	| "AiChatThread-composer";
 
 type AiChatThread_Props = {
 	controller: AiChatController;
@@ -585,16 +567,7 @@ function AiChatThread(props: AiChatThread_Props) {
 	const [isAtBottom, setIsAtBottom] = useState(true);
 	const messageCount = controller.activeBranchMessages.length;
 	const scrollRef = useRef<HTMLDivElement | null>(null);
-
-	const updateScrollState = () => {
-		const node = scrollRef.current;
-		if (!node) {
-			return;
-		}
-
-		const distanceToBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
-		setIsAtBottom(distanceToBottom < 80);
-	};
+	const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
 
 	const handleScrollToBottom = () => {
 		const node = scrollRef.current;
@@ -605,22 +578,9 @@ function AiChatThread(props: AiChatThread_Props) {
 		node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
 	};
 
-	useEffect(() => {
-		const node = scrollRef.current;
-		if (!node) {
-			return;
-		}
-
-		const handleScroll = () => {
-			updateScrollState();
-		};
-
-		handleScroll();
-		node.addEventListener("scroll", handleScroll, { passive: true });
-		return () => {
-			node.removeEventListener("scroll", handleScroll);
-		};
-	}, []);
+	const handleIsAtBottomIntersection = (args: { entry: IntersectionObserverEntry; observer: IntersectionObserver }) => {
+		setIsAtBottom(args.entry.isIntersecting);
+	};
 
 	useEffect(() => {
 		const node = scrollRef.current;
@@ -628,7 +588,6 @@ function AiChatThread(props: AiChatThread_Props) {
 			return;
 		}
 
-		updateScrollState();
 		if (isAtBottom) {
 			node.scrollTop = node.scrollHeight;
 		}
@@ -684,9 +643,12 @@ function AiChatThread(props: AiChatThread_Props) {
 	const isRunning = controller.isRunning;
 
 	return (
-		<div className={cn("AiChat" satisfies AiChat_ClassNames)}>
-			<div ref={scrollRef} className={cn("AiChat-scroll-area" satisfies AiChat_ClassNames)}>
-				<div className={cn("AiChat-scroll-area-inner" satisfies AiChat_ClassNames)}>
+		<div className={cn("AiChatThread" satisfies AiChatThread_ClassNames)}>
+			<div
+				ref={(node) => forward_ref(node, scrollRef, setScrollRoot)}
+				className={cn("AiChatThread-scroll-area" satisfies AiChatThread_ClassNames)}
+			>
+				<div className={cn("AiChatThread-scroll-area-inner" satisfies AiChatThread_ClassNames)}>
 					<AiChatMessageList
 						selectedThreadId={selectedThreadId}
 						activeBranchMessages={controller.activeBranchMessages}
@@ -701,16 +663,22 @@ function AiChatThread(props: AiChatThread_Props) {
 						onMessageRegenerate={handleMessageRegenerate}
 						onSelectBranchAnchor={controller.selectBranchAnchor}
 					/>
+					<InfiniteScrollSentinel
+						root={scrollRoot}
+						// Treat "at bottom" as within ~80px of the end.
+						rootMargin="0px 0px 80px 0px"
+						onIntersection={handleIsAtBottomIntersection}
+					/>
 				</div>
 				{!isAtBottom && (
-					<div className={cn("AiChat-scroll-to-bottom" satisfies AiChat_ClassNames)}>
+					<div className={cn("AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames)}>
 						<MyIconButton variant="outline" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
-							<ArrowDown className={cn("AiChat-scroll-to-bottom-icon" satisfies AiChat_ClassNames)} />
+							<ArrowDown className={cn("AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames)} />
 						</MyIconButton>
 					</div>
 				)}
 			</div>
-			<div className={cn("AiChat-composer" satisfies AiChat_ClassNames)}>
+			<div className={cn("AiChatThread-composer" satisfies AiChatThread_ClassNames)}>
 				<AiChatComposer
 					key={selectedThreadId ?? "new"}
 					canCancel={canCancel}
@@ -724,6 +692,26 @@ function AiChatThread(props: AiChatThread_Props) {
 		</div>
 	);
 }
+// #endregion thread
+
+// #region root
+type AiChat_ClassNames =
+	| "AiChat"
+	| "AiChat-ai-sidebar"
+	| "AiChat-ai-sidebar-state-open"
+	| "AiChat-ai-sidebar-state-closed"
+	| "AiChat-main"
+	| "AiChat-thread-panel"
+	| "AiChat-thread-controls"
+	| "AiChat-thread-control-button"
+	| "AiChat-thread-control-icon"
+	| "AiChat-thread-content";
+
+export type AiChat_Props = ComponentPropsWithRef<"div"> & {
+	ref?: Ref<HTMLDivElement>;
+	id?: string;
+	className?: string;
+};
 
 export function AiChat(props: AiChat_Props) {
 	const { ref, id, className, ...rest } = props;
@@ -733,18 +721,18 @@ export function AiChat(props: AiChat_Props) {
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	return (
-		<div ref={ref} id={id} className={cn("ChatV2" satisfies ChatV2_ClassNames, className)} {...rest}>
+		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
 			{/* AI Chat Sidebar - positioned between main sidebar and content with animation */}
 			<div
 				className={cn(
-					"ChatV2-ai-sidebar" satisfies ChatV2_ClassNames,
+					"AiChat-ai-sidebar" satisfies AiChat_ClassNames,
 					aiChatSidebarOpen
-						? ("ChatV2-ai-sidebar-state-open" satisfies ChatV2_ClassNames)
-						: ("ChatV2-ai-sidebar-state-closed" satisfies ChatV2_ClassNames),
+						? ("AiChat-ai-sidebar-state-open" satisfies AiChat_ClassNames)
+						: ("AiChat-ai-sidebar-state-closed" satisfies AiChat_ClassNames),
 				)}
 			>
 				<AiChatThreads
-					threads={controller.threads}
+					paginatedThreads={controller.paginatedThreads}
 					streamingTitleByThreadId={controller.streamingTitleByThreadId}
 					selectedThreadId={controller.selectedThreadId}
 					onClose={() => setAiChatSidebarOpen(false)}
@@ -756,30 +744,30 @@ export function AiChat(props: AiChat_Props) {
 			</div>
 
 			{/* Main Content Area - takes remaining space */}
-			<div className={cn("ChatV2-main" satisfies ChatV2_ClassNames)}>
-				<div className={cn("ChatV2-thread-panel" satisfies ChatV2_ClassNames)}>
+			<div className={cn("AiChat-main" satisfies AiChat_ClassNames)}>
+				<div className={cn("AiChat-thread-panel" satisfies AiChat_ClassNames)}>
 					{!aiChatSidebarOpen && (
-						<div className={cn("ChatV2-thread-controls" satisfies ChatV2_ClassNames)}>
+						<div className={cn("AiChat-thread-controls" satisfies AiChat_ClassNames)}>
 							<MyIconButton
 								variant="outline"
 								tooltip="Open app sidebar"
 								onClick={toggleSidebar}
-								className={cn("ChatV2-thread-control-button" satisfies ChatV2_ClassNames)}
+								className={cn("AiChat-thread-control-button" satisfies AiChat_ClassNames)}
 							>
-								<Menu className={cn("ChatV2-thread-control-icon" satisfies ChatV2_ClassNames)} />
+								<Menu className={cn("AiChat-thread-control-icon" satisfies AiChat_ClassNames)} />
 							</MyIconButton>
 
 							<MyIconButton
 								variant="outline"
 								tooltip="Open chat threads"
 								onClick={() => setAiChatSidebarOpen(true)}
-								className={cn("ChatV2-thread-control-button" satisfies ChatV2_ClassNames)}
+								className={cn("AiChat-thread-control-button" satisfies AiChat_ClassNames)}
 							>
-								<PanelLeft className={cn("ChatV2-thread-control-icon" satisfies ChatV2_ClassNames)} />
+								<PanelLeft className={cn("AiChat-thread-control-icon" satisfies AiChat_ClassNames)} />
 							</MyIconButton>
 						</div>
 					)}
-					<div className={cn("ChatV2-thread-content" satisfies ChatV2_ClassNames)}>
+					<div className={cn("AiChat-thread-content" satisfies AiChat_ClassNames)}>
 						<AiChatThread controller={controller} />
 					</div>
 				</div>
@@ -787,4 +775,5 @@ export function AiChat(props: AiChat_Props) {
 		</div>
 	);
 }
+
 // #endregion root
