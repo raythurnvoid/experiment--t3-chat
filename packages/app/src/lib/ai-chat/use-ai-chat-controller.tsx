@@ -441,6 +441,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const pendingMessagesData = ((/* iife */) => {
 		const result = {
 			list: [] as ai_chat_AiSdkUiMessage[],
+			mapById: new Map<string, ai_chat_AiSdkUiMessage>(),
 			childrenByParentId: new Map<string | null, ai_chat_AiSdkUiMessage[]>(),
 		};
 
@@ -454,6 +455,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			if (!persistedMessagesData?.mapById.has(message.id)) {
 				result.list.push(message);
 			}
+
+			result.mapById.set(message.id, message);
 
 			const parentIdOrRoot = ai_chat_get_parent_id(message.metadata?.convexParentId);
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
@@ -469,7 +472,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const anchorMessage = persistedMessagesData
 		? session?.anchorId
 			? (persistedMessagesData.mapById.get(session.anchorId) ?? null)
-			: (persistedMessagesData.list.at(0) ?? null)
+			: (pendingMessagesData.list.at(0) ?? persistedMessagesData.list.at(0) ?? null)
 		: null;
 
 	const activeBranchMessages = ((/* iife */) => {
@@ -484,7 +487,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			while (current) {
 				tail.push(current);
 				current = current.metadata?.convexParentId
-					? persistedMessagesData.mapById.get(current.metadata.convexParentId)
+					? (pendingMessagesData.mapById.get(current.metadata.convexParentId) ??
+						persistedMessagesData.mapById.get(current.metadata.convexParentId))
 					: undefined;
 			}
 		}
@@ -667,7 +671,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
-		const convexParentId = options?.parentId ?? activeBranchMessages.at(-1)?.id ?? null;
+		const convexParentId = options?.parentId === undefined ? activeBranchMessages.at(-1)?.id : options.parentId;
 
 		chat.messages = activeBranchMessages;
 		chat.sendMessage({
