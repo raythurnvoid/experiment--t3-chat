@@ -159,12 +159,12 @@ type AiChatThreadsListItem_ClassNames =
 	| "AiChatThreadsListItem-action";
 
 type AiChatThreadsListItem_Props = {
-	thread: app_convex_Doc<"threads">;
+	thread: app_convex_Doc<"ai_chat_threads">;
 	searchQuery: string;
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
 	onSelectThread: (threadId: string) => void;
-	onToggleFavouriteThread: (threadId: app_convex_Id<"threads">, starred: boolean) => void;
+	onToggleFavouriteThread: (threadId: app_convex_Id<"ai_chat_threads">, starred: boolean) => void;
 	onArchiveThread: (threadId: string, isArchived: boolean) => void;
 };
 
@@ -248,7 +248,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 
 // #region optimistic list item
 type AiChatThreadsOptimisticListItem_Props = {
-	thread: app_convex_Doc<"threads">;
+	thread: app_convex_Doc<"ai_chat_threads">;
 	searchQuery: string;
 	selectedThreadId: string | null;
 	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
@@ -344,7 +344,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 	const [scrollRoot, setScrollRoot] = useState<HTMLUListElement | null>(null);
 
 	const threads = paginatedThreads?.results ?? [];
-	const sortedThreads = threads.sort((a, b) => b.last_message_at - a.last_message_at);
+	const sortedThreads = threads.sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
 
 	const canLoadMore = paginatedThreads?.status === "CanLoadMore";
 
@@ -376,7 +376,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 					if (ai_chat_is_optimistic_thread(thread)) {
 						return (
 							<AiChatThreadsOptimisticListItem
-								key={thread.external_id ?? thread._id}
+								key={thread.clientGeneratedId ?? thread._id}
 								thread={thread}
 								searchQuery={searchQuery}
 								selectedThreadId={selectedThreadId}

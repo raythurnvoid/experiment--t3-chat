@@ -27,7 +27,7 @@ This is a monorepo project with the following essential structure that you must 
 - [packages/app/](packages/app) - MAIN APPLICATION ROOT
 
   - [src/](packages/app/src) - React frontend application code
-    - [src/components/](packages/app/src/components) - React components (UI, assistant-ui, canvas)
+    - [src/components/](packages/app/src/components) - React components (UI, app assistant UI, canvas)
     - [src/routes/](packages/app/src/routes) - TanStack Router route definitions
     - [src/lib/](packages/app/src/lib) - Shared utilities and helpers
     - [src/hooks/](packages/app/src/hooks) - Custom React hooks
@@ -36,12 +36,12 @@ This is a monorepo project with the following essential structure that you must 
     - [src/app.css](packages/app/src/app.css) - Main CSS file with Tailwind 4 configuration
   - [convex/](packages/app/convex) - Convex backend code and functions
   - [shared/](packages/app/shared) - Shared code between frontend and backend
-  - [vendor/assistant-ui/](packages/app/vendor/assistant-ui) - Assistant UI submodule (full repo for reference)
   - [vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
   - [vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
   - [vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
 
 - [references-submodules/](references-submodules) - Reference-only git submodules (docs + source scraping)
+  - [assistant-ui/](references-submodules/assistant-ui) - Assistant UI submodule (reference-only)
 
 - [+personal/](+personal) - DOCUMENTATION & RESEARCH FOLDER
   - [+personal/+ai/](+personal/+ai) - Only writable subfolder for AI-generated content
@@ -51,23 +51,8 @@ This is a monorepo project with the following essential structure that you must 
 
 ## Submodules (Special Import Handling)
 
-- [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui) - Assistant UI submodule with custom overrides
-
-- Importing: Import Assistant UI via normal node_modules package imports (the submodule is vendored/symlinked into node_modules for development)
-  - ✅ Correct:
-    ```ts
-    import { useAssistantState, useAssistantApi } from "@assistant-ui/react";
-    import { AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
-    ```
-  - ❌ Wrong: do not import from `@/vendor/...` paths
-    ```ts
-    import { useAssistantState } from "@/vendor/assistant-ui/packages/react/src/context/react/hooks/useAssistantState";
-    ```
-- Documentation folders:
-  - [apps/docs/](packages/app/vendor/assistant-ui/apps/docs)
-- Examples folders:
-
-  - [examples/](packages/app/vendor/assistant-ui/examples)
+The `assistant-ui` repository is checked out as a **reference-only** submodule at `references-submodules/assistant-ui`.
+The app should **not** depend on `@assistant-ui/*` packages; use normal `node_modules` dependencies for runtime.
 
 - [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule
 
@@ -143,7 +128,7 @@ Documentation Sources
 
 - [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
 - You may assume `+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
-- Submodules - [packages/app/vendor/assistant-ui/](packages/app/vendor/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [references-submodules/ai/](references-submodules/ai), [references-submodules/convex-backend/](references-submodules/convex-backend), [references-submodules/convex-helpers/](references-submodules/convex-helpers), [references-submodules/convex-js/](references-submodules/convex-js), and [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
+- Submodules - [references-submodules/assistant-ui/](references-submodules/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [references-submodules/ai/](references-submodules/ai), [references-submodules/convex-backend/](references-submodules/convex-backend), [references-submodules/convex-helpers/](references-submodules/convex-helpers), [references-submodules/convex-js/](references-submodules/convex-js), and [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 
 Research Process
@@ -165,18 +150,6 @@ Quality Standard: Understanding should be deep enough to explain concepts confid
 - [packages/app/vite.config.ts](packages/app/vite.config.ts) - Vite development server configuration
 
 ## Import Guidelines
-
-### Assistant UI Imports
-
-When importing assistant-ui components or utilities, ALWAYS use normal package imports (node_modules):
-
-```ts
-// ✅ CORRECT
-import { useAssistantTool } from "@assistant-ui/react";
-
-// ❌ WRONG - do not import from `@/vendor/...`
-import { useAssistantTool } from "@/vendor/assistant-ui/packages/react/src/runtime";
-```
 
 ### Standard Library Imports
 
@@ -380,7 +353,6 @@ The frontend is a React 19 application located in [packages/app/src/](packages/a
 
 - Convex - Real-time backend, HTTP actions, persistence
 - Clerk - Authentication
-- Assistant UI (submodule) - Chat/runtime UI
 - Liveblocks + Yjs - Real-time collaborative editing
 - BlockNote - Rich text/Markdown editor
 - Monaco Editor - Code and Diff editor
@@ -397,7 +369,7 @@ The frontend is a React 19 application located in [packages/app/src/](packages/a
 
 The app runs at http://localhost:5173/ during development.
 
-- Chat: The center panel uses Assistant UI runtime to send messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool calls can create or update artifacts which appear in the right-hand canvas.
+- Chat: The center panel sends messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool calls can create or update artifacts which appear in the right-hand canvas.
 - Agent file access: Server-side tools in `packages/app/server/server-ai-tools.ts` let the agent read, write, and diff files in the workspace (search, edits, filesystem ops). These run in Node, not the browser, and are invoked through tool calls from the chat flow.
 - Docs: The docs experience combines a file/tree explorer and an editor surface. Content supports rich text Markdown via BlockNote and code/diff via Monaco Diff Editor. The canvas can switch between these modes depending on the artifact type.
 - Collaboration: Liveblocks + Yjs provide real-time presence and editing. Convex acts as a secondary source of truth: we persist Yjs snapshots and metadata (`packages/app/convex/ai_docs_temp.ts`) and hydrate rooms from Convex when joining, ensuring recovery and consistency if Yjs state is unavailable. Webhooks/mutations upsert snapshots so new clients can catch up quickly.

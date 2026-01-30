@@ -3,7 +3,7 @@ import "./ai-chat.css";
 import type { ComponentPropsWithRef, Ref } from "react";
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, Check, ChevronLeft, ChevronRight, Copy, Menu, PanelLeft, Pencil, RefreshCw, X } from "lucide-react";
-import type { ai_chat_AiSdkUiMessage } from "@/lib/ai-chat.ts";
+import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
@@ -74,7 +74,7 @@ type AiChatMessage_ToolActions = {
 	stop: AiChatController["stop"];
 };
 
-const ai_chat_get_copy_text = (message: ai_chat_AiSdkUiMessage) => {
+const ai_chat_get_copy_text = (message: ai_chat_AiSdk5UiMessage) => {
 	const textFromParts = message.parts
 		.filter((part) => part.type === "text")
 		.map((part) => part.text)
@@ -83,7 +83,7 @@ const ai_chat_get_copy_text = (message: ai_chat_AiSdkUiMessage) => {
 	return textFromParts.length > 0 ? textFromParts : null;
 };
 
-const ai_chat_find_artifact_id = (message: ai_chat_AiSdkUiMessage) => {
+const ai_chat_find_artifact_id = (message: ai_chat_AiSdk5UiMessage) => {
 	const parts = message.parts ?? [];
 	for (const part of parts) {
 		if (!part || typeof part !== "object") {
@@ -116,7 +116,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 
-	message: ai_chat_AiSdkUiMessage;
+	message: ai_chat_AiSdk5UiMessage;
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	isEditing: boolean;
@@ -378,8 +378,8 @@ function AiChatMessage(props: AiChatMessage_Props) {
 // #region message part
 type AiChatMessagePart_Props = {
 	role: "assistant" | "user" | "system";
-	part: ai_chat_AiSdkUiMessage["parts"][number];
-	message: ai_chat_AiSdkUiMessage;
+	part: ai_chat_AiSdk5UiMessage["parts"][number];
+	message: ai_chat_AiSdk5UiMessage;
 	artifactId: string | null;
 	toolActions: AiChatMessage_ToolActions;
 };
@@ -402,8 +402,8 @@ function AiChatMessagePart(props: AiChatMessagePart_Props) {
 // #region message part inner
 type AiChatMessagePartInner_Props = {
 	role: "assistant" | "user" | "system";
-	part: ai_chat_AiSdkUiMessage["parts"][number];
-	message: ai_chat_AiSdkUiMessage;
+	part: ai_chat_AiSdk5UiMessage["parts"][number];
+	message: ai_chat_AiSdk5UiMessage;
 	artifactId: string | null;
 	toolActions: AiChatMessage_ToolActions;
 };

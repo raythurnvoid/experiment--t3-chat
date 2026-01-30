@@ -2,6 +2,13 @@ This folder contains **git submodules used only for reference** (docs + source r
 
 We do **not** vendor these into the application build; the app should continue to use normal `node_modules` dependencies.
 
+# Assistant UI
+
+The `assistant-ui` repository is checked out here as a submodule so it can be updated easily when needed.
+It is used for scraping/reading documentation and source code during development.
+
+- root: `references-submodules/assistant-ui` - assistant-ui monorepo
+
 # AI SDK
 
 The Vercel AI SDK repository is checked out here as a submodule so it can be updated easily when needed.

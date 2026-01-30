@@ -1,11 +1,10 @@
 import "../assistant-ui/markdown-text.css";
 
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { memo, useMemo, useState } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { unstable_memoizeMarkdownComponents as memoizeMarkdownComponents } from "@assistant-ui/react-markdown";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -250,7 +249,7 @@ function CodeComponent(props: ComponentPropsWithoutRef<"code"> & { inline?: bool
 	);
 }
 
-const ai_chat_markdown_components = memoizeMarkdownComponents({
+const ai_chat_markdown_components = {
 	h1: H1Component,
 	h2: H2Component,
 	h3: H3Component,
@@ -270,4 +269,4 @@ const ai_chat_markdown_components = memoizeMarkdownComponents({
 	sup: SupComponent,
 	pre: PreComponent,
 	code: CodeComponent,
-});
+} satisfies Components;
