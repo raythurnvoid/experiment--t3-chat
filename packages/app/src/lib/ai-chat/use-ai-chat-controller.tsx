@@ -46,6 +46,10 @@ type ThreadStore = {
 	threadById: Map<string, ThreadSession>;
 };
 
+type ChatRequestMetadata = {
+	isOptimistic: boolean;
+};
+
 const useAiChatStore = ((/* iife */) => {
 	const store = create<ThreadStore>(() => ({
 		selectedThreadId: null,
@@ -354,47 +358,21 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			headers.set("Authorization", `Bearer ${token}`);
 		}
 
-		const chatId = options.id;
+		debugger;
+		// During submit the last message is the user message
+		const messagesPayload = options.trigger === "regenerate-message" ? [] : options.messages.slice(-1);
 
-		const session = useAiChatStore.getState().threadById.get(chatId);
-		const threadId = session?.optimisticThread ? undefined : chatId;
-		const clientThreadId = session?.optimisticThread
-			? (session.optimisticThread.clientGeneratedId ?? chatId)
-			: undefined;
+		const metadata = options.requestMetadata as ChatRequestMetadata;
 
-		const isRegenerate = options.trigger === "regenerate-message";
-		const regenMessage =
-			isRegenerate && options.messageId ? (persistedMessagesData?.mapById.get(options.messageId) ?? null) : null;
-		if (isRegenerate && !options.messageId) {
-			should_never_happen("[useAiChatController] Missing messageId for regenerate request", { chatId });
-		}
-		if (isRegenerate && options.messageId && !regenMessage) {
-			should_never_happen("[useAiChatController] Missing Convex message for regenerate request", {
-				chatId,
-				messageId: options.messageId,
-			});
-		}
-
-		const regenParentId = ai_chat_get_parent_id(regenMessage?.metadata?.convexParentId);
-		const messagesPayload = isRegenerate ? [] : options.messages.slice(-1);
-
-		const tools = (options.body as { tools?: Record<string, unknown> } | undefined)?.tools ?? {};
-		const lastMessage = messagesPayload.at(-1) ?? null;
-		const submitParentId = lastMessage?.role === "user" ? lastMessage.metadata?.convexParentId : undefined;
 		const requestBody = {
-			...(options.body as Record<string, unknown> | undefined),
-			id: threadId ?? chatId,
+			...options.body,
+
+			threadId: metadata.isOptimistic ? undefined : options.id,
+			clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
+
 			messages: messagesPayload,
 			trigger: options.trigger,
 			messageId: options.messageId,
-			tools,
-			...(threadId ? { threadId } : {}),
-			...(clientThreadId ? { clientThreadId } : {}),
-			...(isRegenerate
-				? { parentId: regenParentId ?? null }
-				: submitParentId !== undefined
-					? { parentId: submitParentId }
-					: {}),
 		} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 		return {
@@ -652,11 +630,15 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		// Hydrate the chat with the exact branch that contains the target message id,
 		// so AI SDK can slice correctly for regenerate.
 		chat.messages = activeBranchMessages;
-
-		chat.regenerate({ messageId }).catch(console.error);
+		chat
+			.regenerate({
+				messageId,
+				metadata: { isOptimistic: session.optimisticThread ? true : false } satisfies ChatRequestMetadata,
+			})
+			.catch(console.error);
 	};
 
-	const sendUserText = (threadId: string, value: string, options?: { parentId?: string | null }) => {
+	const sendUserText = (threadId: string, value: string, options?: { messageId?: string }) => {
 		if (!value.trim()) {
 			return;
 		}
@@ -672,16 +654,19 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
-		const convexParentId = options?.parentId === undefined ? activeBranchMessages.at(-1)?.id : options.parentId;
-
 		chat.messages = activeBranchMessages;
-		chat.sendMessage({
-			role: "user",
-			parts: [{ type: "text", text: value }],
-			metadata: {
-				convexParentId,
-			} satisfies Partial<ai_chat_UiMessageMetadata>,
-		});
+		chat.sendMessage(
+			{
+				role: "user",
+				parts: [{ type: "text", text: value }],
+				messageId: options?.messageId,
+			},
+			{
+				metadata: {
+					isOptimistic: session.optimisticThread ? true : false,
+				} satisfies ChatRequestMetadata,
+			},
+		);
 
 		setComposerValue(threadId, "");
 	};
@@ -751,7 +736,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 		setComposerValue,
 		sendUserText,
-		sendMessage: chat.sendMessage,
 		regenerate,
 		stop: chat.stop,
 		resumeStream: chat.resumeStream,

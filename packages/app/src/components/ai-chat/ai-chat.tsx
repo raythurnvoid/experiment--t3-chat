@@ -748,7 +748,7 @@ function AiChatThread(props: AiChatThread_Props) {
 			return;
 		}
 
-		controller.sendUserText(selectedThreadId, value, { parentId: editing.parentId });
+		controller.sendUserText(selectedThreadId, value, { messageId: editing.messageId });
 		setEditingState(null);
 	};
 

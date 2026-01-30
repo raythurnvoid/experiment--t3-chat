@@ -1,4 +1,4 @@
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, should_never_happen } from "../shared/shared-utils.ts";
 import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, internalMutation, type ActionCtx } from "./_generated/server.js";
@@ -38,21 +38,7 @@ import {
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-
-/**
- * This function exists only becase is not possible to define a type specific enough to make ts happy when using
- * the data saved in convex as {@link ai_chat_AiSdk5UiMessage}. However, {@link ai_chat_AiSdk5UiMessage} is the type that is saved in convex.
- */
-function convert_convex_db_message_to_aisdk_ui_message(
-	message: app_convex_Doc<"ai_chat_threads_messages_aisdk_5">,
-): ai_chat_AiSdk5UiMessage {
-	return {
-		id: message._id,
-		role: message.content.role,
-		parts: message.content.parts as ai_chat_AiSdk5UiMessage["parts"],
-		metadata: message.content.metadata as ai_chat_AiSdk5UiMessage["metadata"],
-	};
-}
+import { options } from "marked";
 
 export const threads_list = query({
 	args: {
@@ -244,7 +230,7 @@ export const thread_messages_list = query({
 export const thread_messages_add = mutation({
 	args: {
 		threadId: v.id("ai_chat_threads"),
-		parentId: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
+		parentId: v.optional(v.union(v.string(), v.null())),
 		messages: v.array(
 			v.object({
 				clientGeneratedMessageId:
@@ -257,13 +243,15 @@ export const thread_messages_add = mutation({
 		ids: v.array(v.id("ai_chat_threads_messages_aisdk_5")),
 	}),
 	handler: async (ctx, args) => {
+		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
+
 		const now = Date.now();
 
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const ids: Array<app_convex_Id<"ai_chat_threads_messages_aisdk_5">> = [];
 
-		let nextParentId = args.parentId;
+		let nextParentId = parentId;
 		for (const message of args.messages) {
 			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -368,21 +356,11 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
 						 **/
 						const bodyValidator = z.object({
-							// AI SDK fields
-							id: z.string(),
 							messages: z.array(z.any()),
 							trigger: z.enum(["submit-message", "regenerate-message"]),
 							messageId: z.string().optional(),
-
-							// Assistant UI fields
-							system: z.string().optional(),
-							tools: z.record(z.string(), z.unknown()),
-
-							// Custom fields
 							threadId: z.string().optional(),
-							// `null` means "root" (explicitly do not append to latest message).
-							parentId: z.union([z.string(), z.null()]).optional(),
-							clientThreadId: z.string().optional(),
+							clientGeneratedThreadId: z.string().optional(),
 						});
 
 						type SearchParams = never;
@@ -401,11 +379,14 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								if (requestParseResult._yay.threadId == null && requestParseResult._yay.clientThreadId == null) {
+								if (
+									requestParseResult._yay.threadId == null &&
+									requestParseResult._yay.clientGeneratedThreadId == null
+								) {
 									return {
 										status: 400,
 										body: {
-											message: "One of `threadId` or `clientThreadId` is required",
+											message: "One of `threadId` or `clientGeneratedThreadId` is required",
 										},
 									} as const;
 								}
@@ -440,38 +421,33 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 									threadId = existingThread._id;
 								} else {
+									if (!body.clientGeneratedThreadId) {
+										throw should_never_happen(
+											"`body.clientGeneratedThreadId` missing, the request was not properly validated at the top of this handler",
+											{
+												threadId,
+												clientGeneratedThreadId: body.clientGeneratedThreadId,
+											},
+										);
+									}
+
 									const created = await ctx.runMutation(api.ai_chat.thread_create, {
 										// Store the optimistic client thread id on the persisted thread.
 										// This lets the frontend dedupe the optimistic entry as soon as the
 										// thread appears in `threads_list`, even if the SSE `data-thread-id`
 										// mapping arrives slightly later.
-										clientGeneratedId: body.clientThreadId ?? get_id_generator("ai_thread")(),
+										clientGeneratedId: body.clientGeneratedThreadId ?? get_id_generator("ai_thread")(),
 									});
-									threadId = created.thread_id;
-									createdThreadId = created.thread_id;
+
+									createdThreadId = threadId = created.thread_id;
 								}
 
 								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
 
-								// TODO(ai-chat): "Persist-first" message flow (user + assistant)
-								// - Persist the incoming *user* message immediately (before streaming) to allocate a Convex message _id.
-								// - Allocate a placeholder *assistant* message doc up front as well (child of the user message).
-								// - Emit a transient stream part (e.g. `data-message-ids`) with:
-								//   - client message id(s) (from AI SDK UIMessage) -> convex message _id mapping
-								//   - optionally also include a `persisted: true` / "barrier" so the client can drop optimistic messages.
-								// - Once this is in place, we should be able to remove (or at least stop depending on) the
-								//   `messages.client_generated_message_id` persistence/dedupe path.
 								let messages: ModelMessage[] = [];
 								let uiMessages: ai_chat_AiSdk5UiMessage[] = [];
-								let resolvedParentId: app_convex_Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
 
 								do {
-									if (body.parentId) {
-										resolvedParentId = body.parentId as app_convex_Id<"ai_chat_threads_messages_aisdk_5">;
-									} else if (body.parentId === null) {
-										resolvedParentId = null;
-									}
-
 									if (threadId) {
 										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
 											threadId: threadId as app_convex_Id<"ai_chat_threads">,
@@ -483,46 +459,33 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											break;
 										}
 
-										// If the client didn't provide a parent id (race condition with initial thread hydration),
-										// fall back to appending to the latest message in the thread.
-										if (!resolvedParentId && body.trigger !== "regenerate-message" && body.parentId !== null) {
-											resolvedParentId = threadMessagesResult.messages.at(-1)?._id ?? null;
-										}
-
 										const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
 											threadMessagesResult.messages.map((msg) => [msg._id, msg]),
 										);
 
-										// For regenerate flows we always target a persisted message, so resolve the branch point
-										// from the persisted message id (AI SDK `messageId`) rather than client-generated ids.
-										if (body.trigger === "regenerate-message") {
-											const targetMessageId = typeof body.messageId === "string" ? body.messageId : null;
-											const targetMessage = targetMessageId ? messagesMap.get(targetMessageId) : undefined;
-											if (targetMessage) {
-												resolvedParentId = targetMessage.parentId;
-											} else if (targetMessageId) {
-												console.warn(`Regenerate target message not found: ${targetMessageId}`);
-											}
-										}
-
 										const reconstructedMessages: app_convex_Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
 
-										let nextParentId = resolvedParentId;
-
-										while (nextParentId) {
-											const parentMessage = messagesMap.get(nextParentId);
-											if (parentMessage) {
-												// the messages has to be from the oldest to the newest
-												reconstructedMessages.unshift(parentMessage);
-												nextParentId = parentMessage.parentId;
-											} else {
-												console.warn(`Parent message not found: ${nextParentId}`);
-												break;
+										let nextMessageId = body.messageId;
+										while (nextMessageId) {
+											const message = messagesMap.get(nextMessageId);
+											if (!message) {
+												throw should_never_happen("Failed to reconstruct messages", {
+													threadId,
+													messageId: nextMessageId,
+												});
 											}
+
+											// For regenerate flows we should not include the target message in the reconstructed messages.
+											if (body.trigger !== "regenerate-message" || body.messageId !== nextMessageId) {
+												reconstructedMessages.push(message);
+											}
+
+											nextMessageId = message.parentId as string;
 										}
 
 										uiMessages = reconstructedMessages
-											.map((msg) => convert_convex_db_message_to_aisdk_ui_message(msg))
+											.reverse()
+											.map((msg) => msg.content as ai_chat_AiSdk5UiMessage)
 											.concat(...requestMessages);
 									}
 								} while (0);
@@ -584,23 +547,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											});
 										}
 
-										// Attach the resolved Convex parent id as message metadata so the client can treat
-										// the streaming (optimistic) assistant message as part of the parent/child tree.
-										//
-										// For normal submits, we want the streaming assistant message to be a child of the optimistic
-										// user message (client-generated id), so the UI includes the user message in the active branch.
-										const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
-										const lastRequestMessage = requestMessages.at(-1) ?? null;
-										const parentIdForStreamingMetadata =
-											body.trigger === "regenerate-message"
-												? (resolvedParentId ?? null)
-												: lastRequestMessage?.role === "user"
-													? lastRequestMessage.id
-													: (resolvedParentId ?? null);
 										writer.write({
 											type: "message-metadata",
 											messageMetadata: {
-												convexParentId: parentIdForStreamingMetadata,
+												convexParentId: requestMessages.at(-1)?.id,
 											},
 										});
 
@@ -701,6 +651,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											}
 
 											const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
+											const lastRequestMessageId = requestMessages.at(-1)?.id;
 											const responseMessage = result.responseMessage;
 											const messagesToPersist = responseMessage
 												? requestMessages.concat(responseMessage)
@@ -728,7 +679,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 											await ctx.runMutation(api.ai_chat.thread_messages_add, {
 												threadId: threadId as app_convex_Id<"ai_chat_threads">,
-												parentId: resolvedParentId,
+												parentId: lastRequestMessageId,
 												messages: messagesInput,
 											});
 										} catch (error: unknown) {
