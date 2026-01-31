@@ -562,7 +562,7 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 		...rest
 	} = props;
 
-	const messageCount = activeBranchMessages.length;
+	const messageCount = activeBranchMessages.list.length;
 
 	const handleSuggestionClick = (action: string) => {
 		onClickSuggestion(action);
@@ -600,7 +600,7 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 					</div>
 				</div>
 			) : (
-				activeBranchMessages.map((message) => (
+				activeBranchMessages.list.map((message) => (
 					<AiChatMessage
 						key={message.id}
 						message={message}
@@ -639,7 +639,7 @@ function AiChatThread(props: AiChatThread_Props) {
 	const { controller } = props;
 
 	const [isAtBottom, setIsAtBottom] = useState(true);
-	const messageCount = controller.activeBranchMessages.length;
+	const messageCount = controller.activeBranchMessages.list.length;
 	const scrollRef = useRef<HTMLDivElement | null>(null);
 	const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
 	const [editingState, setEditingState] = useState<{
@@ -846,7 +846,7 @@ export function AiChat(props: AiChat_Props) {
 				)}
 			>
 				<AiChatThreads
-					paginatedThreads={controller.paginatedThreads}
+					paginatedThreads={controller.currentThreadsWithOptimistic}
 					streamingTitleByThreadId={controller.streamingTitleByThreadId}
 					selectedThreadId={controller.selectedThreadId}
 					onClose={() => setAiChatSidebarOpen(false)}

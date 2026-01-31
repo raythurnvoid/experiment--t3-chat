@@ -1,4 +1,9 @@
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, should_never_happen } from "../shared/shared-utils.ts";
+import {
+	ai_chat_HARDCODED_ORG_ID,
+	ai_chat_HARDCODED_PROJECT_ID,
+	omit_properties,
+	should_never_happen,
+} from "../shared/shared-utils.ts";
 import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, internalMutation, type ActionCtx } from "./_generated/server.js";
@@ -16,8 +21,6 @@ import {
 	convertToModelMessages,
 	validateUIMessages,
 	TypeValidationError,
-	type Tool,
-	type ModelMessage,
 } from "ai";
 import { z } from "zod";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
@@ -38,7 +41,6 @@ import {
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-import { options } from "marked";
 
 export const threads_list = query({
 	args: {
@@ -356,10 +358,25 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
 						 **/
 						const bodyValidator = z.object({
+							/**
+							 * The messages to append to the thread.
+							 */
 							messages: z.array(z.any()),
 							trigger: z.enum(["submit-message", "regenerate-message"]),
-							messageId: z.string().optional(),
+							/**
+							 * The id of the message to which the new message should be appended.
+							 */
+							parentId: z.string().optional(),
+							/**
+							 * The id of the thread to which the new message should be appended.
+							 *
+							 * `undefined` for new threads.
+							 */
 							threadId: z.string().optional(),
+
+							/**
+							 * The client generated id for a new thread.
+							 */
 							clientGeneratedThreadId: z.string().optional(),
 						});
 
@@ -391,28 +408,53 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const body = requestParseResult._yay;
-
-								// Validate messages from request
-								if (!Array.isArray(body.messages)) {
-									return {
-										status: 400,
-										body: {
-											message: "Invalid messages format",
-										},
-									} as const;
+								// Validate the messages if they are present
+								if (requestParseResult._yay.messages.length > 0) {
+									try {
+										await validateUIMessages({
+											messages: requestParseResult._yay.messages,
+											tools: undefined,
+										});
+									} catch (error) {
+										if (error instanceof TypeValidationError) {
+											return {
+												status: 400,
+												body: {
+													message: "Invalid messages format",
+												},
+											} as const;
+										} else {
+											const msg = "Failed to validate chat messages";
+											should_never_happen(msg, {
+												error: error,
+											});
+											return {
+												status: 500,
+												body: {
+													message: msg,
+												},
+											} as const;
+										}
+									}
 								}
 
-								let threadId = body.threadId ?? null;
-								let createdThreadId: string | null = null;
+								const now = Date.now();
 
-								if (threadId) {
+								const body = requestParseResult._yay;
+
+								let threadId = null;
+								let createdThreadId = null;
+
+								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
+								let uiMessages: ai_chat_AiSdk5UiMessage[] = [];
+
+								if (body.threadId) {
 									const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
-										threadId,
+										threadId: body.threadId,
 									});
 									if (!existingThread) {
 										return {
-											status: 404,
+											status: 400,
 											body: {
 												message: "Thread not found",
 											},
@@ -437,25 +479,20 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										// thread appears in `threads_list`, even if the SSE `data-thread-id`
 										// mapping arrives slightly later.
 										clientGeneratedId: body.clientGeneratedThreadId ?? get_id_generator("ai_thread")(),
+										lastMessageAt: now,
 									});
 
 									createdThreadId = threadId = created.thread_id;
 								}
 
-								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
-
-								let messages: ModelMessage[] = [];
-								let uiMessages: ai_chat_AiSdk5UiMessage[] = [];
-
-								do {
-									if (threadId) {
+								if (threadId) {
+									do {
 										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
 											threadId: threadId as app_convex_Id<"ai_chat_threads">,
 											order: "asc",
 										});
 
 										if (!threadMessagesResult) {
-											uiMessages = requestMessages;
 											break;
 										}
 
@@ -465,7 +502,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 										const reconstructedMessages: app_convex_Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
 
-										let nextMessageId = body.messageId;
+										let nextMessageId = body.parentId;
 										while (nextMessageId) {
 											const message = messagesMap.get(nextMessageId);
 											if (!message) {
@@ -475,20 +512,22 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 												});
 											}
 
-											// For regenerate flows we should not include the target message in the reconstructed messages.
-											if (body.trigger !== "regenerate-message" || body.messageId !== nextMessageId) {
-												reconstructedMessages.push(message);
-											}
-
+											reconstructedMessages.push(message);
 											nextMessageId = message.parentId as string;
 										}
 
 										uiMessages = reconstructedMessages
 											.reverse()
-											.map((msg) => msg.content as ai_chat_AiSdk5UiMessage)
+											.map(
+												(msg) =>
+													({
+														...(msg.content as any),
+														id: msg._id,
+													}) as ai_chat_AiSdk5UiMessage,
+											)
 											.concat(...requestMessages);
-									}
-								} while (0);
+									} while (0);
+								}
 
 								const tools = {
 									weather: tool({
@@ -510,26 +549,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									edit_page: ai_chat_tool_create_edit_page(ctx, { thread_id: threadId ?? "" }),
 								} as const;
 
-								try {
-									uiMessages = await validateUIMessages({
-										messages: uiMessages,
-										tools: tools as Record<string, Tool<unknown, unknown>>,
-									});
-								} catch (error) {
-									if (error instanceof TypeValidationError) {
-										console.error("Failed to validate chat messages, falling back to request messages.", error);
-										uiMessages = requestMessages;
-									} else {
-										throw error;
-									}
-								}
-
-								messages = convertToModelMessages(uiMessages);
-
-								console.info("messages", {
-									messages: messages,
-									threadId,
-								});
+								const modelMessages = convertToModelMessages(uiMessages);
 
 								const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
 									generateId: get_id_generator("ai_message"),
@@ -550,14 +570,14 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										writer.write({
 											type: "message-metadata",
 											messageMetadata: {
-												convexParentId: requestMessages.at(-1)?.id,
+												convexParentId: uiMessages.at(-1)?.id,
 											},
 										});
 
 										const result1 = streamText({
 											model: openai("gpt-5-nano"),
 											system: `Either respond directly to the user or use the tools at your disposal.`,
-											messages,
+											messages: modelMessages,
 											temperature: 0.7,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,
@@ -595,7 +615,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 													return;
 												}
 
-												const titleMessages = [...messages, ...response1.messages];
+												const titleMessages = [...modelMessages, ...response1.messages];
 												const titleResult = streamText({
 													model: openai("gpt-4.1-nano"),
 													system:
@@ -646,41 +666,19 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									},
 									onFinish: async (result) => {
 										try {
-											if (request.signal.aborted) {
+											if (request.signal.aborted || !result.responseMessage) {
 												return;
 											}
 
-											const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
-											const lastRequestMessageId = requestMessages.at(-1)?.id;
-											const responseMessage = result.responseMessage;
-											const messagesToPersist = responseMessage
-												? requestMessages.concat(responseMessage)
-												: requestMessages;
-
-											if (messagesToPersist.length === 0) {
-												return;
-											}
-
-											const messagesInput = messagesToPersist.map((message) => {
-												const parts = (message.parts ?? []).filter((part) => part.type !== "file");
-												const content = Object.assign(
-													{
-														role: message.role,
-														parts,
-													},
-													message.metadata != null ? { metadata: message.metadata } : null,
-												);
-
-												return {
-													clientGeneratedMessageId: message.id,
-													content,
-												};
-											});
+											const messagesToAdd = [...requestMessages, result.responseMessage].map((message) => ({
+												clientGeneratedMessageId: message.id,
+												content: message,
+											}));
 
 											await ctx.runMutation(api.ai_chat.thread_messages_add, {
 												threadId: threadId as app_convex_Id<"ai_chat_threads">,
-												parentId: lastRequestMessageId,
-												messages: messagesInput,
+												parentId: body.parentId,
+												messages: messagesToAdd,
 											});
 										} catch (error: unknown) {
 											console.error("Failed to persist chat messages:", error);

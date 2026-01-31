@@ -95,3 +95,23 @@ export function has_defined_property<O extends object, P extends KeysOfUnion<O>>
 		obj[property] !== undefined
 	);
 }
+
+export function omit_properties<O extends object, P extends KeysOfUnion<O>>(
+	obj: O,
+	propertiesToExclude: Array<P> | Set<P>,
+): Omit<O, P> {
+	const propertiesToExcludeSet =
+		propertiesToExclude instanceof Set ? propertiesToExclude : new Set(propertiesToExclude);
+
+	const result = {} as Omit<O, P>;
+
+	for (const key of Reflect.ownKeys(obj)) {
+		if (propertiesToExcludeSet.has(key as P)) {
+			continue;
+		}
+
+		Reflect.set(result, key, Reflect.get(obj, key));
+	}
+
+	return result;
+}

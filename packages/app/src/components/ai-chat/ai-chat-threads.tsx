@@ -316,8 +316,8 @@ type AiChatThreadsList_Props = ComponentPropsWithRef<"section"> & {
 	className?: string;
 	searchQuery: string;
 	paginatedThreads:
-		| AiChatController["paginatedThreads"]["unarchived"]
-		| AiChatController["paginatedThreads"]["archived"]
+		| AiChatController["currentThreadsWithOptimistic"]["unarchived"]
+		| AiChatController["currentThreadsWithOptimistic"]["archived"]
 		| null;
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
@@ -418,7 +418,7 @@ export type AiChatThreads_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
-	paginatedThreads: AiChatController["paginatedThreads"];
+	paginatedThreads: AiChatController["currentThreadsWithOptimistic"];
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
 	onClose?: () => void;
