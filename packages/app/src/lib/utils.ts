@@ -1,8 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
-import type { KeysOfUnion, Primitive } from "type-fest";
-import type { AppDomId } from "./app-dom-id.ts";
+import type { Primitive } from "type-fest";
 
 export * from "../../shared/shared-utils.ts";
 
@@ -41,6 +40,41 @@ export function forward_ref(refValue: any, ...targetRefs: (React.Ref<any> | unde
 			cleanedUpFn();
 		}
 	};
+}
+
+/**
+ * Check if an element is in a list of allowed areas.
+ *
+ * If the element is outside the `restrictionScope`, than it's
+ * considered inside the allowed areas.
+ *
+ * Useful for classic "click outside" behavior.
+ * The `restrictionScope` lets you treat hoisted/portaled UI (for example, a
+ * dialog/popover rendered outside the normal DOM subtree) as "inside", so the
+ * active element doesn't close while interacting with that UI.
+ *
+ * @param element - The element to check.
+ * @param allowedAreas - The allowed areas.
+ * @param restrictionScope - The scope to restrict the allowed areas. Default to `document.body`.
+ *
+ * @returns `true` if the element is in the allowed areas, `false` otherwise.
+ */
+export function check_element_is_in_allowed_focus_area(
+	element: EventTarget | null,
+	options: {
+		allowedAreas: Array<Element | null | undefined>;
+		restrictionScope?: Element | null;
+	},
+) {
+	const elAsNode = element as Node;
+	if (!(elAsNode instanceof Node)) {
+		return false;
+	}
+
+	const restrictionScope = options.restrictionScope ?? document.body;
+
+	const isInAllowedAreas = options.allowedAreas.some((area) => area?.contains(elAsNode) == true);
+	return isInAllowedAreas || !restrictionScope.contains(elAsNode);
 }
 
 /**
@@ -265,4 +299,25 @@ export class XCustomEvent<T extends { [key: string]: any }> extends Event {
 	}
 }
 
-export type AppElementId = AppDomId;
+/**
+ * Can be used for custom event without all the ceremony of DOM events,
+ * just call a callback with an object with this shape to ensure
+ * compatibility with the most important stuff of DOM Custom Events.
+ *
+ * Perfect for non bubbling React component custom events.
+ *
+ * @example
+ * ```ts
+ * let isDefaultPrevented = false;
+ * onCustomClick({
+ *   detail: { name: "John" },
+ *   isDefaultPrevented: () => isDefaultPrevented,
+ *   preventDefault: () => { isDefaultPrevented = true; }
+ * });
+ * ```
+ */
+export type XCustomEventLike<T> = {
+	detail: T;
+	isDefaultPrevented: () => boolean;
+	preventDefault: () => void;
+};

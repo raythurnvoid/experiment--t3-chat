@@ -17,9 +17,9 @@ import type {
 	ai_chat_tool_create_edit_page_ToolOutput,
 } from "../server/server-ai-tools.ts";
 
-export type ai_chat_Message = Doc<"messages">;
+export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
-export type ai_chat_Thread = Doc<"threads">;
+export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
 /**
  * Assistant UI compatible thread meta.
@@ -195,7 +195,7 @@ export type ai_chat_MessageContentPartFile = {
 	mimeType: string;
 };
 
-export type ai_chat_AiSdkUiTools = {
+export type ai_chat_AiSdk5UiTools = {
 	weather: {
 		input: {
 			location: string;
@@ -235,7 +235,7 @@ export type ai_chat_AiSdkUiTools = {
 	};
 };
 
-export type ai_chat_AiSdkUiDataParts = {
+export type ai_chat_AiSdk5UiDataParts = {
 	"thread-id": {
 		threadId: string;
 	};
@@ -244,13 +244,13 @@ export type ai_chat_AiSdkUiDataParts = {
 	};
 };
 
-export type ai_chat_AiSdkUiDataPart = DataUIPart<ai_chat_AiSdkUiDataParts>;
+export type ai_chat_AiSdk5UiDataPart = DataUIPart<ai_chat_AiSdk5UiDataParts>;
 
-export type ai_chat_AiSdkUiMessage = UIMessage<
+export type ai_chat_AiSdk5UiMessage = UIMessage<
 	Record<string, unknown> & {
 		convexId?: string | undefined;
 		convexParentId?: string | null | undefined;
 	},
-	ai_chat_AiSdkUiDataParts,
-	ai_chat_AiSdkUiTools
+	ai_chat_AiSdk5UiDataParts,
+	ai_chat_AiSdk5UiTools
 >;

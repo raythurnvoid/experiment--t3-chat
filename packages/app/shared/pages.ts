@@ -124,6 +124,10 @@ export function pages_tiptap_html_to_json(args: { html: string; extensions?: Ext
 }
 
 export function pages_tiptap_markdown_to_json(args: { markdown: string; extensions?: Extensions }) {
+	if (!args.markdown) {
+		return pages_tiptap_empty_doc_json();
+	}
+
 	const html = pages_parse_markdown_to_html(args.markdown);
 	return pages_tiptap_html_to_json({
 		html,
@@ -293,6 +297,18 @@ export function pages_yjs_compute_diff_update_from_yjs_doc(args: { yjsDoc: YDoc;
 // #endregion yjs
 
 // #region tiptap editor
+export const pages_tiptap_empty_doc_json = ((/* iife */) => {
+	function value(): TiptapJSONContent {
+		return { type: "doc", content: [{ type: "paragraph" }] };
+	}
+
+	let cache: ReturnType<typeof value>;
+
+	return function pages_tiptap_empty_doc_json() {
+		return (cache ??= value());
+	};
+})();
+
 /**
  * Server-safe Tiptap extensions (no DOM, no React).
  *

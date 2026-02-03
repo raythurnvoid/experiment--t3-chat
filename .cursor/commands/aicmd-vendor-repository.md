@@ -29,7 +29,6 @@ git checkout -b rt0-updates
 ```yaml
 packages:
   - "packages/*"
-  - "packages/app/vendor/assistant-ui/packages/*"
   - "packages/app/vendor/novel/packages/*"
   - "packages/app/vendor/liveblocks/packages/*"
   - "packages/app/vendor/liveblocks/shared/*"
@@ -146,7 +145,6 @@ After completing these steps:
 
 This same pattern applies to:
 
-- `assistant-ui` - Already configured
 - `novel` - Already configured
 - `liveblocks` - Already configured
 - `remix` - Now configured

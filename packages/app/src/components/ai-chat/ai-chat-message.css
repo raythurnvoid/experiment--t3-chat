@@ -1,0 +1,281 @@
+@layer components {
+	/* #region message */
+	/* #region message container */
+	.AiChatMessageContainer {
+		contain: content;
+		container-type: inline-size;
+		content-visibility: auto;
+		contain-intrinsic-height: auto 500px;
+		/* Necessary for contain-intrinsic-height to work */
+		flex: none;
+
+		height: max-content;
+
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	/* #endregion message container */
+
+	.AiChatMessageBubble {
+		contain: content;
+
+		display: flex;
+		flex-direction: column;
+		/* The gap must match the composer's gap to ensure proper measurements */
+		gap: 8px;
+
+		border-radius: 16px;
+
+		background: var(--color-base-1-03);
+		color: inherit;
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+	}
+
+	.AiChatMessageUser-bubble-state-editing {
+		padding: 0;
+
+		background: transparent;
+		box-shadow: none;
+
+		& .AiChatComposer {
+			width: 100%;
+		}
+	}
+
+	.AiChatMessageUser-bubble {
+		display: grid;
+		grid-template-columns: 1fr;
+		grid-template-rows: auto auto;
+
+		background-color: var(--color-base-1-05);
+		color: var(--color-fg-08);
+
+		max-width: 520px;
+		min-width: 320px;
+
+		&.AiChatMessageUser-bubble-state-editing {
+			grid-template-rows: auto;
+		}
+
+		&:has(> .AiChatMessageUser-edit-button:is(:hover, :focus-visible)) {
+			background-color: var(--color-base-1-06);
+			color: var(--color-fg-11);
+		}
+
+		&:has(> .AiChatMessageUser-edit-button:is(:active)) {
+			background-color: var(--color-base-1-07);
+			color: var(--color-fg-11);
+		}
+
+		& > .AiChatMessageContent {
+			grid-column: 1;
+			grid-row: 1;
+		}
+	}
+
+	.AiChatMessageUser-edit-button {
+		contain: strict;
+
+		grid-column: 1;
+		grid-row: 1 / -1;
+
+		display: block;
+		width: 100%;
+		padding: 0;
+		border: 2px solid transparent;
+		border-radius: inherit;
+
+		background: transparent;
+		color: inherit;
+		text-align: inherit;
+
+		&:focus-visible {
+			border-color: var(--color-fg-12);
+		}
+	}
+
+	.AiChatMessageAgent-bubble,
+	.AiChatMessageSystem-bubble {
+		width: 100%;
+
+		padding: 0;
+
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.AiChatMessageSystem-bubble {
+		color: var(--color-fg-06);
+	}
+
+	.AiChatMessageContent {
+		.AiChatMessageUser > .AiChatMessageUser-bubble:not(.AiChatMessageUser-bubble-state-editing) > & {
+			padding: 10px 10px 0 10px;
+		}
+
+		p {
+			margin: 0;
+		}
+	}
+
+	.AiChatMessageUser-content-composer .MyInputBox {
+		border-radius: 16px;
+	}
+
+	.AiChatMessageUser-actions,
+	.AiChatMessageAgent-actions {
+		display: flex;
+		align-items: center;
+
+		/*
+		This needs to match the size of the composer actions to ensure
+		the conent is not shifted when switching in editing mode.
+		*/
+		min-height: 48px;
+		padding: 0 12px;
+	}
+
+	.AiChatMessageUser-actions {
+		grid-column: 1;
+		grid-row: 2;
+
+		justify-self: end;
+		width: max-content;
+	}
+
+	.AiChatMessageUser-action-button,
+	.AiChatMessageAgent-action-button {
+		height: 28px;
+		width: 28px;
+		padding: 0;
+	}
+
+	.AiChatMessageUser-action-icon,
+	.AiChatMessageAgent-action-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.AiChatMessageUser-branch-controls,
+	.AiChatMessageAgent-branch-controls {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.AiChatMessageUser-branch-label,
+	.AiChatMessageAgent-branch-label {
+		min-width: 32px;
+
+		text-align: center;
+
+		font-size: 0.75rem;
+		color: hsl(var(--muted-foreground));
+	}
+	/* #endregion message */
+
+	/* #region user message */
+	.AiChatMessageUser {
+		align-items: flex-end;
+	}
+	/* #endregion user message */
+
+	/* #region agent message */
+	.AiChatMessageAgent {
+		align-items: flex-start;
+	}
+	/* #endregion agent message */
+
+	/* #region system message */
+
+	/* #region message part */
+	.AiChatMessagePart {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.AiChatMessagePart-markdown {
+		font-size: 0.95rem;
+		line-height: 1.7;
+		color: hsl(var(--foreground));
+
+		& :where(p) {
+			margin: 0 0 12px;
+		}
+
+		& :where(h1, h2, h3, h4) {
+			margin: 20px 0 8px;
+
+			font-weight: 600;
+		}
+
+		& :where(ul, ol) {
+			margin: 0 0 12px 20px;
+			padding: 0;
+		}
+
+		& :where(code) {
+			padding: 2px 6px;
+			border-radius: 6px;
+
+			background: hsl(var(--muted));
+
+			font-size: 0.85rem;
+		}
+
+		& :where(pre) {
+			padding: 12px 14px;
+			border-radius: 10px;
+
+			background: hsl(var(--muted-foreground) / 0.1);
+			overflow-x: auto;
+		}
+
+		& :where(a) {
+			color: hsl(var(--primary));
+
+			text-decoration: underline;
+			text-underline-offset: 3px;
+		}
+	}
+
+	.AiChatMessagePart-image {
+		max-width: 100%;
+		border-radius: 12px;
+
+		border: 1px solid hsl(var(--border));
+	}
+
+	.AiChatMessagePart-file {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		padding: 10px 12px;
+		border-radius: 10px;
+		border: 1px solid hsl(var(--border));
+
+		background: hsl(var(--background));
+	}
+
+	.AiChatMessagePart-file-name {
+		font-size: 0.875rem;
+		color: hsl(var(--foreground));
+	}
+
+	.AiChatMessagePart-source {
+		font-size: 0.875rem;
+		color: hsl(var(--primary));
+
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	/* #endregion message part */
+
+	.AiChatMessageSystem {
+		align-items: flex-start;
+	}
+	/* #endregion system message */
+}

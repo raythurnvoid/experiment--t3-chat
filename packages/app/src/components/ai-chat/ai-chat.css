@@ -54,7 +54,7 @@
 
 		min-height: 0;
 
-		background: hsl(var(--background));
+		background: var(--color-base-1-02);
 	}
 
 	.AiChat-thread-controls {
@@ -87,44 +87,42 @@
 
 	/* #region thread */
 	.AiChatThread {
+		contain: strict;
+
 		display: flex;
+		flex: 1;
 		flex-direction: column;
+		align-items: center;
 
 		width: 100%;
-		max-width: 720px;
 		height: 100%;
+		padding: 24px;
+
+		overflow: hidden auto;
+		scroll-padding-block: 100px 200px;
 	}
 
-	.AiChatThread-scroll-area {
-		position: relative;
-
+	.AiChatThread-content {
 		display: flex;
-		flex: 1;
-		flex-direction: column;
-
-		min-height: 0;
-		padding: 24px 20px 0;
-
-		overflow: auto hidden;
-	}
-
-	.AiChatThread-scroll-area-inner {
-		display: flex;
-		flex: 1;
 		flex-direction: column;
 		gap: 16px;
 
-		min-height: 100%;
+		flex: 1;
+		height: max-content;
+		width: 100%;
+		max-width: 720px;
 	}
 
 	.AiChatThread-scroll-to-bottom {
+		contain: layout;
+
 		position: sticky;
-		bottom: 16px;
+		bottom: 150px;
 
 		display: flex;
 		justify-content: center;
 
-		padding-bottom: 16px;
+		height: 0px;
 	}
 
 	.AiChatThread-scroll-to-bottom-icon {
@@ -137,6 +135,9 @@
 
 		background: hsl(var(--background));
 		border-top: 1px solid hsl(var(--border));
+
+		width: 100%;
+		max-width: 780px;
 
 		position: sticky;
 		bottom: 0;
@@ -217,193 +218,4 @@
 		font-size: 0.875rem;
 	}
 	/* #endregion message list */
-
-	/* #region message */
-	.AiChatMessage {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.AiChatMessage-role-user {
-		align-items: flex-end;
-	}
-
-	.AiChatMessage-role-assistant,
-	.AiChatMessage-role-system {
-		align-items: flex-start;
-	}
-
-	.AiChatMessage-content {
-		width: 100%;
-		max-width: 720px;
-	}
-
-	.AiChatMessage-role-user .AiChatMessage-content {
-		display: flex;
-		justify-content: flex-end;
-	}
-
-	.AiChatMessage-bubble {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-
-		padding: 12px 16px;
-		border-radius: 16px;
-
-		background: hsl(var(--muted));
-		color: hsl(var(--foreground));
-		box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
-	}
-
-	.AiChatMessage-bubble-state-editing {
-		padding: 0;
-
-		background: transparent;
-		box-shadow: none;
-
-		& .AiChatComposer {
-			width: 100%;
-		}
-	}
-
-	.AiChatMessage-role-user .AiChatMessage-bubble {
-		max-width: 520px;
-	}
-
-	.AiChatMessage-role-assistant .AiChatMessage-bubble,
-	.AiChatMessage-role-system .AiChatMessage-bubble {
-		padding: 0;
-
-		background: transparent;
-		box-shadow: none;
-	}
-
-	.AiChatMessage-actions {
-		display: flex;
-		gap: 8px;
-	}
-
-	.AiChatMessage-action-button {
-		height: 28px;
-		width: 28px;
-		padding: 0;
-	}
-
-	.AiChatMessage-action-icon {
-		width: 16px;
-		height: 16px;
-	}
-
-	.AiChatMessage-branch-controls {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-	}
-
-	.AiChatMessage-branch-label {
-		min-width: 32px;
-
-		text-align: center;
-
-		font-size: 0.75rem;
-		color: hsl(var(--muted-foreground));
-	}
-	/* #endregion message */
-
-	/* #region message part */
-	.AiChatMessage-part {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-	/* #endregion message part */
-
-	/* #region message part inner */
-	.AiChatMessage-text {
-		margin: 0;
-
-		font-size: 0.95rem;
-		line-height: 1.6;
-		white-space: pre-wrap;
-	}
-
-	.AiChatMessage-markdown {
-		font-size: 0.95rem;
-		line-height: 1.7;
-		color: hsl(var(--foreground));
-
-		& :where(p) {
-			margin: 0 0 12px;
-		}
-
-		& :where(h1, h2, h3, h4) {
-			margin: 20px 0 8px;
-
-			font-weight: 600;
-		}
-
-		& :where(ul, ol) {
-			margin: 0 0 12px 20px;
-			padding: 0;
-		}
-
-		& :where(code) {
-			padding: 2px 6px;
-			border-radius: 6px;
-
-			background: hsl(var(--muted));
-
-			font-size: 0.85rem;
-		}
-
-		& :where(pre) {
-			padding: 12px 14px;
-			border-radius: 10px;
-
-			background: hsl(var(--muted-foreground) / 0.1);
-			overflow-x: auto;
-		}
-
-		& :where(a) {
-			color: hsl(var(--primary));
-
-			text-decoration: underline;
-			text-underline-offset: 3px;
-		}
-	}
-
-	.AiChatMessage-image {
-		max-width: 100%;
-		border-radius: 12px;
-
-		border: 1px solid hsl(var(--border));
-	}
-
-	.AiChatMessage-file {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-
-		padding: 10px 12px;
-		border-radius: 10px;
-		border: 1px solid hsl(var(--border));
-
-		background: hsl(var(--background));
-	}
-
-	.AiChatMessage-file-name {
-		font-size: 0.875rem;
-		color: hsl(var(--foreground));
-	}
-
-	.AiChatMessage-source {
-		font-size: 0.875rem;
-		color: hsl(var(--primary));
-
-		text-decoration: underline;
-		text-underline-offset: 3px;
-	}
-	/* #endregion message part inner */
 }

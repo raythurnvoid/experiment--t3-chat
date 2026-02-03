@@ -13,8 +13,7 @@ import type { MyInputTextAreaControl_ClassNames } from "../../my-input.tsx";
 
 export type PageEditorRichTextCommentComposer_ClassNames =
 	| "PageEditorRichTextCommentComposer"
-	| "PageEditorRichTextCommentComposer-editor"
-	| "PageEditorRichTextCommentComposer-empty-editor";
+	| "PageEditorRichTextCommentComposer-editor";
 
 export interface PageEditorRichTextCommentComposer_Ref {
 	getMarkdownContent: () => string;
@@ -80,8 +79,6 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 			pages_get_tiptap_shared_extensions().markdown,
 			Placeholder.configure({
 				placeholder,
-				emptyEditorClass:
-					"PageEditorRichTextCommentComposer-empty-editor" satisfies PageEditorRichTextCommentComposer_ClassNames,
 			}),
 		];
 

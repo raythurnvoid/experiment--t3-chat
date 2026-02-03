@@ -1,0 +1,46 @@
+@layer common_components {
+	/* #region root */
+	/* #endregion root */
+
+	/* #region label */
+	/* #endregion label */
+
+	/* #region trigger */
+	/* #endregion trigger */
+
+	/* #region popover */
+	/* #region popover scrollable area */
+	/* #endregion popover scrollable area */
+
+	/* #region popover content */
+	/* #endregion popover content */
+	/* #endregion popover */
+
+	/* #region search */
+	.MySearchSelectSearch {
+		position: sticky;
+		top: 0;
+		z-index: 1;
+
+		padding: 4px;
+		margin: -4px -4px 4px -4px;
+
+		background: var(--color-base-1-04);
+		border-bottom: 1px solid var(--color-base-1-10);
+	}
+	/* #endregion search */
+
+	.MySearchSelectEmpty {
+		padding: 24px 12px;
+		text-align: center;
+
+		font-size: 0.875rem;
+		color: var(--muted-foreground);
+	}
+
+	/* #region list */
+	/* #endregion list */
+
+	/* #region item */
+	/* #endregion item */
+}

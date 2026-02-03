@@ -5,32 +5,11 @@ alwaysApply: false
 
 # CSS Approach for This Project
 
-This project uses both **Tailwind CSS** and **vanilla CSS files**.
+This project uses vanilla `.css` files for styling components.
 
-## Default Approach: Tailwind CSS
+## Default Approach: Vanilla CSS
 
-**By default, you should use Tailwind utility classes** for styling components unless the user explicitly requests vanilla CSS.
-
-Examples of when to use Tailwind:
-
-- Component styling with utilities: `className="flex items-center gap-2 px-4 py-2"`
-- Transitions and animations: `transition-all duration-150 delay-200`
-- Responsive design: `md:flex-row lg:gap-4`
-- State-based styling: `hover:bg-blue-600 focus:ring-2`
-
-## When to Create Vanilla CSS Files
-
-**Only create separate `.css` files** when:
-
-1. **User explicitly requests vanilla CSS** ("use vanilla CSS", "create a CSS file", etc.)
-2. **Complex styling patterns** that require:
-   - Advanced CSS nesting
-   - Complex state management that's difficult with Tailwind
-   - Component-specific CSS custom properties
-
-## Guidelines Application
-
-The guidelines below apply **only when creating vanilla CSS files**, not when using Tailwind utility classes.
+By default, you should use vanilla CSS (co-located `.css` files imported by the corresponding `.tsx` modules) for component styling.
 
 # File Structure
 
@@ -130,12 +109,11 @@ When a `.css` file is paired with a `.tsx` module (same feature/module, imported
 
 ### Important Rule for CSS Selectors
 
-**CRITICAL**: When creating class names that will be used in CSS selectors (including Tailwind's `has-[]`, `:not()`, `:is()`, etc.), you **MUST use dashes (kebab-case) instead of underscores** for the selectors to work properly.
+**CRITICAL**: When creating class names that will be used in CSS selectors (including `:has(...)`, `:not()`, `:is()`, etc.), you **MUST use dashes (kebab-case) instead of underscores** for the selectors to work properly.
 
 ### Why Dashes Are Required
 
 - **CSS Standard**: CSS class selectors expect dashes as word separators
-- **Tailwind Compatibility**: Tailwind's `has-[]` selector only works with valid CSS class names
 - **Browser Parsing**: Browsers parse CSS class names with dashes correctly
 - **Selector Matching**: CSS selector engines rely on standard class naming conventions
 
@@ -151,18 +129,9 @@ When a `.css` file is paired with a `.tsx` module (same feature/module, imported
 	padding: 2rem;
 }
 
-/* In Tailwind has-[] selectors */
-.has-\[\.Button-variant-primary\:focus-visible\]\:ring-2 {
-	/* This works correctly */
-}
-
 /* ❌ Incorrect: Underscores don't work in CSS selectors */
 .Button_variant_primary {
 	/* This may not work as expected */
-}
-
-.has-\[\.Button_variant_primary\:focus-visible\]\:ring-2 {
-	/* This will NOT work */
 }
 ```
 
@@ -187,7 +156,7 @@ When creating CSS files, ensure all class names use dashes:
 
 ### Integration with React Components
 
-When your CSS classes need to work with Tailwind selectors or other CSS features, ensure the class values in your React components use dashes:
+When your CSS classes need to work with advanced CSS selectors or other CSS features, ensure the class values in your React components use dashes:
 
 ```tsx
 // In React component file
@@ -201,9 +170,6 @@ const MessageComposer_class_names = {
 .MessageComposer-input-field {
 	border: 1px solid hsl(var(--border));
 }
-
-// In Tailwind has-[] selectors
-<div className="has-[.MessageComposer-input-field:focus-visible]:ring-2">
 ```
 
 ### When to Use Dashes vs Underscores
@@ -404,45 +370,6 @@ background: var(--primary);
 		padding-left: 0.75rem;
 		padding-right: 0.75rem;
 	}
-}
-```
-
-# Converting from Tailwind
-
-When converting from Tailwind utility classes to CSS:
-
-1. **Group related utilities**: Convert spacing, colors, and layout utilities into logical CSS property groups
-2. **Preserve responsive behavior**: Use CSS custom properties and media queries
-3. **Maintain design tokens**: Use CSS custom properties that match the design system
-4. **Handle arbitrary selectors**: Convert Tailwind's arbitrary selectors like `[&_svg]:size-4` to proper nested CSS
-
-```css
-/* Before: Tailwind utilities */
-/* className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90" */
-
-/* After: CSS properties with dash-based class names */
-.Button {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.5rem;
-
-	padding: 0.5rem 1rem;
-
-	background: hsl(var(--primary));
-	color: hsl(var(--primary-foreground));
-
-	&:hover {
-		background: hsl(var(--primary) / 0.9);
-	}
-}
-
-/* Variant classes use dashes for CSS compatibility */
-.Button-variant-primary {
-	background: hsl(var(--primary));
-}
-
-.Button-size-large {
-	padding: 0.75rem 1.5rem;
 }
 ```
 

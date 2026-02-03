@@ -5,23 +5,8 @@ import { Badge } from "@/components/ui/badge.tsx";
 import { Actions, Action } from "@/components/ai-elements/actions.tsx";
 import { CodeBlock } from "@/components/ai-elements/code-block.tsx";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool.tsx";
-import type { AiChatController } from "@/lib/ai-chat/use-ai-chat-controller.tsx";
-import type {
-	ai_chat_tool_create_read_page_ToolInput,
-	ai_chat_tool_create_read_page_ToolOutput,
-	ai_chat_tool_create_list_pages_ToolInput,
-	ai_chat_tool_create_list_pages_ToolOutput,
-	ai_chat_tool_create_glob_pages_ToolInput,
-	ai_chat_tool_create_glob_pages_ToolOutput,
-	ai_chat_tool_create_grep_pages_ToolInput,
-	ai_chat_tool_create_grep_pages_ToolOutput,
-	ai_chat_tool_create_text_search_pages_ToolInput,
-	ai_chat_tool_create_text_search_pages_ToolOutput,
-	ai_chat_tool_create_write_page_ToolInput,
-	ai_chat_tool_create_write_page_ToolOutput,
-	ai_chat_tool_create_edit_page_ToolInput,
-	ai_chat_tool_create_edit_page_ToolOutput,
-} from "@/lib/ai-chat.ts";
+import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import type { ai_chat_AiSdk5UiTools } from "@/lib/ai-chat.ts";
 import type { CreateArtifactArgs } from "@/types/artifact-schemas.ts";
 import { CreateArtifactToolUI } from "@/components/create-artifact-tool-ui.tsx";
 
@@ -37,7 +22,7 @@ type ai_chat_ToolPart = {
 	type: string;
 	toolName?: string | undefined;
 	toolCallId?: string | undefined;
-	state?: ai_chat_ToolState | string | undefined;
+	state?: string | undefined;
 	input?: unknown;
 	output?: unknown;
 	errorText?: string | undefined;
@@ -128,8 +113,8 @@ function ToolMetaHeader(props: { metadata: Record<string, unknown> }) {
 }
 
 function ReadPageToolUi(props: {
-	args: ai_chat_tool_create_read_page_ToolInput | undefined;
-	result: ai_chat_tool_create_read_page_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["read_page"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -157,8 +142,8 @@ function ReadPageToolUi(props: {
 }
 
 function ListPagesToolUi(props: {
-	args: ai_chat_tool_create_list_pages_ToolInput | undefined;
-	result: ai_chat_tool_create_list_pages_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["list_pages"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -186,8 +171,8 @@ function ListPagesToolUi(props: {
 }
 
 function GlobPagesToolUi(props: {
-	args: ai_chat_tool_create_glob_pages_ToolInput | undefined;
-	result: ai_chat_tool_create_glob_pages_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["glob_pages"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -215,8 +200,8 @@ function GlobPagesToolUi(props: {
 }
 
 function GrepPagesToolUi(props: {
-	args: ai_chat_tool_create_grep_pages_ToolInput | undefined;
-	result: ai_chat_tool_create_grep_pages_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["grep_pages"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -244,8 +229,8 @@ function GrepPagesToolUi(props: {
 }
 
 function TextSearchPagesToolUi(props: {
-	args: ai_chat_tool_create_text_search_pages_ToolInput | undefined;
-	result: ai_chat_tool_create_text_search_pages_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["text_search_pages"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -273,8 +258,8 @@ function TextSearchPagesToolUi(props: {
 }
 
 function WritePageToolUi(props: {
-	args: ai_chat_tool_create_write_page_ToolInput | undefined;
-	result: ai_chat_tool_create_write_page_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["write_page"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -308,8 +293,8 @@ function WritePageToolUi(props: {
 }
 
 function EditPageToolUi(props: {
-	args: ai_chat_tool_create_edit_page_ToolInput | undefined;
-	result: ai_chat_tool_create_edit_page_ToolOutput | undefined;
+	args: ai_chat_AiSdk5UiTools["edit_page"]["input"] | undefined;
+	result: ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined;
 	toolState: ai_chat_ToolState;
 	errorText?: string | undefined;
 }) {
@@ -389,8 +374,8 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "read_page":
 			return (
 				<ReadPageToolUi
-					args={args as ai_chat_tool_create_read_page_ToolInput | undefined}
-					result={result as ai_chat_tool_create_read_page_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["read_page"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
@@ -398,8 +383,8 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "list_pages":
 			return (
 				<ListPagesToolUi
-					args={args as ai_chat_tool_create_list_pages_ToolInput | undefined}
-					result={result as ai_chat_tool_create_list_pages_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["list_pages"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
@@ -407,8 +392,8 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "glob_pages":
 			return (
 				<GlobPagesToolUi
-					args={args as ai_chat_tool_create_glob_pages_ToolInput | undefined}
-					result={result as ai_chat_tool_create_glob_pages_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["glob_pages"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
@@ -416,8 +401,8 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "grep_pages":
 			return (
 				<GrepPagesToolUi
-					args={args as ai_chat_tool_create_grep_pages_ToolInput | undefined}
-					result={result as ai_chat_tool_create_grep_pages_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["grep_pages"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
@@ -425,8 +410,8 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "text_search_pages":
 			return (
 				<TextSearchPagesToolUi
-					args={args as ai_chat_tool_create_text_search_pages_ToolInput | undefined}
-					result={result as ai_chat_tool_create_text_search_pages_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["text_search_pages"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
@@ -434,8 +419,8 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "write_page":
 			return (
 				<WritePageToolUi
-					args={args as ai_chat_tool_create_write_page_ToolInput | undefined}
-					result={result as ai_chat_tool_create_write_page_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["write_page"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
@@ -443,21 +428,15 @@ export const ai_chat_render_tool_part = (options: ai_chat_RenderToolPartOptions)
 		case "edit_page":
 			return (
 				<EditPageToolUi
-					args={args as ai_chat_tool_create_edit_page_ToolInput | undefined}
-					result={result as ai_chat_tool_create_edit_page_ToolOutput | undefined}
+					args={args as ai_chat_AiSdk5UiTools["edit_page"]["input"] | undefined}
+					result={result as ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined}
 					toolState={toolState}
 					errorText={errorText}
 				/>
 			);
 		default:
 			return (
-				<UnknownToolUi
-					toolName={toolName}
-					args={args}
-					result={result}
-					toolState={toolState}
-					errorText={errorText}
-				/>
+				<UnknownToolUi toolName={toolName} args={args} result={result} toolState={toolState} errorText={errorText} />
 			);
 	}
 };

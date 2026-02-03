@@ -1,5 +1,5 @@
 [submodule "assistant-ui"]
-	path = packages/app/vendor/assistant-ui
+	path = references-submodules/assistant-ui
 	url = ../assistant-ui.git
 	branch = main
 [submodule "liveblocks"]

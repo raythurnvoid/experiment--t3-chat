@@ -1,10 +1,10 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.tsx";
 import { cn } from "@/lib/utils.ts";
-import type { ai_chat_AiSdkUiMessage } from "@/lib/ai-chat.ts";
+import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
 import type { ComponentProps, HTMLAttributes } from "react";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
-	from: ai_chat_AiSdkUiMessage["role"];
+	from: ai_chat_AiSdk5UiMessage["role"];
 };
 
 export const Message = ({ className, from, ...props }: MessageProps) => (

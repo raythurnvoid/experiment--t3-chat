@@ -352,7 +352,3 @@
 	text-decoration: line-through;
 	text-decoration-color: var(--color-red-05);
 }
-
-.PageEditorSnapshotsModal-preview-diff-unchanged {
-	color: var(--foreground);
-}

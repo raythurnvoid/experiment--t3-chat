@@ -1,5 +1,5 @@
 /* https://tailwindcss.com/docs/preflight#disabling-preflight */
-@layer external, theme, base, normalize, common_components, components, utilities, top_layer;
+@layer external, theme,  normalize, base, common_components, components, utilities, top_layer;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
@@ -71,7 +71,7 @@
 /* shadcn/ui CSS Variables - Light Mode */
 :root {
 	/* Core shadcn design system variables */
-	--background: white;
+	--background: red;
 	--foreground: var(--gray-000);
 	--card: white;
 	--card-foreground: var(--gray-000);
@@ -87,7 +87,7 @@
 	--accent-foreground: var(--gray-050);
 	--destructive: var(--red-500);
 	--destructive-foreground: var(--gray-700);
-	--border: var(--gray-200);
+	--border: red;
 	--input: var(--gray-200);
 	--ring: var(--gray-050);
 	--chart-1: 12 76% 61%;
@@ -277,7 +277,7 @@
 /* shadcn/ui CSS Variables - Dark Mode */
 .dark {
 	/* Core shadcn design system variables - dark mode */
-	--background: var(--gray-000);
+	--background: red;
 	--foreground: var(--gray-700);
 	--card: var(--gray-000);
 	--card-foreground: var(--gray-700);
@@ -293,7 +293,7 @@
 	--accent-foreground: var(--gray-700);
 	--destructive: var(--red-400);
 	--destructive-foreground: var(--gray-700);
-	--border: var(--gray-300);
+	--border: red;
 	--input: var(--gray-300);
 	--ring: var(--gray-700);
 	--chart-1: 220 70% 50%;
@@ -380,7 +380,8 @@
 /* App Styles */
 @layer base {
 	* {
-		@apply border-border outline-ring/50;
+		border-color: var(--color-fg-02);
+		outline-color: var(--color-fg-05);
 	}
 
 	html {
@@ -393,7 +394,8 @@
 	}
 
 	body {
-		@apply bg-background text-foreground;
+		background: var(--color-base-1-01);
+		color: var(--color-fg-11);
 	}
 
 	#root {
@@ -426,75 +428,187 @@
 		color: #888;
 	}
 
-	/* #region ProseMirror styles */
-	.ProseMirror {
+	/* #region rich text styles */
+	.ProseMirror,
+	.app-doc {
 		position: relative;
 		word-wrap: break-word;
-		white-space: break-spaces;
+		/*
+		break-spaces causes issues with text rendered from markdown in ai-chats because it
+		has newlines characters
+		*/
+		/* white-space: break-spaces; */
+		white-space: normal;
 		-webkit-font-variant-ligatures: none;
 		font-variant-ligatures: none;
 		font-feature-settings: "liga" 0;
-	}
 
-	.ProseMirror [contenteditable="false"] {
-		white-space: normal;
-	}
+		outline: none;
 
-	.ProseMirror [contenteditable="false"] [contenteditable="true"] {
-		white-space: pre-wrap;
-	}
+		/* Tiptap editor styles to match liveblocks example */
+		p[data-placeholder]::before {
+			content: attr(data-placeholder);
 
-	.ProseMirror pre {
-		white-space: pre-wrap;
-	}
+			color: var(--color-fg-07);
 
-	img.ProseMirror-separator {
-		display: inline !important;
-		border: none !important;
-		margin: 0 !important;
-		width: 0 !important;
-		height: 0 !important;
-	}
+			user-select: none;
+			pointer-events: none;
 
-	.ProseMirror-gapcursor {
-		display: none;
-		pointer-events: none;
-		position: absolute;
-		margin: 0;
-	}
+			height: 0;
+			float: left;
+		}
 
-	.ProseMirror-gapcursor:after {
-		content: "";
-		display: block;
-		position: absolute;
-		top: -2px;
-		width: 20px;
-		border-top: 1px solid black;
-		animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
-	}
+		&:not(:focus) [data-decoration-highlight] {
+			background-color: var(--color-base-1-10);
+		}
 
-	.ProseMirror-hideselection *::selection {
-		background: transparent;
-	}
+		[contenteditable="false"] {
+			white-space: normal;
+		}
 
-	.ProseMirror-hideselection *::-moz-selection {
-		background: transparent;
-	}
+		[contenteditable="false"] [contenteditable="true"] {
+			white-space: pre-wrap;
+		}
 
-	.ProseMirror-hideselection * {
-		caret-color: transparent;
-	}
+		h1 {
+			font-size: 2em;
+			line-height: 2;
+			font-weight: 400;
+		}
 
-	.ProseMirror-focused .ProseMirror-gapcursor {
-		display: block;
-	}
+		h2 {
+			font-size: 1.6em;
+			font-weight: 400;
+			line-height: 1.6;
+			color: var(--color-fg-02);
 
-	@keyframes ProseMirror-cursor-blink {
-		to {
-			visibility: hidden;
+			.dark & {
+				color: var(--color-fg-11);
+			}
+		}
+
+		h3 {
+			font-size: 1.4em;
+			font-weight: 400;
+			line-height: 1.6;
+			color: var(--color-fg-02);
+
+			.dark & {
+				color: var(--color-fg-11);
+			}
+		}
+
+		h4 {
+			font-size: 1.3em;
+			font-weight: 500;
+			line-height: 1.6;
+			color: var(--color-fg-02);
+
+			.dark & {
+				color: var(--color-fg-11);
+			}
+		}
+
+		h5 {
+			font-size: 1.2em;
+			font-weight: 500;
+			line-height: 1.6;
+		}
+
+		h6 {
+			font-size: 1.1em;
+			font-weight: 700;
+			line-height: 1.4;
+		}
+
+		p {
+			margin: 0.2em 0;
+		}
+
+		ul {
+			display: block;
+			list-style-type: disc;
+			margin: 0.2em 0;
+			padding-inline-start: 40px;
+			unicode-bidi: isolate;
+		}
+
+		ol {
+			display: block;
+			list-style-type: decimal;
+			margin: 0.2em 0;
+			padding-inline-start: 40px;
+			unicode-bidi: isolate;
+		}
+
+		li {
+			display: list-item;
+			text-align: -webkit-match-parent;
+			unicode-bidi: isolate;
+		}
+
+		li::marker {
+			unicode-bidi: isolate;
+			font-variant-numeric: tabular-nums;
+			text-transform: none;
+			text-indent: 0px;
+			text-align: start;
+			text-align-last: start;
+		}
+
+		pre {
+			white-space: pre-wrap;
+		}
+
+		img.ProseMirror-separator {
+			display: inline !important;
+			border: none !important;
+			margin: 0 !important;
+			width: 0 !important;
+			height: 0 !important;
+		}
+
+		.ProseMirror-gapcursor {
+			display: none;
+			pointer-events: none;
+			position: absolute;
+			margin: 0;
+		}
+
+		.ProseMirror-gapcursor:after {
+			content: "";
+			display: block;
+			position: absolute;
+			top: -2px;
+			width: 20px;
+			border-top: 1px solid black;
+			animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+		}
+
+		.ProseMirror-hideselection *::selection {
+			background: transparent;
+		}
+
+		.ProseMirror-hideselection *::-moz-selection {
+			background: transparent;
+		}
+
+		.ProseMirror-hideselection * {
+			caret-color: transparent;
+		}
+
+		.ProseMirror-focused .ProseMirror-gapcursor {
+			display: block;
+		}
+
+		@keyframes ProseMirror-cursor-blink {
+			to {
+				visibility: hidden;
+			}
 		}
 	}
-	/* #endregion ProseMirror styles */
+
+	/* #endregion rich text styles */
 
 	@keyframes logo-spin {
 		from {

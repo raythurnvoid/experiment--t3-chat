@@ -65,8 +65,7 @@ export function useGlobalCustomEvent<K extends keyof global_custom_event_Event["
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		const cleanup = global_custom_event_listen(name, handlerRef.current);
-		return cleanup;
+		return global_custom_event_listen(name, (event) => handlerRef.current(event));
 	}, [name]);
 }
 // #endregion custom events
@@ -108,8 +107,7 @@ export function useGlobalEvent<K extends keyof GlobalEventHandlersEventMap>(
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		const cleanup = global_event_listen(event, handlerRef.current, options);
-		return cleanup;
+		return global_event_listen(event, (e) => handlerRef.current(e), options);
 	}, [event]);
 }
 
@@ -121,8 +119,7 @@ export function useGlobalEventList<K extends keyof GlobalEventHandlersEventMap>(
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		const cleanup = global_event_listen_all(events, handlerRef.current, options);
-		return cleanup;
+		return global_event_listen_all(events, (e) => handlerRef.current(e), options);
 	}, [events]);
 }
 // #endregion global events

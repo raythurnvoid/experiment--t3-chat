@@ -194,6 +194,42 @@ export function Toolbar(props: Toolbar_Props) {
 type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 ```
 
+- When a component uses vanilla CSS, you must keep styles **module-owned and co-located**.
+
+## TSX ↔ CSS pairing (no cross-file styling by default)
+
+When you create a new component module `foo.tsx` that uses vanilla CSS, you must also create a paired `foo.css` and import it from `foo.tsx`.
+
+When you extract/split a component into a new `*.tsx` module, you must also extract/split the relevant CSS into that module’s paired `*.css` file.
+
+You must not style a new module by importing another component’s CSS file unless the user explicitly requested shared/global styling.
+
+✅ Good: the module imports its own paired CSS
+
+```tsx
+import "./ai-chat-message.css";
+```
+
+❌ Bad: the module imports a different component’s CSS
+
+```tsx
+import "./ai-chat.css";
+```
+
+## Exceptions (must be explicit)
+
+Only reuse styling across components when it is explicit and intentional:
+
+### Shared/global styles
+
+If the user explicitly requests shared/global styles, put them in an appropriate shared/global location (e.g. app-wide CSS), not in an unrelated feature component’s CSS file.
+
+### Reuse via class contracts (preferred)
+
+If you need to inherit another component’s styling, prefer reusing its class contract (apply both class names and type-check them), rather than importing the other component’s CSS file.
+
+This is most appropriate when you are actually rendering the reused component somewhere in the UI (so its module/CSS is already loaded). If you need truly shared styling without rendering that component, extract the shared rules into an explicit shared/global place instead of importing another component’s feature CSS file.
+
 - **MANDATORY**: Use TypeScript's `satisfies` operator to validate component-owned class string literals at call sites.
 
 ```ts
@@ -202,9 +238,9 @@ type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
 
 - **MANDATORY**: Extend the same “typed string literal contract” approach beyond `className`:
   - **DOM ids**
-    - When referencing DOM elements by id, validate the string with the app’s id types (e.g. `AppElementId`, `AppDomId`) using `satisfies`.
+    - When referencing DOM elements by id, validate the string with the app’s id types (e.g. `AppElementId`) using `satisfies`.
   - **`data-*` attributes**
-    - Model component-owned `data-*` attributes as a `ComponentName_CustomAttributes` type and validate both the attribute usage and key access using `satisfies` / `ExtractStrict` as needed.
+    - Model component-owned `data-*` attributes as a `ComponentName_CustomAttributes` type and validate both the attribute usage and key access using `satisfies keyof` as needed.
 
 ```ts
 // DOM ids
@@ -213,7 +249,7 @@ document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
 // data-* attributes (example pattern)
 type MyComponent_CustomAttributes = { "data-my-flag": "" };
 
-el?.getAttribute("data-my-flag" satisfies ExtractStrict<keyof MyComponent_CustomAttributes, "data-my-flag">);
+el?.getAttribute("data-my-flag" satisfies keyof MyComponent_CustomAttributes);
 ```
 
 ## Grouped \_ClassNames by Compound Component
@@ -221,6 +257,46 @@ el?.getAttribute("data-my-flag" satisfies ExtractStrict<keyof MyComponent_Custom
 Instead of a single `<ComponentName>_ClassNames` union, group class names by compound component. Each subcomponent gets its own `_ClassNames` type. Use PascalCase for subcomponent root classes and dash-suffixed modifiers for states, variants, and sizes.
 
 **Type Placement**: Each `_ClassNames` type must be placed directly above its corresponding component definition, before any `_Props` or `_Ref` types.
+
+## Region boundaries: class name ownership (default)
+
+When a module uses `// #region ...` blocks to encapsulate components, you must treat each region as a component boundary.
+
+By default, a component must only use class names from its own `_ClassNames` type (its own region). Do not “reach across” regions and use another component’s class name type just because it exists in the same file.
+
+If you need a class name for a subcomponent, create a dedicated `<SubcomponentName>_ClassNames` type for that subcomponent and use that type inside the subcomponent implementation.
+
+✅ Good: subcomponent owns its class names
+
+```tsx
+export type AiChatMessageUser_ClassNames = "AiChatMessageUser" | "AiChatMessageUser-role-user";
+
+export function AiChatMessageUser(props: AiChatMessageUser_Props) {
+	return <div className={cn("AiChatMessageUser-role-user" satisfies AiChatMessageUser_ClassNames)} />;
+}
+```
+
+❌ Bad: subcomponent uses the parent/root region’s class name type by default
+
+```tsx
+export type AiChatMessage_ClassNames = "AiChatMessage" | "AiChatMessage-role-user";
+
+export function AiChatMessageUser(props: AiChatMessageUser_Props) {
+	return <div className={cn("AiChatMessage-role-user" satisfies AiChatMessage_ClassNames)} />;
+}
+```
+
+## Exceptions (must be intentional and explicit)
+
+You may use class names from another region only when you intentionally want one of these behaviors:
+
+### Reuse exact styling
+
+You are intentionally inheriting the exact same styles (apply both classes and type-check them), and the reused styles are meant to be shared.
+
+### Cross-component selectors / DOM targeting
+
+You are intentionally targeting another component in a selector or query (for example `:has(...)`, `querySelector`, or test selectors). In this case, using another region’s class name is allowed because the goal is explicit cross-component targeting, not ownership.
 
 **Reusing Styles from Other Components**: When a component needs to reuse styling from another `my-*` component, import the other component's `_ClassNames` type and apply both the component's own class name and the reused class name. This maintains component identity for debugging while inheriting shared styles. For example:
 
@@ -313,7 +389,7 @@ export function ThreadMenuButton(props: ThreadMenuButton_Props) {
 }
 ```
 
-- Use Tailwind by default for styling. When the user requests explicit CSS classes, prefer component-prefixed classes validated by the `_ClassNames` type and follow the CSS rules in [airule-code-css](.cursor/rules/code-css/RULE.md).
+- Use vanilla CSS by default for styling. Prefer component-prefixed classes validated by the `_ClassNames` type and follow the CSS rules in [airule-code-css](.cursor/rules/code-css/RULE.mdc).
 
 - Variants and sizes must be represented directly in each component's `_ClassNames` type. Use conditional adds with `satisfies` for validation.
 

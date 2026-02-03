@@ -443,10 +443,14 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 					const suggestions = siblingPaths
 						.filter(
 							(name) =>
-								name.toLowerCase().includes(pageName.toLowerCase()) ||
-								pageName.toLowerCase().includes(name.toLowerCase()),
+								name.trim() !== "" &&
+								(	name.toLowerCase().includes(pageName.toLowerCase()) ||
+									pageName.toLowerCase().includes(name.toLowerCase())),
 						)
-						.map((name) => (parentPath === "/" ? `/${name}` : `${parentPath}/${name}`))
+						.map((name) => {
+							const trimmedName = name.trim();
+							return parentPath === "/" ? `/${trimmedName}` : `${parentPath}/${trimmedName}`;
+						})
 						.slice(0, 3);
 
 					if (suggestions.length > 0) {

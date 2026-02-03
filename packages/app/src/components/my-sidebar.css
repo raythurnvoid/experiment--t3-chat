@@ -11,9 +11,9 @@
 		flex-shrink: 0;
 		contain: content;
 
-		background: var(--sidebar);
-		color: var(--sidebar-foreground);
-		border-right: 1px solid var(--border);
+		background: var(--color-base-1-03);
+		color: var(--color-fg-09);
+		border-right: 1px solid var(--color-fg-02);
 
 		transition: width 0.2s ease-in-out allow-discrete;
 	}

@@ -1,6 +1,5 @@
 packages:
   - "packages/*"
-  - "packages/app/vendor/assistant-ui/packages/*"
   - "packages/app/vendor/novel/packages/*"
   - "packages/app/vendor/liveblocks/packages/*"
   - "packages/app/vendor/liveblocks/shared/*"

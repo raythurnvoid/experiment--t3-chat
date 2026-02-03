@@ -1,4 +1,24 @@
 @layer common_components {
+	/* #region root */
+	/* #endregion root */
+
+	/* #region label */
+	.MySelectLabel {
+		padding: 8px 8px 4px 8px;
+		font-size: 0.75em;
+		font-weight: 500;
+		color: var(--color-fg-07);
+
+		@media (prefers-color-scheme: dark) {
+			color: var(--color-fg-05);
+		}
+	}
+	/* #endregion label */
+
+	/* #region trigger */
+	/* #endregion trigger */
+
+	/* #region open indicator */
 	.MySelectOpenIndicator.MyIcon {
 		width: 16px;
 		height: 16px;
@@ -10,7 +30,9 @@
 			transform: rotate(-180deg);
 		}
 	}
+	/* #endregion open indicator */
 
+	/* #region popover */
 	.MySelectPopover {
 		box-sizing: border-box;
 		position: relative;
@@ -19,7 +41,7 @@
 		max-height: 300px;
 
 		border-radius: 6px;
-		border: 1px solid var(--color-base-1-10);
+		border: 2px solid var(--color-fg-06);
 
 		background: var(--color-base-1-04);
 		color: var(--color-fg-11);
@@ -33,16 +55,22 @@
 		}
 	}
 
+	/* #region popover scrollable area */
 	.MySelectPopoverScrollableArea {
 		max-height: inherit;
 		overflow-x: hidden;
 		overflow-y: auto;
 	}
+	/* #endregion popover scrollable area */
 
+	/* #region popover content */
 	.MySelectPopoverContent {
 		padding: 4px;
 	}
+	/* #endregion popover content */
+	/* #endregion popover */
 
+	/* #region item */
 	.MySelectItem {
 		box-sizing: border-box;
 		position: relative;
@@ -56,7 +84,7 @@
 		border-radius: 4px;
 
 		background: var(--color-base-1-04);
-		color: var(--color-fg-11);
+		color: var(--color-fg-08);
 
 		font-size: 0.875rem;
 		line-height: 1.25;
@@ -75,22 +103,24 @@
 		}
 
 		&[aria-selected="true"] {
-			background: var(--color-base-1-06);
-			color: var(--color-fg-12);
+			background: var(--color-base-1-05);
+			color: var(--color-fg-09);
 		}
 
 		&[data-active-item] {
-			background: var(--color-base-1-07);
-			color: var(--color-fg-12);
+			background: var(--color-base-1-06);
+			color: var(--color-fg-11);
 		}
 	}
 
+	/* #region item indicator */
 	.MySelectItemIndicator.MyIcon {
 		width: 16px;
 		height: 16px;
 	}
+	/* #endregion item indicator */
 
-	/* Select item content grid */
+	/* #region item content */
 	.MySelectItemContent {
 		display: grid;
 		grid-template: auto / auto 1fr;
@@ -101,13 +131,16 @@
 		flex: 1;
 	}
 
+	/* #region item content primary */
 	.MySelectItemContentPrimary {
 		grid-column: 2;
 		grid-row: 1;
 
 		height: 18px;
 	}
+	/* #endregion item content primary */
 
+	/* #region item content secondary */
 	.MySelectItemContentSecondary {
 		grid-column: 2;
 		grid-row: 2;
@@ -115,7 +148,9 @@
 		font-size: 0.75rem;
 		color: var(--color-fg-09);
 	}
+	/* #endregion item content secondary */
 
+	/* #region item content icon */
 	.MySelectItemContentIcon.MyIcon {
 		grid-column: 1;
 		grid-row: 1 / -1;
@@ -125,25 +160,18 @@
 
 		margin-right: 8px;
 	}
+	/* #endregion item content icon */
+	/* #endregion item content */
+	/* #endregion item */
 
-	/* Select label */
-	.MySelectLabel {
-		padding: 8px 8px 4px 8px;
-		font-size: 0.75em;
-		font-weight: 500;
-		color: var(--color-fg-07);
-
-		@media (prefers-color-scheme: dark) {
-			color: var(--color-fg-05);
-		}
-	}
-
+	/* #region items group */
 	.MySelectItemsGroup-separator {
 		margin-top: 8px;
 		border-top: 1px solid var(--color-base-1-10);
 		padding-top: 8px;
 	}
 
+	/* #region items group text */
 	.MySelectItemsGroupText {
 		cursor: default;
 
@@ -156,4 +184,6 @@
 
 		min-height: 30px;
 	}
+	/* #endregion items group text */
+	/* #endregion items group */
 }

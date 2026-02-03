@@ -15,7 +15,7 @@
 
 		background: transparent;
 
-		border: 2px solid var(--input);
+		border: 2px solid var(--color-fg-01);
 		border-radius: 6px;
 
 		@media (prefers-color-scheme: dark) {
@@ -30,20 +30,19 @@
 
 	/* Invalid state ring */
 	.MyInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
-		border-color: var(--destructive);
-		box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
+		border-color: var(--color-red-06);
+		box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.2);
 	}
 
 	/* Dark mode invalid state */
 	@media (prefers-color-scheme: dark) {
 		.MyInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
-			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
+			box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.4);
 		}
 	}
 
 	.MyInput-variant-surface .MyInputBox {
-		background: var(--background);
-		box-shadow: none;
+		background: var(--color-base-1-01);
 	}
 
 	.MyInputArea {
@@ -110,11 +109,6 @@
 			font-weight: 500;
 			color: inherit;
 		}
-
-		/* Responsive font size */
-		@media (min-width: 768px) {
-			font-size: 0.875rem;
-		}
 	}
 
 	.MyInputControl {
@@ -137,9 +131,10 @@
 
 	.MyInputLabel {
 		display: block;
+
 		font-size: 0.875rem;
 		font-weight: 500;
-		color: var(--foreground);
+
 		margin-bottom: 12px;
 	}
 

@@ -29,7 +29,7 @@
 		width: 100%;
 	}
 
-	.PageEditorRichText-editor-container {
+	.PageEditorRichText-editor-content-container {
 		width: 100%;
 
 		/*
@@ -62,36 +62,11 @@
 		width: 100%;
 		padding: max(16px, var(--app-scrollbar-w) + 1px) 64px 16px 64px;
 
-		font-size: 1rem;
-		line-height: 1.5rem;
-		font-weight: 400;
 		color: var(--PageEditorRichText-text-color-fg-default);
 
-		outline: none;
-
-		&:focus {
-			outline: none;
-		}
-
 		/* Editor content styles */
-		/* Tiptap editor styles to match liveblocks example */
-		&:focus p[data-placeholder]::before {
-			content: attr(data-placeholder);
 
-			color: var(--color-fg-07);
-
-			user-select: none;
-			pointer-events: none;
-
-			height: 0;
-			float: left;
-		}
-
-		&.ProseMirror-hideselection::selection {
-			background-color: transparent;
-		}
-
-		.PageEditorRichText-editor-container:focus-within & .ProseMirror-selectednode {
+		.PageEditorRichText-editor-content-container:focus-within & .ProseMirror-selectednode {
 			position: relative;
 
 			&::before {
@@ -105,12 +80,6 @@
 			}
 		}
 
-		h1 {
-			font-size: 2em;
-			line-height: 2;
-			font-weight: 400;
-		}
-
 		h2 {
 			--PageEditorRichText-text-color-fg-default: var(--color-fg-02);
 
@@ -118,9 +87,6 @@
 				--PageEditorRichText-text-color-fg-default: var(--color-fg-11);
 			}
 
-			font-size: 1.6em;
-			font-weight: 400;
-			line-height: 1.6;
 			color: var(--PageEditorRichText-text-color-fg-default);
 		}
 
@@ -131,9 +97,6 @@
 				--PageEditorRichText-text-color-fg-default: var(--color-fg-11);
 			}
 
-			font-size: 1.4em;
-			font-weight: 400;
-			line-height: 1.6;
 			color: var(--PageEditorRichText-text-color-fg-default);
 		}
 
@@ -144,61 +107,7 @@
 				--PageEditorRichText-text-color-fg-default: var(--color-fg-11);
 			}
 
-			font-size: 1.3em;
-			font-weight: 500;
-			line-height: 1.6;
 			color: var(--PageEditorRichText-text-color-fg-default);
-		}
-
-		h5 {
-			font-size: 1.2em;
-			font-weight: 500;
-			line-height: 1.6;
-		}
-
-		h6 {
-			font-size: 1.1em;
-			font-weight: 700;
-			line-height: 1.4;
-		}
-
-		p {
-			margin: 0.2em 0;
-		}
-
-		ul {
-			display: block;
-			list-style-type: disc;
-			margin: 0.2em 0;
-			padding-inline-start: 40px;
-			unicode-bidi: isolate;
-		}
-
-		ol {
-			display: block;
-			list-style-type: decimal;
-			margin: 0.2em 0;
-			padding-inline-start: 40px;
-			unicode-bidi: isolate;
-		}
-
-		li {
-			display: list-item;
-			text-align: -webkit-match-parent;
-			unicode-bidi: isolate;
-		}
-
-		li::marker {
-			unicode-bidi: isolate;
-			font-variant-numeric: tabular-nums;
-			text-transform: none;
-			text-indent: 0px;
-			text-align: start;
-			text-align-last: start;
-		}
-
-		[data-decoration-highlight] {
-			background-color: var(--color-base-1-10);
 		}
 
 		/*

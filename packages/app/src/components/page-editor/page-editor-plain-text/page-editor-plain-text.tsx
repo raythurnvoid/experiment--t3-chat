@@ -16,7 +16,8 @@ import { editor as monaco_editor } from "monaco-editor";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
-import { cn, should_never_happen, type AppElementId } from "@/lib/utils.ts";
+import { cn, should_never_happen } from "@/lib/utils.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
@@ -30,7 +31,6 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
-import type { AppDomId } from "@/lib/app-dom-id.ts";
 
 // #region toolbar
 export type PageEditorPlainTextToolbar_ClassNames =
@@ -141,7 +141,7 @@ function PageEditorPlainTextSidebar(props: PageEditorPlainTextSidebar_Props) {
 			<div
 				className={cn("PageEditorPlainTextSidebar-background" satisfies PageEditorPlainTextSidebar_ClassNames)}
 			></div>
-			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>
+			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>
 				<div className={cn("PageEditorPlainTextSidebar-toolbar" satisfies PageEditorPlainTextSidebar_ClassNames)}>
 					<div
 						className={cn(
@@ -152,8 +152,8 @@ function PageEditorPlainTextSidebar(props: PageEditorPlainTextSidebar_Props) {
 							className={cn("PageEditorPlainTextSidebar-tabs-list" satisfies PageEditorPlainTextSidebar_ClassNames)}
 							aria-label="Sidebar tabs"
 						>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}>Agent</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>Comments</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}>Agent</MyTabsTab>
 						</MyTabsList>
 					</div>
 				</div>
@@ -162,13 +162,13 @@ function PageEditorPlainTextSidebar(props: PageEditorPlainTextSidebar_Props) {
 				>
 					<MyTabsPanel
 						className={cn("PageEditorPlainTextSidebar-panel" satisfies PageEditorPlainTextSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}
+						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
 					>
 						<PageEditorCommentsSidebar threadIds={threadIds} />
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("PageEditorPlainTextSidebar-panel" satisfies PageEditorPlainTextSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}
+						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
 					>
 						<div className={cn("PageEditorPlainTextSidebar-agent" satisfies PageEditorPlainTextSidebar_ClassNames)}>
 							Agent tools will appear here.

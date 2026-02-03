@@ -14,20 +14,20 @@ import {
 	get_id_generator,
 	should_never_happen,
 } from "@/lib/utils.ts";
-import { useLiveRef, useRenderPromise } from "../../hooks/utils-hooks.ts";
-import { generate_id } from "../utils.ts";
-import { type ai_chat_AiSdkUiMessage, type ai_chat_Message, type ai_chat_Thread } from "@/lib/ai-chat.ts";
+import { useLiveRef, useRenderPromise } from "./utils-hooks.ts";
+import { generate_id } from "../lib/utils.ts";
+import { type ai_chat_AiSdk5UiMessage, type ai_chat_Message, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
-export type ai_chat_UiMessageMetadata = NonNullable<ai_chat_AiSdkUiMessage["metadata"]>;
+export type ai_chat_UiMessageMetadata = NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
 
 type ThreadChatArgs = {
 	chatId: string | null;
-	initialMessages?: ai_chat_AiSdkUiMessage[] | undefined;
-	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdkUiMessage>["prepareSendMessagesRequest"]>;
+	initialMessages?: ai_chat_AiSdk5UiMessage[] | undefined;
+	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>;
 };
 
 type ThreadSession = {
-	chat: Chat<ai_chat_AiSdkUiMessage> | null;
+	chat: Chat<ai_chat_AiSdk5UiMessage> | null;
 	draftComposerText: string;
 	/**
 	 * Optional branch anchor (Convex message id).
@@ -44,6 +44,10 @@ type ThreadSession = {
 type ThreadStore = {
 	selectedThreadId: string | null;
 	threadById: Map<string, ThreadSession>;
+};
+
+type ChatRequestMetadata = {
+	isOptimistic: boolean;
 };
 
 const useAiChatStore = ((/* iife */) => {
@@ -90,18 +94,19 @@ function create_optimistic_thread(): ai_chat_Thread {
 	const clientId = generate_id("ai_thread");
 	const now = Date.now();
 	return {
-		_id: clientId as app_convex_Id<"threads">,
+		_id: clientId as app_convex_Id<"ai_chat_threads">,
 		_creationTime: now,
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		clientGeneratedId: clientId,
 		title: null,
 		archived: false,
-		last_message_at: now,
-		workspace_id: ai_chat_HARDCODED_ORG_ID,
-		created_by: "",
-		updated_by: "",
-		updated_at: now,
-		external_id: clientId,
-		project_id: ai_chat_HARDCODED_PROJECT_ID,
 		starred: false,
+		runtime: "aisdk_5",
+		createdBy: "" as app_convex_Id<"users">,
+		updatedBy: "" as app_convex_Id<"users">,
+		updatedAt: now,
+		lastMessageAt: now,
 	};
 }
 
@@ -115,16 +120,16 @@ export function ai_chat_get_parent_id(parentId?: string | null) {
 }
 
 export function ai_chat_is_optimistic_thread(thread?: ai_chat_Thread | null) {
-	const externalId = thread?.external_id;
-	if (!externalId) {
+	const clientGeneratedId = thread?.clientGeneratedId;
+	if (!clientGeneratedId) {
 		return false;
 	}
-	return thread._id === externalId;
+	return thread._id === clientGeneratedId;
 }
 
 const thread_session_create = (args?: {
 	optimisticThread?: ai_chat_Thread;
-	chat?: Chat<ai_chat_AiSdkUiMessage> | null;
+	chat?: Chat<ai_chat_AiSdk5UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
 }) => {
 	return {
@@ -151,17 +156,17 @@ function convex_message_to_ui_message(message: ai_chat_Message, metadata?: ai_ch
 		id: message._id,
 		role: message.content.role,
 		// TODO: improve types
-		parts: message.content.parts as ai_chat_AiSdkUiMessage["parts"],
+		parts: message.content.parts as ai_chat_AiSdk5UiMessage["parts"],
 		...(mergedMetadata !== undefined ? { metadata: mergedMetadata } : {}),
-	} satisfies ai_chat_AiSdkUiMessage;
+	} satisfies ai_chat_AiSdk5UiMessage;
 }
 
 function create_chat_instance(args: {
 	chatId: string | null;
-	initialMessages?: ai_chat_AiSdkUiMessage[] | undefined;
-	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdkUiMessage>["prepareSendMessagesRequest"]>;
+	initialMessages?: ai_chat_AiSdk5UiMessage[] | undefined;
+	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>;
 }) {
-	const chat = new Chat<ai_chat_AiSdkUiMessage>({
+	const chat = new Chat<ai_chat_AiSdk5UiMessage>({
 		id: args.chatId ?? generate_id("ai_thread"),
 		generateId: get_id_generator("ai_message"),
 		...(args.initialMessages ? { messages: args.initialMessages } : {}),
@@ -237,17 +242,14 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
 	);
 
-	const unarchivedThreads = usePaginatedQuery(
-		app_convex_api.ai_chat.threads_list,
-		{ archived: false },
-		{ initialNumItems: 100 },
-	);
+	const threads = usePaginatedQuery(app_convex_api.ai_chat.threads_list, { archived: false }, { initialNumItems: 100 });
 	const archivedThreads = usePaginatedQuery(
 		app_convex_api.ai_chat.threads_list,
 		includeArchived ? { archived: true } : "skip",
 		{ initialNumItems: 100 },
 	);
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
+	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
 
 	const persistedThreadMessages = useQuery(
 		app_convex_api.ai_chat.thread_messages_list,
@@ -260,12 +262,10 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	);
 
 	/** Necessary to manage optimistic threads and their swtch to persisted threads. */
-	const threadIdByExternalId = ((/* iife */) => {
+	const threadIdByClientGeneratedId = ((/* iife */) => {
 		const result = new Map<string, string>();
-		for (const thread of unarchivedThreads.results) {
-			if (thread.external_id) {
-				result.set(thread.external_id, thread._id);
-			}
+		for (const thread of threads.results) {
+			result.set(thread.clientGeneratedId, thread._id);
 		}
 		return result;
 	})();
@@ -273,25 +273,20 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const optimisticThreads = ((/* iife */) => {
 		const result: Array<ai_chat_Thread> = [];
 		for (const session of threadById.values()) {
-			if (session.optimisticThread && !threadIdByExternalId.has(session.optimisticThread._id)) {
+			if (session.optimisticThread && !threadIdByClientGeneratedId.has(session.optimisticThread._id)) {
 				result.push(session.optimisticThread);
 			}
 		}
 		return result;
 	})();
 
-	const paginatedThreads = ((/* iife */) => {
+	const currentThreadsWithOptimistic = ((/* iife */) => {
 		const unarchived = {
-			...unarchivedThreads,
-			results: [...optimisticThreads, ...unarchivedThreads.results],
+			...threads,
+			results: [...optimisticThreads, ...threads.results],
 		};
 
-		const archived = includeArchived
-			? {
-					...archivedThreads,
-					results: archivedThreads.results,
-				}
-			: null;
+		const archived = includeArchived ? archivedThreads : null;
 
 		return {
 			unarchived,
@@ -313,29 +308,29 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		if (!persistedThreadMessages) return undefined;
 
 		const result = {
-			mapById: new Map<string, ai_chat_AiSdkUiMessage>(),
-			childrenByParentId: new Map<string | null, ai_chat_AiSdkUiMessage[]>(),
+			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
+			childrenByParentId: new Map<string | null, ai_chat_AiSdk5UiMessage[]>(),
 			clientGeneratedIds: new Set<string>(),
-			list: [] as ai_chat_AiSdkUiMessage[],
+			list: [] as ai_chat_AiSdk5UiMessage[],
 		};
 
 		for (const message of persistedThreadMessages.messages) {
 			const uiMessage = convex_message_to_ui_message(message, {
 				convexId: message._id,
-				convexParentId: message.parent_id,
+				convexParentId: message.parentId,
 			});
 
 			result.mapById.set(message._id, uiMessage);
 
-			const parentIdOrRoot = ai_chat_get_parent_id(message.parent_id);
+			const parentIdOrRoot = ai_chat_get_parent_id(message.parentId);
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
 				result.childrenByParentId.get(parentIdOrRoot)?.push(uiMessage);
 			} else {
 				result.childrenByParentId.set(parentIdOrRoot, [uiMessage]);
 			}
 
-			if (message.client_generated_message_id) {
-				result.clientGeneratedIds.add(message.client_generated_message_id);
+			if (message.clientGeneratedMessageId) {
+				result.clientGeneratedIds.add(message.clientGeneratedMessageId);
 			}
 
 			result.list.push(uiMessage);
@@ -345,63 +340,53 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	})();
 
 	const prepareSendMessagesRequest = useLiveRef<
-		NonNullable<DefaultChatTransport<ai_chat_AiSdkUiMessage>["prepareSendMessagesRequest"]>
+		NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>
 	>(async (options) => {
-		const headers = new Headers(options.headers);
-		headers.set("Accept", "text/event-stream");
+		return (async (/* iife */) => {
+			const headers = new Headers(options.headers);
+			headers.set("Accept", "text/event-stream");
 
-		const token = await AppAuthProvider.getToken();
-		if (token) {
-			headers.set("Authorization", `Bearer ${token}`);
-		}
+			const token = await AppAuthProvider.getToken();
+			if (token) {
+				headers.set("Authorization", `Bearer ${token}`);
+			}
 
-		const chatId = options.id;
+			// When regenerating the last message is a persisted assistant message,
+			// When editing or submitting the last message is the optimistic user message.
+			// The messages we send are the ones we want to persist.
+			const messagesToAppend = options.trigger === "regenerate-message" ? [] : options.messages.slice(-1);
 
-		const session = useAiChatStore.getState().threadById.get(chatId);
-		const threadId = session?.optimisticThread ? undefined : chatId;
-		const clientThreadId = session?.optimisticThread ? (session.optimisticThread.external_id ?? chatId) : undefined;
+			// The `parentId` is the id of the persisted message to which we want to append the new message.
+			const parentId =
+				options.trigger === "regenerate-message" ? options.messages.at(-1)?.id : options.messages.at(-2)?.id;
 
-		const isRegenerate = options.trigger === "regenerate-message";
-		const regenMessage =
-			isRegenerate && options.messageId ? (persistedMessagesData?.mapById.get(options.messageId) ?? null) : null;
-		if (isRegenerate && !options.messageId) {
-			should_never_happen("[useAiChatController] Missing messageId for regenerate request", { chatId });
-		}
-		if (isRegenerate && options.messageId && !regenMessage) {
-			should_never_happen("[useAiChatController] Missing Convex message for regenerate request", {
-				chatId,
-				messageId: options.messageId,
-			});
-		}
+			const metadata = options.requestMetadata as ChatRequestMetadata;
 
-		const regenParentId = ai_chat_get_parent_id(regenMessage?.metadata?.convexParentId);
-		const messagesPayload = isRegenerate ? [] : options.messages.slice(-1);
+			const requestBody = {
+				...options.body,
 
-		const tools = (options.body as { tools?: Record<string, unknown> } | undefined)?.tools ?? {};
-		const lastMessage = messagesPayload.at(-1) ?? null;
-		const submitParentId = lastMessage?.role === "user" ? lastMessage.metadata?.convexParentId : undefined;
-		const requestBody = {
-			...(options.body as Record<string, unknown> | undefined),
-			id: threadId ?? chatId,
-			messages: messagesPayload,
-			trigger: options.trigger,
-			messageId: options.messageId,
-			tools,
-			...(threadId ? { threadId } : {}),
-			...(clientThreadId ? { clientThreadId } : {}),
-			...(isRegenerate
-				? { parentId: regenParentId ?? null }
-				: submitParentId !== undefined
-					? { parentId: submitParentId }
-					: {}),
-		} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
+				threadId: metadata.isOptimistic ? undefined : options.id,
+				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
 
-		return {
-			api: options.api,
-			body: requestBody,
-			credentials: "omit" satisfies RequestCredentials,
-			headers,
-		};
+				messages: messagesToAppend,
+				trigger: options.trigger,
+				parentId,
+			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
+
+			return {
+				api: options.api,
+				body: requestBody,
+				credentials: "omit" satisfies RequestCredentials,
+				headers,
+			} as const;
+		})().catch((error) =>
+			Promise.reject(
+				should_never_happen("Failed to prepare send messages request", {
+					error,
+					options,
+				}),
+			),
+		);
 	});
 
 	const unselectedChatInstance = create_chat_instance({
@@ -436,13 +421,13 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		return unselectedChatInstance;
 	})();
 
-	const chat = useChat<ai_chat_AiSdkUiMessage>({ chat: activeChatInstance });
+	const chat = useChat<ai_chat_AiSdk5UiMessage>({ chat: activeChatInstance });
 
 	const pendingMessagesData = ((/* iife */) => {
 		const result = {
-			list: [] as ai_chat_AiSdkUiMessage[],
-			mapById: new Map<string, ai_chat_AiSdkUiMessage>(),
-			childrenByParentId: new Map<string | null, ai_chat_AiSdkUiMessage[]>(),
+			list: [] as ai_chat_AiSdk5UiMessage[],
+			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
+			childrenByParentId: new Map<string | null, ai_chat_AiSdk5UiMessage[]>(),
 		};
 
 		// Read messages from the newest to the oldest.
@@ -478,6 +463,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const activeBranchMessages = ((/* iife */) => {
 		const tail = [];
 		const head = [];
+		const mapById = new Map<string, ai_chat_AiSdk5UiMessage>();
 
 		// Find tail messages from persisted messages.
 		if (persistedMessagesData) {
@@ -485,6 +471,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			// we should start from the newest (0).
 			let current = anchorMessage ?? persistedMessagesData.list.at(0);
 			while (current) {
+				mapById.set(current.id, current);
 				tail.push(current);
 				current = current.metadata?.convexParentId
 					? (pendingMessagesData.mapById.get(current.metadata.convexParentId) ??
@@ -501,6 +488,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			while (current) {
 				// The anchor is already included in the tail
 				if (current !== anchorMessage) {
+					mapById.set(current.id, current);
 					head.push(current);
 				}
 
@@ -511,11 +499,14 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			}
 		}
 
-		return [...tail.toReversed(), ...head];
+		return {
+			list: [...tail.toReversed(), ...head],
+			mapById,
+		};
 	})();
 
 	const messagesChildrenByParentId = ((/* iife */) => {
-		const result = new Map<string | null, ai_chat_AiSdkUiMessage[]>();
+		const result = new Map<string | null, ai_chat_AiSdk5UiMessage[]>();
 
 		if (persistedMessagesData) {
 			for (const [parentId, children] of persistedMessagesData.childrenByParentId.entries()) {
@@ -542,12 +533,27 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		useAiChatStore.setState(() => ({ selectedThreadId: optimisticThread._id }));
 
 		if (message?.trim()) {
-			optimisticChat.sendMessage({
-				role: "user",
-				parts: [{ type: "text", text: message }],
-				metadata: {} satisfies ai_chat_UiMessageMetadata,
-			});
+			optimisticChat.sendMessage(
+				{
+					role: "user",
+					parts: [{ type: "text", text: message }],
+					metadata: {} satisfies ai_chat_UiMessageMetadata,
+				},
+				{
+					metadata: {
+						isOptimistic: true,
+					} satisfies ChatRequestMetadata,
+				},
+			);
 		}
+	};
+
+	const branchChat = (threadId: string, messageId?: string) => {
+		branchThread({ threadId, ...(messageId ? { messageId } : {}) })
+			.then((result) => {
+				selectThread(result.threadId);
+			})
+			.catch(console.error);
 	};
 
 	const selectThread = (threadId: string) => {
@@ -637,25 +643,32 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
-		useAiChatStore.actions.setSession(threadId, (prev) => {
-			const parentIdOrRoot = ai_chat_get_parent_id(messageToRegenerate.metadata?.convexParentId);
-
-			const base = prev ?? thread_session_create();
-			return {
-				...base,
-				...prev,
-				anchorId: parentIdOrRoot,
-			};
-		});
-
 		// Hydrate the chat with the exact branch that contains the target message id,
 		// so AI SDK can slice correctly for regenerate.
-		chat.messages = activeBranchMessages;
+		chat.messages = activeBranchMessages.list;
+		chat
+			.regenerate({
+				messageId,
+				metadata: { isOptimistic: session.optimisticThread ? true : false } satisfies ChatRequestMetadata,
+			})
+			.catch(console.error);
 
-		chat.regenerate({ messageId }).catch(console.error);
+		useAiChatStore.actions.setSession(threadId, (prev) => {
+			if (!prev) {
+				should_never_happen("[useAiChatController.regenerate] Missing session", {
+					threadId,
+				});
+				return;
+			}
+
+			return {
+				...prev,
+				anchorId: null,
+			};
+		});
 	};
 
-	const sendUserText = (threadId: string, value: string, options?: { parentId?: string | null }) => {
+	const sendUserText = (threadId: string, value: string, options?: { messageId?: string }) => {
 		if (!value.trim()) {
 			return;
 		}
@@ -671,15 +684,42 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
-		const convexParentId = options?.parentId === undefined ? activeBranchMessages.at(-1)?.id : options.parentId;
+		const targetMessage = options?.messageId ? activeBranchMessages?.mapById.get(options.messageId) : null;
+		const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
 
-		chat.messages = activeBranchMessages;
-		chat.sendMessage({
-			role: "user",
-			parts: [{ type: "text", text: value }],
-			metadata: {
-				convexParentId,
-			} satisfies Partial<ai_chat_UiMessageMetadata>,
+		chat.messages = targetMessageIndex
+			? activeBranchMessages.list.slice(0, targetMessageIndex)
+			: activeBranchMessages.list;
+
+		const parentId = targetMessage ? targetMessage.metadata?.convexParentId : activeBranchMessages.list.at(-1)?.id;
+
+		chat.sendMessage(
+			{
+				role: "user",
+				parts: [{ type: "text", text: value }],
+				metadata: {
+					convexParentId: parentId,
+				} satisfies ai_chat_UiMessageMetadata,
+			},
+			{
+				metadata: {
+					isOptimistic: session.optimisticThread ? true : false,
+				} satisfies ChatRequestMetadata,
+			},
+		);
+
+		useAiChatStore.actions.setSession(threadId, (prev) => {
+			if (!prev) {
+				should_never_happen("[useAiChatController.regenerate] Missing session", {
+					threadId,
+				});
+				return;
+			}
+
+			return {
+				...prev,
+				anchorId: null,
+			};
 		});
 
 		setComposerValue(threadId, "");
@@ -704,7 +744,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 			const optimisticThreadId = session.optimisticThread._id;
 
-			const threadId = threadIdByExternalId.get(optimisticThreadId);
+			const threadId = threadIdByClientGeneratedId.get(optimisticThreadId);
 			if (threadId) {
 				const persistedSession = useAiChatStore.actions.getSession(threadId);
 				if (!persistedSession) {
@@ -727,13 +767,13 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				});
 			}
 		}
-	}, [unarchivedThreads.results]);
+	}, [threads.results]);
 
 	return {
 		selectedThreadId,
 		session,
 
-		paginatedThreads,
+		currentThreadsWithOptimistic,
 		streamingTitleByThreadId,
 
 		status: chat.status,
@@ -743,6 +783,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		messagesChildrenByParentId,
 
 		startNewChat,
+		branchChat,
 		selectThread,
 		selectBranchAnchor,
 		setThreadStarred,
@@ -750,7 +791,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 		setComposerValue,
 		sendUserText,
-		sendMessage: chat.sendMessage,
 		regenerate,
 		stop: chat.stop,
 		resumeStream: chat.resumeStream,

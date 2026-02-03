@@ -1,5 +1,10 @@
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
-import { type ai_chat_AiSdkUiMessage } from "../src/lib/ai-chat.ts";
+import {
+	ai_chat_HARDCODED_ORG_ID,
+	ai_chat_HARDCODED_PROJECT_ID,
+	omit_properties,
+	should_never_happen,
+} from "../shared/shared-utils.ts";
+import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, internalMutation, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
@@ -16,8 +21,6 @@ import {
 	convertToModelMessages,
 	validateUIMessages,
 	TypeValidationError,
-	type Tool,
-	type ModelMessage,
 } from "ai";
 import { z } from "zod";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
@@ -37,20 +40,7 @@ import {
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
-
-/**
- * This function exists only becase is not possible to define a type specific enough to make ts happy when using
- * the data saved in convex as {@link ai_chat_AiSdkUiMessage}. However, {@link ai_chat_AiSdkUiMessage} is the type that is saved in convex.
- */
-function convert_convex_db_message_to_aisdk_ui_message(message: app_convex_Doc<"messages">): ai_chat_AiSdkUiMessage {
-	return {
-		id: message._id,
-		role: message.content.role,
-		parts: message.content.parts as ai_chat_AiSdkUiMessage["parts"],
-		metadata: message.content.metadata as ai_chat_AiSdkUiMessage["metadata"],
-	};
-}
+import { Result } from "../src/lib/errors-as-values-utils.ts";
 
 export const threads_list = query({
 	args: {
@@ -62,11 +52,11 @@ export const threads_list = query({
 		const archived = args.archived ?? false;
 
 		const threads_query = ctx.db
-			.query("threads")
-			.withIndex("by_workspace_project_archived", (q) =>
+			.query("ai_chat_threads")
+			.withIndex("by_workspace_project_archived_last_message_at", (q) =>
 				q
-					.eq("workspace_id", ai_chat_HARDCODED_ORG_ID)
-					.eq("project_id", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
 					.eq("archived", archived),
 			);
 
@@ -90,16 +80,16 @@ export const thread_get = query({
 		threadId: v.string(),
 	},
 	handler: async (ctx, args) => {
-		const id_normalized = ctx.db.normalizeId("threads", args.threadId);
+		const id_normalized = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 
 		if (!id_normalized) {
 			return null;
 		}
 
-		const thread = await ctx.db.get("threads", id_normalized);
+		const thread = await ctx.db.get("ai_chat_threads", id_normalized);
 
 		// Verify the thread belongs to the current workspace
-		if (thread && thread.workspace_id !== ai_chat_HARDCODED_ORG_ID) {
+		if (thread && thread.workspaceId !== ai_chat_HARDCODED_ORG_ID) {
 			return null;
 		}
 
@@ -111,33 +101,221 @@ export const thread_get = query({
  * Mutation to create a new thread
  */
 export const thread_create = mutation({
-	args: {
-		title: v.optional(v.string()),
-		lastMessageAt: v.number(), // timestamp in milliseconds
-		metadata: v.optional(v.any()),
-		externalId: v.optional(v.union(v.string())),
-	},
+	args: v.object({
+		clientGeneratedId: app_convex_schema.tables.ai_chat_threads.validator.fields.clientGeneratedId,
+		title: v.optional(app_convex_schema.tables.ai_chat_threads.validator.fields.title),
+		lastMessageAt: app_convex_schema.tables.ai_chat_threads.validator.fields.lastMessageAt,
+	}),
 	handler: async (ctx, args) => {
-		const created_by = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const now = Date.now();
 
-		const thread_id = await ctx.db.insert("threads", {
+		const thread_id = await ctx.db.insert("ai_chat_threads", {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			clientGeneratedId: args.clientGeneratedId,
 			title: args.title ?? null,
-			last_message_at: args.lastMessageAt,
+			lastMessageAt: args.lastMessageAt,
 			archived: false,
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			created_by: created_by.name,
-			updated_by: created_by.name,
-			updated_at: now,
-			external_id: args.externalId ?? null,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
+			runtime: "aisdk_5",
+			createdBy: user.id,
+			updatedBy: user.id,
+			updatedAt: now,
 			starred: false,
 		});
 
 		return {
 			thread_id,
 		};
+	},
+});
+
+export const thread_branch = mutation({
+	args: {
+		threadId: v.string(),
+		messageId: v.optional(v.string()),
+	},
+	returns: v.object({
+		threadId: v.id("ai_chat_threads"),
+	}),
+	handler: async (ctx, args) => {
+		const sourceThreadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
+		if (!sourceThreadId) {
+			throw should_never_happen("[thread_branch] Invalid thread ID", { threadId: args.threadId });
+		}
+
+		const sourceThread = await ctx.db.get("ai_chat_threads", sourceThreadId);
+		if (!sourceThread) {
+			throw should_never_happen("[thread_branch] Missing thread", { threadId: args.threadId });
+		}
+
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const now = Date.now();
+
+		const sourceTitle = (sourceThread.title || "New Chat").trim() || "New Chat";
+		const baseTitle = sourceTitle.replace(/ \(\d+\)$/, "");
+
+		const unarchivedThreads = await ctx.db
+			.query("ai_chat_threads")
+			.withIndex("by_workspace_project_archived_last_message_at", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("archived", false),
+			)
+			.collect();
+
+		const archivedThreads = await ctx.db
+			.query("ai_chat_threads")
+			.withIndex("by_workspace_project_archived_last_message_at", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("archived", true),
+			)
+			.collect();
+
+		let maxSuffix = 0;
+		for (const thread of [...unarchivedThreads, ...archivedThreads]) {
+			const title = (thread.title || "New Chat").trim() || "New Chat";
+			const normalized = title.replace(/ \(\d+\)$/, "");
+			if (normalized !== baseTitle) {
+				continue;
+			}
+
+			const match = title.match(/ \((\d+)\)$/);
+			if (!match) {
+				continue;
+			}
+
+			const n = Number(match[1]);
+			if (Number.isFinite(n) && n > maxSuffix) {
+				maxSuffix = n;
+			}
+		}
+
+		const title = `${baseTitle} (${maxSuffix + 1})`;
+		const clientGeneratedId = get_id_generator("ai_thread")();
+
+		const newThreadId = await ctx.db.insert("ai_chat_threads", {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			clientGeneratedId,
+			title,
+			lastMessageAt: now,
+			archived: false,
+			runtime: "aisdk_5",
+			createdBy: user.id,
+			updatedBy: user.id,
+			updatedAt: now,
+			starred: false,
+		});
+
+		const allMessages = await ctx.db
+			.query("ai_chat_threads_messages_aisdk_5")
+			.withIndex("by_workspace_project_thread", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("threadId", sourceThreadId),
+			)
+			.collect();
+
+		const byId = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
+			allMessages.map((m) => [m._id, m]),
+		);
+
+		const newestMessage = ((/* iife */) => {
+			if (args.messageId) {
+				const normalized = ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.messageId);
+				if (!normalized) {
+					throw should_never_happen("[thread_branch] Invalid message ID", {
+						messageId: args.messageId,
+						threadId: args.threadId,
+					});
+				}
+				const message = byId.get(normalized);
+				if (!message) {
+					throw should_never_happen("[thread_branch] Missing message", {
+						messageId: args.messageId,
+						threadId: args.threadId,
+					});
+				}
+				return message;
+			}
+
+			let newest: app_convex_Doc<"ai_chat_threads_messages_aisdk_5"> | null = null;
+			for (const message of allMessages) {
+				if (!newest || message._creationTime > newest._creationTime) {
+					newest = message;
+				}
+			}
+			return newest;
+		})();
+
+		if (!newestMessage) {
+			return { threadId: newThreadId };
+		}
+
+		const chain: Array<app_convex_Doc<"ai_chat_threads_messages_aisdk_5">> = [];
+
+		let current: app_convex_Doc<"ai_chat_threads_messages_aisdk_5"> | undefined = newestMessage;
+		while (current) {
+			chain.push(current);
+			current = current.parentId ? byId.get(current.parentId) : undefined;
+		}
+
+		chain.reverse();
+
+		const messages: Array<{
+			clientGeneratedMessageId: string;
+			content: Record<string, unknown>;
+		}> = [];
+
+		for (const msg of chain) {
+			const content = msg.content as unknown as ai_chat_AiSdk5UiMessage;
+			const nextId = get_id_generator("ai_message")();
+			const metadata = content.metadata
+				? omit_properties(content.metadata as Record<string, unknown>, ["convexParentId", "convexId"])
+				: undefined;
+
+			messages.push({
+				clientGeneratedMessageId: nextId,
+				content: {
+					...content,
+					id: nextId,
+					...(metadata ? { metadata } : {}),
+				},
+			});
+		}
+
+		let nextParentId: app_convex_Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
+		for (const message of messages) {
+			const insertedId: app_convex_Id<"ai_chat_threads_messages_aisdk_5"> = await ctx.db.insert(
+				"ai_chat_threads_messages_aisdk_5",
+				{
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					parentId: nextParentId,
+					threadId: newThreadId,
+					createdBy: user.id,
+					updatedAt: now,
+					clientGeneratedMessageId: message.clientGeneratedMessageId,
+					content: message.content,
+				},
+			);
+
+			nextParentId = insertedId;
+		}
+
+		await ctx.db.patch("ai_chat_threads", newThreadId, {
+			lastMessageAt: now,
+			updatedAt: now,
+			updatedBy: user.id,
+		});
+
+		return { threadId: newThreadId };
 	},
 });
 
@@ -152,20 +330,20 @@ export const thread_update = mutation({
 		starred: v.optional(v.boolean()),
 	},
 	handler: async (ctx, args) => {
-		const updated_by = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const threadId = ctx.db.normalizeId("threads", args.threadId);
+		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 		if (!threadId) {
-			return Result({ _nay: { message: "Invalid threadId" } });
+			return Result({ _nay: { message: "Invalid thread ID" } });
 		}
 
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
 		await ctx.db.patch(
-			"threads",
+			"ai_chat_threads",
 			threadId,
 			Object.assign(
 				{
-					updated_by: updated_by.name,
-					updated_at: Date.now(),
+					updatedBy: user.id,
+					updatedAt: Date.now(),
 				},
 				args.title !== undefined
 					? {
@@ -192,17 +370,17 @@ export const thread_update = mutation({
  */
 export const thread_archive = mutation({
 	args: {
-		threadId: v.id("threads"),
+		threadId: v.id("ai_chat_threads"),
 	},
 	handler: async (ctx, args) => {
-		const updated_by = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const now = Date.now();
 
-		await ctx.db.patch("threads", args.threadId, {
+		await ctx.db.patch("ai_chat_threads", args.threadId, {
 			archived: true,
-			updated_by: updated_by.name,
-			updated_at: now,
+			updatedBy: user.id,
+			updatedAt: now,
 		});
 	},
 });
@@ -214,195 +392,81 @@ export const thread_messages_list = query({
 	args: {
 		threadId: v.string(),
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-		query: v.optional(
-			v.object({
-				format: v.optional(v.string()),
-			}),
-		),
 	},
 	handler: async (ctx, args) => {
-		const thread_id_normalized = ctx.db.normalizeId("threads", args.threadId);
-
-		if (!thread_id_normalized) {
+		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
+		if (!threadId) {
 			return null;
 		}
 
-		const messagesRaw = await ctx.db
-			.query("messages")
-			.withIndex("by_thread", (q) => q.eq("thread_id", thread_id_normalized))
+		const messages = await ctx.db
+			.query("ai_chat_threads_messages_aisdk_5")
+			.withIndex("by_workspace_project_thread", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("threadId", threadId),
+			)
 			.order(args.order ?? "desc")
 			.collect();
-
-		const format = args.query?.format;
-		const messagesFiltered = format ? messagesRaw.filter((message) => message.format === format) : messagesRaw;
-
-		// De-duplicate by client-generated message id (or fallback to _id).
-		// This prevents assistant-ui crashes if duplicates were inserted previously.
-		const seen = new Set<string>();
-		const messages = messagesFiltered.filter((message) => {
-			const id = message.client_generated_message_id ?? message._id;
-			if (seen.has(id)) return false;
-			seen.add(id);
-			return true;
-		});
 
 		return { messages };
 	},
 });
 
 /**
- * Resolve a Convex message id from an Assistant UI / AI SDK client-generated message id.
- *
- * Used to derive a stable branch point when the client cannot provide `parentId` / `messageId`
- * during regenerate flows.
- */
-export const message_id_get_by_client_generated_message_id = query({
-	args: {
-		threadId: v.id("threads"),
-		clientGeneratedMessageId: v.string(),
-	},
-	returns: v.union(v.id("messages"), v.null()),
-	handler: async (ctx, args) => {
-		const existingWithClientId = await ctx.db
-			.query("messages")
-			.withIndex("by_client_generated_message_id", (q) =>
-				q.eq("client_generated_message_id", args.clientGeneratedMessageId),
-			)
-			.order("asc")
-			.collect();
-
-		const existingForThread = existingWithClientId.find((doc) => doc.thread_id === args.threadId);
-		return existingForThread?._id ?? null;
-	},
-});
-
-/**
- * Mutation to add a message to a thread
+ * Mutation to add one or more messages to a thread.
  */
 export const thread_messages_add = mutation({
 	args: {
-		threadId: v.id("threads"),
-		parentId: v.union(v.id("messages"), v.null()),
-		format: v.string(),
-		content: v.object({
-			role: app_convex_schema.tables.messages.validator.fields.content.fields.role,
-			parts: app_convex_schema.tables.messages.validator.fields.content.fields.parts,
-			metadata: app_convex_schema.tables.messages.validator.fields.content.fields.metadata,
-		}),
-	},
-	handler: async (ctx, args) => {
-		const created_by = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const now = Date.now();
-
-		// Insert the message
-		const message_id = await ctx.db.insert("messages", {
-			parent_id: args.parentId,
-			thread_id: args.threadId,
-			created_by: created_by.name,
-			updated_by: created_by.name,
-			updated_at: now,
-			format: args.format,
-			height: 1,
-			content: args.content,
-		});
-
-		// Update the thread's lastMessageAt timestamp
-		try {
-			await ctx.db.patch("threads", args.threadId, {
-				last_message_at: now,
-				updated_at: now,
-				updated_by: created_by.name,
-			});
-		} catch (error) {
-			console.error("Failed to update thread when adding message", error);
-		}
-
-		return { message_id };
-	},
-});
-
-/**
- * Mutation to add multiple messages to a thread.
- */
-export const thread_messages_add_many = mutation({
-	args: {
-		threadId: v.id("threads"),
-		parentId: v.union(v.id("messages"), v.null()),
+		threadId: v.id("ai_chat_threads"),
+		parentId: v.optional(v.union(v.string(), v.null())),
 		messages: v.array(
 			v.object({
-				id: v.string(),
-				format: v.string(),
-				content: v.object({
-					role: app_convex_schema.tables.messages.validator.fields.content.fields.role,
-					parts: app_convex_schema.tables.messages.validator.fields.content.fields.parts,
-					metadata: app_convex_schema.tables.messages.validator.fields.content.fields.metadata,
-				}),
+				clientGeneratedMessageId:
+					app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
+				content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
 			}),
 		),
 	},
 	returns: v.object({
-		messageIds: v.array(v.id("messages")),
-		idMap: v.record(v.string(), v.id("messages")),
+		ids: v.array(v.id("ai_chat_threads_messages_aisdk_5")),
 	}),
 	handler: async (ctx, args) => {
-		const created_by = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
+
 		const now = Date.now();
 
-		const messageIds: Array<app_convex_Id<"messages">> = [];
-		const idMap: Record<string, app_convex_Id<"messages">> = {};
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		let nextParentId = args.parentId;
-		let skippedExistingCount = 0;
-		let insertedCount = 0;
+		const ids: Array<app_convex_Id<"ai_chat_threads_messages_aisdk_5">> = [];
 
+		let nextParentId = parentId;
 		for (const message of args.messages) {
-			const existingWithClientId = await ctx.db
-				.query("messages")
-				.withIndex("by_client_generated_message_id", (q) => q.eq("client_generated_message_id", message.id))
-				.order("asc")
-				.collect();
-
-			const existingForThread = existingWithClientId.find((doc) => doc.thread_id === args.threadId);
-			if (existingForThread) {
-				skippedExistingCount += 1;
-				messageIds.push(existingForThread._id);
-				idMap[message.id] = existingForThread._id;
-				nextParentId = existingForThread._id;
-				continue;
-			}
-
-			const messageId = await ctx.db.insert("messages", {
-				parent_id: nextParentId,
-				thread_id: args.threadId,
-				created_by: created_by.name,
-				updated_by: created_by.name,
-				updated_at: now,
-				format: message.format,
-				height: 1,
-				client_generated_message_id: message.id,
+			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				parentId: nextParentId,
+				threadId: args.threadId,
+				createdBy: user.id,
+				updatedAt: now,
+				clientGeneratedMessageId: message.clientGeneratedMessageId,
 				content: message.content,
 			});
 
-			insertedCount += 1;
-			messageIds.push(messageId);
-			idMap[message.id] = messageId;
+			ids.push(messageId);
 			nextParentId = messageId;
 		}
 
-		if (messageIds.length > 0) {
-			try {
-				await ctx.db.patch("threads", args.threadId, {
-					last_message_at: now,
-					updated_at: now,
-					updated_by: created_by.name,
-				});
-			} catch (error) {
-				console.error("Failed to update thread when adding messages", error);
-			}
+		if (ids.length > 0) {
+			await ctx.db.patch("ai_chat_threads", args.threadId, {
+				lastMessageAt: now,
+				updatedAt: now,
+				updatedBy: user.id,
+			});
 		}
 
-		return { messageIds, idMap };
+		return { ids };
 	},
 });
 
@@ -482,21 +546,26 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 						 * See {@link AssistantChatTransport.prepareSendMessagesRequest}.
 						 **/
 						const bodyValidator = z.object({
-							// AI SDK fields
-							id: z.string(),
+							/**
+							 * The messages to append to the thread.
+							 */
 							messages: z.array(z.any()),
 							trigger: z.enum(["submit-message", "regenerate-message"]),
-							messageId: z.string().optional(),
-
-							// Assistant UI fields
-							system: z.string().optional(),
-							tools: z.record(z.string(), z.unknown()),
-
-							// Custom fields
+							/**
+							 * The id of the message to which the new message should be appended.
+							 */
+							parentId: z.string().optional(),
+							/**
+							 * The id of the thread to which the new message should be appended.
+							 *
+							 * `undefined` for new threads.
+							 */
 							threadId: z.string().optional(),
-							// `null` means "root" (explicitly do not append to latest message).
-							parentId: z.union([z.string(), z.null()]).optional(),
-							clientThreadId: z.string().optional(),
+
+							/**
+							 * The client generated id for a new thread.
+							 */
+							clientGeneratedThreadId: z.string().optional(),
 						});
 
 						type SearchParams = never;
@@ -515,28 +584,65 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const body = requestParseResult._yay;
-
-								// Validate messages from request
-								if (!Array.isArray(body.messages)) {
+								if (
+									requestParseResult._yay.threadId == null &&
+									requestParseResult._yay.clientGeneratedThreadId == null
+								) {
 									return {
 										status: 400,
 										body: {
-											message: "Invalid messages format",
+											message: "One of `threadId` or `clientGeneratedThreadId` is required",
 										},
 									} as const;
 								}
 
-								let threadId = body.threadId ?? null;
-								let createdThreadId: string | null = null;
+								// Validate the messages if they are present
+								if (requestParseResult._yay.messages.length > 0) {
+									try {
+										await validateUIMessages({
+											messages: requestParseResult._yay.messages,
+											tools: undefined,
+										});
+									} catch (error) {
+										if (error instanceof TypeValidationError) {
+											return {
+												status: 400,
+												body: {
+													message: "Invalid messages format",
+												},
+											} as const;
+										} else {
+											const msg = "Failed to validate chat messages";
+											should_never_happen(msg, {
+												error: error,
+											});
+											return {
+												status: 500,
+												body: {
+													message: msg,
+												},
+											} as const;
+										}
+									}
+								}
 
-								if (threadId) {
-									const existingThread: app_convex_Doc<"threads"> | null = await ctx.runQuery(api.ai_chat.thread_get, {
-										threadId,
+								const now = Date.now();
+
+								const body = requestParseResult._yay;
+
+								let threadId = null;
+								let createdThreadId = null;
+
+								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
+								let uiMessages: ai_chat_AiSdk5UiMessage[] = [];
+
+								if (body.threadId) {
+									const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
+										threadId: body.threadId,
 									});
 									if (!existingThread) {
 										return {
-											status: 404,
+											status: 400,
 											body: {
 												message: "Thread not found",
 											},
@@ -545,101 +651,71 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 									threadId = existingThread._id;
 								} else {
+									if (!body.clientGeneratedThreadId) {
+										throw should_never_happen(
+											"`body.clientGeneratedThreadId` missing, the request was not properly validated at the top of this handler",
+											{
+												threadId,
+												clientGeneratedThreadId: body.clientGeneratedThreadId,
+											},
+										);
+									}
+
 									const created = await ctx.runMutation(api.ai_chat.thread_create, {
-										lastMessageAt: Date.now(),
 										// Store the optimistic client thread id on the persisted thread.
 										// This lets the frontend dedupe the optimistic entry as soon as the
 										// thread appears in `threads_list`, even if the SSE `data-thread-id`
 										// mapping arrives slightly later.
-										externalId: body.clientThreadId ?? undefined,
+										clientGeneratedId: body.clientGeneratedThreadId ?? get_id_generator("ai_thread")(),
+										lastMessageAt: now,
 									});
-									threadId = created.thread_id;
-									createdThreadId = created.thread_id;
+
+									createdThreadId = threadId = created.thread_id;
 								}
 
-								const requestMessages = body.messages as ai_chat_AiSdkUiMessage[];
-
-								// TODO(ai-chat): "Persist-first" message flow (user + assistant)
-								// - Persist the incoming *user* message immediately (before streaming) to allocate a Convex message _id.
-								// - Allocate a placeholder *assistant* message doc up front as well (child of the user message).
-								// - Emit a transient stream part (e.g. `data-message-ids`) with:
-								//   - client message id(s) (from AI SDK UIMessage) -> convex message _id mapping
-								//   - optionally also include a `persisted: true` / "barrier" so the client can drop optimistic messages.
-								// - Once this is in place, we should be able to remove (or at least stop depending on) the
-								//   `messages.client_generated_message_id` persistence/dedupe path.
-								let messages: ModelMessage[] = [];
-								let uiMessages: ai_chat_AiSdkUiMessage[] = [];
-								let resolvedParentId: app_convex_Id<"messages"> | null = null;
-
-								do {
-									if (body.parentId) {
-										resolvedParentId = body.parentId as app_convex_Id<"messages">;
-									} else if (body.parentId === null) {
-										resolvedParentId = null;
-									} else if (body.trigger === "regenerate-message") {
-										const lastClientMessageId =
-											Array.isArray(body.messages) && typeof (body.messages.at(-1) as any)?.id === "string"
-												? ((body.messages.at(-1) as any).id as string)
-												: null;
-
-										if (lastClientMessageId) {
-											// TODO(ai-chat): Remove reliance on stored `client_generated_message_id` for regenerate.
-											// If we persist user/assistant messages up front and propagate Convex ids to the client,
-											// regenerate should always have a stable Convex parent id available and this fallback
-											// query can go away.
-											const resolvedFromClientId: app_convex_Id<"messages"> | null = await ctx.runQuery(
-												api.ai_chat.message_id_get_by_client_generated_message_id,
-												{
-													threadId: threadId as app_convex_Id<"threads">,
-													clientGeneratedMessageId: lastClientMessageId,
-												},
-											);
-											resolvedParentId = resolvedFromClientId;
-										}
-									}
-
-									if (threadId) {
+								if (threadId) {
+									do {
 										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
-											threadId: threadId as app_convex_Id<"threads">,
+											threadId: threadId as app_convex_Id<"ai_chat_threads">,
 											order: "asc",
 										});
 
 										if (!threadMessagesResult) {
-											uiMessages = requestMessages;
 											break;
 										}
 
-										// If the client didn't provide a parent id (race condition with initial thread hydration),
-										// fall back to appending to the latest message in the thread.
-										if (!resolvedParentId && body.trigger !== "regenerate-message" && body.parentId !== null) {
-											resolvedParentId = threadMessagesResult.messages.at(-1)?._id ?? null;
-										}
-
-										const messagesMap = new Map<string, app_convex_Doc<"messages">>(
+										const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
 											threadMessagesResult.messages.map((msg) => [msg._id, msg]),
 										);
 
-										const reconstructedMessages: app_convex_Doc<"messages">[] = [];
+										const reconstructedMessages: app_convex_Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
 
-										let nextParentId = resolvedParentId;
-
-										while (nextParentId) {
-											const parentMessage = messagesMap.get(nextParentId);
-											if (parentMessage) {
-												// the messages has to be from the oldest to the newest
-												reconstructedMessages.unshift(parentMessage);
-												nextParentId = parentMessage.parent_id;
-											} else {
-												console.warn(`Parent message not found: ${nextParentId}`);
-												break;
+										let nextMessageId = body.parentId;
+										while (nextMessageId) {
+											const message = messagesMap.get(nextMessageId);
+											if (!message) {
+												throw should_never_happen("Failed to reconstruct messages", {
+													threadId,
+													messageId: nextMessageId,
+												});
 											}
+
+											reconstructedMessages.push(message);
+											nextMessageId = message.parentId as string;
 										}
 
 										uiMessages = reconstructedMessages
-											.map((msg) => convert_convex_db_message_to_aisdk_ui_message(msg))
+											.reverse()
+											.map(
+												(msg) =>
+													({
+														...(msg.content as any),
+														id: msg._id,
+													}) as ai_chat_AiSdk5UiMessage,
+											)
 											.concat(...requestMessages);
-									}
-								} while (0);
+									} while (0);
+								}
 
 								const tools = {
 									weather: tool({
@@ -661,28 +737,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									edit_page: ai_chat_tool_create_edit_page(ctx, { thread_id: threadId ?? "" }),
 								} as const;
 
-								try {
-									uiMessages = await validateUIMessages({
-										messages: uiMessages,
-										tools: tools as Record<string, Tool<unknown, unknown>>,
-									});
-								} catch (error) {
-									if (error instanceof TypeValidationError) {
-										console.error("Failed to validate chat messages, falling back to request messages.", error);
-										uiMessages = requestMessages;
-									} else {
-										throw error;
-									}
-								}
+								const modelMessages = convertToModelMessages(uiMessages);
 
-								messages = convertToModelMessages(uiMessages);
-
-								console.info("messages", {
-									messages: messages,
-									threadId,
-								});
-
-								const stream = createUIMessageStream<ai_chat_AiSdkUiMessage>({
+								const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
 									generateId: get_id_generator("ai_message"),
 									execute: async ({ writer }) => {
 										// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
@@ -698,30 +755,17 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											});
 										}
 
-										// Attach the resolved Convex parent id as message metadata so the client can treat
-										// the streaming (optimistic) assistant message as part of the parent/child tree.
-										//
-										// For normal submits, we want the streaming assistant message to be a child of the optimistic
-										// user message (client-generated id), so the UI includes the user message in the active branch.
-										const requestMessages = body.messages as ai_chat_AiSdkUiMessage[];
-										const lastRequestMessage = requestMessages.at(-1) ?? null;
-										const parentIdForStreamingMetadata =
-											body.trigger === "regenerate-message"
-												? (resolvedParentId ?? null)
-												: lastRequestMessage?.role === "user"
-													? lastRequestMessage.id
-													: (resolvedParentId ?? null);
 										writer.write({
 											type: "message-metadata",
 											messageMetadata: {
-												convexParentId: parentIdForStreamingMetadata,
+												convexParentId: uiMessages.at(-1)?.id,
 											},
 										});
 
 										const result1 = streamText({
 											model: openai("gpt-5-nano"),
 											system: `Either respond directly to the user or use the tools at your disposal.`,
-											messages,
+											messages: modelMessages,
 											temperature: 0.7,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,
@@ -759,7 +803,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 													return;
 												}
 
-												const titleMessages = [...messages, ...response1.messages];
+												const titleMessages = [...modelMessages, ...response1.messages];
 												const titleResult = streamText({
 													model: openai("gpt-4.1-nano"),
 													system:
@@ -810,45 +854,19 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									},
 									onFinish: async (result) => {
 										try {
-											if (request.signal.aborted) {
+											if (request.signal.aborted || !result.responseMessage) {
 												return;
 											}
 
-											// TODO(ai-chat): Once messages are allocated up front, switch this to patch/update the
-											// placeholder docs (user + assistant) rather than inserting via `thread_messages_add_many`.
-											// That would make Convex `_id` the canonical message id end-to-end and allow us to drop
-											// `client_generated_message_id` (and its index/query) over time.
-											const requestMessages = body.messages as ai_chat_AiSdkUiMessage[];
-											const responseMessage = result.responseMessage;
-											const messagesToPersist = responseMessage
-												? requestMessages.concat(responseMessage)
-												: requestMessages;
+											const messagesToAdd = [...requestMessages, result.responseMessage].map((message) => ({
+												clientGeneratedMessageId: message.id,
+												content: message,
+											}));
 
-											if (messagesToPersist.length === 0) {
-												return;
-											}
-
-											const messagesInput = messagesToPersist.map((message) => {
-												const parts = (message.parts ?? []).filter((part) => part.type !== "file");
-												const content = Object.assign(
-													{
-														role: message.role,
-														parts,
-													},
-													message.metadata != null ? { metadata: message.metadata } : null,
-												);
-
-												return {
-													id: message.id,
-													format: "ai-sdk/v5",
-													content,
-												};
-											});
-
-											await ctx.runMutation(api.ai_chat.thread_messages_add_many, {
-												threadId: threadId as app_convex_Id<"threads">,
-												parentId: resolvedParentId,
-												messages: messagesInput,
+											await ctx.runMutation(api.ai_chat.thread_messages_add, {
+												threadId: threadId as app_convex_Id<"ai_chat_threads">,
+												parentId: body.parentId,
+												messages: messagesToAdd,
 											});
 										} catch (error: unknown) {
 											console.error("Failed to persist chat messages:", error);

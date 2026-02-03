@@ -3,7 +3,8 @@ import { useEffect } from "react";
 import { AppAuthProvider } from "../components/app-auth.tsx";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { cn, valorize_scrollbar_width_px_css_var, type AppElementId } from "../lib/utils.ts";
+import { cn, valorize_scrollbar_width_px_css_var } from "../lib/utils.ts";
+import type { AppElementId } from "../lib/dom-utils.ts";
 import { useConvexAuth } from "convex/react";
 
 export type RootLayout_ClassNames = "RootLayout";

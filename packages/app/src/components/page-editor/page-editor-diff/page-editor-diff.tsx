@@ -8,7 +8,14 @@ import { DiffEditor, type DiffEditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen, type AppElementId, type CSSPropertiesX } from "@/lib/utils.ts";
+import {
+	ai_chat_HARDCODED_ORG_ID,
+	ai_chat_HARDCODED_PROJECT_ID,
+	cn,
+	should_never_happen,
+	type CSSPropertiesX,
+} from "@/lib/utils.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -32,7 +39,6 @@ import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
-import type { AppDomId } from "@/lib/app-dom-id.ts";
 
 // #region toolbar
 export type PageEditorDiffToolbar_ClassNames =
@@ -189,7 +195,7 @@ function PageEditorDiffSidebar(props: PageEditorDiffSidebar_Props) {
 	return (
 		<>
 			<div className={cn("PageEditorDiffSidebar-background" satisfies PageEditorDiffSidebar_ClassNames)}></div>
-			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>
+			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>
 				<div className={cn("PageEditorDiffSidebar-toolbar" satisfies PageEditorDiffSidebar_ClassNames)}>
 					<div
 						className={cn("PageEditorDiffSidebar-toolbar-scrollable-area" satisfies PageEditorDiffSidebar_ClassNames)}
@@ -198,21 +204,21 @@ function PageEditorDiffSidebar(props: PageEditorDiffSidebar_Props) {
 							className={cn("PageEditorDiffSidebar-tabs-list" satisfies PageEditorDiffSidebar_ClassNames)}
 							aria-label="Sidebar tabs"
 						>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}>Agent</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>Comments</MyTabsTab>
+							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}>Agent</MyTabsTab>
 						</MyTabsList>
 					</div>
 				</div>
 				<MyTabsPanels className={cn("PageEditorDiffSidebar-tabs-panels" satisfies PageEditorDiffSidebar_ClassNames)}>
 					<MyTabsPanel
 						className={cn("PageEditorDiffSidebar-panel" satisfies PageEditorDiffSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppDomId}
+						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
 					>
 						<PageEditorCommentsSidebar threadIds={threadIds} />
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("PageEditorDiffSidebar-panel" satisfies PageEditorDiffSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppDomId}
+						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
 					>
 						<div className={cn("PageEditorDiffSidebar-agent" satisfies PageEditorDiffSidebar_ClassNames)}>
 							Agent tools will appear here.

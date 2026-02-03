@@ -2,54 +2,81 @@
 	.AiChatComposer {
 		contain: content;
 
-		display: flex;
-		gap: 4px;
-		padding: 4px;
+		display: grid;
+		grid-template-columns: repeat(2, auto);
+		grid-template-rows: repeat(2, auto);
+		gap: 8px;
 
-		align-items: center;
-	}
-
-	.AiChatComposer-input {
-		flex: 1;
-		contain: style;
+		min-width: 320px;
 	}
 
 	.AiChatComposer-editor {
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
+		grid-area: 1 / 1 / -1 / -1;
+
+		contain: style;
+	}
+
+	.AiChatComposer-editor-area {
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: auto;
+		grid-area: inherit;
+		gap: 0px;
+
+		padding: 0;
+	}
+
+	.AiChatComposer-editor-content-container {
+		display: flex;
+		grid-area: 1 / 1 / 2 / -1;
+		align-items: center;
+
+		min-height: 36px;
+
 		position: relative;
 
-		display: flex;
-		flex: 1;
-		min-width: 0;
+		max-height: 160px;
+		overflow-y: auto;
+		contain: content;
 	}
 
 	.AiChatComposer-editor-content {
-		flex: 1;
-		min-width: 0;
-	}
+		min-height: min-content;
+		height: 1lh;
+		color: var(--color-fg-11);
+		padding: 10px 10px 56px 10px;
 
-	.AiChatComposer-placeholder {
-		position: absolute;
-		top: 0;
-		left: 0;
-
-		color: var(--muted-foreground);
-		pointer-events: none;
-	}
-
-	.AiChatComposer-textarea {
-		resize: none;
-		max-height: 160px;
-		overflow-y: auto;
-
-		& p {
+		p {
 			margin: 0;
 		}
 	}
 
-	.AiChatComposer-actions {
+	.AiChatComposer-configurations {
+		grid-area: 2 / 1;
+		width: max-content;
+		justify-self: start;
+		align-self: end;
+
 		display: flex;
 		align-items: center;
+		gap: 2px;
+
+		padding: 0px 0px 10px 10px;
+	}
+
+	.AiChatComposer-actions {
+		grid-area: 2 / 2;
+		width: max-content;
+		justify-self: end;
 		align-self: end;
-		gap: 4px;
+
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		padding: 0px 10px 10px 0px;
 	}
 }

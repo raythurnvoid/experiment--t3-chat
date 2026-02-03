@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
-import type { ai_chat_AiSdkUiMessage } from "@/lib/ai-chat.ts";
+import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import { createContext, useContext, useEffect, useState } from "react";
@@ -93,7 +93,7 @@ export const BranchMessages = ({ children, ...props }: BranchMessagesProps) => {
 };
 
 export type BranchSelectorProps = HTMLAttributes<HTMLDivElement> & {
-	from: ai_chat_AiSdkUiMessage["role"];
+	from: ai_chat_AiSdk5UiMessage["role"];
 };
 
 export const BranchSelector = ({ className, from, ...props }: BranchSelectorProps) => {

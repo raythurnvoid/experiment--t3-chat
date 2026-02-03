@@ -20,18 +20,6 @@
 		/* Show placeholder only when the entire editor is empty */
 		p {
 			min-height: 1lh;
-
-			&.PageEditorRichTextCommentComposer-empty-editor::before {
-				content: attr(data-placeholder);
-
-				color: var(--color-fg-07);
-
-				user-select: none;
-				pointer-events: none;
-
-				height: 0;
-				float: left;
-			}
 		}
 	}
 }

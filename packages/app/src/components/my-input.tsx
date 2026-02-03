@@ -2,7 +2,7 @@ import "./my-input.css";
 import type { ComponentPropsWithRef } from "react";
 import { createContext, use, useId } from "react";
 
-import { cn } from "@/lib/utils.ts";
+import { cn, type XCustomEventLike } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
 
 // #region Context
@@ -155,34 +155,51 @@ export type MyInputArea_Props = ComponentPropsWithRef<"div"> & {
 	 * @default true
 	 */
 	focusForwarding?: boolean;
+	onFocusForward?: (event: XCustomEventLike<{ originalEvent: React.PointerEvent<HTMLDivElement> }>) => void;
 };
 
 export function MyInputArea(props: MyInputArea_Props) {
-	const { ref, className, style, focusForwarding = true, onPointerDown, children, ...rest } = props;
+	const { ref, className, style, focusForwarding = true, onPointerDown, onFocusForward, children, ...rest } = props;
 	const context = use(MyInputContext);
 	if (!context) {
 		throw new Error("MyInputArea must be used within MyInput");
 	}
 
-	const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-		if (focusForwarding) {
+	const handlePointerDown: ComponentPropsWithRef<"div">["onPointerDown"] = (event) => {
+		onPointerDown?.(event);
+
+		if (focusForwarding && !event.isDefaultPrevented()) {
 			// Don't focus if click target is a button or link or is the input itself
 			const target = event.target as HTMLElement;
-			const targetIsInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+			const targetIsInput =
+				target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.closest("[contenteditable='true']");
 			const targetIsButton =
 				target.tagName === "BUTTON" || Boolean(target.closest("button")) || target.getAttribute("role") === "button";
 			const targetIsLink = target.tagName === "A" || Boolean(target.closest("a"));
 
 			if (!targetIsInput && !targetIsButton && !targetIsLink) {
-				const inputElement = document.getElementById(context.inputId) as HTMLInputElement | HTMLTextAreaElement | null;
-				if (inputElement) {
-					event.preventDefault();
-					inputElement.focus();
+				let canFocusOnInput = true;
+				onFocusForward?.({
+					detail: { originalEvent: event },
+					isDefaultPrevented: () => !canFocusOnInput,
+					preventDefault: () => {
+						canFocusOnInput = false;
+					},
+				});
+
+				if (canFocusOnInput) {
+					const inputElement = document.getElementById(context.inputId) as
+						| HTMLInputElement
+						| HTMLTextAreaElement
+						| null;
+
+					if (inputElement) {
+						event.preventDefault();
+						inputElement.focus();
+					}
 				}
 			}
 		}
-
-		onPointerDown?.(event);
 	};
 
 	return (
