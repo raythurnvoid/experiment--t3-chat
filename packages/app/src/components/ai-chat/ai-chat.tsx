@@ -70,7 +70,9 @@ export type AiChatMessageList_Props = ComponentPropsWithRef<"div"> & {
 	messagesChildrenByParentId: ReturnType<typeof useAiChatController>["messagesChildrenByParentId"];
 	isRunning: boolean;
 	editingMessageId: string | null;
-	toolActions: AiChatMessage_ToolActions;
+	onToolOutput: AiChatMessage_ToolActions["onToolOutput"];
+	onToolResumeStream: AiChatMessage_ToolActions["onToolResumeStream"];
+	onToolStop: AiChatMessage_ToolActions["onToolStop"];
 	onEditStart: AiChatMessage_Props["onEditStart"];
 	onEditCancel: AiChatMessage_Props["onEditCancel"];
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
@@ -90,7 +92,9 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 		messagesChildrenByParentId,
 		isRunning,
 		editingMessageId,
-		toolActions,
+		onToolOutput,
+		onToolResumeStream,
+		onToolStop,
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
@@ -147,7 +151,9 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 						isRunning={isRunning}
 						isEditing={editingMessageId === message.id}
 						messagesChildrenByParentId={messagesChildrenByParentId}
-						toolActions={toolActions}
+						onToolOutput={onToolOutput}
+						onToolResumeStream={onToolResumeStream}
+						onToolStop={onToolStop}
 						onEditStart={onEditStart}
 						onEditCancel={onEditCancel}
 						onEditSubmit={onEditSubmit}
@@ -624,11 +630,9 @@ function AiChatThread(props: AiChatThread_Props) {
 					onEditStart={handleEditStart}
 					onEditCancel={handleEditCancel}
 					onEditSubmit={handleEditSubmit}
-					toolActions={{
-						addToolOutput: controller.addToolOutput,
-						resumeStream: controller.resumeStream,
-						stop: controller.stop,
-					}}
+					onToolOutput={controller.addToolOutput}
+					onToolResumeStream={controller.resumeStream}
+					onToolStop={controller.stop}
 					onClickSuggestion={handleClickSuggestion}
 					onMessageRegenerate={handleMessageRegenerate}
 					onMessageBranchChat={handleMessageBranchChat}

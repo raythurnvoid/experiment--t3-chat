@@ -2,6 +2,7 @@ import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
 import type { Primitive } from "type-fest";
+import { Result } from "./errors-as-values-utils.ts";
 
 export * from "../../shared/shared-utils.ts";
 
@@ -89,6 +90,51 @@ export function check_element_is_in_allowed_focus_area(
 export function delay(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Copy content to the system clipboard.
+ *
+ * Supports copying either plain text, or both `text/plain` + `text/html` when available.
+ *
+ * - Uses the async Clipboard API (`navigator.clipboard.write` / `writeText`)
+ * - Returns a `Result` instead of throwing
+ *
+ * @example
+ *
+ * ```ts
+ * const res = await copy_to_clipboard({ text: "Hello", html: "<b>Hello</b>" });
+ * if ("_yay" in res) {
+ * 	console.info("Copied:", res._yay);
+ * } else {
+ * 	console.error("Copy failed:", res._nay?.message);
+ * }
+ * ```
+ */
+export async function copy_to_clipboard(args: { text: string; html?: string }) {
+	const text = args.text;
+
+	try {
+		if (args.html != null) {
+			const doc = new DOMParser().parseFromString(args.html, "text/html");
+			const properHtml = `<!doctype html>${doc.documentElement.outerHTML}`;
+
+			const clipboardItem = new ClipboardItem({
+				"text/plain": new Blob([text], { type: "text/plain" }),
+				"text/html": new Blob([properHtml], { type: "text/html" }),
+			});
+
+			await navigator.clipboard.write([clipboardItem]);
+			return Result({ _yay: text });
+		}
+
+		await navigator.clipboard.writeText(text);
+		return Result({ _yay: text });
+	} catch (error) {
+		return Result({ _nay: { name: "nay", message: "Copy failed", cause: error } });
+	}
+}
+
+export type copy_to_clipboard_Result = Awaited<ReturnType<typeof copy_to_clipboard>>;
 
 /**
  * Create a deferred object with a status property.

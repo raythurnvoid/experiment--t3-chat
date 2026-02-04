@@ -76,6 +76,15 @@ export function should_never_happen(message: LiteralUnion<"Missing deps", string
 	);
 }
 
+export function json_strigify_ensured(value: unknown, space: string | number = "\t") {
+	try {
+		const json = JSON.stringify(value, null, space);
+		return json ?? String(value);
+	} catch {
+		return String(value);
+	}
+}
+
 type ExtractTypeByProperty<O extends object, P extends KeysOfUnion<O>> = Extract<O, { [K in P]?: any }>;
 
 type ExtractTypeByPropertyAndAssertNotUndefined<O extends object, P extends KeysOfUnion<O>> = ExtractTypeByProperty<

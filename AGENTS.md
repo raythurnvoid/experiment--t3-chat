@@ -165,6 +165,15 @@ import { LiveblocksProvider } from "@liveblocks/react";
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
+## TypeScript return types: prefer inference
+
+Avoid explicitly annotating function return types; prefer TypeScript's inferred return type.
+
+Exceptions (add an explicit return type when it helps):
+
+- Exported/public API functions where the return type is part of the contract
+- When inference is unstable/too-wide and a return annotation prevents regressions
+
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 ## Consistency requirement (same-author rule)
@@ -327,7 +336,7 @@ This app is an AI chatbot that allows users to chat with AI, call tools, and pro
 
 The backend uses Convex as the primary backend platform, located in [packages/app/convex/](packages/app/convex):
 
-- [ai_chat.ts](packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming, tool calling, and artifact creation
+- [ai_chat.ts](packages/app/convex/ai_chat.ts) - Main AI chat functionality with streaming and tool calling
 - [schema.ts](packages/app/convex/schema.ts) - Database schema for threads and messages
 - [auth.ts](packages/app/convex/auth.ts) - Authentication with Clerk integration
 - [http.ts](packages/app/convex/http.ts) - HTTP routing for API endpoints
@@ -336,7 +345,7 @@ The Convex backend handles:
 
 - AI chat streaming with OpenAI integration
 - Thread and message management
-- Tool calling (weather, artifact creation)
+- Tool calling (weather, page tools)
 - Authentication token generation
 - CORS handling
 
@@ -351,7 +360,7 @@ The frontend is a React 19 application located in [packages/app/src/](packages/a
   - [chat.tsx](packages/app/src/routes/chat.tsx) - Main chat interface with canvas
 - [components/](packages/app/src/components) - React components organized by feature
   - [assistant-ui/](packages/app/src/components/assistant-ui) - Chat interface components
-  - [canvas/](packages/app/src/components/canvas) - Canvas/artifact editing components
+  - [canvas/](packages/app/src/components/canvas) - Canvas/document editing components
   - [ui/](packages/app/src/components/ui) - Shared UI components
 
 ## Key Technologies
@@ -374,9 +383,9 @@ The frontend is a React 19 application located in [packages/app/src/](packages/a
 
 The app runs at http://localhost:5173/ during development.
 
-- Chat: The center panel sends messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool calls can create or update artifacts which appear in the right-hand canvas.
+- Chat: The center panel sends messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool outputs render inline in the chat UI.
 - Agent file access: Server-side tools in `packages/app/server/server-ai-tools.ts` let the agent read, write, and diff files in the workspace (search, edits, filesystem ops). These run in Node, not the browser, and are invoked through tool calls from the chat flow.
-- Docs: The docs experience combines a file/tree explorer and an editor surface. Content supports rich text Markdown via BlockNote and code/diff via Monaco Diff Editor. The canvas can switch between these modes depending on the artifact type.
+- Docs: The docs experience combines a file/tree explorer and an editor surface. Content supports rich text Markdown via BlockNote and code/diff via Monaco Diff Editor. The canvas can switch between these modes depending on the document type.
 - Collaboration: Liveblocks + Yjs provide real-time presence and editing. Convex acts as a secondary source of truth: we persist Yjs snapshots and metadata (`packages/app/convex/ai_docs_temp.ts`) and hydrate rooms from Convex when joining, ensuring recovery and consistency if Yjs state is unavailable. Webhooks/mutations upsert snapshots so new clients can catch up quickly.
 
 # Convex Environment Variables

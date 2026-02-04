@@ -18,7 +18,14 @@ import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } fr
 import { MyInput, MyInputBox, MyInputArea, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, forward_ref, generate_id, sx } from "@/lib/utils.ts";
+import {
+	ai_chat_HARDCODED_ORG_ID,
+	ai_chat_HARDCODED_PROJECT_ID,
+	cn,
+	forward_ref,
+	generate_id,
+	sx,
+} from "@/lib/utils.ts";
 import {
 	UncontrolledTreeEnvironment,
 	Tree,
@@ -369,7 +376,7 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 			side="bottom"
 			variant="ghost-secondary"
 		>
-			<MyIcon>{context.isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIcon>
+			<MyIconButtonIcon>{context.isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 		</MyIconButton>
 	);
 }
@@ -1351,9 +1358,9 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 								tooltip="Close"
 								className={cn("PagesSidebar-close-button" satisfies PagesSidebar_ClassNames)}
 							>
-								<MyIcon>
+								<MyIconButtonIcon>
 									<X />
-								</MyIcon>
+								</MyIconButtonIcon>
 							</MyIconButton>
 						</div>
 

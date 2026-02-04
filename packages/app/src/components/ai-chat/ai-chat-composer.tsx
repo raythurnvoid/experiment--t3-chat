@@ -348,7 +348,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			onSubmit={handleSubmit}
 			{...rest}
 		>
-			<MyInput className={cn("AiChatComposer-editor" satisfies AiChatComposer_ClassNames)} variant="surface">
+			<MyInput className={"AiChatComposer-editor" satisfies AiChatComposer_ClassNames} variant="surface">
 				<MyInputBox />
 				<MyInputArea
 					className={"AiChatComposer-editor-area" satisfies AiChatComposer_ClassNames}
@@ -357,12 +357,12 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				>
 					<EditorContent
 						editor={editor}
-						className={cn("AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames)}
+						className={"AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames}
 					/>
 				</MyInputArea>
 			</MyInput>
 
-			<div className={cn("AiChatComposer-configurations" satisfies AiChatComposer_ClassNames)}>
+			<div className={"AiChatComposer-configurations" satisfies AiChatComposer_ClassNames}>
 				<MySelect
 					value={mode}
 					setValue={(value) => {
@@ -413,7 +413,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 							<MySearchSelectPopoverContent>
 								<MySearchSelectSearch placeholder="Search models…" onChange={handleModelSearchChange} />
 								{filteredModels.length === 0 ? (
-									<div className={cn("MySearchSelectEmpty")}>No results</div>
+									<div className={"MySearchSelectEmpty"}>No results</div>
 								) : (
 									<MySearchSelectList>
 										{filteredModels.map((modelItem) => {
@@ -432,7 +432,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				</MySearchSelect>
 			</div>
 
-			<div className={cn("AiChatComposer-actions" satisfies AiChatComposer_ClassNames)}>
+			<div className={"AiChatComposer-actions" satisfies AiChatComposer_ClassNames}>
 				{isRunning ? (
 					<MyIconButton
 						type="button"
@@ -441,11 +441,11 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 						onClick={handleCancel}
 						disabled={!canCancel}
 					>
-						<Square className={cn("AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames)} />
+						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				) : (
 					<MyIconButton type="submit" variant="default" tooltip="Send message" disabled={!canSend}>
-						<ArrowUp className={cn("AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames)} />
+						<ArrowUp className={"AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				)}
 			</div>

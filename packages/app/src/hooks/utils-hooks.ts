@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, type SetStateAction, type Dispatch } from "react";
 import { tuple } from "../lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { Result } from "../lib/errors-as-values-utils.ts";
@@ -50,6 +50,77 @@ export function useStateRef<T>(initialValue: T) {
 	res[2] = state;
 
 	return res;
+}
+
+/**
+ * A hook that works like `useState`, but automatically reverts back to the initial value after a timeout.
+ *
+ * The setter behaves like `setState`, with one addition: you can optionally pass a `timeoutMs`
+ * to override the default timeout for that specific update.
+ *
+ * @param initialState - The initial state value (or lazy initializer).
+ * @param timeoutMs - The default timeout (in ms) before reverting to the initial value.
+ *
+ * @example
+ * ```tsx
+ * const [isCopied, setIsCopied] = useAutoRevertingState(false);
+ *
+ * const handleCopy = () => {
+ * 	navigator.clipboard
+ * 		.writeText("Hello")
+ * 		.then(() => setIsCopied(true))
+ * 		.catch(console.error);
+ * };
+ *
+ * return (
+ * 	<MyIconButton tooltip={isCopied ? "Copied" : "Copy"} onClick={handleCopy}>
+ * 		{isCopied ? <Check /> : <Copy />}
+ * 	</MyIconButton>
+ * );
+ * ```
+ */
+export function useAutoRevertingState<T>(
+	initialState: T | (() => T),
+	timeoutMs?: number,
+): [T, Dispatch<SetStateAction<T>>];
+export function useAutoRevertingState<T = undefined>(
+	initialState?: T | (() => T),
+	timeoutMs?: number,
+): [T | undefined, Dispatch<SetStateAction<T | undefined>>];
+export function useAutoRevertingState<T = undefined>(
+	initialState?: T | (() => T),
+	timeoutMs = 2000,
+): [T | undefined, Dispatch<SetStateAction<T | undefined>>] {
+	const timeoutMsProp = timeoutMs;
+
+	const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+	const [state, setState] = useState(initialState);
+	const initialValueRef = useRef(state);
+
+	const setStateAndRevert = (value: Parameters<typeof setState>[0], timeoutMs = timeoutMsProp) => {
+		setState(value);
+
+		if (timeoutIdRef.current !== undefined) {
+			clearTimeout(timeoutIdRef.current);
+			timeoutIdRef.current = undefined;
+		}
+
+		timeoutIdRef.current = setTimeout(() => {
+			setState(initialValueRef.current);
+		}, timeoutMs);
+	};
+
+	useEffect(() => {
+		return () => {
+			if (timeoutIdRef.current !== undefined) {
+				clearTimeout(timeoutIdRef.current);
+				timeoutIdRef.current = undefined;
+			}
+		};
+	}, []);
+
+	return [state, setStateAndRevert];
 }
 
 /**
