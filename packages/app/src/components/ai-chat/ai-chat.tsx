@@ -22,7 +22,6 @@ import {
 	type AiChatMessage_ClassNames,
 	type AiChatMessage_CustomAttributes,
 	type AiChatMessage_Props,
-	type AiChatMessage_ToolActions,
 	type AiChatMessageUser_ClassNames,
 } from "@/components/ai-chat/ai-chat-message.tsx";
 
@@ -49,8 +48,8 @@ const ai_chat_message_list_suggestions = [
 	},
 ] as const;
 
-// #region message list
-export type AiChatMessageList_ClassNames =
+// #region messages list
+export type AiChatMessagesList_ClassNames =
 	| "AiChatMessageList"
 	| "AiChatMessageList-empty"
 	| "AiChatMessageList-empty-title"
@@ -60,7 +59,7 @@ export type AiChatMessageList_ClassNames =
 	| "AiChatMessageList-suggestion-title"
 	| "AiChatMessageList-suggestion-label";
 
-export type AiChatMessageList_Props = ComponentPropsWithRef<"div"> & {
+export type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
@@ -70,9 +69,9 @@ export type AiChatMessageList_Props = ComponentPropsWithRef<"div"> & {
 	messagesChildrenByParentId: ReturnType<typeof useAiChatController>["messagesChildrenByParentId"];
 	isRunning: boolean;
 	editingMessageId: string | null;
-	onToolOutput: AiChatMessage_ToolActions["onToolOutput"];
-	onToolResumeStream: AiChatMessage_ToolActions["onToolResumeStream"];
-	onToolStop: AiChatMessage_ToolActions["onToolStop"];
+	onToolOutput: AiChatMessage_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessage_Props["onToolResumeStream"];
+	onToolStop: AiChatMessage_Props["onToolStop"];
 	onEditStart: AiChatMessage_Props["onEditStart"];
 	onEditCancel: AiChatMessage_Props["onEditCancel"];
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
@@ -82,7 +81,7 @@ export type AiChatMessageList_Props = ComponentPropsWithRef<"div"> & {
 	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
 
-function AiChatMessageList(props: AiChatMessageList_Props) {
+function AiChatMessagesList(props: AiChatMessagesList_Props) {
 	const {
 		ref,
 		id,
@@ -113,29 +112,32 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 
 	return (
 		<div
+			// Ensure the list is unmounted when the thread or branch anchor is changed
+			// or when the branch is switched
+			key={`${selectedThreadId ?? "new"}:${activeBranchMessages.anchorId ?? "root"}`}
 			ref={ref}
 			id={id}
-			className={cn("AiChatMessageList" satisfies AiChatMessageList_ClassNames, className)}
+			className={cn("AiChatMessageList" satisfies AiChatMessagesList_ClassNames, className)}
 			{...rest}
 		>
 			{messageCount === 0 ? (
-				<div className={cn("AiChatMessageList-empty" satisfies AiChatMessageList_ClassNames)}>
-					<div className={cn("AiChatMessageList-empty-title" satisfies AiChatMessageList_ClassNames)}>Hello there!</div>
-					<div className={cn("AiChatMessageList-empty-subtitle" satisfies AiChatMessageList_ClassNames)}>
+				<div className={"AiChatMessageList-empty" satisfies AiChatMessagesList_ClassNames}>
+					<div className={"AiChatMessageList-empty-title" satisfies AiChatMessagesList_ClassNames}>Hello there!</div>
+					<div className={"AiChatMessageList-empty-subtitle" satisfies AiChatMessagesList_ClassNames}>
 						How can I help you today?
 					</div>
-					<div className={cn("AiChatMessageList-suggestions" satisfies AiChatMessageList_ClassNames)}>
+					<div className={"AiChatMessageList-suggestions" satisfies AiChatMessagesList_ClassNames}>
 						{ai_chat_message_list_suggestions.map((suggestion) => (
 							<MyButton
 								key={suggestion.action}
 								variant="secondary-subtle"
-								className={cn("AiChatMessageList-suggestion" satisfies AiChatMessageList_ClassNames)}
+								className={"AiChatMessageList-suggestion" satisfies AiChatMessagesList_ClassNames}
 								onClick={() => handleSuggestionClick(suggestion.action)}
 							>
-								<span className={cn("AiChatMessageList-suggestion-title" satisfies AiChatMessageList_ClassNames)}>
+								<span className={"AiChatMessageList-suggestion-title" satisfies AiChatMessagesList_ClassNames}>
 									{suggestion.title}
 								</span>
-								<span className={cn("AiChatMessageList-suggestion-label" satisfies AiChatMessageList_ClassNames)}>
+								<span className={"AiChatMessageList-suggestion-label" satisfies AiChatMessagesList_ClassNames}>
 									{suggestion.label}
 								</span>
 							</MyButton>
@@ -143,9 +145,12 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 					</div>
 				</div>
 			) : (
-				activeBranchMessages.list.map((message) => (
+				activeBranchMessages.list.map((message, index) => (
 					<AiChatMessage
-						key={message.id}
+						// index is better in this case because the messages follow a static order
+						// and this will prevent them from being unmounted when the message is
+						// persisted after stream
+						key={index}
 						message={message}
 						selectedThreadId={selectedThreadId}
 						isRunning={isRunning}
@@ -166,7 +171,7 @@ function AiChatMessageList(props: AiChatMessageList_Props) {
 		</div>
 	);
 }
-// #endregion message list
+// #endregion messages list
 
 // #region auto scroll hook
 const AUTO_SCROLL_BOTTOM_MARGIN = 1;
@@ -366,7 +371,7 @@ function AiChatThread(props: AiChatThread_Props) {
 		controller.stop();
 	};
 
-	const handleClickSuggestion: AiChatMessageList_Props["onClickSuggestion"] = (action) => {
+	const handleClickSuggestion: AiChatMessagesList_Props["onClickSuggestion"] = (action) => {
 		if (!action.trim()) {
 			return;
 		}
@@ -378,7 +383,7 @@ function AiChatThread(props: AiChatThread_Props) {
 		}
 	};
 
-	const handleMessageRegenerate: AiChatMessageList_Props["onMessageRegenerate"] = (args) => {
+	const handleMessageRegenerate: AiChatMessagesList_Props["onMessageRegenerate"] = (args) => {
 		if (!selectedThreadId || args.threadId !== selectedThreadId) {
 			return;
 		}
@@ -386,7 +391,7 @@ function AiChatThread(props: AiChatThread_Props) {
 		controller.regenerate(args.threadId, args.messageId);
 	};
 
-	const handleMessageBranchChat: AiChatMessageList_Props["onMessageBranchChat"] = (args) => {
+	const handleMessageBranchChat: AiChatMessagesList_Props["onMessageBranchChat"] = (args) => {
 		if (!selectedThreadId || args.threadId !== selectedThreadId) {
 			return;
 		}
@@ -394,7 +399,7 @@ function AiChatThread(props: AiChatThread_Props) {
 		controller.branchChat(args.threadId, args.messageId);
 	};
 
-	const handleEditStart: AiChatMessageList_Props["onEditStart"] = (args) => {
+	const handleEditStart: AiChatMessagesList_Props["onEditStart"] = (args) => {
 		if (!selectedThreadId) {
 			return;
 		}
@@ -405,11 +410,11 @@ function AiChatThread(props: AiChatThread_Props) {
 		setEditingMessageId(args.messageId);
 	};
 
-	const handleEditCancel: AiChatMessageList_Props["onEditCancel"] = () => {
+	const handleEditCancel: AiChatMessagesList_Props["onEditCancel"] = () => {
 		setEditingMessageId(null);
 	};
 
-	const handleEditSubmit: AiChatMessageList_Props["onEditSubmit"] = (args) => {
+	const handleEditSubmit: AiChatMessagesList_Props["onEditSubmit"] = (args) => {
 		if (!selectedThreadId) {
 			return;
 		}
@@ -618,9 +623,9 @@ function AiChatThread(props: AiChatThread_Props) {
 	};
 
 	return (
-		<div ref={setRootEl} className={cn("AiChatThread" satisfies AiChatThread_ClassNames)} onKeyDown={handleKeyDown}>
-			<div className={cn("AiChatThread-content" satisfies AiChatThread_ClassNames)}>
-				<AiChatMessageList
+		<div ref={setRootEl} className={"AiChatThread" satisfies AiChatThread_ClassNames} onKeyDown={handleKeyDown}>
+			<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
+				<AiChatMessagesList
 					ref={setMessagesListEl}
 					selectedThreadId={selectedThreadId}
 					activeBranchMessages={controller.activeBranchMessages}
@@ -639,12 +644,12 @@ function AiChatThread(props: AiChatThread_Props) {
 					onSelectBranchAnchor={controller.selectBranchAnchor}
 				/>
 			</div>
-			<div className={cn("AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames)}>
+			<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
 				<MyIconButton variant="outline" tooltip="Scroll to bottom" onClick={handleScrollToBottom} hidden={isAtBottom}>
-					<ArrowDown className={cn("AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames)} />
+					<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
 				</MyIconButton>
 			</div>
-			<div className={cn("AiChatThread-composer" satisfies AiChatThread_ClassNames)}>
+			<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
 				<AiChatComposer
 					key={selectedThreadId ?? "new"}
 					canCancel={controller.isRunning}
@@ -663,9 +668,6 @@ function AiChatThread(props: AiChatThread_Props) {
 // #region root
 type AiChat_ClassNames =
 	| "AiChat"
-	| "AiChat-ai-sidebar"
-	| "AiChat-ai-sidebar-state-open"
-	| "AiChat-ai-sidebar-state-closed"
 	| "AiChat-main"
 	| "AiChat-thread-panel"
 	| "AiChat-thread-controls"
@@ -688,52 +690,43 @@ export function AiChat(props: AiChat_Props) {
 
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
-			{/* AI Chat Sidebar - positioned between main sidebar and content with animation */}
-			<div
-				className={cn(
-					"AiChat-ai-sidebar" satisfies AiChat_ClassNames,
-					aiChatSidebarOpen
-						? ("AiChat-ai-sidebar-state-open" satisfies AiChat_ClassNames)
-						: ("AiChat-ai-sidebar-state-closed" satisfies AiChat_ClassNames),
-				)}
-			>
-				<AiChatThreads
-					paginatedThreads={controller.currentThreadsWithOptimistic}
-					streamingTitleByThreadId={controller.streamingTitleByThreadId}
-					selectedThreadId={controller.selectedThreadId}
-					onClose={() => setAiChatSidebarOpen(false)}
-					onSelectThread={controller.selectThread}
-					onToggleFavouriteThread={controller.setThreadStarred}
-					onArchiveThread={controller.archiveThread}
-					onNewChat={controller.startNewChat}
-				/>
-			</div>
+			<AiChatThreads
+				state={aiChatSidebarOpen ? "expanded" : "closed"}
+				paginatedThreads={controller.currentThreadsWithOptimistic}
+				streamingTitleByThreadId={controller.streamingTitleByThreadId}
+				selectedThreadId={controller.selectedThreadId}
+				onClose={() => setAiChatSidebarOpen(false)}
+				onSelectThread={controller.selectThread}
+				onToggleFavouriteThread={controller.setThreadStarred}
+				onArchiveThread={controller.archiveThread}
+				onNewChat={controller.startNewChat}
+			/>
 
 			{/* Main Content Area - takes remaining space */}
-			<div className={cn("AiChat-main" satisfies AiChat_ClassNames)}>
-				<div className={cn("AiChat-thread-panel" satisfies AiChat_ClassNames)}>
+			<div className={"AiChat-main" satisfies AiChat_ClassNames}>
+				<div className={"AiChat-thread-panel" satisfies AiChat_ClassNames}>
 					{!aiChatSidebarOpen && (
-						<div className={cn("AiChat-thread-controls" satisfies AiChat_ClassNames)}>
+						<div className={"AiChat-thread-controls" satisfies AiChat_ClassNames}>
 							<MyIconButton
 								variant="outline"
 								tooltip="Open app sidebar"
 								onClick={toggleSidebar}
-								className={cn("AiChat-thread-control-button" satisfies AiChat_ClassNames)}
+								className={"AiChat-thread-control-button" satisfies AiChat_ClassNames}
 							>
-								<Menu className={cn("AiChat-thread-control-icon" satisfies AiChat_ClassNames)} />
+								<Menu className={"AiChat-thread-control-icon" satisfies AiChat_ClassNames} />
 							</MyIconButton>
 
 							<MyIconButton
 								variant="outline"
 								tooltip="Open chat threads"
 								onClick={() => setAiChatSidebarOpen(true)}
-								className={cn("AiChat-thread-control-button" satisfies AiChat_ClassNames)}
+								className={"AiChat-thread-control-button" satisfies AiChat_ClassNames}
 							>
-								<PanelLeft className={cn("AiChat-thread-control-icon" satisfies AiChat_ClassNames)} />
+								<PanelLeft className={"AiChat-thread-control-icon" satisfies AiChat_ClassNames} />
 							</MyIconButton>
 						</div>
 					)}
-					<div className={cn("AiChat-thread-content" satisfies AiChat_ClassNames)}>
+					<div className={"AiChat-thread-content" satisfies AiChat_ClassNames}>
 						<AiChatThread controller={controller} />
 					</div>
 				</div>

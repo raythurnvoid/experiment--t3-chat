@@ -423,9 +423,9 @@ type AiChatMessagePart_Props = {
 	role: "assistant" | "user" | "system";
 	part: ai_chat_AiSdk5UiMessage["parts"][number];
 	message: ai_chat_AiSdk5UiMessage;
-	onToolOutput: AiChatMessage_ToolActions["onToolOutput"];
-	onToolResumeStream: AiChatMessage_ToolActions["onToolResumeStream"];
-	onToolStop: AiChatMessage_ToolActions["onToolStop"];
+	onToolOutput: AiChatController["addToolOutput"];
+	onToolResumeStream: AiChatController["resumeStream"];
+	onToolStop: AiChatController["stop"];
 };
 
 function AiChatMessagePart(props: AiChatMessagePart_Props) {
@@ -611,6 +611,40 @@ function AiChatMessagePart(props: AiChatMessagePart_Props) {
 
 // #endregion part
 
+// #region parts liss
+type AiChatMessagePartsList_Props = {
+	message: ai_chat_AiSdk5UiMessage;
+	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
+	onToolStop: AiChatMessagePart_Props["onToolStop"];
+};
+
+function AiChatMessagePartsList(props: AiChatMessagePartsList_Props) {
+	const { message, onToolOutput, onToolResumeStream, onToolStop } = props;
+
+	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
+
+	return (
+		<div>
+			{displayParts.map((part, index) => (
+				<AiChatMessagePart
+					// index is better in this case because the parts follow a static order
+					// and this will prevent them from being unmounted when the message is
+					// persisted after stream
+					key={index}
+					part={part}
+					role={message.role}
+					message={message}
+					onToolOutput={onToolOutput}
+					onToolResumeStream={onToolResumeStream}
+					onToolStop={onToolStop}
+				/>
+			))}
+		</div>
+	);
+}
+// #endregion parts list
+
 // #region container
 type AiChatMessageContainer_ClassNames = "AiChatMessageContainer";
 
@@ -706,7 +740,9 @@ export type AiChatMessageUser_ClassNames =
 	| "AiChatMessageUser-branch-controls"
 	| "AiChatMessageUser-branch-label";
 
-function AiChatMessageUser(props: AiChatMessage_Props) {
+type AiChatMessageUser_Props = AiChatMessage_Props;
+
+function AiChatMessageUser(props: AiChatMessageUser_Props) {
 	const {
 		ref,
 		id,
@@ -727,7 +763,6 @@ function AiChatMessageUser(props: AiChatMessage_Props) {
 		...rest
 	} = props;
 
-	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
 	const branchMetadata = ((/* iife */) => {
 		const siblings = messagesChildrenByParentId.get(ai_chat_get_parent_id(message.metadata?.convexParentId)) ?? [];
 		const currentIndex = siblings.indexOf(message);
@@ -828,17 +863,12 @@ function AiChatMessageUser(props: AiChatMessage_Props) {
 							onClose={handleEditCancel}
 						/>
 					) : (
-						displayParts.map((part, index) => (
-							<AiChatMessagePart
-								key={`${message.id}:${index}`}
-								part={part}
-								role={message.role}
-								message={message}
-								onToolOutput={onToolOutput}
-								onToolResumeStream={onToolResumeStream}
-								onToolStop={onToolStop}
-							/>
-						))
+						<AiChatMessagePartsList
+							message={message}
+							onToolOutput={onToolOutput}
+							onToolResumeStream={onToolResumeStream}
+							onToolStop={onToolStop}
+						/>
 					)}
 				</AiChatMessageContent>
 				{showEditButton && (
@@ -900,7 +930,9 @@ type AiChatMessageAgent_ClassNames =
 	| "AiChatMessageAgent-branch-controls"
 	| "AiChatMessageAgent-branch-label";
 
-function AiChatMessageAgent(props: AiChatMessage_Props) {
+type AiChatMessageAgent_Props = AiChatMessage_Props;
+
+function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 	const {
 		ref,
 		id,
@@ -919,7 +951,6 @@ function AiChatMessageAgent(props: AiChatMessage_Props) {
 		...rest
 	} = props;
 
-	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
 	const branchMetadata = ((/* iife */) => {
 		const siblings = messagesChildrenByParentId.get(ai_chat_get_parent_id(message.metadata?.convexParentId)) ?? [];
 		const currentIndex = siblings.indexOf(message);
@@ -983,18 +1014,6 @@ function AiChatMessageAgent(props: AiChatMessage_Props) {
 	const showBranchControls = Boolean(branchMetadata && branchMetadata.variantCount > 1);
 	const branchLabel = branchMetadata ? `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}` : "";
 
-	const renderedParts = displayParts.map((part, index) => (
-		<AiChatMessagePart
-			key={`${message.id}:${index}`}
-			part={part}
-			role={message.role}
-			message={message}
-			onToolOutput={onToolOutput}
-			onToolResumeStream={onToolResumeStream}
-			onToolStop={onToolStop}
-		/>
-	));
-
 	return (
 		<AiChatMessageContainer
 			ref={ref}
@@ -1003,7 +1022,14 @@ function AiChatMessageAgent(props: AiChatMessage_Props) {
 			{...rest}
 		>
 			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
-				<AiChatMessageContent>{renderedParts}</AiChatMessageContent>
+				<AiChatMessageContent>
+					<AiChatMessagePartsList
+						message={message}
+						onToolOutput={onToolOutput}
+						onToolResumeStream={onToolResumeStream}
+						onToolStop={onToolStop}
+					/>
+				</AiChatMessageContent>
 				<div className={"AiChatMessageAgent-actions" satisfies AiChatMessageAgent_ClassNames} hidden={isEditing}>
 					<CopyIconButton
 						variant="ghost"
@@ -1064,22 +1090,10 @@ function AiChatMessageAgent(props: AiChatMessage_Props) {
 // #region system message
 type AiChatMessageSystem_ClassNames = "AiChatMessageSystem" | "AiChatMessageSystem-bubble";
 
-function AiChatMessageSystem(props: AiChatMessage_Props) {
+type AiChatMessageSystem_Props = AiChatMessage_Props;
+
+function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 	const { ref, id, className, message, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
-
-	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
-
-	const renderedParts = displayParts.map((part, index) => (
-		<AiChatMessagePart
-			key={`${message.id}:${index}`}
-			part={part}
-			role={message.role}
-			message={message}
-			onToolOutput={onToolOutput}
-			onToolResumeStream={onToolResumeStream}
-			onToolStop={onToolStop}
-		/>
-	));
 
 	return (
 		<AiChatMessageContainer
@@ -1089,7 +1103,14 @@ function AiChatMessageSystem(props: AiChatMessage_Props) {
 			{...rest}
 		>
 			<AiChatMessageBubble className={"AiChatMessageSystem-bubble" satisfies AiChatMessageSystem_ClassNames}>
-				<AiChatMessageContent>{renderedParts}</AiChatMessageContent>
+				<AiChatMessageContent>
+					<AiChatMessagePartsList
+						message={message}
+						onToolOutput={onToolOutput}
+						onToolResumeStream={onToolResumeStream}
+						onToolStop={onToolStop}
+					/>
+				</AiChatMessageContent>
 			</AiChatMessageBubble>
 		</AiChatMessageContainer>
 	);
@@ -1101,12 +1122,6 @@ type AiChatMessage_BranchMetadata = {
 	variantIndex: number;
 	variantCount: number;
 	variantAnchorIds: string[];
-};
-
-export type AiChatMessage_ToolActions = {
-	onToolOutput: AiChatController["addToolOutput"];
-	onToolResumeStream: AiChatController["resumeStream"];
-	onToolStop: AiChatController["stop"];
 };
 
 export type AiChatMessage_ClassNames = "AiChatMessage";
@@ -1121,9 +1136,9 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
-	onToolOutput: AiChatMessage_ToolActions["onToolOutput"];
-	onToolResumeStream: AiChatMessage_ToolActions["onToolResumeStream"];
-	onToolStop: AiChatMessage_ToolActions["onToolStop"];
+	onToolOutput: AiChatMessagePartsList_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessagePartsList_Props["onToolResumeStream"];
+	onToolStop: AiChatMessagePartsList_Props["onToolStop"];
 	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
 	onEditCancel: () => void;
 	onEditSubmit: (args: { value: string }) => void;

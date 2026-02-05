@@ -502,6 +502,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		return {
 			list: [...tail.toReversed(), ...head],
 			mapById,
+			anchorId: session ? session.anchorId : undefined,
 		};
 	})();
 

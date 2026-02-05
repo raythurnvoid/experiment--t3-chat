@@ -9,6 +9,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
+import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_is_optimistic_thread, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
@@ -423,12 +424,13 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 // #endregion list
 
 // #region root
-export type AiChatThreads_ClassNames = "AiChatThreads";
+export type AiChatThreads_ClassNames =
+	| "AiChatThreads"
+	| "AiChatThreadsSidebar"
+	| "AiChatThreadsSidebar-header"
+	| "AiChatThreadsSidebar-content";
 
-export type AiChatThreads_Props = ComponentPropsWithRef<"div"> & {
-	ref?: Ref<HTMLDivElement>;
-	id?: string;
-	className?: string;
+export type AiChatThreads_Props = MySidebar_Props & {
 	paginatedThreads: AiChatController["currentThreadsWithOptimistic"];
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
@@ -444,6 +446,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 		ref,
 		id,
 		className,
+		state,
 		paginatedThreads,
 		streamingTitleByThreadId,
 		selectedThreadId,
@@ -470,25 +473,39 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 	};
 
 	return (
-		<div ref={ref} id={id} className={cn("AiChatThreads" satisfies AiChatThreads_ClassNames, className)} {...rest}>
-			<AiChatThreadsHeader
-				onClose={onClose}
-				searchQuery={searchQuery}
-				onSearchChange={handleSearchChange}
-				showArchived={showArchived}
-				onShowArchivedChange={handleArchivedChange}
-				onNewChat={handleNewChat}
-			/>
-			<AiChatThreadsList
-				searchQuery={searchQuery}
-				paginatedThreads={showArchived ? paginatedThreads.archived : paginatedThreads.unarchived}
-				streamingTitleByThreadId={streamingTitleByThreadId}
-				selectedThreadId={selectedThreadId}
-				onSelectThread={onSelectThread}
-				onToggleFavouriteThread={onToggleFavouriteThread}
-				onArchiveThread={onArchiveThread}
-			/>
-		</div>
+		<MySidebar
+			ref={ref}
+			id={id}
+			state={state}
+			aria-hidden={state === "closed" ? true : undefined}
+			inert={state === "closed" ? true : undefined}
+			className={cn("AiChatThreadsSidebar" satisfies AiChatThreads_ClassNames, className)}
+			{...rest}
+		>
+			<div className={cn("AiChatThreads" satisfies AiChatThreads_ClassNames)}>
+				<MySidebarHeader className={cn("AiChatThreadsSidebar-header" satisfies AiChatThreads_ClassNames)}>
+					<AiChatThreadsHeader
+						onClose={onClose}
+						searchQuery={searchQuery}
+						onSearchChange={handleSearchChange}
+						showArchived={showArchived}
+						onShowArchivedChange={handleArchivedChange}
+						onNewChat={handleNewChat}
+					/>
+				</MySidebarHeader>
+				<MySidebarContent className={cn("AiChatThreadsSidebar-content" satisfies AiChatThreads_ClassNames)}>
+					<AiChatThreadsList
+						searchQuery={searchQuery}
+						paginatedThreads={showArchived ? paginatedThreads.archived : paginatedThreads.unarchived}
+						streamingTitleByThreadId={streamingTitleByThreadId}
+						selectedThreadId={selectedThreadId}
+						onSelectThread={onSelectThread}
+						onToggleFavouriteThread={onToggleFavouriteThread}
+						onArchiveThread={onArchiveThread}
+					/>
+				</MySidebarContent>
+			</div>
+		</MySidebar>
 	);
 }
 // #endregion root

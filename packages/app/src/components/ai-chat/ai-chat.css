@@ -9,33 +9,6 @@
 		height: 100%;
 	}
 
-	.AiChat-ai-sidebar {
-		box-sizing: border-box;
-
-		flex-shrink: 0;
-
-		width: 320px;
-		height: 100%;
-
-		contain: content;
-		overflow: hidden;
-
-		transition:
-			width 200ms ease,
-			opacity 200ms ease;
-	}
-
-	.AiChat-ai-sidebar-state-open {
-		opacity: 1;
-	}
-
-	.AiChat-ai-sidebar-state-closed {
-		width: 0;
-		opacity: 0;
-
-		pointer-events: none;
-	}
-
 	.AiChat-main {
 		display: flex;
 		flex: 1;

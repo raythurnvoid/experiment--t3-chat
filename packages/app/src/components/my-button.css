@@ -36,25 +36,25 @@
 
 	/* Variants */
 	.MyButton-variant-default {
-		background: var(--color-base-1-08);
+		background: var(--color-base-1-07);
 		color: var(--color-fg-10);
 
 		&:not(:disabled) {
 			&:hover,
 			&:focus-visible {
-				background: var(--color-base-1-11);
+				background: var(--color-base-1-08);
 				color: var(--color-fg-11);
 			}
 
 			&:active {
-				background: var(--color-base-1-12);
+				background: var(--color-base-1-09);
 				color: var(--color-fg-12);
 			}
 		}
 
 		&:disabled {
-			background: var(--color-base-1-05);
-			color: var(--color-fg-04);
+			background: var(--color-base-1-04);
+			color: var(--color-fg-03);
 		}
 	}
 
