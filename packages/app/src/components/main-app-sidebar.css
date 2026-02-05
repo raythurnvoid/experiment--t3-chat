@@ -1,0 +1,269 @@
+@layer components {
+	/* #region root */
+	.MainAppSidebar {
+		display: flex;
+
+		flex: 1;
+		min-height: 0;
+	}
+
+	.MainAppSidebar-sidebar {
+		--my-sidebar-width: 256px;
+		--my-sidebar-width-collapsed: 47px;
+
+		height: auto;
+
+		transition: opacity 200ms ease;
+	}
+
+	.MainAppSidebar-sidebar.MySidebar-state-closed {
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.MainAppSidebar-header {
+		padding: 8px;
+	}
+
+	.MainAppSidebar-header-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.MainAppSidebar-header-spacer {
+		flex: 1;
+	}
+
+	.MainAppSidebar-trigger {
+		width: 32px;
+		height: 32px;
+		padding: 0;
+	}
+
+	.MainAppSidebar-trigger-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.MainAppSidebar-presence {
+		display: flex;
+		align-items: center;
+	}
+
+	.MainAppSidebar-logo-section {
+		padding: 0 8px 8px;
+	}
+
+	.MainAppSidebar-logo-link {
+		display: contents;
+	}
+
+	.MainAppSidebar-logo {
+		display: flex;
+		align-items: center;
+
+		padding: 0 24px;
+	}
+
+	.MainAppSidebar-content {
+		padding: 0;
+	}
+
+	.MainAppSidebar-group {
+		padding: 0;
+	}
+
+	.MainAppSidebar-menu {
+		padding: 0 8px;
+	}
+
+	.MainAppSidebar-nav-button {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.MainAppSidebar-nav-link {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+	}
+
+	.MainAppSidebar-nav-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.MainAppSidebar-footer {
+		padding: 8px;
+		gap: 8px;
+	}
+	/* #endregion root */
+
+	/* #region menu button label */
+	.MainAppSidebarMenuButtonLabel {
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion menu button label */
+
+	/* #region theme toggle item */
+	.MainAppSidebarThemeToggleMenuItem-button {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.MainAppSidebarThemeToggleMenuItem-icon {
+		width: 16px;
+		height: 16px;
+	}
+	/* #endregion theme toggle item */
+
+	/* #region profile section */
+	.MainAppSidebarProfileSection {
+		border-top: 1px solid var(--sidebar-border);
+
+		padding: 8px;
+	}
+
+	.MainAppSidebarProfileSection-signin-button {
+		width: 100%;
+	}
+
+	.MainAppSidebarProfileSection-user {
+		width: 100%;
+	}
+	/* #endregion profile section */
+
+	/* #region user profile button */
+	.MainAppSidebarUserProfileButton {
+		position: relative;
+
+		width: 100%;
+	}
+
+	.MainAppSidebarUserProfileButton-button {
+		width: 100%;
+		height: auto;
+		padding: 0;
+
+		justify-content: start;
+		gap: 12px;
+	}
+
+	.MainAppSidebarUserProfileButton-avatar {
+		flex-shrink: 0;
+	}
+
+	.MainAppSidebarUserProfileButton-avatar-image {
+		width: 32px;
+		height: 32px;
+
+		border-radius: 999px;
+
+		display: block;
+	}
+
+	.MainAppSidebarUserProfileButton-info {
+		display: flex;
+		flex-direction: column;
+		align-items: start;
+
+		min-width: 0;
+		flex: 1;
+	}
+
+	.MainAppSidebarUserProfileButton-name {
+		width: 100%;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--sidebar-foreground);
+	}
+
+	.MainAppSidebarUserProfileButton-email {
+		width: 100%;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
+
+		font-size: 0.75rem;
+		color: var(--sidebar-foreground);
+		opacity: 0.7;
+	}
+
+	.MainAppSidebarUserProfileButton-clerk-wrapper {
+		position: absolute;
+		right: -30px;
+		bottom: 0;
+
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		border: 0;
+		margin: -1px;
+
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+	}
+
+	.MainAppSidebarClerkAvatarBox {
+		width: 32px;
+		height: 32px;
+	}
+
+	.MainAppSidebarClerkPopoverCard {
+		background: var(--sidebar);
+		border: 1px solid var(--sidebar-border);
+		color: var(--sidebar-foreground);
+	}
+
+	.MainAppSidebarClerkPopoverMain {
+		background: var(--sidebar);
+		color: var(--sidebar-foreground);
+	}
+
+	.MainAppSidebarClerkPopoverActionButton {
+		color: var(--sidebar-foreground);
+	}
+
+	.MainAppSidebarClerkPopoverActionButton:hover {
+		background: var(--sidebar-accent);
+		color: var(--sidebar-accent-foreground);
+	}
+
+	.MainAppSidebarClerkPopoverActionButtonText {
+		color: var(--sidebar-foreground);
+	}
+
+	.MainAppSidebarClerkPopoverFooter {
+		background: var(--sidebar);
+		border-top: 1px solid var(--sidebar-border);
+		color: var(--sidebar-foreground);
+	}
+	/* #endregion user profile button */
+
+	/* #region inset */
+	.MainAppSidebarInset {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+
+		min-height: 0;
+	}
+	/* #endregion inset */
+}

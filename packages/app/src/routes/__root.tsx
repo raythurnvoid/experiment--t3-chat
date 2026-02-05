@@ -1,3 +1,4 @@
+import "./__root.css";
 import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AppAuthProvider } from "../components/app-auth.tsx";

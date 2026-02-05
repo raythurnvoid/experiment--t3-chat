@@ -1,43 +1,93 @@
+import "./main-app-sidebar.css";
+
 import * as React from "react";
-import { Home, MessageSquare, FileText, Moon, Sun, Monitor } from "lucide-react";
-import {
-	Sidebar,
-	SidebarContent,
-	SidebarFooter,
-	SidebarGroup,
-	SidebarGroupContent,
-	SidebarHeader,
-	SidebarInset,
-	SidebarMenu,
-	SidebarMenuButton,
-	SidebarMenuItem,
-	SidebarProvider,
-	SidebarTrigger,
-	useSidebar,
-} from "@/components/ui/sidebar.tsx";
-import { Button } from "@/components/ui/button.tsx";
-import { useThemeContext } from "@/components/theme-provider.tsx";
+import type { ComponentPropsWithRef, Ref } from "react";
+import { FileText, Home, MessageSquare, Monitor, Moon, PanelLeft, Sun } from "lucide-react";
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link } from "@tanstack/react-router";
-import { cn } from "@/lib/utils.ts";
-import { Logo } from "@/components/logo.tsx";
 import { dark } from "@clerk/themes";
-import { OnlinePresenceIndicator } from "@/components/online-presence-indicator.tsx";
 
-// Context for exposing main sidebar controls to child components
-const MainSidebarContext = React.createContext<{
+import { cn } from "@/lib/utils.ts";
+import { useIsMobile } from "@/hooks/use-mobile.ts";
+import { useThemeContext } from "@/components/theme-provider.tsx";
+import { Logo } from "@/components/logo.tsx";
+import { OnlinePresenceIndicator } from "@/components/online-presence-indicator.tsx";
+import { MyButton } from "@/components/my-button.tsx";
+import { MyIcon } from "@/components/my-icon.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import {
+	MySidebar,
+	MySidebarContent,
+	MySidebarFooter,
+	MySidebarGroup,
+	MySidebarGroupContent,
+	MySidebarHeader,
+	MySidebarInset,
+	MySidebarMenu,
+	MySidebarMenuButton,
+	MySidebarMenuItem,
+	type MySidebar_Props,
+} from "@/components/my-sidebar.tsx";
+
+const main_app_sidebar_COOKIE_NAME = "sidebar_state";
+const main_app_sidebar_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
+const main_app_sidebar_KEYBOARD_SHORTCUT = "b";
+const main_app_sidebar_DEFAULT_OPEN = true;
+
+const main_app_sidebar_read_cookie_value = (cookieName: string) => {
+	if (typeof document === "undefined") {
+		return null;
+	}
+
+	const cookieValue = document.cookie
+		.split(";")
+		.map((cookie) => cookie.trim())
+		.find((cookie) => cookie.startsWith(`${cookieName}=`));
+
+	if (!cookieValue) {
+		return null;
+	}
+
+	return cookieValue.slice(cookieName.length + 1);
+};
+
+const main_app_sidebar_get_initial_open = () => {
+	const cookieValue = main_app_sidebar_read_cookie_value(main_app_sidebar_COOKIE_NAME);
+
+	if (cookieValue === "true") {
+		return true;
+	}
+
+	if (cookieValue === "false") {
+		return false;
+	}
+
+	return main_app_sidebar_DEFAULT_OPEN;
+};
+
+// #region context
+type MainAppSidebar_Context = {
 	toggleSidebar: () => void;
 	isMobile: boolean;
-} | null>(null);
+};
+
+const MainSidebarContext = React.createContext<MainAppSidebar_Context | null>(null);
+// #endregion context
+
+// #region theme toggle item
+type MainAppSidebarThemeToggleMenuItem_ClassNames =
+	| "MainAppSidebarThemeToggleMenuItem"
+	| "MainAppSidebarThemeToggleMenuItem-button"
+	| "MainAppSidebarThemeToggleMenuItem-icon";
 
 function ThemeToggleMenuItem() {
 	const { mode, resolved_theme, set_mode } = useThemeContext();
 
 	const get_theme_icon = () => {
 		if (mode === "system") {
-			return <Monitor className="h-4 w-4" />;
+			return <Monitor />;
 		}
-		return resolved_theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />;
+		return resolved_theme === "dark" ? <Moon /> : <Sun />;
 	};
 
 	const cycle_theme = () => {
@@ -57,32 +107,63 @@ function ThemeToggleMenuItem() {
 	};
 
 	return (
-		<SidebarMenuItem>
-			<SidebarMenuButton
+		<MySidebarMenuItem className={"MainAppSidebarThemeToggleMenuItem" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}>
+			<MySidebarMenuButton
 				onClick={cycle_theme}
-				className={cn("main-app-sidebar-theme-toggle-menu-item", "flex items-center gap-2")}
+				className={"MainAppSidebarThemeToggleMenuItem-button" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 			>
-				{get_theme_icon()}
+				<MyIcon className={"MainAppSidebarThemeToggleMenuItem-icon" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}>
+					{get_theme_icon()}
+				</MyIcon>
 				<MainAppSidebarMenuButtonLabel>Theme</MainAppSidebarMenuButtonLabel>
-			</SidebarMenuButton>
-		</SidebarMenuItem>
+			</MySidebarMenuButton>
+		</MySidebarMenuItem>
 	);
 }
+// #endregion theme toggle item
 
-function MainAppSidebarMenuButtonLabel({ className, ...props }: React.ComponentProps<"span">) {
+// #region menu button label
+type MainAppSidebarMenuButtonLabel_ClassNames = "MainAppSidebarMenuButtonLabel";
+
+type MainAppSidebarMenuButtonLabel_Props = ComponentPropsWithRef<"span"> & {
+	ref?: Ref<HTMLSpanElement>;
+	id?: string;
+	className?: string;
+	children?: React.ReactNode;
+};
+
+function MainAppSidebarMenuButtonLabel(props: MainAppSidebarMenuButtonLabel_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
 	return (
 		<span
-			data-slot="sidebar-menu-button-label"
-			data-sidebar="menu-button-label"
-			className={cn(
-				"main-app-sidebar-menu-button-label",
-				"transition-opacity transition-discrete delay-200 duration-150 ease-in-out group-data-[collapsible=icon]:hidden group-data-[collapsible=icon]:delay-0 group-data-[collapsible=icon]:duration-0 starting:opacity-0",
-				className,
-			)}
-			{...props}
-		/>
+			ref={ref}
+			id={id}
+			className={cn("MainAppSidebarMenuButtonLabel" satisfies MainAppSidebarMenuButtonLabel_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</span>
 	);
 }
+// #endregion menu button label
+
+// #region user profile button
+type MainAppSidebarUserProfileButton_ClassNames =
+	| "MainAppSidebarUserProfileButton"
+	| "MainAppSidebarUserProfileButton-button"
+	| "MainAppSidebarUserProfileButton-avatar"
+	| "MainAppSidebarUserProfileButton-avatar-image"
+	| "MainAppSidebarUserProfileButton-info"
+	| "MainAppSidebarUserProfileButton-name"
+	| "MainAppSidebarUserProfileButton-email"
+	| "MainAppSidebarUserProfileButton-clerk-wrapper"
+	| "MainAppSidebarClerkAvatarBox"
+	| "MainAppSidebarClerkPopoverCard"
+	| "MainAppSidebarClerkPopoverMain"
+	| "MainAppSidebarClerkPopoverActionButton"
+	| "MainAppSidebarClerkPopoverActionButtonText"
+	| "MainAppSidebarClerkPopoverFooter";
 
 function UserProfileButton() {
 	const { user } = useUser();
@@ -120,61 +201,67 @@ function UserProfileButton() {
 		}
 	};
 
+	const clerkAvatarBoxClassName =
+		"MainAppSidebarClerkAvatarBox" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	const clerkPopoverCardClassName =
+		"MainAppSidebarClerkPopoverCard" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	const clerkPopoverMainClassName =
+		"MainAppSidebarClerkPopoverMain" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	const clerkPopoverActionButtonClassName =
+		"MainAppSidebarClerkPopoverActionButton" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	const clerkPopoverActionButtonTextClassName =
+		"MainAppSidebarClerkPopoverActionButtonText" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	const clerkPopoverFooterClassName =
+		"MainAppSidebarClerkPopoverFooter" satisfies MainAppSidebarUserProfileButton_ClassNames;
+
 	return (
-		<div className={cn("main-app-sidebar-user-profile-button", "relative w-full")}>
+		<div className={"MainAppSidebarUserProfileButton" satisfies MainAppSidebarUserProfileButton_ClassNames}>
 			{/* Custom display button */}
-			<Button
-				variant="ghost"
+			<MyButton
+				variant="ghost-secondary"
 				onClick={handleCustomButtonClick}
-				className={cn(
-					"flex h-auto w-full items-center justify-start gap-3 p-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-				)}
+				className={"MainAppSidebarUserProfileButton-button" satisfies MainAppSidebarUserProfileButton_ClassNames}
 			>
-				<div className={cn("main-app-sidebar-user-profile-avatar", "flex-shrink-0")}>
+				<div className={"MainAppSidebarUserProfileButton-avatar" satisfies MainAppSidebarUserProfileButton_ClassNames}>
 					<img
 						src={user.imageUrl}
 						alt={displayName}
-						className={cn("main-app-sidebar-user-profile-avatar-image", "h-8 w-8 rounded-full")}
+						className={
+							"MainAppSidebarUserProfileButton-avatar-image" satisfies MainAppSidebarUserProfileButton_ClassNames
+						}
 					/>
 				</div>
-				<div className={cn("main-app-sidebar-user-profile-info", "flex min-w-0 flex-1 flex-col items-start")}>
+				<div className={"MainAppSidebarUserProfileButton-info" satisfies MainAppSidebarUserProfileButton_ClassNames}>
 					<span
-						className={cn(
-							"main-app-sidebar-user-profile-name",
-							"w-full truncate text-left text-sm font-medium text-sidebar-foreground",
-						)}
+						className={"MainAppSidebarUserProfileButton-name" satisfies MainAppSidebarUserProfileButton_ClassNames}
 					>
 						{displayName}
 					</span>
 					{emailAddress && (
 						<span
-							className={cn(
-								"main-app-sidebar-user-profile-email",
-								"w-full truncate text-left text-xs text-sidebar-foreground/70",
-							)}
+							className={"MainAppSidebarUserProfileButton-email" satisfies MainAppSidebarUserProfileButton_ClassNames}
 						>
 							{emailAddress}
 						</span>
 					)}
 				</div>
-			</Button>
+			</MyButton>
 
 			{/* Hidden UserButton for popup functionality */}
 			<div
 				ref={userButtonRef}
-				className={cn("main-app-sidebar-user-profile-clerk-wrapper", "sr-only absolute right-[-30px] bottom-0 h-0 w-0")}
+				className={"MainAppSidebarUserProfileButton-clerk-wrapper" satisfies MainAppSidebarUserProfileButton_ClassNames}
 			>
 				<UserButton
 					appearance={{
 						baseTheme: theme.resolved_theme === "dark" ? dark : (undefined as any),
 						elements: {
-							userButtonAvatarBox: "w-8 h-8",
-							userButtonPopoverCard: "bg-sidebar-background border-sidebar-border",
-							userButtonPopoverMain: "bg-sidebar-background",
-							userButtonPopoverActionButton:
-								"text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-							userButtonPopoverActionButtonText: "text-sidebar-foreground",
-							userButtonPopoverFooter: "bg-sidebar-background border-sidebar-border",
+							userButtonAvatarBox: clerkAvatarBoxClassName,
+							userButtonPopoverCard: clerkPopoverCardClassName,
+							userButtonPopoverMain: clerkPopoverMainClassName,
+							userButtonPopoverActionButton: clerkPopoverActionButtonClassName,
+							userButtonPopoverActionButtonText: clerkPopoverActionButtonTextClassName,
+							userButtonPopoverFooter: clerkPopoverFooterClassName,
 						},
 					}}
 					userProfileMode="modal"
@@ -183,114 +270,233 @@ function UserProfileButton() {
 		</div>
 	);
 }
+// #endregion user profile button
+
+// #region profile section
+type MainAppSidebarProfileSection_ClassNames =
+	| "MainAppSidebarProfileSection"
+	| "MainAppSidebarProfileSection-signin-button"
+	| "MainAppSidebarProfileSection-user";
 
 function ProfileSection() {
 	return (
-		<div className={cn("main-app-sidebar-profile-section", "border-t px-2 py-2")}>
+		<div className={"MainAppSidebarProfileSection" satisfies MainAppSidebarProfileSection_ClassNames}>
 			<SignedOut>
 				<SignInButton>
-					<Button variant="outline" className="w-full">
+					<MyButton
+						variant="outline"
+						className={"MainAppSidebarProfileSection-signin-button" satisfies MainAppSidebarProfileSection_ClassNames}
+					>
 						Sign In
-					</Button>
+					</MyButton>
 				</SignInButton>
 			</SignedOut>
 			<SignedIn>
-				<div className={cn("main-app-sidebar-user-section", "w-full")}>
+				<div className={"MainAppSidebarProfileSection-user" satisfies MainAppSidebarProfileSection_ClassNames}>
 					<UserProfileButton />
 				</div>
 			</SignedIn>
 		</div>
 	);
 }
+// #endregion profile section
 
-function MainAppSidebarInset({ children }: { children: React.ReactNode }) {
-	const { toggleSidebar, isMobile } = useSidebar();
+// #region inset
+type MainAppSidebarInset_ClassNames = "MainAppSidebarInset";
+
+type MainAppSidebarInset_Props = ComponentPropsWithRef<typeof MySidebarInset> & {
+	ref?: Ref<HTMLElement>;
+	id?: string;
+	className?: string;
+	children?: React.ReactNode;
+};
+
+function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
+	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<MainSidebarContext.Provider value={{ toggleSidebar, isMobile }}>
-			<SidebarInset>{children}</SidebarInset>
-		</MainSidebarContext.Provider>
+		<MySidebarInset
+			ref={ref}
+			id={id}
+			className={cn("MainAppSidebarInset" satisfies MainAppSidebarInset_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</MySidebarInset>
 	);
 }
+// #endregion inset
+
+// #region root
+type MainAppSidebar_ClassNames =
+	| "MainAppSidebar"
+	| "MainAppSidebar-sidebar"
+	| "MainAppSidebar-header"
+	| "MainAppSidebar-header-row"
+	| "MainAppSidebar-header-spacer"
+	| "MainAppSidebar-trigger"
+	| "MainAppSidebar-trigger-icon"
+	| "MainAppSidebar-presence"
+	| "MainAppSidebar-logo-section"
+	| "MainAppSidebar-logo-link"
+	| "MainAppSidebar-logo"
+	| "MainAppSidebar-content"
+	| "MainAppSidebar-group"
+	| "MainAppSidebar-group-content"
+	| "MainAppSidebar-menu"
+	| "MainAppSidebar-nav-button"
+	| "MainAppSidebar-nav-link"
+	| "MainAppSidebar-nav-icon"
+	| "MainAppSidebar-footer"
+	| "MainAppSidebar-footer-menu";
+
+type MainAppSidebar_Props = ComponentPropsWithRef<"div"> & {
+	ref?: Ref<HTMLDivElement>;
+	id?: string;
+	className?: string;
+	children?: React.ReactNode;
+};
 
 export const MainAppSidebar = ((/* iife */) => {
-	function MainAppSidebar(props: React.ComponentProps<typeof Sidebar>) {
-		const { children, ...rest } = props;
+	function MainAppSidebar(props: MainAppSidebar_Props) {
+		const { ref, id, className, children, ...rest } = props;
+
+		const isMobile = useIsMobile();
+		const [isOpen, setIsOpen] = React.useState(() => {
+			return main_app_sidebar_get_initial_open();
+		});
+
+		const sidebarState: MySidebar_Props["state"] = isOpen ? "expanded" : "closed";
+
+		const toggleSidebar = () => {
+			setIsOpen((value) => !value);
+		};
+
+		React.useEffect(() => {
+			if (typeof document === "undefined") {
+				return;
+			}
+
+			document.cookie = `${main_app_sidebar_COOKIE_NAME}=${isOpen}; path=/; max-age=${main_app_sidebar_COOKIE_MAX_AGE_SECONDS}`;
+		}, [isOpen]);
+
+		React.useEffect(() => {
+			const handleKeyDown = (event: KeyboardEvent) => {
+				if (event.key.toLowerCase() !== main_app_sidebar_KEYBOARD_SHORTCUT) {
+					return;
+				}
+
+				if (!event.metaKey && !event.ctrlKey) {
+					return;
+				}
+
+				event.preventDefault();
+				toggleSidebar();
+			};
+
+			window.addEventListener("keydown", handleKeyDown);
+			return () => window.removeEventListener("keydown", handleKeyDown);
+		}, [toggleSidebar]);
 
 		return (
-			<SidebarProvider className={cn("MainAppSidebar", "flex h-full w-full")}>
-				<Sidebar collapsible="icon" {...rest}>
-					<SidebarHeader>
-						<SidebarTrigger />
-						<div className="ml-auto pr-2">
-							<OnlinePresenceIndicator />
-						</div>
-					</SidebarHeader>
-
-					{/* App Name */}
-					<div
-						className={cn(
-							"main-app-sidebar-app-logo-container",
-							"px-2 transition-opacity delay-200 duration-150 ease-in-out group-data-[collapsible=icon]:opacity-0 group-data-[collapsible=icon]:delay-0 group-data-[collapsible=icon]:duration-0 starting:opacity-0",
-						)}
+			<MainSidebarContext.Provider value={{ toggleSidebar, isMobile }}>
+				<div
+					ref={ref}
+					id={id}
+					className={cn("MainAppSidebar" satisfies MainAppSidebar_ClassNames, className)}
+					{...rest}
+				>
+					<MySidebar
+						state={sidebarState}
+						aria-hidden={sidebarState === "closed" ? true : undefined}
+						inert={sidebarState === "closed" ? true : undefined}
+						className={"MainAppSidebar-sidebar" satisfies MainAppSidebar_ClassNames}
 					>
-						<Link to="/" className={cn("main-app-sidebar-app-link", "contents")}>
-							<div className="px-8">
-								<Logo className={cn("main-app-sidebar-logo", "flex items-center")} />
+						<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
+							<div className={"MainAppSidebar-header-row" satisfies MainAppSidebar_ClassNames}>
+								<MyIconButton
+									variant="ghost"
+									tooltip="Toggle sidebar"
+									onClick={toggleSidebar}
+									className={"MainAppSidebar-trigger" satisfies MainAppSidebar_ClassNames}
+								>
+									<MyIconButtonIcon className={"MainAppSidebar-trigger-icon" satisfies MainAppSidebar_ClassNames}>
+										<PanelLeft />
+									</MyIconButtonIcon>
+								</MyIconButton>
+								<div className={"MainAppSidebar-header-spacer" satisfies MainAppSidebar_ClassNames} />
+								<div className={"MainAppSidebar-presence" satisfies MainAppSidebar_ClassNames}>
+									<OnlinePresenceIndicator />
+								</div>
 							</div>
-						</Link>
-					</div>
+						</MySidebarHeader>
 
-					<SidebarContent>
-						<SidebarGroup>
-							<SidebarGroupContent>
-								<SidebarMenu>
-									{/* Home Navigation */}
-									<SidebarMenuItem>
-										<SidebarMenuButton asChild>
-											<Link to="/" className={cn("main-app-sidebar-nav-home", "flex items-center gap-2")}>
-												<Home className="h-4 w-4" />
-												<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
-											</Link>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
+						<div className={"MainAppSidebar-logo-section" satisfies MainAppSidebar_ClassNames}>
+							<Link to="/" className={"MainAppSidebar-logo-link" satisfies MainAppSidebar_ClassNames}>
+								<Logo className={"MainAppSidebar-logo" satisfies MainAppSidebar_ClassNames} />
+							</Link>
+						</div>
 
-									{/* Chat Navigation */}
-									<SidebarMenuItem>
-										<SidebarMenuButton asChild>
-											<Link to="/chat" className={cn("main-app-sidebar-nav-chat", "flex items-center gap-2")}>
-												<MessageSquare className="h-4 w-4" />
-												<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
-											</Link>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
+						<MySidebarContent className={"MainAppSidebar-content" satisfies MainAppSidebar_ClassNames}>
+							<MySidebarGroup className={"MainAppSidebar-group" satisfies MainAppSidebar_ClassNames}>
+								<MySidebarGroupContent className={"MainAppSidebar-group-content" satisfies MainAppSidebar_ClassNames}>
+									<MySidebarMenu className={"MainAppSidebar-menu" satisfies MainAppSidebar_ClassNames}>
+										<MySidebarMenuItem>
+											<MySidebarMenuButton
+												asChild
+												className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
+											>
+												<Link to="/" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
+													<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
+														<Home />
+													</MyIcon>
+													<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
+												</Link>
+											</MySidebarMenuButton>
+										</MySidebarMenuItem>
 
-									{/* Docs Navigation */}
-									<SidebarMenuItem>
-										<SidebarMenuButton asChild>
-											<Link to="/pages" className={cn("main-app-sidebar-nav-docs", "flex items-center gap-2")}>
-												<FileText className="h-4 w-4" />
-												<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
-											</Link>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
-								</SidebarMenu>
-							</SidebarGroupContent>
-						</SidebarGroup>
-					</SidebarContent>
+										<MySidebarMenuItem>
+											<MySidebarMenuButton
+												asChild
+												className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
+											>
+												<Link to="/chat" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
+													<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
+														<MessageSquare />
+													</MyIcon>
+													<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
+												</Link>
+											</MySidebarMenuButton>
+										</MySidebarMenuItem>
 
-					<SidebarFooter>
-						{/* Theme Toggle */}
-						<SidebarMenu>
-							<ThemeToggleMenuItem />
-						</SidebarMenu>
+										<MySidebarMenuItem>
+											<MySidebarMenuButton
+												asChild
+												className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
+											>
+												<Link to="/pages" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
+													<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
+														<FileText />
+													</MyIcon>
+													<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
+												</Link>
+											</MySidebarMenuButton>
+										</MySidebarMenuItem>
+									</MySidebarMenu>
+								</MySidebarGroupContent>
+							</MySidebarGroup>
+						</MySidebarContent>
 
-						{/* Profile Section */}
-						<ProfileSection />
-					</SidebarFooter>
-				</Sidebar>
-				<MainAppSidebarInset>{children}</MainAppSidebarInset>
-			</SidebarProvider>
+						<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
+							<MySidebarMenu className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
+								<ThemeToggleMenuItem />
+							</MySidebarMenu>
+							<ProfileSection />
+						</MySidebarFooter>
+					</MySidebar>
+					<MainAppSidebarInset>{children}</MainAppSidebarInset>
+				</div>
+			</MainSidebarContext.Provider>
 		);
 	}
 
@@ -304,3 +510,4 @@ export const MainAppSidebar = ((/* iife */) => {
 		},
 	});
 })();
+// #endregion root
