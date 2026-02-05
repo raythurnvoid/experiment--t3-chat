@@ -143,55 +143,6 @@
 		align-items: center;
 
 		padding: 0;
-
-		border-radius: 8px;
-		border: 1px solid transparent;
-
-		color: inherit;
-
-		transition: background-color 0.15s ease-in-out;
-
-		&:focus-within {
-			border-color: var(--color-fg-03);
-
-			@media (prefers-color-scheme: dark) {
-				border-color: var(--color-fg-10);
-			}
-		}
-
-		&:hover {
-			background-color: var(--color-base-alt-2-12);
-
-			@media (prefers-color-scheme: dark) {
-				background-color: var(--color-base-alt-1-09);
-			}
-		}
-
-		&[data-active="true"] {
-			background-color: var(--color-base-alt-2-12);
-			border-color: var(--color-fg-04);
-
-			&:hover {
-				background-color: var(--color-base-alt-2-12);
-			}
-
-			@media (prefers-color-scheme: dark) {
-				background-color: var(--color-base-alt-1-07);
-				border-color: var(--color-fg-07);
-
-				&:hover {
-					background-color: var(--color-base-alt-2-07);
-				}
-			}
-
-			&:focus-within {
-				border-color: var(--color-fg-03);
-
-				@media (prefers-color-scheme: dark) {
-					border-color: var(--color-fg-10);
-				}
-			}
-		}
 	}
 
 	.AiChatThreadsListItem-state-hidden {

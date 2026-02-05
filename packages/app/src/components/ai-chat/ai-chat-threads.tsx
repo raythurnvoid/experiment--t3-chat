@@ -1,15 +1,17 @@
 import "./ai-chat-threads.css";
 
 import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArchiveIcon, ArchiveRestoreIcon, Plus, Search, Star, X } from "lucide-react";
 
 import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
+import { MyInteractiveList, MyInteractiveListItem } from "@/components/my-interactive-list.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
+import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_is_optimistic_thread, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
@@ -215,7 +217,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 	const archiveButtonLabel = isArchived ? "Unarchive thread" : "Archive thread";
 
 	return (
-		<li
+		<MyInteractiveListItem
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
@@ -225,7 +227,10 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 		>
 			<button
 				type="button"
-				className={cn("AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames)}
+				className={cn(
+					"AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames,
+					"MyFocus-row" satisfies MyFocus_ClassNames,
+				)}
 				onClick={handleSelect}
 			>
 				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
@@ -253,7 +258,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 					<MyIconButtonIcon>{isArchived ? <ArchiveIcon /> : <ArchiveRestoreIcon />}</MyIconButtonIcon>
 				</MyIconButton>
 			</div>
-		</li>
+		</MyInteractiveListItem>
 	);
 }
 // #endregion list item
@@ -285,7 +290,7 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 	const archiveButtonLabel = "Archive thread";
 
 	return (
-		<li
+		<MyInteractiveListItem
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
@@ -295,7 +300,10 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 		>
 			<button
 				type="button"
-				className={cn("AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames)}
+				className={cn(
+					"AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames,
+					"MyFocus-row" satisfies MyFocus_ClassNames,
+				)}
 				onClick={handleSelect}
 			>
 				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
@@ -314,7 +322,7 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 					</MyIconButtonIcon>
 				</MyIconButton>
 			</div>
-		</li>
+		</MyInteractiveListItem>
 	);
 }
 // #endregion optimistic list item
@@ -371,6 +379,19 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 		paginatedThreads.loadMore(100);
 	};
 
+	useEffect(() => {
+		if (!scrollRoot) {
+			return;
+		}
+
+		const focus = new MyFocus(scrollRoot);
+		focus.start();
+
+		return () => {
+			focus.stop();
+		};
+	}, [scrollRoot]);
+
 	return (
 		<section
 			ref={ref}
@@ -379,10 +400,13 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 			aria-label="Search results"
 			{...rest}
 		>
-			<ul
+			<MyInteractiveList
 				ref={setScrollRoot}
 				id={ai_chat_threads_RESULTS_LIST_ID}
-				className={cn("AiChatThreadsList" satisfies AiChatThreadsList_ClassNames)}
+				className={cn(
+					"AiChatThreadsList" satisfies AiChatThreadsList_ClassNames,
+					"MyFocus-container" satisfies MyFocus_ClassNames,
+				)}
 			>
 				{sortedThreads.map((thread) => {
 					if (ai_chat_is_optimistic_thread(thread)) {
@@ -417,7 +441,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 						<InfiniteScrollSentinel root={scrollRoot} rootMargin="400px 0px" onIntersection={handleIntersection} />
 					</li>
 				) : null}
-			</ul>
+			</MyInteractiveList>
 		</section>
 	);
 }
