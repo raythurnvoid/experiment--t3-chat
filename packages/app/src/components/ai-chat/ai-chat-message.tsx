@@ -1,7 +1,18 @@
 import "./ai-chat-message.css";
 
 import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
-import { ChevronLeft, ChevronRight, GitBranch, RefreshCw } from "lucide-react";
+import {
+	CheckCircle,
+	ChevronDown,
+	ChevronLeft,
+	ChevronRight,
+	Circle,
+	Clock,
+	GitBranch,
+	RefreshCw,
+	Wrench,
+	XCircle,
+} from "lucide-react";
 import {
 	isDataUIPart,
 	isFileUIPart,
@@ -15,9 +26,8 @@ import type { ExtractStrict } from "type-fest";
 import { ai_chat_get_message_text, type ai_chat_AiSdk5UiMessage, type ai_chat_AiSdk5UiTools } from "@/lib/ai-chat.ts";
 
 import { CodeBlock } from "@/components/ai-elements/code-block.tsx";
-import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool.tsx";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
-import { Badge } from "@/components/ui/badge.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { ai_chat_get_parent_id } from "@/hooks/ai-chat-hooks.tsx";
@@ -25,6 +35,206 @@ import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/
 import { AiChatMarkdown } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { cn, json_strigify_ensured } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
+
+// #region tool base
+type AiChatMessageToolChip_ClassNames = "AiChatMessageToolChip";
+
+type AiChatMessageToolChip_Props = {
+	className?: string | undefined;
+	children?: ReactNode;
+};
+
+function AiChatMessageToolChip(props: AiChatMessageToolChip_Props) {
+	const { className, children } = props;
+
+	return (
+		<span className={cn("AiChatMessageToolChip" satisfies AiChatMessageToolChip_ClassNames, className)}>
+			{children}
+		</span>
+	);
+}
+
+type AiChatMessageToolStatusBadge_ClassNames =
+	| "AiChatMessageToolStatusBadge"
+	| "AiChatMessageToolStatusBadge-icon"
+	| "AiChatMessageToolStatusBadge-state-input-streaming"
+	| "AiChatMessageToolStatusBadge-state-input-available"
+	| "AiChatMessageToolStatusBadge-state-approval-requested"
+	| "AiChatMessageToolStatusBadge-state-approval-responded"
+	| "AiChatMessageToolStatusBadge-state-output-available"
+	| "AiChatMessageToolStatusBadge-state-output-error"
+	| "AiChatMessageToolStatusBadge-state-output-denied";
+
+type AiChatMessageToolUiState = ToolUIPart["state"] | "approval-requested" | "approval-responded" | "output-denied";
+
+const ai_chat_message_tool_status_labels: Record<AiChatMessageToolUiState, string> = {
+	"input-streaming": "Pending",
+	"input-available": "Running",
+	"approval-requested": "Awaiting Approval",
+	"approval-responded": "Responded",
+	"output-available": "Completed",
+	"output-error": "Error",
+	"output-denied": "Denied",
+};
+
+const ai_chat_message_tool_status_icons: Record<AiChatMessageToolUiState, ReactNode> = {
+	"input-streaming": <Circle className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+	"input-available": <Clock className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+	"approval-requested": <Clock className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+	"approval-responded": <CheckCircle className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+	"output-available": <CheckCircle className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+	"output-error": <XCircle className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+	"output-denied": <XCircle className={"AiChatMessageToolStatusBadge-icon" satisfies AiChatMessageToolStatusBadge_ClassNames} />,
+};
+
+type AiChatMessageToolStatusBadge_Props = {
+	state: AiChatMessageToolUiState;
+};
+
+function AiChatMessageToolStatusBadge(props: AiChatMessageToolStatusBadge_Props) {
+	const { state } = props;
+
+	return (
+		<AiChatMessageToolChip
+			className={cn(
+				"AiChatMessageToolStatusBadge" satisfies AiChatMessageToolStatusBadge_ClassNames,
+				`AiChatMessageToolStatusBadge-state-${state}` satisfies AiChatMessageToolStatusBadge_ClassNames,
+			)}
+		>
+			{ai_chat_message_tool_status_icons[state]}
+			{ai_chat_message_tool_status_labels[state]}
+		</AiChatMessageToolChip>
+	);
+}
+
+type AiChatMessageToolRoot_ClassNames = "AiChatMessageToolRoot";
+
+type AiChatMessageToolRoot_Props = React.ComponentProps<typeof Collapsible> & {
+	className?: string | undefined;
+};
+
+function AiChatMessageToolRoot(props: AiChatMessageToolRoot_Props) {
+	const { className, ...rest } = props;
+
+	return (
+		<Collapsible
+			className={cn("AiChatMessageToolRoot" satisfies AiChatMessageToolRoot_ClassNames, className)}
+			{...rest}
+		/>
+	);
+}
+
+type AiChatMessageToolHeader_ClassNames =
+	| "AiChatMessageToolHeader"
+	| "AiChatMessageToolHeader-left"
+	| "AiChatMessageToolHeader-icon"
+	| "AiChatMessageToolHeader-label"
+	| "AiChatMessageToolHeader-chevron";
+
+type AiChatMessageToolHeader_Props = {
+	type: string;
+	state: AiChatMessageToolUiState;
+	className?: string | undefined;
+};
+
+function AiChatMessageToolHeader(props: AiChatMessageToolHeader_Props) {
+	const { className, type, state } = props;
+
+	return (
+		<CollapsibleTrigger
+			className={cn("AiChatMessageToolHeader" satisfies AiChatMessageToolHeader_ClassNames, className)}
+		>
+			<div className={"AiChatMessageToolHeader-left" satisfies AiChatMessageToolHeader_ClassNames}>
+				<Wrench className={"AiChatMessageToolHeader-icon" satisfies AiChatMessageToolHeader_ClassNames} />
+				<span className={"AiChatMessageToolHeader-label" satisfies AiChatMessageToolHeader_ClassNames}>
+					{type}
+				</span>
+				<AiChatMessageToolStatusBadge state={state} />
+			</div>
+			<ChevronDown className={"AiChatMessageToolHeader-chevron" satisfies AiChatMessageToolHeader_ClassNames} />
+		</CollapsibleTrigger>
+	);
+}
+
+type AiChatMessageToolBody_ClassNames = "AiChatMessageToolBody";
+
+type AiChatMessageToolBody_Props = React.ComponentProps<typeof CollapsibleContent> & {
+	className?: string | undefined;
+};
+
+function AiChatMessageToolBody(props: AiChatMessageToolBody_Props) {
+	const { className, ...rest } = props;
+
+	return (
+		<CollapsibleContent
+			className={cn("AiChatMessageToolBody" satisfies AiChatMessageToolBody_ClassNames, className)}
+			{...rest}
+		/>
+	);
+}
+
+type AiChatMessageToolParams_ClassNames =
+	| "AiChatMessageToolParams"
+	| "AiChatMessageToolParams-heading"
+	| "AiChatMessageToolParams-code";
+
+type AiChatMessageToolParams_Props = {
+	className?: string | undefined;
+	input: ToolUIPart["input"];
+};
+
+function AiChatMessageToolParams(props: AiChatMessageToolParams_Props) {
+	const { className, input } = props;
+
+	return (
+		<div className={cn("AiChatMessageToolParams" satisfies AiChatMessageToolParams_ClassNames, className)}>
+			<h4 className={"AiChatMessageToolParams-heading" satisfies AiChatMessageToolParams_ClassNames}>
+				Parameters
+			</h4>
+			<div className={"AiChatMessageToolParams-code" satisfies AiChatMessageToolParams_ClassNames}>
+				<CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+			</div>
+		</div>
+	);
+}
+
+type AiChatMessageToolResult_ClassNames =
+	| "AiChatMessageToolResult"
+	| "AiChatMessageToolResult-heading"
+	| "AiChatMessageToolResult-content"
+	| "AiChatMessageToolResult-state-error";
+
+type AiChatMessageToolResult_Props = {
+	className?: string | undefined;
+	output: ReactNode;
+	errorText: ToolUIPart["errorText"];
+};
+
+function AiChatMessageToolResult(props: AiChatMessageToolResult_Props) {
+	const { className, output, errorText } = props;
+
+	if (!(output || errorText)) {
+		return null;
+	}
+
+	return (
+		<div className={cn("AiChatMessageToolResult" satisfies AiChatMessageToolResult_ClassNames, className)}>
+			<h4 className={"AiChatMessageToolResult-heading" satisfies AiChatMessageToolResult_ClassNames}>
+				{errorText ? "Error" : "Result"}
+			</h4>
+			<div
+				className={cn(
+					"AiChatMessageToolResult-content" satisfies AiChatMessageToolResult_ClassNames,
+					errorText && ("AiChatMessageToolResult-state-error" satisfies AiChatMessageToolResult_ClassNames),
+				)}
+			>
+				{errorText && <div>{errorText}</div>}
+				{output && <div>{output}</div>}
+			</div>
+		</div>
+	);
+}
+// #endregion tool base
 
 // #region tool meta header
 type AiChatMessageToolMetaHeader_ClassNames = "AiChatMessageToolMetaHeader-chips";
@@ -38,29 +248,19 @@ function AiChatMessageToolMetaHeader(props: AiChatMessageToolMetaHeader_Props) {
 	return (
 		<div className={"AiChatMessageToolMetaHeader-chips" satisfies AiChatMessageToolMetaHeader_ClassNames}>
 			{"title" in metadata && metadata.title ? (
-				<Badge variant="secondary" className="text-xs">
-					title: {String(metadata.title)}
-				</Badge>
+				<AiChatMessageToolChip>title: {String(metadata.title)}</AiChatMessageToolChip>
 			) : null}
 			{"count" in metadata && metadata.count !== undefined ? (
-				<Badge variant="secondary" className="text-xs">
-					count: {String(metadata.count)}
-				</Badge>
+				<AiChatMessageToolChip>count: {String(metadata.count)}</AiChatMessageToolChip>
 			) : null}
 			{"matches" in metadata && metadata.matches !== undefined ? (
-				<Badge variant="secondary" className="text-xs">
-					matches: {String(metadata.matches)}
-				</Badge>
+				<AiChatMessageToolChip>matches: {String(metadata.matches)}</AiChatMessageToolChip>
 			) : null}
 			{"truncated" in metadata && metadata.truncated !== undefined ? (
-				<Badge variant="secondary" className="text-xs">
-					truncated: {String(metadata.truncated)}
-				</Badge>
+				<AiChatMessageToolChip>truncated: {String(metadata.truncated)}</AiChatMessageToolChip>
 			) : null}
 			{"preview" in metadata && metadata.preview ? (
-				<Badge variant="secondary" className="text-xs">
-					preview: {String(metadata.preview).slice(0, 30)}...
-				</Badge>
+				<AiChatMessageToolChip>preview: {String(metadata.preview).slice(0, 30)}...</AiChatMessageToolChip>
 			) : null}
 		</div>
 	);
@@ -127,20 +327,20 @@ function AiChatMessageToolReadPage(props: AiChatMessageToolReadPage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolReadPage" satisfies AiChatMessageToolReadPage_ClassNames, className)}
 		>
-			<ToolHeader type="tool-read_page" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-read_page" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool read_page
@@ -160,20 +360,20 @@ function AiChatMessageToolListPages(props: AiChatMessageToolListPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolListPages" satisfies AiChatMessageToolListPages_ClassNames, className)}
 		>
-			<ToolHeader type="tool-list_pages" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-list_pages" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool list_pages
@@ -193,20 +393,20 @@ function AiChatMessageToolGlobPages(props: AiChatMessageToolGlobPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolGlobPages" satisfies AiChatMessageToolGlobPages_ClassNames, className)}
 		>
-			<ToolHeader type="tool-glob_pages" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-glob_pages" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool glob_pages
@@ -226,20 +426,20 @@ function AiChatMessageToolGrepPages(props: AiChatMessageToolGrepPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolGrepPages" satisfies AiChatMessageToolGrepPages_ClassNames, className)}
 		>
-			<ToolHeader type="tool-grep_pages" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-grep_pages" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool grep_pages
@@ -259,23 +459,23 @@ function AiChatMessageToolTextSearchPages(props: AiChatMessageToolTextSearchPage
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn(
 				"AiChatMessageToolTextSearchPages" satisfies AiChatMessageToolTextSearchPages_ClassNames,
 				className,
 			)}
 		>
-			<ToolHeader type="tool-text_search_pages" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-text_search_pages" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={result?.output ? <CodeBlock code={result.output} language="text" /> : null}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool text_search_pages
@@ -295,15 +495,15 @@ function AiChatMessageToolWritePage(props: AiChatMessageToolWritePage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolWritePage" satisfies AiChatMessageToolWritePage_ClassNames, className)}
 		>
-			<ToolHeader type="tool-write_page" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-write_page" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={
 						result?.metadata?.diff ? (
 							<CodeBlock code={result.metadata.diff} language="diff" />
@@ -313,8 +513,8 @@ function AiChatMessageToolWritePage(props: AiChatMessageToolWritePage_Props) {
 					}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool write_page
@@ -334,15 +534,15 @@ function AiChatMessageToolEditPage(props: AiChatMessageToolEditPage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolEditPage" satisfies AiChatMessageToolEditPage_ClassNames, className)}
 		>
-			<ToolHeader type="tool-edit_page" state={toolState} />
-			<ToolContent>
+			<AiChatMessageToolHeader type="tool-edit_page" state={toolState} />
+			<AiChatMessageToolBody>
 				<AiChatMessageToolMetaRow metadata={result?.metadata || {}} copyText={result?.output} />
-				<ToolInput input={args ?? {}} />
-				<ToolOutput
+				<AiChatMessageToolParams input={args ?? {}} />
+				<AiChatMessageToolResult
 					output={
 						result?.metadata?.diff ? (
 							<CodeBlock code={result.metadata.diff} language="diff" />
@@ -352,8 +552,8 @@ function AiChatMessageToolEditPage(props: AiChatMessageToolEditPage_Props) {
 					}
 					errorText={errorText}
 				/>
-			</ToolContent>
-		</Tool>
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool edit_page
@@ -380,32 +580,21 @@ function AiChatMessageToolUnknown(props: AiChatMessageToolUnknown_Props) {
 		);
 
 	return (
-		<Tool
+		<AiChatMessageToolRoot
 			defaultOpen={false}
 			className={cn("AiChatMessageToolUnknown" satisfies AiChatMessageToolUnknown_ClassNames, className)}
 		>
-			<ToolHeader type={`tool-${toolName}`} state={part.state} />
-			<ToolContent>
-				<div
-					className={cn(
-						"AiChatMessageToolUnknown-meta" satisfies AiChatMessageToolUnknown_ClassNames,
-						"flex flex-wrap gap-1 px-4 pt-3",
-					)}
-				>
-					<Badge variant="secondary" className="text-xs">
-						type: {part.type}
-					</Badge>
-					<Badge variant="secondary" className="text-xs">
-						toolCallId: {part.toolCallId}
-					</Badge>
-					<Badge variant="secondary" className="text-xs">
-						state: {part.state}
-					</Badge>
+			<AiChatMessageToolHeader type={`tool-${toolName}`} state={part.state} />
+			<AiChatMessageToolBody>
+				<div className={"AiChatMessageToolUnknown-meta" satisfies AiChatMessageToolUnknown_ClassNames}>
+					<AiChatMessageToolChip>type: {part.type}</AiChatMessageToolChip>
+					<AiChatMessageToolChip>toolCallId: {part.toolCallId}</AiChatMessageToolChip>
+					<AiChatMessageToolChip>state: {part.state}</AiChatMessageToolChip>
 				</div>
-				<ToolInput input={part.input ?? {}} />
-				<ToolOutput output={outputNode} errorText={errorText} />
-			</ToolContent>
-		</Tool>
+				<AiChatMessageToolParams input={part.input ?? {}} />
+				<AiChatMessageToolResult output={outputNode} errorText={errorText} />
+			</AiChatMessageToolBody>
+		</AiChatMessageToolRoot>
 	);
 }
 // #endregion tool unknown
