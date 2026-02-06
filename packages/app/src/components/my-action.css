@@ -1,0 +1,25 @@
+@layer common_components {
+	/* #region primary action */
+	.MyPrimaryAction {
+		box-sizing: border-box;
+
+		display: block;
+		width: 100%;
+
+		border: 2px solid transparent;
+		border-radius: inherit;
+
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		text-align: inherit;
+
+		outline: none;
+		cursor: pointer;
+
+		&:focus-visible {
+			border-color: var(--color-fg-12);
+		}
+	}
+	/* #endregion primary action */
+}

@@ -882,7 +882,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
 					<CopyIconButton
-						variant="ghost"
+						variant="ghost-highlightable"
 						tooltipCopy="Copy message"
 						text={text ?? undefined}
 						className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}

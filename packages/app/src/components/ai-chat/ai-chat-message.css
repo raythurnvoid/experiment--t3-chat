@@ -26,10 +26,6 @@
 		gap: 8px;
 
 		border-radius: 16px;
-
-		background: var(--color-base-1-03);
-		color: inherit;
-		box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
 	}
 
 	.AiChatMessageUser-bubble-state-editing {
@@ -48,7 +44,7 @@
 		grid-template-columns: 1fr;
 		grid-template-rows: auto auto;
 
-		background-color: var(--color-base-1-05);
+		background: var(--color-base-1-05);
 		color: var(--color-fg-08);
 
 		max-width: 520px;
@@ -80,29 +76,13 @@
 		grid-column: 1;
 		grid-row: 1 / -1;
 
-		display: block;
-		width: 100%;
 		padding: 0;
 		border: 2px solid transparent;
 		border-radius: inherit;
 
-		background: transparent;
-		color: inherit;
-		text-align: inherit;
-
 		&:focus-visible {
 			border-color: var(--color-fg-12);
 		}
-	}
-
-	.AiChatMessageAgent-bubble,
-	.AiChatMessageSystem-bubble {
-		width: 100%;
-
-		padding: 0;
-
-		background: transparent;
-		box-shadow: none;
 	}
 
 	.AiChatMessageSystem-bubble {
@@ -133,7 +113,8 @@
 		the conent is not shifted when switching in editing mode.
 		*/
 		min-height: 48px;
-		padding: 0 12px;
+
+		color: var(--color-fg-08);
 	}
 
 	.AiChatMessageUser-actions {
@@ -142,19 +123,8 @@
 
 		justify-self: end;
 		width: max-content;
-	}
 
-	.AiChatMessageUser-action-button,
-	.AiChatMessageAgent-action-button {
-		height: 28px;
-		width: 28px;
-		padding: 0;
-	}
-
-	.AiChatMessageUser-action-icon,
-	.AiChatMessageAgent-action-icon {
-		width: 16px;
-		height: 16px;
+		padding: 0px 10px 10px 0px;
 	}
 
 	.AiChatMessageUser-branch-controls,
@@ -162,6 +132,8 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
+
+		user-select: none;
 	}
 
 	.AiChatMessageUser-branch-label,

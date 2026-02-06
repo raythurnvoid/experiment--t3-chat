@@ -296,7 +296,7 @@ function PageEditorCommentsThreadResolveButton(props: PageEditorCommentsThreadRe
 	return (
 		<MyIconButton
 			className={"PageEditorCommentsThreadResolveButton" satisfies PageEditorCommentsThreadResolveButton_ClassNames}
-			variant="ghost-secondary"
+			variant="ghost-highlightable"
 			tooltip="Mark as resolved"
 			aria-busy={isArchiving}
 			disabled={isArchiving}

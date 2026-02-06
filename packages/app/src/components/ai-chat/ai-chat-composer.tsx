@@ -69,7 +69,7 @@ export type AiChatComposer_Props = Omit<ComponentPropsWithRef<"form">, "onSubmit
 	onValueChange?: (value: string) => void;
 	onSubmit: (value: string) => void;
 	onCancel: () => void;
-	onInteractedOutside?: (event: PointerEvent) => void;
+	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
 	onClose?: (event: React.KeyboardEvent<HTMLFormElement>) => void;
 };
 
@@ -297,10 +297,6 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 	useGlobalEventList(
 		["pointerdown", "focusin"],
 		(event) => {
-			if (!(event instanceof PointerEvent)) {
-				return;
-			}
-
 			if (!onInteractedOutside) {
 				return;
 			}

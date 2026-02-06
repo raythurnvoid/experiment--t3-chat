@@ -83,7 +83,15 @@
 			&:hover {
 				color: var(--color-fg-10);
 				background: var(--color-base-1-04);
-				border-color: var(--color-fg-05);
+
+				&:not(:focus-visible) {
+					border-color: var(--color-fg-05);
+				}
+			}
+
+			&:focus-visible {
+				color: var(--color-fg-10);
+				background: var(--color-base-1-04);
 			}
 		}
 
@@ -152,33 +160,20 @@
 		}
 	}
 
-	.MyButton-variant-ghost-secondary {
+	.MyButton-variant-ghost-highlightable {
 		background: transparent;
 		color: var(--color-fg-09);
 
 		&:not(:disabled) {
 			&:hover,
 			&:focus-visible {
-				background: var(--color-base-1-06);
+				background: var(--color-base-1-07);
+				color: var(--color-fg-12);
 			}
 		}
 
 		&:disabled {
-			color: var(--color-fg-10);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&:not(:disabled) {
-				&:hover,
-				&:focus-visible {
-					background: var(--color-base-1-04);
-					color: var(--color-fg-09);
-				}
-			}
-
-			&:disabled {
-				color: var(--color-fg-04);
-			}
+			color: var(--color-fg-04);
 		}
 	}
 

@@ -40,7 +40,7 @@
 
 	.MyLinkSurface-variant-button-tertiary,
 	.MyLinkSurface-variant-button-ghost,
-	.MyLinkSurface-variant-button-ghost-secondary {
+	.MyLinkSurface-variant-button-ghost-highlightable {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -101,20 +101,13 @@
 		}
 	}
 
-	.MyLinkSurface-variant-button-ghost-secondary {
-		color: var(--muted-foreground);
+	.MyLinkSurface-variant-button-ghost-highlightable {
+		color: var(--color-fg-09);
 
 		&:hover,
 		&:focus-visible {
-			background: var(--accent);
-			color: var(--accent-foreground);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&:hover,
-			&:focus-visible {
-				background: oklch(from var(--accent) l c h / 0.5);
-			}
+			background: var(--color-base-1-07);
+			color: var(--color-fg-12);
 		}
 	}
 }

@@ -20,6 +20,11 @@
 		overflow: hidden; */
 	}
 
+	::selection {
+		background: var(--color-accent-alt-10);
+		color: var(--color-fg-02);
+	}
+
 	a {
 		font-weight: 500;
 		color: #646cff;

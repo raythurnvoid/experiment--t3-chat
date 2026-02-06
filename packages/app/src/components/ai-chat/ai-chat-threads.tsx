@@ -2,14 +2,25 @@ import "./ai-chat-threads.css";
 
 import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
 import { useEffect, useState } from "react";
-import { ArchiveIcon, ArchiveRestoreIcon, Plus, Search, Star, X } from "lucide-react";
+import { ArchiveIcon, ArchiveRestoreIcon, EllipsisVertical, GitBranch, Plus, Search, Star, X } from "lucide-react";
 
+import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
 import { MyInteractiveList, MyInteractiveListItem } from "@/components/my-interactive-list.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
+import {
+	MyMenu,
+	MyMenuItem,
+	MyMenuItemContent,
+	MyMenuItemContentIcon,
+	MyMenuItemContentPrimary,
+	MyMenuPopover,
+	MyMenuPopoverContent,
+	MyMenuTrigger,
+} from "@/components/my-menu.tsx";
 import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
@@ -46,7 +57,7 @@ function AiChatThreadsHeader(props: AiChatThreadsHeader_Props) {
 				<div className={cn("AiChatThreadsHeader-row" satisfies AiChatThreadsHeader_ClassNames)}>
 					<MyIconButton
 						className={cn("AiChatThreadsHeader-close-button" satisfies AiChatThreadsHeader_ClassNames)}
-						variant="ghost"
+						variant="ghost-highlightable"
 						onClick={handleCloseClick}
 						tooltip="Close"
 					>
@@ -179,6 +190,7 @@ type AiChatThreadsListItem_Props = {
 	selectedThreadId: string | null;
 	onSelectThread: (threadId: string) => void;
 	onToggleFavouriteThread: (threadId: app_convex_Id<"ai_chat_threads">, starred: boolean) => void;
+	onBranchThread: (threadId: string) => void;
 	onArchiveThread: (threadId: string, isArchived: boolean) => void;
 };
 
@@ -190,6 +202,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 		selectedThreadId,
 		onSelectThread,
 		onToggleFavouriteThread,
+		onBranchThread,
 		onArchiveThread,
 	} = props;
 
@@ -208,13 +221,17 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 		onToggleFavouriteThread(thread._id, !isStarred);
 	};
 
+	const handleBranch = () => {
+		onBranchThread(thread._id);
+	};
+
 	const handleArchiveToggle = () => {
 		onArchiveThread(thread._id, !isArchived);
 	};
 
 	const isStarred = thread.starred === true;
 	const starButtonLabel = isStarred ? "Remove from favorites" : "Add to favorites";
-	const archiveButtonLabel = isArchived ? "Unarchive thread" : "Archive thread";
+	const archiveLabel = isArchived ? "Unarchive" : "Archive";
 
 	return (
 		<MyInteractiveListItem
@@ -222,25 +239,23 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
 			)}
-			data-active={isActive || undefined}
-			aria-current={isActive ? "true" : undefined}
 		>
-			<button
-				type="button"
+			<MyPrimaryAction
 				className={cn(
 					"AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
 				)}
+				selected={isActive}
 				onClick={handleSelect}
 			>
 				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
 					{threadTitle}
 				</span>
-			</button>
+			</MyPrimaryAction>
 			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
 				<MyIconButton
 					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
-					variant="ghost-secondary"
+					variant="ghost-highlightable"
 					onClick={handleStarToggle}
 					aria-pressed={isStarred}
 					tooltip={starButtonLabel}
@@ -249,14 +264,37 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 						<Star fill={isStarred ? "currentColor" : "none"} />
 					</MyIconButtonIcon>
 				</MyIconButton>
-				<MyIconButton
-					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
-					variant="ghost-secondary"
-					onClick={handleArchiveToggle}
-					tooltip={archiveButtonLabel}
-				>
-					<MyIconButtonIcon>{isArchived ? <ArchiveIcon /> : <ArchiveRestoreIcon />}</MyIconButtonIcon>
-				</MyIconButton>
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyIconButton
+							className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
+							variant="ghost-highlightable"
+							tooltip="More actions"
+						>
+							<MyIconButtonIcon>
+								<EllipsisVertical />
+							</MyIconButtonIcon>
+						</MyIconButton>
+					</MyMenuTrigger>
+					<MyMenuPopover>
+						<MyMenuPopoverContent>
+							<MyMenuItem onClick={handleBranch}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<GitBranch />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Branch</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+							<MyMenuItem variant="destructive" onClick={handleArchiveToggle}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>{isArchived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>{archiveLabel}</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuPopoverContent>
+					</MyMenuPopover>
+				</MyMenu>
 			</div>
 		</MyInteractiveListItem>
 	);
@@ -269,11 +307,10 @@ type AiChatThreadsOptimisticListItem_Props = {
 	searchQuery: string;
 	selectedThreadId: string | null;
 	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
-	onArchiveThread: AiChatThreadsListItem_Props["onArchiveThread"];
 };
 
 function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_Props) {
-	const { thread, searchQuery, selectedThreadId, onSelectThread, onArchiveThread } = props;
+	const { thread, searchQuery, selectedThreadId, onSelectThread } = props;
 
 	const isActive = selectedThreadId === thread._id;
 	const threadTitle = thread.title || "New Chat";
@@ -283,45 +320,25 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 		onSelectThread(thread._id);
 	};
 
-	const handleDelete = () => {
-		onArchiveThread(thread._id, true);
-	};
-
-	const archiveButtonLabel = "Archive thread";
-
 	return (
 		<MyInteractiveListItem
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
 			)}
-			data-active={isActive || undefined}
-			aria-current={isActive ? "true" : undefined}
 		>
-			<button
-				type="button"
+			<MyPrimaryAction
 				className={cn(
 					"AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
 				)}
+				selected={isActive}
 				onClick={handleSelect}
 			>
 				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
 					{threadTitle}
 				</span>
-			</button>
-			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
-				<MyIconButton
-					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
-					variant="ghost-secondary"
-					onClick={handleDelete}
-					tooltip={archiveButtonLabel}
-				>
-					<MyIconButtonIcon>
-						<ArchiveRestoreIcon />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</div>
+			</MyPrimaryAction>
 		</MyInteractiveListItem>
 	);
 }
@@ -343,6 +360,7 @@ type AiChatThreadsList_Props = ComponentPropsWithRef<"section"> & {
 	selectedThreadId: string | null;
 	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
 	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavouriteThread"];
+	onBranchThread: AiChatThreadsListItem_Props["onBranchThread"];
 	onArchiveThread: AiChatThreadsListItem_Props["onArchiveThread"];
 };
 
@@ -357,6 +375,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 		selectedThreadId,
 		onSelectThread,
 		onToggleFavouriteThread,
+		onBranchThread,
 		onArchiveThread,
 		...rest
 	} = props;
@@ -417,7 +436,6 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 								searchQuery={searchQuery}
 								selectedThreadId={selectedThreadId}
 								onSelectThread={onSelectThread}
-								onArchiveThread={onArchiveThread}
 							/>
 						);
 					}
@@ -431,6 +449,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 							selectedThreadId={selectedThreadId}
 							onSelectThread={onSelectThread}
 							onToggleFavouriteThread={onToggleFavouriteThread}
+							onBranchThread={onBranchThread}
 							onArchiveThread={onArchiveThread}
 						/>
 					);
@@ -461,6 +480,7 @@ export type AiChatThreads_Props = MySidebar_Props & {
 	onClose?: () => void;
 	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
 	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavouriteThread"];
+	onBranchThread: AiChatThreadsListItem_Props["onBranchThread"];
 	onArchiveThread: AiChatThreadsListItem_Props["onArchiveThread"];
 	onNewChat: AiChatThreadsHeader_Props["onNewChat"];
 };
@@ -477,6 +497,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 		onClose,
 		onSelectThread,
 		onToggleFavouriteThread,
+		onBranchThread,
 		onArchiveThread,
 		onNewChat,
 		...rest
@@ -525,6 +546,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 						selectedThreadId={selectedThreadId}
 						onSelectThread={onSelectThread}
 						onToggleFavouriteThread={onToggleFavouriteThread}
+						onBranchThread={onBranchThread}
 						onArchiveThread={onArchiveThread}
 					/>
 				</MySidebarContent>

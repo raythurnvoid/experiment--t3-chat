@@ -12,25 +12,27 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-secondary"
 	| "MyButton-variant-secondary-subtle"
 	| "MyButton-variant-ghost"
-	| "MyButton-variant-ghost-secondary"
+	| "MyButton-variant-ghost-highlightable"
 	| "MyButton-variant-tertiary"
 	| "MyButton-variant-link";
+
+type X =
+	| "default"
+	| "destructive"
+	| "outline"
+	| "secondary"
+	| "secondary-subtle"
+	| "ghost"
+	| "ghost-highlightable"
+	| "tertiary"
+	| "link";
 
 export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	ref?: Ref<HTMLButtonElement>;
 	id?: string;
 	className?: string;
 	type?: ComponentPropsWithRef<"button">["type"];
-	variant?:
-		| "default"
-		| "destructive"
-		| "outline"
-		| "secondary"
-		| "secondary-subtle"
-		| "ghost"
-		| "ghost-secondary"
-		| "tertiary"
-		| "link";
+	variant?: X;
 
 	/**
 	 * Whether the button is in loading state.
@@ -56,7 +58,7 @@ export function MyButton(props: MyButton_Props) {
 				variant === "secondary" && ("MyButton-variant-secondary" satisfies MyButton_ClassNames),
 				variant === "secondary-subtle" && ("MyButton-variant-secondary-subtle" satisfies MyButton_ClassNames),
 				variant === "ghost" && ("MyButton-variant-ghost" satisfies MyButton_ClassNames),
-				variant === "ghost-secondary" && ("MyButton-variant-ghost-secondary" satisfies MyButton_ClassNames),
+				variant === "ghost-highlightable" && ("MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames),
 				variant === "tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),
 				variant === "link" && ("MyButton-variant-link" satisfies MyButton_ClassNames),
 				className,

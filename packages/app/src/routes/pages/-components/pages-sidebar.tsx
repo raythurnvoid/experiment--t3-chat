@@ -374,7 +374,7 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 			className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
 			tooltip={context.isExpanded ? "Collapse page" : "Expand page"}
 			side="bottom"
-			variant="ghost-secondary"
+			variant="ghost-highlightable"
 		>
 			<MyIconButtonIcon>{context.isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 		</MyIconButton>
@@ -475,7 +475,7 @@ function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionI
 				"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames,
 				className,
 			)}
-			variant="ghost-secondary"
+			variant="ghost-highlightable"
 			tooltip={tooltip}
 			tabIndex={isActive ? 0 : -1}
 			onClick={onClick}

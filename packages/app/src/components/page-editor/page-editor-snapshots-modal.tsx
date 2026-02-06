@@ -309,7 +309,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 												className={cn(
 													"PageEditorSnapshotsModal-snapshot-action-button" satisfies PageEditorSnapshotsModal_ClassNames,
 												)}
-												variant="ghost-secondary"
+												variant="ghost-highlightable"
 												tooltip={snapshot.is_archived ? "Restore" : "Archive"}
 												onClick={(e) => handleArchiveClick(e, snapshot._id, snapshot.is_archived)}
 											>

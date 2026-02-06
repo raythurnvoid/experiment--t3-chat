@@ -107,12 +107,16 @@ function ThemeToggleMenuItem() {
 	};
 
 	return (
-		<MySidebarMenuItem className={"MainAppSidebarThemeToggleMenuItem" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}>
+		<MySidebarMenuItem
+			className={"MainAppSidebarThemeToggleMenuItem" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
+		>
 			<MySidebarMenuButton
 				onClick={cycle_theme}
 				className={"MainAppSidebarThemeToggleMenuItem-button" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 			>
-				<MyIcon className={"MainAppSidebarThemeToggleMenuItem-icon" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}>
+				<MyIcon
+					className={"MainAppSidebarThemeToggleMenuItem-icon" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
+				>
 					{get_theme_icon()}
 				</MyIcon>
 				<MainAppSidebarMenuButtonLabel>Theme</MainAppSidebarMenuButtonLabel>
@@ -201,8 +205,7 @@ function UserProfileButton() {
 		}
 	};
 
-	const clerkAvatarBoxClassName =
-		"MainAppSidebarClerkAvatarBox" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	const clerkAvatarBoxClassName = "MainAppSidebarClerkAvatarBox" satisfies MainAppSidebarUserProfileButton_ClassNames;
 	const clerkPopoverCardClassName =
 		"MainAppSidebarClerkPopoverCard" satisfies MainAppSidebarUserProfileButton_ClassNames;
 	const clerkPopoverMainClassName =
@@ -218,7 +221,7 @@ function UserProfileButton() {
 		<div className={"MainAppSidebarUserProfileButton" satisfies MainAppSidebarUserProfileButton_ClassNames}>
 			{/* Custom display button */}
 			<MyButton
-				variant="ghost-secondary"
+				variant="ghost-highlightable"
 				onClick={handleCustomButtonClick}
 				className={"MainAppSidebarUserProfileButton-button" satisfies MainAppSidebarUserProfileButton_ClassNames}
 			>
@@ -232,9 +235,7 @@ function UserProfileButton() {
 					/>
 				</div>
 				<div className={"MainAppSidebarUserProfileButton-info" satisfies MainAppSidebarUserProfileButton_ClassNames}>
-					<span
-						className={"MainAppSidebarUserProfileButton-name" satisfies MainAppSidebarUserProfileButton_ClassNames}
-					>
+					<span className={"MainAppSidebarUserProfileButton-name" satisfies MainAppSidebarUserProfileButton_ClassNames}>
 						{displayName}
 					</span>
 					{emailAddress && (

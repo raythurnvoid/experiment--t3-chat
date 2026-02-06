@@ -698,6 +698,7 @@ export function AiChat(props: AiChat_Props) {
 				onClose={() => setAiChatSidebarOpen(false)}
 				onSelectThread={controller.selectThread}
 				onToggleFavouriteThread={controller.setThreadStarred}
+				onBranchThread={controller.branchChat}
 				onArchiveThread={controller.archiveThread}
 				onNewChat={controller.startNewChat}
 			/>

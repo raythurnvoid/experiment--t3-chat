@@ -682,7 +682,7 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 			className={cn(
 				"PageEditorRichTextDragHandle" satisfies PageEditorRichTextDragHandle_ClassNames,
 				"MyButton" satisfies MyButton_ClassNames,
-				"MyButton-variant-ghost-secondary" satisfies MyButton_ClassNames,
+				"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
 			)}
 			onNodeChange={handleNodeChange}
 			computePositionConfig={computePositionConfig}
@@ -694,7 +694,7 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 							"PageEditorRichTextDragHandle-button" satisfies PageEditorRichTextDragHandle_ClassNames,
 							"MyButton" satisfies MyButton_ClassNames,
 							"MyIconButton" satisfies MyIconButton_ClassNames,
-							"MyButton-variant-ghost-secondary" satisfies MyButton_ClassNames,
+							"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
 						)}
 						type="button"
 						aria-label="Block menu"

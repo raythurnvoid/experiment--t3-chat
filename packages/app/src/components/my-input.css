@@ -24,8 +24,10 @@
 	}
 
 	/* Focus ring */
-	.MyInput:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) .MyInputBox {
-		border-color: var(--color-fg-12);
+	.MyInput:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) {
+		& .MyInputBox {
+			border-color: var(--color-fg-12);
+		}
 	}
 
 	/* Invalid state ring */
@@ -70,8 +72,8 @@
 
 		background: transparent;
 		border: none;
-		color: inherit;
 
+		color: var(--color-fg-11);
 		font-size: 1rem;
 		line-height: 1.5;
 
@@ -86,13 +88,7 @@
 
 		/* Placeholder */
 		&::placeholder {
-			color: var(--muted-foreground);
-		}
-
-		/* Selection */
-		&::selection {
-			background: var(--primary);
-			color: var(--primary-foreground);
+			color: var(--color-fg-07);
 		}
 
 		/* File button */
