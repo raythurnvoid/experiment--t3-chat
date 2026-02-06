@@ -673,6 +673,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									createdThreadId = threadId = created.thread_id;
 								}
 
+								// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
+								let resolvedParentId: string | undefined = body.parentId;
+
 								if (threadId) {
 									do {
 										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
@@ -684,9 +687,25 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											break;
 										}
 
-										const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
-											threadMessagesResult.messages.map((msg) => [msg._id, msg]),
-										);
+										// FIX(parentId-race-condition): Index by both Convex doc `_id` and `clientGeneratedMessageId`
+										// so lookups work regardless of which ID format the client sends.
+										// The client may send a client-generated ID as `body.parentId` when the Convex
+										// real-time subscription hasn't delivered the persisted messages yet.
+										//
+										// BEFORE:
+										// const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
+										// 	threadMessagesResult.messages.map((msg) => [msg._id, msg]),
+										// );
+										const messagesMap = new Map<
+											string,
+											app_convex_Doc<"ai_chat_threads_messages_aisdk_5">
+										>();
+										for (const msg of threadMessagesResult.messages) {
+											messagesMap.set(msg._id, msg);
+											if (msg.clientGeneratedMessageId) {
+												messagesMap.set(msg.clientGeneratedMessageId, msg);
+											}
+										}
 
 										const reconstructedMessages: app_convex_Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
 
@@ -702,6 +721,17 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 											reconstructedMessages.push(message);
 											nextMessageId = message.parentId as string;
+										}
+
+										// FIX(parentId-race-condition): Resolve `body.parentId` to the Convex doc `_id` so that
+										// `onFinish` can persist the parent chain with real doc IDs.
+										// Without this, `normalizeId()` in `thread_messages_add` silently returns `null`
+										// for client-generated IDs, breaking the parent chain.
+										if (body.parentId) {
+											const parentMsg = messagesMap.get(body.parentId);
+											if (parentMsg) {
+												resolvedParentId = parentMsg._id;
+											}
 										}
 
 										uiMessages = reconstructedMessages
@@ -863,9 +893,14 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 												content: message,
 											}));
 
+											// FIX(parentId-race-condition): Use `resolvedParentId` (Convex doc ID) instead of
+											// `body.parentId` (which may be a client-generated ID).
+											//
+											// BEFORE:
+											// parentId: body.parentId,
 											await ctx.runMutation(api.ai_chat.thread_messages_add, {
 												threadId: threadId as app_convex_Id<"ai_chat_threads">,
-												parentId: body.parentId,
+												parentId: resolvedParentId,
 												messages: messagesToAdd,
 											});
 										} catch (error: unknown) {
