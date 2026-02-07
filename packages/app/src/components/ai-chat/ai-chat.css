@@ -125,6 +125,89 @@
 	}
 	/* #endregion thread */
 
+	/* #region skeleton */
+	.AiChatSkeleton {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+
+		min-height: 100%;
+	}
+
+	.AiChatSkeleton-row {
+		display: flex;
+	}
+
+	.AiChatSkeleton-row-align-end {
+		justify-content: end;
+	}
+
+	.AiChatSkeleton-bubble {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		padding: 16px;
+		border-radius: 16px;
+	}
+
+	.AiChatSkeleton-bubble-user {
+		width: 320px;
+		height: 90px;
+
+		background: var(--color-base-1-05);
+
+		animation: AiChatSkeleton-pulse 1s ease-in-out infinite alternate;
+
+		> .AiChatSkeleton-line {
+			animation: AiChatSkeleton-user-line-pulse 1s ease-in-out infinite alternate;
+		}
+	}
+
+	.AiChatSkeleton-bubble-agent {
+		width: 100%;
+	}
+
+	.AiChatSkeleton-line {
+		height: 1em;
+		border-radius: 6px;
+
+		background: var(--color-base-1-05);
+
+		animation: AiChatSkeleton-pulse 1s ease-in-out infinite alternate-reverse;
+	}
+
+	.AiChatSkeleton-line-short {
+		width: 40%;
+	}
+
+	.AiChatSkeleton-line-medium {
+		width: 70%;
+	}
+
+	.AiChatSkeleton-line-long {
+		width: 100%;
+	}
+
+	@keyframes AiChatSkeleton-pulse {
+		from {
+			filter: brightness(0.4);
+		}
+		to {
+			filter: brightness(1);
+		}
+	}
+
+	@keyframes AiChatSkeleton-user-line-pulse {
+		from {
+			filter: brightness(3);
+		}
+		to {
+			filter: brightness(1.5);
+		}
+	}
+	/* #endregion skeleton */
+
 	/* #region welcome */
 	.AiChatWelcome {
 		display: flex;

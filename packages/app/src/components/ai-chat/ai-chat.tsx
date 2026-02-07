@@ -91,10 +91,80 @@ function AiChatWelcome(props: AiChatWelcome_Props) {
 }
 // #endregion welcome
 
-// #region messages list
-export type AiChatMessagesList_ClassNames = "AiChatMessageList";
+// #region skeleton
+type AiChatSkeleton_ClassNames =
+	| "AiChatSkeleton"
+	| "AiChatSkeleton-row"
+	| "AiChatSkeleton-row-align-end"
+	| "AiChatSkeleton-bubble"
+	| "AiChatSkeleton-bubble-user"
+	| "AiChatSkeleton-bubble-agent"
+	| "AiChatSkeleton-line"
+	| "AiChatSkeleton-line-short"
+	| "AiChatSkeleton-line-medium"
+	| "AiChatSkeleton-line-long";
 
-export type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
+function AiChatSkeleton() {
+	return (
+		<div className={"AiChatSkeleton" satisfies AiChatSkeleton_ClassNames}>
+			{/* User message skeleton */}
+			<div
+				className={cn(
+					"AiChatSkeleton-row" satisfies AiChatSkeleton_ClassNames,
+					"AiChatSkeleton-row-align-end" satisfies AiChatSkeleton_ClassNames,
+				)}
+			>
+				<div
+					className={cn(
+						"AiChatSkeleton-bubble" satisfies AiChatSkeleton_ClassNames,
+						"AiChatSkeleton-bubble-user" satisfies AiChatSkeleton_ClassNames,
+					)}
+				>
+					<div
+						className={cn(
+							"AiChatSkeleton-line" satisfies AiChatSkeleton_ClassNames,
+							"AiChatSkeleton-line-medium" satisfies AiChatSkeleton_ClassNames,
+						)}
+					/>
+				</div>
+			</div>
+			{/* Agent message skeleton */}
+			<div className={"AiChatSkeleton-row" satisfies AiChatSkeleton_ClassNames}>
+				<div
+					className={cn(
+						"AiChatSkeleton-bubble" satisfies AiChatSkeleton_ClassNames,
+						"AiChatSkeleton-bubble-agent" satisfies AiChatSkeleton_ClassNames,
+					)}
+				>
+					<div
+						className={cn(
+							"AiChatSkeleton-line" satisfies AiChatSkeleton_ClassNames,
+							"AiChatSkeleton-line-long" satisfies AiChatSkeleton_ClassNames,
+						)}
+					/>
+					<div
+						className={cn(
+							"AiChatSkeleton-line" satisfies AiChatSkeleton_ClassNames,
+							"AiChatSkeleton-line-long" satisfies AiChatSkeleton_ClassNames,
+						)}
+					/>
+					<div
+						className={cn(
+							"AiChatSkeleton-line" satisfies AiChatSkeleton_ClassNames,
+							"AiChatSkeleton-line-short" satisfies AiChatSkeleton_ClassNames,
+						)}
+					/>
+				</div>
+			</div>
+		</div>
+	);
+}
+// #endregion skeleton
+
+// #region message list
+type AiChatMessagesList_ClassNames = "AiChatMessageList";
+
+type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
@@ -103,6 +173,7 @@ export type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	activeBranchMessages: ReturnType<typeof useAiChatController>["activeBranchMessages"];
 	messagesChildrenByParentId: ReturnType<typeof useAiChatController>["messagesChildrenByParentId"];
 	isRunning: boolean;
+	status: AiChatController["status"];
 	editingMessageId: string | null;
 	onToolOutput: AiChatMessage_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessage_Props["onToolResumeStream"];
@@ -125,6 +196,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 		activeBranchMessages,
 		messagesChildrenByParentId,
 		isRunning,
+		status,
 		editingMessageId,
 		onToolOutput,
 		onToolResumeStream,
@@ -184,7 +256,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 		</div>
 	);
 }
-// #endregion messages list
+// #endregion message list
 
 // #region auto scroll hook
 const AUTO_SCROLL_BOTTOM_MARGIN = 1;
@@ -340,18 +412,18 @@ function useAutoScroll(props: useAutoScroll_Props) {
 // #endregion auto scroll hook
 
 // #region thread
-type AiChatThread_ClassNames =
+export type AiChatThread_ClassNames =
 	| "AiChatThread"
 	| "AiChatThread-content"
 	| "AiChatThread-scroll-to-bottom"
 	| "AiChatThread-scroll-to-bottom-icon"
 	| "AiChatThread-composer";
 
-type AiChatThread_Props = {
+export type AiChatThread_Props = {
 	controller: AiChatController;
 };
 
-function AiChatThread(props: AiChatThread_Props) {
+export function AiChatThread(props: AiChatThread_Props) {
 	const { controller } = props;
 
 	const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -655,6 +727,7 @@ function AiChatThread(props: AiChatThread_Props) {
 					activeBranchMessages={controller.activeBranchMessages}
 					messagesChildrenByParentId={controller.messagesChildrenByParentId}
 					isRunning={controller.isRunning}
+					status={controller.status}
 					editingMessageId={editingMessageId}
 					onEditStart={handleEditStart}
 					onEditCancel={handleEditCancel}
@@ -699,7 +772,7 @@ type AiChat_ClassNames =
 	| "AiChat-thread-control-icon"
 	| "AiChat-thread-content";
 
-export type AiChat_Props = ComponentPropsWithRef<"div"> & {
+type AiChat_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;

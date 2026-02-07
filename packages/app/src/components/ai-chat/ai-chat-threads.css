@@ -44,7 +44,7 @@
 
 	.AiChatThreadsHeader-row {
 		display: flex;
-		justify-content: flex-end;
+		justify-content: end;
 	}
 
 	.AiChatThreadsHeader-close-button {
@@ -71,7 +71,7 @@
 		gap: 8px;
 
 		font-size: 0.875rem;
-		color: var(--foreground);
+		color: var(--color-fg-08);
 	}
 
 	.AiChatThreadsArchivedToggle-input {

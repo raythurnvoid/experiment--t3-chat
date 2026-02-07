@@ -12,7 +12,7 @@ import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_ROOT_ID, pages_create_room_id, type pages_TreeItem, pages_PresenceStore } from "@/lib/pages.ts";
-import { Home } from "lucide-react";
+import { Home, Sparkles } from "lucide-react";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
@@ -195,6 +195,49 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 	);
 }
 // #endregion Header
+
+// #region PendingEditsBanner
+type PageEditorPendingEditsBanner_ClassNames =
+	| "PageEditorPendingEditsBanner"
+	| "PageEditorPendingEditsBanner-content"
+	| "PageEditorPendingEditsBanner-icon"
+	| "PageEditorPendingEditsBanner-text"
+	| "PageEditorPendingEditsBanner-review-button";
+
+type PageEditorPendingEditsBanner_Props = {
+	threadId: string;
+	updatedAt: number;
+	onReviewChanges: (threadId: string) => void;
+};
+
+function PageEditorPendingEditsBanner(props: PageEditorPendingEditsBanner_Props) {
+	const { threadId, updatedAt, onReviewChanges } = props;
+
+	const handleClick = () => {
+		onReviewChanges(threadId);
+	};
+
+	return (
+		<div className={cn("PageEditorPendingEditsBanner" satisfies PageEditorPendingEditsBanner_ClassNames)}>
+			<div className={cn("PageEditorPendingEditsBanner-content" satisfies PageEditorPendingEditsBanner_ClassNames)}>
+				<Sparkles
+					size={16}
+					className={cn("PageEditorPendingEditsBanner-icon" satisfies PageEditorPendingEditsBanner_ClassNames)}
+				/>
+				<span className={cn("PageEditorPendingEditsBanner-text" satisfies PageEditorPendingEditsBanner_ClassNames)}>
+					Agent edits are pending review
+				</span>
+				<button
+					className={cn("PageEditorPendingEditsBanner-review-button" satisfies PageEditorPendingEditsBanner_ClassNames)}
+					onClick={handleClick}
+				>
+					Review changes
+				</button>
+			</div>
+		</div>
+	);
+}
+// #endregion PendingEditsBanner
 
 // #region PresenceSupplier
 
@@ -387,16 +430,32 @@ type PageEditor_Inner_Props = {
 		anagraphic: { displayName: string; avatarUrl?: string };
 		color: string;
 	}>;
-	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 	diffModifiedInitialValue?: string;
+	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
+	onReviewPendingEdits?: (threadId: string) => void;
+	onDiffExit?: () => void;
 };
 
 function PageEditor_Inner(props: PageEditor_Inner_Props) {
-	const { pageId, editorMode, threadId, presenceStore, onlineUsers, onEditorModeChange, diffModifiedInitialValue } =
-		props;
+	const {
+		pageId,
+		editorMode,
+		threadId,
+		presenceStore,
+		onlineUsers,
+		diffModifiedInitialValue,
+		onEditorModeChange,
+		onReviewPendingEdits,
+		onDiffExit,
+	} = props;
+
+	const pendingEditsResult = useQuery(app_convex_api.ai_chat.has_pending_edits_for_page, {
+		pageId: pageId,
+	});
 
 	const handleDiffExit = () => {
 		onEditorModeChange("rich");
+		onDiffExit?.();
 	};
 
 	const headerSlot = (
@@ -406,6 +465,19 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 			onEditorModeChange={onEditorModeChange}
 			onlineUsers={onlineUsers}
 		/>
+	);
+
+	const enhancedHeaderSlot = (
+		<>
+			{headerSlot}
+			{pendingEditsResult && editorMode !== "diff" && (
+				<PageEditorPendingEditsBanner
+					threadId={pendingEditsResult.threadId}
+					updatedAt={pendingEditsResult.updatedAt}
+					onReviewChanges={onReviewPendingEdits ?? (() => {})}
+				/>
+			)}
+		</>
 	);
 
 	return (
@@ -419,10 +491,15 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 					}}
 				>
 					{editorMode === "rich" ? (
-						<PageEditorRichText pageId={pageId} presenceStore={presenceStore} headerSlot={headerSlot} />
+						<PageEditorRichText pageId={pageId} presenceStore={presenceStore} headerSlot={enhancedHeaderSlot} />
 					) : editorMode === "diff" ? (
 						threadId ? (
-							<MonacoMarkdownDiffEditorAiEditsWrapper pageId={pageId} threadId={threadId} onExit={handleDiffExit} />
+							<MonacoMarkdownDiffEditorAiEditsWrapper
+								pageId={pageId}
+								threadId={threadId}
+								headerSlot={headerSlot}
+								onExit={handleDiffExit}
+							/>
 						) : (
 							<PageEditorDiff
 								pageId={pageId}
@@ -433,7 +510,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 							/>
 						)
 					) : (
-						<PageEditorPlainText pageId={pageId} presenceStore={presenceStore} headerSlot={headerSlot} />
+						<PageEditorPlainText pageId={pageId} presenceStore={presenceStore} headerSlot={enhancedHeaderSlot} />
 					)}
 				</CatchBoundary>
 			</div>
@@ -462,9 +539,12 @@ export function PageEditor(props: PageEditor_Props) {
 	const [diffModifiedInitialValuePageId, setDiffModifiedInitialValuePageId] = useState<app_convex_Id<"pages"> | null>(
 		null,
 	);
+	const [localThreadId, setLocalThreadId] = useState<string | undefined>(undefined);
 
 	const diffModifiedInitialValueForPage =
 		pageId && diffModifiedInitialValuePageId === pageId ? diffModifiedInitialValue : undefined;
+
+	const effectiveThreadId = threadId ?? localThreadId;
 
 	useImperativeHandle(
 		refProp,
@@ -485,11 +565,18 @@ export function PageEditor(props: PageEditor_Props) {
 				<PageEditor_Inner
 					pageId={pageId}
 					editorMode={editorMode}
-					threadId={threadId}
+					threadId={effectiveThreadId}
 					presenceStore={presenceStore}
 					onlineUsers={onlineUsers}
 					diffModifiedInitialValue={diffModifiedInitialValueForPage}
 					onEditorModeChange={setEditorMode}
+					onReviewPendingEdits={(reviewThreadId) => {
+						setLocalThreadId(reviewThreadId);
+						setEditorMode("diff");
+					}}
+					onDiffExit={() => {
+						setLocalThreadId(undefined);
+					}}
 				/>
 			)}
 		</PageEditorPresenceSupplier>

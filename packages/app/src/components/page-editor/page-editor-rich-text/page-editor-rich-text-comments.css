@@ -4,6 +4,13 @@
 		/* z-index: 1; */
 	}
 
+	.PageEditorRichTextAnchoredComments-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-06);
+	}
+
 	.PageEditorRichTextAnchoredComments-anchored-elements-container {
 		position: relative;
 

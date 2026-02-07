@@ -429,7 +429,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
 
-			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+			const pageContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 				path: normalizedPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -437,7 +437,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 				threadId: tool_execution_ctx.thread_id,
 			});
 
-			if (!textContent) {
+			if (!pageContent) {
 				// Try to get suggestions for similar paths
 				const parentPath = server_path_parent_of(normalizedPath);
 				if (parentPath) {
@@ -475,7 +475,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 				};
 			}
 
-			const lines = textContent.split("\n");
+			const lines = pageContent.content.split("\n");
 			const offset = args.offset || 0;
 			const limit = args.limit ?? 2000;
 
@@ -507,6 +507,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 				output,
 				metadata: {
 					preview,
+					pageId: pageContent.pageId,
 				},
 			};
 		},
@@ -746,7 +747,7 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ct
 
 			for (const item of list.items) {
 				// Read page content
-				const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+				const pageResult = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 					path: item.path,
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -755,7 +756,7 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ct
 				});
 
 				const pageName = path_name_of(item.path);
-				const fullText = `${pageName}\n${textContent ?? ""}`;
+				const fullText = `${pageName}\n${pageResult?.content ?? ""}`;
 
 				// Line-based scan to produce line numbers and line snippets, similar to ripgrep output
 				const lines = fullText.split(/\r?\n/);
@@ -914,13 +915,15 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx, tool_execution_ct
 			let exists = !!pageId;
 
 			const oldText = pageId
-				? ((await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
-						path,
-						workspaceId: ai_chat_HARDCODED_ORG_ID,
-						projectId: ai_chat_HARDCODED_PROJECT_ID,
-						userId: user.id,
-						threadId: tool_execution_ctx.thread_id,
-					})) ?? "")
+				? ((
+						await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+							path,
+							workspaceId: ai_chat_HARDCODED_ORG_ID,
+							projectId: ai_chat_HARDCODED_PROJECT_ID,
+							userId: user.id,
+							threadId: tool_execution_ctx.thread_id,
+						})
+					)?.content ?? "")
 				: "";
 
 			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
@@ -1012,13 +1015,15 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx
 			}
 
 			const baseText =
-				(await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
-					path: normalizedPath,
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					userId: user.id,
-					threadId: tool_execution_ctx.thread_id,
-				})) ?? "";
+				(
+					await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+						path: normalizedPath,
+						workspaceId: ai_chat_HARDCODED_ORG_ID,
+						projectId: ai_chat_HARDCODED_PROJECT_ID,
+						userId: user.id,
+						threadId: tool_execution_ctx.thread_id,
+					})
+				)?.content ?? "";
 
 			const { content: modifiedText, matches } = replace_once_or_all(baseText, args.oldString, args.newString, {
 				replaceAll: args.replaceAll,

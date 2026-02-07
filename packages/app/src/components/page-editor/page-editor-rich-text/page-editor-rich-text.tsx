@@ -25,6 +25,7 @@ import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-t
 import { MySeparator, type MySeparator_ClassNames } from "@/components/my-separator.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
+import { PageEditorRichTextSidebarAgent } from "./page-editor-rich-text-sidebar-agent.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import {
@@ -418,7 +419,7 @@ export type PageEditorRichTextSidebar_ClassNames =
 	| "PageEditorRichTextSidebar-tabs-list"
 	| "PageEditorRichTextSidebar-tabs-panels"
 	| "PageEditorRichTextSidebar-panel"
-	| "PageEditorRichTextSidebar-agent";
+	| "PageEditorRichTextSidebar-panel-empty";
 
 export type PageEditorRichTextSidebar_Props = {
 	editor: Editor;
@@ -456,17 +457,13 @@ function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
 						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
 						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
 					>
-						{editor && threadsQuery && (
-							<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery.threads} />
-						)}
+						{editor && <PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />}
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
 						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
 					>
-						<div className={cn("PageEditorRichTextSidebar-agent" satisfies PageEditorRichTextSidebar_ClassNames)}>
-							Agent tools will appear here.
-						</div>
+						<PageEditorRichTextSidebarAgent />
 					</MyTabsPanel>
 				</MyTabsPanels>
 			</MyTabs>
@@ -697,7 +694,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 								overflow: "initial",
 							}}
 						>
-							{editor && threadsQuery && <PageEditorRichTextSidebar editor={editor} threadsQuery={threadsQuery} />}
+							{editor && <PageEditorRichTextSidebar editor={editor} threadsQuery={threadsQuery} />}
 						</Panel>
 					</PanelGroup>
 				</div>

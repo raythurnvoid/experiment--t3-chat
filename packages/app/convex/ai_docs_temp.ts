@@ -801,7 +801,7 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		userId: v.string(),
 		threadId: v.string(),
 	},
-	returns: v.union(v.string(), v.null()),
+	returns: v.union(v.object({ content: v.string(), pageId: v.string() }), v.null()),
 	handler: async (ctx, args) => {
 		const pageId = await resolve_id_from_path(ctx, {
 			workspace_id: args.workspaceId,
@@ -816,6 +816,13 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		if (!page) return null;
 		if (page.is_archived) return null;
 
+		if (!page.markdown_content_id) {
+			throw should_never_happen("page.markdown_content_id is not set", {
+				pageId,
+				markdownContentId: page.markdown_content_id,
+			});
+		}
+
 		const overlay = await ctx.db
 			.query("ai_chat_pending_edits")
 			.withIndex("by_user_thread_page", (q) =>
@@ -825,19 +832,12 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 					.eq("page_id", page.page_id),
 			)
 			.first();
-		if (overlay) return overlay.modified_content;
-
-		if (!page.markdown_content_id) {
-			throw should_never_happen("page.markdown_content_id is not set", {
-				pageId,
-				markdownContentId: page.markdown_content_id,
-			});
-		}
+		if (overlay) return { content: overlay.modified_content, pageId: page.page_id };
 
 		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdown_content_id);
 		if (!markdownContentDoc) return null;
 
-		return markdownContentDoc.content;
+		return { content: markdownContentDoc.content, pageId: page.page_id };
 	},
 });
 

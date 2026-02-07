@@ -534,6 +534,30 @@ export const get_ai_pending_edit = query({
 	},
 });
 
+export const has_pending_edits_for_page = query({
+	args: {
+		pageId: v.string(),
+	},
+	returns: v.union(
+		v.object({ hasPending: v.literal(true), threadId: v.string(), updatedAt: v.number() }),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const pending = await ctx.db
+			.query("ai_chat_pending_edits")
+			.withIndex("by_page", (q) => q.eq("page_id", args.pageId))
+			.order("desc")
+			.first();
+		if (!pending || pending.user_id !== user.id) return null;
+		return {
+			hasPending: true as const,
+			threadId: pending.thread_id,
+			updatedAt: pending.updated_at,
+		};
+	},
+});
+
 export function ai_chat_http_routes(router: RouterForConvexModules) {
 	return {
 		...((/* iife */ path = "/api/chat" as const satisfies api_schemas_Main_Path) => ({

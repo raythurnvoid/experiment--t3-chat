@@ -738,6 +738,19 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 	const isRunning = chat.status === "submitted" || chat.status === "streaming";
 
+	const status = ((/* iife */) => {
+		if (!selectedThreadId || !session) {
+			return "idle" as const;
+		}
+		if (session.optimisticThread) {
+			return "loaded" as const;
+		}
+		if (persistedThreadMessages === undefined) {
+			return "loading" as const;
+		}
+		return "loaded" as const;
+	})();
+
 	useEffect(() => {
 		// Clean up optimistic threads that have been persisted.
 		for (const session of threadById.values()) {
@@ -777,7 +790,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		currentThreadsWithOptimistic,
 		streamingTitleByThreadId,
 
-		status: chat.status,
+		status,
 		error: chat.error,
 		isRunning,
 		activeBranchMessages,

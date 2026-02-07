@@ -308,26 +308,17 @@
 	}
 	/* #endregion tool textarea section */
 
-	/* #region tool meta header */
-	.AiChatMessageToolMetaHeader-chips {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-	}
-	/* #endregion tool meta header */
+	/* #region tool read_page */
+	.AiChatMessageToolReadPage-link {
+		display: inline-block;
 
-	/* #region tool copy_result_action */
-	.AiChatMessageToolCopyResultAction-button {
-		height: 28px;
-		width: 28px;
-		padding: 0;
-	}
+		padding: 4px 16px;
 
-	.AiChatMessageToolCopyResultAction-icon {
-		width: 16px;
-		height: 16px;
+		font-size: 0.8125rem;
+		color: hsl(var(--primary));
+		text-decoration: none;
 	}
-	/* #endregion tool copy_result_action */
+	/* #endregion tool read_page */
 
 	/* #region tool unknown */
 	.AiChatMessageToolUnknown-meta {
@@ -341,13 +332,13 @@
 
 	/* #region user message */
 	.AiChatMessageUser {
-		align-items: flex-end;
+		align-items: end;
 	}
 	/* #endregion user message */
 
 	/* #region agent message */
 	.AiChatMessageAgent {
-		align-items: flex-start;
+		align-items: start;
 	}
 
 	.AiChatMessageAgent-bubble {
@@ -355,9 +346,7 @@
 	}
 	/* #endregion agent message */
 
-	/* #region system message */
-
-	/* #region message part */
+	/* #region part */
 	.AiChatMessagePart {
 		display: flex;
 		flex-direction: column;
@@ -440,10 +429,12 @@
 		text-decoration: underline;
 		text-underline-offset: 3px;
 	}
-	/* #endregion message part */
+	/* #endregion part */
+
+	/* #region system message */
 
 	.AiChatMessageSystem {
-		align-items: flex-start;
+		align-items: start;
 	}
 	/* #endregion system message */
 }

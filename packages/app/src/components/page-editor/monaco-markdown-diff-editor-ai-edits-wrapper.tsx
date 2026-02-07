@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
+import React, { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { useConvex } from "convex/react";
 import { api } from "../../../convex/_generated/api.js";
 import { PageEditorDiff, type PageEditorDiff_Ref } from "./page-editor-diff/page-editor-diff.tsx";
@@ -10,13 +10,14 @@ export interface MonacoMarkdownDiffEditorAiEditsWrapper_Props {
 	ref?: Ref<PageEditorDiff_Ref>;
 	id?: string;
 	className?: string;
+	headerSlot?: React.ReactNode;
 	pageId: app_convex_Id<"pages">;
 	threadId: string;
 	onExit: () => void;
 }
 
 export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiffEditorAiEditsWrapper_Props) {
-	const { ref, id, className, pageId, threadId, onExit } = props;
+	const { ref, id, className, headerSlot, pageId, threadId, onExit } = props;
 	const convex = useConvex();
 
 	const [initialModified, setInitialModified] = useStateRef<string | undefined>(undefined);
@@ -57,6 +58,7 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 				<PageEditorDiff
 					ref={diffEditorRef}
 					className={className}
+					headerSlot={headerSlot}
 					pageId={pageId}
 					modifiedInitialValue={initialModified.current}
 					onExit={onExit}

@@ -62,13 +62,14 @@ function PageEditorRichTextAnchoredCommentsThreadsList(props: PageEditorRichText
 // #region root
 export type PageEditorRichTextAnchoredComments_ClassNames =
 	| "PageEditorRichTextAnchoredComments"
+	| "PageEditorRichTextAnchoredComments-empty"
 	| "PageEditorRichTextAnchoredComments-anchored-elements-container"
 	| "PageEditorRichTextAnchoredComments-thread-container"
 	| "PageEditorRichTextAnchoredComments-filter";
 
 export type PageEditorRichTextAnchoredComments_Props = {
 	editor: Editor;
-	threads: human_thread_messages_Thread[];
+	threads: human_thread_messages_Thread[] | undefined;
 };
 
 export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnchoredComments_Props) {
@@ -76,7 +77,7 @@ export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnch
 
 	const [query, setQuery] = useState("");
 
-	const filteredThreads = PageEditorCommentsFilterInput.filterThreads(threads, query);
+	const filteredThreads = threads ? PageEditorCommentsFilterInput.filterThreads(threads, query) : [];
 
 	const handleThreadClick = (threadId: string) => {
 		editor.commands.selectThread(threadId);
@@ -88,22 +89,30 @@ export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnch
 
 	return (
 		<aside className={"PageEditorRichTextAnchoredComments" satisfies PageEditorRichTextAnchoredComments_ClassNames}>
-			<AnchoredThreads
-				className={
-					"PageEditorRichTextAnchoredComments-anchored-elements-container" satisfies PageEditorRichTextAnchoredComments_ClassNames
-				}
-				editor={editor}
-				threads={filteredThreads}
-			>
-				<PageEditorCommentsFilterInput
+			{!threads || threads.length === 0 ? (
+				<div
+					className={"PageEditorRichTextAnchoredComments-empty" satisfies PageEditorRichTextAnchoredComments_ClassNames}
+				>
+					No comments yet
+				</div>
+			) : (
+				<AnchoredThreads
 					className={
-						"PageEditorRichTextAnchoredComments-filter" satisfies PageEditorRichTextAnchoredComments_ClassNames
+						"PageEditorRichTextAnchoredComments-anchored-elements-container" satisfies PageEditorRichTextAnchoredComments_ClassNames
 					}
-					value={query}
-					onValueChange={setQuery}
-				/>
-				<PageEditorRichTextAnchoredCommentsThreadsList threads={filteredThreads} onClick={handleThreadClick} />
-			</AnchoredThreads>
+					editor={editor}
+					threads={filteredThreads}
+				>
+					<PageEditorCommentsFilterInput
+						className={
+							"PageEditorRichTextAnchoredComments-filter" satisfies PageEditorRichTextAnchoredComments_ClassNames
+						}
+						value={query}
+						onValueChange={setQuery}
+					/>
+					<PageEditorRichTextAnchoredCommentsThreadsList threads={filteredThreads} onClick={handleThreadClick} />
+				</AnchoredThreads>
+			)}
 		</aside>
 	);
 }

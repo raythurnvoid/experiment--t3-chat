@@ -1,7 +1,7 @@
 import "./ai-chat-message.css";
 
 import type { ComponentProps, ComponentPropsWithRef, ReactNode, Ref } from "react";
-import { ChevronLeft, ChevronRight, CircleAlert, GitBranch, RefreshCw, ShieldQuestion, XCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, GitBranch, RefreshCw, ShieldQuestion } from "lucide-react";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import {
 	isDataUIPart,
@@ -21,6 +21,7 @@ import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { ai_chat_get_parent_id } from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown } from "@/components/ai-chat/ai-chat-markdown.tsx";
+import { MyLink } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 
@@ -261,63 +262,8 @@ function AiChatMessageToolTextAreaSection(props: AiChatMessageToolTextAreaSectio
 }
 // #endregion tool textarea section
 
-// #region tool meta header
-type AiChatMessageToolMetaHeader_ClassNames = "AiChatMessageToolMetaHeader-chips";
-
-type AiChatMessageToolMetaHeader_Props = {
-	metadata: Record<string, unknown>;
-};
-
-function AiChatMessageToolMetaHeader(props: AiChatMessageToolMetaHeader_Props) {
-	const { metadata } = props;
-	return (
-		<div className={"AiChatMessageToolMetaHeader-chips" satisfies AiChatMessageToolMetaHeader_ClassNames}>
-			{"title" in metadata && metadata.title ? (
-				<AiChatMessageToolChip>title: {String(metadata.title)}</AiChatMessageToolChip>
-			) : null}
-			{"count" in metadata && metadata.count !== undefined ? (
-				<AiChatMessageToolChip>count: {String(metadata.count)}</AiChatMessageToolChip>
-			) : null}
-			{"matches" in metadata && metadata.matches !== undefined ? (
-				<AiChatMessageToolChip>matches: {String(metadata.matches)}</AiChatMessageToolChip>
-			) : null}
-			{"truncated" in metadata && metadata.truncated !== undefined ? (
-				<AiChatMessageToolChip>truncated: {String(metadata.truncated)}</AiChatMessageToolChip>
-			) : null}
-			{"preview" in metadata && metadata.preview ? (
-				<AiChatMessageToolChip>preview: {String(metadata.preview).slice(0, 30)}...</AiChatMessageToolChip>
-			) : null}
-		</div>
-	);
-}
-// #endregion tool meta header
-
-// #region tool copy_result_action
-type AiChatMessageToolCopyResultAction_ClassNames =
-	| "AiChatMessageToolCopyResultAction-button"
-	| "AiChatMessageToolCopyResultAction-icon";
-
-type AiChatMessageToolCopyResultAction_Props = {
-	text?: string | undefined;
-};
-
-function AiChatMessageToolCopyResultAction(props: AiChatMessageToolCopyResultAction_Props) {
-	const { text } = props;
-
-	return (
-		<CopyIconButton
-			variant="ghost"
-			tooltipCopy="Copy result"
-			text={text}
-			className={"AiChatMessageToolCopyResultAction-button" satisfies AiChatMessageToolCopyResultAction_ClassNames}
-			iconClassName={"AiChatMessageToolCopyResultAction-icon" satisfies AiChatMessageToolCopyResultAction_ClassNames}
-		/>
-	);
-}
-// #endregion tool copy_result_action
-
 // #region tool read_page
-type AiChatMessageToolReadPage_ClassNames = "AiChatMessageToolReadPage";
+type AiChatMessageToolReadPage_ClassNames = "AiChatMessageToolReadPage" | "AiChatMessageToolReadPage-link";
 
 type AiChatMessageToolReadPage_Props = {
 	className?: string | undefined;
@@ -340,6 +286,16 @@ function AiChatMessageToolReadPage(props: AiChatMessageToolReadPage_Props) {
 				state={toolState}
 			/>
 			<AiChatMessageToolBody>
+				{result?.metadata?.pageId && (
+					<MyLink
+						className={"AiChatMessageToolReadPage-link" satisfies AiChatMessageToolReadPage_ClassNames}
+						to="/pages"
+						search={{ pageId: result.metadata.pageId }}
+						variant="button-tertiary"
+					>
+						Open page
+					</MyLink>
+				)}
 				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
 				{result?.output && <AiChatMessageToolTextAreaSection label="Content" code={result.output} maxHeight="16lh" />}
@@ -786,7 +742,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 
 // #endregion part
 
-// #region parts liss
+// #region parts list
 type AiChatMessagePartsList_Props = {
 	message: ai_chat_AiSdk5UiMessage;
 	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
@@ -902,7 +858,7 @@ function AiChatMessageBubble(props: AiChatMessageBubble_Props) {
 }
 // #endregion bubble
 
-// #region user message-
+// #region user message
 export type AiChatMessageUser_ClassNames =
 	| "AiChatMessageUser"
 	| "AiChatMessageUser-bubble"
@@ -1094,7 +1050,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 }
 // #endregion user message
 
-// #region agent message-
+// #region agent message
 type AiChatMessageAgent_ClassNames =
 	| "AiChatMessageAgent"
 	| "AiChatMessageAgent-bubble"

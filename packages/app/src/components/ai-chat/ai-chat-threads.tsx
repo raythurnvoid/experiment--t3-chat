@@ -383,7 +383,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 	const [scrollRoot, setScrollRoot] = useState<HTMLUListElement | null>(null);
 
 	const threads = paginatedThreads?.results ?? [];
-	const sortedThreads = threads.sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
+	const sortedThreads = threads.toSorted((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
 
 	const canLoadMore = paginatedThreads?.status === "CanLoadMore";
 
