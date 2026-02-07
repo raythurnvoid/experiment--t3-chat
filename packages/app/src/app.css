@@ -58,17 +58,14 @@
 		outline: none;
 		user-select: none;
 
-		&::marker {
-			display: none;
-		}
-
+		&::marker,
 		&::-webkit-details-marker {
 			display: none;
 		}
 	}
 
 	*:focus-visible {
-		outline: var(--color-base-2-06) solid 2px;
+		outline: var(--color-fg-12) solid 2px;
 		border-radius: 4px;
 	}
 }
@@ -386,7 +383,6 @@
 @layer base {
 	* {
 		border-color: var(--color-fg-02);
-		outline-color: var(--color-fg-05);
 	}
 
 	html {
@@ -407,6 +403,10 @@
 		/* overflow: hidden; */
 		min-height: 100vh;
 		isolation: isolate;
+	}
+
+	.app-font-monospace {
+		font-family: monospace;
 	}
 
 	/* App-specific utility styles */

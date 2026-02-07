@@ -20,7 +20,7 @@ import { paginationOptsValidator, type RouteSpec } from "convex/server";
 import { streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
-	server_path_extract_segments_from,
+	path_extract_segments_from,
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 	encode_path_segment,
@@ -62,7 +62,7 @@ import type { RouterForConvexModules } from "./http.ts";
 async function resolve_id_from_path(ctx: QueryCtx, args: { workspace_id: string; project_id: string; path: string }) {
 	if (args.path === "/") return null;
 
-	const segments = server_path_extract_segments_from(args.path);
+	const segments = path_extract_segments_from(args.path);
 
 	let pageId = null;
 	let currentNode = pages_ROOT_ID;
@@ -91,7 +91,7 @@ async function resolve_page_id_from_path_fn(
 	ctx: QueryCtx,
 	args: { workspaceId: string; projectId: string; path: string },
 ) {
-	const segments = server_path_extract_segments_from(args.path);
+	const segments = path_extract_segments_from(args.path);
 
 	let pageId = null;
 	let currentNode = pages_ROOT_ID;
@@ -126,7 +126,7 @@ async function resolve_tree_node_id_from_path_fn(
 	args: { workspaceId: string; projectId: string; path: string },
 ) {
 	if (args.path === "/") return pages_ROOT_ID;
-	const segments = server_path_extract_segments_from(args.path);
+	const segments = path_extract_segments_from(args.path);
 
 	let currentNode = pages_ROOT_ID;
 
@@ -1069,7 +1069,7 @@ export const create_page_by_path = internalMutation({
 	returns: v.object({ page_id: v.id("pages") }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
-		const segments = server_path_extract_segments_from(args.path);
+		const segments = path_extract_segments_from(args.path);
 
 		let currentParent = pages_ROOT_ID;
 		let lastPageId = null;

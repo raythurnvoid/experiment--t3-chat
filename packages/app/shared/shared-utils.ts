@@ -124,3 +124,17 @@ export function omit_properties<O extends object, P extends KeysOfUnion<O>>(
 
 	return result;
 }
+
+// #region path
+export function path_extract_segments_from(path: string): string[] {
+	const normalizedPath = path.trim();
+	if (normalizedPath === "" || normalizedPath === "/") return [];
+	return normalizedPath
+		.split(/(?<!\\)\//) // split on / not preceeded by \
+		.filter(Boolean);
+}
+
+export function path_name_of(path: string): string {
+	return path_extract_segments_from(path).at(-1) ?? "";
+}
+// #endregion path

@@ -28,21 +28,6 @@
 		transition:
 			background-color 0.15s ease,
 			color 0.15s ease;
-
-		&:has(> .MyPrimaryAction[data-selected]) {
-			background: var(--color-base-1-05);
-			color: var(--color-fg-09);
-		}
-
-		&:has(> .MyPrimaryAction:hover) {
-			background: var(--color-base-1-06);
-			color: var(--color-fg-11);
-		}
-
-		&:has(> .MyPrimaryAction:focus-visible) {
-			background: var(--color-base-1-06);
-			color: var(--color-fg-11);
-		}
 	}
 	/* #endregion item */
 }

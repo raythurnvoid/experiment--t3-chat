@@ -24,8 +24,6 @@
 		flex-direction: column;
 		/* The gap must match the composer's gap to ensure proper measurements */
 		gap: 8px;
-
-		border-radius: 16px;
 	}
 
 	.AiChatMessageUser-bubble-state-editing {
@@ -50,6 +48,8 @@
 		max-width: 520px;
 		min-width: 320px;
 
+		border-radius: 16px;
+
 		&.AiChatMessageUser-bubble-state-editing {
 			grid-template-rows: auto;
 		}
@@ -59,9 +59,9 @@
 			color: var(--color-fg-11);
 		}
 
-		&:has(> .AiChatMessageUser-edit-button:is(:active)) {
+		&:has(> .AiChatMessageUser-edit-button:active) {
 			background-color: var(--color-base-1-07);
-			color: var(--color-fg-11);
+			color: var(--color-fg-12);
 		}
 
 		& > .AiChatMessageContent {
@@ -147,7 +147,7 @@
 	}
 	/* #endregion message */
 
-	/* #region tool base */
+	/* #region tool chip */
 	.AiChatMessageToolChip {
 		display: inline-flex;
 		align-items: center;
@@ -170,168 +170,143 @@
 			flex-shrink: 0;
 		}
 	}
+	/* #endregion tool chip */
 
-	.AiChatMessageToolStatusBadge-state-input-streaming > svg {
-		color: var(--color-fg-06);
-	}
-
-	@keyframes AiChatMessageToolStatusBadge-pulse {
-		0%,
-		100% {
-			opacity: 1;
-		}
-		50% {
-			opacity: 0.5;
-		}
-	}
-
-	.AiChatMessageToolStatusBadge-state-input-available > svg {
-		color: var(--color-fg-08);
-		animation: AiChatMessageToolStatusBadge-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-	}
-
-	.AiChatMessageToolStatusBadge-state-approval-requested > svg {
-		color: var(--color-accent-06);
-	}
-
-	.AiChatMessageToolStatusBadge-state-approval-responded > svg {
-		color: var(--color-accent-alt-06);
-	}
-
-	.AiChatMessageToolStatusBadge-state-output-available > svg {
-		color: var(--color-green-07);
-	}
-
-	.AiChatMessageToolStatusBadge-state-output-error > svg {
-		color: var(--color-red-07);
-	}
-
-	.AiChatMessageToolStatusBadge-state-output-denied > svg {
-		color: var(--color-red-05);
-	}
-
-	.AiChatMessageToolRoot {
-		width: 100%;
-
-		border-radius: 6px;
-		border: 1px solid var(--color-base-1-06);
-	}
-
-	.AiChatMessageToolHeader {
-		display: flex;
+	/* #region tool status */
+	.AiChatMessageToolStatus {
+		display: inline-flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
+		gap: 4px;
 
-		width: 100%;
-		padding: 12px;
-
-		cursor: pointer;
-	}
-
-	.AiChatMessageToolHeader-left {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.AiChatMessageToolHeader-icon {
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
-
-		color: var(--color-fg-06);
-	}
-
-	.AiChatMessageToolHeader-label {
 		font-size: 0.875rem;
 		font-weight: 500;
-
-		color: var(--color-fg-10);
+		white-space: nowrap;
 	}
 
-	.AiChatMessageToolHeader-chevron {
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
-
+	.AiChatMessageToolStatus-state-loading {
 		color: var(--color-fg-06);
-
-		transition: transform 150ms ease;
 	}
 
-	[data-state="open"] > .AiChatMessageToolHeader-chevron {
-		transform: rotate(180deg);
+	.AiChatMessageToolStatus-state-approval {
+		color: var(--color-accent-06);
+
+		& > svg {
+			color: var(--color-accent-06);
+		}
+	}
+	/* #endregion tool status */
+
+	/* #region tool disclosure */
+	.AiChatMessageToolDisclosure {
+		width: 100%;
+	}
+	/* #endregion tool disclosure */
+
+	/* #region tool disclosure button */
+	.AiChatMessageToolDisclosureButton {
+		list-style: revert;
+
+		width: 100%;
+
+		cursor: pointer;
+
+		font-size: 0.875rem;
+
+		color: var(--color-fg-04);
+
+		&[aria-disabled="true"] {
+			cursor: default;
+		}
 	}
 
+	.AiChatMessageToolDisclosureButton-content {
+		display: inline-flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
+		> b {
+			font-weight: 500;
+		}
+	}
+	/* #endregion tool disclosure button */
+
+	/* #region tool body */
 	.AiChatMessageToolBody {
 		outline: none;
 	}
+	/* #endregion tool body */
 
-	.AiChatMessageToolParams {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
+	/* #region tool textarea section */
+	.AiChatMessageToolTextAreaSection {
+		container-type: inline-size;
 
-		overflow: hidden;
-		padding: 16px;
-	}
+		display: grid;
 
-	.AiChatMessageToolParams-heading {
-		margin: 0;
+		contain: content;
+		margin: 16px;
 
 		font-size: 0.75rem;
-		font-weight: 500;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-
 		color: var(--color-fg-06);
-	}
-
-	.AiChatMessageToolParams-code {
-		border-radius: 6px;
 
 		background: var(--color-base-1-03);
-	}
 
-	.AiChatMessageToolResult {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
+		overflow: auto;
 
-		padding: 16px;
-	}
+		max-height: var(--AiChatMessageToolTextAreaSection-max-height, 8lh);
 
-	.AiChatMessageToolResult-heading {
-		margin: 0;
+		border: 2px solid transparent;
 
-		font-size: 0.75rem;
-		font-weight: 500;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-
-		color: var(--color-fg-06);
-	}
-
-	.AiChatMessageToolResult-content {
-		overflow-x: auto;
 		border-radius: 6px;
 
-		font-size: 0.75rem;
-
-		background: var(--color-base-1-03);
-		color: var(--color-fg-10);
-
-		& table {
-			width: 100%;
+		&:has(.AiChatMessageToolTextAreaSection-textarea:focus-visible) {
+			border-color: var(--color-fg-12);
 		}
 	}
 
-	.AiChatMessageToolResult-state-error {
+	.AiChatMessageToolTextAreaSection-state-error {
 		background: var(--color-red-02);
 		color: var(--color-red-08);
 	}
-	/* #endregion tool base */
+
+	.AiChatMessageToolTextAreaSection-heading {
+		width: calc(100cqw - var(--app-scrollbar-w));
+
+		grid-column: 1;
+		grid-row: 1;
+
+		padding: 8px 8px 8px 16px;
+		background: inherit;
+
+		height: max-content;
+
+		font-size: 0.875rem;
+		font-weight: 600;
+
+		position: sticky;
+		top: 0;
+		left: 0;
+	}
+
+	.AiChatMessageToolTextAreaSection-textarea {
+		grid-column: 1;
+		grid-row: 1;
+
+		resize: none;
+
+		padding: calc(1lh + 16px) 16px 16px 16px;
+
+		white-space: pre;
+
+		field-sizing: content;
+
+		overflow: clip;
+
+		&:focus-visible {
+			outline: none;
+		}
+	}
+	/* #endregion tool textarea section */
 
 	/* #region tool meta header */
 	.AiChatMessageToolMetaHeader-chips {
@@ -354,22 +329,6 @@
 	}
 	/* #endregion tool copy_result_action */
 
-	/* #region tool meta row */
-	.AiChatMessageToolMetaRow {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-
-		padding: 12px 16px 0 16px;
-	}
-
-	.AiChatMessageToolMetaRow-actions {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-	}
-	/* #endregion tool meta row */
-
 	/* #region tool unknown */
 	.AiChatMessageToolUnknown-meta {
 		display: flex;
@@ -389,6 +348,10 @@
 	/* #region agent message */
 	.AiChatMessageAgent {
 		align-items: flex-start;
+	}
+
+	.AiChatMessageAgent-bubble {
+		width: 100%;
 	}
 	/* #endregion agent message */
 

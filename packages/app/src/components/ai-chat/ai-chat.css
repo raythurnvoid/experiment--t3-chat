@@ -69,7 +69,7 @@
 
 		width: 100%;
 		height: 100%;
-		padding: 24px;
+		padding: 24px 0px 0px 0px;
 
 		overflow: hidden auto;
 		scroll-padding-block: 100px 200px;
@@ -80,17 +80,19 @@
 		flex-direction: column;
 		gap: 16px;
 
+		padding: 0px 24px;
+
 		flex: 1;
 		height: max-content;
 		width: 100%;
-		max-width: 720px;
+		max-width: 744px;
 	}
 
 	.AiChatThread-scroll-to-bottom {
 		contain: layout;
 
 		position: sticky;
-		bottom: 150px;
+		bottom: 160px;
 
 		display: flex;
 		justify-content: center;
@@ -104,28 +106,27 @@
 	}
 
 	.AiChatThread-composer {
-		padding: 16px 20px;
+		display: flex;
+		justify-content: center;
 
-		background: hsl(var(--background));
-		border-top: 1px solid hsl(var(--border));
+		padding: 0px 20px 24px 20px;
+
+		background: var(--color-base-1-02);
 
 		width: 100%;
-		max-width: 780px;
 
 		position: sticky;
 		bottom: 0;
+
+		> .AiChatComposer {
+			width: 100%;
+			max-width: 780px;
+		}
 	}
 	/* #endregion thread */
 
-	/* #region message list */
-	.AiChatMessageList {
-		display: flex;
-		flex: 1;
-		flex-direction: column;
-		gap: 16px;
-	}
-
-	.AiChatMessageList-empty {
+	/* #region welcome */
+	.AiChatWelcome {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -138,20 +139,19 @@
 		text-align: center;
 	}
 
-	.AiChatMessageList-empty-title {
-		color: hsl(var(--foreground));
+	.AiChatWelcome-title {
+		color: var(--color-fg-11);
 
 		font-size: 1.5rem;
 		font-weight: 600;
 	}
 
-	.AiChatMessageList-empty-subtitle {
-		color: hsl(var(--muted-foreground));
-
+	.AiChatWelcome-subtitle {
+		color: var(--color-fg-06);
 		font-size: 1.25rem;
 	}
 
-	.AiChatMessageList-suggestions {
+	.AiChatWelcome-suggestions {
 		display: grid;
 		grid-template-columns: repeat(1, minmax(0, 1fr));
 		gap: 12px;
@@ -165,11 +165,11 @@
 		}
 	}
 
-	.AiChatMessageList-suggestion {
+	.AiChatWelcome-suggestion {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		justify-content: flex-start;
+		align-items: start;
+		justify-content: start;
 		gap: 4px;
 
 		height: auto;
@@ -178,17 +178,24 @@
 		text-align: left;
 	}
 
-	.AiChatMessageList-suggestion-title {
-		color: hsl(var(--foreground));
-
+	.AiChatWelcome-suggestion-title {
 		font-size: 0.875rem;
 		font-weight: 600;
 	}
 
-	.AiChatMessageList-suggestion-label {
-		color: hsl(var(--muted-foreground));
+	.AiChatWelcome-suggestion-label {
+		color: var(--color-fg-07);
 
 		font-size: 0.875rem;
+	}
+	/* #endregion welcome */
+
+	/* #region message list */
+	.AiChatMessageList {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		gap: 16px;
 	}
 	/* #endregion message list */
 }

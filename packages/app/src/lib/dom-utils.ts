@@ -9,7 +9,7 @@ export type AppElementId =
  * Global class names defined in app.css that can be used across components.
  * Use with `satisfies AppClassName` for type-safe class name usage.
  */
-export type AppClassName = "app-doc";
+export type AppClassName = "app-doc" | "app-font-monospace";
 
 export class dom_TypedAttributeAccessor<CustomAttributes extends Record<string, string>> {
 	get<AttributeName extends keyof CustomAttributes & string>(

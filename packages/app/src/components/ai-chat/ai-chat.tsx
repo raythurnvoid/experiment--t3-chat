@@ -25,39 +25,74 @@ import {
 	type AiChatMessageUser_ClassNames,
 } from "@/components/ai-chat/ai-chat-message.tsx";
 
-const ai_chat_message_list_suggestions = [
-	{
-		title: "What's the weather",
-		label: "in San Francisco?",
-		action: "What's the weather in San Francisco?",
-	},
-	{
-		title: "Explain React hooks",
-		label: "like useState and useEffect",
-		action: "Explain React hooks like useState and useEffect",
-	},
-	{
-		title: "Write a SQL query",
-		label: "to find top customers",
-		action: "Write a SQL query to find top customers",
-	},
-	{
-		title: "Create a meal plan",
-		label: "for healthy weight loss",
-		action: "Create a meal plan for healthy weight loss",
-	},
-] as const;
+// #region welcome
+type AiChatWelcome_ClassNames =
+	| "AiChatWelcome"
+	| "AiChatWelcome-title"
+	| "AiChatWelcome-subtitle"
+	| "AiChatWelcome-suggestions"
+	| "AiChatWelcome-suggestion"
+	| "AiChatWelcome-suggestion-title"
+	| "AiChatWelcome-suggestion-label";
+
+type AiChatWelcome_Props = {
+	onClickSuggestion: (action: string) => void;
+};
+
+function AiChatWelcome(props: AiChatWelcome_Props) {
+	const { onClickSuggestion } = props;
+
+	// TODO: the suggestions should be based on recent users activity
+
+	return (
+		<div className={"AiChatWelcome" satisfies AiChatWelcome_ClassNames}>
+			<h3 className={"AiChatWelcome-title" satisfies AiChatWelcome_ClassNames}>Hello there!</h3>
+			<p className={"AiChatWelcome-subtitle" satisfies AiChatWelcome_ClassNames}>How can I help you today?</p>
+			<div className={"AiChatWelcome-suggestions" satisfies AiChatWelcome_ClassNames}>
+				{[
+					{
+						title: "Draft a new page",
+						label: "from a topic or rough notes",
+						action: "Create a new page with a well-structured draft about ",
+					},
+					{
+						title: "Summarize my docs",
+						label: "find key points across pages",
+						action: "Search through my pages and give me a summary of what's documented so far",
+					},
+					{
+						title: "Help me write",
+						label: "draft a professional email",
+						action: "Help me draft a professional email to ",
+					},
+					{
+						title: "Edit an existing page",
+						label: "improve, expand, or fix content",
+						action: "Find and improve the content of ",
+					},
+				].map((suggestion) => (
+					<MyButton
+						key={suggestion.action}
+						variant="secondary-subtle"
+						className={"AiChatWelcome-suggestion" satisfies AiChatWelcome_ClassNames}
+						onClick={() => onClickSuggestion(suggestion.action)}
+					>
+						<span className={"AiChatWelcome-suggestion-title" satisfies AiChatWelcome_ClassNames}>
+							{suggestion.title}
+						</span>
+						<span className={"AiChatWelcome-suggestion-label" satisfies AiChatWelcome_ClassNames}>
+							{suggestion.label}
+						</span>
+					</MyButton>
+				))}
+			</div>
+		</div>
+	);
+}
+// #endregion welcome
 
 // #region messages list
-export type AiChatMessagesList_ClassNames =
-	| "AiChatMessageList"
-	| "AiChatMessageList-empty"
-	| "AiChatMessageList-empty-title"
-	| "AiChatMessageList-empty-subtitle"
-	| "AiChatMessageList-suggestions"
-	| "AiChatMessageList-suggestion"
-	| "AiChatMessageList-suggestion-title"
-	| "AiChatMessageList-suggestion-label";
+export type AiChatMessagesList_ClassNames = "AiChatMessageList";
 
 export type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
@@ -121,29 +156,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 			{...rest}
 		>
 			{messageCount === 0 ? (
-				<div className={"AiChatMessageList-empty" satisfies AiChatMessagesList_ClassNames}>
-					<div className={"AiChatMessageList-empty-title" satisfies AiChatMessagesList_ClassNames}>Hello there!</div>
-					<div className={"AiChatMessageList-empty-subtitle" satisfies AiChatMessagesList_ClassNames}>
-						How can I help you today?
-					</div>
-					<div className={"AiChatMessageList-suggestions" satisfies AiChatMessagesList_ClassNames}>
-						{ai_chat_message_list_suggestions.map((suggestion) => (
-							<MyButton
-								key={suggestion.action}
-								variant="secondary-subtle"
-								className={"AiChatMessageList-suggestion" satisfies AiChatMessagesList_ClassNames}
-								onClick={() => handleSuggestionClick(suggestion.action)}
-							>
-								<span className={"AiChatMessageList-suggestion-title" satisfies AiChatMessagesList_ClassNames}>
-									{suggestion.title}
-								</span>
-								<span className={"AiChatMessageList-suggestion-label" satisfies AiChatMessagesList_ClassNames}>
-									{suggestion.label}
-								</span>
-							</MyButton>
-						))}
-					</div>
-				</div>
+				<AiChatWelcome onClickSuggestion={handleSuggestionClick} />
 			) : (
 				activeBranchMessages.list.map((message, index) => (
 					<AiChatMessage
@@ -180,10 +193,11 @@ type useAutoScroll_Props = {
 	scrollEl: HTMLDivElement | null;
 	contentEl: HTMLDivElement | null;
 	controller: AiChatController;
+	enable?: boolean;
 };
 
 function useAutoScroll(props: useAutoScroll_Props) {
-	const { scrollEl, contentEl, controller } = props;
+	const { scrollEl, contentEl, controller, enable = true } = props;
 
 	const isRunning = controller.isRunning;
 	const threadId = controller.selectedThreadId;
@@ -237,6 +251,11 @@ function useAutoScroll(props: useAutoScroll_Props) {
 	});
 
 	const handleContentResize = useEffectEvent(() => {
+		if (!enable) {
+			handleScroll();
+			return;
+		}
+
 		const scrollBehavior = scrollingToBottomBehaviorRef.current;
 		if (scrollBehavior) {
 			scrollToBottom(scrollBehavior);
@@ -274,6 +293,12 @@ function useAutoScroll(props: useAutoScroll_Props) {
 	}, [contentEl]);
 
 	useEffect(() => {
+		wasRunningRef.current = isRunning;
+
+		if (!enable) {
+			return;
+		}
+
 		const wasRunning = wasRunningRef.current;
 
 		if (!wasRunning && isRunning) {
@@ -294,12 +319,10 @@ function useAutoScroll(props: useAutoScroll_Props) {
 
 			scrollToBottom("smooth");
 		}
-
-		wasRunningRef.current = isRunning;
-	}, [isRunning]);
+	}, [isRunning, enable]);
 
 	useEffect(() => {
-		if (!threadId) {
+		if (!threadId || !enable) {
 			return;
 		}
 
@@ -307,7 +330,7 @@ function useAutoScroll(props: useAutoScroll_Props) {
 		requestAnimationFrame(() => {
 			scrollToBottom("instant");
 		});
-	}, [threadId]);
+	}, [threadId, enable]);
 
 	return {
 		isAtBottom,
@@ -342,6 +365,7 @@ function AiChatThread(props: AiChatThread_Props) {
 		scrollEl: rootEl,
 		contentEl: messagesListEl,
 		controller,
+		enable: controller.isRunning,
 	});
 
 	const handleScrollToBottom = () => {

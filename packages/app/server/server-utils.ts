@@ -3,6 +3,9 @@ import { Result, Result_try_promise } from "../shared/errors-as-values-utils.ts"
 import type z from "zod";
 import type { Id } from "../convex/_generated/dataModel";
 import { users_create_anonymouse_user_display_name, users_create_fallback_display_name } from "../shared/users.ts";
+import { path_extract_segments_from } from "../shared/shared-utils.ts";
+
+export * from "../shared/shared-utils.ts";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
 if (!ALLOWED_ORIGINS) {
@@ -45,26 +48,14 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 	};
 }
 
-export function server_path_extract_segments_from(path: string): string[] {
-	const normalizedPath = path.trim();
-	if (normalizedPath === "" || normalizedPath === "/") return [];
-	return normalizedPath
-		.split(/(?<!\\)\//) // split on / not preceeded by \
-		.filter(Boolean);
-}
-
 export function server_path_normalize(path: string): string {
-	return `/${server_path_extract_segments_from(path).join("/")}`;
+	return `/${path_extract_segments_from(path).join("/")}`;
 }
 
 export function server_path_parent_of(path: string): string {
-	const segments = server_path_extract_segments_from(path);
+	const segments = path_extract_segments_from(path);
 	if (segments.length === 0) return "/";
 	return `/${segments.slice(0, -1).join("/")}`;
-}
-
-export function server_path_name_of(path: string): string {
-	return server_path_extract_segments_from(path).at(-1) ?? "";
 }
 
 export function server_json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>) {

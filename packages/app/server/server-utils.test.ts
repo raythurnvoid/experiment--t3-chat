@@ -2,10 +2,10 @@ import "../convex/setup.test.ts";
 import { test, expect } from "vitest";
 import { z } from "zod";
 import {
-	server_path_extract_segments_from,
+	path_extract_segments_from,
 	server_path_normalize,
 	server_path_parent_of,
-	server_path_name_of,
+	path_name_of,
 	encode_path_segment,
 	decode_path_segment,
 	server_json_parse_and_validate,
@@ -13,16 +13,16 @@ import {
 } from "./server-utils.ts";
 
 test("server_path_extract_segments_from handles root and simple paths", () => {
-	expect(server_path_extract_segments_from("/")).toEqual([]);
-	expect(server_path_extract_segments_from("/foo/bar")).toEqual(["foo", "bar"]);
+	expect(path_extract_segments_from("/")).toEqual([]);
+	expect(path_extract_segments_from("/foo/bar")).toEqual(["foo", "bar"]);
 });
 
 test("server_path_extract_segments_from preserves escaped slashes", () => {
 	const input = "/foo/a\\/b/bar"; // a\/b should be treated as a single segment
-	expect(server_path_extract_segments_from(input)).toEqual(["foo", "a\\/b", "bar"]);
+	expect(path_extract_segments_from(input)).toEqual(["foo", "a\\/b", "bar"]);
 });
 
-test("server_path_normalize trims and collapses", () => {
+test("server_path_normalize trims and csollapses", () => {
 	expect(server_path_normalize("  /foo//bar/  ")).toBe("/foo/bar");
 	expect(server_path_normalize("foo/bar")).toBe("/foo/bar");
 	expect(server_path_normalize("/")).toBe("/");
@@ -35,9 +35,9 @@ test("server_path_parent_of computes parent correctly", () => {
 });
 
 test("server_path_name_of returns last segment", () => {
-	expect(server_path_name_of("/")).toBe("");
-	expect(server_path_name_of("/a")).toBe("a");
-	expect(server_path_name_of("/a/b")).toBe("b");
+	expect(path_name_of("/")).toBe("");
+	expect(path_name_of("/a")).toBe("a");
+	expect(path_name_of("/a/b")).toBe("b");
 });
 
 test("encode/decode path segment roundtrip", () => {

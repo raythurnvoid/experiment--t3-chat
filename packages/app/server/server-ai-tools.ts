@@ -6,8 +6,8 @@ import type { ActionCtx } from "../convex/_generated/server";
 import { internal } from "../convex/_generated/api.js";
 import {
 	decode_path_segment,
-	server_path_extract_segments_from,
-	server_path_name_of,
+	path_extract_segments_from,
+	path_name_of,
 	server_path_normalize,
 	server_path_parent_of,
 } from "./server-utils.ts";
@@ -447,7 +447,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 						projectId: ai_chat_HARDCODED_PROJECT_ID,
 					});
 
-					const pageName = server_path_name_of(normalizedPath);
+					const pageName = path_name_of(normalizedPath);
 					const suggestions = siblingPaths
 						.filter(
 							(name) =>
@@ -564,7 +564,7 @@ export function ai_chat_tool_create_list_pages(ctx: ActionCtx, tool_execution_ct
 			const depthTruncatedPaths = new Set<string>();
 
 			for (const visiblePath of visiblePaths) {
-				const segments = server_path_extract_segments_from(visiblePath.path);
+				const segments = path_extract_segments_from(visiblePath.path);
 
 				if (visiblePath.depthTruncated) {
 					depthTruncatedPaths.add(visiblePath.path);
@@ -580,7 +580,7 @@ export function ai_chat_tool_create_list_pages(ctx: ActionCtx, tool_execution_ct
 			// Render tree starting at `path`
 			function renderDir(dirPath: string, depth: number): string {
 				const indent = "  ".repeat(depth);
-				let output = depth === 0 ? `/\n` : `${indent}${decode_path_segment(server_path_name_of(dirPath))}/\n`;
+				let output = depth === 0 ? `/\n` : `${indent}${decode_path_segment(path_name_of(dirPath))}/\n`;
 
 				const subdirs = Array.from(dirs)
 					.filter((d) => server_path_parent_of(d) === dirPath && d !== dirPath)
@@ -754,7 +754,7 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ct
 					threadId: tool_execution_ctx.thread_id,
 				});
 
-				const pageName = server_path_name_of(item.path);
+				const pageName = path_name_of(item.path);
 				const fullText = `${pageName}\n${textContent ?? ""}`;
 
 				// Line-based scan to produce line numbers and line snippets, similar to ripgrep output

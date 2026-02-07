@@ -68,7 +68,7 @@ export type AiChatComposer_Props = Omit<ComponentPropsWithRef<"form">, "onSubmit
 
 	onValueChange?: (value: string) => void;
 	onSubmit: (value: string) => void;
-	onCancel: () => void;
+	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
 	onClose?: (event: React.KeyboardEvent<HTMLFormElement>) => void;
 };
@@ -276,7 +276,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			return;
 		}
 
-		onCancel();
+		onCancel?.();
 	};
 
 	const handleSubmit: ComponentPropsWithRef<"form">["onSubmit"] = (event) => {

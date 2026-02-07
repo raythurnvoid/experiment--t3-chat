@@ -17,9 +17,26 @@
 		outline: none;
 		cursor: pointer;
 
+		&[data-selected] {
+			background: var(--color-base-1-05);
+			color: var(--color-fg-09);
+		}
+
 		&:focus-visible {
 			border-color: var(--color-fg-12);
 		}
+
+		&:hover,
+		&:focus-visible {
+			background: var(--color-base-1-06);
+			color: var(--color-fg-11);
+		}
+
+		&:active {
+			background: var(--color-base-1-07);
+			color: var(--color-fg-12);
+		}
 	}
+
 	/* #endregion primary action */
 }

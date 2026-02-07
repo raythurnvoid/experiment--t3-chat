@@ -108,6 +108,11 @@
 			background: var(--color-base-1-06);
 			color: var(--color-fg-11);
 		}
+
+		&:active {
+			background: var(--color-base-1-07);
+			color: var(--color-fg-12);
+		}
 	}
 
 	/* #region item indicator */
