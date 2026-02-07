@@ -793,30 +793,6 @@ export const list_pages = internalQuery({
 	},
 });
 
-export const page_exists_by_path = internalQuery({
-	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		const pageId = await resolve_page_id_from_path_fn(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			path: args.path,
-		});
-		if (!pageId) return false;
-
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspace_project_and_page_id", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", pageId),
-			)
-			.first();
-
-		if (!page) return false;
-		if (page.workspace_id !== args.workspaceId || page.project_id !== args.projectId) return false;
-		return true;
-	},
-});
-
 export const get_page_last_available_markdown_content_by_path = internalQuery({
 	args: {
 		workspaceId: v.string(),

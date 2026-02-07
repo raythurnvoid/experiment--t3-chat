@@ -76,7 +76,10 @@ function* ai_chat_tool_edit_page_replacer_simple(_content: string, find: string)
  * Cons:
  * - Can collide when multiple blocks are equal after per-line trim
  */
-function* ai_chat_tool_edit_page_replacer_line_trimmed(content: string, find: string): Generator<string, void, unknown> {
+function* ai_chat_tool_edit_page_replacer_line_trimmed(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
 	const originalLines = content.split("\n");
 	const searchLines = find.split("\n");
 	if (searchLines[searchLines.length - 1] === "") searchLines.pop();
@@ -114,7 +117,10 @@ function* ai_chat_tool_edit_page_replacer_line_trimmed(content: string, find: st
  * - Heuristic thresholds; slower on large files
  * - Possible false positives
  */
-function* ai_chat_tool_edit_page_replacer_block_anchor(content: string, find: string): Generator<string, void, unknown> {
+function* ai_chat_tool_edit_page_replacer_block_anchor(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
 	const originalLines = content.split("\n");
 	const searchLines = find.split("\n");
 	if (searchLines.length < 3) return;
@@ -423,13 +429,15 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
 
-			const pageExists = await ctx.runQuery(internal.ai_docs_temp.page_exists_by_path, {
+			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 				path: normalizedPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				userId: user.id,
+				threadId: tool_execution_ctx.thread_id,
 			});
 
-			if (!pageExists) {
+			if (!textContent) {
 				// Try to get suggestions for similar paths
 				const parentPath = server_path_parent_of(normalizedPath);
 				if (parentPath) {
@@ -444,7 +452,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 						.filter(
 							(name) =>
 								name.trim() !== "" &&
-								(	name.toLowerCase().includes(pageName.toLowerCase()) ||
+								(name.toLowerCase().includes(pageName.toLowerCase()) ||
 									pageName.toLowerCase().includes(name.toLowerCase())),
 						)
 						.map((name) => {
@@ -454,30 +462,16 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 						.slice(0, 3);
 
 					if (suggestions.length > 0) {
-						throw new Error(
-							`Page not found: ${normalizedPath}\n\nDid you mean one of these?\n${suggestions.join("\n")}`,
-						);
+						return {
+							title: normalizedPath,
+							output: "Page not found. Did you mean one of these?\n" + suggestions.join("\n"),
+						};
 					}
 				}
 
-				throw new Error(`Page not found: ${normalizedPath}`);
-			}
-
-			const textContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
-				path: normalizedPath,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				userId: user.id,
-				threadId: tool_execution_ctx.thread_id,
-			});
-
-			if (!textContent) {
 				return {
 					title: normalizedPath,
-					output: "<file>\n(Page has no text content)\n</file>",
-					metadata: {
-						preview: "(empty)",
-					},
+					output: "Page not found.",
 				};
 			}
 
@@ -497,13 +491,13 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 				return `${lineNumber.toString().padStart(5, "0")}| ${line}`;
 			});
 
-			let output = "<file>\n";
+			let output = "<page>\n";
 			output += formattedLines.join("\n");
 
 			if (lines.length > offset + selectedLines.length) {
 				output += `\n\n(Page has more lines. Use 'offset' parameter to read beyond line ${offset + selectedLines.length})`;
 			}
-			output += "\n</file>";
+			output += "\n</page>";
 
 			// Create preview (first 20 lines of truncated content, without line numbers)
 			const preview = truncatedLines.slice(0, 20).join("\n");
@@ -870,8 +864,10 @@ export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx, tool_execu
 }
 
 type ai_chat_tool_create_text_search_pages_Tool = ReturnType<typeof ai_chat_tool_create_text_search_pages>;
-export type ai_chat_tool_create_text_search_pages_ToolInput = InferToolInput<ai_chat_tool_create_text_search_pages_Tool>;
-export type ai_chat_tool_create_text_search_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_text_search_pages_Tool>;
+export type ai_chat_tool_create_text_search_pages_ToolInput =
+	InferToolInput<ai_chat_tool_create_text_search_pages_Tool>;
+export type ai_chat_tool_create_text_search_pages_ToolOutput =
+	InferToolOutput<ai_chat_tool_create_text_search_pages_Tool>;
 
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`

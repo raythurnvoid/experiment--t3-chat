@@ -696,10 +696,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										// const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
 										// 	threadMessagesResult.messages.map((msg) => [msg._id, msg]),
 										// );
-										const messagesMap = new Map<
-											string,
-											app_convex_Doc<"ai_chat_threads_messages_aisdk_5">
-										>();
+										const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>();
 										for (const msg of threadMessagesResult.messages) {
 											messagesMap.set(msg._id, msg);
 											if (msg.clientGeneratedMessageId) {
@@ -796,7 +793,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											model: openai("gpt-5-nano"),
 											system: `Either respond directly to the user or use the tools at your disposal.`,
 											messages: modelMessages,
-											temperature: 0.7,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,
 											providerOptions: {
@@ -807,9 +803,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											toolChoice: "auto",
 											stopWhen: stepCountIs(5),
 											tools,
-											experimental_transform: smoothStream({
-												delayInMs: 100,
-											}),
 										});
 
 										writer.merge(result1.toUIMessageStream());
