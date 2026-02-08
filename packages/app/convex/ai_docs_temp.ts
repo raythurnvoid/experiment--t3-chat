@@ -800,24 +800,27 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		path: v.string(),
 		userId: v.string(),
 	},
-	returns: v.union(v.object({ content: v.string(), pageId: v.string() }), v.null()),
+	returns: v.union(
+		v.object({ content: v.string(), pageId: v.string(), convexId: v.id("pages") }),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
-		const pageId = await resolve_id_from_path(ctx, {
+		const convexId = await resolve_id_from_path(ctx, {
 			workspace_id: args.workspaceId,
 			project_id: args.projectId,
 			path: args.path,
 		});
 
-		if (!pageId) return null;
+		if (!convexId) return null;
 
-		const page = await ctx.db.get("pages", pageId);
+		const page = await ctx.db.get("pages", convexId);
 
 		if (!page) return null;
 		if (page.is_archived) return null;
 
 		if (!page.markdown_content_id) {
 			throw should_never_happen("page.markdown_content_id is not set", {
-				pageId,
+				pageId: convexId,
 				markdownContentId: page.markdown_content_id,
 			});
 		}
@@ -829,15 +832,15 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("userId", args.userId as string)
-					.eq("pageId", page.page_id),
+					.eq("pageId", convexId),
 			)
 			.first();
-		if (overlay) return { content: overlay.modifiedContent, pageId: page.page_id };
+		if (overlay) return { content: overlay.modifiedContent, pageId: page.page_id, convexId };
 
 		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdown_content_id);
 		if (!markdownContentDoc) return null;
 
-		return { content: markdownContentDoc.content, pageId: page.page_id };
+		return { content: markdownContentDoc.content, pageId: page.page_id, convexId };
 	},
 });
 
@@ -1068,13 +1071,14 @@ export const create_page_by_path = internalMutation({
 		path: v.string(),
 		userId: v.string(),
 	},
-	returns: v.object({ page_id: v.string() }),
+	returns: v.object({ page_id: v.string(), convexId: v.id("pages") }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 		const segments = path_extract_segments_from(args.path);
 
 		let currentParent = pages_ROOT_ID;
 		let lastPageId: string | null = null;
+		let lastConvexId: Id<"pages"> | null = null;
 
 		for (let i = 0; i < segments.length; i++) {
 			const name = segments[i];
@@ -1090,7 +1094,7 @@ export const create_page_by_path = internalMutation({
 			if (!existing) {
 				// Create missing segment
 				const clientGeneratedPageId = generate_id("page");
-				await do_create_page(ctx, {
+				const convexId = await do_create_page(ctx, {
 					workspace_id: workspaceId,
 					project_id: projectId,
 					page_id: clientGeneratedPageId,
@@ -1100,23 +1104,25 @@ export const create_page_by_path = internalMutation({
 				});
 				currentParent = clientGeneratedPageId;
 				lastPageId = clientGeneratedPageId;
+				lastConvexId = convexId;
 			} else {
 				// Continue traversal
 				currentParent = existing.page_id;
 				lastPageId = existing.page_id;
+				lastConvexId = existing._id;
 
 				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
 				if (i === segments.length - 1) {
-					return { page_id: lastPageId };
+					return { page_id: lastPageId, convexId: lastConvexId };
 				}
 			}
 		}
 
-		if (!lastPageId) {
+		if (!lastPageId || !lastConvexId) {
 			throw should_never_happen("lastPageId not resolved after page creation");
 		}
 
-		return { page_id: lastPageId };
+		return { page_id: lastPageId, convexId: lastConvexId };
 	},
 });
 

@@ -48,6 +48,7 @@ import {
 	pages_create_tree_placeholder_child,
 	pages_ROOT_ID,
 	type pages_TreeItem,
+	type pages_EditorView,
 } from "@/lib/pages.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import { useNavigate } from "@tanstack/react-router";
@@ -1168,13 +1169,14 @@ type PagesSidebar_CssVars = {
 export type PagesSidebar_Props = {
 	state: MySidebar_Props["state"];
 	selectedPageId: string | null;
+	view: pages_EditorView;
 	onClose: () => void;
 	onArchive: (itemId: string) => void;
 	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
 export function PagesSidebar(props: PagesSidebar_Props) {
-	const { selectedPageId, state = "expanded", onClose, onArchive, onPrimaryAction } = props;
+	const { selectedPageId, state = "expanded", view, onClose, onArchive, onPrimaryAction } = props;
 
 	const navigate = useNavigate();
 
@@ -1261,7 +1263,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 		navigate({
 			to: "/pages",
-			search: { pageId: newPageId },
+			search: { pageId: newPageId, view },
 		}).catch(console.error);
 
 		return app_convex_wait_new_query_value(

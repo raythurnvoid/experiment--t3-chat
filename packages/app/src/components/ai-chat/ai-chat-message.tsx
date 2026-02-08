@@ -1,7 +1,7 @@
 import "./ai-chat-message.css";
 
-import type { ComponentProps, ComponentPropsWithoutRef, ComponentPropsWithRef, ReactNode, Ref } from "react";
-import { ArrowUpRight, ChevronLeft, ChevronRight, GitBranch, RefreshCw, ShieldQuestion } from "lucide-react";
+import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, FileText, GitBranch, RefreshCw, ShieldQuestion } from "lucide-react";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import {
 	isDataUIPart,
@@ -21,6 +21,7 @@ import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { ai_chat_get_parent_id } from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
+import { DiffMonospaceBlock } from "@/components/diff-monospace-block.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
@@ -86,7 +87,9 @@ function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
 						"AiChatMessagePartToolStatus-state-approval" satisfies AiChatMessagePartToolStatus_ClassNames,
 					)}
 				>
-					<ShieldQuestion className={"AiChatMessagePartToolStatus-icon" satisfies AiChatMessagePartToolStatus_ClassNames} />
+					<ShieldQuestion
+						className={"AiChatMessagePartToolStatus-icon" satisfies AiChatMessagePartToolStatus_ClassNames}
+					/>
 					Awaiting Approval
 				</AiChatMessagePartToolChip>
 			);
@@ -161,7 +164,7 @@ function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDiscl
 
 	const isLoading = state === "input-streaming" || state === "input-available";
 
-	const handleClick: ComponentProps<"summary">["onClick"] = (e) => {
+	const handleClick: ComponentPropsWithRef<"summary">["onClick"] = (e) => {
 		if (isLoading) {
 			e.preventDefault();
 		}
@@ -178,7 +181,9 @@ function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDiscl
 			onClick={handleClick}
 		>
 			<div
-				className={"AiChatMessagePartToolDisclosureButton-content" satisfies AiChatMessagePartToolDisclosureButton_ClassNames}
+				className={
+					"AiChatMessagePartToolDisclosureButton-content" satisfies AiChatMessagePartToolDisclosureButton_ClassNames
+				}
 			>
 				<b>
 					{title}
@@ -203,7 +208,10 @@ function AiChatMessagePartToolBody(props: AiChatMessagePartToolBody_Props) {
 	const { className, ...rest } = props;
 
 	return (
-		<div className={cn("AiChatMessagePartToolBody" satisfies AiChatMessagePartToolBody_ClassNames, className)} {...rest} />
+		<div
+			className={cn("AiChatMessagePartToolBody" satisfies AiChatMessagePartToolBody_ClassNames, className)}
+			{...rest}
+		/>
 	);
 }
 // #endregion tool body
@@ -250,11 +258,17 @@ function AiChatMessagePartToolTextAreaSection(props: AiChatMessagePartToolTextAr
 					AiChatMessagePartToolTextAreaSection_CssVars_DEFAULTS["--AiChatMessagePartToolTextAreaSection-max-height"],
 			} satisfies AiChatMessagePartToolTextAreaSection_CssVars)}
 		>
-			<h6 className={"AiChatMessagePartToolTextAreaSection-heading" satisfies AiChatMessagePartToolTextAreaSection_ClassNames}>
+			<h6
+				className={
+					"AiChatMessagePartToolTextAreaSection-heading" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
+				}
+			>
 				{label}
 			</h6>
 			<textarea
-				className={"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames}
+				className={
+					"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
+				}
 				value={code}
 				readOnly
 			/>
@@ -302,7 +316,9 @@ function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Prop
 				)}
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessagePartToolTextAreaSection label="Content" code={result.output} maxHeight="16lh" />}
+				{result?.output && (
+					<AiChatMessagePartToolTextAreaSection label="Content" code={result.output} maxHeight="16lh" />
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartToolDisclosure>
 	);
@@ -335,7 +351,9 @@ function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Pr
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+				{result?.output && (
+					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartToolDisclosure>
 	);
@@ -364,7 +382,9 @@ function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Pr
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+				{result?.output && (
+					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartToolDisclosure>
 	);
@@ -393,7 +413,9 @@ function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Pr
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+				{result?.output && (
+					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartToolDisclosure>
 	);
@@ -425,7 +447,9 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+				{result?.output && (
+					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartToolDisclosure>
 	);
@@ -433,7 +457,14 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 // #endregion tool text_search_pages
 
 // #region tool write_page
-type AiChatMessagePartToolWritePage_ClassNames = "AiChatMessagePartToolWritePage" | "AiChatMessagePartToolWritePage-link";
+type AiChatMessagePartToolWritePage_ClassNames =
+	| "AiChatMessagePartToolWritePage"
+	| "AiChatMessagePartToolWritePage-header"
+	| "AiChatMessagePartToolWritePage-header-title"
+	| "AiChatMessagePartToolWritePage-header-file-icon"
+	| "AiChatMessagePartToolWritePage-header-actions"
+	| "AiChatMessagePartToolWritePage-header-icon"
+	| "AiChatMessagePartToolWritePage-diff";
 
 type AiChatMessagePartToolWritePage_Props = {
 	className?: string | undefined;
@@ -446,32 +477,97 @@ type AiChatMessagePartToolWritePage_Props = {
 function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
-	const resultCode = result?.metadata?.diff ?? result?.output;
+	const pageName = result?.metadata.path
+		? path_name_of(result.metadata.path)
+		: args?.path
+			? path_name_of(args.path)
+			: "Writing page";
+	const pageId = result?.metadata?.pageId;
+	const diffText = result?.metadata?.diff ?? result?.output;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<div
 			className={cn("AiChatMessagePartToolWritePage" satisfies AiChatMessagePartToolWritePage_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-write_page" state={toolState} />
-			<AiChatMessagePartToolBody>
-				{result?.metadata?.pageId && (
-					<MyLink
-						className={"AiChatMessagePartToolWritePage-link" satisfies AiChatMessagePartToolWritePage_ClassNames}
-						to="/pages"
-						search={{ pageId: result.metadata.pageId }}
-						variant="button-ghost-accent"
+			{pageId ? (
+				<MyLink
+					className={"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames}
+					to="/pages"
+					search={{ pageId, view: "diff_editor" }}
+					variant="button-ghost-accent"
+				>
+					<MyButtonIcon
+						className={
+							"AiChatMessagePartToolWritePage-header-file-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
+						}
 					>
-						Open page
-						<MyButtonIcon>
+						<FileText />
+					</MyButtonIcon>
+					<span
+						className={
+							"AiChatMessagePartToolWritePage-header-title" satisfies AiChatMessagePartToolWritePage_ClassNames
+						}
+					>
+						{pageName}
+					</span>
+					<span
+						className={
+							"AiChatMessagePartToolWritePage-header-actions" satisfies AiChatMessagePartToolWritePage_ClassNames
+						}
+					>
+						<AiChatMessagePartToolStatus state={toolState} />
+						<MyButtonIcon
+							className={
+								"AiChatMessagePartToolWritePage-header-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
+							}
+						>
 							<ArrowUpRight />
 						</MyButtonIcon>
-					</MyLink>
-				)}
-				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
-			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+					</span>
+				</MyLink>
+			) : (
+				<div
+					className={"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames}
+					aria-disabled="true"
+				>
+					<MyButtonIcon
+						className={
+							"AiChatMessagePartToolWritePage-header-file-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
+						}
+					>
+						<FileText />
+					</MyButtonIcon>
+					<span
+						className={
+							"AiChatMessagePartToolWritePage-header-title" satisfies AiChatMessagePartToolWritePage_ClassNames
+						}
+					>
+						{pageName}
+					</span>
+					<span
+						className={
+							"AiChatMessagePartToolWritePage-header-actions" satisfies AiChatMessagePartToolWritePage_ClassNames
+						}
+					>
+						<AiChatMessagePartToolStatus state={toolState} />
+						<MyButtonIcon
+							className={
+								"AiChatMessagePartToolWritePage-header-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
+							}
+						>
+							<ArrowUpRight />
+						</MyButtonIcon>
+					</span>
+				</div>
+			)}
+			{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+			{diffText && (
+				<DiffMonospaceBlock
+					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
+					diffText={diffText}
+				/>
+			)}
+		</div>
 	);
 }
 // #endregion tool write_page
@@ -980,7 +1076,24 @@ export type AiChatMessageUser_ClassNames =
 	| "AiChatMessageUser-branch-controls"
 	| "AiChatMessageUser-branch-label";
 
-type AiChatMessageUser_Props = AiChatMessage_Props;
+type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
+	ref?: Ref<HTMLDivElement>;
+	id?: string;
+	className?: string;
+
+	message: ai_chat_AiSdk5UiMessage;
+	selectedThreadId: string | null;
+	isRunning: boolean;
+	isEditing: boolean;
+	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
+	onToolStop: AiChatMessageContent_Props["onToolStop"];
+	onEditStart: AiChatMessage_Props["onEditStart"];
+	onEditCancel: AiChatMessage_Props["onEditCancel"];
+	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
+	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
+};
 
 function AiChatMessageUser(props: AiChatMessageUser_Props) {
 	const {
@@ -998,7 +1111,6 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
-		onMessageBranchChat,
 		onSelectBranchAnchor,
 		...rest
 	} = props;
@@ -1167,7 +1279,23 @@ type AiChatMessageAgent_ClassNames =
 	| "AiChatMessageAgent-branch-controls"
 	| "AiChatMessageAgent-branch-label";
 
-type AiChatMessageAgent_Props = AiChatMessage_Props;
+type AiChatMessageAgent_Props = ComponentPropsWithRef<"div"> & {
+	ref?: Ref<HTMLDivElement>;
+	id?: string;
+	className?: string;
+
+	message: ai_chat_AiSdk5UiMessage;
+	selectedThreadId: string | null;
+	isRunning: boolean;
+	isEditing: boolean;
+	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
+	onToolStop: AiChatMessageContent_Props["onToolStop"];
+	onMessageRegenerate: AiChatMessage_Props["onMessageRegenerate"];
+	onMessageBranchChat: AiChatMessage_Props["onMessageBranchChat"];
+	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
+};
 
 function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 	const {
@@ -1325,7 +1453,20 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 // #region system message
 type AiChatMessageSystem_ClassNames = "AiChatMessageSystem" | "AiChatMessageSystem-bubble";
 
-type AiChatMessageSystem_Props = AiChatMessage_Props;
+type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
+	ref?: Ref<HTMLDivElement>;
+	id?: string;
+	className?: string;
+
+	message: ai_chat_AiSdk5UiMessage;
+	selectedThreadId: string | null;
+	isRunning: boolean;
+	isEditing: boolean;
+	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
+	onToolStop: AiChatMessageContent_Props["onToolStop"];
+};
 
 function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 	const { ref, id, className, message, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
@@ -1386,17 +1527,50 @@ export type AiChatMessage_CustomAttributes = {
 };
 
 export function AiChatMessage(props: AiChatMessage_Props) {
-	const { className, message } = props;
+	const {
+		ref,
+		id,
+		className,
+		message,
+		selectedThreadId,
+		isRunning,
+		isEditing,
+		messagesChildrenByParentId,
+		onToolOutput,
+		onToolResumeStream,
+		onToolStop,
+		onEditStart,
+		onEditCancel,
+		onEditSubmit,
+		onMessageRegenerate,
+		onMessageBranchChat,
+		onSelectBranchAnchor,
+		...rest
+	} = props;
 
 	if (message.role === "user") {
 		return (
 			<AiChatMessageUser
+				ref={ref}
+				id={id}
 				className={cn("AiChatMessage" satisfies AiChatMessage_ClassNames, className)}
 				{...({
 					"data-ai-chat-message-id": message.id,
 					"data-ai-chat-message-role": message.role,
 				} satisfies Partial<AiChatMessage_CustomAttributes>)}
-				{...props}
+				message={message}
+				selectedThreadId={selectedThreadId}
+				isRunning={isRunning}
+				isEditing={isEditing}
+				messagesChildrenByParentId={messagesChildrenByParentId}
+				onToolOutput={onToolOutput}
+				onToolResumeStream={onToolResumeStream}
+				onToolStop={onToolStop}
+				onEditStart={onEditStart}
+				onEditCancel={onEditCancel}
+				onEditSubmit={onEditSubmit}
+				onSelectBranchAnchor={onSelectBranchAnchor}
+				{...rest}
 			/>
 		);
 	}
@@ -1404,24 +1578,47 @@ export function AiChatMessage(props: AiChatMessage_Props) {
 	if (message.role === "assistant") {
 		return (
 			<AiChatMessageAgent
+				ref={ref}
+				id={id}
 				className={cn("AiChatMessage" satisfies AiChatMessage_ClassNames, className)}
 				{...({
 					"data-ai-chat-message-id": message.id,
 					"data-ai-chat-message-role": message.role,
 				} satisfies Partial<AiChatMessage_CustomAttributes>)}
-				{...props}
+				message={message}
+				selectedThreadId={selectedThreadId}
+				isRunning={isRunning}
+				isEditing={isEditing}
+				messagesChildrenByParentId={messagesChildrenByParentId}
+				onToolOutput={onToolOutput}
+				onToolResumeStream={onToolResumeStream}
+				onToolStop={onToolStop}
+				onMessageRegenerate={onMessageRegenerate}
+				onMessageBranchChat={onMessageBranchChat}
+				onSelectBranchAnchor={onSelectBranchAnchor}
+				{...rest}
 			/>
 		);
 	}
 
 	return (
 		<AiChatMessageSystem
+			ref={ref}
+			id={id}
 			className={cn("AiChatMessage" satisfies AiChatMessage_ClassNames, className)}
 			{...({
 				"data-ai-chat-message-id": message.id,
 				"data-ai-chat-message-role": message.role,
 			} satisfies Partial<AiChatMessage_CustomAttributes>)}
-			{...props}
+			message={message}
+			selectedThreadId={selectedThreadId}
+			isRunning={isRunning}
+			isEditing={isEditing}
+			messagesChildrenByParentId={messagesChildrenByParentId}
+			onToolOutput={onToolOutput}
+			onToolResumeStream={onToolResumeStream}
+			onToolStop={onToolStop}
+			{...rest}
 		/>
 	);
 }

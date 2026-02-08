@@ -31,6 +31,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
+import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 
 // #region toolbar
 export type PageEditorPlainTextToolbar_ClassNames =
@@ -136,12 +137,23 @@ export type PageEditorPlainTextSidebar_Props = {
 function PageEditorPlainTextSidebar(props: PageEditorPlainTextSidebar_Props) {
 	const { threadIds } = props;
 
+	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab);
+	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
+
+	const handleTabChange = (nextSelectedId: string | null | undefined) => {
+		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
+			return;
+		}
+
+		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
+	};
+
 	return (
 		<>
 			<div
 				className={cn("PageEditorPlainTextSidebar-background" satisfies PageEditorPlainTextSidebar_ClassNames)}
 			></div>
-			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>
+			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
 				<div className={cn("PageEditorPlainTextSidebar-toolbar" satisfies PageEditorPlainTextSidebar_ClassNames)}>
 					<div
 						className={cn(

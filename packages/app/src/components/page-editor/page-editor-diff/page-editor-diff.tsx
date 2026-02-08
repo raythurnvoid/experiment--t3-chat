@@ -39,6 +39,7 @@ import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
+import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 
 // #region toolbar
 export type PageEditorDiffToolbar_ClassNames =
@@ -192,10 +193,21 @@ export type PageEditorDiffSidebar_Props = {
 function PageEditorDiffSidebar(props: PageEditorDiffSidebar_Props) {
 	const { threadIds } = props;
 
+	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab);
+	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
+
+	const handleTabChange = (nextSelectedId: string | null | undefined) => {
+		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
+			return;
+		}
+
+		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
+	};
+
 	return (
 		<>
 			<div className={cn("PageEditorDiffSidebar-background" satisfies PageEditorDiffSidebar_ClassNames)}></div>
-			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>
+			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
 				<div className={cn("PageEditorDiffSidebar-toolbar" satisfies PageEditorDiffSidebar_ClassNames)}>
 					<div
 						className={cn("PageEditorDiffSidebar-toolbar-scrollable-area" satisfies PageEditorDiffSidebar_ClassNames)}
@@ -1113,7 +1125,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		ref,
 		() => ({
 			setModifiedContent: (value: string) => {
-				pushChangeToWorkingEditor(value);
+				pushChangeToUnstagedEditor(value);
 			},
 		}),
 		[],

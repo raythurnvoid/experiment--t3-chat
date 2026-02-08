@@ -95,10 +95,6 @@
 		.AiChatMessageUser > .AiChatMessageUser-bubble:not(.AiChatMessageUser-bubble-state-editing) > & {
 			padding: 10px 10px 0 10px;
 		}
-
-		p {
-			margin: 0;
-		}
 	}
 
 	.AiChatMessageUser-content-composer .MyInputBox {
@@ -333,6 +329,44 @@
 		}
 	}
 	/* #endregion tool textarea section */
+
+	/* #region tool write_page */
+	.AiChatMessagePartToolWritePage {
+		display: flex;
+		flex-direction: column;
+
+		padding: 0 16px 16px 16px;
+	}
+
+	.AiChatMessagePartToolWritePage-header {
+		display: flex;
+		justify-content: start;
+	}
+	.AiChatMessagePartToolWritePage-header-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.AiChatMessagePartToolWritePage-header-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.AiChatMessagePartToolWritePage-header-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.AiChatMessagePartToolWritePage-diff {
+		margin-top: 4px;
+
+		> .DiffMonospaceBlock-line {
+			white-space: pre;
+		}
+	}
+	/* #endregion tool write_page */
 
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {

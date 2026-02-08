@@ -913,41 +913,39 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 				},
 			);
 
-			const exists = !!currentPageContent?.pageId;
-
+			let exists = !!currentPageContent;
 			const oldText = currentPageContent?.content ?? "";
 
 			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
 			const newText = args.content;
 			const diff = createPatch(path, oldText, newText);
 
-			let pageId = currentPageContent?.pageId;
+			let clientPageId = currentPageContent?.pageId;
+			let pageDocId = currentPageContent?.convexId;
 
-			if (!pageId) {
+			if (!clientPageId || !pageDocId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					path,
 					userId: user.id,
 				});
-				pageId = created.page_id;
-			}
-
-			if (!pageId) {
-				throw new Error("Internal error: pageId not resolved after page creation");
+				exists = false;
+				clientPageId = created.page_id;
+				pageDocId = created.convexId;
 			}
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: pageId,
+				pageId: pageDocId,
 				baseContent: oldText,
 				modifiedContent: newText,
 			});
 
 			return {
 				output: exists ? "Page overwritten" : "New page created",
-				metadata: { pageId: pageId, exists, path, diff, modifiedContent: newText },
+				metadata: { pageId: clientPageId, exists, path, diff, modifiedContent: newText },
 			};
 		},
 	});
@@ -1021,10 +1019,13 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 
 			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
 
+			const pageDocId = currentPageContent.convexId;
+			const clientPageId = currentPageContent.pageId;
+
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: currentPageContent.pageId,
+				pageId: pageDocId,
 				baseContent: currentPageContent.content,
 				modifiedContent: modifiedText,
 			});
@@ -1032,7 +1033,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			return {
 				title: normalizedPath,
 				metadata: {
-					pageId: currentPageContent.pageId,
+					pageId: clientPageId,
 					path: normalizedPath,
 					matches,
 					diff,

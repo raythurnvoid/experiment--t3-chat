@@ -212,6 +212,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 	} = props;
 
 	const messageCount = activeBranchMessages.list.length;
+	const shouldShowSkeleton = status === "loading" && messageCount === 0;
 
 	const handleSuggestionClick = (action: string) => {
 		onClickSuggestion(action);
@@ -227,7 +228,9 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 			className={cn("AiChatMessageList" satisfies AiChatMessagesList_ClassNames, className)}
 			{...rest}
 		>
-			{messageCount === 0 ? (
+			{shouldShowSkeleton ? (
+				<AiChatSkeleton />
+			) : messageCount === 0 ? (
 				<AiChatWelcome onClickSuggestion={handleSuggestionClick} />
 			) : (
 				activeBranchMessages.list.map((message, index) => (
@@ -262,7 +265,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 const AUTO_SCROLL_BOTTOM_MARGIN = 1;
 
 type useAutoScroll_Props = {
-	scrollEl: HTMLDivElement | null;
+	scrollEl: HTMLElement | null;
 	contentEl: HTMLDivElement | null;
 	controller: AiChatController;
 	enable?: boolean;
@@ -426,20 +429,20 @@ export type AiChatThread_ClassNames =
 export type AiChatThread_Props = {
 	variant?: AiChatThread_Variant;
 	controller: AiChatController;
+	scrollableContainer: HTMLElement | null;
 };
 
 export function AiChatThread(props: AiChatThread_Props) {
-	const { variant = "default", controller } = props;
+	const { variant = "default", controller, scrollableContainer } = props;
 
 	const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 	const selectedThreadId = controller.selectedThreadId;
 	const initialComposerValue = controller.session?.draftComposerText ?? "";
 
-	const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
 	const [messagesListEl, setMessagesListEl] = useState<HTMLDivElement | null>(null);
 
 	const { isAtBottom, scrollToBottom } = useAutoScroll({
-		scrollEl: rootEl,
+		scrollEl: scrollableContainer,
 		contentEl: messagesListEl,
 		controller,
 		enable: controller.isRunning,
@@ -586,7 +589,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 				if (isComposerInFocus) {
 					if (event.key === "Escape" && editingMessageId) {
 						setEditingMessageId(null);
-						elToFocus = rootEl?.querySelector<HTMLElement>(
+						elToFocus = event.currentTarget.querySelector<HTMLElement>(
 							`.${"AiChatThread-composer" satisfies AiChatThread_ClassNames} .${"AiChatComposer-editor-content" satisfies AiChatComposer_ClassNames}`,
 						);
 						preventScroll = true;
@@ -625,7 +628,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 						}
 
 						if (editingIndex === userMessageElements.length - 1) {
-							elToFocus = rootEl?.querySelector<HTMLElement>(
+							elToFocus = event.currentTarget.querySelector<HTMLElement>(
 								`.${"AiChatThread-composer" satisfies AiChatThread_ClassNames} .${"AiChatComposer-editor-content" satisfies AiChatComposer_ClassNames}`,
 							);
 							preventScroll = true;
@@ -690,14 +693,20 @@ export function AiChatThread(props: AiChatThread_Props) {
 					} else if (event.key === "End") {
 						targetMessageEl = userMessageElements.at(-1) ?? null;
 					} else if (event.key === "PageUp") {
-						const scrollEl = rootEl ?? (event.currentTarget instanceof Element ? event.currentTarget : messagesListEl);
+						const scrollEl = scrollableContainer;
+						if (!scrollEl) {
+							break;
+						}
 						const targetElement =
 							dom_find_first_element_overflowing_element(scrollEl, userMessageElements, "up") ??
 							userMessageElements.at(0) ??
 							null;
 						targetMessageEl = targetElement instanceof HTMLElement ? targetElement : null;
 					} else if (event.key === "PageDown") {
-						const scrollEl = rootEl ?? (event.currentTarget instanceof Element ? event.currentTarget : messagesListEl);
+						const scrollEl = scrollableContainer;
+						if (!scrollEl) {
+							break;
+						}
 						const targetElement =
 							dom_find_first_element_overflowing_element(scrollEl, userMessageElements, "down") ??
 							userMessageElements.at(-1) ??
@@ -725,7 +734,6 @@ export function AiChatThread(props: AiChatThread_Props) {
 
 	return (
 		<div
-			ref={setRootEl}
 			className={cn(
 				"AiChatThread" satisfies AiChatThread_ClassNames,
 				variant === "default" && ("AiChatThread-variant-default" satisfies AiChatThread_ClassNames),
@@ -796,6 +804,7 @@ export function AiChat(props: AiChat_Props) {
 
 	const controller = useAiChatController();
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
+	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	return (
@@ -837,8 +846,8 @@ export function AiChat(props: AiChat_Props) {
 							</MyIconButton>
 						</div>
 					)}
-					<div className={"AiChat-thread-content" satisfies AiChat_ClassNames}>
-						<AiChatThread controller={controller} />
+					<div ref={setScrollableContainer} className={"AiChat-thread-content" satisfies AiChat_ClassNames}>
+						<AiChatThread controller={controller} scrollableContainer={scrollableContainer} />
 					</div>
 				</div>
 			</div>

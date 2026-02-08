@@ -1,0 +1,34 @@
+@layer common_components {
+	.MyButtonGroup {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.MyButtonGroupItem {
+		position: relative;
+		display: inline-flex;
+	}
+
+	.MyButtonGroupItem-input {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.MyButtonGroupItem-button {
+		cursor: pointer;
+		user-select: none;
+	}
+
+	.MyButtonGroupItem:has(.MyButtonGroupItem-input:focus-visible) .MyButtonGroupItem-button {
+		border-color: var(--color-fg-12);
+	}
+
+	.MyButtonGroupItem:has(.MyButtonGroupItem-input:disabled) .MyButtonGroupItem-button {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+}

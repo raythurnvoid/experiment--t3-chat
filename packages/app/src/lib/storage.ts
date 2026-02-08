@@ -4,7 +4,10 @@
  * Avoid generic names. You can use this pattern to make the key descriptive
  * `app_<feature_name>_<some_key>`
  */
-export type storage_local_Key = "app::auth::anonymous_token" | "app::auth::anonymous_token_user_id";
+export type storage_local_Key =
+	| "app::auth::anonymous_token"
+	| "app::auth::anonymous_token_user_id"
+	| `app_state::${string}`;
 
 /**
  * All keys used for `sessionStorage` values.

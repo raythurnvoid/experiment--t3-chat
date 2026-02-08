@@ -13,6 +13,10 @@ import { app_convex, type app_convex_Id, app_convex_api } from "@/lib/app-convex
 
 export * from "../../shared/pages.ts";
 
+export const pages_editor_view_values = ["rich_text_editor", "plain_text_editor", "diff_editor"] as const;
+
+export type pages_EditorView = (typeof pages_editor_view_values)[number];
+
 export const pages_INITIAL_CONTENT = `\
 # Welcome
 

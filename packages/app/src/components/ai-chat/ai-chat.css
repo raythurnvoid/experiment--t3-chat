@@ -52,15 +52,18 @@
 	}
 
 	.AiChat-thread-content {
+		contain: strict;
+
 		display: flex;
 		flex: 1;
 		justify-content: center;
+
+		overflow: hidden auto;
 	}
 	/* #endregion root */
 
 	/* #region thread */
 	.AiChatThread {
-		contain: strict;
 		container-type: size;
 
 		display: flex;
@@ -72,7 +75,6 @@
 		height: 100%;
 		padding: 16px 0px 0px 0px;
 
-		overflow: hidden auto;
 		scroll-padding-block: 100px 200px;
 	}
 

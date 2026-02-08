@@ -7,20 +7,10 @@ They can be used also to listen and dispatch events outside of React components.
 
 import { useEffect } from "react";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
-import type { app_convex_Id } from "./app-convex-client.ts";
 import { XCustomEvent } from "./utils.ts";
 
 // #region custom events
-export class global_custom_event_Event extends XCustomEvent<{
-	"ai_chat::open_canvas": {
-		pageId: app_convex_Id<"pages">;
-		mode: "diff" | "editor";
-		modifiedContent?: string;
-	};
-	"ai_chat::open_canvas_by_path": {
-		path: string;
-	};
-}> {}
+export class global_custom_event_Event extends XCustomEvent<{}> {}
 
 declare global {
 	interface Window {

@@ -1,6 +1,6 @@
 import "./page-editor-rich-text-sidebar-agent.css";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Clock, Plus } from "lucide-react";
 
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
@@ -121,6 +121,7 @@ export type PageEditorRichTextSidebarAgent_ClassNames =
 export function PageEditorRichTextSidebarAgent() {
 	const controller = useAiChatController({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
+	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 
 	const handleNewChat = () => {
 		controller.startNewChat();
@@ -150,9 +151,10 @@ export function PageEditorRichTextSidebarAgent() {
 				</div>
 			</div>
 			<div
+				ref={setScrollableContainer}
 				className={cn("PageEditorRichTextSidebarAgent-chat-area" satisfies PageEditorRichTextSidebarAgent_ClassNames)}
 			>
-				<AiChatThread variant="sidebar" controller={controller} />
+				<AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />
 			</div>
 		</div>
 	);

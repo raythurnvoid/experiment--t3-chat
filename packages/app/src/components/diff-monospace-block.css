@@ -1,0 +1,51 @@
+@layer components {
+	/* #region root */
+	.DiffMonospaceBlock {
+		box-sizing: border-box;
+
+		display: block;
+
+		width: 100%;
+		margin: 0;
+		padding: 12px 16px;
+
+		border-radius: 6px;
+		border: 1px solid var(--color-base-1-06);
+
+		background: var(--color-base-1-03);
+		color: var(--color-fg-10);
+
+		font-size: 0.75rem;
+		line-height: 1.4;
+
+		white-space: pre-wrap;
+		word-break: break-word;
+
+		overflow: auto;
+		max-height: var(--DiffMonospaceBlock-max-height);
+	}
+
+	.DiffMonospaceBlock-line {
+		display: inline;
+		white-space: pre-wrap;
+	}
+
+	.DiffMonospaceBlock-line-added {
+		color: var(--color-green-09);
+	}
+
+	.DiffMonospaceBlock-line-removed {
+		color: var(--color-red-09);
+		text-decoration: line-through;
+		text-decoration-color: var(--color-red-05);
+	}
+
+	.DiffMonospaceBlock-line-header {
+		color: var(--color-fg-07);
+	}
+
+	.DiffMonospaceBlock-line-context {
+		color: var(--color-fg-10);
+	}
+	/* #endregion root */
+}

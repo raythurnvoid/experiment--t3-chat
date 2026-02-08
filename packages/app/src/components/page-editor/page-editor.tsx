@@ -3,16 +3,21 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref, useEffect, useRef, useEffectEvent } from "react";
-import { Switch } from "../ui/switch.tsx";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
-import { MonacoMarkdownDiffEditorAiEditsWrapper } from "./monaco-markdown-diff-editor-ai-edits-wrapper.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
-import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
+import { PageEditorDiff, type PageEditorDiff_Ref } from "./page-editor-diff/page-editor-diff.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { pages_ROOT_ID, pages_create_room_id, type pages_TreeItem, pages_PresenceStore } from "@/lib/pages.ts";
+import {
+	pages_ROOT_ID,
+	pages_create_room_id,
+	type pages_TreeItem,
+	pages_PresenceStore,
+	type pages_EditorView,
+} from "@/lib/pages.ts";
 import { Home, Sparkles } from "lucide-react";
+import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
@@ -72,18 +77,18 @@ type PageEditorHeader_ClassNames =
 
 type PageEditorHeader_Props = {
 	pageId: app_convex_Id<"pages"> | null | undefined;
-	editorMode: "rich" | "markdown" | "diff";
-	onEditorModeChange: (mode: "rich" | "markdown" | "diff") => void;
+	editorMode: PageEditor_Mode;
 	onlineUsers: Array<{
 		userId: string;
 		isSelf: boolean;
 		anagraphic: { displayName: string; avatarUrl?: string };
 		color: string;
 	}>;
+	onEditorModeChange: (mode: PageEditor_Mode) => void;
 };
 
 function PageEditorHeader(props: PageEditorHeader_Props) {
-	const { pageId, editorMode, onEditorModeChange, onlineUsers } = props;
+	const { pageId, editorMode, onlineUsers, onEditorModeChange } = props;
 
 	// Query tree items to build breadcrumb path
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
@@ -93,6 +98,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 
 	// Build breadcrumb path from pageId up to root
 	const breadcrumbPath = get_breadcrumb_path(treeItemsList, pageId);
+	const view = editorMode === "rich_text_editor" ? undefined : editorMode;
 
 	return (
 		<div className={cn("PageEditorHeader" satisfies PageEditorHeader_ClassNames)}>
@@ -105,6 +111,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 								<MyLink
 									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
 									to="/pages"
+									search={{ view }}
 									variant="button-tertiary"
 								>
 									<li
@@ -140,7 +147,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 											<MyLink
 												className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
 												to="/pages"
-												search={{ pageId: item.index }}
+												search={{ pageId: item.index, view }}
 												variant="button-tertiary"
 											>
 												{item.title}
@@ -168,28 +175,14 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 			{/* Right: Presence indicator and switches */}
 			<div className={cn("PageEditorHeader-switch-group" satisfies PageEditorHeader_ClassNames)}>
 				<PageEditorPresence users={onlineUsers} />
-				{/* Diff switch (only in markdown mode) */}
-				<div
-					className={cn(
-						"PageEditorHeader-diff-switch" satisfies PageEditorHeader_ClassNames,
-						editorMode === "rich" && "invisible",
-					)}
+				<MyButtonGroup
+					value={editorMode}
+					onValueChange={(mode) => onEditorModeChange(mode as PageEditorHeader_Props["editorMode"])}
 				>
-					<span className={cn("PageEditorHeader-label-text" satisfies PageEditorHeader_ClassNames)}>Diff</span>
-					<Switch
-						checked={(editorMode as "diff" | "markdown") === "diff"}
-						onCheckedChange={(checked: boolean) => onEditorModeChange(checked ? "diff" : "markdown")}
-					/>
-				</div>
-				{/* Rich/Markdown switch */}
-				<div className={cn("PageEditorHeader-switch-container" satisfies PageEditorHeader_ClassNames)}>
-					<span className={cn("PageEditorHeader-switch-text" satisfies PageEditorHeader_ClassNames)}>Rich</span>
-					<Switch
-						checked={editorMode !== "rich"}
-						onCheckedChange={(checked: boolean) => onEditorModeChange(checked ? "markdown" : "rich")}
-					/>
-					<span className={cn("PageEditorHeader-switch-text" satisfies PageEditorHeader_ClassNames)}>Markdown</span>
-				</div>
+					<MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>
+					<MyButtonGroupItem value="plain_text_editor">Markdown</MyButtonGroupItem>
+					<MyButtonGroupItem value="diff_editor">Diff</MyButtonGroupItem>
+				</MyButtonGroup>
 			</div>
 		</div>
 	);
@@ -210,7 +203,7 @@ type PageEditorPendingEditsBanner_Props = {
 };
 
 function PageEditorPendingEditsBanner(props: PageEditorPendingEditsBanner_Props) {
-	const { updatedAt, onReviewChanges } = props;
+	const { onReviewChanges } = props;
 
 	const handleClick = () => {
 		onReviewChanges();
@@ -414,7 +407,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 // #endregion PresenceSupplier
 
 // #region PageEditor
-export type PageEditor_Mode = "rich" | "markdown" | "diff";
+export type PageEditor_Mode = pages_EditorView;
 
 export type PageEditor_ClassNames = "PageEditor" | "PageEditor-editor-container";
 
@@ -428,34 +421,35 @@ type PageEditor_Inner_Props = {
 		anagraphic: { displayName: string; avatarUrl?: string };
 		color: string;
 	}>;
-	diffModifiedInitialValue?: string;
 	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 	onReviewPendingEdits?: () => void;
 	onDiffExit?: () => void;
 };
 
 function PageEditor_Inner(props: PageEditor_Inner_Props) {
-	const {
-		pageId,
-		editorMode,
-		presenceStore,
-		onlineUsers,
-		diffModifiedInitialValue,
-		onEditorModeChange,
-		onReviewPendingEdits,
-		onDiffExit,
-	} = props;
+	const { pageId, editorMode, presenceStore, onlineUsers, onEditorModeChange, onReviewPendingEdits, onDiffExit } =
+		props;
 
-	const pendingEditsResult = useQuery(app_convex_api.ai_chat.has_pending_edits_for_page, {
-		pageId: pageId,
+	const pendingEditsResult = useQuery(app_convex_api.ai_chat.get_ai_pending_edit, {
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		pageId,
 	});
 
-	const hasPendingAiEdits = !!pendingEditsResult;
+	const diffEditorRef = useRef<PageEditorDiff_Ref | null>(null);
 
 	const handleDiffExit = () => {
-		onEditorModeChange("rich");
+		onEditorModeChange("rich_text_editor");
 		onDiffExit?.();
 	};
+
+	useEffect(() => {
+		if (editorMode !== "diff_editor" || !pendingEditsResult) {
+			return;
+		}
+
+		diffEditorRef.current?.setModifiedContent(pendingEditsResult.modifiedContent ?? "");
+	}, [editorMode, pendingEditsResult?.modifiedContent]);
 
 	const headerSlot = (
 		<PageEditorHeader
@@ -469,7 +463,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	const enhancedHeaderSlot = (
 		<>
 			{headerSlot}
-			{pendingEditsResult && editorMode !== "diff" && (
+			{pendingEditsResult && editorMode !== "diff_editor" && (
 				<PageEditorPendingEditsBanner
 					updatedAt={pendingEditsResult.updatedAt}
 					onReviewChanges={onReviewPendingEdits ?? (() => {})}
@@ -488,24 +482,17 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 						console.error("[PageEditor_Inner]", err);
 					}}
 				>
-					{editorMode === "rich" ? (
+					{editorMode === "rich_text_editor" ? (
 						<PageEditorRichText pageId={pageId} presenceStore={presenceStore} headerSlot={enhancedHeaderSlot} />
-					) : editorMode === "diff" ? (
-						hasPendingAiEdits ? (
-							<MonacoMarkdownDiffEditorAiEditsWrapper
-								pageId={pageId}
-								headerSlot={headerSlot}
-								onExit={handleDiffExit}
-							/>
-						) : (
-							<PageEditorDiff
-								pageId={pageId}
-								presenceStore={presenceStore}
-								headerSlot={headerSlot}
-								modifiedInitialValue={diffModifiedInitialValue}
-								onExit={handleDiffExit}
-							/>
-						)
+					) : editorMode === "diff_editor" ? (
+						<PageEditorDiff
+							ref={diffEditorRef}
+							pageId={pageId}
+							presenceStore={presenceStore}
+							headerSlot={headerSlot}
+							modifiedInitialValue={pendingEditsResult?.modifiedContent ?? undefined}
+							onExit={handleDiffExit}
+						/>
 					) : (
 						<PageEditorPlainText pageId={pageId} presenceStore={presenceStore} headerSlot={enhancedHeaderSlot} />
 					)}
@@ -516,41 +503,32 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 }
 
 export type PageEditor_Ref = {
-	requestOpenDiff: (args: { pageId: app_convex_Id<"pages">; modifiedEditorValue: string }) => void;
 	getMode: () => PageEditor_Mode;
 };
 
 export type PageEditor_Props = {
 	ref?: Ref<PageEditor_Ref>;
 	pageId: app_convex_Id<"pages"> | null | undefined;
+	editorMode: PageEditor_Mode;
+	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 };
 
 export function PageEditor(props: PageEditor_Props) {
-	const { ref: refProp, pageId } = props;
+	const { ref, pageId, editorMode, onEditorModeChange } = props;
 
 	const authenticated = AppAuthProvider.useAuthenticated();
 
-	const [editorMode, setEditorMode] = useState<PageEditor_Mode>("rich");
-	const [diffModifiedInitialValue, setDiffModifiedInitialValue] = useState<string | undefined>(undefined);
-	const [diffModifiedInitialValuePageId, setDiffModifiedInitialValuePageId] = useState<app_convex_Id<"pages"> | null>(
-		null,
-	);
-
-	const diffModifiedInitialValueForPage =
-		pageId && diffModifiedInitialValuePageId === pageId ? diffModifiedInitialValue : undefined;
-
 	useImperativeHandle(
-		refProp,
+		ref,
 		() => ({
-			requestOpenDiff: (_args: { pageId: app_convex_Id<"pages">; modifiedEditorValue: string }) => {
-				setDiffModifiedInitialValuePageId(_args.pageId);
-				setDiffModifiedInitialValue(_args.modifiedEditorValue);
-				setEditorMode("diff");
-			},
 			getMode: () => editorMode,
 		}),
 		[editorMode],
 	);
+
+	const handleReviewPendingEdits = () => {
+		onEditorModeChange("diff_editor");
+	};
 
 	return pageId ? (
 		<PageEditorPresenceSupplier userId={authenticated.userId} pageId={pageId}>
@@ -560,11 +538,8 @@ export function PageEditor(props: PageEditor_Props) {
 					editorMode={editorMode}
 					presenceStore={presenceStore}
 					onlineUsers={onlineUsers}
-					diffModifiedInitialValue={diffModifiedInitialValueForPage}
-					onEditorModeChange={setEditorMode}
-					onReviewPendingEdits={() => {
-						setEditorMode("diff");
-					}}
+					onEditorModeChange={onEditorModeChange}
+					onReviewPendingEdits={handleReviewPendingEdits}
 				/>
 			)}
 		</PageEditorPresenceSupplier>

@@ -252,6 +252,13 @@ export function useAiChat_grouped_threads() {
 }
 ```
 
+#### Hook naming gotcha (React Compiler)
+
+React tooling (and the React Compiler) expects hooks to be named in the form `useXxx...` where the character immediately after `use` is uppercase.
+
+- ✅ Good: `usePagesLastOpen`, `useAiChatController`, `useAiChat_grouped_threads`
+- ❌ Bad: `use_pages_last_open`, `use_ai_chat_controller`, `use_foo`
+
 ### Third-Party and Native JavaScript Functions
 
 ## IIFE
@@ -320,6 +327,21 @@ export const pages_parse_markdown_to_html = ((/* iife */) => {
 - Use a `Map` with appropriate key type (often `string` for single parameter, or a tuple/serialized object for multiple parameters)
 - Cache type uses `ReturnType<typeof value>` for type safety
 - Check cache first, compute and cache if missing, then return
+
+## Zustand stores
+
+This repo uses Zustand for client-side state.
+
+When you create or update a Zustand store, you should follow the existing store patterns in this repo:
+
+- **Store creation**: create the store in an IIFE and export the result (matches the “lazy singleton” style used elsewhere in this repo).
+- **Actions (common pattern)**: many stores attach actions via `Object.assign(store, { actions: { ... } })` so call sites use `useXxx.actions.someAction(...)`.
+- **Tiny stores (allowed)**: for very small stores, it’s acceptable to export the store directly and call `useXxx.setState(...)` at call sites.
+
+Before implementing a new store, read these examples and match their local style:
+
+- [packages/app/src/lib/app-global-store.ts](packages/app/src/lib/app-global-store.ts)
+- [packages/app/src/lib/app-local-storage-state.ts](packages/app/src/lib/app-local-storage-state.ts)
 
 ## No Barrel Exports
 

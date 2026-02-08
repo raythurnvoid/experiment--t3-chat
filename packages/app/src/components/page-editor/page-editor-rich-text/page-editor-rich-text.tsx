@@ -54,6 +54,7 @@ import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { global_event_listen_all } from "../../../lib/global-event.tsx";
+import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 
 type SyncStatus = YjsSyncStatus;
 
@@ -431,10 +432,23 @@ export type PageEditorRichTextSidebar_Props = {
 function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
 	const { editor, threadsQuery } = props;
 
+	const pagesLastTab =
+		useAppLocalStorageState((state) => state.pages_last_tab) ??
+		("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
+	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
+
+	const handleTabChange = (nextSelectedId: string | null | undefined) => {
+		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
+			return;
+		}
+
+		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
+	};
+
 	return (
 		<>
 			<div className={cn("PageEditorRichTextSidebar-background" satisfies PageEditorRichTextSidebar_ClassNames)}></div>
-			<MyTabs defaultSelectedId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>
+			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
 				<div className={cn("PageEditorRichTextSidebar-toolbar" satisfies PageEditorRichTextSidebar_ClassNames)}>
 					<div
 						className={cn(

@@ -66,12 +66,11 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
-		pageId: v.string(),
+		pageId: v.id("pages"),
 		baseContent: v.string(),
 		modifiedContent: v.string(),
 		updatedAt: v.number(),
-	})
-		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
+	}).index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks to remove a user's pending edits.

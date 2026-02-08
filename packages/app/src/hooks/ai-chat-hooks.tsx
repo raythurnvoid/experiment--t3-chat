@@ -8,6 +8,7 @@ import type { api_schemas_Main } from "@/lib/api-schemas.ts";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 import {
 	ai_chat_HARDCODED_ORG_ID,
 	ai_chat_HARDCODED_PROJECT_ID,
@@ -51,8 +52,10 @@ type ChatRequestMetadata = {
 };
 
 const useAiChatStore = ((/* iife */) => {
+	const initialSelectedThreadId = useAppLocalStorageState.getState().ai_chat_last_open;
+	
 	const store = create<ThreadStore>(() => ({
-		selectedThreadId: null,
+		selectedThreadId: initialSelectedThreadId ?? null,
 		threadById: new Map(),
 	}));
 
@@ -576,6 +579,10 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			});
 		}
 
+		if (!session?.optimisticThread) {
+			useAppLocalStorageState.setState({ ai_chat_last_open: threadId });
+		}
+
 		useAiChatStore.setState(() => {
 			return { selectedThreadId: threadId };
 		});
@@ -772,6 +779,10 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				useAiChatStore.actions.deleteSession(optimisticThreadId);
 
 				// Swap selection to the persisted thread if the optimistic thread was selected.
+				if (useAiChatStore.getState().selectedThreadId === optimisticThreadId) {
+					useAppLocalStorageState.setState({ ai_chat_last_open: threadId });
+				}
+
 				useAiChatStore.setState((prev) => {
 					if (prev.selectedThreadId === optimisticThreadId) {
 						return { ...prev, selectedThreadId: threadId };
