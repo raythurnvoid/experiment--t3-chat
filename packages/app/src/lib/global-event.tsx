@@ -16,7 +16,6 @@ export class global_custom_event_Event extends XCustomEvent<{
 		pageId: app_convex_Id<"pages">;
 		mode: "diff" | "editor";
 		modifiedContent?: string;
-		threadId: string;
 	};
 	"ai_chat::open_canvas_by_path": {
 		path: string;

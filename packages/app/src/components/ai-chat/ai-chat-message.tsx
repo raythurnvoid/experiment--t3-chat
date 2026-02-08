@@ -433,7 +433,7 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 // #endregion tool text_search_pages
 
 // #region tool write_page
-type AiChatMessagePartToolWritePage_ClassNames = "AiChatMessagePartToolWritePage";
+type AiChatMessagePartToolWritePage_ClassNames = "AiChatMessagePartToolWritePage" | "AiChatMessagePartToolWritePage-link";
 
 type AiChatMessagePartToolWritePage_Props = {
 	className?: string | undefined;
@@ -454,6 +454,19 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 		>
 			<AiChatMessagePartToolDisclosureButton title="tool-write_page" state={toolState} />
 			<AiChatMessagePartToolBody>
+				{result?.metadata?.pageId && (
+					<MyLink
+						className={"AiChatMessagePartToolWritePage-link" satisfies AiChatMessagePartToolWritePage_ClassNames}
+						to="/pages"
+						search={{ pageId: result.metadata.pageId }}
+						variant="button-ghost-accent"
+					>
+						Open page
+						<MyButtonIcon>
+							<ArrowUpRight />
+						</MyButtonIcon>
+					</MyLink>
+				)}
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
 				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
@@ -464,7 +477,7 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 // #endregion tool write_page
 
 // #region tool edit_page
-type AiChatMessagePartToolEditPage_ClassNames = "AiChatMessagePartToolEditPage";
+type AiChatMessagePartToolEditPage_ClassNames = "AiChatMessagePartToolEditPage" | "AiChatMessagePartToolEditPage-link";
 
 type AiChatMessagePartToolEditPage_Props = {
 	className?: string | undefined;
@@ -485,6 +498,19 @@ function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Prop
 		>
 			<AiChatMessagePartToolDisclosureButton title="tool-edit_page" state={toolState} />
 			<AiChatMessagePartToolBody>
+				{result?.metadata?.pageId && (
+					<MyLink
+						className={"AiChatMessagePartToolEditPage-link" satisfies AiChatMessagePartToolEditPage_ClassNames}
+						to="/pages"
+						search={{ pageId: result.metadata.pageId }}
+						variant="button-ghost-accent"
+					>
+						Open page
+						<MyButtonIcon>
+							<ArrowUpRight />
+						</MyButtonIcon>
+					</MyLink>
+				)}
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
 				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}

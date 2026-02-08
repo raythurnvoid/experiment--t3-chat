@@ -3,7 +3,7 @@ import { components, internal } from "./_generated/api.js";
 import { v } from "convex/values";
 import { Presence } from "@convex-dev/presence";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
-import { should_never_happen } from "../shared/shared-utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -23,10 +23,10 @@ export const heartbeat = mutation({
 		// Cancel any scheduled pending-edits cleanup for this user on heartbeat
 		const scheduled = await ctx.db
 			.query("ai_chat_pending_edits_cleanup_tasks")
-			.withIndex("by_user_id", (q) => q.eq("user_id", user.id))
+			.withIndex("by_userId", (q) => q.eq("userId", user.id))
 			.collect();
 		for (const task of scheduled) {
-			await ctx.scheduler.cancel(task.scheduled_function_id);
+			await ctx.scheduler.cancel(task.scheduledFunctionId);
 			await ctx.db.delete("ai_chat_pending_edits_cleanup_tasks", task._id);
 		}
 
@@ -234,10 +234,10 @@ export const disconnect = mutation({
 		const userId = effective.id;
 		const existing = await ctx.db
 			.query("ai_chat_pending_edits_cleanup_tasks")
-			.withIndex("by_user_id", (q) => q.eq("user_id", userId))
+			.withIndex("by_userId", (q) => q.eq("userId", userId))
 			.collect();
 		for (const task of existing) {
-			await ctx.scheduler.cancel(task.scheduled_function_id);
+			await ctx.scheduler.cancel(task.scheduledFunctionId);
 			await ctx.db.delete("ai_chat_pending_edits_cleanup_tasks", task._id);
 		}
 
@@ -248,8 +248,8 @@ export const disconnect = mutation({
 		});
 
 		await ctx.db.insert("ai_chat_pending_edits_cleanup_tasks", {
-			user_id: userId,
-			scheduled_function_id: scheduledId,
+			userId: userId,
+			scheduledFunctionId: scheduledId,
 		});
 
 		return result;
@@ -267,7 +267,7 @@ export const remove_pending_edits_if_offline = internalMutation({
 		// Clear any scheduled record(s) for this user
 		const records = await ctx.db
 			.query("ai_chat_pending_edits_cleanup_tasks")
-			.withIndex("by_user_id", (q) => q.eq("user_id", userId))
+			.withIndex("by_userId", (q) => q.eq("userId", userId))
 			.collect();
 		for (const rec of records) {
 			await ctx.db.delete("ai_chat_pending_edits_cleanup_tasks", rec._id);
@@ -280,7 +280,12 @@ export const remove_pending_edits_if_offline = internalMutation({
 		// Remove pending edits for this user
 		const pending = await ctx.db
 			.query("ai_chat_pending_edits")
-			.withIndex("by_user_thread_page", (q) => q.eq("user_id", userId))
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("userId", userId),
+			)
 			.collect();
 		for (const doc of pending) {
 			await ctx.db.delete("ai_chat_pending_edits", doc._id);

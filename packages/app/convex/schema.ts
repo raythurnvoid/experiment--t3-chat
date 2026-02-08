@@ -60,29 +60,27 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * Pending edits overlay used to stage AI-written content until user saves.
-	 * Keys by user/thread/page to allow parallel staging across chat threads.
+	 * Keyed by user + page so all chat threads share a single pending edit per page.
 	 */
 	ai_chat_pending_edits: defineTable({
-		workspace_id: v.string(),
-		project_id: v.string(),
-		user_id: v.string(),
-		thread_id: v.string(),
-		page_id: v.string(),
-		base_content: v.string(),
-		modified_content: v.string(),
-		updated_at: v.number(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.string(),
+		pageId: v.string(),
+		baseContent: v.string(),
+		modifiedContent: v.string(),
+		updatedAt: v.number(),
 	})
-		.index("by_user_thread_page", ["user_id", "thread_id", "page_id"])
-		.index("by_page", ["page_id"]),
+		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks to remove a user's pending edits.
 	 * One task per user; canceled on heartbeat, executed if user remains offline.
 	 */
 	ai_chat_pending_edits_cleanup_tasks: defineTable({
-		user_id: v.string(),
-		scheduled_function_id: v.id("_scheduled_functions"),
-	}).index("by_user_id", ["user_id"]),
+		userId: v.string(),
+		scheduledFunctionId: v.id("_scheduled_functions"),
+	}).index("by_userId", ["userId"]),
 	// #endregion AI
 
 	// #region Pages

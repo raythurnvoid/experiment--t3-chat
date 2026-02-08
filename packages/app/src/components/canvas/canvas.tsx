@@ -10,7 +10,6 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 export function Canvas() {
 	const [editorPageId, setEditorPageId] = useStateRef<app_convex_Id<"pages"> | null>(null);
-	const [threadId, setThreadId] = useStateRef<string | undefined>(undefined);
 	const editor = useRef<PageEditor_Ref | null>(null);
 	const convex = useConvex();
 
@@ -39,7 +38,6 @@ export function Canvas() {
 			}
 
 			setEditorPageId(payload.pageId);
-			setThreadId(payload.threadId);
 			await renderPromise.wait();
 
 			if (!editor.current) {
@@ -79,7 +77,7 @@ export function Canvas() {
 	if (editorPageId.current) {
 		return (
 			<div className="Canvas h-full">
-				<PageEditor ref={editor} pageId={editorPageId.current} threadId={threadId.current} />
+				<PageEditor ref={editor} pageId={editorPageId.current} />
 			</div>
 		);
 	}

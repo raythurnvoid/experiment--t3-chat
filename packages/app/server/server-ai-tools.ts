@@ -402,7 +402,7 @@ function replace_once_or_all(
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
  */
-export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Reads a page from the DB. You can access any page directly by using this tool.
@@ -434,7 +434,6 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx, tool_execution_ctx
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				userId: user.id,
-				threadId: tool_execution_ctx.thread_id,
 			});
 
 			if (!pageContent) {
@@ -521,7 +520,7 @@ export type ai_chat_tool_create_read_page_ToolOutput = InferToolOutput<ai_chat_t
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
-export function ai_chat_tool_create_list_pages(ctx: ActionCtx, tool_execution_ctx?: { thread_id: string }) {
+export function ai_chat_tool_create_list_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Lists descendants pages in a given path. \
@@ -688,7 +687,7 @@ export type ai_chat_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_chat_
  *
  * Search pages by applying a regex pattern against page name + text_content
  */
-export function ai_chat_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
       Fast content search over pages using regular expressions.\
@@ -752,7 +751,6 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx, tool_execution_ct
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					userId: user.id,
-					threadId: tool_execution_ctx.thread_id,
 				});
 
 				const pageName = path_name_of(item.path);
@@ -813,7 +811,7 @@ type ai_chat_tool_create_grep_pages_Tool = ReturnType<typeof ai_chat_tool_create
 export type ai_chat_tool_create_grep_pages_ToolInput = InferToolInput<ai_chat_tool_create_grep_pages_Tool>;
 export type ai_chat_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_pages_Tool>;
 
-export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Ultra-fast text search over page content using the database search index.\
@@ -838,7 +836,6 @@ export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx, tool_execu
 				query: args.query,
 				limit: args.limit ?? 20,
 				userId: user.id,
-				threadId: tool_execution_ctx.thread_id,
 			});
 
 			if (!res.items.length) {
@@ -875,7 +872,7 @@ export type ai_chat_tool_create_text_search_pages_ToolOutput =
  *
  * Tool for proposing page content with preview diff (no direct apply)
  */
-export function ai_chat_tool_create_write_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Writes a page in the system.
@@ -906,29 +903,25 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx, tool_execution_ct
 				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
 			}
 
-			let pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-				path,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-			});
+			const currentPageContent = await ctx.runQuery(
+				internal.ai_docs_temp.get_page_last_available_markdown_content_by_path,
+				{
+					path,
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					userId: user.id,
+				},
+			);
 
-			let exists = !!pageId;
+			const exists = !!currentPageContent?.pageId;
 
-			const oldText = pageId
-				? ((
-						await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
-							path,
-							workspaceId: ai_chat_HARDCODED_ORG_ID,
-							projectId: ai_chat_HARDCODED_PROJECT_ID,
-							userId: user.id,
-							threadId: tool_execution_ctx.thread_id,
-						})
-					)?.content ?? "")
-				: "";
+			const oldText = currentPageContent?.content ?? "";
 
 			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
 			const newText = args.content;
 			const diff = createPatch(path, oldText, newText);
+
+			let pageId = currentPageContent?.pageId;
 
 			if (!pageId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
@@ -936,9 +929,7 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx, tool_execution_ct
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					path,
 					userId: user.id,
-					threadId: tool_execution_ctx.thread_id,
 				});
-				exists = false;
 				pageId = created.page_id;
 			}
 
@@ -949,7 +940,6 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx, tool_execution_ct
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				threadId: tool_execution_ctx.thread_id,
 				pageId: pageId,
 				baseContent: oldText,
 				modifiedContent: newText,
@@ -974,7 +964,7 @@ export type ai_chat_tool_create_write_page_ToolOutput = InferToolOutput<ai_chat_
  * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on DB pages,
  * and stores a pending edit for human-in-the-loop review.
  */
-export function ai_chat_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx: { thread_id: string }) {
+export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
 			Edits an existing page by replacing text and returns a preview diff.
@@ -1005,46 +995,49 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx, tool_execution_ctx
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
 
-			const pageId = await ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-				path: normalizedPath,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-			});
-			if (!pageId) {
+			const currentPageContent = await ctx.runQuery(
+				internal.ai_docs_temp.get_page_last_available_markdown_content_by_path,
+				{
+					path: normalizedPath,
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					userId: user.id,
+				},
+			);
+			if (!currentPageContent) {
 				throw new Error(`Page not found: ${normalizedPath}`);
 			}
 
-			const baseText =
-				(
-					await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
-						path: normalizedPath,
-						workspaceId: ai_chat_HARDCODED_ORG_ID,
-						projectId: ai_chat_HARDCODED_PROJECT_ID,
-						userId: user.id,
-						threadId: tool_execution_ctx.thread_id,
-					})
-				)?.content ?? "";
-
-			const { content: modifiedText, matches } = replace_once_or_all(baseText, args.oldString, args.newString, {
-				replaceAll: args.replaceAll,
-				mode: "auto",
-			});
+			const { content: modifiedText, matches } = replace_once_or_all(
+				currentPageContent.content,
+				args.oldString,
+				args.newString,
+				{
+					replaceAll: args.replaceAll,
+					mode: "auto",
+				},
+			);
 			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
 
-			const diff = createPatch(normalizedPath, baseText, modifiedText);
+			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				threadId: tool_execution_ctx.thread_id,
-				pageId,
-				baseContent: baseText,
+				pageId: currentPageContent.pageId,
+				baseContent: currentPageContent.content,
 				modifiedContent: modifiedText,
 			});
 
 			return {
 				title: normalizedPath,
-				metadata: { pageId: pageId, path: normalizedPath, matches, diff, modifiedContent: modifiedText },
+				metadata: {
+					pageId: currentPageContent.pageId,
+					path: normalizedPath,
+					matches,
+					diff,
+					modifiedContent: modifiedText,
+				},
 				output: args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence",
 			};
 		},

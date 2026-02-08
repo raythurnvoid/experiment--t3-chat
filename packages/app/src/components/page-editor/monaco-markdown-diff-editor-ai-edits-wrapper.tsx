@@ -12,12 +12,11 @@ export interface MonacoMarkdownDiffEditorAiEditsWrapper_Props {
 	className?: string;
 	headerSlot?: React.ReactNode;
 	pageId: app_convex_Id<"pages">;
-	threadId: string;
 	onExit: () => void;
 }
 
 export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiffEditorAiEditsWrapper_Props) {
-	const { ref, id, className, headerSlot, pageId, threadId, onExit } = props;
+	const { ref, id, className, headerSlot, pageId, onExit } = props;
 	const convex = useConvex();
 
 	const [initialModified, setInitialModified] = useStateRef<string | undefined>(undefined);
@@ -25,31 +24,29 @@ export function MonacoMarkdownDiffEditorAiEditsWrapper(props: MonacoMarkdownDiff
 	const diffEditorRef = useRef<PageEditorDiff_Ref>(null);
 	useImperativeHandle(ref, () => diffEditorRef.current!, []);
 
-	// Watch pending edits only if we have a threadId
+	// Watch pending edits for this page
 	useEffect(() => {
-		if (!threadId) return;
 		const watcher = convex.watchQuery(api.ai_chat.get_ai_pending_edit, {
 			pageId: pageId,
-			threadId: threadId,
 		});
 
 		const unsubs = watcher.onUpdate(() => {
 			const res = watcher.localQueryResult();
 			if (res && typeof res === "object") {
-				const { modified_content } = res;
+				const { modifiedContent } = res;
 
 				// If the modified content was already set, update it in the editor
 				if (initialModified.current) {
-					diffEditorRef.current?.setModifiedContent(modified_content ?? "");
+					diffEditorRef.current?.setModifiedContent(modifiedContent ?? "");
 				} else {
-					setInitialModified(modified_content);
+					setInitialModified(modifiedContent);
 				}
 			}
 		});
 		return () => {
 			unsubs();
 		};
-	}, [convex, pageId, threadId]);
+	}, [convex, pageId]);
 
 	return (
 		<div id={id} className={cn("MonacoMarkdownDiffEditorAiEditsWrapper h-full w-full", className)}>

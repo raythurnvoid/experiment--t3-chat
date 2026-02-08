@@ -474,7 +474,6 @@ export const upsert_ai_pending_edit = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		threadId: v.string(),
 		pageId: v.string(),
 		baseContent: v.string(),
 		modifiedContent: v.string(),
@@ -485,26 +484,29 @@ export const upsert_ai_pending_edit = internalMutation({
 		const now = Date.now();
 		const existing = await ctx.db
 			.query("ai_chat_pending_edits")
-			.withIndex("by_user_thread_page", (q) =>
-				q.eq("user_id", user.id).eq("thread_id", args.threadId).eq("page_id", args.pageId),
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("userId", user.id)
+					.eq("pageId", args.pageId),
 			)
 			.first();
 
 		if (!existing) {
 			await ctx.db.insert("ai_chat_pending_edits", {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-				user_id: user.id,
-				thread_id: args.threadId,
-				page_id: args.pageId,
-				base_content: args.baseContent,
-				modified_content: args.modifiedContent,
-				updated_at: now,
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: user.id,
+				pageId: args.pageId,
+				baseContent: args.baseContent,
+				modifiedContent: args.modifiedContent,
+				updatedAt: now,
 			});
 		} else {
 			await ctx.db.patch("ai_chat_pending_edits", existing._id, {
-				modified_content: args.modifiedContent,
-				updated_at: now,
+				modifiedContent: args.modifiedContent,
+				updatedAt: now,
 			});
 		}
 		return null;
@@ -514,22 +516,25 @@ export const upsert_ai_pending_edit = internalMutation({
 export const get_ai_pending_edit = query({
 	args: {
 		pageId: v.string(),
-		threadId: v.string(),
 	},
-	returns: v.union(v.object({ page_id: v.string(), base_content: v.string(), modified_content: v.string() }), v.null()),
+	returns: v.union(v.object({ pageId: v.string(), baseContent: v.string(), modifiedContent: v.string() }), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const pending = await ctx.db
 			.query("ai_chat_pending_edits")
-			.withIndex("by_user_thread_page", (q) =>
-				q.eq("user_id", user.id).eq("thread_id", args.threadId).eq("page_id", args.pageId),
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("userId", user.id)
+					.eq("pageId", args.pageId),
 			)
 			.first();
 		if (!pending) return null;
 		return {
-			page_id: pending.page_id,
-			base_content: pending.base_content,
-			modified_content: pending.modified_content,
+			pageId: pending.pageId,
+			baseContent: pending.baseContent,
+			modifiedContent: pending.modifiedContent,
 		};
 	},
 });
@@ -539,21 +544,25 @@ export const has_pending_edits_for_page = query({
 		pageId: v.string(),
 	},
 	returns: v.union(
-		v.object({ hasPending: v.literal(true), threadId: v.string(), updatedAt: v.number() }),
+		v.object({ hasPending: v.literal(true), updatedAt: v.number() }),
 		v.null(),
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const pending = await ctx.db
 			.query("ai_chat_pending_edits")
-			.withIndex("by_page", (q) => q.eq("page_id", args.pageId))
-			.order("desc")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
+					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
+					.eq("userId", user.id)
+					.eq("pageId", args.pageId),
+			)
 			.first();
-		if (!pending || pending.user_id !== user.id) return null;
+		if (!pending) return null;
 		return {
 			hasPending: true as const,
-			threadId: pending.thread_id,
-			updatedAt: pending.updated_at,
+			updatedAt: pending.updatedAt,
 		};
 	},
 });
@@ -779,13 +788,13 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											temperature: "200°",
 										}),
 									}),
-									read_page: ai_chat_tool_create_read_page(ctx, { thread_id: threadId ?? "" }),
-									list_pages: ai_chat_tool_create_list_pages(ctx),
-									glob_pages: ai_chat_tool_create_glob_pages(ctx),
-									grep_pages: ai_chat_tool_create_grep_pages(ctx, { thread_id: threadId ?? "" }),
-									text_search_pages: ai_chat_tool_create_text_search_pages(ctx, { thread_id: threadId ?? "" }),
-									write_page: ai_chat_tool_create_write_page(ctx, { thread_id: threadId ?? "" }),
-									edit_page: ai_chat_tool_create_edit_page(ctx, { thread_id: threadId ?? "" }),
+								read_page: ai_chat_tool_create_read_page(ctx),
+								list_pages: ai_chat_tool_create_list_pages(ctx),
+								glob_pages: ai_chat_tool_create_glob_pages(ctx),
+								grep_pages: ai_chat_tool_create_grep_pages(ctx),
+								text_search_pages: ai_chat_tool_create_text_search_pages(ctx),
+								write_page: ai_chat_tool_create_write_page(ctx),
+								edit_page: ai_chat_tool_create_edit_page(ctx),
 								} as const;
 
 								const modelMessages = convertToModelMessages(uiMessages);

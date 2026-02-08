@@ -799,7 +799,6 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		projectId: v.string(),
 		path: v.string(),
 		userId: v.string(),
-		threadId: v.string(),
 	},
 	returns: v.union(v.object({ content: v.string(), pageId: v.string() }), v.null()),
 	handler: async (ctx, args) => {
@@ -825,14 +824,15 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 
 		const overlay = await ctx.db
 			.query("ai_chat_pending_edits")
-			.withIndex("by_user_thread_page", (q) =>
+			.withIndex("by_workspace_project_user_page", (q) =>
 				q
-					.eq("user_id", args.userId as string)
-					.eq("thread_id", args.threadId as string)
-					.eq("page_id", page.page_id),
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("userId", args.userId as string)
+					.eq("pageId", page.page_id),
 			)
 			.first();
-		if (overlay) return { content: overlay.modified_content, pageId: page.page_id };
+		if (overlay) return { content: overlay.modifiedContent, pageId: page.page_id };
 
 		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdown_content_id);
 		if (!markdownContentDoc) return null;
@@ -1014,7 +1014,6 @@ export const text_search_pages = internalQuery({
 		query: v.string(),
 		limit: v.number(),
 		userId: v.string(),
-		threadId: v.string(),
 	},
 	returns: v.object({
 		items: v.array(
@@ -1045,11 +1044,15 @@ export const text_search_pages = internalQuery({
 				});
 				const pending = await ctx.db
 					.query("ai_chat_pending_edits")
-					.withIndex("by_user_thread_page", (q) =>
-						q.eq("user_id", args.userId).eq("thread_id", args.threadId).eq("page_id", page.page_id),
+					.withIndex("by_workspace_project_user_page", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("userId", args.userId)
+							.eq("pageId", page.page_id),
 					)
 					.first();
-				const preview = (pending?.modified_content ?? page.content).slice(0, 160);
+				const preview = (pending?.modifiedContent ?? page.content).slice(0, 160);
 				return { path, preview };
 			}),
 		);
@@ -1064,15 +1067,14 @@ export const create_page_by_path = internalMutation({
 		projectId: v.string(),
 		path: v.string(),
 		userId: v.string(),
-		threadId: v.string(),
 	},
-	returns: v.object({ page_id: v.id("pages") }),
+	returns: v.object({ page_id: v.string() }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 		const segments = path_extract_segments_from(args.path);
 
 		let currentParent = pages_ROOT_ID;
-		let lastPageId = null;
+		let lastPageId: string | null = null;
 
 		for (let i = 0; i < segments.length; i++) {
 			const name = segments[i];
@@ -1088,7 +1090,7 @@ export const create_page_by_path = internalMutation({
 			if (!existing) {
 				// Create missing segment
 				const clientGeneratedPageId = generate_id("page");
-				const pageId = await do_create_page(ctx, {
+				await do_create_page(ctx, {
 					workspace_id: workspaceId,
 					project_id: projectId,
 					page_id: clientGeneratedPageId,
@@ -1096,12 +1098,12 @@ export const create_page_by_path = internalMutation({
 					name: name,
 					markdown_content: "",
 				});
-				currentParent = pageId;
-				lastPageId = pageId;
+				currentParent = clientGeneratedPageId;
+				lastPageId = clientGeneratedPageId;
 			} else {
 				// Continue traversal
-				currentParent = existing._id;
-				lastPageId = existing._id;
+				currentParent = existing.page_id;
+				lastPageId = existing.page_id;
 
 				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
 				if (i === segments.length - 1) {
