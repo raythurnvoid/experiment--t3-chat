@@ -3,31 +3,29 @@ import "../assistant-ui/markdown-text.css";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { memo, useMemo, useState } from "react";
+import { useState } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
+import type { AppClassName } from "../../lib/dom-utils.ts";
 
-type AiChatMarkdown_Props = {
+export type AiChatMarkdown_Props = {
 	text: string;
 	className?: string;
 };
 
-const AiChatMarkdownImpl = (props: AiChatMarkdown_Props) => {
+export function AiChatMarkdown(props: AiChatMarkdown_Props) {
 	const { text, className } = props;
-	const components = useMemo(() => ai_chat_markdown_components, []);
 
 	return (
-		<div className={cn("aui-md", className)}>
-			<ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+		<div className={cn("AiChatMarkdown", "app-doc" satisfies AppClassName, className)}>
+			<ReactMarkdown remarkPlugins={[remarkGfm]} components={ai_chat_markdown_components}>
 				{text}
 			</ReactMarkdown>
 		</div>
 	);
-};
-
-export const AiChatMarkdown = memo(AiChatMarkdownImpl);
+}
 
 function CodeHeader(props: { language: string; code: string }) {
 	const { language, code } = props;

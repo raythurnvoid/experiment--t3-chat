@@ -15,6 +15,7 @@ import {
 	MySearchSelectPopoverScrollableArea,
 	MySearchSelectSearch,
 	MySearchSelectTrigger,
+	type MySearchSelect_Props,
 } from "@/components/my-search-select.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -39,7 +40,7 @@ function PageEditorRichTextSidebarAgentThreadPicker(props: PageEditorRichTextSid
 		controller.selectThread(threadId);
 	};
 
-	const handleSelectValue = (value: string | null) => {
+	const handleSelectValue: MySearchSelect_Props["setValue"] = (value) => {
 		if (!value) {
 			return;
 		}
@@ -151,7 +152,7 @@ export function PageEditorRichTextSidebarAgent() {
 			<div
 				className={cn("PageEditorRichTextSidebarAgent-chat-area" satisfies PageEditorRichTextSidebarAgent_ClassNames)}
 			>
-				<AiChatThread controller={controller} />
+				<AiChatThread variant="sidebar" controller={controller} />
 			</div>
 		</div>
 	);

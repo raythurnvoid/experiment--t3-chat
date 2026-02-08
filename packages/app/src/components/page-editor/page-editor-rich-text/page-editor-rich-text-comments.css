@@ -1,6 +1,8 @@
 @layer components {
 	.PageEditorRichTextAnchoredComments {
 		position: relative;
+		padding: 16px;
+
 		/* z-index: 1; */
 	}
 

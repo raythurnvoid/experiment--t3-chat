@@ -1,4 +1,5 @@
 @layer common_components {
+	/* #region root */
 	.MyBadge {
 		box-sizing: border-box;
 		position: relative;
@@ -24,32 +25,14 @@
 			color 0.15s ease,
 			box-shadow 0.15s ease;
 
-		/* Focus styles */
 		&:focus-visible {
-			border-color: var(--gray-050);
-			box-shadow: 0 0 0 3px var(--gray-200);
+			border-color: var(--color-fg-12);
 		}
 
-		@media (prefers-color-scheme: dark) {
-			&:focus-visible {
-				border-color: var(--gray-800);
-				box-shadow: 0 0 0 3px var(--gray-600);
-			}
-		}
-
-		/* Invalid state */
 		&[aria-invalid="true"] {
-			border-color: var(--red-400);
-			box-shadow: 0 0 0 3px var(--red-200);
+			border-color: var(--color-red-06);
 		}
 
-		@media (prefers-color-scheme: dark) {
-			&[aria-invalid="true"] {
-				box-shadow: 0 0 0 3px var(--red-600);
-			}
-		}
-
-		/* Child elements */
 		& svg {
 			width: 12px;
 			height: 12px;
@@ -57,95 +40,47 @@
 			flex-shrink: 0;
 		}
 
-		/* Link hover behavior */
 		&[href]:hover {
 			text-decoration: none;
 		}
 	}
 
-	/* Variants */
 	.MyBadge-variant-default {
-		background: var(--gray-050);
-		color: var(--gray-800);
-		border-color: transparent;
+		background: var(--color-base-1-04);
+		color: var(--color-fg-09);
 
 		&[href]:hover {
-			background: var(--gray-100);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			background: var(--gray-800);
-			color: var(--gray-050);
-
-			&[href]:hover {
-				background: var(--gray-600);
-			}
+			background: var(--color-base-1-05);
 		}
 	}
 
 	.MyBadge-variant-secondary {
-		background: var(--gray-600);
-		color: var(--gray-050);
-		border-color: transparent;
+		background: var(--color-base-1-07);
+		color: var(--color-fg-10);
 
 		&[href]:hover {
-			background: var(--gray-500);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			background: var(--gray-300);
-			color: var(--gray-800);
-
-			&[href]:hover {
-				background: var(--gray-400);
-			}
+			background: var(--color-base-1-08);
 		}
 	}
 
 	.MyBadge-variant-destructive {
-		background: var(--red-400);
-		color: white;
-		border-color: transparent;
-
-		&:focus-visible {
-			box-shadow: 0 0 0 3px var(--red-200);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&:focus-visible {
-				box-shadow: 0 0 0 3px var(--red-600);
-			}
-		}
+		background: var(--color-red-06);
+		color: var(--color-fg-10);
 
 		&[href]:hover {
-			background: var(--red-300);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&[href]:hover {
-				background: var(--red-500);
-			}
+			background: var(--color-red-07);
 		}
 	}
 
 	.MyBadge-variant-outline {
 		background: transparent;
-		color: var(--gray-000);
-		border-color: var(--gray-300);
+		color: var(--color-fg-06);
+		border-color: var(--color-fg-04);
 
 		&[href]:hover {
-			background: var(--gray-600);
-			color: var(--gray-050);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			color: var(--gray-800);
-			border-color: var(--gray-300);
-
-			&[href]:hover {
-				background: var(--gray-300);
-				color: var(--gray-800);
-			}
+			background: var(--color-base-1-04);
+			color: var(--color-fg-10);
 		}
 	}
+	/* #endregion root */
 }

@@ -3,6 +3,7 @@ import type { ComponentPropsWithRef, Ref } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
+// #region root
 export type MyBadge_ClassNames =
 	| "MyBadge"
 	| "MyBadge-variant-default"
@@ -38,3 +39,4 @@ export function MyBadge(props: MyBadge_Props) {
 		</span>
 	);
 }
+// #endregion root

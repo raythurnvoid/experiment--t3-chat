@@ -179,7 +179,7 @@ export function MySearchSelectLabel(props: MySearchSelectLabel_Props) {
 // #region root
 export type MySearchSelect_ClassNames = "MySearchSelect";
 
-export type MySearchSelect_Props = Ariakit.SelectProviderProps;
+export type MySearchSelect_Props = Ariakit.SelectProviderProps<string>;
 
 export function MySearchSelect(props: MySearchSelect_Props) {
 	const { children, ...rest } = props;

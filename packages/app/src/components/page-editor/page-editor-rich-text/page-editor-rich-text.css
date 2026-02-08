@@ -232,7 +232,9 @@
 	/* #region toolbar */
 	.PageEditorRichTextToolbar {
 		height: 44px;
-		background: var(--color-base-alt-1-05);
+		background: var(--color-base-1-04);
+
+		border-bottom: 1px solid var(--color-fg-02);
 
 		contain: inline-size layout style;
 
@@ -319,7 +321,8 @@
 
 	.PageEditorRichTextSidebar-toolbar {
 		height: 44px;
-		background: var(--color-base-alt-1-05);
+		background: var(--color-base-1-04);
+		border-bottom: 1px solid var(--color-fg-02);
 
 		contain: inline-size layout style;
 
@@ -354,8 +357,6 @@
 	}
 
 	.PageEditorRichTextSidebar-panel {
-		padding: 16px;
-
 		min-height: 100%;
 
 		display: flex;
@@ -391,7 +392,7 @@
 			*/
 			inset: 0 0 auto 0;
 
-			background-color: var(--color-base-1-04);
+			background-color: var(--color-base-1-03);
 			pointer-events: none;
 
 			/*

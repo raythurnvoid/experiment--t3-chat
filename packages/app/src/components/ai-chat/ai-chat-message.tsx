@@ -1,7 +1,7 @@
 import "./ai-chat-message.css";
 
-import type { ComponentProps, ComponentPropsWithRef, ReactNode, Ref } from "react";
-import { ChevronLeft, ChevronRight, GitBranch, RefreshCw, ShieldQuestion } from "lucide-react";
+import type { ComponentProps, ComponentPropsWithoutRef, ComponentPropsWithRef, ReactNode, Ref } from "react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, GitBranch, RefreshCw, ShieldQuestion } from "lucide-react";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import {
 	isDataUIPart,
@@ -20,24 +20,25 @@ import { MyIconButton } from "@/components/my-icon-button.tsx";
 import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { ai_chat_get_parent_id } from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
-import { AiChatMarkdown } from "@/components/ai-chat/ai-chat-markdown.tsx";
+import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
+import { MyButtonIcon } from "../my-button.tsx";
 
 // #region tool chip
-type AiChatMessageToolChip_ClassNames = "AiChatMessageToolChip";
+type AiChatMessagePartToolChip_ClassNames = "AiChatMessagePartToolChip";
 
-type AiChatMessageToolChip_Props = {
+type AiChatMessagePartToolChip_Props = {
 	className?: string | undefined;
 	children?: ReactNode;
 };
 
-function AiChatMessageToolChip(props: AiChatMessageToolChip_Props) {
+function AiChatMessagePartToolChip(props: AiChatMessagePartToolChip_Props) {
 	const { className, children } = props;
 
 	return (
-		<span className={cn("AiChatMessageToolChip" satisfies AiChatMessageToolChip_ClassNames, className)}>
+		<span className={cn("AiChatMessagePartToolChip" satisfies AiChatMessagePartToolChip_ClassNames, className)}>
 			{children}
 		</span>
 	);
@@ -45,20 +46,20 @@ function AiChatMessageToolChip(props: AiChatMessageToolChip_Props) {
 // #endregion tool chip
 
 // #region tool status
-type AiChatMessageToolStatus_ClassNames =
-	| "AiChatMessageToolStatus"
-	| "AiChatMessageToolStatus-icon"
-	| "AiChatMessageToolStatus-state-loading"
-	| "AiChatMessageToolStatus-state-error"
-	| "AiChatMessageToolStatus-state-approval";
+type AiChatMessagePartToolStatus_ClassNames =
+	| "AiChatMessagePartToolStatus"
+	| "AiChatMessagePartToolStatus-icon"
+	| "AiChatMessagePartToolStatus-state-loading"
+	| "AiChatMessagePartToolStatus-state-error"
+	| "AiChatMessagePartToolStatus-state-approval";
 
-type AiChatMessageToolUiState = ToolUIPart["state"] | "approval-requested" | "approval-responded" | "output-denied";
+type AiChatMessagePartToolUiState = ToolUIPart["state"] | "approval-requested" | "approval-responded" | "output-denied";
 
-type AiChatMessageToolStatus_Props = {
-	state: AiChatMessageToolUiState;
+type AiChatMessagePartToolStatus_Props = {
+	state: AiChatMessagePartToolUiState;
 };
 
-function AiChatMessageToolStatus(props: AiChatMessageToolStatus_Props) {
+function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
 	const { state } = props;
 
 	switch (state) {
@@ -68,8 +69,8 @@ function AiChatMessageToolStatus(props: AiChatMessageToolStatus_Props) {
 			return (
 				<span
 					className={cn(
-						"AiChatMessageToolStatus" satisfies AiChatMessageToolStatus_ClassNames,
-						"AiChatMessageToolStatus-state-loading" satisfies AiChatMessageToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus-state-loading" satisfies AiChatMessagePartToolStatus_ClassNames,
 					)}
 				>
 					<MySpinner size="14px" aria-label="Running" />
@@ -79,15 +80,15 @@ function AiChatMessageToolStatus(props: AiChatMessageToolStatus_Props) {
 		// Approval requested: visible indicator since it's actionable
 		case "approval-requested":
 			return (
-				<AiChatMessageToolChip
+				<AiChatMessagePartToolChip
 					className={cn(
-						"AiChatMessageToolStatus" satisfies AiChatMessageToolStatus_ClassNames,
-						"AiChatMessageToolStatus-state-approval" satisfies AiChatMessageToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus-state-approval" satisfies AiChatMessagePartToolStatus_ClassNames,
 					)}
 				>
-					<ShieldQuestion className={"AiChatMessageToolStatus-icon" satisfies AiChatMessageToolStatus_ClassNames} />
+					<ShieldQuestion className={"AiChatMessagePartToolStatus-icon" satisfies AiChatMessagePartToolStatus_ClassNames} />
 					Awaiting Approval
-				</AiChatMessageToolChip>
+				</AiChatMessagePartToolChip>
 			);
 
 		// Success states: show nothing
@@ -100,8 +101,8 @@ function AiChatMessageToolStatus(props: AiChatMessageToolStatus_Props) {
 			return (
 				<span
 					className={cn(
-						"AiChatMessageToolStatus" satisfies AiChatMessageToolStatus_ClassNames,
-						"AiChatMessageToolStatus-state-error" satisfies AiChatMessageToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus-state-error" satisfies AiChatMessagePartToolStatus_ClassNames,
 					)}
 				>
 					Failed
@@ -112,8 +113,8 @@ function AiChatMessageToolStatus(props: AiChatMessageToolStatus_Props) {
 			return (
 				<span
 					className={cn(
-						"AiChatMessageToolStatus" satisfies AiChatMessageToolStatus_ClassNames,
-						"AiChatMessageToolStatus-state-error" satisfies AiChatMessageToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
+						"AiChatMessagePartToolStatus-state-error" satisfies AiChatMessagePartToolStatus_ClassNames,
 					)}
 				>
 					Denied
@@ -124,18 +125,18 @@ function AiChatMessageToolStatus(props: AiChatMessageToolStatus_Props) {
 // #endregion tool status
 
 // #region tool disclosure
-type AiChatMessageToolDisclosure_ClassNames = "AiChatMessageToolDisclosure";
+type AiChatMessagePartToolDisclosure_ClassNames = "AiChatMessagePartToolDisclosure";
 
-type AiChatMessageToolDisclosure_Props = React.ComponentProps<"details"> & {
+type AiChatMessagePartToolDisclosure_Props = React.ComponentProps<"details"> & {
 	className?: string | undefined;
 };
 
-function AiChatMessageToolDisclosure(props: AiChatMessageToolDisclosure_Props) {
+function AiChatMessagePartToolDisclosure(props: AiChatMessagePartToolDisclosure_Props) {
 	const { className, ...rest } = props;
 
 	return (
 		<details
-			className={cn("AiChatMessageToolDisclosure" satisfies AiChatMessageToolDisclosure_ClassNames, className)}
+			className={cn("AiChatMessagePartToolDisclosure" satisfies AiChatMessagePartToolDisclosure_ClassNames, className)}
 			{...rest}
 		/>
 	);
@@ -143,19 +144,19 @@ function AiChatMessageToolDisclosure(props: AiChatMessageToolDisclosure_Props) {
 // #endregion tool disclosure
 
 // #region tool disclosure button
-type AiChatMessageToolDisclosureButton_ClassNames =
-	| "AiChatMessageToolDisclosureButton"
-	| "AiChatMessageToolDisclosureButton-content"
-	| "AiChatMessageToolDisclosureButton-label";
+type AiChatMessagePartToolDisclosureButton_ClassNames =
+	| "AiChatMessagePartToolDisclosureButton"
+	| "AiChatMessagePartToolDisclosureButton-content"
+	| "AiChatMessagePartToolDisclosureButton-label";
 
-type AiChatMessageToolDisclosureButton_Props = {
+type AiChatMessagePartToolDisclosureButton_Props = {
 	title: string;
 	text?: string;
-	state: AiChatMessageToolUiState;
+	state: AiChatMessagePartToolUiState;
 	className?: string | undefined;
 };
 
-function AiChatMessageToolDisclosureButton(props: AiChatMessageToolDisclosureButton_Props) {
+function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDisclosureButton_Props) {
 	const { className, title, text, state } = props;
 
 	const isLoading = state === "input-streaming" || state === "input-available";
@@ -169,7 +170,7 @@ function AiChatMessageToolDisclosureButton(props: AiChatMessageToolDisclosureBut
 	return (
 		<summary
 			className={cn(
-				"AiChatMessageToolDisclosureButton" satisfies AiChatMessageToolDisclosureButton_ClassNames,
+				"AiChatMessagePartToolDisclosureButton" satisfies AiChatMessagePartToolDisclosureButton_ClassNames,
 				className,
 			)}
 			aria-busy={isLoading}
@@ -177,14 +178,14 @@ function AiChatMessageToolDisclosureButton(props: AiChatMessageToolDisclosureBut
 			onClick={handleClick}
 		>
 			<div
-				className={"AiChatMessageToolDisclosureButton-content" satisfies AiChatMessageToolDisclosureButton_ClassNames}
+				className={"AiChatMessagePartToolDisclosureButton-content" satisfies AiChatMessagePartToolDisclosureButton_ClassNames}
 			>
 				<b>
 					{title}
 					{text && `:`}
 				</b>
 				<span> {text}</span>
-				<AiChatMessageToolStatus state={state} />
+				<AiChatMessagePartToolStatus state={state} />
 			</div>
 		</summary>
 	);
@@ -192,37 +193,37 @@ function AiChatMessageToolDisclosureButton(props: AiChatMessageToolDisclosureBut
 // #endregion tool disclosure button
 
 // #region tool body
-type AiChatMessageToolBody_ClassNames = "AiChatMessageToolBody";
+type AiChatMessagePartToolBody_ClassNames = "AiChatMessagePartToolBody";
 
-type AiChatMessageToolBody_Props = React.ComponentProps<"div"> & {
+type AiChatMessagePartToolBody_Props = React.ComponentProps<"div"> & {
 	className?: string | undefined;
 };
 
-function AiChatMessageToolBody(props: AiChatMessageToolBody_Props) {
+function AiChatMessagePartToolBody(props: AiChatMessagePartToolBody_Props) {
 	const { className, ...rest } = props;
 
 	return (
-		<div className={cn("AiChatMessageToolBody" satisfies AiChatMessageToolBody_ClassNames, className)} {...rest} />
+		<div className={cn("AiChatMessagePartToolBody" satisfies AiChatMessagePartToolBody_ClassNames, className)} {...rest} />
 	);
 }
 // #endregion tool body
 
 // #region tool textarea section
-type AiChatMessageToolTextAreaSection_ClassNames =
-	| "AiChatMessageToolTextAreaSection"
-	| "AiChatMessageToolTextAreaSection-heading"
-	| "AiChatMessageToolTextAreaSection-textarea"
-	| "AiChatMessageToolTextAreaSection-state-error";
+type AiChatMessagePartToolTextAreaSection_ClassNames =
+	| "AiChatMessagePartToolTextAreaSection"
+	| "AiChatMessagePartToolTextAreaSection-heading"
+	| "AiChatMessagePartToolTextAreaSection-textarea"
+	| "AiChatMessagePartToolTextAreaSection-state-error";
 
-type AiChatMessageToolTextAreaSection_CssVars = {
-	"--AiChatMessageToolTextAreaSection-max-height": string;
+type AiChatMessagePartToolTextAreaSection_CssVars = {
+	"--AiChatMessagePartToolTextAreaSection-max-height": string;
 };
 
-const AiChatMessageToolTextAreaSection_CssVars_DEFAULTS: AiChatMessageToolTextAreaSection_CssVars = {
-	"--AiChatMessageToolTextAreaSection-max-height": "8lh",
+const AiChatMessagePartToolTextAreaSection_CssVars_DEFAULTS: AiChatMessagePartToolTextAreaSection_CssVars = {
+	"--AiChatMessagePartToolTextAreaSection-max-height": "8lh",
 } as const;
 
-type AiChatMessageToolTextAreaSection_Props = {
+type AiChatMessagePartToolTextAreaSection_Props = {
 	className?: string | undefined;
 	label: string;
 	code: string;
@@ -230,30 +231,30 @@ type AiChatMessageToolTextAreaSection_Props = {
 	state?: "error" | undefined;
 };
 
-function AiChatMessageToolTextAreaSection(props: AiChatMessageToolTextAreaSection_Props) {
+function AiChatMessagePartToolTextAreaSection(props: AiChatMessagePartToolTextAreaSection_Props) {
 	const { className, label, code, maxHeight, state } = props;
 
 	return (
 		<section
 			className={cn(
-				"AiChatMessageToolTextAreaSection" satisfies AiChatMessageToolTextAreaSection_ClassNames,
+				"AiChatMessagePartToolTextAreaSection" satisfies AiChatMessagePartToolTextAreaSection_ClassNames,
 				"app-font-monospace" satisfies AppClassName,
 				state === "error" &&
-					("AiChatMessageToolTextAreaSection-state-error" satisfies AiChatMessageToolTextAreaSection_ClassNames),
+					("AiChatMessagePartToolTextAreaSection-state-error" satisfies AiChatMessagePartToolTextAreaSection_ClassNames),
 				className,
 			)}
 			style={sx({
-				...AiChatMessageToolTextAreaSection_CssVars_DEFAULTS,
-				"--AiChatMessageToolTextAreaSection-max-height":
+				...AiChatMessagePartToolTextAreaSection_CssVars_DEFAULTS,
+				"--AiChatMessagePartToolTextAreaSection-max-height":
 					maxHeight ??
-					AiChatMessageToolTextAreaSection_CssVars_DEFAULTS["--AiChatMessageToolTextAreaSection-max-height"],
-			} satisfies AiChatMessageToolTextAreaSection_CssVars)}
+					AiChatMessagePartToolTextAreaSection_CssVars_DEFAULTS["--AiChatMessagePartToolTextAreaSection-max-height"],
+			} satisfies AiChatMessagePartToolTextAreaSection_CssVars)}
 		>
-			<h6 className={"AiChatMessageToolTextAreaSection-heading" satisfies AiChatMessageToolTextAreaSection_ClassNames}>
+			<h6 className={"AiChatMessagePartToolTextAreaSection-heading" satisfies AiChatMessagePartToolTextAreaSection_ClassNames}>
 				{label}
 			</h6>
 			<textarea
-				className={"AiChatMessageToolTextAreaSection-textarea" satisfies AiChatMessageToolTextAreaSection_ClassNames}
+				className={"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames}
 				value={code}
 				readOnly
 			/>
@@ -263,9 +264,9 @@ function AiChatMessageToolTextAreaSection(props: AiChatMessageToolTextAreaSectio
 // #endregion tool textarea section
 
 // #region tool read_page
-type AiChatMessageToolReadPage_ClassNames = "AiChatMessageToolReadPage" | "AiChatMessageToolReadPage-link";
+type AiChatMessagePartToolReadPage_ClassNames = "AiChatMessagePartToolReadPage" | "AiChatMessagePartToolReadPage-link";
 
-type AiChatMessageToolReadPage_Props = {
+type AiChatMessagePartToolReadPage_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-read_page" }>["input"];
 	result: ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined;
@@ -273,42 +274,45 @@ type AiChatMessageToolReadPage_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolReadPage(props: AiChatMessageToolReadPage_Props) {
+function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolReadPage" satisfies AiChatMessageToolReadPage_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolReadPage" satisfies AiChatMessagePartToolReadPage_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton
+			<AiChatMessagePartToolDisclosureButton
 				title="Read Page"
 				text={args?.path ? path_name_of(args.path) : undefined}
 				state={toolState}
 			/>
-			<AiChatMessageToolBody>
+			<AiChatMessagePartToolBody>
 				{result?.metadata?.pageId && (
 					<MyLink
-						className={"AiChatMessageToolReadPage-link" satisfies AiChatMessageToolReadPage_ClassNames}
+						className={"AiChatMessagePartToolReadPage-link" satisfies AiChatMessagePartToolReadPage_ClassNames}
 						to="/pages"
 						search={{ pageId: result.metadata.pageId }}
-						variant="button-tertiary"
+						variant="button-ghost-accent"
 					>
 						Open page
+						<MyButtonIcon>
+							<ArrowUpRight />
+						</MyButtonIcon>
 					</MyLink>
 				)}
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessageToolTextAreaSection label="Content" code={result.output} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{result?.output && <AiChatMessagePartToolTextAreaSection label="Content" code={result.output} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool read_page
 
 // #region tool list_pages
-type AiChatMessageToolListPages_ClassNames = "AiChatMessageToolListPages";
+type AiChatMessagePartToolListPages_ClassNames = "AiChatMessagePartToolListPages";
 
-type AiChatMessageToolListPages_Props = {
+type AiChatMessagePartToolListPages_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-list_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined;
@@ -316,32 +320,32 @@ type AiChatMessageToolListPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolListPages(props: AiChatMessageToolListPages_Props) {
+function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolListPages" satisfies AiChatMessageToolListPages_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolListPages" satisfies AiChatMessagePartToolListPages_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton
+			<AiChatMessagePartToolDisclosureButton
 				title="List Pages"
 				text={args?.path ? path_name_of(args.path) || "/ (Home) " : undefined}
 				state={toolState}
 			/>
-			<AiChatMessageToolBody>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessageToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool list_pages
 
 // #region tool glob_pages
-type AiChatMessageToolGlobPages_ClassNames = "AiChatMessageToolGlobPages";
+type AiChatMessagePartToolGlobPages_ClassNames = "AiChatMessagePartToolGlobPages";
 
-type AiChatMessageToolGlobPages_Props = {
+type AiChatMessagePartToolGlobPages_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-glob_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined;
@@ -349,28 +353,28 @@ type AiChatMessageToolGlobPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolGlobPages(props: AiChatMessageToolGlobPages_Props) {
+function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolGlobPages" satisfies AiChatMessageToolGlobPages_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolGlobPages" satisfies AiChatMessagePartToolGlobPages_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton title="tool-glob_pages" state={toolState} />
-			<AiChatMessageToolBody>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessageToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			<AiChatMessagePartToolDisclosureButton title="tool-glob_pages" state={toolState} />
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool glob_pages
 
 // #region tool grep_pages
-type AiChatMessageToolGrepPages_ClassNames = "AiChatMessageToolGrepPages";
+type AiChatMessagePartToolGrepPages_ClassNames = "AiChatMessagePartToolGrepPages";
 
-type AiChatMessageToolGrepPages_Props = {
+type AiChatMessagePartToolGrepPages_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-grep_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined;
@@ -378,28 +382,28 @@ type AiChatMessageToolGrepPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolGrepPages(props: AiChatMessageToolGrepPages_Props) {
+function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolGrepPages" satisfies AiChatMessageToolGrepPages_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolGrepPages" satisfies AiChatMessagePartToolGrepPages_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton title="tool-grep_pages" state={toolState} />
-			<AiChatMessageToolBody>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessageToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			<AiChatMessagePartToolDisclosureButton title="tool-grep_pages" state={toolState} />
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool grep_pages
 
 // #region tool text_search_pages
-type AiChatMessageToolTextSearchPages_ClassNames = "AiChatMessageToolTextSearchPages";
+type AiChatMessagePartToolTextSearchPages_ClassNames = "AiChatMessagePartToolTextSearchPages";
 
-type AiChatMessageToolTextSearchPages_Props = {
+type AiChatMessagePartToolTextSearchPages_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-text_search_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined;
@@ -407,31 +411,31 @@ type AiChatMessageToolTextSearchPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolTextSearchPages(props: AiChatMessageToolTextSearchPages_Props) {
+function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSearchPages_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	return (
-		<AiChatMessageToolDisclosure
+		<AiChatMessagePartToolDisclosure
 			className={cn(
-				"AiChatMessageToolTextSearchPages" satisfies AiChatMessageToolTextSearchPages_ClassNames,
+				"AiChatMessagePartToolTextSearchPages" satisfies AiChatMessagePartToolTextSearchPages_ClassNames,
 				className,
 			)}
 		>
-			<AiChatMessageToolDisclosureButton title="tool-text_search_pages" state={toolState} />
-			<AiChatMessageToolBody>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && <AiChatMessageToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			<AiChatMessagePartToolDisclosureButton title="tool-text_search_pages" state={toolState} />
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{result?.output && <AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool text_search_pages
 
 // #region tool write_page
-type AiChatMessageToolWritePage_ClassNames = "AiChatMessageToolWritePage";
+type AiChatMessagePartToolWritePage_ClassNames = "AiChatMessagePartToolWritePage";
 
-type AiChatMessageToolWritePage_Props = {
+type AiChatMessagePartToolWritePage_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-write_page" }>["input"];
 	result: ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined;
@@ -439,30 +443,30 @@ type AiChatMessageToolWritePage_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolWritePage(props: AiChatMessageToolWritePage_Props) {
+function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	const resultCode = result?.metadata?.diff ?? result?.output;
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolWritePage" satisfies AiChatMessageToolWritePage_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolWritePage" satisfies AiChatMessagePartToolWritePage_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton title="tool-write_page" state={toolState} />
-			<AiChatMessageToolBody>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{resultCode && <AiChatMessageToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			<AiChatMessagePartToolDisclosureButton title="tool-write_page" state={toolState} />
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool write_page
 
 // #region tool edit_page
-type AiChatMessageToolEditPage_ClassNames = "AiChatMessageToolEditPage";
+type AiChatMessagePartToolEditPage_ClassNames = "AiChatMessagePartToolEditPage";
 
-type AiChatMessageToolEditPage_Props = {
+type AiChatMessagePartToolEditPage_Props = {
 	className?: string | undefined;
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-edit_page" }>["input"];
 	result: ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined;
@@ -470,35 +474,35 @@ type AiChatMessageToolEditPage_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessageToolEditPage(props: AiChatMessageToolEditPage_Props) {
+function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Props) {
 	const { className, args, result, toolState, errorText } = props;
 
 	const resultCode = result?.metadata?.diff ?? result?.output;
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolEditPage" satisfies AiChatMessageToolEditPage_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolEditPage" satisfies AiChatMessagePartToolEditPage_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton title="tool-edit_page" state={toolState} />
-			<AiChatMessageToolBody>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{resultCode && <AiChatMessageToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			<AiChatMessagePartToolDisclosureButton title="tool-edit_page" state={toolState} />
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool edit_page
 
 // #region tool unknown
-type AiChatMessageToolUnknown_ClassNames = "AiChatMessageToolUnknown" | "AiChatMessageToolUnknown-meta";
+type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
 
-type AiChatMessageToolUnknown_Props = {
+type AiChatMessagePartToolUnknown_Props = {
 	className?: string | undefined;
 	part: ToolUIPart<ai_chat_AiSdk5UiTools> | DynamicToolUIPart;
 };
 
-function AiChatMessageToolUnknown(props: AiChatMessageToolUnknown_Props) {
+function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props) {
 	const { className, part } = props;
 
 	const toolName = part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length);
@@ -508,26 +512,153 @@ function AiChatMessageToolUnknown(props: AiChatMessageToolUnknown_Props) {
 		output === undefined ? undefined : typeof output === "string" ? output : json_strigify_ensured(output);
 
 	return (
-		<AiChatMessageToolDisclosure
-			className={cn("AiChatMessageToolUnknown" satisfies AiChatMessageToolUnknown_ClassNames, className)}
+		<AiChatMessagePartToolDisclosure
+			className={cn("AiChatMessagePartToolUnknown" satisfies AiChatMessagePartToolUnknown_ClassNames, className)}
 		>
-			<AiChatMessageToolDisclosureButton title={`tool-${toolName}`} state={part.state} />
-			<AiChatMessageToolBody>
-				<div className={"AiChatMessageToolUnknown-meta" satisfies AiChatMessageToolUnknown_ClassNames}>
-					<AiChatMessageToolChip>type: {part.type}</AiChatMessageToolChip>
-					<AiChatMessageToolChip>toolCallId: {part.toolCallId}</AiChatMessageToolChip>
-					<AiChatMessageToolChip>state: {part.state}</AiChatMessageToolChip>
+			<AiChatMessagePartToolDisclosureButton title={`tool-${toolName}`} state={part.state} />
+			<AiChatMessagePartToolBody>
+				<div className={"AiChatMessagePartToolUnknown-meta" satisfies AiChatMessagePartToolUnknown_ClassNames}>
+					<AiChatMessagePartToolChip>type: {part.type}</AiChatMessagePartToolChip>
+					<AiChatMessagePartToolChip>toolCallId: {part.toolCallId}</AiChatMessagePartToolChip>
+					<AiChatMessagePartToolChip>state: {part.state}</AiChatMessagePartToolChip>
 				</div>
-				<AiChatMessageToolTextAreaSection label="Parameters" code={JSON.stringify(part.input ?? {}, null, "\t")} />
-				{errorText && <AiChatMessageToolTextAreaSection label="Error" code={errorText} state="error" />}
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(part.input ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
 				{outputCode !== undefined && (
-					<AiChatMessageToolTextAreaSection label="Result" code={outputCode} maxHeight="16lh" />
+					<AiChatMessagePartToolTextAreaSection label="Result" code={outputCode} maxHeight="16lh" />
 				)}
-			</AiChatMessageToolBody>
-		</AiChatMessageToolDisclosure>
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartToolDisclosure>
 	);
 }
 // #endregion tool unknown
+
+// #region markdown
+type AiChatMessagePartMarkdown_ClassNames = "AiChatMessagePartMarkdown";
+
+type AiChatMessagePartMarkdown_Props = AiChatMarkdown_Props;
+
+function AiChatMessagePartMarkdown(props: AiChatMessagePartMarkdown_Props) {
+	const { className, ...rest } = props;
+
+	return (
+		<AiChatMarkdown
+			className={cn("AiChatMessagePartMarkdown" satisfies AiChatMessagePartMarkdown_ClassNames, className)}
+			{...rest}
+		/>
+	);
+}
+// #endregion markdown
+
+// #region part text
+type AiChatMessagePartText_ClassNames = "AiChatMessagePartText";
+
+type AiChatMessagePartText_Props = {
+	text: string;
+};
+
+function AiChatMessagePartText(props: AiChatMessagePartText_Props) {
+	const { text } = props;
+	return <p className={"AiChatMessagePartText" satisfies AiChatMessagePartText_ClassNames}>{text}</p>;
+}
+// #endregion part text
+
+// #region part reasoning
+type AiChatMessagePartReasoning_ClassNames = "AiChatMessagePartReasoning";
+
+type AiChatMessagePartReasoning_Props = {
+	text: string;
+};
+
+function AiChatMessagePartReasoning(props: AiChatMessagePartReasoning_Props) {
+	const { text } = props;
+	return <p className={"AiChatMessagePartReasoning" satisfies AiChatMessagePartReasoning_ClassNames}>{text}</p>;
+}
+// #endregion part reasoning
+
+// #region part image
+type AiChatMessagePartImage_ClassNames = "AiChatMessagePartImage";
+
+type AiChatMessagePartImage_Props = {
+	url: string;
+	filename: string | undefined;
+};
+
+function AiChatMessagePartImage(props: AiChatMessagePartImage_Props) {
+	const { url, filename } = props;
+	return (
+		<img
+			className={"AiChatMessagePartImage" satisfies AiChatMessagePartImage_ClassNames}
+			src={url}
+			alt={filename ?? "Image attachment"}
+		/>
+	);
+}
+// #endregion part image
+
+// #region part file
+type AiChatMessagePartFile_ClassNames = "AiChatMessagePartFile";
+
+type AiChatMessagePartFile_Props = {
+	filename: string | undefined;
+};
+
+function AiChatMessagePartFile(props: AiChatMessagePartFile_Props) {
+	const { filename } = props;
+	return (
+		<span className={"AiChatMessagePartFile" satisfies AiChatMessagePartFile_ClassNames}>
+			{filename ?? "File attachment"}
+		</span>
+	);
+}
+// #endregion part file
+
+// #region part source url
+type AiChatMessagePartSourceUrl_ClassNames = "AiChatMessagePartSourceUrl";
+
+type AiChatMessagePartSourceUrl_Props = {
+	url: string;
+	title: string | undefined;
+};
+
+function AiChatMessagePartSourceUrl(props: AiChatMessagePartSourceUrl_Props) {
+	const { url, title } = props;
+	return (
+		<a
+			className={"AiChatMessagePartSourceUrl" satisfies AiChatMessagePartSourceUrl_ClassNames}
+			href={url}
+			target="_blank"
+			rel="noreferrer"
+		>
+			{title ?? url}
+		</a>
+	);
+}
+// #endregion part source url
+
+// #region part source document
+type AiChatMessagePartSourceDocument_ClassNames = "AiChatMessagePartSourceDocument";
+
+type AiChatMessagePartSourceDocument_Props = {
+	title: string | undefined;
+	filename: string | undefined;
+	sourceId: string;
+	mediaType: string;
+};
+
+function AiChatMessagePartSourceDocument(props: AiChatMessagePartSourceDocument_Props) {
+	const { title: titleProp, filename, sourceId, mediaType } = props;
+	const title = titleProp || filename || sourceId;
+	return (
+		<span
+			className={"AiChatMessagePartSourceDocument" satisfies AiChatMessagePartSourceDocument_ClassNames}
+			title={`${mediaType}${filename ? ` • ${filename}` : ""}`}
+		>
+			{title}
+		</span>
+	);
+}
+// #endregion part source document
 
 // #region part
 type AiChatMessagePart_ClassNames =
@@ -536,7 +667,6 @@ type AiChatMessagePart_ClassNames =
 	| "AiChatMessagePart-markdown"
 	| "AiChatMessagePart-image"
 	| "AiChatMessagePart-file"
-	| "AiChatMessagePart-file-name"
 	| "AiChatMessagePart-source";
 
 type AiChatMessagePart_Props = {
@@ -549,8 +679,24 @@ type AiChatMessagePart_Props = {
 };
 
 function AiChatMessagePart(props: AiChatMessagePart_Props) {
+	const { role, part } = props;
+
+	const partClass = ((/* iife */) => {
+		if (isToolOrDynamicToolUIPart(part)) return "AiChatMessagePart-tool" as const;
+		if (isTextUIPart(part) && role === "assistant") return "AiChatMessagePart-markdown" as const;
+		if (isFileUIPart(part))
+			return part.mediaType.startsWith("image/")
+				? ("AiChatMessagePart-image" as const)
+				: ("AiChatMessagePart-file" as const);
+		if (part.type === "source-url" || part.type === "source-document") return "AiChatMessagePart-source" as const;
+		return undefined;
+	})() satisfies AiChatMessagePart_ClassNames | undefined;
+
 	return (
-		<div className={"AiChatMessagePart" satisfies AiChatMessagePart_ClassNames}>
+		<div
+			className={cn("AiChatMessagePart" satisfies AiChatMessagePart_ClassNames, partClass)}
+			data-part-type={part.type}
+		>
 			<AiChatMessagePartInner {...props} />
 		</div>
 	);
@@ -561,12 +707,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 
 	if (isToolOrDynamicToolUIPart(part)) {
 		if (part.type === "dynamic-tool") {
-			return (
-				<AiChatMessageToolUnknown
-					part={part}
-					className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
-				/>
-			);
+			return <AiChatMessagePartToolUnknown part={part} />;
 		}
 
 		switch (part.type) {
@@ -574,8 +715,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolReadPage
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolReadPage
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined}
 						toolState={part.state}
@@ -587,8 +727,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolListPages
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolListPages
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined}
 						toolState={part.state}
@@ -600,8 +739,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolGlobPages
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolGlobPages
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined}
 						toolState={part.state}
@@ -613,8 +751,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolGrepPages
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolGrepPages
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined}
 						toolState={part.state}
@@ -626,8 +763,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolTextSearchPages
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolTextSearchPages
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined}
 						toolState={part.state}
@@ -639,8 +775,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolWritePage
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolWritePage
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined}
 						toolState={part.state}
@@ -652,8 +787,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				const result = part.state === "output-available" ? part.output : undefined;
 				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
-					<AiChatMessageToolEditPage
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
+					<AiChatMessagePartToolEditPage
 						args={part.input}
 						result={result as ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined}
 						toolState={part.state}
@@ -662,30 +796,20 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 				);
 			}
 			default:
-				return (
-					<AiChatMessageToolUnknown
-						part={part}
-						className={"AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames}
-					/>
-				);
+				return <AiChatMessagePartToolUnknown part={part} />;
 		}
 	}
 
 	if (isTextUIPart(part)) {
 		if (role === "assistant") {
-			return (
-				<AiChatMarkdown
-					text={part.text}
-					className={"AiChatMessagePart-markdown" satisfies AiChatMessagePart_ClassNames}
-				/>
-			);
+			return <AiChatMessagePartMarkdown text={part.text} />;
 		}
 
-		return <p>{part.text}</p>;
+		return <AiChatMessagePartText text={part.text} />;
 	}
 
 	if (isReasoningUIPart(part)) {
-		return <p>{part.text}</p>;
+		return <AiChatMessagePartReasoning text={part.text} />;
 	}
 
 	if (isDataUIPart(part)) {
@@ -694,87 +818,30 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 
 	if (isFileUIPart(part)) {
 		if (part.mediaType.startsWith("image/")) {
-			return (
-				<img
-					className={"AiChatMessagePart-image" satisfies AiChatMessagePart_ClassNames}
-					src={part.url}
-					alt={part.filename ?? "Image attachment"}
-				/>
-			);
+			return <AiChatMessagePartImage url={part.url} filename={part.filename} />;
 		}
 
-		return (
-			<div className={"AiChatMessagePart-file" satisfies AiChatMessagePart_ClassNames}>
-				<span className={"AiChatMessagePart-file-name" satisfies AiChatMessagePart_ClassNames}>
-					{part.filename ?? "File attachment"}
-				</span>
-			</div>
-		);
+		return <AiChatMessagePartFile filename={part.filename} />;
 	}
 
 	if (part.type === "source-url") {
-		return (
-			<a
-				className={"AiChatMessagePart-source" satisfies AiChatMessagePart_ClassNames}
-				href={part.url}
-				target="_blank"
-				rel="noreferrer"
-			>
-				{part.title ?? part.url}
-			</a>
-		);
+		return <AiChatMessagePartSourceUrl url={part.url} title={part.title} />;
 	}
 
 	if (part.type === "source-document") {
-		const title = part.title || part.filename || part.sourceId;
 		return (
-			<span
-				className={"AiChatMessagePart-source" satisfies AiChatMessagePart_ClassNames}
-				title={`${part.mediaType}${part.filename ? ` • ${part.filename}` : ""}`}
-			>
-				{title}
-			</span>
+			<AiChatMessagePartSourceDocument
+				title={part.title}
+				filename={part.filename}
+				sourceId={part.sourceId}
+				mediaType={part.mediaType}
+			/>
 		);
 	}
 
 	return null;
 }
-
 // #endregion part
-
-// #region parts list
-type AiChatMessagePartsList_Props = {
-	message: ai_chat_AiSdk5UiMessage;
-	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
-	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
-	onToolStop: AiChatMessagePart_Props["onToolStop"];
-};
-
-function AiChatMessagePartsList(props: AiChatMessagePartsList_Props) {
-	const { message, onToolOutput, onToolResumeStream, onToolStop } = props;
-
-	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
-
-	return (
-		<div>
-			{displayParts.map((part, index) => (
-				<AiChatMessagePart
-					// index is better in this case because the parts follow a static order
-					// and this will prevent them from being unmounted when the message is
-					// persisted after stream
-					key={index}
-					part={part}
-					role={message.role}
-					message={message}
-					onToolOutput={onToolOutput}
-					onToolResumeStream={onToolResumeStream}
-					onToolStop={onToolStop}
-				/>
-			))}
-		</div>
-	);
-}
-// #endregion parts list
 
 // #region container
 type AiChatMessageContainer_ClassNames = "AiChatMessageContainer";
@@ -809,24 +876,40 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
-	children: ReactNode;
+	message: ai_chat_AiSdk5UiMessage;
+	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
+	onToolStop: AiChatMessagePart_Props["onToolStop"];
+	children?: ReactNode;
 };
 
 function AiChatMessageContent(props: AiChatMessageContent_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className, message, onToolOutput, onToolResumeStream, onToolStop, children, ...rest } = props;
+
+	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
 
 	return (
 		<div
 			ref={ref}
 			id={id}
-			className={cn(
-				"AiChatMessageContent" satisfies AiChatMessageContent_ClassNames,
-				"app-doc" satisfies AppClassName,
-				className,
-			)}
+			className={cn("AiChatMessageContent" satisfies AiChatMessageContent_ClassNames, className)}
 			{...rest}
 		>
-			{children}
+			{children ??
+				displayParts.map((part, index) => (
+					<AiChatMessagePart
+						// index is better in this case because the parts follow a static order
+						// and this will prevent them from being unmounted when the message is
+						// persisted after stream
+						key={index}
+						part={part}
+						role={message.role}
+						message={message}
+						onToolOutput={onToolOutput}
+						onToolResumeStream={onToolResumeStream}
+						onToolStop={onToolStop}
+					/>
+				))}
 		</div>
 	);
 }
@@ -978,7 +1061,12 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 					isEditing && ("AiChatMessageUser-bubble-state-editing" satisfies AiChatMessageUser_ClassNames),
 				)}
 			>
-				<AiChatMessageContent>
+				<AiChatMessageContent
+					message={message}
+					onToolOutput={onToolOutput}
+					onToolResumeStream={onToolResumeStream}
+					onToolStop={onToolStop}
+				>
 					{isEditing ? (
 						<AiChatComposer
 							key={message.id}
@@ -992,14 +1080,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 							onInteractedOutside={handleEditCancel}
 							onClose={handleEditCancel}
 						/>
-					) : (
-						<AiChatMessagePartsList
-							message={message}
-							onToolOutput={onToolOutput}
-							onToolResumeStream={onToolResumeStream}
-							onToolStop={onToolStop}
-						/>
-					)}
+					) : null}
 				</AiChatMessageContent>
 				{showEditButton && (
 					<button
@@ -1152,14 +1233,12 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 			{...rest}
 		>
 			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
-				<AiChatMessageContent>
-					<AiChatMessagePartsList
-						message={message}
-						onToolOutput={onToolOutput}
-						onToolResumeStream={onToolResumeStream}
-						onToolStop={onToolStop}
-					/>
-				</AiChatMessageContent>
+				<AiChatMessageContent
+					message={message}
+					onToolOutput={onToolOutput}
+					onToolResumeStream={onToolResumeStream}
+					onToolStop={onToolStop}
+				/>
 				<div className={"AiChatMessageAgent-actions" satisfies AiChatMessageAgent_ClassNames} hidden={isEditing}>
 					<CopyIconButton
 						variant="ghost"
@@ -1233,14 +1312,12 @@ function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 			{...rest}
 		>
 			<AiChatMessageBubble className={"AiChatMessageSystem-bubble" satisfies AiChatMessageSystem_ClassNames}>
-				<AiChatMessageContent>
-					<AiChatMessagePartsList
-						message={message}
-						onToolOutput={onToolOutput}
-						onToolResumeStream={onToolResumeStream}
-						onToolStop={onToolStop}
-					/>
-				</AiChatMessageContent>
+				<AiChatMessageContent
+					message={message}
+					onToolOutput={onToolOutput}
+					onToolResumeStream={onToolResumeStream}
+					onToolStop={onToolStop}
+				/>
 			</AiChatMessageBubble>
 		</AiChatMessageContainer>
 	);
@@ -1266,9 +1343,9 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
-	onToolOutput: AiChatMessagePartsList_Props["onToolOutput"];
-	onToolResumeStream: AiChatMessagePartsList_Props["onToolResumeStream"];
-	onToolStop: AiChatMessagePartsList_Props["onToolStop"];
+	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
+	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
+	onToolStop: AiChatMessageContent_Props["onToolStop"];
 	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
 	onEditCancel: () => void;
 	onEditSubmit: (args: { value: string }) => void;

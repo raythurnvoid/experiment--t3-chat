@@ -122,7 +122,7 @@ When a `.css` file is paired with a `.tsx` module (same feature/module, imported
 ```css
 /* ✅ Correct: Dashes work in all CSS selectors */
 .Button-variant-primary {
-	background: hsl(var(--primary));
+	background: var(--color-accent-06);
 }
 
 .Card-size-large {
@@ -168,7 +168,7 @@ const MessageComposer_class_names = {
 
 // In CSS file
 .MessageComposer-input-field {
-	border: 1px solid hsl(var(--border));
+	border: 1px solid var(--color-base-1-05);
 }
 ```
 
@@ -243,8 +243,8 @@ const MessageComposer_class_names = {
 	font-weight: 500;
 	line-height: 1.25rem;
 
-	background: hsl(var(--primary));
-	color: hsl(var(--primary-foreground));
+	background: var(--color-accent-06);
+	color: var(--color-fg-12);
 
 	transition: all 0.15s ease;
 }
@@ -289,20 +289,47 @@ const MessageComposer_class_names = {
 }
 ```
 
-# CSS Custom Properties
+# Color System
 
-- Use CSS custom properties with `hsl()` function
-- Pattern: `hsl(var(--variable-name))`
-- For opacity variants: `hsl(var(--variable-name) / 0.9)`
+This project uses a custom color system defined in `app.css` with `oklch()` values. The system is currently **dark-mode only** — light mode is not planned yet.
+
+## How it works
+
+- Each color has a numbered scale (e.g. `--color-base-1-01` through `--color-base-1-12`). The last number varies by color — it can be 10, 12, or other values.
+- **`-01` is the darkest shade, higher numbers are progressively lighter.** Every step is lighter than the previous one.
+- This gives flexibility and predictability: instead of being constrained to a few named tokens like "primary" / "secondary", you pick the shade that matches the element's visual depth in the UI.
+
+## Depth model (dark mode)
+
+The color system follows a depth-based approach:
+
+- **Deepest elements** (page background, main content area) use the **darkest shades** (low numbers like `-01`, `-02`).
+- **Higher / elevated elements** (buttons, sidebars, popovers, cards) use **progressively lighter shades** (higher numbers like `-04`, `-05`, `-06`).
+- This creates visual depth — elements that sit "above" the background appear lighter, giving the UI layering.
+
+## Using the variables
+
+Use `var(--color-...)` directly — **no** `hsl()` wrapper needed (the variables already contain complete `oklch()` color values).
+
+## Available color scales
+
+- **`--color-base-1-*`** (01–12) and **`--color-base-2-*`** (01–12) — Neutral backgrounds and surfaces. Base comes in two groups: group 1 has the dark shades, group 2 has the brighter shades. Use these for page backgrounds, cards, panels, inputs, borders, etc.
+- **`--color-base-alt-1-*`** / **`--color-base-alt-2-*`** — Alternative neutral with a cool (blue) hue. Use to emphasize or differentiate certain sections from the main base surfaces.
+- **`--color-fg-*`** (01–12) — Foreground content: text, icons, outlines. 01 is the dimmest, 12 is the brightest.
+- **`--color-accent-*`** (01–10) — Primary accent (warm orange). For interactive/important elements like links, active states, primary buttons.
+- **`--color-accent-alt-*`** (01–10) — Secondary accent (blue/purple). For secondary emphasis, tags, or alternative highlights.
+- **`--color-green-*`** (01–12) — Success / positive states.
+- **`--color-red-*`** (01–12) — Danger / destructive / error states.
 
 ```css
-/* ✅ Good */
-background: hsl(var(--primary));
-color: hsl(var(--primary-foreground));
-border-color: hsl(var(--destructive) / 0.2);
+/* ✅ Good - use var() directly */
+background: var(--color-accent-06);
+color: var(--color-fg-10);
+border-color: var(--color-base-1-05);
 
-/* ❌ Bad - missing hsl() wrapper */
-background: var(--primary);
+/* ❌ Bad - do not use hsl() or shadcn variables */
+background: hsl(var(--primary));
+color: hsl(var(--foreground));
 ```
 
 # Dark Mode Support
@@ -312,12 +339,12 @@ background: var(--primary);
 
 ```css
 .Button-variant-outline {
-	background: hsl(var(--background));
-	border: 1px solid hsl(var(--border));
+	background: var(--color-base-1-02);
+	border: 1px solid var(--color-base-1-05);
 
 	@media (prefers-color-scheme: dark) {
-		background: hsl(var(--input) / 0.3);
-		border-color: hsl(var(--input));
+		background: var(--color-base-1-04);
+		border-color: var(--color-base-1-06);
 	}
 }
 ```
@@ -342,7 +369,7 @@ background: var(--primary);
 	}
 
 	&:hover {
-		background: hsl(var(--primary) / 0.9);
+		background: var(--color-accent-07);
 	}
 }
 ```
@@ -406,10 +433,10 @@ Prefer `contain: content` for container components (e.g., sidebars) instead of `
 
 		padding: 1.5rem;
 		border-radius: 0.5rem;
-		border: 1px solid hsl(var(--border));
+		border: 1px solid var(--color-base-1-05);
 
-		background: hsl(var(--card));
-		color: hsl(var(--card-foreground));
+		background: var(--color-base-1-03);
+		color: var(--color-fg-10);
 
 		box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
 	}

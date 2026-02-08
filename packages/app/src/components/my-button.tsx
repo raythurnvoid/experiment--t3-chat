@@ -12,6 +12,7 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-secondary"
 	| "MyButton-variant-secondary-subtle"
 	| "MyButton-variant-ghost"
+	| "MyButton-variant-ghost-accent"
 	| "MyButton-variant-ghost-highlightable"
 	| "MyButton-variant-tertiary"
 	| "MyButton-variant-link";
@@ -23,6 +24,7 @@ type X =
 	| "secondary"
 	| "secondary-subtle"
 	| "ghost"
+	| "ghost-accent"
 	| "ghost-highlightable"
 	| "tertiary"
 	| "link";
@@ -58,6 +60,7 @@ export function MyButton(props: MyButton_Props) {
 				variant === "secondary" && ("MyButton-variant-secondary" satisfies MyButton_ClassNames),
 				variant === "secondary-subtle" && ("MyButton-variant-secondary-subtle" satisfies MyButton_ClassNames),
 				variant === "ghost" && ("MyButton-variant-ghost" satisfies MyButton_ClassNames),
+				variant === "ghost-accent" && ("MyButton-variant-ghost-accent" satisfies MyButton_ClassNames),
 				variant === "ghost-highlightable" && ("MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames),
 				variant === "tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),
 				variant === "link" && ("MyButton-variant-link" satisfies MyButton_ClassNames),

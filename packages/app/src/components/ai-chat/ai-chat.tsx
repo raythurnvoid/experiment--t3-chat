@@ -412,19 +412,24 @@ function useAutoScroll(props: useAutoScroll_Props) {
 // #endregion auto scroll hook
 
 // #region thread
+export type AiChatThread_Variant = "default" | "sidebar";
+
 export type AiChatThread_ClassNames =
 	| "AiChatThread"
+	| "AiChatThread-variant-default"
+	| "AiChatThread-variant-sidebar"
 	| "AiChatThread-content"
 	| "AiChatThread-scroll-to-bottom"
 	| "AiChatThread-scroll-to-bottom-icon"
 	| "AiChatThread-composer";
 
 export type AiChatThread_Props = {
+	variant?: AiChatThread_Variant;
 	controller: AiChatController;
 };
 
 export function AiChatThread(props: AiChatThread_Props) {
-	const { controller } = props;
+	const { variant = "default", controller } = props;
 
 	const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 	const selectedThreadId = controller.selectedThreadId;
@@ -719,7 +724,15 @@ export function AiChatThread(props: AiChatThread_Props) {
 	};
 
 	return (
-		<div ref={setRootEl} className={"AiChatThread" satisfies AiChatThread_ClassNames} onKeyDown={handleKeyDown}>
+		<div
+			ref={setRootEl}
+			className={cn(
+				"AiChatThread" satisfies AiChatThread_ClassNames,
+				variant === "default" && ("AiChatThread-variant-default" satisfies AiChatThread_ClassNames),
+				variant === "sidebar" && ("AiChatThread-variant-sidebar" satisfies AiChatThread_ClassNames),
+			)}
+			onKeyDown={handleKeyDown}
+		>
 			<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
 				<AiChatMessagesList
 					ref={setMessagesListEl}

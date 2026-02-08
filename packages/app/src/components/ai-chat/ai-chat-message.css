@@ -14,11 +14,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+
+		padding: 8px 0px;
 	}
 	/* #endregion message container */
 
 	.AiChatMessageBubble {
-		contain: content;
+		contain: layout;
 
 		display: flex;
 		flex-direction: column;
@@ -143,12 +145,12 @@
 		text-align: center;
 
 		font-size: 0.75rem;
-		color: hsl(var(--muted-foreground));
+		color: var(--color-fg-06);
 	}
 	/* #endregion message */
 
 	/* #region tool chip */
-	.AiChatMessageToolChip {
+	.AiChatMessagePartToolChip {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -173,7 +175,7 @@
 	/* #endregion tool chip */
 
 	/* #region tool status */
-	.AiChatMessageToolStatus {
+	.AiChatMessagePartToolStatus {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
@@ -183,11 +185,11 @@
 		white-space: nowrap;
 	}
 
-	.AiChatMessageToolStatus-state-loading {
+	.AiChatMessagePartToolStatus-state-loading {
 		color: var(--color-fg-06);
 	}
 
-	.AiChatMessageToolStatus-state-approval {
+	.AiChatMessagePartToolStatus-state-approval {
 		color: var(--color-accent-06);
 
 		& > svg {
@@ -197,13 +199,14 @@
 	/* #endregion tool status */
 
 	/* #region tool disclosure */
-	.AiChatMessageToolDisclosure {
+	.AiChatMessagePartToolDisclosure {
+		padding: 0 16px;
 		width: 100%;
 	}
 	/* #endregion tool disclosure */
 
 	/* #region tool disclosure button */
-	.AiChatMessageToolDisclosureButton {
+	.AiChatMessagePartToolDisclosureButton {
 		list-style: revert;
 
 		width: 100%;
@@ -214,12 +217,35 @@
 
 		color: var(--color-fg-04);
 
+		padding: 8px;
+		border-radius: 6px;
+
+		outline: none;
+		border: 2px solid transparent;
+
+		&:not([aria-disabled="true"]) {
+			&:hover {
+				color: var(--color-fg-10);
+				background: var(--color-base-1-04);
+			}
+
+			&:focus-visible {
+				color: var(--color-fg-09);
+				border-color: var(--color-fg-12);
+			}
+
+			&:active {
+				color: var(--color-fg-11);
+				background: var(--color-base-1-06);
+			}
+		}
+
 		&[aria-disabled="true"] {
 			cursor: default;
 		}
 	}
 
-	.AiChatMessageToolDisclosureButton-content {
+	.AiChatMessagePartToolDisclosureButton-content {
 		display: inline-flex;
 		align-items: center;
 		justify-content: space-between;
@@ -232,19 +258,19 @@
 	/* #endregion tool disclosure button */
 
 	/* #region tool body */
-	.AiChatMessageToolBody {
+	.AiChatMessagePartToolBody {
 		outline: none;
 	}
 	/* #endregion tool body */
 
 	/* #region tool textarea section */
-	.AiChatMessageToolTextAreaSection {
+	.AiChatMessagePartToolTextAreaSection {
 		container-type: inline-size;
 
 		display: grid;
 
 		contain: content;
-		margin: 16px;
+		margin: 16px 0 16px 16px;
 
 		font-size: 0.75rem;
 		color: var(--color-fg-06);
@@ -253,23 +279,23 @@
 
 		overflow: auto;
 
-		max-height: var(--AiChatMessageToolTextAreaSection-max-height, 8lh);
+		max-height: var(--AiChatMessagePartToolTextAreaSection-max-height, 8lh);
 
 		border: 2px solid transparent;
 
 		border-radius: 6px;
 
-		&:has(.AiChatMessageToolTextAreaSection-textarea:focus-visible) {
+		&:has(.AiChatMessagePartToolTextAreaSection-textarea:focus-visible) {
 			border-color: var(--color-fg-12);
 		}
 	}
 
-	.AiChatMessageToolTextAreaSection-state-error {
+	.AiChatMessagePartToolTextAreaSection-state-error {
 		background: var(--color-red-02);
 		color: var(--color-red-08);
 	}
 
-	.AiChatMessageToolTextAreaSection-heading {
+	.AiChatMessagePartToolTextAreaSection-heading {
 		width: calc(100cqw - var(--app-scrollbar-w));
 
 		grid-column: 1;
@@ -288,7 +314,7 @@
 		left: 0;
 	}
 
-	.AiChatMessageToolTextAreaSection-textarea {
+	.AiChatMessagePartToolTextAreaSection-textarea {
 		grid-column: 1;
 		grid-row: 1;
 
@@ -308,20 +334,8 @@
 	}
 	/* #endregion tool textarea section */
 
-	/* #region tool read_page */
-	.AiChatMessageToolReadPage-link {
-		display: inline-block;
-
-		padding: 4px 16px;
-
-		font-size: 0.8125rem;
-		color: hsl(var(--primary));
-		text-decoration: none;
-	}
-	/* #endregion tool read_page */
-
 	/* #region tool unknown */
-	.AiChatMessageToolUnknown-meta {
+	.AiChatMessagePartToolUnknown-meta {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 4px;
@@ -333,6 +347,8 @@
 	/* #region user message */
 	.AiChatMessageUser {
 		align-items: end;
+
+		padding: 8px 24px;
 	}
 	/* #endregion user message */
 
@@ -344,6 +360,10 @@
 	.AiChatMessageAgent-bubble {
 		width: 100%;
 	}
+
+	.AiChatMessageAgent-actions {
+		padding-inline: 16px;
+	}
 	/* #endregion agent message */
 
 	/* #region part */
@@ -353,78 +373,37 @@
 		gap: 8px;
 	}
 
-	.AiChatMessagePart-markdown {
-		font-size: 0.95rem;
-		line-height: 1.7;
-		color: hsl(var(--foreground));
-
-		& :where(p) {
-			margin: 0 0 12px;
-		}
-
-		& :where(h1, h2, h3, h4) {
-			margin: 20px 0 8px;
-
-			font-weight: 600;
-		}
-
-		& :where(ul, ol) {
-			margin: 0 0 12px 20px;
-			padding: 0;
-		}
-
-		& :where(code) {
-			padding: 2px 6px;
-			border-radius: 6px;
-
-			background: hsl(var(--muted));
-
-			font-size: 0.85rem;
-		}
-
-		& :where(pre) {
-			padding: 12px 14px;
-			border-radius: 10px;
-
-			background: hsl(var(--muted-foreground) / 0.1);
-			overflow-x: auto;
-		}
-
-		& :where(a) {
-			color: hsl(var(--primary));
-
-			text-decoration: underline;
-			text-underline-offset: 3px;
-		}
+	.AiChatMarkdown {
+		padding: 0 24px;
 	}
 
-	.AiChatMessagePart-image {
+	.AiChatMessagePartImage {
 		max-width: 100%;
 		border-radius: 12px;
 
-		border: 1px solid hsl(var(--border));
+		border: 1px solid var(--color-base-1-05);
 	}
 
 	.AiChatMessagePart-file {
-		display: flex;
+		flex-direction: row;
 		align-items: center;
-		gap: 8px;
 
 		padding: 10px 12px;
 		border-radius: 10px;
-		border: 1px solid hsl(var(--border));
+		border: 1px solid var(--color-base-1-05);
 
-		background: hsl(var(--background));
+		background: var(--color-base-1-02);
 	}
 
-	.AiChatMessagePart-file-name {
+	.AiChatMessagePartFile {
 		font-size: 0.875rem;
-		color: hsl(var(--foreground));
+		color: var(--color-fg-10);
 	}
 
-	.AiChatMessagePart-source {
+	.AiChatMessagePartSourceUrl,
+	.AiChatMessagePartSourceDocument {
 		font-size: 0.875rem;
-		color: hsl(var(--primary));
+		color: var(--color-accent-06);
 
 		text-decoration: underline;
 		text-underline-offset: 3px;

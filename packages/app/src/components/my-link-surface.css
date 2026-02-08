@@ -1,113 +1,12 @@
 @layer common_components {
-	.MyLinkSurface {
-		box-sizing: border-box;
-		position: relative;
-
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
-
-		border-radius: 6px;
-
-		font-size: 0.875rem;
-		font-weight: 500;
-		line-height: 1.25rem;
-		white-space: nowrap;
-
+	.MyLinkSurface-variant-default {
 		background: transparent;
 
-		transition: background-color 0.15s ease-in-out;
-
-		&:focus-visible {
-			outline: none;
-			box-shadow: 0 0 0 1px var(--ring);
-		}
-
-		&:disabled {
-			opacity: 0.5;
-		}
-	}
-
-	.MyLinkSurface-variant-default {
-		color: var(--primary);
+		color: var(--color-accent-06);
 		text-underline-offset: 4px;
 
 		&:hover {
 			text-decoration: underline;
-		}
-	}
-
-	.MyLinkSurface-variant-button-tertiary,
-	.MyLinkSurface-variant-button-ghost,
-	.MyLinkSurface-variant-button-ghost-highlightable {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		gap: 8px;
-		white-space: nowrap;
-		flex-shrink: 0;
-
-		height: 36px;
-		padding: 6px 10px;
-		border-radius: 6px;
-		border: 2px solid transparent;
-
-		font-size: 0.875rem;
-		font-weight: 500;
-		line-height: 1.25rem;
-
-		background: transparent;
-
-		transition: background-color 0.15s ease-in-out;
-		outline: none;
-
-		&:focus-visible {
-			border-color: var(--color-fg-12);
-		}
-
-		&:disabled {
-			opacity: 0.5;
-		}
-	}
-
-	.MyLinkSurface-variant-button-tertiary {
-		background: transparent;
-
-		&:hover,
-		&:focus-visible {
-			background: var(--sidebar-accent);
-			color: var(--sidebar-accent-foreground);
-		}
-
-		&:active {
-			background: var(--sidebar-accent);
-			color: var(--sidebar-accent-foreground);
-		}
-	}
-
-	.MyLinkSurface-variant-button-ghost {
-		&:hover,
-		&:focus-visible {
-			background: var(--accent);
-			color: var(--accent-foreground);
-		}
-
-		@media (prefers-color-scheme: dark) {
-			&:hover,
-			&:focus-visible {
-				background: oklch(from var(--accent) l c h / 0.5);
-			}
-		}
-	}
-
-	.MyLinkSurface-variant-button-ghost-highlightable {
-		color: var(--color-fg-09);
-
-		&:hover,
-		&:focus-visible {
-			background: var(--color-base-1-07);
-			color: var(--color-fg-12);
 		}
 	}
 }

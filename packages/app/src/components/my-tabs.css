@@ -1,4 +1,5 @@
 @layer common_components {
+	/* #region root */
 	.MyTabs {
 		box-sizing: border-box;
 		position: relative;
@@ -7,7 +8,9 @@
 		flex-direction: column;
 		gap: 8px;
 	}
+	/* #endregion root */
 
+	/* #region list */
 	.MyTabsList {
 		box-sizing: border-box;
 		position: relative;
@@ -15,7 +18,9 @@
 		display: flex;
 		gap: 4px;
 	}
+	/* #endregion list */
 
+	/* #region tab */
 	.MyTabsTab {
 		box-sizing: border-box;
 		position: relative;
@@ -69,9 +74,12 @@
 			cursor: default;
 		}
 	}
+	/* #endregion tab */
 
+	/* #region panel */
 	.MyTabsPanel {
 		outline: none;
 		border-color: transparent;
 	}
+	/* #endregion panel */
 }
