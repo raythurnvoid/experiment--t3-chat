@@ -4,11 +4,7 @@
 		display: flex;
 		height: 100%;
 		flex-direction: column;
-		background: var(--gray-950);
-
-		@media (prefers-color-scheme: dark) {
-			background: var(--gray-100);
-		}
+		background: var(--color-base-1-02);
 	}
 
 	.PageEditorSkeleton-header {
@@ -18,7 +14,7 @@
 		align-items: center;
 		justify-content: space-between;
 
-		border-bottom: 1px solid var(--gray-400);
+		border-bottom: 1px solid var(--color-base-1-04);
 		padding-inline: 24px;
 	}
 
@@ -29,7 +25,7 @@
 		align-items: center;
 		gap: 8px;
 
-		border-bottom: 1px solid var(--gray-400);
+		border-bottom: 1px solid var(--color-base-1-04);
 		padding-inline: 24px;
 	}
 
@@ -47,11 +43,11 @@
 
 	.PageEditorSkeleton-skeleton {
 		border-radius: 4px;
-		background: var(--gray-400);
+		background: var(--color-base-1-05);
 		animation: skeleton-pulse 2s ease-in infinite;
 
 		@media (prefers-color-scheme: dark) {
-			background: var(--gray-400);
+			background: var(--color-base-1-05);
 		}
 
 		.PageEditorSkeleton-header & {
