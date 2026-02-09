@@ -544,6 +544,11 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			throw error;
 		}
 
+		const originalLineCount = editorModels.original.getLineCount();
+		const originalLastLineMaxColumn = editorModels.original.getLineMaxColumn(originalLineCount);
+		const modifiedLineCount = editorModels.modified.getLineCount();
+		const modifiedLastLineMaxColumn = editorModels.modified.getLineMaxColumn(modifiedLineCount);
+
 		const resultParts: string[] = [];
 		let currentLine = 0; // zero-based
 
@@ -551,52 +556,86 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			const isInsertion = diff.originalEndLineNumber === 0;
 			const isDeletion = diff.modifiedEndLineNumber === 0;
 
-			let endLine =
-				(isInsertion ? diff.originalStartLineNumber : diff.originalStartLineNumber - 1) +
-				1; /* +1 because monaco APIs are 1 based */
-			let endCharacter = 1; /* monaco APIs are 1 based */
+			let endLine: number;
+			let endCharacter: number;
 
-			// if this is a deletion at the very end of the document,then we need to account
-			// for a newline at the end of the last line which may have been deleted
-			// https://github.com/microsoft/vscode/issues/59670
-			if (isDeletion && diff.originalEndLineNumber === editorModels.original.getLineCount()) {
-				endLine -= 1;
-				endCharacter = editorModels.original.getLineContent(endLine).length;
+			if (isInsertion) {
+				// Correctly handle EOF insertions (Monaco can't point at lineCount + 1).
+				if (diff.originalStartLineNumber === originalLineCount) {
+					endLine = originalLineCount;
+					endCharacter = originalLastLineMaxColumn;
+				} else {
+					// `+ 1` converts 0-based line indexes to Monaco's 1-based range.
+					endLine = diff.originalStartLineNumber + 1;
+					endCharacter = 1;
+				}
+			}
+			// isDeletion
+			else {
+				if (diff.originalEndLineNumber === editorModels.original.getLineCount()) {
+					// if this is a deletion at the very end of the document,then we need to account
+					// for a newline at the end of the last line which may have been deleted
+					// https://github.com/microsoft/vscode/issues/59670
+					endLine = diff.originalStartLineNumber - 1;
+					endCharacter = editorModels.original.getLineMaxColumn(endLine);
+				} else {
+					// Regular index normalization to convert 0-based indexes from `diff` to 1-based indexes for Monaco ranges.
+					endLine = diff.originalStartLineNumber;
+					endCharacter = 1;
+				}
 			}
 
-			resultParts.push(editorModels.original.getValueInRange(new monaco_Range(currentLine, 1, endLine, endCharacter)));
+			resultParts.push(
+				editorModels.original.getValueInRange(
+					new monaco_Range(
+						// `+ 1` converts 0-based line index to Monaco's 1-based range.
+						currentLine === originalLineCount ? originalLineCount : currentLine + 1,
+						currentLine === originalLineCount ? originalLastLineMaxColumn : 1,
+						endLine,
+						endCharacter,
+					),
+				),
+			);
 
 			if (!isDeletion) {
-				let fromLine = diff.modifiedStartLineNumber - 1 + 1; /* +1 because monaco APIs are 1 based */
-				let fromCharacter = 1; /* monaco APIs are 1 based */
+				let fromLine = diff.modifiedStartLineNumber - 1;
+				let fromCharacter = 0;
 
 				// if this is an insertion at the very end of the document,
 				// then we must start the next range after the last character of the
 				// previous line, in order to take the correct eol
 				if (isInsertion && diff.originalStartLineNumber === editorModels.original.getLineCount()) {
 					fromLine -= 1;
-					fromCharacter = editorModels.modified.getLineContent(fromLine).length;
+					fromCharacter = editorModels.modified.getLineContent(fromLine + 1).length;
 				}
 
 				resultParts.push(
 					editorModels.modified.getValueInRange(
 						new monaco_Range(
-							fromLine,
-							fromCharacter,
-							diff.modifiedEndLineNumber + 1 /* +1 because monaco APIs are 1 based */,
-							1,
+							// `+ 1` converts 0-based line index to Monaco's 1-based range.
+							fromLine === modifiedLineCount ? modifiedLineCount : fromLine + 1,
+							fromLine === modifiedLineCount ? modifiedLastLineMaxColumn : fromCharacter + 1,
+							// `+ 1` converts 0-based line index to Monaco's 1-based range.
+							diff.modifiedEndLineNumber === modifiedLineCount ? modifiedLineCount : diff.modifiedEndLineNumber + 1,
+							diff.modifiedEndLineNumber === modifiedLineCount ? modifiedLastLineMaxColumn : 1,
 						),
 					),
 				);
 			}
 
-			currentLine =
-				(isInsertion ? diff.originalStartLineNumber : diff.originalEndLineNumber) +
-				1; /* +1 because monaco APIs are 1 based */
+			currentLine = isInsertion ? diff.originalStartLineNumber : diff.originalEndLineNumber;
 		}
 
 		resultParts.push(
-			editorModels.original.getValueInRange(new monaco_Range(currentLine, 1, editorModels.original.getLineCount(), 1)),
+			editorModels.original.getValueInRange(
+				new monaco_Range(
+					// `+ 1` converts 0-based line index to Monaco's 1-based range.
+					currentLine === originalLineCount ? originalLineCount : currentLine + 1,
+					currentLine === originalLineCount ? originalLastLineMaxColumn : 1,
+					originalLineCount,
+					originalLastLineMaxColumn,
+				),
+			),
 		);
 
 		return resultParts.join("");
@@ -1058,6 +1097,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 					const existingWidget = newContentWidgets.at(i);
 
 					if (existingWidget) {
+						existingWidget.args.index = i;
 						// If the widget for this index already exists,
 						// and should target the same editor, update the line number
 						if (existingWidget.args.editor === targetEditor) {
