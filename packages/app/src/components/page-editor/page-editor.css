@@ -1,13 +1,99 @@
 @layer components {
+	/* #region root */
 	.PageEditor {
-		height: 100%;
-		width: 100%;
-	}
+		display: flex;
+		flex-direction: column;
 
-	.PageEditor-editor-container {
 		height: 100%;
 	}
 
+	.PageEditor-editor-area {
+		display: flex;
+		flex-direction: column;
+
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+
+		contain: strict;
+		container-type: size;
+	}
+
+	.PageEditor-panels-group {
+		flex: 1;
+	}
+
+	.PageEditor-content-panel {
+		min-width: 0;
+		min-height: 0;
+
+		display: flex;
+		flex-direction: column;
+
+		contain: inline-size layout style;
+	}
+
+	.PageEditor-panel-size-handle-container {
+		/*
+		The container makes sure that the even though the handle
+		has an arbitrarily large height, it will not affect the ancestor's
+		scrollable area size.
+		*/
+		contain: layout style size;
+		width: 0;
+		z-index: 2;
+
+		display: flex;
+		justify-content: center;
+	}
+
+	.PageEditor-panel-size-handle {
+		/*
+		Since the container size depends exclusively on the content of the editor,
+		to ensure the handle spans across the whole page height,
+		we set an arbitrarily large height to handle.
+		*/
+		height: 9999px;
+		width: 24px;
+
+		display: flex;
+		justify-content: center;
+
+		position: absolute;
+
+		/* Set a container to support position absolute children */
+		contain: layout style;
+		touch-action: none;
+
+		background-color: transparent;
+
+		&[data-resize-handle-state="drag"] {
+			background-color: var(--color-base-alt-2-10);
+		}
+
+		&[data-resize-handle-state="hover"] {
+			background-color: var(--color-base-alt-1-07);
+		}
+
+		&::before {
+			content: "";
+			position: absolute;
+			height: 100%;
+
+			width: 2px;
+		}
+
+		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+			background-color: var(--color-base-alt-1-07);
+		}
+	}
+
+	.PageEditor-sidebar {
+		contain: inline-size layout style;
+	}
+	/* #endregion root */
+
+	/* #region header */
 	.PageEditorHeader {
 		display: flex;
 		height: 48px;
@@ -93,8 +179,9 @@
 		font-size: 0.75rem;
 		color: var(--gray-600);
 	}
+	/* #endregion header */
 
-	/* #region PendingEditsBanner */
+	/* #region pending edits banner */
 	.PageEditorPendingEditsBanner {
 		display: flex;
 		align-items: center;
@@ -146,5 +233,11 @@
 			outline-offset: 2px;
 		}
 	}
-	/* #endregion PendingEditsBanner */
+	/* #endregion pending edits banner */
+
+	/* #region presence supplier */
+	/* #endregion presence supplier */
+
+	/* #region page editor render */
+	/* #endregion page editor render */
 }

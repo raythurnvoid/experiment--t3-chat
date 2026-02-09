@@ -10,7 +10,8 @@ import {
 	pages_monaco_create_editor_model,
 	pages_fetch_page_yjs_state_and_markdown,
 } from "@/lib/pages.ts";
-import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
 import { useQuery, useMutation } from "convex/react";
@@ -27,11 +28,8 @@ import { Await } from "@/components/await.tsx";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
-import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
-import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 
 // #region toolbar
 export type PageEditorPlainTextToolbar_ClassNames =
@@ -119,88 +117,10 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 }
 // #endregion toolbar
 
-// #region sidebar
-export type PageEditorPlainTextSidebar_ClassNames =
-	| "PageEditorPlainTextSidebar"
-	| "PageEditorPlainTextSidebar-background"
-	| "PageEditorPlainTextSidebar-toolbar"
-	| "PageEditorPlainTextSidebar-toolbar-scrollable-area"
-	| "PageEditorPlainTextSidebar-tabs-list"
-	| "PageEditorPlainTextSidebar-tabs-panels"
-	| "PageEditorPlainTextSidebar-panel"
-	| "PageEditorPlainTextSidebar-agent";
-
-export type PageEditorPlainTextSidebar_Props = {
-	threadIds: string[];
-};
-
-function PageEditorPlainTextSidebar(props: PageEditorPlainTextSidebar_Props) {
-	const { threadIds } = props;
-
-	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab);
-	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
-
-	const handleTabChange = (nextSelectedId: string | null | undefined) => {
-		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
-			return;
-		}
-
-		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
-	};
-
-	return (
-		<>
-			<div
-				className={cn("PageEditorPlainTextSidebar-background" satisfies PageEditorPlainTextSidebar_ClassNames)}
-			></div>
-			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
-				<div className={cn("PageEditorPlainTextSidebar-toolbar" satisfies PageEditorPlainTextSidebar_ClassNames)}>
-					<div
-						className={cn(
-							"PageEditorPlainTextSidebar-toolbar-scrollable-area" satisfies PageEditorPlainTextSidebar_ClassNames,
-						)}
-					>
-						<MyTabsList
-							className={cn("PageEditorPlainTextSidebar-tabs-list" satisfies PageEditorPlainTextSidebar_ClassNames)}
-							aria-label="Sidebar tabs"
-						>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}>Agent</MyTabsTab>
-						</MyTabsList>
-					</div>
-				</div>
-				<MyTabsPanels
-					className={cn("PageEditorPlainTextSidebar-tabs-panels" satisfies PageEditorPlainTextSidebar_ClassNames)}
-				>
-					<MyTabsPanel
-						className={cn("PageEditorPlainTextSidebar-panel" satisfies PageEditorPlainTextSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
-					>
-						<PageEditorCommentsSidebar threadIds={threadIds} />
-					</MyTabsPanel>
-					<MyTabsPanel
-						className={cn("PageEditorPlainTextSidebar-panel" satisfies PageEditorPlainTextSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
-					>
-						<div className={cn("PageEditorPlainTextSidebar-agent" satisfies PageEditorPlainTextSidebar_ClassNames)}>
-							Agent tools will appear here.
-						</div>
-					</MyTabsPanel>
-				</MyTabsPanels>
-			</MyTabs>
-		</>
-	);
-}
-// #endregion sidebar
-
 // #region root
 type PageEditorPlainText_ClassNames =
 	| "PageEditorPlainText"
-	| "PageEditorPlainText-editor"
-	| "PageEditorPlainText-panels-group"
-	| "PageEditorPlainText-editor-panel"
-	| "PageEditorPlainText-panel-resize-handle-container"
-	| "PageEditorPlainText-panel-resize-handle";
+	| "PageEditorPlainText-editor";
 
 type PageEditorPlainText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
@@ -210,11 +130,11 @@ type PageEditorPlainText_Inner_Props = {
 		yjsSequence: number;
 	};
 	presenceStore: pages_PresenceStore;
-	headerSlot: ReactNode;
+	commentsPortalHost: HTMLElement | null;
 };
 
 function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
-	const { initialData, headerSlot, pageId, presenceStore } = props;
+	const { initialData, pageId, presenceStore, commentsPortalHost } = props;
 
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
 
@@ -545,67 +465,51 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 	}, []);
 
 	return (
-		<div className={"PageEditorPlainText" satisfies PageEditorPlainText_ClassNames}>
-			{headerSlot}
-
-			<PanelGroup
-				direction="horizontal"
-				className={"PageEditorPlainText-panels-group" satisfies PageEditorPlainText_ClassNames}
-			>
-				<Panel defaultSize={75} className={"PageEditorPlainText-editor-panel" satisfies PageEditorPlainText_ClassNames}>
-					<PageEditorPlainTextToolbar
-						isSaveDisabled={isSaveDisabled}
-						isSyncDisabled={isSyncDisabled}
-						isSaveDebouncing={isSaveDebouncing}
-						pageId={pageId}
-						sessionId={presenceStore.localSessionId}
-						getCurrentMarkdown={getCurrentMarkdown}
-						onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
-						onClickSave={handleClickSave}
-						onClickSync={handleClickSync}
-					/>
-					<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
-						{hoistingContainer && (
-							<Editor
-								height="100%"
-								language="markdown"
-								theme={app_monaco_THEME_NAME_DARK}
-								options={{
-									overflowWidgetsDomNode: hoistingContainer,
-									fixedOverflowWidgets: true,
-									wordWrap: "on",
-									scrollBeyondLastLine: false,
-									model: initialEditorModel,
-								}}
-								onMount={handleOnMount}
-							/>
-						)}
-					</div>
-				</Panel>
-				<div className={"PageEditorPlainText-panel-resize-handle-container" satisfies PageEditorPlainText_ClassNames}>
-					<PanelResizeHandle
-						className={"PageEditorPlainText-panel-resize-handle" satisfies PageEditorPlainText_ClassNames}
-					/>
+		<>
+			<div className={"PageEditorPlainText" satisfies PageEditorPlainText_ClassNames}>
+				<PageEditorPlainTextToolbar
+					isSaveDisabled={isSaveDisabled}
+					isSyncDisabled={isSyncDisabled}
+					isSaveDebouncing={isSaveDebouncing}
+					pageId={pageId}
+					sessionId={presenceStore.localSessionId}
+					getCurrentMarkdown={getCurrentMarkdown}
+					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
+					onClickSave={handleClickSave}
+					onClickSync={handleClickSync}
+				/>
+				<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
+					{hoistingContainer && (
+						<Editor
+							height="100%"
+							language="markdown"
+							theme={app_monaco_THEME_NAME_DARK}
+							options={{
+								overflowWidgetsDomNode: hoistingContainer,
+								fixedOverflowWidgets: true,
+								wordWrap: "on",
+								scrollBeyondLastLine: false,
+								model: initialEditorModel,
+							}}
+							onMount={handleOnMount}
+						/>
+					)}
 				</div>
-				<Panel
-					defaultSize={25}
-					className={cn("PageEditorPlainTextSidebar" satisfies PageEditorPlainTextSidebar_ClassNames)}
-				>
-					<PageEditorPlainTextSidebar threadIds={commentThreadIds} />
-				</Panel>
-			</PanelGroup>
-		</div>
+			</div>
+			{commentsPortalHost &&
+				createPortal(<PageEditorCommentsSidebar threadIds={commentThreadIds} />, commentsPortalHost)}
+		</>
 	);
 }
 
 export type PageEditorPlainText_Props = {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	headerSlot: ReactNode;
+	commentsPortalHost: HTMLElement | null;
 };
 
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {
-	const { pageId, presenceStore, headerSlot } = props;
+	const { pageId, presenceStore, commentsPortalHost } = props;
 
 	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -630,7 +534,7 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 								: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
 						}
 						presenceStore={presenceStore}
-						headerSlot={headerSlot}
+						commentsPortalHost={commentsPortalHost}
 					/>
 				)}
 			</Await>

@@ -24,7 +24,6 @@ import { toast } from "sonner";
 import { Await } from "@/components/await.tsx";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { useStateRef } from "@/hooks/utils-hooks.ts";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
 	pages_monaco_create_editor_model,
 	pages_headless_tiptap_editor_create,
@@ -38,8 +37,6 @@ import {
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
-import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
-import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 
 // #region toolbar
 export type PageEditorDiffToolbar_ClassNames =
@@ -174,74 +171,6 @@ function PageEditorDiffToolbar(props: PageEditorDiffToolbar_Props) {
 	);
 }
 // #endregion toolbar
-
-// #region sidebar
-export type PageEditorDiffSidebar_ClassNames =
-	| "PageEditorDiffSidebar"
-	| "PageEditorDiffSidebar-background"
-	| "PageEditorDiffSidebar-toolbar"
-	| "PageEditorDiffSidebar-toolbar-scrollable-area"
-	| "PageEditorDiffSidebar-tabs-list"
-	| "PageEditorDiffSidebar-tabs-panels"
-	| "PageEditorDiffSidebar-panel"
-	| "PageEditorDiffSidebar-agent";
-
-export type PageEditorDiffSidebar_Props = {
-	threadIds: string[];
-};
-
-function PageEditorDiffSidebar(props: PageEditorDiffSidebar_Props) {
-	const { threadIds } = props;
-
-	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab);
-	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
-
-	const handleTabChange = (nextSelectedId: string | null | undefined) => {
-		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
-			return;
-		}
-
-		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
-	};
-
-	return (
-		<>
-			<div className={cn("PageEditorDiffSidebar-background" satisfies PageEditorDiffSidebar_ClassNames)}></div>
-			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
-				<div className={cn("PageEditorDiffSidebar-toolbar" satisfies PageEditorDiffSidebar_ClassNames)}>
-					<div
-						className={cn("PageEditorDiffSidebar-toolbar-scrollable-area" satisfies PageEditorDiffSidebar_ClassNames)}
-					>
-						<MyTabsList
-							className={cn("PageEditorDiffSidebar-tabs-list" satisfies PageEditorDiffSidebar_ClassNames)}
-							aria-label="Sidebar tabs"
-						>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}>Agent</MyTabsTab>
-						</MyTabsList>
-					</div>
-				</div>
-				<MyTabsPanels className={cn("PageEditorDiffSidebar-tabs-panels" satisfies PageEditorDiffSidebar_ClassNames)}>
-					<MyTabsPanel
-						className={cn("PageEditorDiffSidebar-panel" satisfies PageEditorDiffSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
-					>
-						<PageEditorCommentsSidebar threadIds={threadIds} />
-					</MyTabsPanel>
-					<MyTabsPanel
-						className={cn("PageEditorDiffSidebar-panel" satisfies PageEditorDiffSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
-					>
-						<div className={cn("PageEditorDiffSidebar-agent" satisfies PageEditorDiffSidebar_ClassNames)}>
-							Agent tools will appear here.
-						</div>
-					</MyTabsPanel>
-				</MyTabsPanels>
-			</MyTabs>
-		</>
-	);
-}
-// #endregion sidebar
 
 // #region PageEditorDiffWidgetAcceptDiscard
 export type PageEditorDiffWidgetAcceptDiscard_ClassNames =
@@ -443,10 +372,6 @@ export function PageEditorDiffWidgetAcceptDiscard(props: PageEditorDiffWidgetAcc
 type PageEditorDiff_ClassNames =
 	| "PageEditorDiff"
 	| "PageEditorDiff-editor"
-	| "PageEditorDiff-panels-group"
-	| "PageEditorDiff-editor-panel"
-	| "PageEditorDiff-panel-resize-handle-container"
-	| "PageEditorDiff-panel-resize-handle"
 	| "PageEditorDiff-anchor";
 
 type PageEditorDiff_CssVars = {
@@ -463,8 +388,16 @@ type PageEditorDiff_Inner_Props = PageEditorDiff_Props & {
 };
 
 function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
-	const { ref, className, pageId, presenceStore, modifiedInitialValue, headerSlot, hoistingContainer, initialData } =
-		props;
+	const {
+		ref,
+		className,
+		pageId,
+		presenceStore,
+		modifiedInitialValue,
+		commentsPortalHost,
+		hoistingContainer,
+		initialData,
+	} = props;
 
 	const id = useId();
 	const anchorName = `${"--PageEditorDiff-anchor-name" satisfies keyof PageEditorDiff_CssVars}-${id}`;
@@ -1172,75 +1105,66 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	);
 
 	return (
-		<div
-			className={cn("PageEditorDiff" satisfies PageEditorDiff_ClassNames, className)}
-			style={{
-				...({
-					"--PageEditorDiff-anchor-name": anchorName,
-				} satisfies Partial<PageEditorDiff_CssVars> as CSSPropertiesX),
-			}}
-		>
-			{headerSlot}
+		<>
+			<div
+				className={cn("PageEditorDiff" satisfies PageEditorDiff_ClassNames, className)}
+				style={{
+					...({
+						"--PageEditorDiff-anchor-name": anchorName,
+					} satisfies Partial<PageEditorDiff_CssVars> as CSSPropertiesX),
+				}}
+			>
+				<PageEditorDiffToolbar
+					isSaveDisabled={isSaveDisabled}
+					isSyncDisabled={isSyncDisabled}
+					isAcceptAllDisabled={isAcceptAllDisabled}
+					isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
+					isDiscardAllDisabled={isDiscardAllDisabled}
+					pageId={pageId}
+					sessionId={presenceStore.localSessionId}
+					getCurrentMarkdown={getCurrentMarkdown}
+					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
+					onClickSave={handleClickSave}
+					onClickSync={handleClickSync}
+					onClickAcceptAll={handleClickAcceptAll}
+					onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
+					onClickDiscardAll={handleClickDiscardAll}
+				/>
+				<div className={"PageEditorDiff-editor" satisfies PageEditorDiff_ClassNames}>
+					<DiffEditor
+						height="100%"
+						theme={app_monaco_THEME_NAME_DARK}
+						onMount={handleOnMount}
+						original={initialData.markdown}
+						modified={modifiedInitialValue ?? initialData.markdown}
+						originalLanguage="markdown"
+						modifiedLanguage="markdown"
+						// We own our own models, so we need to keep them alive even after the editor is disposed,
+						// because we dispose them manually
+						keepCurrentOriginalModel={true}
+						keepCurrentModifiedModel={true}
+						options={{
+							overflowWidgetsDomNode: hoistingContainer,
+							originalEditable: false,
+							renderSideBySide: false,
+							ignoreTrimWhitespace: false,
+							glyphMargin: false,
+							lineDecorationsWidth: 72,
+							renderMarginRevertIcon: false,
+							renderGutterMenu: false,
+							fixedOverflowWidgets: true,
+							wordWrap: "on",
+							scrollBeyondLastLine: false,
 
-			<PanelGroup direction="horizontal" className={"PageEditorDiff-panels-group" satisfies PageEditorDiff_ClassNames}>
-				<Panel defaultSize={75} className={"PageEditorDiff-editor-panel" satisfies PageEditorDiff_ClassNames}>
-					<PageEditorDiffToolbar
-						isSaveDisabled={isSaveDisabled}
-						isSyncDisabled={isSyncDisabled}
-						isAcceptAllDisabled={isAcceptAllDisabled}
-						isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
-						isDiscardAllDisabled={isDiscardAllDisabled}
-						pageId={pageId}
-						sessionId={presenceStore.localSessionId}
-						getCurrentMarkdown={getCurrentMarkdown}
-						onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
-						onClickSave={handleClickSave}
-						onClickSync={handleClickSync}
-						onClickAcceptAll={handleClickAcceptAll}
-						onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
-						onClickDiscardAll={handleClickDiscardAll}
+							lineNumbers: "on",
+							renderLineHighlight: "all",
+							renderLineHighlightOnlyWhenFocus: true,
+						}}
 					/>
-					<div className={"PageEditorDiff-editor" satisfies PageEditorDiff_ClassNames}>
-						<DiffEditor
-							height="100%"
-							theme={app_monaco_THEME_NAME_DARK}
-							onMount={handleOnMount}
-							original={initialData.markdown}
-							modified={modifiedInitialValue ?? initialData.markdown}
-							originalLanguage="markdown"
-							modifiedLanguage="markdown"
-							// We own our own models, so we need to keep them alive even after the editor is disposed,
-							// because we dispose them manually
-							keepCurrentOriginalModel={true}
-							keepCurrentModifiedModel={true}
-							options={{
-								overflowWidgetsDomNode: hoistingContainer,
-								originalEditable: false,
-								renderSideBySide: false,
-								ignoreTrimWhitespace: false,
-								glyphMargin: false,
-								lineDecorationsWidth: 72,
-								renderMarginRevertIcon: false,
-								renderGutterMenu: false,
-								fixedOverflowWidgets: true,
-								wordWrap: "on",
-								scrollBeyondLastLine: false,
-
-								lineNumbers: "on",
-								renderLineHighlight: "all",
-								renderLineHighlightOnlyWhenFocus: true,
-							}}
-						/>
-					</div>
-				</Panel>
-				<div className={"PageEditorDiff-panel-resize-handle-container" satisfies PageEditorDiff_ClassNames}>
-					<PanelResizeHandle className={"PageEditorDiff-panel-resize-handle" satisfies PageEditorDiff_ClassNames} />
 				</div>
-				<Panel defaultSize={25} className={cn("PageEditorDiffSidebar" satisfies PageEditorDiffSidebar_ClassNames)}>
-					<PageEditorDiffSidebar threadIds={commentThreadIds} />
-				</Panel>
-			</PanelGroup>
-
+			</div>
+			{commentsPortalHost &&
+				createPortal(<PageEditorCommentsSidebar threadIds={commentThreadIds} />, commentsPortalHost)}
 			{contentWidgets.map((widget) =>
 				createPortal(
 					<PageEditorDiffWidgetAcceptDiscard
@@ -1251,7 +1175,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 					widget.id,
 				),
 			)}
-		</div>
+		</>
 	);
 }
 
@@ -1267,11 +1191,11 @@ export type PageEditorDiff_Props = {
 	threadId?: string;
 	modifiedInitialValue?: string;
 	onExit: () => void;
-	headerSlot: React.ReactNode;
+	commentsPortalHost: HTMLElement | null;
 };
 
 export function PageEditorDiff(props: PageEditorDiff_Props) {
-	const { pageId, presenceStore, modifiedInitialValue, headerSlot, className } = props;
+	const { pageId, presenceStore, modifiedInitialValue, commentsPortalHost, className } = props;
 
 	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -1301,7 +1225,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 							pageId={pageId}
 							presenceStore={presenceStore}
 							modifiedInitialValue={modifiedInitialValue}
-							headerSlot={headerSlot}
+							commentsPortalHost={commentsPortalHost}
 							hoistingContainer={hoistingContainer}
 							initialData={
 								pageContentData

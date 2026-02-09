@@ -6,6 +6,7 @@ import React, { useState, useImperativeHandle, type Ref, useEffect, useRef, useE
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
 import { PageEditorDiff, type PageEditorDiff_Ref } from "./page-editor-diff/page-editor-diff.tsx";
+import { PageEditorSidebar } from "./page-editor-sidebar/page-editor-sidebar.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -29,6 +30,8 @@ import {
 } from "../../hooks/presence-hooks.ts";
 import { CatchBoundary } from "@tanstack/react-router";
 import { PageEditorError } from "./page-editor-error.tsx";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import type { MySeparator_ClassNames } from "../my-separator.tsx";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -60,7 +63,7 @@ function get_breadcrumb_path(
 	return path;
 }
 
-// #region Header
+// #region header
 type PageEditorHeader_ClassNames =
 	| "PageEditorHeader"
 	| "PageEditorHeader-breadcrumb"
@@ -187,9 +190,9 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 		</div>
 	);
 }
-// #endregion Header
+// #endregion header
 
-// #region PendingEditsBanner
+// #region pending edits banner
 type PageEditorPendingEditsBanner_ClassNames =
 	| "PageEditorPendingEditsBanner"
 	| "PageEditorPendingEditsBanner-content"
@@ -229,16 +232,16 @@ function PageEditorPendingEditsBanner(props: PageEditorPendingEditsBanner_Props)
 		</div>
 	);
 }
-// #endregion PendingEditsBanner
+// #endregion pending edits banner
 
-// #region PresenceSupplier
+// #region presence supplier
 
 type PageEditorPresenceSupplier_Props = {
 	userId: string | null | undefined;
 	pageId: app_convex_Id<"pages">;
 
 	children: (props: {
-		presenceStore: PageEditor_Inner_Props["presenceStore"];
+		presenceStore: pages_PresenceStore | null;
 		onlineUsers: Array<{
 			userId: string;
 			isSelf: boolean;
@@ -401,20 +404,67 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 		setSessionDataMutation,
 	]);
 
-	return presenceStore ? children({ presenceStore, onlineUsers }) : <PageEditorSkeleton />;
+	return children({ presenceStore, onlineUsers });
 }
 
-// #endregion PresenceSupplier
+// #endregion presence supplier
 
-// #region PageEditor
+// #region page editor render
+type PageEditorRender_Props = {
+	pageId: app_convex_Id<"pages">;
+	editorMode: PageEditor_Mode;
+	presenceStore: pages_PresenceStore | null;
+	commentsPortalHost: HTMLElement | null;
+	diffEditorRef: Ref<PageEditorDiff_Ref>;
+	modifiedInitialValue?: string;
+	onDiffExit: () => void;
+};
+
+function PageEditorRender(props: PageEditorRender_Props) {
+	const { pageId, editorMode, presenceStore, commentsPortalHost, diffEditorRef, modifiedInitialValue, onDiffExit } =
+		props;
+
+	if (!presenceStore) {
+		return <PageEditorSkeleton />;
+	}
+
+	if (editorMode === "rich_text_editor") {
+		return <PageEditorRichText pageId={pageId} presenceStore={presenceStore} commentsPortalHost={commentsPortalHost} />;
+	}
+
+	if (editorMode === "diff_editor") {
+		return (
+			<PageEditorDiff
+				ref={diffEditorRef}
+				pageId={pageId}
+				presenceStore={presenceStore}
+				modifiedInitialValue={modifiedInitialValue}
+				onExit={onDiffExit}
+				commentsPortalHost={commentsPortalHost}
+			/>
+		);
+	}
+
+	return <PageEditorPlainText pageId={pageId} presenceStore={presenceStore} commentsPortalHost={commentsPortalHost} />;
+}
+// #endregion page editor render
+
+// #region root
 export type PageEditor_Mode = pages_EditorView;
 
-export type PageEditor_ClassNames = "PageEditor" | "PageEditor-editor-container";
+export type PageEditor_ClassNames =
+	| "PageEditor"
+	| "PageEditor-editor-area"
+	| "PageEditor-panels-group"
+	| "PageEditor-content-panel"
+	| "PageEditor-sidebar"
+	| "PageEditor-panel-size-handle-container"
+	| "PageEditor-panel-size-handle";
 
 type PageEditor_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
 	editorMode: PageEditor_Mode;
-	presenceStore: pages_PresenceStore;
+	presenceStore: pages_PresenceStore | null;
 	onlineUsers: Array<{
 		userId: string;
 		isSelf: boolean;
@@ -437,6 +487,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	});
 
 	const diffEditorRef = useRef<PageEditorDiff_Ref | null>(null);
+	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
 
 	const handleDiffExit = () => {
 		onEditorModeChange("rich_text_editor");
@@ -472,31 +523,75 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		</>
 	);
 
+	const leftPanelStyle =
+		editorMode === "rich_text_editor"
+			? {
+					minHeight: "100%",
+					height: "max-content",
+					/** required for sticky descendants to work */
+					overflow: "visible",
+				}
+			: undefined;
+
 	return (
 		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
-			<div className={cn("PageEditor-editor-container" satisfies PageEditor_ClassNames)}>
-				<CatchBoundary
-					getResetKey={() => 0}
-					errorComponent={PageEditorError}
-					onCatch={(err) => {
-						console.error("[PageEditor_Inner]", err);
+			{editorMode === "diff_editor" ? headerSlot : enhancedHeaderSlot}
+			<div
+				className={cn("PageEditor-editor-area" satisfies PageEditor_ClassNames)}
+				style={editorMode === "rich_text_editor" ? undefined : { overflowY: "visible" }}
+			>
+				<PanelGroup
+					direction="horizontal"
+					className={cn("PageEditor-panels-group" satisfies PageEditor_ClassNames)}
+					style={{
+						height: "max-content",
+						/** required for sticky descendants to work */
+						overflow: "visible",
 					}}
 				>
-					{editorMode === "rich_text_editor" ? (
-						<PageEditorRichText pageId={pageId} presenceStore={presenceStore} headerSlot={enhancedHeaderSlot} />
-					) : editorMode === "diff_editor" ? (
-						<PageEditorDiff
-							ref={diffEditorRef}
-							pageId={pageId}
-							presenceStore={presenceStore}
-							headerSlot={headerSlot}
-							modifiedInitialValue={pendingEditsResult?.modifiedContent ?? undefined}
-							onExit={handleDiffExit}
+					<Panel
+						defaultSize={75}
+						className={cn("PageEditor-content-panel" satisfies PageEditor_ClassNames)}
+						style={leftPanelStyle}
+					>
+						<CatchBoundary
+							getResetKey={() => 0}
+							errorComponent={PageEditorError}
+							onCatch={(err) => {
+								console.error("[PageEditor_Inner]", err);
+							}}
+						>
+							<PageEditorRender
+								pageId={pageId}
+								editorMode={editorMode}
+								presenceStore={presenceStore}
+								commentsPortalHost={commentsPortalHost}
+								diffEditorRef={diffEditorRef}
+								modifiedInitialValue={pendingEditsResult?.modifiedContent ?? undefined}
+								onDiffExit={handleDiffExit}
+							/>
+						</CatchBoundary>
+					</Panel>
+					<div className={cn("PageEditor-panel-size-handle-container" satisfies PageEditor_ClassNames)}>
+						<PanelResizeHandle
+							className={cn(
+								"PageEditor-panel-size-handle" satisfies PageEditor_ClassNames,
+								"MySeparator" satisfies MySeparator_ClassNames,
+								"MySeparator-vertical" satisfies MySeparator_ClassNames,
+							)}
 						/>
-					) : (
-						<PageEditorPlainText pageId={pageId} presenceStore={presenceStore} headerSlot={enhancedHeaderSlot} />
-					)}
-				</CatchBoundary>
+					</div>
+					<Panel
+						className={"PageEditor-sidebar" satisfies PageEditor_ClassNames}
+						collapsible={false}
+						defaultSize={25}
+						style={{
+							overflow: "initial",
+						}}
+					>
+						<PageEditorSidebar commentsContainerRef={setCommentsPortalHost} />
+					</Panel>
+				</PanelGroup>
 			</div>
 		</div>
 	);
@@ -547,4 +642,4 @@ export function PageEditor(props: PageEditor_Props) {
 		<div>No document selected</div>
 	);
 }
-// #endregion PageEditor
+// #endregion root

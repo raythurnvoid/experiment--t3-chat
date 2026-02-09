@@ -1,5 +1,6 @@
 import "./page-editor-rich-text.css";
 import { useState, useEffect, useRef, useEffectEvent } from "react";
+import { createPortal } from "react-dom";
 import {
 	EditorContent,
 	EditorRoot,
@@ -22,10 +23,9 @@ import { PageEditorRichTextToolsMathToggle } from "./page-editor-rich-text-tools
 import { PageEditorRichTextToolsTextStyles } from "./page-editor-rich-text-tools-text-styles.tsx";
 import { PageEditorRichTextToolsSlashCommand } from "./page-editor-rich-text-tools-slash-command.tsx";
 import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-tools-history-buttons.tsx";
-import { MySeparator, type MySeparator_ClassNames } from "@/components/my-separator.tsx";
+import { MySeparator } from "@/components/my-separator.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
-import { PageEditorRichTextSidebarAgent } from "./page-editor-rich-text-sidebar-agent.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import {
@@ -37,7 +37,6 @@ import {
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
-import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -48,13 +47,11 @@ import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-co
 import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { global_event_listen_all } from "../../../lib/global-event.tsx";
-import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 
 type SyncStatus = YjsSyncStatus;
 
@@ -411,93 +408,13 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 }
 // #endregion Bubble
 
-// #region Sidebar
-export type PageEditorRichTextSidebar_ClassNames =
-	| "PageEditorRichTextSidebar"
-	| "PageEditorRichTextSidebar-background"
-	| "PageEditorRichTextSidebar-toolbar"
-	| "PageEditorRichTextSidebar-toolbar-scrollable-area"
-	| "PageEditorRichTextSidebar-tabs-list"
-	| "PageEditorRichTextSidebar-tabs-panels"
-	| "PageEditorRichTextSidebar-panel"
-	| "PageEditorRichTextSidebar-panel-empty";
-
-export type PageEditorRichTextSidebar_Props = {
-	editor: Editor;
-	threadsQuery: ReturnType<
-		typeof useStableQuery<typeof app_convex_api.human_thread_messages.human_thread_messages_threads_list>
-	>;
-};
-
-function PageEditorRichTextSidebar(props: PageEditorRichTextSidebar_Props) {
-	const { editor, threadsQuery } = props;
-
-	const pagesLastTab =
-		useAppLocalStorageState((state) => state.pages_last_tab) ??
-		("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
-	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
-
-	const handleTabChange = (nextSelectedId: string | null | undefined) => {
-		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
-			return;
-		}
-
-		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
-	};
-
-	return (
-		<>
-			<div className={cn("PageEditorRichTextSidebar-background" satisfies PageEditorRichTextSidebar_ClassNames)}></div>
-			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
-				<div className={cn("PageEditorRichTextSidebar-toolbar" satisfies PageEditorRichTextSidebar_ClassNames)}>
-					<div
-						className={cn(
-							"PageEditorRichTextSidebar-toolbar-scrollable-area" satisfies PageEditorRichTextSidebar_ClassNames,
-						)}
-					>
-						<MyTabsList
-							className={cn("PageEditorRichTextSidebar-tabs-list" satisfies PageEditorRichTextSidebar_ClassNames)}
-							aria-label="Sidebar tabs"
-						>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}>Agent</MyTabsTab>
-						</MyTabsList>
-					</div>
-				</div>
-				<MyTabsPanels
-					className={cn("PageEditorRichTextSidebar-tabs-panels" satisfies PageEditorRichTextSidebar_ClassNames)}
-				>
-					<MyTabsPanel
-						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
-					>
-						{editor && <PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />}
-					</MyTabsPanel>
-					<MyTabsPanel
-						className={cn("PageEditorRichTextSidebar-panel" satisfies PageEditorRichTextSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
-					>
-						<PageEditorRichTextSidebarAgent />
-					</MyTabsPanel>
-				</MyTabsPanels>
-			</MyTabs>
-		</>
-	);
-}
-// #endregion Sidebar
-
 // #region Root
 export type PageEditorRichText_ClassNames =
 	| "PageEditorRichText"
 	| "PageEditorRichText-visible"
-	| "PageEditorRichText-editor-area"
-	| "PageEditorRichText-editor-panels-group"
-	| "PageEditorRichText-editor-content-panel"
 	| "PageEditorRichText-editor-content-root"
 	| "PageEditorRichText-editor-content-container"
 	| "PageEditorRichText-editor-content"
-	| "PageEditorRichText-panel-resize-handle-container"
-	| "PageEditorRichText-panel-resize-handle"
 	| "PageEditorRichText-status-badge"
 	| "PageEditorRichText-word-count-badge"
 	| "PageEditorRichText-word-count-badge-hidden";
@@ -506,11 +423,11 @@ type PageEditorRichText_Inner_Props = {
 	pagesYjs: pages_Yjs;
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	headerSlot: React.ReactNode;
+	commentsPortalHost: HTMLElement | null;
 };
 
 function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
-	const { pagesYjs, pageId, presenceStore, headerSlot } = props;
+	const { pagesYjs, pageId, presenceStore, commentsPortalHost } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const editorRef = useLiveRef(editor);
@@ -623,98 +540,58 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 					isEditorReady && ("PageEditorRichText-visible" satisfies PageEditorRichText_ClassNames),
 				)}
 			>
-				{headerSlot}
-
-				<div className={cn("PageEditorRichText-editor-area" satisfies PageEditorRichText_ClassNames)}>
-					<PanelGroup
-						direction="horizontal"
-						className={cn("PageEditorRichText-editor-panels-group" satisfies PageEditorRichText_ClassNames)}
-						style={{
-							height: "max-content",
-							/** required for sticky descendants to work */
-							overflow: "visible",
-						}}
-					>
-						<Panel
-							className={cn("PageEditorRichText-editor-content-panel" satisfies PageEditorRichText_ClassNames)}
-							collapsible={false}
-							defaultSize={75}
-							style={{
-								/** required for sticky descendants to work */
-								overflow: "visible",
-							}}
-						>
-							{editor && (
-								<PageEditorRichTextToolbar
-									editor={editor}
-									charsCount={charsCount}
-									syncStatus={pagesYjs.syncStatus}
-									syncChanged={pagesYjs.syncChanged}
-									pageId={pageId}
-									sessionId={presenceStore.localSessionId}
-								/>
-							)}
-							<EditorContent
-								className={cn("PageEditorRichText-editor-content-root" satisfies PageEditorRichText_ClassNames)}
-								injectCSS={false}
-								editorContainerProps={{
-									className: cn("PageEditorRichText-editor-content-container" satisfies PageEditorRichText_ClassNames),
-								}}
-								editorProps={{
-									attributes: {
-										class: cn(
-											"app-doc" satisfies AppClassName,
-											"PageEditorRichText-editor-content" satisfies PageEditorRichText_ClassNames,
-										),
-									},
-									handleDOMEvents: {
-										keydown: (_view, event) => handleCommandNavigation(event),
-									},
-									handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
-									handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
-								}}
-								extensions={extensions}
-								immediatelyRender={false}
-								onCreate={handleCreate}
-								onUpdate={handleUpdate}
-								slotAfter={
-									editor && (
-										<>
-											<ImageResizer />
-											<PageEditorRichTextToolsSlashCommand />
-											<PageEditorRichTextDragHandle editor={editor} />
-											<PageEditorRichTextBubble editor={editor} />
-										</>
-									)
-								}
-							></EditorContent>
-						</Panel>
-						<div
-							className={cn("PageEditorRichText-panel-resize-handle-container" satisfies PageEditorRichText_ClassNames)}
-						>
-							<PanelResizeHandle
-								className={cn(
-									"PageEditorRichText-panel-resize-handle" satisfies PageEditorRichText_ClassNames,
-									"MySeparator" satisfies MySeparator_ClassNames,
-									"MySeparator-vertical" satisfies MySeparator_ClassNames,
-								)}
-							/>
-						</div>
-						<Panel
-							className={cn("PageEditorRichTextSidebar" satisfies PageEditorRichTextSidebar_ClassNames)}
-							collapsible={false}
-							defaultSize={25}
-							style={{
-								overflow: "initial",
-							}}
-						>
-							{editor && <PageEditorRichTextSidebar editor={editor} threadsQuery={threadsQuery} />}
-						</Panel>
-					</PanelGroup>
-				</div>
+				{editor && (
+					<PageEditorRichTextToolbar
+						editor={editor}
+						charsCount={charsCount}
+						syncStatus={pagesYjs.syncStatus}
+						syncChanged={pagesYjs.syncChanged}
+						pageId={pageId}
+						sessionId={presenceStore.localSessionId}
+					/>
+				)}
+				<EditorContent
+					className={cn("PageEditorRichText-editor-content-root" satisfies PageEditorRichText_ClassNames)}
+					injectCSS={false}
+					editorContainerProps={{
+						className: cn("PageEditorRichText-editor-content-container" satisfies PageEditorRichText_ClassNames),
+					}}
+					editorProps={{
+						attributes: {
+							class: cn(
+								"app-doc" satisfies AppClassName,
+								"PageEditorRichText-editor-content" satisfies PageEditorRichText_ClassNames,
+							),
+						},
+						handleDOMEvents: {
+							keydown: (_view, event) => handleCommandNavigation(event),
+						},
+						handlePaste: (view, event) => handleImagePaste(view, event, uploadFn),
+						handleDrop: (view, event, _slice, moved) => handleImageDrop(view, event, moved, uploadFn),
+					}}
+					extensions={extensions}
+					immediatelyRender={false}
+					onCreate={handleCreate}
+					onUpdate={handleUpdate}
+					slotAfter={
+						editor && (
+							<>
+								<ImageResizer />
+								<PageEditorRichTextToolsSlashCommand />
+								<PageEditorRichTextDragHandle editor={editor} />
+								<PageEditorRichTextBubble editor={editor} />
+							</>
+						)
+					}
+				></EditorContent>
 			</div>
+			{commentsPortalHost &&
+				editor &&
+				createPortal(
+					<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />,
+					commentsPortalHost,
+				)}
 			{!isEditorReady && <PageEditorSkeleton />}
-			{"" + pagesYjs.syncStatus}
 		</>
 	);
 }
@@ -748,11 +625,11 @@ export type PageEditorRichText_FgColorCssVarKeys =
 export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
-	headerSlot: React.ReactNode;
+	commentsPortalHost: HTMLElement | null;
 };
 
 export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { className, pageId, presenceStore, headerSlot, ...rest } = props;
+	const { pageId, presenceStore, commentsPortalHost, ...rest } = props;
 
 	const pagesYjs = usePagesYjs({
 		pageId: pageId,
@@ -769,7 +646,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 					pagesYjs={pagesYjs}
 					pageId={pageId}
 					presenceStore={presenceStore}
-					headerSlot={headerSlot}
+					commentsPortalHost={commentsPortalHost}
 					{...rest}
 				/>
 			) : (

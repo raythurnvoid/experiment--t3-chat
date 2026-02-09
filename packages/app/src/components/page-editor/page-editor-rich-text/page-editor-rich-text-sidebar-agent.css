@@ -1,13 +1,18 @@
 @layer components {
 	/* #region root */
 	.PageEditorRichTextSidebarAgent {
-		flex: 1;
-
 		display: flex;
 		flex-direction: column;
 
 		width: 100%;
-		height: 100%;
+		/* 44px is the size of the sidebar toolbar */
+		height: calc(100cqh - 44px);
+
+		position: sticky;
+		/* 44px is the size of the sidebar toolbar */
+		top: 44px;
+
+		contain: strict;
 	}
 
 	.PageEditorRichTextSidebarAgent-header {
@@ -30,6 +35,8 @@
 		display: flex;
 		flex: 1;
 		flex-direction: column;
+
+		overflow: hidden auto;
 	}
 	/* #endregion root */
 

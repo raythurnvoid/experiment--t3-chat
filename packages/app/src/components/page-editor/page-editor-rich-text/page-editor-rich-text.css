@@ -11,20 +11,6 @@
 		}
 	}
 
-	.PageEditorRichText-editor-area {
-		flex: 1;
-		overflow-y: auto;
-	}
-
-	.PageEditorRichText-editor-panels-group {
-		min-height: 100%;
-	}
-
-	.PageEditorRichText-editor-content-panel {
-		min-height: 100%;
-		height: max-content;
-	}
-
 	.PageEditorRichText-editor-content-root {
 		width: 100%;
 	}
@@ -172,63 +158,6 @@
 	}
 	/* #endregion editor content */
 
-	/* #region resize handle */
-	.PageEditorRichText-panel-resize-handle-container {
-		/*
-		The container makes sure that the even though the handle
-		has an arbitrarily large height, it will not affect the ancestor's
-		scrollable area size.
-		*/
-		contain: layout style size;
-		width: 0;
-		z-index: 2;
-
-		display: flex;
-		justify-content: center;
-	}
-
-	.PageEditorRichText-panel-resize-handle {
-		/*
-		Since the container size depends exclusively on the content of the editor,
-		to ensure the handle spans across the whole page height,
-		we set an arbitrarily large height to handle.
-		*/
-		height: 9999px;
-		width: 24px;
-
-		display: flex;
-		justify-content: center;
-
-		position: absolute;
-
-		/* Set a container to support position absolute children */
-		contain: layout style;
-		touch-action: none;
-
-		background-color: transparent;
-
-		&[data-resize-handle-state="drag"] {
-			background-color: var(--color-base-alt-2-10);
-		}
-
-		&[data-resize-handle-state="hover"] {
-			background-color: var(--color-base-alt-1-07);
-		}
-
-		&::before {
-			content: "";
-			position: absolute;
-			height: 100%;
-
-			width: 2px;
-		}
-
-		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
-			background-color: var(--color-base-alt-1-07);
-		}
-	}
-	/* #endregion resize handle */
-
 	/* #region toolbar */
 	.PageEditorRichTextToolbar {
 		height: 44px;
@@ -236,7 +165,7 @@
 
 		border-bottom: 1px solid var(--color-fg-02);
 
-		contain: inline-size layout style;
+		contain: size layout style;
 
 		position: sticky;
 		top: 0;
@@ -312,95 +241,4 @@
 	}
 
 	/* #endregion bubble */
-
-	/* #region sidebar */
-	.PageEditorRichTextSidebar {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.PageEditorRichTextSidebar-toolbar {
-		height: 44px;
-		background: var(--color-base-1-04);
-		border-bottom: 1px solid var(--color-fg-02);
-
-		contain: inline-size layout style;
-
-		position: sticky;
-		top: 0;
-		z-index: 1;
-	}
-
-	.PageEditorRichTextSidebar-toolbar-scrollable-area {
-		min-height: 44px;
-		max-height: calc(44px + var(--app-scrollbar-w));
-
-		display: flex;
-		flex-direction: row;
-		align-items: center;
-		gap: 4px;
-
-		padding: 4px 16px;
-
-		overflow: auto hidden;
-		contain: content;
-
-		min-width: 0;
-	}
-
-	.PageEditorRichTextSidebar-tabs-list {
-		width: 500px;
-	}
-
-	.PageEditorRichTextSidebar-tabs-panels {
-		flex: 1;
-	}
-
-	.PageEditorRichTextSidebar-panel {
-		min-height: 100%;
-
-		display: flex;
-		flex-direction: column;
-	}
-
-	.PageEditorRichTextSidebar-panel-empty {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--color-fg-06);
-	}
-
-	.PageEditorRichTextSidebar-background {
-		/*
-		Set a container to support position absolute and
-		ensure that the arbitrarily large height of the background
-		does not affect the ancestor's scrollable area size.
-		*/
-		contain: layout style size;
-
-		/* Ensure content is visible */
-		z-index: -1;
-
-		&:before {
-			content: "";
-			display: block;
-			position: absolute;
-
-			/*
-			Negative inset matches the padding of the container while
-			allows the element to grow vertically.
-			*/
-			inset: 0 0 auto 0;
-
-			background-color: var(--color-base-1-03);
-			pointer-events: none;
-
-			/*
-			Arbitrarily large height to ensure the background 
-			spans across the whole page height.
-			*/
-			height: 9999px;
-		}
-	}
-	/* #endregion sidebar */
 }
