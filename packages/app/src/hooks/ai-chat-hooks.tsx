@@ -53,7 +53,7 @@ type ChatRequestMetadata = {
 
 const useAiChatStore = ((/* iife */) => {
 	const initialSelectedThreadId = useAppLocalStorageState.getState().ai_chat_last_open;
-	
+
 	const store = create<ThreadStore>(() => ({
 		selectedThreadId: initialSelectedThreadId ?? null,
 		threadById: new Map(),
@@ -403,10 +403,11 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				return session.chat;
 			}
 
-			should_never_happen("[useAiChatController] Missing `session.chat` for selected thread", {
-				selectedThreadId,
-				hasSession: Boolean(session),
-			});
+			// This happens when a chat is pre-selected from local storage.
+			// should_never_happen("[useAiChatController] Missing `session.chat` for selected thread", {
+			// 	selectedThreadId,
+			// 	hasSession: Boolean(session),
+			// });
 
 			const createdChat = create_chat_instance({
 				chatId: selectedThreadId,
