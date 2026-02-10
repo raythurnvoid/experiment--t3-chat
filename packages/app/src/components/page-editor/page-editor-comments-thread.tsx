@@ -1,6 +1,6 @@
 import "./page-editor-comments-thread.css";
 import { useMemo, useState, useRef, type ComponentProps, type HTMLAttributes, type ReactNode, type Ref } from "react";
-import type { human_thread_messages_Thread } from "@/lib/human-thread-messages.ts";
+import type { chat_messages_Thread } from "@/lib/chat-messages.ts";
 import { compute_fallback_user_name, forward_ref } from "@/lib/utils.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import { pages_parse_markdown_to_html } from "@/lib/pages.ts";
@@ -134,9 +134,9 @@ type PageEditorCommentsThreadMessage_ClassNames =
 	| "PageEditorCommentsThreadMessage-actions";
 
 type PageEditorCommentsThreadMessage_Props = ComponentProps<"div"> & {
-	createdBy: Pick<human_thread_messages_Thread, "created_by">["created_by"];
-	createdAt: Pick<human_thread_messages_Thread, "created_at">["created_at"];
-	content: Pick<human_thread_messages_Thread, "content">["content"];
+	createdBy: Pick<chat_messages_Thread, "createdBy">["createdBy"];
+	createdAt: Pick<chat_messages_Thread, "createdAt">["createdAt"];
+	content: Pick<chat_messages_Thread, "content">["content"];
 	avatarFallbackDelay: boolean;
 	actionsSlot?: ReactNode;
 };
@@ -177,7 +177,7 @@ type PageEditorCommentsThreadForm_ClassNames =
 	| "PageEditorCommentsThreadForm-submit-button";
 
 type PageEditorCommentsThreadForm_Props = {
-	threadId: Id<"human_thread_messages">;
+	threadId: Id<"chat_messages">;
 	composerRef?: Ref<PageEditorRichTextCommentComposer_Ref>;
 	onSubmit?: () => void;
 };
@@ -185,7 +185,7 @@ type PageEditorCommentsThreadForm_Props = {
 function PageEditorCommentsThreadForm(props: PageEditorCommentsThreadForm_Props) {
 	const { threadId, onSubmit } = props;
 
-	const addMessage = useMutation(app_convex_api.human_thread_messages.human_thread_messages_add);
+	const addMessage = useMutation(app_convex_api.chat_messages.chat_messages_add);
 
 	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
 	const formRef = useRef<HTMLFormElement>(null);
@@ -346,7 +346,7 @@ type PageEditorCommentsThread_ClassNames =
 export type PageEditorCommentsThread_Props = {
 	ref?: Ref<HTMLDetailsElement>;
 	className?: string;
-	thread: human_thread_messages_Thread;
+	thread: chat_messages_Thread;
 	open: boolean;
 	hidden: boolean;
 	onToggle?: ComponentProps<"details">["onToggle"];
@@ -360,12 +360,12 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 
 	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
 
-	const archiveThread = useMutation(app_convex_api.human_thread_messages.human_thread_messages_archive);
+	const archiveThread = useMutation(app_convex_api.chat_messages.chat_messages_archive);
 
 	const [isArchiving, setIsArchiving] = useState(false);
 
 	const messagesQuery = useQuery(
-		app_convex_api.human_thread_messages.human_thread_messages_list,
+		app_convex_api.chat_messages.chat_messages_list,
 		open
 			? {
 					threadId: thread.id,
@@ -435,12 +435,12 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 				aria-description={"Open comments thread"}
 			>
 				<PageEditorCommentsThreadMessage
-					createdBy={thread.created_by}
-					createdAt={thread.created_at}
+					createdBy={thread.createdBy}
+					createdAt={thread.createdAt}
 					content={thread.content}
 					avatarFallbackDelay
 					actionsSlot={
-						!thread.is_archived && (
+						!thread.isArchived && (
 							<PageEditorCommentsThreadResolveButton isArchiving={isArchiving} onClick={handleResolve} />
 						)
 					}
@@ -454,12 +454,12 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 							(messagesQuery === undefined ? (
 								<>
 									<PageEditorCommentsThreadMessage
-										createdBy={thread.created_by}
-										createdAt={thread.created_at}
+										createdBy={thread.createdBy}
+										createdAt={thread.createdAt}
 										content={thread.content}
 										avatarFallbackDelay={false}
 										actionsSlot={
-											!thread.is_archived && (
+											!thread.isArchived && (
 												<PageEditorCommentsThreadResolveButton isArchiving={isArchiving} onClick={handleResolve} />
 											)
 										}
@@ -473,13 +473,13 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 										messagesQuery.messages.map((message, index) => (
 											<PageEditorCommentsThreadMessage
 												key={message._id}
-												createdBy={message.created_by}
+												createdBy={message.createdBy}
 												createdAt={message._creationTime}
 												content={message.content}
-												avatarFallbackDelay={message.created_by !== thread.created_by}
+												avatarFallbackDelay={message.createdBy !== thread.createdBy}
 												actionsSlot={
 													index === 0 &&
-													!thread.is_archived && (
+													!thread.isArchived && (
 														<PageEditorCommentsThreadResolveButton isArchiving={isArchiving} onClick={handleResolve} />
 													)
 												}

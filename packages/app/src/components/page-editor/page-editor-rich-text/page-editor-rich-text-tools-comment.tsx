@@ -30,7 +30,7 @@ export type PageEditorRichTextToolsComment_Props = {
 export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsComment_Props) {
 	const { onClose } = props;
 
-	const createCommentsThread = useMutation(app_convex_api.human_thread_messages.human_thread_messages_threads_create);
+	const createCommentsThread = useMutation(app_convex_api.chat_messages.chat_messages_threads_create);
 
 	const { editor } = useEditor();
 	const [isEmpty, setIsEmpty] = useState(true);
@@ -80,7 +80,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 			content: markdownContent.trim(),
 		})
 			.then((result) => {
-				editor.chain().focus().addComment(result.thread_id).run();
+				editor.chain().focus().addComment(result.threadId).run();
 
 				composerRef.current?.clear();
 				setIsEmpty(true);

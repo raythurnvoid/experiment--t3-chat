@@ -205,39 +205,38 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace_project_and_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
 	// #endregion Pages
 
-	// #region Human Threads
+	// #region Chat Messages
 	/**
-	 * Human thread messages table - a single table that represents both threads and messages.
-	 * Root messages (thread_id = null) act as thread heads.
-	 * Child messages (thread_id = rootId) form a linked list via parent_id.
+	 * Chat messages table - a single table that represents both threads and messages.
+	 * Root messages have `threadId = null`.
+	 * Child messages have `threadId = rootId`.
+	 *
+	 * Any message can also be the root of a descendant thread by using that message id as
+	 * the thread id for future children.
 	 */
-	human_thread_messages: defineTable({
+	chat_messages: defineTable({
 		/** Workspace ID for multi-tenant scoping */
-		workspace_id: v.string(),
+		workspaceId: v.string(),
 		/** Project ID for multi-tenant scoping */
-		project_id: v.string(),
+		projectId: v.string(),
 		/**
-		 * null → this row is a root message (thread head).
-		 * non-null → this row is a child message belonging to the root whose id is thread_id.
+		 * null → this row is a top-level root message.
+		 * non-null → this row is a child message belonging to the message whose id is threadId.
 		 */
-		thread_id: v.union(v.id("human_thread_messages"), v.null()),
+		threadId: v.union(v.id("chat_messages"), v.null()),
 		/**
 		 * null for roots.
-		 * For children: points to the previous message in that thread's linear chain.
+		 * For children: points to the parent/root message that this message directly replies to.
 		 */
-		parent_id: v.union(v.id("human_thread_messages"), v.null()),
-		/**
-		 * Only meaningful on roots: id of the last child in the chain, or null if there are no children.
-		 */
-		last_child_id: v.union(v.id("human_thread_messages"), v.null()),
+		parentId: v.union(v.id("chat_messages"), v.null()),
 		/** Soft delete / hide flag, especially for root messages */
-		is_archived: v.boolean(),
+		isArchived: v.boolean(),
 		/** User ID who created this message */
-		created_by: v.string(),
+		createdBy: v.string(),
 		/** Markdown content; produced from TipTap rich text on submit */
 		content: v.string(),
-	}),
-	// #endregion Human Threads
+	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
+	// #endregion Chat Messages
 
 	// #region Users
 	users: defineTable({

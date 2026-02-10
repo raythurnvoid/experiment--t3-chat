@@ -63,7 +63,7 @@ export function PageEditorCommentsSidebar(props: PageEditorCommentsSidebar_Props
 	const [query, setFilterValue] = useState("");
 
 	const threadsQuery = useStableQuery(
-		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
+		app_convex_api.chat_messages.chat_messages_threads_list,
 		threadIds.length > 0
 			? {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -74,7 +74,7 @@ export function PageEditorCommentsSidebar(props: PageEditorCommentsSidebar_Props
 			: "skip",
 	);
 
-	const sortedThreads = threadsQuery && threadsQuery.threads.toSorted((a, b) => b.last_message_at - a.last_message_at);
+	const sortedThreads = threadsQuery && threadsQuery.threads.toSorted((a, b) => b.lastMessageAt - a.lastMessageAt);
 
 	const normalizedQuery = sortedThreads ? query.trim().toLowerCase() : null;
 

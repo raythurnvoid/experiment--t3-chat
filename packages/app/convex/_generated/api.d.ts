@@ -10,9 +10,9 @@
 
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_docs_temp from "../ai_docs_temp.js";
+import type * as chat_messages from "../chat_messages.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
-import type * as human_thread_messages from "../human_thread_messages.js";
 import type * as migrations from "../migrations.js";
 import type * as presence from "../presence.js";
 import type * as users from "../users.js";
@@ -26,9 +26,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   ai_chat: typeof ai_chat;
   ai_docs_temp: typeof ai_docs_temp;
+  chat_messages: typeof chat_messages;
   crons: typeof crons;
   http: typeof http;
-  human_thread_messages: typeof human_thread_messages;
   migrations: typeof migrations;
   presence: typeof presence;
   users: typeof users;

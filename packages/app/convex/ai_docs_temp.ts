@@ -517,13 +517,13 @@ export const unarchive_pages = mutation({
 	},
 });
 
-export const get_page_id_if_exists = query({
+export const get = query({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.string(),
 	},
-	returns: v.union(v.id("pages"), v.null()),
+	returns: v.union(doc(app_convex_schema, "pages"), v.null()),
 	handler: async (ctx, args) => {
 		const normalizedPageId = ctx.db.normalizeId("pages", args.pageId);
 		if (!normalizedPageId) {
@@ -535,7 +535,7 @@ export const get_page_id_if_exists = query({
 			return null;
 		}
 
-		return page._id;
+		return page;
 	},
 });
 

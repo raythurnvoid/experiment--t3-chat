@@ -2,7 +2,7 @@
 import "./page-editor-rich-text-comments.css";
 import { AnchoredThreads, AnchoredThreadsItem } from "@liveblocks/react-tiptap";
 import type { Editor } from "@tiptap/react";
-import type { human_thread_messages_Thread } from "../../../lib/human-thread-messages.ts";
+import type { chat_messages_Thread } from "../../../lib/chat-messages.ts";
 import {
 	PageEditorCommentsFilterInput,
 	PageEditorCommentsThread,
@@ -69,7 +69,7 @@ export type PageEditorRichTextAnchoredComments_ClassNames =
 
 export type PageEditorRichTextAnchoredComments_Props = {
 	editor: Editor;
-	threads: human_thread_messages_Thread[] | undefined;
+	threads: chat_messages_Thread[] | undefined;
 };
 
 export function PageEditorRichTextAnchoredComments(props: PageEditorRichTextAnchoredComments_Props) {

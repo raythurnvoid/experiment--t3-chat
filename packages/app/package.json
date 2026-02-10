@@ -16,7 +16,8 @@
 		"test": "vitest",
 		"test:once": "vitest run",
 		"test:debug": "vitest --inspect-brk --no-file-parallelism",
-		"test:coverage": "vitest run --coverage --coverage.reporter=text"
+		"test:coverage": "vitest run --coverage --coverage.reporter=text",
+		"test:e2e": "playwright test"
 	},
 	"dependencies": {
 		"@ai-sdk/anthropic": "2.0.57",
@@ -150,6 +151,7 @@
 		"@convex-dev/eslint-plugin": "^1.0.0",
 		"@edge-runtime/vm": "^5.0.0",
 		"@faker-js/faker": "^10.0.0",
+		"@playwright/test": "^1.58.2",
 		"@tanstack/router-plugin": "^1.132.51",
 		"@types/node": "^24.7.2",
 		"@types/react": "^19.2.0",

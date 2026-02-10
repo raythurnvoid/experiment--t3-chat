@@ -1,5 +1,5 @@
 import { Migrations } from "@convex-dev/migrations";
-import { components } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import type { DataModel, Id } from "./_generated/dataModel.js";
 
 export const migrations = new Migrations<DataModel>(components.migrations);
@@ -90,4 +90,59 @@ export const migrate_pages_remove_client_generated_id = migrations.define({
 	},
 });
 
+/**
+ * No-backfill cutover helper for chat messages:
+ * if any rows still contain legacy snake_case fields, drop them and keep camelCase values.
+ */
+export const migrate_chat_messages_drop_legacy_snake_case = migrations.define({
+	table: "chat_messages",
+	migrateOne: (_ctx, chatMessage) => {
+		const value = chatMessage as {
+			workspaceId?: string;
+			projectId?: string;
+			threadId?: Id<"chat_messages"> | null;
+			parentId?: Id<"chat_messages"> | null;
+			isArchived?: boolean;
+			createdBy?: string;
+			workspace_id?: string;
+			project_id?: string;
+			thread_id?: Id<"chat_messages"> | null;
+			parent_id?: Id<"chat_messages"> | null;
+			is_archived?: boolean;
+			created_by?: string;
+		};
+
+		const hasLegacySnakeCaseFields =
+			value.workspace_id !== undefined ||
+			value.project_id !== undefined ||
+			value.thread_id !== undefined ||
+			value.parent_id !== undefined ||
+			value.is_archived !== undefined ||
+			value.created_by !== undefined;
+
+		if (!hasLegacySnakeCaseFields) {
+			return;
+		}
+
+		return {
+			workspaceId: value.workspaceId ?? value.workspace_id,
+			projectId: value.projectId ?? value.project_id,
+			threadId: value.threadId ?? value.thread_id ?? null,
+			parentId: value.parentId ?? value.parent_id ?? null,
+			isArchived: value.isArchived ?? value.is_archived ?? false,
+			createdBy: value.createdBy ?? value.created_by ?? "Unknown",
+			workspace_id: undefined,
+			project_id: undefined,
+			thread_id: undefined,
+			parent_id: undefined,
+			is_archived: undefined,
+			created_by: undefined,
+		} as unknown as Partial<DataModel["chat_messages"]["document"]>;
+	},
+});
+
 export const run = migrations.runner();
+
+export const run_migrate_chat_messages_drop_legacy_snake_case = migrations.runner(
+	internal.migrations.migrate_chat_messages_drop_legacy_snake_case,
+);

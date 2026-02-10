@@ -79,8 +79,8 @@ function RoutePages() {
 
 	const searchPageId = searchParams.pageId;
 
-	const resolvedPageId = useStableQuery(
-		app_convex_api.ai_docs_temp.get_page_id_if_exists,
+	const resolvedPage = useStableQuery(
+		app_convex_api.ai_docs_temp.get,
 		searchPageId
 			? {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -89,6 +89,7 @@ function RoutePages() {
 				}
 			: "skip",
 	);
+	const resolvedPageId = resolvedPage?._id ?? null;
 
 	// Navigation function to update URL with selected page
 	const navigateToPage = (pageId?: string) => {
@@ -156,13 +157,13 @@ function RoutePages() {
 
 	// If a requested page id cannot be resolved, clear stale last-open and fall back to homepage.
 	useEffect(() => {
-		if (!searchPageId || resolvedPageId === undefined || resolvedPageId !== null) {
+		if (!searchPageId || resolvedPage === undefined || resolvedPage !== null) {
 			return;
 		}
 
 		useAppLocalStorageState.setState({ pages_last_open: null });
 		navigateToPage(homePageId);
-	}, [homePageId, resolvedPageId, searchPageId]);
+	}, [homePageId, resolvedPage, searchPageId]);
 
 	return (
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>

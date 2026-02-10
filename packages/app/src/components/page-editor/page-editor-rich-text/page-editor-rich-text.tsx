@@ -464,7 +464,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 	const extensions = [...defaultExtensions, PageEditorRichTextToolsSlashCommand.slashCommand, liveblocks];
 
 	const threadsQuery = useStableQuery(
-		app_convex_api.human_thread_messages.human_thread_messages_threads_list,
+		app_convex_api.chat_messages.chat_messages_threads_list,
 		threadIds.length > 0
 			? {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
