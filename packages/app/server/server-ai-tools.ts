@@ -506,7 +506,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 				output,
 				metadata: {
 					preview,
-					pageId: pageContent.pageId,
+					pageId: pageContent.pageClientGeneratedId,
 				},
 			};
 		},
@@ -920,7 +920,7 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 			const newText = args.content;
 			const diff = createPatch(path, oldText, newText);
 
-			let clientPageId = currentPageContent?.pageId;
+			let clientPageId = currentPageContent?.pageClientGeneratedId;
 			let pageDocId = currentPageContent?.convexId;
 
 			if (!clientPageId || !pageDocId) {
@@ -931,7 +931,7 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 					userId: user.id,
 				});
 				exists = false;
-				clientPageId = created.page_id;
+				clientPageId = created.pageClientGeneratedId;
 				pageDocId = created.convexId;
 			}
 
@@ -1020,7 +1020,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
 
 			const pageDocId = currentPageContent.convexId;
-			const clientPageId = currentPageContent.pageId;
+			const clientPageId = currentPageContent.pageClientGeneratedId;
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,

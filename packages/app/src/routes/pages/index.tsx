@@ -81,12 +81,12 @@ function RoutePages() {
 
 	const [clientGeneratePageId, setClientGeneratePageId] = useState<string | null>(null);
 	const effectivePageId = useStableQuery(
-		app_convex_api.ai_docs_temp.get_page_id_from_client_generated_id,
+		app_convex_api.ai_docs_temp.get_convex_page_id_from_client_generated_id,
 		clientGeneratePageId
 			? {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					clientGeneratedId: clientGeneratePageId,
+					pageClientGeneratedId: clientGeneratePageId,
 				}
 			: "skip",
 	);

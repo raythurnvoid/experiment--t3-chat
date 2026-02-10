@@ -85,36 +85,36 @@ const app_convex_schema = defineSchema({
 	// #region Pages
 	pages: defineTable({
 		/** Workspace ID extracted from roomId */
-		workspace_id: v.string(),
+		workspaceId: v.string(),
 		/** Project ID extracted from roomId */
-		project_id: v.string(),
+		projectId: v.string(),
 		/** Document ID generated client side */
-		page_id: v.string(),
+		clientGeneratedId: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
 		/** ID of the markdown content for the page */
-		markdown_content_id: v.optional(v.id("pages_markdown_content")),
+		markdownContentId: v.optional(v.id("pages_markdown_content")),
 		/** ID of the last YJS sequence for the page */
-		yjs_last_sequence_id: v.optional(v.id("pages_yjs_docs_last_sequences")),
+		yjsLastSequenceId: v.optional(v.id("pages_yjs_docs_last_sequences")),
 		/** ID of the last YJS sequence for the page */
-		yjs_snapshot_id: v.optional(v.id("pages_yjs_snapshots")),
+		yjsSnapshotId: v.optional(v.id("pages_yjs_snapshots")),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
 		/** Whether document is archived */
-		is_archived: v.boolean(),
+		isArchived: v.boolean(),
 		/** "root" for root items */
-		parent_id: v.string(),
+		parentId: v.string(),
 		/** Created by user ID */
-		created_by: v.string(),
+		createdBy: v.id("users"),
 		/** Updated by user ID */
-		updated_by: v.string(),
+		updatedBy: v.string(),
 		/** timestamp in milliseconds when document was last updated */
-		updated_at: v.number(),
+		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"])
-		.index("by_workspace_project_parent_id_and_name", ["workspace_id", "project_id", "parent_id", "name"])
-		.index("by_workspace_project_parent_id_and_is_archived", ["workspace_id", "project_id", "parent_id", "is_archived"])
-		.index("by_workspace_project_and_name", ["workspace_id", "project_id", "name"]),
+		.index("by_workspaceId_projectId_and_clientGeneratedId", ["workspaceId", "projectId", "clientGeneratedId"])
+		.index("by_workspaceId_projectId_parentId_and_name", ["workspaceId", "projectId", "parentId", "name"])
+		.index("by_workspaceId_projectId_parentId_and_isArchived", ["workspaceId", "projectId", "parentId", "isArchived"])
+		.index("by_workspaceId_projectId_and_name", ["workspaceId", "projectId", "name"]),
 	/**
 	 * Table to store markdown content for pages.
 	 */

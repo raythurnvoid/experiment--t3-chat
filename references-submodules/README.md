@@ -35,3 +35,10 @@ They are used for scraping/reading documentation and source code during developm
 - Convex tour chat sample: `references-submodules/convex-tour-chat`
 - Convex Auth + role-based permissions template: `references-submodules/convex-auth-with-role-based-permissions`
 - Convex + TanStack Start template: `references-submodules/convex-tanstack-start` (no top-level README; start at `src/` and `convex/`)
+
+# Tree libraries
+
+The Headless Tree repository is checked out here as a submodule so it can be updated easily when needed.
+It is used for scraping/reading documentation and source code during development.
+
+- root: `references-submodules/headless-tree` - Headless Tree monorepo

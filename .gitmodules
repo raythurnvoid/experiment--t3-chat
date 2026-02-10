@@ -58,3 +58,6 @@
 [submodule "references-submodules/ai-chatbot"]
 	path = references-submodules/ai-chatbot
 	url = https://github.com/vercel/ai-chatbot.git
+[submodule "references-submodules/headless-tree"]
+	path = references-submodules/headless-tree
+	url = https://github.com/raythurnvoid/headless-tree.git

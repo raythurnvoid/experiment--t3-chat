@@ -27,6 +27,7 @@
 		"@clerk/backend": "^2.17.2",
 		"@clerk/clerk-react": "^5.51.0",
 		"@clerk/themes": "^2.4.25",
+		"@convex-dev/migrations": "^0.3.1",
 		"@convex-dev/presence": "workspace:*",
 		"@floating-ui/dom": "^1.6.13",
 		"@hono/node-server": "^1.19.5",

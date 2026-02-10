@@ -22,17 +22,17 @@ test("list_pages", async () => {
 
 		expect(result_list_root.items[0]).toStrictEqual({
 			path: `/${db.pages.page_root_1.name}`,
-			updatedAt: db.pages.page_root_1.updated_at,
+			updatedAt: db.pages.page_root_1.updatedAt,
 		});
 
 		// The list must be depth-first
 		expect(result_list_root.items[1]).toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1.updatedAt,
 		});
 		expect(result_list_root.items[2]).toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1_deep_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1_deep_1.updatedAt,
 		});
 
 		const result_list_page_root_1 = await list_dir(ctx as any, {
@@ -48,7 +48,7 @@ test("list_pages", async () => {
 		// The list must be depth-first
 		expect(result_list_page_root_1.items[0]).toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1.updatedAt,
 		});
 	});
 });
@@ -71,18 +71,18 @@ test("list_pages_new", async () => {
 
 		expect(result_root.items[0], "The first result must be the first page at the root").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}`,
-			updatedAt: db.pages.page_root_1.updated_at,
+			updatedAt: db.pages.page_root_1.updatedAt,
 			depthTruncated: false,
 		});
 
 		expect(result_root.items[1], "The list must be depth-first").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1.updatedAt,
 			depthTruncated: false,
 		});
 		expect(result_root.items[2], "The list must be depth-first").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1_deep_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1_deep_1.updatedAt,
 			depthTruncated: false,
 		});
 
@@ -102,7 +102,7 @@ test("list_pages_new", async () => {
 
 		expect(result_under_root1.items[0], "The first result must be the first child of the root").toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1.updatedAt,
 			depthTruncated: false,
 		});
 
@@ -117,7 +117,7 @@ test("list_pages_new", async () => {
 
 		expect(result_depth1.items[1]).toStrictEqual({
 			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updated_at,
+			updatedAt: db.pages.page_root_1_child_1.updatedAt,
 			depthTruncated: true,
 		});
 	});
@@ -179,7 +179,7 @@ async function list_dir(
 		// If include pattern is provided, only add items that match the glob
 		const matchesInclude = args.include ? minimatch(childPath, args.include) : true;
 		if (matchesInclude) {
-			resultPaths.push({ path: childPath, updatedAt: child.updated_at });
+			resultPaths.push({ path: childPath, updatedAt: child.updatedAt });
 
 			// Respect limit if provided (only counts included items)
 			if (resultPaths.length >= limit) {
@@ -202,7 +202,7 @@ async function list_dir(
 		// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
 		const nextDepth = frame.depth + 1;
 		if (nextDepth < maxDepth) {
-			stack.push({ parentId: child.page_id, absPath: childPath, cursor: null, depth: nextDepth });
+			stack.push({ parentId: child.pageClientGeneratedId, absPath: childPath, cursor: null, depth: nextDepth });
 		}
 	}
 

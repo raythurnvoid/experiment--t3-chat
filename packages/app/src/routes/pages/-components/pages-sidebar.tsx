@@ -78,9 +78,14 @@ type PagesSidebarTreeDataProvider_Args = {
 		workspaceId: string;
 		projectId: string;
 	}) => Promise<void>;
-	renamePage: (params: { workspaceId: string; projectId: string; pageId: string; name: string }) => Promise<void>;
+	renamePage: (params: {
+		workspaceId: string;
+		projectId: string;
+		pageClientGeneratedId: string;
+		name: string;
+	}) => Promise<void>;
 	createPage: (params: {
-		pageId: string;
+		pageClientGeneratedId: string;
 		parentId: string;
 		name: string;
 		workspaceId: string;
@@ -234,7 +239,7 @@ class PagesSidebarTreeDataProvider implements TreeDataProvider<pages_TreeItem> {
 			.renamePage({
 				workspaceId: this.args.workspaceId,
 				projectId: this.args.projectId,
-				pageId: item.index.toString(),
+				pageClientGeneratedId: item.index.toString(),
 				name: trimmedName,
 			})
 			.catch(console.error);
@@ -291,7 +296,7 @@ class PagesSidebarTreeDataProvider implements TreeDataProvider<pages_TreeItem> {
 
 		this.args
 			.createPage({
-				pageId: pageId,
+				pageClientGeneratedId: pageId,
 				parentId: parentId,
 				name: title,
 				workspaceId: this.args.workspaceId,
@@ -886,7 +891,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		archiveDocument({
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: itemId,
+			pageClientGeneratedId: itemId,
 		}).catch(console.error);
 
 		onArchive(itemId);
@@ -901,7 +906,7 @@ function PagesSidebarTreeArea(props: PagesSidebarTreeArea_Props) {
 		unarchivePage({
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: itemId,
+			pageClientGeneratedId: itemId,
 		}).catch(console.error);
 	};
 
