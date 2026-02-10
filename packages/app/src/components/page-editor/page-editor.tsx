@@ -32,6 +32,7 @@ import { CatchBoundary } from "@tanstack/react-router";
 import { PageEditorError } from "./page-editor-error.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import type { MySeparator_ClassNames } from "../my-separator.tsx";
+import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -93,6 +94,8 @@ type PageEditorHeader_Props = {
 function PageEditorHeader(props: PageEditorHeader_Props) {
 	const { pageId, editorMode, onlineUsers, onEditorModeChange } = props;
 
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
+
 	// Query tree items to build breadcrumb path
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -101,7 +104,6 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 
 	// Build breadcrumb path from pageId up to root
 	const breadcrumbPath = get_breadcrumb_path(treeItemsList, pageId);
-	const view = editorMode === "rich_text_editor" ? undefined : editorMode;
 
 	return (
 		<div className={cn("PageEditorHeader" satisfies PageEditorHeader_ClassNames)}>
@@ -114,7 +116,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 								<MyLink
 									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
 									to="/pages"
-									search={{ view }}
+									search={{ pageId: homePageId, view: editorMode }}
 									variant="button-tertiary"
 								>
 									<li
@@ -150,7 +152,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 											<MyLink
 												className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
 												to="/pages"
-												search={{ pageId: item.index, view }}
+												search={{ pageId: item.index, view: editorMode }}
 												variant="button-tertiary"
 											>
 												{item.title}

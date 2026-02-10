@@ -43,7 +43,7 @@ import { check_element_is_in_allowed_focus_area, cn, forward_ref } from "@/lib/u
 import { pages_get_tiptap_shared_extensions, pages_tiptap_markdown_to_json } from "@/lib/pages.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
-import { use_app_global_store } from "@/lib/app-global-store.ts";
+import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"
@@ -168,14 +168,14 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 								selection.from <= 1 &&
 								view.endOfTextblock("up")
 							) {
-								use_app_global_store.setState((prev) => ({
+								useAppGlobalStore.setState((prev) => ({
 									...prev,
 									ai_chat_composer_selection_collapsed_and_at_start: true,
 								}));
 
 								// Clear the state to prevent it from leaking after the event has been handled.
 								setTimeout(() => {
-									use_app_global_store.setState((prev) => ({
+									useAppGlobalStore.setState((prev) => ({
 										...prev,
 										ai_chat_composer_selection_collapsed_and_at_start: undefined,
 									}));
@@ -192,14 +192,14 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 								selection.to >= view.state.doc.content.size - 1 &&
 								view.endOfTextblock("down")
 							) {
-								use_app_global_store.setState((prev) => ({
+								useAppGlobalStore.setState((prev) => ({
 									...prev,
 									ai_chat_composer_selection_collapsed_and_at_end: true,
 								}));
 
 								// Clear the state to prevent it from leaking after the event has been handled.
 								setTimeout(() => {
-									use_app_global_store.setState((prev) => ({
+									useAppGlobalStore.setState((prev) => ({
 										...prev,
 										ai_chat_composer_selection_collapsed_and_at_end: undefined,
 									}));

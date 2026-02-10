@@ -4,19 +4,19 @@ import React, { Suspense } from "react";
 import type { PageEditor_Props } from "../../components/page-editor/page-editor.tsx";
 import { PagesSidebar, type PagesSidebar_Props } from "./-components/pages-sidebar.tsx";
 import { Panel, PanelGroup } from "react-resizable-panels";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { PageEditorSkeleton } from "../../components/page-editor/page-editor-skeleton.tsx";
 import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
-import { useMutation } from "convex/react";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_editor_view_values, type pages_EditorView } from "@/lib/pages.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 import { useStableQuery } from "../../hooks/convex-hooks.ts";
 import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
+import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
 const PageEditor = React.lazy(() =>
 	import("../../components/page-editor/page-editor.tsx").then((module) => ({
@@ -74,13 +74,10 @@ function RoutePages() {
 
 	const [pagesSidebarState, setPagesSidebarState] = useState<PagesSidebar_Props["state"]>("expanded");
 
-	const pagesLastOpen = useAppLocalStorageState((state) => state.pages_last_open);
+	const lastOpenPageId = useAppLocalStorageState((state) => state.pages_last_open);
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
 
-	const skipHomepageFallbackRef = useRef(false);
-
-	// Ensure homepage exists and get its ID
-	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
-	const [homepageId, setHomepageId] = useState<string | null>(null);
+	const searchPageId = searchParams.pageId;
 
 	const [clientGeneratePageId, setClientGeneratePageId] = useState<string | null>(null);
 	const effectivePageId = useStableQuery(
@@ -95,27 +92,10 @@ function RoutePages() {
 	);
 	const resolvedPageId = clientGeneratePageId ? effectivePageId : null;
 
-	useEffect(() => {
-		const nextClientGeneratePageId =
-			searchParams.pageId ?? pagesLastOpen ?? (skipHomepageFallbackRef.current ? null : homepageId);
-
-		setClientGeneratePageId((prev) => (prev === nextClientGeneratePageId ? prev : nextClientGeneratePageId));
-	}, [homepageId, pagesLastOpen, searchParams.pageId]);
-
-	useEffect(() => {
-		if (!searchParams.pageId && !pagesLastOpen && homepageId === null && !skipHomepageFallbackRef.current) {
-			ensureHomepage({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-			})
-				.then((result) => setHomepageId(result.page_id))
-				.catch(console.error);
-		}
-	}, [ensureHomepage, homepageId, pagesLastOpen, searchParams.pageId]);
-
 	// Navigation function to update URL with selected page
 	const navigateToPage = (pageId?: string) => {
 		const view = effectiveView === "rich_text_editor" ? undefined : effectiveView;
+
 		navigate({
 			to: "/pages",
 			search: { pageId, view },
@@ -123,7 +103,7 @@ function RoutePages() {
 	};
 
 	const navigateToView = (nextView: pages_EditorView) => {
-		const pageId = clientGeneratePageId ?? undefined;
+		const pageId = clientGeneratePageId ?? homePageId;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
 		navigate({
 			to: "/pages",
@@ -153,35 +133,44 @@ function RoutePages() {
 		setPagesSidebarState("expanded");
 	};
 
+	// Derive the selected client page id from URL first, then last-open, then homepage.
 	useEffect(() => {
-		if (searchParams.pageId || !pagesLastOpen) {
-			return;
-		}
+		const nextClientGeneratePageId = searchPageId ?? lastOpenPageId ?? homePageId;
+		setClientGeneratePageId(nextClientGeneratePageId);
+	}, [homePageId, lastOpenPageId, searchPageId]);
 
-		navigateToPage(pagesLastOpen);
-	}, [pagesLastOpen, searchParams.pageId]);
-
+	// If URL has no page id, restore last-open; otherwise default to homepage.
 	useEffect(() => {
-		if (!searchParams.pageId) {
+		if (searchPageId) {
 			return;
 		}
 
-		useAppLocalStorageState.setState({ pages_last_open: searchParams.pageId });
-	}, [searchParams.pageId]);
+		if (lastOpenPageId) {
+			navigateToPage(lastOpenPageId);
+			return;
+		}
 
+		navigateToPage(homePageId);
+	}, [homePageId, lastOpenPageId, searchPageId]);
+
+	// Persist the current URL page id as "last open" for next visits.
 	useEffect(() => {
-		if (!searchParams.pageId) {
+		if (!searchPageId) {
 			return;
 		}
 
-		if (resolvedPageId !== null) {
+		useAppLocalStorageState.setState({ pages_last_open: searchPageId });
+	}, [searchPageId]);
+
+	// If a requested page id cannot be resolved, clear stale last-open and fall back to homepage.
+	useEffect(() => {
+		if (!searchPageId || !clientGeneratePageId || effectivePageId === undefined || effectivePageId !== null) {
 			return;
 		}
 
-		skipHomepageFallbackRef.current = true;
 		useAppLocalStorageState.setState({ pages_last_open: null });
-		navigateToPage();
-	}, [resolvedPageId, searchParams.pageId]);
+		navigateToPage(homePageId);
+	}, [clientGeneratePageId, effectivePageId, homePageId, searchPageId]);
 
 	return (
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
@@ -237,9 +226,7 @@ function RoutePages() {
 				</div>
 			) : clientGeneratePageId ? (
 				<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
-			) : (
-				<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Select a page to get started.</div>
-			)}
+			) : null}
 		</div>
 	);
 }

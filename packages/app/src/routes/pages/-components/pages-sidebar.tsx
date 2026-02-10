@@ -56,6 +56,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { MyLink } from "@/components/my-link.tsx";
 import { TypedEventTarget } from "@remix-run/interaction";
 import { useAsyncEffect, useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
 /**
  * `react-complex-tree` flat data record object
@@ -1180,6 +1181,8 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	const navigate = useNavigate();
 
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
+
 	const renderPromise = useRenderPromise();
 
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
@@ -1349,6 +1352,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 									className={cn("PagesSidebar-title" satisfies PagesSidebar_ClassNames)}
 									variant="button-tertiary"
 									to="/pages"
+									search={{ pageId: homePageId, view }}
 								>
 									Pages
 								</MyLink>

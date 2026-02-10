@@ -10,7 +10,7 @@ import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
-import { use_app_global_store } from "@/lib/app-global-store.ts";
+import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { ai_chat_get_parent_id, useAiChatController, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import {
 	AiChatComposer,
@@ -594,7 +594,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 						);
 						preventScroll = true;
 					} else if (event.key === "ArrowUp") {
-						const shouldNavigateUp = use_app_global_store.getState().ai_chat_composer_selection_collapsed_and_at_start;
+						const shouldNavigateUp = useAppGlobalStore.getState().ai_chat_composer_selection_collapsed_and_at_start;
 						if (!shouldNavigateUp) {
 							break;
 						}
@@ -617,7 +617,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 							setEditingMessageId(null);
 						}
 					} else if (event.key === "ArrowDown" && editingMessageId) {
-						const shouldNavigateDown = use_app_global_store.getState().ai_chat_composer_selection_collapsed_and_at_end;
+						const shouldNavigateDown = useAppGlobalStore.getState().ai_chat_composer_selection_collapsed_and_at_end;
 						if (!shouldNavigateDown) {
 							break;
 						}
