@@ -1,92 +1,93 @@
 import { Migrations } from "@convex-dev/migrations";
-import { components, internal } from "./_generated/api.js";
+import { components } from "./_generated/api.js";
 import type { DataModel, Id } from "./_generated/dataModel.js";
-
-const pages_migration_created_by_user_id = "m576s0qn7c59mej54zddpr8dr97yewhy" as Id<"users">;
 
 export const migrations = new Migrations<DataModel>(components.migrations);
 
-export const migrate_pages_created_by_to_createdby = migrations.define({
+const pages_parent_id_by_legacy_id_cache = new Map<string, Map<string, Id<"pages">>>();
+
+export const migrate_pages_parent_id_client_generated_id_to_convex_id = migrations.define({
 	table: "pages",
-	migrateOne: () => ({
-		createdBy: pages_migration_created_by_user_id,
-		created_by: undefined,
-	}),
+	migrateOne: async (ctx, page) => {
+		const value = page as {
+			parentId: Id<"pages"> | string;
+			workspaceId: string;
+			projectId: string;
+			clientGeneratedId?: string;
+			page_id?: string;
+		};
+
+		if (value.parentId === "root") {
+			return {
+				clientGeneratedId: undefined,
+				page_id: undefined,
+			} as unknown as Partial<DataModel["pages"]["document"]>;
+		}
+
+		const normalizedParentId = ctx.db.normalizeId("pages", value.parentId);
+		if (normalizedParentId) {
+			return {
+				parentId: normalizedParentId,
+				clientGeneratedId: undefined,
+				page_id: undefined,
+			} as unknown as Partial<DataModel["pages"]["document"]>;
+		}
+
+		const cacheKey = `${value.workspaceId}::${value.projectId}`;
+		let legacyIdMap = pages_parent_id_by_legacy_id_cache.get(cacheKey);
+		if (!legacyIdMap) {
+			const pages = await ctx.db
+				.query("pages")
+				.withIndex("by_workspaceId_projectId_and_name", (q) =>
+					q.eq("workspaceId", value.workspaceId).eq("projectId", value.projectId),
+				)
+				.collect();
+
+			legacyIdMap = new Map<string, Id<"pages">>();
+			for (const currentPage of pages) {
+				const currentPageClientGeneratedId = (currentPage as { clientGeneratedId?: string }).clientGeneratedId;
+				const currentPageLegacyId = (currentPage as { page_id?: string }).page_id;
+
+				if (currentPageClientGeneratedId) {
+					legacyIdMap.set(currentPageClientGeneratedId, currentPage._id);
+				}
+				if (currentPageLegacyId) {
+					legacyIdMap.set(currentPageLegacyId, currentPage._id);
+				}
+			}
+
+			pages_parent_id_by_legacy_id_cache.set(cacheKey, legacyIdMap);
+		}
+
+		const migratedParentId = legacyIdMap.get(value.parentId);
+		if (!migratedParentId) {
+			return {
+				clientGeneratedId: undefined,
+				page_id: undefined,
+			} as unknown as Partial<DataModel["pages"]["document"]>;
+		}
+
+		return {
+			parentId: migratedParentId,
+			clientGeneratedId: undefined,
+			page_id: undefined,
+		} as unknown as Partial<DataModel["pages"]["document"]>;
+	},
 });
 
-export const migrate_pages_page_id_to_client_generated_id = migrations.define({
+export const migrate_pages_remove_client_generated_id = migrations.define({
 	table: "pages",
 	migrateOne: (_ctx, page) => {
-		const pageClientGeneratedId =
-			(page as { clientGeneratedId?: string }).clientGeneratedId ?? (page as { page_id?: string }).page_id;
-		if (!pageClientGeneratedId) {
+		const value = page as { clientGeneratedId?: string; page_id?: string };
+		if (!value.clientGeneratedId && !value.page_id) {
 			return;
 		}
 
 		return {
-			clientGeneratedId: pageClientGeneratedId,
+			clientGeneratedId: undefined,
 			page_id: undefined,
-		};
-	},
-});
-
-export const migrate_pages_snake_case_to_camel_case = migrations.define({
-	table: "pages",
-	migrateOne: (_ctx, page) => {
-		const value = page as {
-			workspaceId?: string;
-			workspace_id?: string;
-			projectId?: string;
-			project_id?: string;
-			markdownContentId?: Id<"pages_markdown_content">;
-			markdown_content_id?: Id<"pages_markdown_content">;
-			yjsLastSequenceId?: Id<"pages_yjs_docs_last_sequences">;
-			yjs_last_sequence_id?: Id<"pages_yjs_docs_last_sequences">;
-			yjsSnapshotId?: Id<"pages_yjs_snapshots">;
-			yjs_snapshot_id?: Id<"pages_yjs_snapshots">;
-			isArchived?: boolean;
-			is_archived?: boolean;
-			parentId?: string;
-			parent_id?: string;
-			updatedBy?: string;
-			updated_by?: string;
-			updatedAt?: number;
-			updated_at?: number;
-		};
-
-		return {
-			workspaceId: value.workspaceId ?? value.workspace_id,
-			projectId: value.projectId ?? value.project_id,
-			markdownContentId: value.markdownContentId ?? value.markdown_content_id,
-			yjsLastSequenceId: value.yjsLastSequenceId ?? value.yjs_last_sequence_id,
-			yjsSnapshotId: value.yjsSnapshotId ?? value.yjs_snapshot_id,
-			isArchived: value.isArchived ?? value.is_archived,
-			parentId: value.parentId ?? value.parent_id,
-			updatedBy: value.updatedBy ?? value.updated_by,
-			updatedAt: value.updatedAt ?? value.updated_at,
-			workspace_id: undefined,
-			project_id: undefined,
-			markdown_content_id: undefined,
-			yjs_last_sequence_id: undefined,
-			yjs_snapshot_id: undefined,
-			is_archived: undefined,
-			parent_id: undefined,
-			updated_by: undefined,
-			updated_at: undefined,
-		};
+		} as unknown as Partial<DataModel["pages"]["document"]>;
 	},
 });
 
 export const run = migrations.runner();
-
-export const run_pages_created_by_to_createdby = migrations.runner(
-	internal.migrations.migrate_pages_created_by_to_createdby,
-);
-
-export const run_pages_page_id_to_client_generated_id = migrations.runner(
-	internal.migrations.migrate_pages_page_id_to_client_generated_id,
-);
-
-export const run_pages_snake_case_to_camel_case = migrations.runner(
-	internal.migrations.migrate_pages_snake_case_to_camel_case,
-);

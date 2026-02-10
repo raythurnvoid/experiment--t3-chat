@@ -202,7 +202,7 @@ async function list_dir(
 		// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
 		const nextDepth = frame.depth + 1;
 		if (nextDepth < maxDepth) {
-			stack.push({ parentId: child.pageClientGeneratedId, absPath: childPath, cursor: null, depth: nextDepth });
+			stack.push({ parentId: child.pageId, absPath: childPath, cursor: null, depth: nextDepth });
 		}
 	}
 

@@ -101,6 +101,12 @@
 		background-color: var(--color-sidebar-accent);
 	}
 
+	.PagesSidebarTreeArea-empty-state {
+		padding: 8px 12px;
+		color: var(--color-fg-07);
+		font-size: 0.875rem;
+	}
+
 	.PagesSidebarTreeItem {
 		position: relative;
 	}

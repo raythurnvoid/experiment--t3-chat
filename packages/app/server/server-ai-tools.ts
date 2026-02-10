@@ -506,7 +506,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 				output,
 				metadata: {
 					preview,
-					pageId: pageContent.pageClientGeneratedId,
+					pageId: pageContent.pageId,
 				},
 			};
 		},
@@ -920,10 +920,9 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 			const newText = args.content;
 			const diff = createPatch(path, oldText, newText);
 
-			let clientPageId = currentPageContent?.pageClientGeneratedId;
-			let pageDocId = currentPageContent?.convexId;
+			let pageId = currentPageContent?.pageId;
 
-			if (!clientPageId || !pageDocId) {
+			if (!pageId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -931,21 +930,20 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 					userId: user.id,
 				});
 				exists = false;
-				clientPageId = created.pageClientGeneratedId;
-				pageDocId = created.convexId;
+				pageId = created.pageId;
 			}
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: pageDocId,
+				pageId,
 				baseContent: oldText,
 				modifiedContent: newText,
 			});
 
 			return {
 				output: exists ? "Page overwritten" : "New page created",
-				metadata: { pageId: clientPageId, exists, path, diff, modifiedContent: newText },
+				metadata: { pageId, exists, path, diff, modifiedContent: newText },
 			};
 		},
 	});
@@ -1019,13 +1017,12 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 
 			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
 
-			const pageDocId = currentPageContent.convexId;
-			const clientPageId = currentPageContent.pageClientGeneratedId;
+			const pageId = currentPageContent.pageId;
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId: pageDocId,
+				pageId,
 				baseContent: currentPageContent.content,
 				modifiedContent: modifiedText,
 			});
@@ -1033,7 +1030,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			return {
 				title: normalizedPath,
 				metadata: {
-					pageId: clientPageId,
+					pageId,
 					path: normalizedPath,
 					matches,
 					diff,

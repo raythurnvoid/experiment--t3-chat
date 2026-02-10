@@ -52,46 +52,20 @@ import { minimatch } from "minimatch";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import type { Editor } from "@tiptap/core";
-import { generate_id, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 
-function pages_get_client_generated_id(page: { clientGeneratedId: string }) {
-	return page.clientGeneratedId;
-}
-
-async function pages_get_by_client_generated_id(args: {
-	ctx: QueryCtx | MutationCtx;
-	workspaceId: string;
-	projectId: string;
-	pageClientGeneratedId: string;
-}) {
-	const byClientGeneratedId = await args.ctx.db
-		.query("pages")
-		.withIndex("by_workspaceId_projectId_and_clientGeneratedId", (q) =>
-			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
-				.eq("clientGeneratedId", args.pageClientGeneratedId),
-		)
-		.first();
-
-	if (byClientGeneratedId) {
-		return byClientGeneratedId;
-	}
-	return null;
-}
-
 async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; projectId: string; path: string }) {
 	if (args.path === "/") return null;
 
 	const segments = path_extract_segments_from(args.path);
 
-	let pageId = null;
-	let currentNode = pages_ROOT_ID;
+	let pageId: Id<"pages"> | null = null;
+	let currentNode: Doc<"pages">["parentId"] = pages_ROOT_ID;
 
 	for (const segment of segments) {
 		const page = await ctx.db
@@ -106,9 +80,7 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; 
 			.unique();
 
 		if (!page) return null;
-		const pageClientGeneratedId = pages_get_client_generated_id(page);
-		if (!pageClientGeneratedId) return null;
-		currentNode = pageClientGeneratedId;
+		currentNode = page._id;
 		pageId = page._id;
 	}
 
@@ -121,8 +93,8 @@ async function resolve_page_id_from_path_fn(
 ) {
 	const segments = path_extract_segments_from(args.path);
 
-	let pageId = null;
-	let currentNode = pages_ROOT_ID;
+	let pageId: Id<"pages"> | null = null;
+	let currentNode: Doc<"pages">["parentId"] = pages_ROOT_ID;
 
 	for (const segment of segments) {
 		const page = await ctx.db
@@ -136,9 +108,7 @@ async function resolve_page_id_from_path_fn(
 			)
 			.unique();
 		if (!page) return null;
-		const pageClientGeneratedId = pages_get_client_generated_id(page);
-		if (!pageClientGeneratedId) return null;
-		currentNode = pageClientGeneratedId;
+		currentNode = page._id;
 		pageId = page._id;
 	}
 
@@ -147,7 +117,7 @@ async function resolve_page_id_from_path_fn(
 
 export const resolve_page_id_from_path = internalQuery({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
-	returns: v.union(v.string(), v.null()),
+	returns: v.union(v.id("pages"), v.null()),
 	handler: (ctx, args) => resolve_page_id_from_path_fn(ctx, args),
 });
 
@@ -158,7 +128,7 @@ async function resolve_tree_node_id_from_path_fn(
 	if (args.path === "/") return pages_ROOT_ID;
 	const segments = path_extract_segments_from(args.path);
 
-	let currentNode = pages_ROOT_ID;
+	let currentNode: Doc<"pages">["parentId"] = pages_ROOT_ID;
 
 	for (const segment of segments) {
 		const page = await ctx.db
@@ -172,9 +142,7 @@ async function resolve_tree_node_id_from_path_fn(
 			)
 			.unique();
 		if (!page) return null;
-		const pageClientGeneratedId = pages_get_client_generated_id(page);
-		if (!pageClientGeneratedId) return null;
-		currentNode = pageClientGeneratedId;
+		currentNode = page._id;
 	}
 
 	return currentNode;
@@ -182,27 +150,24 @@ async function resolve_tree_node_id_from_path_fn(
 
 export const resolve_tree_node_id_from_path = internalQuery({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
-	returns: v.union(v.string(), v.null()),
+	returns: v.union(v.id("pages"), v.literal(pages_ROOT_ID), v.null()),
 	handler: (ctx, args) => resolve_tree_node_id_from_path_fn(ctx, args),
 });
 
-async function resolve_path_from_page_client_generated_id(
+async function resolve_path_from_page_id(
 	ctx: QueryCtx,
-	args: { workspaceId: string; projectId: string; pageClientGeneratedId: string },
+	args: { workspaceId: string; projectId: string; pageId: Id<"pages"> },
 ): Promise<string> {
-	if (args.pageClientGeneratedId === pages_ROOT_ID) return "/";
+	if (!args.pageId) return "/";
 	const segments: string[] = [];
-	let currentId: string | null = args.pageClientGeneratedId;
-	while (currentId && currentId !== pages_ROOT_ID) {
-		const page = await pages_get_by_client_generated_id({
-			ctx,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageClientGeneratedId: currentId,
-		});
-		if (!page) break;
+	let currentId: Id<"pages"> | null = args.pageId;
+	while (currentId) {
+		const page: Doc<"pages"> | null = await ctx.db.get("pages", currentId);
+		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+			break;
+		}
 		segments.unshift(page.name);
-		currentId = page.parentId;
+		currentId = page.parentId === pages_ROOT_ID ? null : page.parentId;
 	}
 	return segments.length === 0 ? "/" : `/${segments.join("/")}`;
 }
@@ -235,7 +200,7 @@ export const get_tree_items_list = query({
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
 			)
 			.order("asc")
-			.filter((q) => q.and(q.neq(q.field("clientGeneratedId"), ""), q.neq(q.field("name"), "")))
+			.filter((q) => q.neq(q.field("name"), ""))
 			.collect();
 
 		const treeItemsList: pages_TreeItem[] = [
@@ -253,8 +218,8 @@ export const get_tree_items_list = query({
 				(page) =>
 					({
 						type: "page" as const,
-						index: pages_get_client_generated_id(page) ?? "",
-						parentId: page.parentId,
+						index: page._id,
+						parentId: page.parentId === pages_ROOT_ID ? pages_ROOT_ID : page.parentId,
 						title: page.name || "Untitled",
 						isArchived: page.isArchived,
 						updatedAt: page.updatedAt,
@@ -273,8 +238,7 @@ async function do_create_page(
 	args: {
 		workspaceId: string;
 		projectId: string;
-		pageClientGeneratedId: string;
-		parentId: string;
+		parentId: Doc<"pages">["parentId"];
 		name: Doc<"pages">["name"];
 		markdown_content: Doc<"pages_markdown_content">["content"];
 	},
@@ -287,7 +251,6 @@ async function do_create_page(
 	const pageId = await ctx.db.insert("pages", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		clientGeneratedId: args.pageClientGeneratedId,
 		parentId: args.parentId,
 		version: pages_FIRST_VERSION,
 		name: args.name,
@@ -355,35 +318,21 @@ async function do_create_page(
 
 export const create_page = mutation({
 	args: {
-		pageClientGeneratedId: v.string(),
-		parentId: v.string(),
+		parentId: v.union(v.id("pages"), v.literal(pages_ROOT_ID)),
 		name: v.string(),
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
+	returns: v.object({ pageId: v.id("pages") }),
 	handler: async (ctx, args) => {
-		await do_create_page(ctx, {
+		const pageId = await do_create_page(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
 			parentId: args.parentId,
 			name: args.name,
 			markdown_content: "",
 		});
-	},
-});
-
-export const get_convex_page_id_from_client_generated_id = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageClientGeneratedId: v.string() },
-	returns: v.union(v.id("pages"), v.null()),
-	handler: async (ctx, args) => {
-		const page = await pages_get_by_client_generated_id({
-			ctx,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
-		});
-		return page?._id ?? null;
+		return { pageId };
 	},
 });
 
@@ -410,7 +359,6 @@ export const create_page_quick = mutation({
 			tmpPageId = await do_create_page(ctx, {
 				workspaceId: workspaceId,
 				projectId: projectId,
-				pageClientGeneratedId: `.tmp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
 				parentId: pages_ROOT_ID,
 				name: ".tmp",
 				markdown_content:
@@ -425,7 +373,6 @@ export const create_page_quick = mutation({
 		const pageId = await do_create_page(ctx, {
 			workspaceId: workspaceId,
 			projectId: projectId,
-			pageClientGeneratedId: generate_id("page"),
 			parentId: tmpPageId,
 			name: title,
 			markdown_content: "",
@@ -439,17 +386,17 @@ export const rename_page = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageClientGeneratedId: v.string(),
+		pageId: v.id("pages"),
 		name: v.string(),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		// Check if this is the homepage (path "/") and ignore if so
-		const path = await resolve_path_from_page_client_generated_id(ctx, {
+		const path = await resolve_path_from_page_id(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
+			pageId: args.pageId,
 		});
 
 		if (path === "/") {
@@ -457,15 +404,10 @@ export const rename_page = mutation({
 			return;
 		}
 
-		const page = await pages_get_by_client_generated_id({
-			ctx,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
-		});
+		const page = await ctx.db.get("pages", args.pageId);
 
-		if (page) {
-			await ctx.db.patch("pages", page._id, {
+		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
+			await ctx.db.patch("pages", args.pageId, {
 				name: args.name,
 				updatedBy: user.name,
 				updatedAt: Date.now(),
@@ -476,18 +418,18 @@ export const rename_page = mutation({
 
 export const move_pages = mutation({
 	args: {
-		itemIds: v.array(v.string()),
-		targetParentId: v.string(),
+		itemIds: v.array(v.id("pages")),
+		targetParentId: v.union(v.id("pages"), v.literal(pages_ROOT_ID)),
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
 	handler: async (ctx, args) => {
-		for (const item_id of args.itemIds) {
+		for (const itemId of args.itemIds) {
 			// Check if this is the homepage (path "/") and skip if so
-			const path = await resolve_path_from_page_client_generated_id(ctx, {
+			const path = await resolve_path_from_page_id(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
-				pageClientGeneratedId: item_id,
+				pageId: itemId,
 			});
 
 			if (path === "/") {
@@ -495,15 +437,10 @@ export const move_pages = mutation({
 				continue;
 			}
 
-			const page = await pages_get_by_client_generated_id({
-				ctx,
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageClientGeneratedId: item_id,
-			});
+			const page = await ctx.db.get("pages", itemId);
 
-			if (page) {
-				await ctx.db.patch("pages", page._id, {
+			if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
+				await ctx.db.patch("pages", itemId, {
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
 					parentId: args.targetParentId,
@@ -518,16 +455,16 @@ export const archive_pages = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageClientGeneratedId: v.string(),
+		pageId: v.id("pages"),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		// Check if this is the homepage (path "/") and ignore if so
-		const path = await resolve_path_from_page_client_generated_id(ctx, {
+		const path = await resolve_path_from_page_id(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
+			pageId: args.pageId,
 		});
 
 		if (path === "/") {
@@ -535,15 +472,10 @@ export const archive_pages = mutation({
 			return;
 		}
 
-		const page = await pages_get_by_client_generated_id({
-			ctx,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
-		});
+		const page = await ctx.db.get("pages", args.pageId);
 
-		if (page) {
-			await ctx.db.patch("pages", page._id, {
+		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
+			await ctx.db.patch("pages", args.pageId, {
 				isArchived: true,
 				updatedBy: user.name,
 				updatedAt: Date.now(),
@@ -556,16 +488,16 @@ export const unarchive_pages = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageClientGeneratedId: v.string(),
+		pageId: v.id("pages"),
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		// Check if this is the homepage (path "/") and ignore if so
-		const path = await resolve_path_from_page_client_generated_id(ctx, {
+		const path = await resolve_path_from_page_id(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
+			pageId: args.pageId,
 		});
 
 		if (path === "/") {
@@ -573,20 +505,37 @@ export const unarchive_pages = mutation({
 			return;
 		}
 
-		const page = await pages_get_by_client_generated_id({
-			ctx,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageClientGeneratedId: args.pageClientGeneratedId,
-		});
+		const page = await ctx.db.get("pages", args.pageId);
 
-		if (page) {
-			await ctx.db.patch("pages", page._id, {
+		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
+			await ctx.db.patch("pages", args.pageId, {
 				isArchived: false,
 				updatedBy: user.name,
 				updatedAt: Date.now(),
 			});
 		}
+	},
+});
+
+export const get_page_id_if_exists = query({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.string(),
+	},
+	returns: v.union(v.id("pages"), v.null()),
+	handler: async (ctx, args) => {
+		const normalizedPageId = ctx.db.normalizeId("pages", args.pageId);
+		if (!normalizedPageId) {
+			return null;
+		}
+
+		const page = await ctx.db.get("pages", normalizedPageId);
+		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+			return null;
+		}
+
+		return page._id;
 	},
 });
 
@@ -660,7 +609,7 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		parentId: v.string(),
+		parentId: v.union(v.id("pages"), v.literal(pages_ROOT_ID)),
 		cursor: paginationOptsValidator.fields.cursor,
 	},
 	handler: async (ctx, args) => {
@@ -681,20 +630,11 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 
 		return {
 			...result,
-			page: result.page
-				.map((page) => {
-					const pageClientGeneratedId = pages_get_client_generated_id(page);
-					if (!pageClientGeneratedId) {
-						return null;
-					}
-
-					return {
-						name: page.name,
-						pageClientGeneratedId,
-						updatedAt: page.updatedAt,
-					};
-				})
-				.filter((page) => page !== null),
+			page: result.page.map((page) => ({
+				name: page.name,
+				pageId: page._id,
+				updatedAt: page.updatedAt,
+			})),
 		};
 	},
 });
@@ -735,7 +675,7 @@ export const list_pages = internalQuery({
 		// Depth-first traversal using an explicit stack.
 		// We iterate children via an indexed query (async iterable) and dive deeper first.
 		const stack: Array<{
-			parentId: string;
+			parentId: Doc<"pages">["parentId"];
 			absPath: string;
 			depth: number;
 			iterator: AsyncIterator<Doc<"pages">> | null;
@@ -809,7 +749,7 @@ export const list_pages = internalQuery({
 					// Set frame on parent frame to resume iteration
 					frame.iterator = iterator;
 					stack.push({
-						parentId: child.clientGeneratedId,
+						parentId: child._id,
 						absPath: childPath,
 						depth: nextDepth,
 						iterator: null,
@@ -832,10 +772,7 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		path: v.string(),
 		userId: v.string(),
 	},
-	returns: v.union(
-		v.object({ content: v.string(), pageClientGeneratedId: v.string(), convexId: v.id("pages") }),
-		v.null(),
-	),
+	returns: v.union(v.object({ content: v.string(), pageId: v.id("pages") }), v.null()),
 	handler: async (ctx, args) => {
 		const convexId = await resolve_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
@@ -867,14 +804,12 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 					.eq("pageId", convexId),
 			)
 			.first();
-		const pageClientGeneratedId = pages_get_client_generated_id(page);
-		if (!pageClientGeneratedId) return null;
-		if (overlay) return { content: overlay.modifiedContent, pageClientGeneratedId, convexId };
+		if (overlay) return { content: overlay.modifiedContent, pageId: convexId };
 
 		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdownContentId);
 		if (!markdownContentDoc) return null;
 
-		return { content: markdownContentDoc.content, pageClientGeneratedId, convexId };
+		return { content: markdownContentDoc.content, pageId: convexId };
 	},
 });
 
@@ -1076,15 +1011,10 @@ export const text_search_pages = internalQuery({
 				if (!pageDoc) {
 					return { path: "/", preview: page.content.slice(0, 160) };
 				}
-				const pageClientGeneratedId = pages_get_client_generated_id(pageDoc);
-				if (!pageClientGeneratedId) {
-					return { path: "/", preview: page.content.slice(0, 160) };
-				}
-
-				const path: string = await resolve_path_from_page_client_generated_id(ctx, {
+				const path: string = await resolve_path_from_page_id(ctx, {
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
-					pageClientGeneratedId,
+					pageId: pageDoc._id,
 				});
 				const pending = await ctx.db
 					.query("ai_chat_pending_edits")
@@ -1112,14 +1042,13 @@ export const create_page_by_path = internalMutation({
 		path: v.string(),
 		userId: v.string(),
 	},
-	returns: v.object({ pageClientGeneratedId: v.string(), convexId: v.id("pages") }),
+	returns: v.object({ pageId: v.id("pages") }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 		const segments = path_extract_segments_from(args.path);
 
-		let currentParent = pages_ROOT_ID;
-		let lastPageId: string | null = null;
-		let lastConvexId: Id<"pages"> | null = null;
+		let currentParent: Doc<"pages">["parentId"] = pages_ROOT_ID;
+		let lastPageId: Id<"pages"> | null = null;
 
 		for (let i = 0; i < segments.length; i++) {
 			const name = segments[i];
@@ -1134,40 +1063,32 @@ export const create_page_by_path = internalMutation({
 
 			if (!existing) {
 				// Create missing segment
-				const clientGeneratedPageId = generate_id("page");
 				const convexId = await do_create_page(ctx, {
 					workspaceId: workspaceId,
 					projectId: projectId,
-					pageClientGeneratedId: clientGeneratedPageId,
 					parentId: currentParent,
 					name: name,
 					markdown_content: "",
 				});
-				currentParent = clientGeneratedPageId;
-				lastPageId = clientGeneratedPageId;
-				lastConvexId = convexId;
+				currentParent = convexId;
+				lastPageId = convexId;
 			} else {
 				// Continue traversal
-				const existingClientGeneratedId = pages_get_client_generated_id(existing);
-				if (!existingClientGeneratedId) {
-					throw should_never_happen("existingClientGeneratedId not found");
-				}
-				currentParent = existingClientGeneratedId;
-				lastPageId = existingClientGeneratedId;
-				lastConvexId = existing._id;
+				currentParent = existing._id;
+				lastPageId = existing._id;
 
 				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
 				if (i === segments.length - 1) {
-					return { pageClientGeneratedId: lastPageId, convexId: lastConvexId };
+					return { pageId: lastPageId };
 				}
 			}
 		}
 
-		if (!lastPageId || !lastConvexId) {
+		if (!lastPageId) {
 			throw should_never_happen("lastPageId not resolved after page creation");
 		}
 
-		return { pageClientGeneratedId: lastPageId, convexId: lastConvexId };
+		return { pageId: lastPageId };
 	},
 });
 
@@ -1176,8 +1097,8 @@ export const ensure_home_page = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.object({ pageClientGeneratedId: v.string() }),
-	handler: async (ctx, args): Promise<{ pageClientGeneratedId: string }> => {
+	returns: v.object({ pageId: v.id("pages") }),
+	handler: async (ctx, args): Promise<{ pageId: Id<"pages"> }> => {
 		// Find homepage (empty name under root)
 		const homepage = await ctx.db
 			.query("pages")
@@ -1191,25 +1112,19 @@ export const ensure_home_page = mutation({
 			.first();
 
 		if (homepage) {
-			const pageClientGeneratedId = pages_get_client_generated_id(homepage);
-			if (!pageClientGeneratedId) {
-				throw should_never_happen("homepage pageClientGeneratedId is missing");
-			}
-			return { pageClientGeneratedId };
+			return { pageId: homepage._id };
 		}
 
 		// Create homepage with empty name
-		const pageId = `page-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-		await do_create_page(ctx, {
+		const result = await do_create_page(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			pageClientGeneratedId: pageId,
 			parentId: pages_ROOT_ID,
 			name: "",
 			markdown_content: "",
 		});
 
-		return { pageClientGeneratedId: pageId };
+		return { pageId: result };
 	},
 });
 

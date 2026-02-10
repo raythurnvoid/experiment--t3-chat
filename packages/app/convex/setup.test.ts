@@ -42,33 +42,25 @@ export const test_mocks_hardcoded = ((/* iife */) => {
 	} as const;
 
 	const page_root_1 = {
-		page_id: "page_root_1_id",
 		name: "page_root_1_name",
 		parentId: pages_ROOT_ID,
 	} as const;
 
 	const page_root_2 = {
-		page_id: "page_root_2_id",
 		name: "page_root_2_name",
 		parentId: pages_ROOT_ID,
 	} as const;
 
 	const page_root_1_child_1 = {
-		page_id: "page_root_1_child_1_id",
 		name: "page_root_1_child_1_name",
-		parentId: page_root_1.page_id,
 	} as const;
 
 	const page_root_1_child_2 = {
-		page_id: "page_root_1_child_2_id",
 		name: "page_root_1_child_2_name",
-		parentId: page_root_1.page_id,
 	} as const;
 
 	const page_root_1_child_1_deep_1 = {
-		page_id: "page_root_1_child_1_deep_1",
 		name: "page_root_1_child_1_deep_1_name",
-		parentId: page_root_1_child_1.page_id,
 	} as const;
 
 	return {
@@ -97,7 +89,6 @@ export const test_mocks = {
 				createdBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
 				updatedAt: updatedAt,
 				updatedBy: test_mocks_hardcoded.user.user_1.id,
-				clientGeneratedId: test_mocks_hardcoded.page.page_root_1.page_id,
 				parentId: test_mocks_hardcoded.page.page_root_1.parentId,
 				name: faker.lorem.words({
 					min: 1,
@@ -116,12 +107,18 @@ export const test_mocks = {
 
 export const test_mocks_fill_db_with = {
 	nested_pages: async (ctx: MutationCtx) => {
+		const createdByUserId = await ctx.db.insert("users", {
+			clerkUserId: null,
+			anonymousAuthToken: null,
+		});
+
 		/** /root_1 */
 		const page_root_1 = await ctx.db.get(
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
-				clientGeneratedId: test_mocks_hardcoded.page.page_root_1.page_id,
+				createdBy: createdByUserId,
+				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1.name,
 				parentId: test_mocks_hardcoded.page.page_root_1.parentId,
 			}),
@@ -133,9 +130,10 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
-				clientGeneratedId: test_mocks_hardcoded.page.page_root_1_child_1.page_id,
+				createdBy: createdByUserId,
+				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_1.name,
-				parentId: test_mocks_hardcoded.page.page_root_1_child_1.parentId,
+				parentId: page_root_1._id,
 			}),
 		);
 		if (!page_root_1_child_1) throw new Error("page_root_1_child_1 not found");
@@ -145,9 +143,10 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
-				clientGeneratedId: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.page_id,
+				createdBy: createdByUserId,
+				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name,
-				parentId: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.parentId,
+				parentId: page_root_1_child_1._id,
 			}),
 		);
 		if (!page_root_1_child_1_deep_1) throw new Error("page_root_1_child_1_deep_1 not found");
@@ -157,9 +156,10 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
-				clientGeneratedId: test_mocks_hardcoded.page.page_root_1_child_2.page_id,
+				createdBy: createdByUserId,
+				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_2.name,
-				parentId: test_mocks_hardcoded.page.page_root_1_child_2.parentId,
+				parentId: page_root_1._id,
 			}),
 		);
 		if (!page_root_1_child_2) throw new Error("page_root_1_child_2 not found");
@@ -169,7 +169,8 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
-				clientGeneratedId: test_mocks_hardcoded.page.page_root_2.page_id,
+				createdBy: createdByUserId,
+				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_2.name,
 				parentId: test_mocks_hardcoded.page.page_root_2.parentId,
 			}),

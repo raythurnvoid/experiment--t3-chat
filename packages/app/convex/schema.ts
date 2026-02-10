@@ -88,8 +88,6 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		/** Project ID extracted from roomId */
 		projectId: v.string(),
-		/** Document ID generated client side */
-		clientGeneratedId: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
 		/** ID of the markdown content for the page */
@@ -102,8 +100,8 @@ const app_convex_schema = defineSchema({
 		version: v.number(),
 		/** Whether document is archived */
 		isArchived: v.boolean(),
-		/** "root" for root items */
-		parentId: v.string(),
+		/** "root" for root items, otherwise parent page `_id` */
+		parentId: v.union(v.id("pages"), v.literal("root")),
 		/** Created by user ID */
 		createdBy: v.id("users"),
 		/** Updated by user ID */
@@ -111,7 +109,6 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
 	})
-		.index("by_workspaceId_projectId_and_clientGeneratedId", ["workspaceId", "projectId", "clientGeneratedId"])
 		.index("by_workspaceId_projectId_parentId_and_name", ["workspaceId", "projectId", "parentId", "name"])
 		.index("by_workspaceId_projectId_parentId_and_isArchived", ["workspaceId", "projectId", "parentId", "isArchived"])
 		.index("by_workspaceId_projectId_and_name", ["workspaceId", "projectId", "name"]),

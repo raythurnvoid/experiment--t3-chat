@@ -79,18 +79,16 @@ function RoutePages() {
 
 	const searchPageId = searchParams.pageId;
 
-	const [clientGeneratePageId, setClientGeneratePageId] = useState<string | null>(null);
-	const effectivePageId = useStableQuery(
-		app_convex_api.ai_docs_temp.get_convex_page_id_from_client_generated_id,
-		clientGeneratePageId
+	const resolvedPageId = useStableQuery(
+		app_convex_api.ai_docs_temp.get_page_id_if_exists,
+		searchPageId
 			? {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					pageClientGeneratedId: clientGeneratePageId,
+					pageId: searchPageId,
 				}
 			: "skip",
 	);
-	const resolvedPageId = clientGeneratePageId ? effectivePageId : null;
 
 	// Navigation function to update URL with selected page
 	const navigateToPage = (pageId?: string) => {
@@ -103,7 +101,7 @@ function RoutePages() {
 	};
 
 	const navigateToView = (nextView: pages_EditorView) => {
-		const pageId = clientGeneratePageId ?? homePageId;
+		const pageId = searchPageId ?? homePageId;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
 		navigate({
 			to: "/pages",
@@ -113,14 +111,14 @@ function RoutePages() {
 
 	const handleArchive = (itemId: string) => {
 		// When a page is archived, clear selection if it was the selected one
-		if (effectivePageId === itemId) {
+		if (searchPageId === itemId) {
 			navigateToPage();
 		}
 	};
 
 	const handlePrimaryAction = (itemId: string, itemType: string) => {
 		// Only navigate if it's not already selected
-		if (effectivePageId !== itemId) {
+		if (searchPageId !== itemId) {
 			navigateToPage(itemId);
 		}
 	};
@@ -132,12 +130,6 @@ function RoutePages() {
 	const handleOpenSidebar = () => {
 		setPagesSidebarState("expanded");
 	};
-
-	// Derive the selected client page id from URL first, then last-open, then homepage.
-	useEffect(() => {
-		const nextClientGeneratePageId = searchPageId ?? lastOpenPageId ?? homePageId;
-		setClientGeneratePageId(nextClientGeneratePageId);
-	}, [homePageId, lastOpenPageId, searchPageId]);
 
 	// If URL has no page id, restore last-open; otherwise default to homepage.
 	useEffect(() => {
@@ -164,19 +156,19 @@ function RoutePages() {
 
 	// If a requested page id cannot be resolved, clear stale last-open and fall back to homepage.
 	useEffect(() => {
-		if (!searchPageId || !clientGeneratePageId || effectivePageId === undefined || effectivePageId !== null) {
+		if (!searchPageId || resolvedPageId === undefined || resolvedPageId !== null) {
 			return;
 		}
 
 		useAppLocalStorageState.setState({ pages_last_open: null });
 		navigateToPage(homePageId);
-	}, [clientGeneratePageId, effectivePageId, homePageId, searchPageId]);
+	}, [homePageId, resolvedPageId, searchPageId]);
 
 	return (
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
 			{/* Pages Sidebar - positioned between main sidebar and content with animation */}
 			<PagesSidebar
-				selectedPageId={clientGeneratePageId}
+				selectedPageId={searchPageId ?? null}
 				view={effectiveView}
 				onClose={handleCloseSidebar}
 				onArchive={handleArchive}
@@ -224,7 +216,7 @@ function RoutePages() {
 						</Panel>
 					</PanelGroup>
 				</div>
-			) : clientGeneratePageId ? (
+			) : searchPageId ? (
 				<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
 			) : null}
 		</div>

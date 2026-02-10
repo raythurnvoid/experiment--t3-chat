@@ -41,7 +41,7 @@ function LayoutInner() {
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 		})
 			.then((result) => {
-				useAppGlobalStore.actions.setPagesHomeId(result.pageClientGeneratedId);
+				useAppGlobalStore.actions.setPagesHomeId(result.pageId);
 			})
 			.catch((error) => {
 				should_never_happen("Error while initializing the home page", { error });
