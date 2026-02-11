@@ -225,6 +225,11 @@
 		.PagesSidebarTreeItem-actions {
 			pointer-events: none;
 		}
+
+		/* Keep drag events bound to the row button itself; avoid child-level dragleave churn. */
+		.PagesSidebarTreeItem-primary-action-interactive-area * {
+			pointer-events: none;
+		}
 	}
 
 	.PagesSidebarTreeItemArrow {
