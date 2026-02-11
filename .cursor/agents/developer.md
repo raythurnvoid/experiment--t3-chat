@@ -1,6 +1,6 @@
 ---
 name: developer
-model: gpt-5.2-codex-high
+model: gpt-5.3-codex
 description: Code implementation specialist for well-defined, scoped edits. Use proactively when you have a clear, concrete task to delegate — specific files, specific changes, clear acceptance criteria. Ideal for targeted edits you orchestrate across one or a few files. Do NOT use for exploration, planning, or ambiguous/open-ended tasks. Prompt must include goal, target files, constraints, and acceptance criteria.
 ---
 

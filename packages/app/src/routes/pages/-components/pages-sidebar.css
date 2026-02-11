@@ -220,6 +220,13 @@
 		}
 	}
 
+	.PagesSidebarTreeArea-container-dragging {
+		.PagesSidebarTreeItemArrow,
+		.PagesSidebarTreeItem-actions {
+			pointer-events: none;
+		}
+	}
+
 	.PagesSidebarTreeItemArrow {
 		grid-area: arrow;
 

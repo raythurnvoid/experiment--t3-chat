@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
 	Archive,
 	ArchiveRestore,
@@ -23,8 +23,10 @@ import {
 	selectionFeature,
 	syncDataLoaderFeature,
 	type ItemInstance,
+	type TreeInstance,
 } from "@headless-tree/core";
-import { AssistiveTreeDescription, useTree } from "@headless-tree/react";
+import { AssistiveTreeDescription } from "@headless-tree/react";
+import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
@@ -34,12 +36,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
-import {
-	ai_chat_HARDCODED_ORG_ID,
-	ai_chat_HARDCODED_PROJECT_ID,
-	cn,
-	sx,
-} from "@/lib/utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import {
@@ -50,58 +47,7 @@ import {
 } from "@/lib/pages.ts";
 import { format_relative_time } from "@/lib/date.ts";
 
-// #region css contracts
-type PagesSidebar_ClassNames =
-	| "PagesSidebar"
-	| "PagesSidebar-header"
-	| "PagesSidebar-top-section"
-	| "PagesSidebar-top-section-left"
-	| "PagesSidebar-hamburger-button"
-	| "PagesSidebar-title"
-	| "PagesSidebar-close-button"
-	| "PagesSidebar-search"
-	| "PagesSidebar-actions"
-	| "PagesSidebar-actions-group"
-	| "PagesSidebar-actions-icon-button"
-	| "PagesSidebar-action-new-page"
-	| "PagesSidebar-archive-toggle"
-	| "PagesSidebar-multi-selection-counter"
-	| "PagesSidebar-multi-selection-counter-label"
-	| "PagesSidebar-content";
-
-type PagesSidebarTreeArea_ClassNames =
-	| "PagesSidebarTreeArea"
-	| "PagesSidebarTreeArea-drag-over"
-	| "PagesSidebarTreeArea-empty-state"
-	| "PagesSidebarTreeArea-container"
-	| "PagesSidebarTreeArea-container-focused"
-	| "PagesSidebarTreeArea-container-dragging"
-	| "PagesSidebar-tree-drag-between-line";
-
-type PagesSidebarTreeItem_ClassNames =
-	| "PagesSidebarTreeItem"
-	| "PagesSidebarTreeItem-content"
-	| "PagesSidebarTreeItem-content-navigated"
-	| "PagesSidebarTreeItem-content-selected"
-	| "PagesSidebarTreeItem-content-focused"
-	| "PagesSidebarTreeItem-content-dragging-over"
-	| "PagesSidebarTreeItem-content-archived"
-	| "PagesSidebarTreeItem-content-placeholder"
-	| "PagesSidebarTreeItem-primary-action-interactive-area"
-	| "PagesSidebarTreeItem-meta-label"
-	| "PagesSidebarTreeItem-meta-label-text"
-	| "PagesSidebarTreeItem-actions";
-
-type PagesSidebarTreeItemActionIconButton_ClassNames = "PagesSidebarTreeItemActionIconButton";
-type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
-type PagesSidebarTreeItemPrimaryActionContent_ClassNames = "PagesSidebarTreeItemPrimaryActionContent";
-type PagesSidebarTreeItemIcon_ClassNames = "PagesSidebarTreeItemIcon";
-type PagesSidebarTreeRenameInput_ClassNames = "PagesSidebarTreeRenameInput" | "PagesSidebarTreeRenameInput-input";
-
-type PagesSidebar_CssVars = {
-	"--PagesSidebarTreeItem-content-depth": number;
-};
-
+// #region helpers
 type PagesSidebar_CollectionItem = {
 	index: string;
 	data: pages_TreeItem;
@@ -109,9 +55,7 @@ type PagesSidebar_CollectionItem = {
 };
 
 type PagesSidebar_Collection = Record<string, PagesSidebar_CollectionItem>;
-// #endregion css contracts
 
-// #region helpers
 function pages_sidebar_to_page_id(pageId: string) {
 	return pageId as app_convex_Id<"pages">;
 }
@@ -122,10 +66,7 @@ function pages_sidebar_to_parent_id(parentId: string) {
 		| typeof pages_ROOT_ID;
 }
 
-function pages_sidebar_sort_children(args: {
-	children: string[];
-	collection: PagesSidebar_Collection;
-}) {
+function sort_children(args: { children: string[]; collection: PagesSidebar_Collection }) {
 	return [...args.children].sort((a, b) => {
 		const itemA = args.collection[a];
 		const itemB = args.collection[b];
@@ -144,10 +85,7 @@ function pages_sidebar_sort_children(args: {
 	});
 }
 
-function pages_sidebar_build_collection(args: {
-	treeItemsList: pages_TreeItem[] | undefined;
-	showArchived: boolean;
-}) {
+function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; showArchived: boolean }) {
 	const rootItem = args.treeItemsList?.find((item) => item.type === "root") ?? {
 		type: "root" as const,
 		index: pages_ROOT_ID,
@@ -226,7 +164,7 @@ function pages_sidebar_build_collection(args: {
 			continue;
 		}
 
-		current.children = pages_sidebar_sort_children({
+		current.children = sort_children({
 			children: current.children,
 			collection,
 		});
@@ -256,6 +194,9 @@ function pages_sidebar_build_collection(args: {
 function pages_sidebar_are_tree_items_lists_equal(
 	left: pages_TreeItem[] | undefined,
 	right: pages_TreeItem[] | undefined,
+	options?: {
+		fields: Array<keyof pages_TreeItem>;
+	},
 ) {
 	if (left === right) {
 		return true;
@@ -267,29 +208,40 @@ function pages_sidebar_are_tree_items_lists_equal(
 		return false;
 	}
 
-	for (let index = 0; index < left.length; index += 1) {
-		const leftValue = left[index];
-		const rightValue = right[index];
-		if (!leftValue || !rightValue) {
+	const fields =
+		options?.fields ??
+		(["index", "parentId", "title", "isArchived", "updatedAt", "updatedBy"] satisfies Array<keyof pages_TreeItem>);
+
+	const rightById = new Map<string, pages_TreeItem>();
+	for (const item of right) {
+		if (rightById.has(item.index)) {
 			return false;
 		}
-		if (leftValue.index !== rightValue.index) {
+		rightById.set(item.index, item);
+	}
+
+	if (rightById.size !== right.length) {
+		return false;
+	}
+
+	const leftIds = new Set<string>();
+	for (const leftItem of left) {
+		if (leftIds.has(leftItem.index)) {
 			return false;
 		}
-		if (leftValue.parentId !== rightValue.parentId) {
+		leftIds.add(leftItem.index);
+
+		const rightItem = rightById.get(leftItem.index);
+		if (!rightItem) {
 			return false;
 		}
-		if (leftValue.title !== rightValue.title) {
-			return false;
-		}
-		if (leftValue.isArchived !== rightValue.isArchived) {
-			return false;
-		}
-		if (leftValue.updatedAt !== rightValue.updatedAt) {
-			return false;
-		}
-		if ((leftValue.updatedBy ?? "") !== (rightValue.updatedBy ?? "")) {
-			return false;
+
+		for (const field of fields) {
+			const leftValue = field === "updatedBy" ? (leftItem.updatedBy ?? "") : leftItem[field];
+			const rightValue = field === "updatedBy" ? (rightItem.updatedBy ?? "") : rightItem[field];
+			if (leftValue !== rightValue) {
+				return false;
+			}
 		}
 	}
 
@@ -297,7 +249,9 @@ function pages_sidebar_are_tree_items_lists_equal(
 }
 // #endregion helpers
 
-// #region view atoms
+// #region tree item icon
+type PagesSidebarTreeItemIcon_ClassNames = "PagesSidebarTreeItemIcon";
+
 function PagesSidebarTreeItemIcon() {
 	return (
 		<MyIcon className={"PagesSidebarTreeItemIcon" satisfies PagesSidebarTreeItemIcon_ClassNames}>
@@ -305,10 +259,16 @@ function PagesSidebarTreeItemIcon() {
 		</MyIcon>
 	);
 }
+// #endregion tree item icon
 
-function PagesSidebarTreeItemPrimaryActionContent(props: {
+// #region tree item primary action content
+type PagesSidebarTreeItemPrimaryActionContent_ClassNames = "PagesSidebarTreeItemPrimaryActionContent";
+
+type PagesSidebarTreeItemPrimaryActionContent_Props = {
 	title: React.ReactNode;
-}) {
+};
+
+function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPrimaryActionContent_Props) {
 	return (
 		<div
 			className={
@@ -322,14 +282,20 @@ function PagesSidebarTreeItemPrimaryActionContent(props: {
 		</div>
 	);
 }
+// #endregion tree item primary action content
 
-function PagesSidebarTreeItemActionIconButton(props: {
+// #region tree item action icon button
+type PagesSidebarTreeItemActionIconButton_ClassNames = "PagesSidebarTreeItemActionIconButton";
+
+type PagesSidebarTreeItemActionIconButton_Props = {
 	children: React.ReactNode;
 	tooltip: string;
 	isActive: boolean;
-	onClick: () => void;
 	disabled?: boolean;
-}) {
+	onClick: () => void;
+};
+
+function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionIconButton_Props) {
 	return (
 		<MyIconButton
 			variant={props.isActive ? "ghost-highlightable" : "ghost"}
@@ -343,9 +309,390 @@ function PagesSidebarTreeItemActionIconButton(props: {
 		</MyIconButton>
 	);
 }
-// #endregion view atoms
+// #endregion tree item action icon button
+
+type PagesSidebarTree_Shared = () => TreeInstance<pages_TreeItem>;
+
+// #region tree item arrow
+type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
+
+type PagesSidebarTreeItemArrow_Props = {
+	item: ItemInstance<pages_TreeItem>;
+	isPending: boolean;
+};
+
+function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
+	return (
+		<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>
+			{props.item.isFolder() ? (
+				<MyIconButton
+					className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
+					tooltip={props.item.isExpanded() ? "Collapse page" : "Expand page"}
+					side="bottom"
+					variant="ghost-highlightable"
+					onClick={(event) => {
+						event.preventDefault();
+						event.stopPropagation();
+						if (props.item.isExpanded()) {
+							props.item.collapse();
+						} else {
+							props.item.expand();
+						}
+					}}
+					disabled={props.isPending}
+				>
+					<MyIconButtonIcon>{props.item.isExpanded() ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
+				</MyIconButton>
+			) : null}
+		</div>
+	);
+}
+// #endregion tree item arrow
+
+// #region tree rename input
+type PagesSidebarTreeRenameInput_ClassNames = "PagesSidebarTreeRenameInput" | "PagesSidebarTreeRenameInput-input";
+
+type PagesSidebarTreeRenameInput_Props = {
+	item: ItemInstance<pages_TreeItem>;
+};
+
+function PagesSidebarTreeRenameInput(props: PagesSidebarTreeRenameInput_Props) {
+	return (
+		<form className={"PagesSidebarTreeRenameInput" satisfies PagesSidebarTreeRenameInput_ClassNames}>
+			<MyInput>
+				<MyInputControl
+					{...props.item.getRenameInputProps()}
+					className={"PagesSidebarTreeRenameInput-input" satisfies PagesSidebarTreeRenameInput_ClassNames}
+				/>
+			</MyInput>
+		</form>
+	);
+}
+// #endregion tree rename input
+
+// #region tree item
+type PagesSidebarTreeItem_ClassNames =
+	| "PagesSidebarTreeItem"
+	| "PagesSidebarTreeItem-content"
+	| "PagesSidebarTreeItem-content-navigated"
+	| "PagesSidebarTreeItem-content-selected"
+	| "PagesSidebarTreeItem-content-focused"
+	| "PagesSidebarTreeItem-content-dragging-over"
+	| "PagesSidebarTreeItem-content-archived"
+	| "PagesSidebarTreeItem-content-placeholder"
+	| "PagesSidebarTreeItem-primary-action-interactive-area"
+	| "PagesSidebarTreeItem-meta-label"
+	| "PagesSidebarTreeItem-meta-label-text"
+	| "PagesSidebarTreeItem-actions";
+
+type PagesSidebar_CssVars = {
+	"--PagesSidebarTreeItem-content-depth": number;
+};
+
+type PagesSidebarTreeItem_Props = {
+	item: ItemInstance<pages_TreeItem>;
+	tree: PagesSidebarTree_Shared;
+	selectedPageId: string | null;
+	isBusy: boolean;
+	pendingActionPageIds: Set<string>;
+	onCreatePage: (parentPageId: string) => void;
+	onArchive: (pageId: string) => void;
+	onUnarchive: (pageId: string) => void;
+	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, item: ItemInstance<pages_TreeItem>) => void;
+};
+
+function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
+	const { item, tree, selectedPageId, isBusy, pendingActionPageIds, onCreatePage, onArchive, onUnarchive } = props;
+	const itemId = item.getId();
+	const itemData = item.getItemData();
+	const isPlaceholder = itemData.type === "placeholder";
+	const isArchived = itemData.isArchived;
+	const isNavigated = selectedPageId === itemId;
+	const isPending = isBusy || pendingActionPageIds.has(itemId);
+	const depth = item.getItemMeta().level;
+	const isDragging = !!tree()
+		.getState()
+		.dnd?.draggedItems?.some((draggedItem: ItemInstance<pages_TreeItem>) => draggedItem.getId() === itemId);
+
+	const metaText = isPlaceholder
+		? ""
+		: `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
+	const tooltipContent = isPlaceholder
+		? undefined
+		: `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`;
+
+	const content = isPlaceholder ? (
+		<div
+			style={sx({
+				"--PagesSidebarTreeItem-content-depth": depth,
+			} satisfies Partial<PagesSidebar_CssVars>)}
+			className={cn(
+				"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
+				"PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames,
+			)}
+		>
+			<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
+		</div>
+	) : (
+		<div
+			style={sx({
+				"--PagesSidebarTreeItem-content-depth": depth,
+			} satisfies Partial<PagesSidebar_CssVars>)}
+			className={cn(
+				"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
+				isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
+				item.isSelected() && ("PagesSidebarTreeItem-content-selected" satisfies PagesSidebarTreeItem_ClassNames),
+				item.isFocused() && ("PagesSidebarTreeItem-content-focused" satisfies PagesSidebarTreeItem_ClassNames),
+				item.isDraggingOver() &&
+					("PagesSidebarTreeItem-content-dragging-over" satisfies PagesSidebarTreeItem_ClassNames),
+				isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
+			)}
+		>
+			{item.isRenaming() ? (
+				<div
+					className={"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames}
+				>
+					<div
+						className={
+							"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
+						}
+					>
+						<PagesSidebarTreeItemIcon />
+						<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
+							<PagesSidebarTreeRenameInput item={item} />
+						</div>
+					</div>
+				</div>
+			) : (
+				<button
+					{...item.getProps()}
+					type="button"
+					className={"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames}
+					disabled={isPending}
+					onClick={(event) => props.onTreeItemPrimaryClick(event, item)}
+				>
+					<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
+				</button>
+			)}
+
+			<PagesSidebarTreeItemArrow item={item} isPending={isPending} />
+
+			<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
+				<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
+					{metaText}
+				</div>
+			</div>
+
+			<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
+				<PagesSidebarTreeItemActionIconButton
+					tooltip="Add child"
+					isActive={item.isFocused()}
+					disabled={isPending}
+					onClick={() => onCreatePage(itemId)}
+				>
+					<Plus />
+				</PagesSidebarTreeItemActionIconButton>
+
+				<PagesSidebarTreeItemActionIconButton
+					tooltip="Rename"
+					isActive={item.isFocused()}
+					disabled={isPending}
+					onClick={() => item.startRenaming()}
+				>
+					<Edit2 />
+				</PagesSidebarTreeItemActionIconButton>
+
+				<PagesSidebarTreeItemActionIconButton
+					tooltip={isArchived ? "Restore" : "Archive"}
+					isActive={item.isFocused()}
+					disabled={isPending}
+					onClick={() => {
+						if (isArchived) {
+							onUnarchive(itemId);
+						} else {
+							onArchive(itemId);
+						}
+					}}
+				>
+					{isArchived ? <ArchiveRestore /> : <Archive />}
+				</PagesSidebarTreeItemActionIconButton>
+			</div>
+		</div>
+	);
+
+	return (
+		<div key={itemId} className={cn("PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames)}>
+			{tooltipContent ? (
+				<Tooltip delayDuration={2000}>
+					<TooltipTrigger asChild>{content}</TooltipTrigger>
+					{!isDragging ? (
+						<TooltipContent side="bottom" align="center">
+							{tooltipContent}
+						</TooltipContent>
+					) : null}
+				</Tooltip>
+			) : (
+				content
+			)}
+		</div>
+	);
+}
+// #endregion tree item
+
+// #region tree area
+type PagesSidebarTreeArea_ClassNames =
+	| "PagesSidebarTreeArea"
+	| "PagesSidebarTreeArea-drag-over"
+	| "PagesSidebarTreeArea-empty-state"
+	| "PagesSidebarTreeArea-container"
+	| "PagesSidebarTreeArea-container-focused"
+	| "PagesSidebarTreeArea-container-dragging"
+	| "PagesSidebar-tree-drag-between-line";
+
+type PagesSidebarTreeArea_Props = {
+	rootElement: React.RefObject<HTMLDivElement | null>;
+	tree: PagesSidebarTree_Shared;
+	isDraggingOverRootArea: boolean;
+	isTreeFocused: boolean;
+	isTreeLoading: boolean;
+	showEmptyState: boolean;
+	searchQuery: string;
+	renderedTreeItems: Array<ItemInstance<pages_TreeItem>>;
+	selectedPageId: string | null;
+	isBusy: boolean;
+	pendingActionPageIds: Set<string>;
+	onSetIsDraggingOverRootArea: React.Dispatch<React.SetStateAction<boolean>>;
+	onDragOverRootArea: (event: React.DragEvent<HTMLDivElement>) => void;
+	onDropOnRootArea: (event: React.DragEvent<HTMLDivElement>) => void;
+	onSetIsTreeFocused: React.Dispatch<React.SetStateAction<boolean>>;
+	onCreatePage: (parentPageId: string) => void;
+	onArchive: (pageId: string) => void;
+	onUnarchive: (pageId: string) => void;
+	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, item: ItemInstance<pages_TreeItem>) => void;
+};
+
+function PagesSidebarTreeArea({
+	rootElement,
+	tree,
+	isDraggingOverRootArea,
+	isTreeFocused,
+	isTreeLoading,
+	showEmptyState,
+	searchQuery,
+	renderedTreeItems,
+	selectedPageId,
+	isBusy,
+	pendingActionPageIds,
+	onSetIsDraggingOverRootArea,
+	onDragOverRootArea,
+	onDropOnRootArea,
+	onSetIsTreeFocused,
+	onCreatePage,
+	onArchive,
+	onUnarchive,
+	onTreeItemPrimaryClick,
+}: PagesSidebarTreeArea_Props) {
+	return (
+		<div
+			ref={rootElement}
+			className={cn(
+				"PagesSidebarTreeArea" satisfies PagesSidebarTreeArea_ClassNames,
+				isDraggingOverRootArea && ("PagesSidebarTreeArea-drag-over" satisfies PagesSidebarTreeArea_ClassNames),
+			)}
+			onDragOver={onDragOverRootArea}
+			onDragLeave={(event) => {
+				if (event.target === rootElement.current) {
+					onSetIsDraggingOverRootArea(false);
+				}
+			}}
+			onDragEnd={() => onSetIsDraggingOverRootArea(false)}
+			onDrop={onDropOnRootArea}
+		>
+			<div
+				{...tree().getContainerProps("Pages")}
+				className={cn(
+					"PagesSidebarTreeArea-container" satisfies PagesSidebarTreeArea_ClassNames,
+					isTreeFocused && ("PagesSidebarTreeArea-container-focused" satisfies PagesSidebarTreeArea_ClassNames),
+					(tree().getState().dnd?.draggedItems?.length ?? 0) > 0 &&
+						("PagesSidebarTreeArea-container-dragging" satisfies PagesSidebarTreeArea_ClassNames),
+				)}
+				onFocus={() => onSetIsTreeFocused(true)}
+				onBlur={(event) => {
+					const relatedTarget = event.relatedTarget as HTMLElement | null;
+					if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
+						onSetIsTreeFocused(false);
+						tree().setSelectedItems([]);
+					}
+				}}
+				onKeyDown={(event) => {
+					if (event.key !== "F2") {
+						return;
+					}
+
+					const focusedItem = tree().getFocusedItem();
+					if (focusedItem.getItemData().type !== "page") {
+						return;
+					}
+
+					event.preventDefault();
+					focusedItem.startRenaming();
+				}}
+			>
+				<AssistiveTreeDescription tree={tree()} />
+
+				{isTreeLoading ? (
+					<div className={cn("PagesSidebarTreeArea-empty-state" satisfies PagesSidebarTreeArea_ClassNames)}>
+						Loading pages...
+					</div>
+				) : showEmptyState ? (
+					<div className={cn("PagesSidebarTreeArea-empty-state" satisfies PagesSidebarTreeArea_ClassNames)}>
+						{searchQuery.trim() ? "No pages match your search." : "No pages yet."}
+					</div>
+				) : (
+					renderedTreeItems.map((item) => (
+						<PagesSidebarTreeItem
+							key={item.getId()}
+							item={item}
+							tree={tree}
+							selectedPageId={selectedPageId}
+							isBusy={isBusy}
+							pendingActionPageIds={pendingActionPageIds}
+							onCreatePage={onCreatePage}
+							onArchive={onArchive}
+							onUnarchive={onUnarchive}
+							onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+						/>
+					))
+				)}
+
+				{tree().getConfig().canReorder ? (
+					<div style={tree().getDragLineStyle()} className="PagesSidebar-tree-drag-between-line" />
+				) : null}
+			</div>
+		</div>
+	);
+}
+// #endregion tree area
 
 // #region root
+type PagesSidebar_ClassNames =
+	| "PagesSidebar"
+	| "PagesSidebar-header"
+	| "PagesSidebar-top-section"
+	| "PagesSidebar-top-section-left"
+	| "PagesSidebar-hamburger-button"
+	| "PagesSidebar-title"
+	| "PagesSidebar-close-button"
+	| "PagesSidebar-search"
+	| "PagesSidebar-actions"
+	| "PagesSidebar-actions-group"
+	| "PagesSidebar-actions-icon-button"
+	| "PagesSidebar-action-new-page"
+	| "PagesSidebar-archive-toggle"
+	| "PagesSidebar-multi-selection-counter"
+	| "PagesSidebar-multi-selection-counter-label"
+	| "PagesSidebar-content";
+
 export type PagesSidebar_Props = {
 	state: MySidebar_Props["state"];
 	selectedPageId: string | null;
@@ -358,7 +705,6 @@ export type PagesSidebar_Props = {
 export function PagesSidebar(props: PagesSidebar_Props) {
 	const { selectedPageId, state = "expanded", view, onClose, onArchive, onPrimaryAction } = props;
 
-	// #region infrastructure
 	const navigate = useNavigate();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
@@ -368,17 +714,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});
 	const [resolvedTreeItemsList, setResolvedTreeItemsList] = useState<typeof queriedTreeItemsList>(undefined);
-	useEffect(() => {
-		if (queriedTreeItemsList === undefined) {
-			return;
-		}
-		setResolvedTreeItemsList((currentValue) => {
-			if (pages_sidebar_are_tree_items_lists_equal(currentValue, queriedTreeItemsList)) {
-				return currentValue;
-			}
-			return queriedTreeItemsList;
-		});
-	}, [queriedTreeItemsList]);
 	const treeItemsList = queriedTreeItemsList ?? resolvedTreeItemsList;
 
 	const serverMovePages = useMutation(app_convex_api.ai_docs_temp.move_pages);
@@ -386,9 +721,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const serverCreatePage = useMutation(app_convex_api.ai_docs_temp.create_page);
 	const serverArchivePage = useMutation(app_convex_api.ai_docs_temp.archive_pages);
 	const serverUnarchivePage = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
-	// #endregion infrastructure
 
-	// #region local state
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
 	const [isCreatingPage, setIsCreatingPage] = useState(false);
@@ -397,13 +730,13 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 	const [pendingRenamePageId, setPendingRenamePageId] = useState<string | null>(null);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
+	const [, setTreeRebuildVersion] = useState(0);
 
 	const rootElement = useRef<HTMLDivElement>(null);
-	// #endregion local state
+	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
 
-	// #region derived tree model
 	const baseTreeCollection = ((/* iife */) => {
-		return pages_sidebar_build_collection({
+		return create_collection({
 			treeItemsList,
 			showArchived,
 		});
@@ -417,31 +750,28 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	})();
 
 	const shouldForceShowArchived =
-		!showArchived &&
-		archivedCount > 0 &&
-		(baseTreeCollection[pages_ROOT_ID]?.children.length ?? 0) === 0;
+		!showArchived && archivedCount > 0 && (baseTreeCollection[pages_ROOT_ID]?.children.length ?? 0) === 0;
 
 	const treeCollection = ((/* iife */) => {
 		if (!shouldForceShowArchived) {
 			return baseTreeCollection;
 		}
 
-		return pages_sidebar_build_collection({
+		return create_collection({
 			treeItemsList,
 			showArchived: true,
 		});
 	})();
 
 	const isArchivedShown = showArchived || shouldForceShowArchived;
+	const lastIsArchivedShownRef = useRef(isArchivedShown);
 
 	const dataLoader = {
 		getItem: (itemId: string) =>
 			treeCollection[itemId]?.data ?? pages_create_tree_placeholder_child(itemId.replace("-placeholder", "")),
 		getChildren: (itemId: string) => treeCollection[itemId]?.children ?? [],
 	};
-	// #endregion derived tree model
 
-	// #region mutations helpers
 	const markPageAsPending = (pageId: string) => {
 		setPendingActionPageIds((oldValue) => {
 			const nextValue = new Set(oldValue);
@@ -458,10 +788,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		});
 	};
 
-	const movePagesToParent = (args: {
-		pageIds: string[];
-		targetParentId: string;
-	}) => {
+	const movePagesToParent = (args: { pageIds: string[]; targetParentId: string }) => {
 		const movedPageIds = args.pageIds.filter((pageId) => treeCollection[pageId]?.data.type === "page");
 		if (movedPageIds.length === 0) {
 			return Promise.resolve();
@@ -474,17 +801,24 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 		});
 	};
-	// #endregion mutations helpers
 
-	// #region headless tree
 	const tree = useTree<pages_TreeItem>({
 		rootItemId: pages_ROOT_ID,
 		initialState: {
 			expandedItems: [pages_ROOT_ID],
 		},
+		canReorder: false,
+		dataLoader,
+		features: [
+			syncDataLoaderFeature,
+			selectionFeature,
+			hotkeysCoreFeature,
+			dragAndDropFeature,
+			renamingFeature,
+			expandAllFeature,
+		],
 		getItemName: (item) => item.getItemData().title,
 		isItemFolder: (item) => item.getItemData().type !== "placeholder",
-		canReorder: true,
 		canDrag: (items) => {
 			return items.every((item) => item.getItemData().type === "page");
 		},
@@ -543,40 +877,13 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				onPrimaryAction(item.getId(), itemData.type);
 			}
 		},
-		dataLoader,
-		features: [
-			syncDataLoaderFeature,
-			selectionFeature,
-			hotkeysCoreFeature,
-			dragAndDropFeature,
-			renamingFeature,
-			expandAllFeature,
-		],
 	});
 
 	const hasSelectedPageInTree = !!(selectedPageId && treeCollection[selectedPageId]);
 	const hasPendingRenamePageInTree = !!(pendingRenamePageId && treeCollection[pendingRenamePageId]);
 
-	useEffect(() => {
-		if (!selectedPageId || !hasSelectedPageInTree) {
-			return;
-		}
-		tree.getItemInstance(selectedPageId).setFocused();
-	}, [hasSelectedPageInTree, selectedPageId, tree]);
+	const treeItems = tree().getItems();
 
-	useEffect(() => {
-		if (!pendingRenamePageId || !hasPendingRenamePageInTree) {
-			return;
-		}
-		tree.getItemInstance(pendingRenamePageId).startRenaming();
-		setPendingRenamePageId(null);
-	}, [hasPendingRenamePageInTree, pendingRenamePageId, tree]);
-
-	tree.scheduleRebuildTree();
-	const treeItems = tree.getItems();
-	// #endregion headless tree
-
-	// #region view model
 	const visibleIds = ((/* iife */) => {
 		const searchTerm = searchQuery.trim().toLowerCase();
 		if (!searchTerm) {
@@ -630,9 +937,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		return true;
 	});
 	const showEmptyState = !isTreeLoading && renderedTreeItems.length === 0;
-	// #endregion view model
 
-	// #region handlers
 	const createPage = (parentPageId: string) => {
 		setIsCreatingPage(true);
 		serverCreatePage({
@@ -706,7 +1011,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			})
 			.catch(console.error)
 			.finally(() => {
-				tree.setSelectedItems([]);
+				tree().setSelectedItems([]);
 				setIsArchivingSelection(false);
 			});
 	};
@@ -716,7 +1021,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			return;
 		}
 
-		const draggedItems = tree.getState().dnd?.draggedItems ?? [];
+		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
 		if (draggedItems.length === 0) {
 			return;
 		}
@@ -732,7 +1037,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		}
 
 		event.preventDefault();
-		const draggedItems = tree.getState().dnd?.draggedItems ?? [];
+		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
 		if (draggedItems.length === 0) {
 			return;
 		}
@@ -743,7 +1048,10 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		}).catch(console.error);
 	};
 
-	const handleTreeItemPrimaryClick = (event: React.MouseEvent<HTMLButtonElement>, item: ItemInstance<pages_TreeItem>) => {
+	const handleTreeItemPrimaryClick = (
+		event: React.MouseEvent<HTMLButtonElement>,
+		item: ItemInstance<pages_TreeItem>,
+	) => {
 		const itemId = item.getId();
 		const isModifierClick = event.shiftKey || event.ctrlKey || event.metaKey;
 
@@ -752,11 +1060,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		} else if (event.ctrlKey || event.metaKey) {
 			item.toggleSelect();
 		} else {
-			tree.setSelectedItems([itemId]);
+			tree().setSelectedItems([itemId]);
 		}
 
 		if (!event.shiftKey) {
-			const dataRef = tree.getDataRef() as { current: { selectUpToAnchorId?: string } };
+			const dataRef = tree().getDataRef() as { current: { selectUpToAnchorId?: string } };
 			dataRef.current.selectUpToAnchorId = itemId;
 		}
 
@@ -770,9 +1078,56 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			onPrimaryAction(itemId, itemData.type);
 		}
 	};
-	// #endregion handlers
 
-	// #region render
+	useLayoutEffect(() => {
+		const shouldRebuild =
+			lastIsArchivedShownRef.current !== isArchivedShown ||
+			!pages_sidebar_are_tree_items_lists_equal(lastTreeItemsListRef.current, treeItemsList, {
+				fields: ["type", "index", "parentId", "title", "isArchived"],
+			});
+
+		lastIsArchivedShownRef.current = isArchivedShown;
+		lastTreeItemsListRef.current = treeItemsList;
+
+		if (!shouldRebuild) {
+			return;
+		}
+
+		tree().scheduleRebuildTree();
+		setTreeRebuildVersion((oldValue) => oldValue + 1);
+	}, [isArchivedShown, treeItemsList]);
+
+	useEffect(() => {
+		if (queriedTreeItemsList === undefined) {
+			return;
+		}
+		setResolvedTreeItemsList((currentValue) => {
+			if (
+				pages_sidebar_are_tree_items_lists_equal(currentValue, queriedTreeItemsList, {
+					fields: ["index", "parentId", "title", "isArchived", "updatedAt", "updatedBy"],
+				})
+			) {
+				return currentValue;
+			}
+			return queriedTreeItemsList;
+		});
+	}, [queriedTreeItemsList]);
+
+	useEffect(() => {
+		if (!selectedPageId || !hasSelectedPageInTree) {
+			return;
+		}
+		tree().getItemInstance(selectedPageId).setFocused();
+	}, [hasSelectedPageInTree, selectedPageId]);
+
+	useEffect(() => {
+		if (!pendingRenamePageId || !hasPendingRenamePageInTree) {
+			return;
+		}
+		tree().getItemInstance(pendingRenamePageId).startRenaming();
+		setPendingRenamePageId(null);
+	}, [hasPendingRenamePageInTree, pendingRenamePageId]);
+
 	return (
 		<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
 			<div className={cn("PagesSidebar" satisfies PagesSidebar_ClassNames)}>
@@ -816,7 +1171,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 							<MyInputIcon>
 								<Search />
 							</MyInputIcon>
-							<MyInputControl placeholder="Search pages" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} />
+							<MyInputControl
+								placeholder="Search pages"
+								value={searchQuery}
+								onChange={(event) => setSearchQuery(event.target.value)}
+							/>
 						</MyInputArea>
 					</MyInput>
 
@@ -826,7 +1185,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 								className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
 								variant="secondary-subtle"
 								tooltip="Unfold"
-								onClick={() => tree.expandAll().catch(console.error)}
+								onClick={() => tree().expandAll().catch(console.error)}
 								disabled={isBusy}
 							>
 								<MyIconButtonIcon>
@@ -838,7 +1197,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 								className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
 								variant="secondary-subtle"
 								tooltip="Fold"
-								onClick={() => tree.collapseAll()}
+								onClick={() => tree().collapseAll()}
 								disabled={isBusy}
 							>
 								<MyIconButtonIcon>
@@ -868,7 +1227,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 										className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
 										variant="secondary"
 										tooltip="Clear"
-										onClick={() => tree.setSelectedItems([])}
+										onClick={() => tree().setSelectedItems([])}
 										disabled={isBusy}
 									>
 										<MyIconButtonIcon>
@@ -905,237 +1264,30 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				</MySidebarHeader>
 
 				<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
-					<div
-						ref={rootElement}
-						className={cn(
-							"PagesSidebarTreeArea" satisfies PagesSidebarTreeArea_ClassNames,
-							isDraggingOverRootArea && ("PagesSidebarTreeArea-drag-over" satisfies PagesSidebarTreeArea_ClassNames),
-						)}
-						onDragOver={handleDragOverRootArea}
-						onDragLeave={(event) => {
-							if (event.target === rootElement.current) {
-								setIsDraggingOverRootArea(false);
-							}
-						}}
-						onDragEnd={() => setIsDraggingOverRootArea(false)}
-						onDrop={handleDropOnRootArea}
-					>
-						<div
-							{...tree.getContainerProps("Pages")}
-							className={cn(
-								"PagesSidebarTreeArea-container" satisfies PagesSidebarTreeArea_ClassNames,
-								isTreeFocused && ("PagesSidebarTreeArea-container-focused" satisfies PagesSidebarTreeArea_ClassNames),
-								(tree.getState().dnd?.draggedItems?.length ?? 0) > 0 &&
-									("PagesSidebarTreeArea-container-dragging" satisfies PagesSidebarTreeArea_ClassNames),
-							)}
-							onFocus={() => setIsTreeFocused(true)}
-							onBlur={(event) => {
-								const relatedTarget = event.relatedTarget as HTMLElement | null;
-								if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
-									setIsTreeFocused(false);
-									tree.setSelectedItems([]);
-								}
-							}}
-							onKeyDown={(event) => {
-								if (event.key !== "F2") {
-									return;
-								}
-
-								const focusedItem = tree.getFocusedItem();
-								if (focusedItem.getItemData().type !== "page") {
-									return;
-								}
-
-								event.preventDefault();
-								focusedItem.startRenaming();
-							}}
-						>
-							<AssistiveTreeDescription tree={tree} />
-
-							{isTreeLoading ? (
-								<div className={cn("PagesSidebarTreeArea-empty-state" satisfies PagesSidebarTreeArea_ClassNames)}>
-									Loading pages...
-								</div>
-							) : showEmptyState ? (
-								<div className={cn("PagesSidebarTreeArea-empty-state" satisfies PagesSidebarTreeArea_ClassNames)}>
-									{searchQuery.trim() ? "No pages match your search." : "No pages yet."}
-								</div>
-							) : (
-								renderedTreeItems.map((item) => {
-									const itemId = item.getId();
-									const itemData = item.getItemData();
-									const isPlaceholder = itemData.type === "placeholder";
-									const isArchived = itemData.isArchived;
-									const isNavigated = selectedPageId === itemId;
-									const isPending = isBusy || pendingActionPageIds.has(itemId);
-									const depth = item.getItemMeta().level;
-									const isDragging = !!tree
-										.getState()
-										.dnd?.draggedItems?.some((draggedItem: ItemInstance<pages_TreeItem>) => draggedItem.getId() === itemId);
-
-									const metaText = isPlaceholder
-										? ""
-										: `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
-									const tooltipContent = isPlaceholder
-										? undefined
-										: `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`;
-
-									const content = isPlaceholder ? (
-										<div
-											style={sx({ "--PagesSidebarTreeItem-content-depth": depth } satisfies Partial<PagesSidebar_CssVars>)}
-											className={cn(
-												"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
-												"PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames,
-											)}
-										>
-											<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
-										</div>
-									) : (
-										<div
-											style={sx({ "--PagesSidebarTreeItem-content-depth": depth } satisfies Partial<PagesSidebar_CssVars>)}
-											className={cn(
-												"PagesSidebarTreeItem-content" satisfies PagesSidebarTreeItem_ClassNames,
-												isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
-												item.isSelected() &&
-													("PagesSidebarTreeItem-content-selected" satisfies PagesSidebarTreeItem_ClassNames),
-												item.isFocused() && ("PagesSidebarTreeItem-content-focused" satisfies PagesSidebarTreeItem_ClassNames),
-												item.isDragTarget() &&
-													("PagesSidebarTreeItem-content-dragging-over" satisfies PagesSidebarTreeItem_ClassNames),
-												isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
-											)}
-										>
-											{item.isRenaming() ? (
-												<div className={"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames}>
-													<div
-														className={
-															"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
-														}
-													>
-														<PagesSidebarTreeItemIcon />
-														<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
-															<form
-																className={
-																	"PagesSidebarTreeRenameInput" satisfies PagesSidebarTreeRenameInput_ClassNames
-																}
-															>
-																<MyInput>
-																	<MyInputControl
-																		{...item.getRenameInputProps()}
-																		className={
-																			"PagesSidebarTreeRenameInput-input" satisfies PagesSidebarTreeRenameInput_ClassNames
-																		}
-																	/>
-																</MyInput>
-															</form>
-														</div>
-													</div>
-												</div>
-											) : (
-												<button
-													{...item.getProps()}
-													onClick={(event) => handleTreeItemPrimaryClick(event, item)}
-													type="button"
-													className={
-														"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames
-													}
-													disabled={isPending}
-												>
-													<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
-												</button>
-											)}
-
-											<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>
-												{item.isFolder() ? (
-													<MyIconButton
-														className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
-														tooltip={item.isExpanded() ? "Collapse page" : "Expand page"}
-														side="bottom"
-														variant="ghost-highlightable"
-														onClick={(event) => {
-															event.preventDefault();
-															event.stopPropagation();
-															if (item.isExpanded()) {
-																item.collapse();
-															} else {
-																item.expand();
-															}
-														}}
-														disabled={isPending}
-													>
-														<MyIconButtonIcon>{item.isExpanded() ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
-													</MyIconButton>
-												) : null}
-											</div>
-
-											<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
-												<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
-													{metaText}
-												</div>
-											</div>
-
-											<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
-												<PagesSidebarTreeItemActionIconButton
-													tooltip="Add child"
-													isActive={item.isFocused()}
-													onClick={() => createPage(itemId)}
-													disabled={isPending}
-												>
-													<Plus />
-												</PagesSidebarTreeItemActionIconButton>
-
-												<PagesSidebarTreeItemActionIconButton
-													tooltip="Rename"
-													isActive={item.isFocused()}
-													onClick={() => item.startRenaming()}
-													disabled={isPending}
-												>
-													<Edit2 />
-												</PagesSidebarTreeItemActionIconButton>
-
-												<PagesSidebarTreeItemActionIconButton
-													tooltip={isArchived ? "Restore" : "Archive"}
-													isActive={item.isFocused()}
-													onClick={() => {
-														if (isArchived) {
-															handleUnarchive(itemId);
-														} else {
-															handleArchive(itemId);
-														}
-													}}
-													disabled={isPending}
-												>
-													{isArchived ? <ArchiveRestore /> : <Archive />}
-												</PagesSidebarTreeItemActionIconButton>
-											</div>
-										</div>
-									);
-
-									return (
-										<div key={itemId} className={cn("PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames)}>
-											{tooltipContent ? (
-												<Tooltip delayDuration={2000}>
-													<TooltipTrigger asChild>{content}</TooltipTrigger>
-													{!isDragging ? (
-														<TooltipContent side="bottom" align="center">
-															{tooltipContent}
-														</TooltipContent>
-													) : null}
-												</Tooltip>
-											) : (
-												content
-											)}
-										</div>
-									);
-								})
-							)}
-
-							<div style={tree.getDragLineStyle()} className="PagesSidebar-tree-drag-between-line" />
-						</div>
-					</div>
+					<PagesSidebarTreeArea
+						rootElement={rootElement}
+						tree={tree}
+						isDraggingOverRootArea={isDraggingOverRootArea}
+						isTreeFocused={isTreeFocused}
+						isTreeLoading={isTreeLoading}
+						showEmptyState={showEmptyState}
+						searchQuery={searchQuery}
+						renderedTreeItems={renderedTreeItems}
+						selectedPageId={selectedPageId}
+						isBusy={isBusy}
+						pendingActionPageIds={pendingActionPageIds}
+						onSetIsDraggingOverRootArea={setIsDraggingOverRootArea}
+						onDragOverRootArea={handleDragOverRootArea}
+						onDropOnRootArea={handleDropOnRootArea}
+						onSetIsTreeFocused={setIsTreeFocused}
+						onCreatePage={createPage}
+						onArchive={handleArchive}
+						onUnarchive={handleUnarchive}
+						onTreeItemPrimaryClick={handleTreeItemPrimaryClick}
+					/>
 				</MySidebarContent>
 			</div>
 		</MySidebar>
 	);
-	// #endregion render
 }
 // #endregion root

@@ -180,6 +180,45 @@ Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 When editing existing code, your changes must match the existing local style and patterns in that file and nearby modules — **it should look like the same person wrote the code**. Do not introduce new organizational patterns, naming conventions, or stylistic preferences unless the user explicitly requested it or it is required for correctness.
 
+### Type and classnames colocation
+
+Keep component-scoped types next to their owner component instead of centralizing them in a single module-level block.
+
+- For component styling contracts, place `*_ClassNames` immediately above the related `*_Props` and component.
+- If a small component has no dedicated `*_Props`, keep its `*_ClassNames` directly above that component.
+- Avoid creating a top-level "css contracts" region that groups classnames/types for many components in one place.
+- Keep helper/data structure types with helper logic, and keep root component types with the root component region.
+
+### Region organization (flat, non-nested)
+
+Use region comments as a flat list to keep the VS Code minimap easy to navigate.
+
+- Do not nest `#region` blocks inside other `#region` blocks.
+- Use ad hoc component regions (one region per component), even for small descendants.
+- Avoid umbrella regions like "atoms", "subcomponents", or similar grouped component buckets.
+- Use lowercase word-case names for region labels.
+- Keep region labels concise and avoid repeating a shared file/component prefix (for example, prefer `#region tree item` over `#region pages sidebar tree item`).
+- Keep the root component region at the bottom of the file, after lower-level components/helpers, and name it exactly `root`.
+- Do not create `#region` blocks inside a component body for "local state", "handlers", "render", etc., unless the user explicitly requests that structure.
+- If you need extra grouping inside a component, use plain comments instead of more `#region` markers.
+
+### Effect placement inside components
+
+Inside a component body, keep `useEffect` hooks below local functions/handlers and above the JSX template return.
+
+- Prefer ordering as: state/derived values -> local functions/handlers -> `useEffect` hooks -> `return (...)`.
+- Avoid scattering `useEffect` between unrelated declarations unless the user explicitly requests that layout.
+- Keep effect callbacks able to reference functions declared above.
+
+### Props ordering and naming
+
+Keep the same prop order in both `*_Props` definitions and JSX call sites.
+
+- Use this order: `ref` (if any), `id` (if any), `className` (if any), `style` (if any), other non-callback props, then callback/event props.
+- Callback/event props must be prefixed with `on*`.
+- Keep callback/event props grouped at the end of the object/type and at the end of JSX prop lists.
+- For extracted child components, keep prop names and call-site order aligned with the same contract order.
+
 ## React Compiler: avoid try/catch/finally blocks
 
 The React Compiler currently has issues lowering `try { ... } catch { ... } finally { ... }` (especially with a `finally` clause) inside components/handlers. Prefer the existing pattern used in this repo:
@@ -190,9 +229,9 @@ The React Compiler currently has issues lowering `try { ... } catch { ... } fina
 
 ## Casing
 
-Use snake_case only for symbols defined at the root of a module (except components and hooks). Everything else uses camelCase.
+Use these naming rules with one practical exception for symbols that are tightly scoped to a specific component, hook, or utility.
 
-### Root Level Module Symbols (snake_case)
+### Root Level Module Symbols (default: snake_case)
 
 ```ts
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
@@ -218,6 +257,20 @@ export enum ai_chat_MyEnum {
 	PROJECT_ID = "app_project_local_dev",
 }
 ```
+
+### Root-Level Scoped Symbols (allowed: OwnerSymbol_Descriptor)
+
+When a root-level symbol exists only to support a specific owner symbol (component, hook, or utility), you may use `OwnerSymbol_Descriptor`.
+
+This is the pattern used for colocated helper types and companion utilities, for example:
+
+```ts
+type AiChatThread_Props = { ... };
+type AiChatThread_ClassNames = "AiChatThread" | "AiChatThread-content";
+type useAutoScroll_Props = { ... };
+```
+
+Use this pattern only for tightly related declarations. Keep shared/generic module APIs in `snake_case`.
 
 ### Everything Else (camelCase)
 
