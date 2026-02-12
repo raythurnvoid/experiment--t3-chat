@@ -7,6 +7,7 @@ import { MyIcon } from "@/components/my-icon.tsx";
 export type MyButton_ClassNames =
 	| "MyButton"
 	| "MyButton-variant-default"
+	| "MyButton-variant-accent"
 	| "MyButton-variant-destructive"
 	| "MyButton-variant-outline"
 	| "MyButton-variant-secondary"
@@ -17,24 +18,23 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-tertiary"
 	| "MyButton-variant-link";
 
-type X =
-	| "default"
-	| "destructive"
-	| "outline"
-	| "secondary"
-	| "secondary-subtle"
-	| "ghost"
-	| "ghost-accent"
-	| "ghost-highlightable"
-	| "tertiary"
-	| "link";
-
 export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	ref?: Ref<HTMLButtonElement>;
 	id?: string;
 	className?: string;
 	type?: ComponentPropsWithRef<"button">["type"];
-	variant?: X;
+	variant?:
+		| "default"
+		| "accent"
+		| "destructive"
+		| "outline"
+		| "secondary"
+		| "secondary-subtle"
+		| "ghost"
+		| "ghost-accent"
+		| "ghost-highlightable"
+		| "tertiary"
+		| "link";
 
 	/**
 	 * Whether the button is in loading state.
@@ -55,6 +55,7 @@ export function MyButton(props: MyButton_Props) {
 			className={cn(
 				"MyButton" satisfies MyButton_ClassNames,
 				variant === "default" && ("MyButton-variant-default" satisfies MyButton_ClassNames),
+				variant === "accent" && ("MyButton-variant-accent" satisfies MyButton_ClassNames),
 				variant === "destructive" && ("MyButton-variant-destructive" satisfies MyButton_ClassNames),
 				variant === "outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
 				variant === "secondary" && ("MyButton-variant-secondary" satisfies MyButton_ClassNames),

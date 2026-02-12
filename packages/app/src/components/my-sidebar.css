@@ -10,7 +10,7 @@
 		height: 100%;
 		width: var(--my-sidebar-width);
 		flex-shrink: 0;
-		contain: content;
+		contain: strict;
 
 		background: var(--color-base-1-03);
 		color: var(--color-fg-09);

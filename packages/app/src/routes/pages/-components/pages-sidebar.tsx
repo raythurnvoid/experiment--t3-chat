@@ -7,6 +7,7 @@ import {
 	ChevronRight,
 	ChevronsDown,
 	ChevronsUp,
+	EllipsisVertical,
 	Edit2,
 	FileText,
 	Menu,
@@ -35,6 +36,16 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import {
+	MyMenu,
+	MyMenuItem,
+	MyMenuItemContent,
+	MyMenuItemContentIcon,
+	MyMenuItemContentPrimary,
+	MyMenuPopover,
+	MyMenuPopoverContent,
+	MyMenuTrigger,
+} from "@/components/my-menu.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -298,7 +309,7 @@ type PagesSidebarTreeItemActionIconButton_Props = {
 function PagesSidebarTreeItemActionIconButton(props: PagesSidebarTreeItemActionIconButton_Props) {
 	return (
 		<MyIconButton
-			variant={props.isActive ? "ghost-highlightable" : "ghost"}
+			variant="ghost-highlightable"
 			className={cn("PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames)}
 			tooltip={props.tooltip}
 			side="bottom"
@@ -492,30 +503,50 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 				>
 					<Plus />
 				</PagesSidebarTreeItemActionIconButton>
-
-				<PagesSidebarTreeItemActionIconButton
-					tooltip="Rename"
-					isActive={item.isFocused()}
-					disabled={isPending}
-					onClick={() => item.startRenaming()}
-				>
-					<Edit2 />
-				</PagesSidebarTreeItemActionIconButton>
-
-				<PagesSidebarTreeItemActionIconButton
-					tooltip={isArchived ? "Restore" : "Archive"}
-					isActive={item.isFocused()}
-					disabled={isPending}
-					onClick={() => {
-						if (isArchived) {
-							onUnarchive(itemId);
-						} else {
-							onArchive(itemId);
-						}
-					}}
-				>
-					{isArchived ? <ArchiveRestore /> : <Archive />}
-				</PagesSidebarTreeItemActionIconButton>
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyIconButton
+							className={cn(
+								"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames,
+							)}
+							variant="ghost-highlightable"
+							tooltip="More actions"
+							disabled={isPending}
+						>
+							<MyIconButtonIcon>
+								<EllipsisVertical />
+							</MyIconButtonIcon>
+						</MyIconButton>
+					</MyMenuTrigger>
+					<MyMenuPopover>
+						<MyMenuPopoverContent>
+							<MyMenuItem disabled={isPending} onClick={() => item.startRenaming()}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<Edit2 />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+							<MyMenuItem
+								variant={isArchived ? "default" : "destructive"}
+								disabled={isPending}
+								onClick={() => {
+									if (isArchived) {
+										onUnarchive(itemId);
+									} else {
+										onArchive(itemId);
+									}
+								}}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuPopoverContent>
+					</MyMenuPopover>
+				</MyMenu>
 			</div>
 		</div>
 	);

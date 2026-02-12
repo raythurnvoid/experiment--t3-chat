@@ -80,6 +80,17 @@
 	}
 	/* #endregion toolbar */
 
+	/* #region top sticky floating container */
+	.PageEditorDiffTopStickyFloatingContainer {
+		position: sticky;
+		top: calc(44px + var(--app-scrollbar-w) + 6px);
+		z-index: 1;
+
+		display: grid;
+		contain: size layout style;
+	}
+	/* #endregion top sticky floating container */
+
 	/* #region editor */
 	.PageEditorDiff-editor {
 		height: 100%;

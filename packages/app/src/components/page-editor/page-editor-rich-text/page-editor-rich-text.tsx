@@ -55,7 +55,7 @@ import { global_event_listen_all } from "../../../lib/global-event.tsx";
 
 type SyncStatus = YjsSyncStatus;
 
-// #region Toolbar
+// #region toolbar
 export type PageEditorRichTextToolbar_ClassNames =
 	| "PageEditorRichTextToolbar"
 	| "PageEditorRichTextToolbar-scrollable-area"
@@ -129,9 +129,31 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 		</div>
 	);
 }
-// #endregion Toolbar
+// #endregion toolbar
 
-// #region Bubble
+// #region top sticky floating container
+type PageEditorRichTextTopStickyFloatingContainer_ClassNames = "PageEditorRichTextTopStickyFloatingContainer";
+
+type PageEditorRichTextTopStickyFloatingContainer_Props = {
+	topStickyFloatingSlot: React.ReactNode;
+};
+
+function PageEditorRichTextTopStickyFloatingContainer(props: PageEditorRichTextTopStickyFloatingContainer_Props) {
+	const { topStickyFloatingSlot } = props;
+
+	return (
+		<div
+			className={cn(
+				"PageEditorRichTextTopStickyFloatingContainer" satisfies PageEditorRichTextTopStickyFloatingContainer_ClassNames,
+			)}
+		>
+			{topStickyFloatingSlot}
+		</div>
+	);
+}
+// #endregion top sticky floating container
+
+// #region bubble
 
 // Derived from Liveblocks:
 // liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
@@ -406,9 +428,9 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		</EditorBubble>
 	) : null;
 }
-// #endregion Bubble
+// #endregion bubble
 
-// #region Root
+// #region root
 export type PageEditorRichText_ClassNames =
 	| "PageEditorRichText"
 	| "PageEditorRichText-visible"
@@ -424,10 +446,11 @@ type PageEditorRichText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 };
 
 function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
-	const { pagesYjs, pageId, presenceStore, commentsPortalHost } = props;
+	const { pagesYjs, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const editorRef = useLiveRef(editor);
@@ -550,6 +573,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 						sessionId={presenceStore.localSessionId}
 					/>
 				)}
+				<PageEditorRichTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<EditorContent
 					className={cn("PageEditorRichText-editor-content-root" satisfies PageEditorRichText_ClassNames)}
 					injectCSS={false}
@@ -626,10 +650,11 @@ export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 };
 
 export function PageEditorRichText(props: PageEditorRichText_Props) {
-	const { pageId, presenceStore, commentsPortalHost, ...rest } = props;
+	const { pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot, ...rest } = props;
 
 	const pagesYjs = usePagesYjs({
 		pageId: pageId,
@@ -647,6 +672,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 					pageId={pageId}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
+					topStickyFloatingSlot={topStickyFloatingSlot}
 					{...rest}
 				/>
 			) : (
@@ -694,4 +720,4 @@ PageEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 		}
 	});
 };
-// #endregion Root
+// #endregion root

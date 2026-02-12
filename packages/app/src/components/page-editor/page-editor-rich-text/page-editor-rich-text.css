@@ -46,7 +46,7 @@
 	/* #region editor content */
 	.PageEditorRichText-editor-content {
 		width: 100%;
-		padding: max(16px, var(--app-scrollbar-w) + 1px) 64px 16px 64px;
+		padding: 64px 64px 16px 64px;
 
 		color: var(--PageEditorRichText-text-color-fg-default);
 
@@ -207,6 +207,17 @@
 		font-size: 0.9rem;
 	}
 	/* #endregion toolbar */
+
+	/* #region top sticky floating container */
+	.PageEditorRichTextTopStickyFloatingContainer {
+		position: sticky;
+		top: calc(44px + var(--app-scrollbar-w) + 6px);
+		z-index: 1;
+
+		display: grid;
+		contain: size layout style;
+	}
+	/* #endregion top sticky floating container */
 
 	/* #region bubble */
 	.PageEditorRichTextBubble:not(.PageEditorRichTextBubble-rendered) {

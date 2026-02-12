@@ -172,6 +172,28 @@ function PageEditorDiffToolbar(props: PageEditorDiffToolbar_Props) {
 }
 // #endregion toolbar
 
+// #region top sticky floating container
+type PageEditorDiffTopStickyFloatingContainer_ClassNames = "PageEditorDiffTopStickyFloatingContainer";
+
+type PageEditorDiffTopStickyFloatingContainer_Props = {
+	topStickyFloatingSlot: React.ReactNode;
+};
+
+function PageEditorDiffTopStickyFloatingContainer(props: PageEditorDiffTopStickyFloatingContainer_Props) {
+	const { topStickyFloatingSlot } = props;
+
+	return (
+		<div
+			className={cn(
+				"PageEditorDiffTopStickyFloatingContainer" satisfies PageEditorDiffTopStickyFloatingContainer_ClassNames,
+			)}
+		>
+			{topStickyFloatingSlot}
+		</div>
+	);
+}
+// #endregion top sticky floating container
+
 // #region PageEditorDiffWidgetAcceptDiscard
 export type PageEditorDiffWidgetAcceptDiscard_ClassNames =
 	| "PageEditorDiffWidgetAcceptDiscard"
@@ -369,10 +391,7 @@ export function PageEditorDiffWidgetAcceptDiscard(props: PageEditorDiffWidgetAcc
 
 // #region root
 
-type PageEditorDiff_ClassNames =
-	| "PageEditorDiff"
-	| "PageEditorDiff-editor"
-	| "PageEditorDiff-anchor";
+type PageEditorDiff_ClassNames = "PageEditorDiff" | "PageEditorDiff-editor" | "PageEditorDiff-anchor";
 
 type PageEditorDiff_CssVars = {
 	"--PageEditorDiff-anchor-name": string;
@@ -397,6 +416,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		commentsPortalHost,
 		hoistingContainer,
 		initialData,
+		topStickyFloatingSlot,
 	} = props;
 
 	const id = useId();
@@ -509,8 +529,15 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 					// if this is a deletion at the very end of the document,then we need to account
 					// for a newline at the end of the last line which may have been deleted
 					// https://github.com/microsoft/vscode/issues/59670
-					endLine = diff.originalStartLineNumber - 1;
-					endCharacter = editorModels.original.getLineMaxColumn(endLine);
+					if (diff.originalStartLineNumber <= 1) {
+						// Monaco ranges are 1-based; when the deleted block starts on the first line,
+						// the unchanged prefix is an empty range at 1:1.
+						endLine = 1;
+						endCharacter = 1;
+					} else {
+						endLine = diff.originalStartLineNumber - 1;
+						endCharacter = editorModels.original.getLineMaxColumn(endLine);
+					}
 				} else {
 					// Regular index normalization to convert 0-based indexes from `diff` to 1-based indexes for Monaco ranges.
 					endLine = diff.originalStartLineNumber;
@@ -531,15 +558,23 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			);
 
 			if (!isDeletion) {
-				let fromLine = diff.modifiedStartLineNumber - 1;
-				let fromCharacter = 0;
+				let fromLine: number;
+				let fromCharacter: number;
 
 				// if this is an insertion at the very end of the document,
 				// then we must start the next range after the last character of the
 				// previous line, in order to take the correct eol
 				if (isInsertion && diff.originalStartLineNumber === editorModels.original.getLineCount()) {
-					fromLine -= 1;
-					fromCharacter = editorModels.modified.getLineContent(fromLine + 1).length;
+					if (diff.modifiedStartLineNumber <= 1) {
+						fromLine = 0;
+						fromCharacter = 0;
+					} else {
+						fromLine = diff.modifiedStartLineNumber - 2;
+						fromCharacter = editorModels.modified.getLineContent(fromLine + 1).length;
+					}
+				} else {
+					fromLine = diff.modifiedStartLineNumber - 1;
+					fromCharacter = 0;
 				}
 
 				resultParts.push(
@@ -659,8 +694,17 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			throw error;
 		}
 
-		const diffsToApply = editorRef.current.getLineChanges() ?? [];
-		const result = applyDiffs(diffsToApply);
+		const editorModels = modelsRef.current;
+		if (!editorModels) {
+			const error = should_never_happen("[PageEditorDiff.acceptAllDiffs] Missing `editorModels`", {
+				editor: editorRef.current,
+				editorModels,
+			});
+			console.error(error);
+			throw error;
+		}
+
+		const result = editorModels.modified.getValue();
 		pushChangeToWorkingEditor(result);
 		editorRef.current.focus();
 
@@ -1130,6 +1174,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 					onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
 					onClickDiscardAll={handleClickDiscardAll}
 				/>
+				<PageEditorDiffTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<div className={"PageEditorDiff-editor" satisfies PageEditorDiff_ClassNames}>
 					<DiffEditor
 						height="100%"
@@ -1190,12 +1235,13 @@ export type PageEditorDiff_Props = {
 	presenceStore: pages_PresenceStore;
 	threadId?: string;
 	modifiedInitialValue?: string;
-	onExit: () => void;
 	commentsPortalHost: HTMLElement | null;
+	onExit: () => void;
+	topStickyFloatingSlot?: React.ReactNode;
 };
 
 export function PageEditorDiff(props: PageEditorDiff_Props) {
-	const { pageId, presenceStore, modifiedInitialValue, commentsPortalHost, className } = props;
+	const { pageId, presenceStore, modifiedInitialValue, commentsPortalHost, className, topStickyFloatingSlot } = props;
 
 	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -1236,6 +1282,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 										}
 									: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
 							}
+							topStickyFloatingSlot={topStickyFloatingSlot}
 						/>
 					)}
 				</Await>

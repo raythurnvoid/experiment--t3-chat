@@ -58,6 +58,47 @@
 		}
 	}
 
+	.MyButton-variant-accent {
+		color: var(--color-fg-11);
+		background: var(--color-accent-01);
+		border-color: var(--color-accent-02);
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		&:not(:disabled) {
+			&:focus-visible {
+				background: var(--color-accent-02);
+			}
+
+			&:hover {
+				color: var(--color-fg-12);
+				background: var(--color-accent-02);
+
+				&:not(:focus-visible) {
+					border-color: var(--color-accent-03);
+				}
+			}
+
+			&:active {
+				background: var(--color-accent-03);
+
+				&:not(:focus-visible) {
+					border-color: var(--color-accent-04);
+				}
+			}
+		}
+
+		&:disabled {
+			color: var(--color-fg-04);
+			background: var(--color-base-1-03);
+			border-color: var(--color-base-1-03);
+		}
+
+		&[aria-expanded="true"] {
+			border-color: var(--color-fg-06);
+			color: var(--color-fg-08);
+		}
+	}
+
 	.MyButton-variant-destructive {
 		background: var(--destructive);
 		color: var(--color-fg-10);

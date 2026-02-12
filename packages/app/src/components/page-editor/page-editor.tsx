@@ -19,6 +19,8 @@ import {
 } from "@/lib/pages.ts";
 import { Home, Sparkles } from "lucide-react";
 import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
+import { MyButton } from "../my-button.tsx";
+import { MyIcon } from "../my-icon.tsx";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
@@ -194,20 +196,18 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 }
 // #endregion header
 
-// #region pending edits banner
-type PageEditorPendingEditsBanner_ClassNames =
-	| "PageEditorPendingEditsBanner"
-	| "PageEditorPendingEditsBanner-content"
-	| "PageEditorPendingEditsBanner-icon"
-	| "PageEditorPendingEditsBanner-text"
-	| "PageEditorPendingEditsBanner-review-button";
+// #region pending edits floating
+type PageEditorPendingEditsFloating_ClassNames =
+	| "PageEditorPendingEditsFloating"
+	| "PageEditorPendingEditsFloating-icon"
+	| "PageEditorPendingEditsFloating-review-button";
 
-type PageEditorPendingEditsBanner_Props = {
+type PageEditorPendingEditsFloating_Props = {
 	updatedAt: number;
 	onReviewChanges: () => void;
 };
 
-function PageEditorPendingEditsBanner(props: PageEditorPendingEditsBanner_Props) {
+function PageEditorPendingEditsFloating(props: PageEditorPendingEditsFloating_Props) {
 	const { onReviewChanges } = props;
 
 	const handleClick = () => {
@@ -215,26 +215,24 @@ function PageEditorPendingEditsBanner(props: PageEditorPendingEditsBanner_Props)
 	};
 
 	return (
-		<div className={cn("PageEditorPendingEditsBanner" satisfies PageEditorPendingEditsBanner_ClassNames)}>
-			<div className={cn("PageEditorPendingEditsBanner-content" satisfies PageEditorPendingEditsBanner_ClassNames)}>
-				<Sparkles
-					size={16}
-					className={cn("PageEditorPendingEditsBanner-icon" satisfies PageEditorPendingEditsBanner_ClassNames)}
-				/>
-				<span className={cn("PageEditorPendingEditsBanner-text" satisfies PageEditorPendingEditsBanner_ClassNames)}>
-					Agent edits are pending review
-				</span>
-				<button
-					className={cn("PageEditorPendingEditsBanner-review-button" satisfies PageEditorPendingEditsBanner_ClassNames)}
-					onClick={handleClick}
-				>
-					Review changes
-				</button>
-			</div>
+		<div className={cn("PageEditorPendingEditsFloating" satisfies PageEditorPendingEditsFloating_ClassNames)}>
+			<MyIcon className={cn("PageEditorPendingEditsFloating-icon" satisfies PageEditorPendingEditsFloating_ClassNames)}>
+				<Sparkles />
+			</MyIcon>
+			Agent edits are pending review
+			<MyButton
+				variant="accent"
+				className={cn(
+					"PageEditorPendingEditsFloating-review-button" satisfies PageEditorPendingEditsFloating_ClassNames,
+				)}
+				onClick={handleClick}
+			>
+				Review changes
+			</MyButton>
 		</div>
 	);
 }
-// #endregion pending edits banner
+// #endregion pending edits floating
 
 // #region presence supplier
 
@@ -420,18 +418,34 @@ type PageEditorRender_Props = {
 	diffEditorRef: Ref<PageEditorDiff_Ref>;
 	modifiedInitialValue?: string;
 	onDiffExit: () => void;
+	topStickyFloatingSlot?: React.ReactNode;
 };
 
 function PageEditorRender(props: PageEditorRender_Props) {
-	const { pageId, editorMode, presenceStore, commentsPortalHost, diffEditorRef, modifiedInitialValue, onDiffExit } =
-		props;
+	const {
+		pageId,
+		editorMode,
+		presenceStore,
+		commentsPortalHost,
+		diffEditorRef,
+		modifiedInitialValue,
+		onDiffExit,
+		topStickyFloatingSlot,
+	} = props;
 
 	if (!presenceStore) {
 		return <PageEditorSkeleton />;
 	}
 
 	if (editorMode === "rich_text_editor") {
-		return <PageEditorRichText pageId={pageId} presenceStore={presenceStore} commentsPortalHost={commentsPortalHost} />;
+		return (
+			<PageEditorRichText
+				pageId={pageId}
+				presenceStore={presenceStore}
+				commentsPortalHost={commentsPortalHost}
+				topStickyFloatingSlot={topStickyFloatingSlot}
+			/>
+		);
 	}
 
 	if (editorMode === "diff_editor") {
@@ -443,11 +457,19 @@ function PageEditorRender(props: PageEditorRender_Props) {
 				modifiedInitialValue={modifiedInitialValue}
 				onExit={onDiffExit}
 				commentsPortalHost={commentsPortalHost}
+				topStickyFloatingSlot={topStickyFloatingSlot}
 			/>
 		);
 	}
 
-	return <PageEditorPlainText pageId={pageId} presenceStore={presenceStore} commentsPortalHost={commentsPortalHost} />;
+	return (
+		<PageEditorPlainText
+			pageId={pageId}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			topStickyFloatingSlot={topStickyFloatingSlot}
+		/>
+	);
 }
 // #endregion page editor render
 
@@ -487,6 +509,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
 	});
+	const hasPendingEdits = !!(pendingEditsResult && editorMode !== "diff_editor");
 
 	const diffEditorRef = useRef<PageEditorDiff_Ref | null>(null);
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
@@ -504,6 +527,14 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		diffEditorRef.current?.setModifiedContent(pendingEditsResult.modifiedContent ?? "");
 	}, [editorMode, pendingEditsResult?.modifiedContent]);
 
+	const topStickyFloatingSlot =
+		hasPendingEdits && pendingEditsResult ? (
+			<PageEditorPendingEditsFloating
+				updatedAt={pendingEditsResult.updatedAt}
+				onReviewChanges={onReviewPendingEdits ?? (() => {})}
+			/>
+		) : null;
+
 	const headerSlot = (
 		<PageEditorHeader
 			pageId={pageId}
@@ -511,18 +542,6 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 			onEditorModeChange={onEditorModeChange}
 			onlineUsers={onlineUsers}
 		/>
-	);
-
-	const enhancedHeaderSlot = (
-		<>
-			{headerSlot}
-			{pendingEditsResult && editorMode !== "diff_editor" && (
-				<PageEditorPendingEditsBanner
-					updatedAt={pendingEditsResult.updatedAt}
-					onReviewChanges={onReviewPendingEdits ?? (() => {})}
-				/>
-			)}
-		</>
 	);
 
 	const leftPanelStyle =
@@ -537,7 +556,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 
 	return (
 		<div className={cn("PageEditor" satisfies PageEditor_ClassNames)}>
-			{editorMode === "diff_editor" ? headerSlot : enhancedHeaderSlot}
+			{headerSlot}
 			<div
 				className={cn("PageEditor-editor-area" satisfies PageEditor_ClassNames)}
 				style={editorMode === "rich_text_editor" ? undefined : { overflowY: "visible" }}
@@ -570,6 +589,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 								commentsPortalHost={commentsPortalHost}
 								diffEditorRef={diffEditorRef}
 								modifiedInitialValue={pendingEditsResult?.modifiedContent ?? undefined}
+								topStickyFloatingSlot={topStickyFloatingSlot}
 								onDiffExit={handleDiffExit}
 							/>
 						</CatchBoundary>

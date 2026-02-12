@@ -181,63 +181,24 @@
 	}
 	/* #endregion header */
 
-	/* #region pending edits banner */
-	.PageEditorPendingEditsBanner {
-		display: flex;
-		align-items: center;
-		justify-content: center;
+	/* #region pending edits floating */
+	.PageEditorPendingEditsFloating {
+		place-self: center;
 
-		padding: 8px 16px;
-
-		background: color-mix(in oklch, var(--color-accent) 15%, transparent);
-		border-bottom: 1px solid color-mix(in oklch, var(--color-accent) 30%, transparent);
-	}
-
-	.PageEditorPendingEditsBanner-content {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-	}
 
-	.PageEditorPendingEditsBanner-icon {
-		color: var(--color-accent);
-		flex-shrink: 0;
-	}
+		padding: 0px 0px 0px 8px;
 
-	.PageEditorPendingEditsBanner-text {
-		font-size: 0.8125rem;
-		color: var(--color-accent);
-		white-space: nowrap;
-	}
-
-	.PageEditorPendingEditsBanner-review-button {
-		margin-left: 4px;
-		padding: 4px 12px;
 		border-radius: 6px;
 
-		font-size: 0.8125rem;
-		font-weight: 500;
-		white-space: nowrap;
+		background: var(--color-base-alt-1-08);
 
-		background: var(--color-accent);
-		color: white;
-		border: none;
-		cursor: pointer;
-
-		&:hover {
-			opacity: 0.9;
-		}
-
-		&:focus-visible {
-			outline: 2px solid var(--color-accent);
-			outline-offset: 2px;
-		}
+		box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
 	}
-	/* #endregion pending edits banner */
 
-	/* #region presence supplier */
-	/* #endregion presence supplier */
-
-	/* #region page editor render */
-	/* #endregion page editor render */
+	.PageEditorPendingEditsFloating-review-button {
+	}
+	/* #endregion pending edits floating */
 }

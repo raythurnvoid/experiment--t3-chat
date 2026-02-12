@@ -117,10 +117,30 @@ function PageEditorPlainTextToolbar(props: PageEditorPlainTextToolbar_Props) {
 }
 // #endregion toolbar
 
+// #region top sticky floating container
+type PageEditorPlainTextTopStickyFloatingContainer_ClassNames = "PageEditorPlainTextTopStickyFloatingContainer";
+
+type PageEditorPlainTextTopStickyFloatingContainer_Props = {
+	topStickyFloatingSlot: React.ReactNode;
+};
+
+function PageEditorPlainTextTopStickyFloatingContainer(props: PageEditorPlainTextTopStickyFloatingContainer_Props) {
+	const { topStickyFloatingSlot } = props;
+
+	return (
+		<div
+			className={cn(
+				"PageEditorPlainTextTopStickyFloatingContainer" satisfies PageEditorPlainTextTopStickyFloatingContainer_ClassNames,
+			)}
+		>
+			{topStickyFloatingSlot}
+		</div>
+	);
+}
+// #endregion top sticky floating container
+
 // #region root
-type PageEditorPlainText_ClassNames =
-	| "PageEditorPlainText"
-	| "PageEditorPlainText-editor";
+type PageEditorPlainText_ClassNames = "PageEditorPlainText" | "PageEditorPlainText-editor";
 
 type PageEditorPlainText_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
@@ -131,10 +151,11 @@ type PageEditorPlainText_Inner_Props = {
 	};
 	presenceStore: pages_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 };
 
 function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
-	const { initialData, pageId, presenceStore, commentsPortalHost } = props;
+	const { initialData, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
 
@@ -478,6 +499,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 					onClickSave={handleClickSave}
 					onClickSync={handleClickSync}
 				/>
+				<PageEditorPlainTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<div className={"PageEditorPlainText-editor" satisfies PageEditorPlainText_ClassNames}>
 					{hoistingContainer && (
 						<Editor
@@ -506,10 +528,11 @@ export type PageEditorPlainText_Props = {
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 };
 
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {
-	const { pageId, presenceStore, commentsPortalHost } = props;
+	const { pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
 	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -535,6 +558,7 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 						}
 						presenceStore={presenceStore}
 						commentsPortalHost={commentsPortalHost}
+						topStickyFloatingSlot={topStickyFloatingSlot}
 					/>
 				)}
 			</Await>
