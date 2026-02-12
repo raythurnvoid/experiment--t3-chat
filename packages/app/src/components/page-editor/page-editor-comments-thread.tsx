@@ -113,7 +113,12 @@ function PageEditorCommentsThreadMessageContent(props: PageEditorCommentsThreadM
 		if (!markdown) {
 			return "";
 		}
-		return pages_parse_markdown_to_html(markdown);
+		const result = pages_parse_markdown_to_html(markdown);
+		if (result._nay) {
+			console.error(result._nay);
+			return "";
+		}
+		return result._yay;
 	}, [markdown]);
 
 	return (

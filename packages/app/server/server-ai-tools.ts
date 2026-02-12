@@ -27,6 +27,29 @@ type Replacer = (content: string, find: string) => Generator<string, void, unkno
 const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0;
 const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3;
 
+function normalize_lf_newlines(content: string) {
+	return content.replace(/\r\n?/g, "\n");
+}
+
+function normalize_ai_edit_content(content: string, baselineContent: string) {
+	if (content.length === 0) {
+		return content;
+	}
+
+	const baselineHasTrailingNewline = baselineContent.endsWith("\n");
+	const contentHasTrailingNewline = content.endsWith("\n");
+
+	if (baselineHasTrailingNewline && !contentHasTrailingNewline) {
+		return `${content}\n`;
+	}
+
+	if (!baselineHasTrailingNewline && contentHasTrailingNewline) {
+		return content.replace(/\n+$/g, "");
+	}
+
+	return content;
+}
+
 /**
  * Calculate the similarity between two strings.
  *
@@ -915,9 +938,7 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 
 			let exists = !!currentPageContent;
 			const oldText = currentPageContent?.content ?? "";
-
-			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
-			const newText = args.content;
+			const newText = normalize_ai_edit_content(normalize_lf_newlines(args.content), oldText);
 			const diff = createPatch(path, oldText, newText);
 
 			let pageId = currentPageContent?.pageId;
@@ -1004,17 +1025,19 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 				throw new Error(`Page not found: ${normalizedPath}`);
 			}
 
-			const { content: modifiedText, matches } = replace_once_or_all(
+			const oldString = normalize_lf_newlines(args.oldString);
+			const newString = normalize_lf_newlines(args.newString);
+
+			const { content: modifiedTextRaw, matches } = replace_once_or_all(
 				currentPageContent.content,
-				args.oldString,
-				args.newString,
+				oldString,
+				newString,
 				{
 					replaceAll: args.replaceAll,
 					mode: "auto",
 				},
 			);
-			// TODO(pages): Enforce LF-only markdown in AI tools. Normalize CRLF/CR to "\n" before diffing and persisting.
-
+			const modifiedText = normalize_ai_edit_content(modifiedTextRaw, currentPageContent.content);
 			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
 
 			const pageId = currentPageContent.pageId;

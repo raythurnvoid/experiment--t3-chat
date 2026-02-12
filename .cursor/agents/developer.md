@@ -50,3 +50,9 @@ Keep it short and evaluable:
 - **Files modified** — list of touched files
 - **Decisions** — non-obvious choices (only if relevant)
 - **Issues** — anything unexpected, incomplete, or needing follow-up
+
+## Learned Implementation Memory
+
+- 2026-02-12: Pending AI page edits are stored in Convex `ai_chat_pending_edits` and currently only written via `internal.ai_chat.upsert_ai_pending_edit` from `packages/app/server/server-ai-tools.ts` (`write_page`/`edit_page` tools).
+- 2026-02-12: There is no explicit save/accept/discard clear path for pending edits in the page editor flow; pending-edit cleanup currently happens only through presence offline cleanup (`packages/app/convex/presence.ts`).
+- 2026-02-12: The diff editor baseline uses live Yjs-reconstructed markdown (`pages_fetch_page_yjs_state_and_markdown`), while AI tool edits are computed from `get_page_last_available_markdown_content_by_path` (overlay or `pages_markdown_content`), so baseline sources can diverge.

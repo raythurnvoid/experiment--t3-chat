@@ -215,13 +215,19 @@ function PageEditorPendingEditsFloating(props: PageEditorPendingEditsFloating_Pr
 	};
 
 	return (
-		<div className={cn("PageEditorPendingEditsFloating" satisfies PageEditorPendingEditsFloating_ClassNames)}>
+		<div
+			className={cn("PageEditorPendingEditsFloating" satisfies PageEditorPendingEditsFloating_ClassNames)}
+			role="status"
+			aria-live="polite"
+			data-testid="pending-edits-banner"
+		>
 			<MyIcon className={cn("PageEditorPendingEditsFloating-icon" satisfies PageEditorPendingEditsFloating_ClassNames)}>
 				<Sparkles />
 			</MyIcon>
 			Agent edits are pending review
 			<MyButton
 				variant="accent"
+				data-testid="review-changes-button"
 				className={cn(
 					"PageEditorPendingEditsFloating-review-button" satisfies PageEditorPendingEditsFloating_ClassNames,
 				)}
@@ -417,6 +423,7 @@ type PageEditorRender_Props = {
 	commentsPortalHost: HTMLElement | null;
 	diffEditorRef: Ref<PageEditorDiff_Ref>;
 	modifiedInitialValue?: string;
+	pendingEditUpdatedAt?: number;
 	onDiffExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 };
@@ -429,6 +436,7 @@ function PageEditorRender(props: PageEditorRender_Props) {
 		commentsPortalHost,
 		diffEditorRef,
 		modifiedInitialValue,
+		pendingEditUpdatedAt,
 		onDiffExit,
 		topStickyFloatingSlot,
 	} = props;
@@ -455,6 +463,7 @@ function PageEditorRender(props: PageEditorRender_Props) {
 				pageId={pageId}
 				presenceStore={presenceStore}
 				modifiedInitialValue={modifiedInitialValue}
+				pendingEditUpdatedAt={pendingEditUpdatedAt}
 				onExit={onDiffExit}
 				commentsPortalHost={commentsPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
@@ -589,6 +598,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 								commentsPortalHost={commentsPortalHost}
 								diffEditorRef={diffEditorRef}
 								modifiedInitialValue={pendingEditsResult?.modifiedContent ?? undefined}
+								pendingEditUpdatedAt={pendingEditsResult?.updatedAt ?? undefined}
 								topStickyFloatingSlot={topStickyFloatingSlot}
 								onDiffExit={handleDiffExit}
 							/>

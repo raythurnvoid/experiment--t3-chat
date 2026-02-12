@@ -11,6 +11,8 @@ export type AppElementId =
  */
 export type AppClassName = "app-doc" | "app-font-monospace";
 
+export type AppDataTestId = "";
+
 export class dom_TypedAttributeAccessor<CustomAttributes extends Record<string, string>> {
 	get<AttributeName extends keyof CustomAttributes & string>(
 		attributeName: AttributeName,

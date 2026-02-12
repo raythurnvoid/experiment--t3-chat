@@ -516,6 +516,41 @@ export const upsert_ai_pending_edit = internalMutation({
 	},
 });
 
+export const clear_ai_pending_edit = mutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+		expectedUpdatedAt: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const pendingEdits = await ctx.db
+			.query("ai_chat_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("userId", user.id)
+					.eq("pageId", args.pageId),
+			)
+			.first();
+
+		if (!pendingEdits) {
+			return null;
+		}
+
+		if (args.expectedUpdatedAt != null && pendingEdits.updatedAt !== args.expectedUpdatedAt) {
+			return null;
+		}
+
+		await ctx.db.delete("ai_chat_pending_edits", pendingEdits._id);
+		return null;
+	},
+});
+
 export const get_ai_pending_edit = query({
 	args: {
 		workspaceId: v.string(),

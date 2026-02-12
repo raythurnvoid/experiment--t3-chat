@@ -1,6 +1,6 @@
 import type { pages_TreeItem } from "../convex/ai_docs_temp.ts";
 import { StarterKit } from "@tiptap/starter-kit";
-import { Markdown } from "@tiptap/markdown";
+import { Markdown, MarkdownManager } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
 import { TaskItem } from "@tiptap/extension-task-item";
 import { TextAlign } from "@tiptap/extension-text-align";
@@ -17,8 +17,12 @@ import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { CommentsExtension } from "@liveblocks/react-tiptap";
-import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
-import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
+import {
+	generateJSON as tiptap_generateJSON_server,
+	generateHTML as tiptap_generateHTML_server,
+} from "@tiptap/html/server";
+import { generateJSON as tiptap_generateJSON_browser, generateHTML as tiptap_generateHTML_browser } from "@tiptap/html";
+import { Result } from "./errors-as-values-utils.ts";
 
 export const pages_ROOT_ID = "root";
 export const pages_FIRST_VERSION = 1;
@@ -81,23 +85,76 @@ const pages_marked = ((/* iife */) => {
 	};
 })();
 
+const tiptap_markdown_manager = ((/* iife */) => {
+	function value() {
+		return new MarkdownManager({
+			marked: pages_marked(),
+			markedOptions: {
+				gfm: true,
+				breaks: false,
+			},
+			extensions: get_tiptap_shared_extensions_list(),
+		});
+	}
+
+	let cache: ReturnType<typeof value>;
+
+	return function pages_tiptap_markdown_manager() {
+		return (cache ??= value());
+	};
+})();
+
+function get_tiptap_markdown_manager(args?: { extensions?: Extensions }) {
+	return args?.extensions
+		? new MarkdownManager({
+				marked: pages_marked(),
+				markedOptions: {
+					gfm: true,
+					breaks: false,
+				},
+				extensions: args.extensions,
+			})
+		: tiptap_markdown_manager();
+}
+
 /**
  * Parse markdown string to HTML.
  */
 export const pages_parse_markdown_to_html = ((/* iife */) => {
 	function value(markdown: string) {
-		const markedInstance = pages_marked();
-		const html = markedInstance.parse(markdown, { async: false });
+		// const markedInstance = pages_marked();
+		// const html = markedInstance.parse(markdown, { async: false });
+
+		const markdownManager = get_tiptap_markdown_manager();
+		let json;
+		try {
+			json = markdownManager.parse(markdown);
+		} catch (error) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "Error parsing markdown to JSON",
+					cause: error,
+				},
+			});
+		}
+
+		const html =
+			typeof window === "undefined"
+				? tiptap_generateHTML_server(json, get_tiptap_shared_extensions_list())
+				: tiptap_generateHTML_browser(json, get_tiptap_shared_extensions_list());
 
 		// Preserve trailing empty lines at EOF (Markdown usually ignores them).
 		// - every 2 `\n` => 1 empty paragraph
 		// - odd counts round up
 		const trailing = /\n+$/.exec(markdown)?.[0] ?? "";
 		const newlineCount = trailing.length > 0 ? trailing.split("\n").length - 1 : 0;
-		if (newlineCount === 0) return html;
+		if (newlineCount === 0) return Result({ _yay: html });
 
 		const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
-		return html + "<p></p>".repeat(paragraphCount);
+		return Result({
+			_yay: html + "<p></p>".repeat(paragraphCount),
+		});
 	}
 
 	const cache = new Map<Parameters<typeof value>[0], ReturnType<typeof value>>();
@@ -115,7 +172,7 @@ export const pages_parse_markdown_to_html = ((/* iife */) => {
 })();
 
 export function pages_tiptap_html_to_json(args: { html: string; extensions?: Extensions }) {
-	const extensions = args.extensions ?? Object.values(pages_get_tiptap_shared_extensions());
+	const extensions = args.extensions ?? get_tiptap_shared_extensions_list();
 	const json =
 		typeof window === "undefined"
 			? tiptap_generateJSON_server(args.html, extensions)
@@ -128,11 +185,9 @@ export function pages_tiptap_markdown_to_json(args: { markdown: string; extensio
 		return pages_tiptap_empty_doc_json();
 	}
 
-	const html = pages_parse_markdown_to_html(args.markdown);
-	return pages_tiptap_html_to_json({
-		html,
-		extensions: args.extensions,
-	});
+	const markdownManager = get_tiptap_markdown_manager({ extensions: args.extensions });
+	const json = markdownManager.parse(args.markdown);
+	return json;
 }
 
 /**
@@ -259,7 +314,15 @@ export function pages_yjs_doc_update_from_markdown(args: { markdown: string; mut
 			opKind: "user-edit",
 		});
 
-		return args.mut_yjsDoc;
+		return Result({ _yay: args.mut_yjsDoc });
+	} catch (error) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Error updating Y.Doc from tiptap editor",
+				cause: error,
+			},
+		});
 	} finally {
 		editor.destroy();
 	}
@@ -385,6 +448,18 @@ export const pages_get_tiptap_shared_extensions = ((/* iife */) => {
 			}),
 			liveblocksComments: CommentsExtension,
 		};
+	}
+
+	let cache: ReturnType<typeof value>;
+
+	return function pages_get_tiptap_shared_extensions() {
+		return (cache ??= value());
+	};
+})();
+
+const get_tiptap_shared_extensions_list = ((/* iife */) => {
+	function value() {
+		return Object.values(pages_get_tiptap_shared_extensions());
 	}
 
 	let cache: ReturnType<typeof value>;

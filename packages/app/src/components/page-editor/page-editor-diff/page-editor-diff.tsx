@@ -413,6 +413,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		pageId,
 		presenceStore,
 		modifiedInitialValue,
+		pendingEditUpdatedAt,
 		commentsPortalHost,
 		hoistingContainer,
 		initialData,
@@ -423,6 +424,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	const anchorName = `${"--PageEditorDiff-anchor-name" satisfies keyof PageEditorDiff_CssVars}-${id}`;
 
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
+	const clearPendingEditMutation = useMutation(api.ai_chat.clear_ai_pending_edit);
 
 	const serverSequenceData = useQuery(api.ai_docs_temp.get_page_last_yjs_sequence, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -481,6 +483,19 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	const updateDirtyBaseline = (newBaselineMarkdown: string) => {
 		baselineMarkdownRef.current = newBaselineMarkdown;
 		setIsDirty(false);
+	};
+
+	const clearPendingEdit = async () => {
+		if (pendingEditUpdatedAt == null) {
+			return;
+		}
+
+		await clearPendingEditMutation({
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId,
+			expectedUpdatedAt: pendingEditUpdatedAt,
+		});
 	};
 
 	/**
@@ -733,10 +748,15 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			const workingMarkdown = originalEditorModel.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 
-			pages_yjs_doc_update_from_markdown({
+			const updatedYjsDocFromMarkdownResult = pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
 			});
+
+			if (updatedYjsDocFromMarkdownResult._nay) {
+				console.error(updatedYjsDocFromMarkdownResult._nay);
+				return;
+			}
 
 			// Diff update from baseline to working.
 			const diffUpdate = pages_yjs_compute_diff_update_from_yjs_doc({
@@ -767,6 +787,10 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 
 			updateDirtyBaseline(workingMarkdown);
 			updateThreadIds(workingMarkdown);
+
+			await clearPendingEdit().catch((error) => {
+				console.error("[PageEditorDiff.handleClickSave] Failed to clear pending edit", error);
+			});
 		})()
 			.catch((err) => {
 				console.error("[PageEditorDiff.handleClickSave] Save failed", err);
@@ -930,6 +954,13 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	const handleClickDiscardAll = () => {
 		if (isSaving || isSyncing || !hasDiffs) return;
 		discardAllDiffs();
+
+		(async (/* iife */) => {
+			await clearPendingEdit();
+		})().catch((error) => {
+			console.error("[PageEditorDiff.handleClickDiscardAll] Failed to clear pending edit", error);
+			toast.error("Failed to clear pending edits");
+		});
 	};
 
 	const handleClickWidgetAccept = (index: number) => {
@@ -1152,6 +1183,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		<>
 			<div
 				className={cn("PageEditorDiff" satisfies PageEditorDiff_ClassNames, className)}
+				aria-label="Page diff editor"
 				style={{
 					...({
 						"--PageEditorDiff-anchor-name": anchorName,
@@ -1235,6 +1267,7 @@ export type PageEditorDiff_Props = {
 	presenceStore: pages_PresenceStore;
 	threadId?: string;
 	modifiedInitialValue?: string;
+	pendingEditUpdatedAt?: number;
 	commentsPortalHost: HTMLElement | null;
 	onExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
