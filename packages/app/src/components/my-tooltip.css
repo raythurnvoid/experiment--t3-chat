@@ -2,6 +2,7 @@
 	.MyTooltipContent {
 		box-sizing: border-box;
 		position: relative;
+		pointer-events: none;
 
 		max-width: 320px;
 

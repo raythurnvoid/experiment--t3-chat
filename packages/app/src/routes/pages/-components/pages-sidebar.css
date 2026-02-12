@@ -104,12 +104,8 @@
 
 	.PagesSidebarTreeItem {
 		position: relative;
-	}
-
-	.PagesSidebarTreeItem-content {
 		height: 44px;
 		border-radius: 8px;
-		border: 2px solid transparent;
 		color: var(--color-fg-08);
 
 		&:not(:has(> .PagesSidebarTreeItemArrow)) {
@@ -122,12 +118,7 @@
 
 		&:not(.PagesSidebarTreeItem-content-placeholder) {
 			display: grid;
-			grid-template:
-				"arrow 			primary-action	primary-action" 22px
-				"meta-label meta-label			actions				" 22px
-				/ auto 1fr auto;
-
-			margin-block: 6px;
+			grid-template-columns: auto 1fr auto;
 		}
 
 		&.PagesSidebarTreeItem-content-placeholder {
@@ -136,19 +127,7 @@
 			align-items: center;
 		}
 
-		&:not(.PagesSidebarTreeItem-content-placeholder):has(
-				> .PagesSidebarTreeItem-primary-action-interactive-area:hover
-			) {
-			background-color: var(--color-base-1-06);
-			color: var(--color-fg-11);
-		}
-
-		&:not(.PagesSidebarTreeItem-content-placeholder):has(.PagesSidebarTreeItem-primary-action-interactive-area:active) {
-			background-color: var(--color-base-1-07);
-			color: var(--color-fg-12);
-		}
-
-		&.PagesSidebarTreeItem-content-dragging-over {
+		&.PagesSidebarTreeItem-content-dragging-target > .PagesSidebarTreeItem-primary-action-interactive-area {
 			border-style: dashed;
 			border-color: var(--color-fg-09);
 			background-color: var(--color-base-1-05);
@@ -161,67 +140,33 @@
 	}
 
 	.PagesSidebarTreeArea-container:not(:has(.PagesSidebarTreeRenameInput-input:focus)) {
-		.PagesSidebarTreeItem-content {
-			&.PagesSidebarTreeItem-content-selected {
-				background-color: var(--color-base-1-05);
-				color: var(--color-fg-09);
-				border-color: transparent;
-
-				&:has(> .PagesSidebarTreeItem-primary-action-interactive-area:hover) {
-					background-color: var(--color-base-1-06);
-					color: var(--color-fg-11);
-				}
-			}
-
-			&.PagesSidebarTreeItem-content-navigated {
-				font-weight: 500;
-				color: var(--color-fg-10);
-			}
-
-			&.PagesSidebarTreeItem-content-focused {
-				border-color: var(--color-fg-12);
-			}
+		.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
+			font-weight: 500;
+			color: var(--color-fg-10);
 		}
 
 		&:focus-within {
-			.PagesSidebarTreeItem-content {
-				&.PagesSidebarTreeItem-content-navigated {
-					font-weight: 500;
-					color: var(--color-fg-11);
-				}
-
-				&.PagesSidebarTreeItem-content-focused {
-					border-color: var(--color-fg-12);
-				}
+			.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
+				font-weight: 500;
+				color: var(--color-fg-11);
 			}
 		}
 	}
 
 	.PagesSidebarTreeArea-container-dragging {
-		.PagesSidebarTreeItemArrow,
-		.PagesSidebarTreeItem-actions {
-			pointer-events: none;
-		}
-
-		/* Keep drag events bound to the row button itself; avoid child-level dragleave churn. */
-		.PagesSidebarTreeItem-primary-action-interactive-area * {
+		.PagesSidebarTreeItem-primary-action-interactive-area > * {
 			pointer-events: none;
 		}
 	}
 
 	.PagesSidebarTreeItemArrow {
-		grid-area: arrow;
-
-		display: flex;
-		height: 20px;
-		width: 20px;
-		align-items: center;
-		justify-content: center;
-		padding: 0;
+		grid-row: 1 / 3;
+		grid-column: 1;
 	}
 
 	.PagesSidebarTreeItemPrimaryActionContent {
-		grid-area: primary-action;
+		grid-row: 1;
+		grid-column: 2;
 
 		display: flex;
 		gap: 4px;
@@ -229,6 +174,8 @@
 
 		font-size: 0.875rem;
 		outline: none;
+
+		min-width: 0;
 	}
 
 	.PagesSidebarTreeItemPrimaryActionContent-title-container {
@@ -246,7 +193,9 @@
 	}
 
 	.PagesSidebarTreeItem-primary-action-interactive-area {
-		grid-area: 1 / 1 / -1 / -1;
+		grid-row: 1 / 4;
+		grid-column: 1 / 4;
+
 		display: grid;
 		grid-template-columns: subgrid;
 		grid-template-rows: subgrid;
@@ -255,7 +204,8 @@
 	}
 
 	.PagesSidebarTreeItem-meta-label {
-		grid-area: meta-label;
+		grid-row: 2;
+		grid-column: 2;
 
 		display: flex;
 		align-items: center;
@@ -279,22 +229,12 @@
 	}
 
 	.PagesSidebarTreeItem-actions {
-		grid-area: actions;
+		grid-row: 1 / 3;
+		grid-column: 3;
 
 		display: flex;
-		gap: 4px;
 		align-items: center;
 		justify-content: flex-end;
-
-		padding-inline: 4px;
-
-		height: 20px;
-	}
-
-	.PagesSidebarTreeItemActionIconButton {
-		width: 20px;
-		height: 20px;
-		padding: 0;
 	}
 
 	.PagesSidebar-multi-selection-counter {
@@ -309,13 +249,6 @@
 	.PagesSidebar-multi-selection-counter-label {
 		font-weight: 500;
 		font-size: 14px;
-	}
-
-	.PagesSidebar-tree-drag-between-line {
-		height: 4px;
-		width: calc(100% + 16px);
-		background-color: var(--color-fg-10);
-		transform: translate3d(-8px, -6px, 0);
 	}
 
 	.PagesSidebarTreeItemIcon {

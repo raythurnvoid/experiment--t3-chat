@@ -1,6 +1,7 @@
 import "./my-icon-button.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
+import type * as Ariakit from "@ariakit/react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -12,11 +13,12 @@ export type MyIconButton_ClassNames = "MyIconButton";
 export type MyIconButton_Props = ComponentPropsWithRef<typeof MyButton> & {
 	ref?: Ref<HTMLButtonElement>;
 	tooltip?: string;
+	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
 	side?: "top" | "bottom" | "left" | "right";
 };
 
 export function MyIconButton(props: MyIconButton_Props) {
-	const { ref, id, className, tooltip, side = "bottom", children, ...rest } = props;
+	const { ref, id, className, tooltip, tooltipTimeout, side = "bottom", children, ...rest } = props;
 	const buttonElement = (
 		<MyButton
 			ref={ref}
@@ -35,7 +37,7 @@ export function MyIconButton(props: MyIconButton_Props) {
 	}
 
 	return (
-		<MyTooltip placement={side}>
+		<MyTooltip timeout={tooltipTimeout} placement={side}>
 			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
 			<MyTooltipContent>{tooltip}</MyTooltipContent>
 		</MyTooltip>
