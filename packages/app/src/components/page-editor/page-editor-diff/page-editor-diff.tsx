@@ -469,8 +469,16 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = pages_headless_tiptap_editor_create({ initialContent: { markdown } });
-		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor.state).toSorted();
-		headlessEditor.destroy();
+
+		if (headlessEditor._nay) {
+			console.error("[PageEditorDiff.updateThreadIds] Error while creating headless editor", {
+				nay: headlessEditor._nay,
+			});
+			return;
+		}
+
+		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor._yay.state).toSorted();
+		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");
 		if (nextKey === commentThreadIdsKeyRef.current) {
@@ -748,13 +756,13 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			const workingMarkdown = originalEditorModel.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 
-			const updatedYjsDocFromMarkdownResult = pages_yjs_doc_update_from_markdown({
+			const updatedYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
 			});
 
-			if (updatedYjsDocFromMarkdownResult._nay) {
-				console.error(updatedYjsDocFromMarkdownResult._nay);
+			if (updatedYjsDocFromMarkdown._nay) {
+				console.error(updatedYjsDocFromMarkdown._nay);
 				return;
 			}
 
@@ -823,17 +831,24 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 				return;
 			}
 
+			if (remoteData.markdown._nay) {
+				console.error("[PageEditorDiff.handleApplySnapshotMarkdown] Error while fetching remote data", {
+					nay: remoteData.markdown._nay,
+				});
+				return;
+			}
+
 			// Reset baselines and sequences
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
-			updateDirtyBaseline(remoteData.markdown);
+			updateDirtyBaseline(remoteData.markdown._yay);
 
 			// Apply the restored content to both Monaco models
-			pushChangeToWorkingEditor(remoteData.markdown);
-			pushChangeToUnstagedEditor(remoteData.markdown);
+			pushChangeToWorkingEditor(remoteData.markdown._yay);
+			pushChangeToUnstagedEditor(remoteData.markdown._yay);
 
 			// Update thread IDs based on the new baseline
-			updateThreadIds(remoteData.markdown);
+			updateThreadIds(remoteData.markdown._yay);
 
 			// Ensure hasDiffs is false since both models now have the same content
 			setHasDiffs(false);
@@ -871,9 +886,27 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			const workingMarkdown = editorModels.original.getValue();
 			const unstagedMarkdown = editorModels.modified.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
-			pages_yjs_doc_update_from_markdown({ mut_yjsDoc: workingYjsDoc, markdown: workingMarkdown });
+			const workingYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
+				mut_yjsDoc: workingYjsDoc,
+				markdown: workingMarkdown,
+			});
+			if (workingYjsDocFromMarkdown._nay) {
+				console.error("[PageEditorDiff.handleClickSync] Error while rebuilding working Y.Doc from markdown", {
+					nay: workingYjsDocFromMarkdown._nay,
+				});
+				return;
+			}
 			const unstagedYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
-			pages_yjs_doc_update_from_markdown({ mut_yjsDoc: unstagedYjsDoc, markdown: unstagedMarkdown });
+			const unstagedYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
+				mut_yjsDoc: unstagedYjsDoc,
+				markdown: unstagedMarkdown,
+			});
+			if (unstagedYjsDocFromMarkdown._nay) {
+				console.error("[PageEditorDiff.handleClickSync] Error while rebuilding unstaged Y.Doc from markdown", {
+					nay: unstagedYjsDocFromMarkdown._nay,
+				});
+				return;
+			}
 
 			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -887,6 +920,13 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 						remoteData,
 					}),
 				);
+				return;
+			}
+
+			if (remoteData.markdown._nay) {
+				console.error("[PageEditorDiff.handleClickSync] Error while fetching remote data", {
+					nay: remoteData.markdown._nay,
+				});
 				return;
 			}
 
@@ -915,21 +955,34 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			const mergedWorkingMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: workingYjsDoc });
 			const mergedUnstagedMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: unstagedYjsDoc });
 
+			if (mergedWorkingMarkdown._nay) {
+				console.error("[PageEditorDiff.handleClickSync] Error while getting merged working markdown", {
+					nay: mergedWorkingMarkdown._nay,
+				});
+				return;
+			}
+			if (mergedUnstagedMarkdown._nay) {
+				console.error("[PageEditorDiff.handleClickSync] Error while getting merged unstaged markdown", {
+					nay: mergedUnstagedMarkdown._nay,
+				});
+				return;
+			}
+
 			// Update dirty detection baseline.
 			baselineYjsDocRef.current = remoteData.yjsDoc;
-			updateDirtyBaseline(mergedWorkingMarkdown);
+			updateDirtyBaseline(mergedWorkingMarkdown._yay);
 			setWorkingYjsSequence(remoteData.yjsSequence);
 
 			// Apply the merged content as a single undoable edit.
 			// TODO: if we save the local edits as incremental updates we can let the user undo granularly.
-			if (mergedWorkingMarkdown !== remoteData.markdown) {
-				pushChangeToWorkingEditor(mergedWorkingMarkdown);
+			if (mergedWorkingMarkdown._yay !== remoteData.markdown._yay) {
+				pushChangeToWorkingEditor(mergedWorkingMarkdown._yay);
 			}
-			if (mergedUnstagedMarkdown !== remoteData.markdown) {
-				pushChangeToUnstagedEditor(mergedUnstagedMarkdown);
+			if (mergedUnstagedMarkdown._yay !== remoteData.markdown._yay) {
+				pushChangeToUnstagedEditor(mergedUnstagedMarkdown._yay);
 			}
 
-			updateThreadIds(remoteData.markdown);
+			updateThreadIds(remoteData.markdown._yay);
 		})()
 			.catch((err) => {
 				console.error("[PageEditorDiff.handleClickSync] Sync failed", err);
@@ -1296,28 +1349,34 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 		hoistingContainer != null && (
 			<Suspense fallback={<>Loading</>}>
 				<Await promise={pageContentData}>
-					{(pageContentData) => (
-						<PageEditorDiff_Inner
-							key={pageId}
-							{...props}
-							className={className}
-							pageId={pageId}
-							presenceStore={presenceStore}
-							modifiedInitialValue={modifiedInitialValue}
-							commentsPortalHost={commentsPortalHost}
-							hoistingContainer={hoistingContainer}
-							initialData={
-								pageContentData
-									? {
-											markdown: pageContentData.markdown,
-											mut_yjsDoc: pageContentData.yjsDoc,
-											yjsSequence: pageContentData.yjsSequence,
-										}
-									: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
-							}
-							topStickyFloatingSlot={topStickyFloatingSlot}
-						/>
-					)}
+					{(pageContentData) => {
+						if (pageContentData?.markdown._nay) {
+							console.error("[PageEditorDiff] Error while fetching page content data", pageContentData.markdown._nay);
+						}
+
+						return (
+							<PageEditorDiff_Inner
+								key={pageId}
+								{...props}
+								className={className}
+								pageId={pageId}
+								presenceStore={presenceStore}
+								modifiedInitialValue={modifiedInitialValue}
+								commentsPortalHost={commentsPortalHost}
+								hoistingContainer={hoistingContainer}
+								initialData={
+									pageContentData?.markdown._yay
+										? {
+												markdown: pageContentData.markdown._yay,
+												mut_yjsDoc: pageContentData.yjsDoc,
+												yjsSequence: pageContentData.yjsSequence,
+											}
+										: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
+								}
+								topStickyFloatingSlot={topStickyFloatingSlot}
+							/>
+						);
+					}}
 				</Await>
 			</Suspense>
 		)

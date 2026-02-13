@@ -478,7 +478,9 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 				if (result._yay) {
 					return result._yay.payload;
 				} else {
-					throw new Error(`Failed to resolve contextual prompt: ${result._nay.message}`);
+					throw new Error("[PageEditorRichText.resolveContextualPrompt] Failed to resolve contextual prompt", {
+						cause: result._nay,
+					});
 				}
 			},
 		},

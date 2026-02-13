@@ -176,6 +176,57 @@ Exceptions (add an explicit return type when it helps):
 
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
+## Errors as values (`Result`) pattern
+
+This codebase uses the `Result` helper from `packages/app/shared/errors-as-values-utils.ts` for recoverable errors.
+
+Return `Result` values with explicit success/failure branches:
+
+```ts
+return Result({ _yay: value });
+return Result({
+	_nay: {
+		name: "nay",
+		message: "[OwnerSymbol.operation] Error while doing something",
+		cause: error,
+	},
+});
+```
+
+When consuming a Result-returning function:
+
+- Handle both branches explicitly (`_yay` and `_nay`)
+- Prefer bubbling `_nay` at the same abstraction layer (`if (result._nay) return result;`)
+- Do not ignore returned Result values; if bubbling is not possible, at least log the `_nay` with context
+
+### Throwing because of `_nay`
+
+At boundaries where you must throw (for example integration boundaries), throw an ad hoc error message and pass `_nay` in `cause`:
+
+```ts
+if (result._nay) {
+	throw new Error("[OwnerSymbol.operation] Failed to perform operation", {
+		cause: result._nay,
+	});
+}
+```
+
+Never throw raw `_nay.message` directly:
+
+```ts
+// bad
+throw new Error(result._nay.message);
+```
+
+### Message string format
+
+For both `_nay.message` and throw messages:
+
+- Start with `[OwnerSymbol.operation]`
+- Describe the failed operation in clear terms (`Failed to ...`, `Error while ...`)
+- Keep the message stable and concise (do not embed volatile payloads)
+- Put details in `cause` and structured logs, not in the message text
+
 ## Consistency requirement (same-author rule)
 
 When editing existing code, your changes must match the existing local style and patterns in that file and nearby modules — **it should look like the same person wrote the code**. Do not introduce new organizational patterns, naming conventions, or stylistic preferences unless the user explicitly requested it or it is required for correctness.

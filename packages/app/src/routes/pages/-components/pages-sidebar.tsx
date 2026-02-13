@@ -1012,10 +1012,13 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 		})
 			.then((result) => {
-				setPendingRenamePageId(result.pageId);
+				if (result._nay) {
+					throw new Error("[PagesSidebar.createPage] Error creating page", { cause: result._nay });
+				}
+				setPendingRenamePageId(result._yay.pageId);
 				return navigate({
 					to: "/pages",
-					search: { pageId: result.pageId, view },
+					search: { pageId: result._yay.pageId, view },
 				});
 			})
 			.catch(console.error)

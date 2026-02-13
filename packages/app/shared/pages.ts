@@ -1,6 +1,6 @@
 import type { pages_TreeItem } from "../convex/ai_docs_temp.ts";
 import { StarterKit } from "@tiptap/starter-kit";
-import { Markdown, MarkdownManager } from "@tiptap/markdown";
+import { Markdown } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
 import { TaskItem } from "@tiptap/extension-task-item";
 import { TextAlign } from "@tiptap/extension-text-align";
@@ -17,11 +17,8 @@ import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { CommentsExtension } from "@liveblocks/react-tiptap";
-import {
-	generateJSON as tiptap_generateJSON_server,
-	generateHTML as tiptap_generateHTML_server,
-} from "@tiptap/html/server";
-import { generateJSON as tiptap_generateJSON_browser, generateHTML as tiptap_generateHTML_browser } from "@tiptap/html";
+import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
+import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "./errors-as-values-utils.ts";
 
 export const pages_ROOT_ID = "root";
@@ -75,6 +72,44 @@ const pages_marked = ((/* iife */) => {
 			gfm: true,
 			breaks: false,
 		});
+
+		// Tiptap registers a custom `taskList` tokenizer on the same marked instance
+		// in `packages/app/vendor/tiptap/packages/extension-list/src/task-list/task-list.ts` (line 76).
+		// Add a renderer for it so `marked.parse()` can emit HTML for task lists.
+		instance.use({
+			extensions: [
+				{
+					name: "taskList",
+					renderer(token) {
+						const taskListToken = token as {
+							items?: Array<{
+								checked?: boolean;
+								text?: string;
+								tokens?: unknown[];
+								nestedTokens?: unknown[];
+							}>;
+						};
+						const itemsHtml = (taskListToken.items ?? [])
+							.map((itemToken) => {
+								const itemTextHtml =
+									itemToken.tokens && itemToken.tokens.length > 0
+										? this.parser.parseInline(itemToken.tokens as Parameters<typeof this.parser.parseInline>[0])
+										: (itemToken.text ?? "");
+								const nestedHtml =
+									itemToken.nestedTokens && itemToken.nestedTokens.length > 0
+										? this.parser.parse(itemToken.nestedTokens as Parameters<typeof this.parser.parse>[0])
+										: "";
+								return `<li data-type="taskItem" data-checked="${
+									itemToken.checked ? "true" : "false"
+								}"><p>${itemTextHtml}</p>${nestedHtml}</li>`;
+							})
+							.join("");
+						return `<ul data-type="taskList">${itemsHtml}</ul>`;
+					},
+				},
+			],
+		});
+
 		return instance;
 	}
 
@@ -85,36 +120,34 @@ const pages_marked = ((/* iife */) => {
 	};
 })();
 
-const tiptap_markdown_manager = ((/* iife */) => {
-	function value() {
-		return new MarkdownManager({
-			marked: pages_marked(),
-			markedOptions: {
-				gfm: true,
-				breaks: false,
+/**
+ * Parse markdown string to HTML.
+ */
+function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensions }) {
+	let html;
+	try {
+		html = pages_marked().parse(args.markdown, { async: false });
+	} catch (error) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "[tiptap_markdown_to_html] Error while parsing markdown to HTML",
+				cause: error,
 			},
-			extensions: get_tiptap_shared_extensions_list(),
 		});
 	}
 
-	let cache: ReturnType<typeof value>;
+	// Preserve trailing empty lines at EOF (Markdown usually ignores them).
+	// - every 2 `\n` => 1 empty paragraph
+	// - odd counts round up
+	const trailing = /\n+$/.exec(args.markdown)?.[0] ?? "";
+	const newlineCount = trailing.length > 0 ? trailing.split("\n").length - 1 : 0;
+	if (newlineCount === 0) return Result({ _yay: html });
 
-	return function pages_tiptap_markdown_manager() {
-		return (cache ??= value());
-	};
-})();
-
-function get_tiptap_markdown_manager(args?: { extensions?: Extensions }) {
-	return args?.extensions
-		? new MarkdownManager({
-				marked: pages_marked(),
-				markedOptions: {
-					gfm: true,
-					breaks: false,
-				},
-				extensions: args.extensions,
-			})
-		: tiptap_markdown_manager();
+	const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
+	return Result({
+		_yay: html + "<p></p>".repeat(paragraphCount),
+	});
 }
 
 /**
@@ -122,38 +155,8 @@ function get_tiptap_markdown_manager(args?: { extensions?: Extensions }) {
  */
 export const pages_parse_markdown_to_html = ((/* iife */) => {
 	function value(markdown: string) {
-		// const markedInstance = pages_marked();
-		// const html = markedInstance.parse(markdown, { async: false });
-
-		const markdownManager = get_tiptap_markdown_manager();
-		let json;
-		try {
-			json = markdownManager.parse(markdown);
-		} catch (error) {
-			return Result({
-				_nay: {
-					name: "nay",
-					message: "Error parsing markdown to JSON",
-					cause: error,
-				},
-			});
-		}
-
-		const html =
-			typeof window === "undefined"
-				? tiptap_generateHTML_server(json, get_tiptap_shared_extensions_list())
-				: tiptap_generateHTML_browser(json, get_tiptap_shared_extensions_list());
-
-		// Preserve trailing empty lines at EOF (Markdown usually ignores them).
-		// - every 2 `\n` => 1 empty paragraph
-		// - odd counts round up
-		const trailing = /\n+$/.exec(markdown)?.[0] ?? "";
-		const newlineCount = trailing.length > 0 ? trailing.split("\n").length - 1 : 0;
-		if (newlineCount === 0) return Result({ _yay: html });
-
-		const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
-		return Result({
-			_yay: html + "<p></p>".repeat(paragraphCount),
+		return tiptap_markdown_to_html({
+			markdown,
 		});
 	}
 
@@ -182,12 +185,26 @@ export function pages_tiptap_html_to_json(args: { html: string; extensions?: Ext
 
 export function pages_tiptap_markdown_to_json(args: { markdown: string; extensions?: Extensions }) {
 	if (!args.markdown) {
-		return pages_tiptap_empty_doc_json();
+		return Result({ _yay: pages_tiptap_empty_doc_json() });
 	}
 
-	const markdownManager = get_tiptap_markdown_manager({ extensions: args.extensions });
-	const json = markdownManager.parse(args.markdown);
-	return json;
+	// Go through HTML so extension `parseHTML` handlers can normalize embedded HTML
+	// consistently with the rest of the editor pipeline.
+	const markdownToHtml = tiptap_markdown_to_html({
+		markdown: args.markdown,
+		extensions: args.extensions,
+	});
+
+	if (markdownToHtml._nay) {
+		return markdownToHtml;
+	}
+
+	return Result({
+		_yay: pages_tiptap_html_to_json({
+			html: markdownToHtml._yay,
+			extensions: args.extensions,
+		}),
+	});
 }
 
 /**
@@ -291,14 +308,26 @@ export function pages_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
 
 	const editor = pages_headless_tiptap_editor_create();
 
+	if (editor._nay) {
+		return editor;
+	}
+
 	try {
-		const node = yXmlFragmentToProseMirrorRootNode(fragment, editor.schema);
+		const node = yXmlFragmentToProseMirrorRootNode(fragment, editor._yay.schema);
 		const json = node.toJSON();
-		editor.commands.setContent(json);
-		const markdown = pages_headless_tiptap_editor_get_markdown({ mut_editor: editor });
-		return markdown;
+		editor._yay.commands.setContent(json);
+		const markdown = pages_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		return Result({ _yay: markdown });
+	} catch (error) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "[pages_yjs_doc_get_markdown] Error while extracting markdown from Y.Doc",
+				cause: error,
+			},
+		});
 	} finally {
-		editor.destroy();
+		editor._yay.destroy();
 	}
 }
 
@@ -307,10 +336,14 @@ export function pages_yjs_doc_update_from_markdown(args: { markdown: string; mut
 		initialContent: { markdown: args.markdown },
 	});
 
+	if (editor._nay) {
+		return editor;
+	}
+
 	try {
 		pages_yjs_doc_update_from_tiptap_editor({
 			mut_yjsDoc: args.mut_yjsDoc,
-			tiptapEditor: editor,
+			tiptapEditor: editor._yay,
 			opKind: "user-edit",
 		});
 
@@ -319,22 +352,33 @@ export function pages_yjs_doc_update_from_markdown(args: { markdown: string; mut
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "Error updating Y.Doc from tiptap editor",
+				message: "[pages_yjs_doc_update_from_markdown] Error while updating Y.Doc from tiptap editor",
 				cause: error,
 			},
 		});
 	} finally {
-		editor.destroy();
+		editor._yay.destroy();
 	}
 }
 
 export function pages_yjs_doc_create_from_markdown(args: { markdown: string }) {
 	const editor = pages_headless_tiptap_editor_create({ initialContent: { markdown: args.markdown } });
+	if (editor._nay) {
+		return editor;
+	}
+
 	try {
-		const yjsDoc = pages_yjs_doc_create_from_tiptap_editor({ tiptapEditor: editor });
-		return yjsDoc;
+		return pages_yjs_doc_create_from_tiptap_editor({ tiptapEditor: editor._yay });
+	} catch (error) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "[pages_yjs_doc_create_from_markdown] Error while creating Y.Doc from tiptap editor",
+				cause: error,
+			},
+		});
 	} finally {
-		editor.destroy();
+		editor._yay.destroy();
 	}
 }
 
@@ -481,9 +525,8 @@ const get_tiptap_shared_extensions_list = ((/* iife */) => {
 export function pages_headless_tiptap_editor_create(args?: {
 	initialContent?: { markdown?: string; json?: TiptapJSONContent };
 	additionalExtensions?: Extension[];
-}): Editor {
-	const sharedExtensions = pages_get_tiptap_shared_extensions();
-	const baseExtensions = Object.values(sharedExtensions);
+}) {
+	const baseExtensions = get_tiptap_shared_extensions_list();
 	const extensions = args?.additionalExtensions ? [...baseExtensions, ...args.additionalExtensions] : baseExtensions;
 
 	const editor = new Editor({
@@ -508,15 +551,19 @@ export function pages_headless_tiptap_editor_create(args?: {
 	);
 
 	if (args?.initialContent?.markdown) {
-		pages_headless_tiptap_editor_set_content_from_markdown({
+		const result = pages_headless_tiptap_editor_set_content_from_markdown({
 			markdown: args.initialContent.markdown,
 			mut_editor: editor,
 		});
+
+		if (result._nay) {
+			return result;
+		}
 	} else if (args?.initialContent?.json) {
 		editor.commands.setContent(args.initialContent.json);
 	}
 
-	return editor;
+	return Result({ _yay: editor });
 }
 
 /**
@@ -540,8 +587,13 @@ export function pages_headless_tiptap_editor_set_content_from_markdown(args: { m
 		markdown: args.markdown,
 		extensions: editor.options.extensions,
 	});
-	editor.commands.setContent(json);
-	return json;
+
+	if (json._nay) {
+		return json;
+	}
+
+	editor.commands.setContent(json._yay);
+	return Result({ _yay: json._yay });
 }
 
 /**

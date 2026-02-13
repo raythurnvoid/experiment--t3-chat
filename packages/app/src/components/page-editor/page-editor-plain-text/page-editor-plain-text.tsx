@@ -192,8 +192,14 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = pages_headless_tiptap_editor_create({ initialContent: { markdown } });
-		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor.state).toSorted();
-		headlessEditor.destroy();
+		if (headlessEditor._nay) {
+			console.error("[PageEditorPlainText.updateThreadIds] Error while creating headless editor", {
+				nay: headlessEditor._nay,
+			});
+			return;
+		}
+		const nextThreadIds = getThreadIdsFromEditorState(headlessEditor._yay.state).toSorted();
+		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");
 		if (nextKey === commentThreadIdsKeyRef.current) {
@@ -312,7 +318,14 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				return;
 			}
 
-			resetToNewBaseline(remoteData.markdown);
+			if (remoteData.markdown._nay) {
+				console.error("[PageEditorPlainText.handleApplySnapshotMarkdown] Error while fetching remote data", {
+					nay: remoteData.markdown._nay,
+				});
+				return;
+			}
+
+			resetToNewBaseline(remoteData.markdown._yay);
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 		})()
@@ -345,10 +358,16 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 			const workingMarkdown = editorModel.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 
-			pages_yjs_doc_update_from_markdown({
+			const workingYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
 			});
+			if (workingYjsDocFromMarkdown._nay) {
+				console.error("[PageEditorPlainText.handleClickSave] Error while rebuilding Y.Doc from markdown", {
+					nay: workingYjsDocFromMarkdown._nay,
+				});
+				return;
+			}
 
 			// Diff update from baseline to working.
 			const diffUpdate = pages_yjs_compute_diff_update_from_yjs_doc({
@@ -413,10 +432,16 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		(async (/* iife */) => {
 			const workingMarkdown = model.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
-			pages_yjs_doc_update_from_markdown({
+			const workingYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
 				markdown: workingMarkdown,
 			});
+			if (workingYjsDocFromMarkdown._nay) {
+				console.error("[PageEditorPlainText.handleClickSync] Error while rebuilding Y.Doc from markdown", {
+					nay: workingYjsDocFromMarkdown._nay,
+				});
+				return;
+			}
 
 			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -433,6 +458,13 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				return;
 			}
 
+			if (remoteData.markdown._nay) {
+				console.error("[PageEditorPlainText.handleClickSync] Error while fetching remote data", {
+					nay: remoteData.markdown._nay,
+				});
+				return;
+			}
+
 			// Diff update from working to remote.
 			const diffUpdate = pages_yjs_compute_diff_update_from_yjs_doc({
 				yjsDoc: remoteData.yjsDoc,
@@ -443,20 +475,26 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				applyUpdate(workingYjsDoc, diffUpdate);
 			}
 			const mergedMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: workingYjsDoc });
+			if (mergedMarkdown._nay) {
+				console.error("[PageEditorPlainText.handleClickSync] Error while getting merged markdown", {
+					nay: mergedMarkdown._nay,
+				});
+				return;
+			}
 
 			// Reset the Monaco model to a clean server baseline.
-			resetToNewBaseline(remoteData.markdown);
+			resetToNewBaseline(remoteData.markdown._yay);
 			baselineYjsDocRef.current = remoteData.yjsDoc;
 			setWorkingYjsSequence(remoteData.yjsSequence);
 
 			// Apply the merged content as a single undoable edit so the user can at least undo back to the
 			// new server baseline (v0) after a sync.
 			// TODO: if we save the local edits as incremental updates we can let the user undo granularly.
-			if (mergedMarkdown !== remoteData.markdown) {
-				pushChangeToEditor(mergedMarkdown);
+			if (mergedMarkdown._yay !== remoteData.markdown._yay) {
+				pushChangeToEditor(mergedMarkdown._yay);
 			}
 
-			updateThreadIds(remoteData.markdown);
+			updateThreadIds(remoteData.markdown._yay);
 		})()
 			.catch((err) => {
 				console.error("[PageEditorPlainText.handleClickSync] Sync failed", err);
@@ -543,24 +581,30 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	return (
 		<Suspense fallback={<>Loading</>}>
 			<Await promise={pageContentData}>
-				{(pageContentData) => (
-					<PageEditorPlainText_Inner
-						key={pageId}
-						pageId={pageId}
-						initialData={
-							pageContentData
-								? {
-										markdown: pageContentData.markdown,
-										mut_yjsDoc: pageContentData.yjsDoc,
-										yjsSequence: pageContentData.yjsSequence,
-									}
-								: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
-						}
-						presenceStore={presenceStore}
-						commentsPortalHost={commentsPortalHost}
-						topStickyFloatingSlot={topStickyFloatingSlot}
-					/>
-				)}
+				{(pageContentData) => {
+					if (pageContentData?.markdown._nay) {
+						console.error("[PageEditorPlainText] Error while fetching page content data", pageContentData.markdown._nay);
+					}
+
+					return (
+						<PageEditorPlainText_Inner
+							key={pageId}
+							pageId={pageId}
+							initialData={
+								pageContentData?.markdown._yay
+									? {
+											markdown: pageContentData.markdown._yay,
+											mut_yjsDoc: pageContentData.yjsDoc,
+											yjsSequence: pageContentData.yjsSequence,
+										}
+									: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
+							}
+							presenceStore={presenceStore}
+							commentsPortalHost={commentsPortalHost}
+							topStickyFloatingSlot={topStickyFloatingSlot}
+						/>
+					);
+				}}
 			</Await>
 		</Suspense>
 	);

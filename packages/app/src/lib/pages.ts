@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import {
 	pages_tiptap_markdown_to_json,
+	pages_tiptap_empty_doc_json,
 	pages_yjs_doc_create_from_array_buffer_update,
 	pages_yjs_doc_get_markdown,
 } from "../../shared/pages.ts";
@@ -25,9 +26,18 @@ You can start editing your document here.
 
 export const pages_get_rich_text_initial_content = ((/* iife */) => {
 	function value(): JSONContent {
-		return pages_tiptap_markdown_to_json({
+		const result = pages_tiptap_markdown_to_json({
 			markdown: pages_INITIAL_CONTENT,
 		});
+
+		if (result._nay) {
+			console.error("[pages_get_rich_text_initial_content] Error while creating initial content", {
+				nay: result._nay,
+			});
+			return pages_tiptap_empty_doc_json();
+		}
+
+		return result._yay;
 	}
 
 	let cache: ReturnType<typeof value> | undefined;

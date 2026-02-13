@@ -8,7 +8,11 @@ import { Text } from "@tiptap/extension-text";
 import { useEffect, useState, useImperativeHandle, type Ref } from "react";
 import { cn } from "@/lib/utils.ts";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
-import { pages_get_tiptap_shared_extensions, pages_tiptap_markdown_to_json } from "../../../lib/pages.ts";
+import {
+	pages_get_tiptap_shared_extensions,
+	pages_tiptap_empty_doc_json,
+	pages_tiptap_markdown_to_json,
+} from "../../../lib/pages.ts";
 import type { MyInputTextAreaControl_ClassNames } from "../../my-input.tsx";
 
 export type PageEditorRichTextCommentComposer_ClassNames =
@@ -103,13 +107,23 @@ export function PageEditorRichTextCommentComposer(props: PageEditorRichTextComme
 			onCreate: ({ editor }) => {
 				try {
 					if (!initialValue) return;
+
 					const json = pages_tiptap_markdown_to_json({
 						markdown: initialValue,
 						extensions,
 					});
-					editor.commands.setContent(json);
+
+					if (json._nay) {
+						console.error(
+							"[PageEditorRichTextCommentComposer.onCreate] Error while setting initial value",
+							json._nay,
+						);
+						editor.commands.setContent(pages_tiptap_empty_doc_json());
+					} else {
+						editor.commands.setContent(json._yay);
+					}
 				} catch (error) {
-					console.error("Failed to set initialValue markdown:", error);
+					console.error("[PageEditorRichTextCommentComposer.onCreate] Failed to set initial value:", error);
 				}
 			},
 		};

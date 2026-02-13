@@ -74,6 +74,51 @@ export function example_http_routes(router: RouterForConvexModules) {
 }
 ```
 
+# Errors as values (`Result`) in Convex handlers
+
+This repository uses an errors-as-values pattern (`Result`) in many Convex helpers and handlers.
+
+When a Convex function returns a Result-like payload, the `returns` validator must describe both branches:
+
+- `_yay` success object
+- `_nay` error object (API-safe shape, usually `{ name, message }`)
+
+Example:
+
+```ts
+export const create_page = mutation({
+	args: { name: v.string() },
+	returns: v.union(
+		v.object({ _yay: v.object({ pageId: v.id("pages") }) }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
+	),
+	handler: async (ctx, args) => {
+		const page = await do_create_page(ctx, args);
+		if (page._nay) {
+			return page;
+		}
+		return Result({ _yay: { pageId: page._yay } });
+	},
+});
+```
+
+When calling Result-returning helpers:
+
+- Do not ignore the return value.
+- Bubble `_nay` when possible.
+- If bubbling is not possible at that boundary, at least log `_nay` with context.
+
+When throwing because of `_nay`, do not throw `_nay.message` directly.
+Throw an ad hoc message and pass `_nay` via `cause`:
+
+```ts
+if (result._nay) {
+	throw new Error("[OwnerSymbol.operation] Failed to create page", {
+		cause: result._nay,
+	});
+}
+```
+
 # Migrations
 
 When the user asks for a Convex migration, you must implement it as an `internalMutation` in [../../../packages/app/convex/migrations.ts](../../../packages/app/convex/migrations.ts).

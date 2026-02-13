@@ -1,148 +1,123 @@
-import { Migrations } from "@convex-dev/migrations";
-import { components, internal } from "./_generated/api.js";
-import type { DataModel, Id } from "./_generated/dataModel.js";
+import { v } from "convex/values";
+import { internalMutation } from "./_generated/server.js";
 
-export const migrations = new Migrations<DataModel>(components.migrations);
+export const delete_all_archived_pages = internalMutation({
+	args: {},
+	returns: v.object({
+		pages: v.number(),
+		pages_markdown_content: v.number(),
+		pages_yjs_snapshots: v.number(),
+		pages_yjs_updates: v.number(),
+		pages_yjs_docs_last_sequences: v.number(),
+		pages_yjs_snapshot_schedules: v.number(),
+		pages_snapshots: v.number(),
+		pages_snapshots_contents: v.number(),
+		ai_chat_pending_edits: v.number(),
+	}),
+	handler: async (ctx) => {
+		const archivedPages = (await ctx.db.query("pages").collect()).filter((page) => page.isArchived);
+		if (archivedPages.length === 0) {
+			return {
+				pages: 0,
+				pages_markdown_content: 0,
+				pages_yjs_snapshots: 0,
+				pages_yjs_updates: 0,
+				pages_yjs_docs_last_sequences: 0,
+				pages_yjs_snapshot_schedules: 0,
+				pages_snapshots: 0,
+				pages_snapshots_contents: 0,
+				ai_chat_pending_edits: 0,
+			};
+		}
 
-const pages_parent_id_by_legacy_id_cache = new Map<string, Map<string, Id<"pages">>>();
-
-export const migrate_pages_parent_id_client_generated_id_to_convex_id = migrations.define({
-	table: "pages",
-	migrateOne: async (ctx, page) => {
-		const value = page as {
-			parentId: Id<"pages"> | string;
-			workspaceId: string;
-			projectId: string;
-			clientGeneratedId?: string;
-			page_id?: string;
+		const counts = {
+			pages: 0,
+			pages_markdown_content: 0,
+			pages_yjs_snapshots: 0,
+			pages_yjs_updates: 0,
+			pages_yjs_docs_last_sequences: 0,
+			pages_yjs_snapshot_schedules: 0,
+			pages_snapshots: 0,
+			pages_snapshots_contents: 0,
+			ai_chat_pending_edits: 0,
 		};
 
-		if (value.parentId === "root") {
-			return {
-				clientGeneratedId: undefined,
-				page_id: undefined,
-			} as unknown as Partial<DataModel["pages"]["document"]>;
+		for (const page of archivedPages) {
+			const [
+				pageMarkdownContentRow,
+				pageYjsSnapshotRows,
+				pageYjsUpdateRows,
+				pageYjsLastSequenceRows,
+				pageYjsSnapshotScheduleRows,
+				pageSnapshotRows,
+				pagePendingEditsRows,
+			] = await Promise.all([
+				page.markdownContentId ? ctx.db.get("pages_markdown_content", page.markdownContentId) : null,
+				ctx.db
+					.query("pages_yjs_snapshots")
+					.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+						q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
+					)
+					.collect(),
+				ctx.db
+					.query("pages_yjs_updates")
+					.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+						q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
+					)
+					.collect(),
+				ctx.db
+					.query("pages_yjs_docs_last_sequences")
+					.withIndex("by_workspace_project_and_page_id", (q) =>
+						q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
+					)
+					.collect(),
+				ctx.db.query("pages_yjs_snapshot_schedules").withIndex("by_page_id", (q) => q.eq("page_id", page._id)).collect(),
+				ctx.db.query("pages_snapshots").withIndex("by_page_id", (q) => q.eq("page_id", page._id)).collect(),
+				ctx.db
+					.query("ai_chat_pending_edits")
+					.withIndex("by_workspace_project_user_page", (q) =>
+						q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId),
+					)
+					.collect()
+					.then((rows) => rows.filter((row) => row.pageId === page._id)),
+			]);
+
+			const pageSnapshotContentRowsNested = await Promise.all(
+				pageSnapshotRows.map((row) =>
+					ctx.db
+						.query("pages_snapshots_contents")
+						.withIndex("by_workspace_project_and_page_snapshot_id", (q) =>
+							q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_snapshot_id", row._id),
+						)
+						.collect(),
+				),
+			);
+			const snapshotLinkedContents = pageSnapshotContentRowsNested.flat();
+
+			await Promise.all([
+				...(pageMarkdownContentRow ? [ctx.db.delete("pages_markdown_content", pageMarkdownContentRow._id)] : []),
+				...pageYjsSnapshotRows.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)),
+				...pageYjsUpdateRows.map((row) => ctx.db.delete("pages_yjs_updates", row._id)),
+				...pageYjsLastSequenceRows.map((row) => ctx.db.delete("pages_yjs_docs_last_sequences", row._id)),
+				...pageYjsSnapshotScheduleRows.map((row) => ctx.db.delete("pages_yjs_snapshot_schedules", row._id)),
+				...snapshotLinkedContents.map((row) => ctx.db.delete("pages_snapshots_contents", row._id)),
+				...pageSnapshotRows.map((row) => ctx.db.delete("pages_snapshots", row._id)),
+				...pagePendingEditsRows.map((row) => ctx.db.delete("ai_chat_pending_edits", row._id)),
+			]);
+
+			await ctx.db.delete("pages", page._id);
+
+			counts.pages += 1;
+			counts.pages_markdown_content += pageMarkdownContentRow ? 1 : 0;
+			counts.pages_yjs_snapshots += pageYjsSnapshotRows.length;
+			counts.pages_yjs_updates += pageYjsUpdateRows.length;
+			counts.pages_yjs_docs_last_sequences += pageYjsLastSequenceRows.length;
+			counts.pages_yjs_snapshot_schedules += pageYjsSnapshotScheduleRows.length;
+			counts.pages_snapshots += pageSnapshotRows.length;
+			counts.pages_snapshots_contents += snapshotLinkedContents.length;
+			counts.ai_chat_pending_edits += pagePendingEditsRows.length;
 		}
 
-		const normalizedParentId = ctx.db.normalizeId("pages", value.parentId);
-		if (normalizedParentId) {
-			return {
-				parentId: normalizedParentId,
-				clientGeneratedId: undefined,
-				page_id: undefined,
-			} as unknown as Partial<DataModel["pages"]["document"]>;
-		}
-
-		const cacheKey = `${value.workspaceId}::${value.projectId}`;
-		let legacyIdMap = pages_parent_id_by_legacy_id_cache.get(cacheKey);
-		if (!legacyIdMap) {
-			const pages = await ctx.db
-				.query("pages")
-				.withIndex("by_workspaceId_projectId_and_name", (q) =>
-					q.eq("workspaceId", value.workspaceId).eq("projectId", value.projectId),
-				)
-				.collect();
-
-			legacyIdMap = new Map<string, Id<"pages">>();
-			for (const currentPage of pages) {
-				const currentPageClientGeneratedId = (currentPage as { clientGeneratedId?: string }).clientGeneratedId;
-				const currentPageLegacyId = (currentPage as { page_id?: string }).page_id;
-
-				if (currentPageClientGeneratedId) {
-					legacyIdMap.set(currentPageClientGeneratedId, currentPage._id);
-				}
-				if (currentPageLegacyId) {
-					legacyIdMap.set(currentPageLegacyId, currentPage._id);
-				}
-			}
-
-			pages_parent_id_by_legacy_id_cache.set(cacheKey, legacyIdMap);
-		}
-
-		const migratedParentId = legacyIdMap.get(value.parentId);
-		if (!migratedParentId) {
-			return {
-				clientGeneratedId: undefined,
-				page_id: undefined,
-			} as unknown as Partial<DataModel["pages"]["document"]>;
-		}
-
-		return {
-			parentId: migratedParentId,
-			clientGeneratedId: undefined,
-			page_id: undefined,
-		} as unknown as Partial<DataModel["pages"]["document"]>;
+		return counts;
 	},
 });
-
-export const migrate_pages_remove_client_generated_id = migrations.define({
-	table: "pages",
-	migrateOne: (_ctx, page) => {
-		const value = page as { clientGeneratedId?: string; page_id?: string };
-		if (!value.clientGeneratedId && !value.page_id) {
-			return;
-		}
-
-		return {
-			clientGeneratedId: undefined,
-			page_id: undefined,
-		} as unknown as Partial<DataModel["pages"]["document"]>;
-	},
-});
-
-/**
- * No-backfill cutover helper for chat messages:
- * if any rows still contain legacy snake_case fields, drop them and keep camelCase values.
- */
-export const migrate_chat_messages_drop_legacy_snake_case = migrations.define({
-	table: "chat_messages",
-	migrateOne: (_ctx, chatMessage) => {
-		const value = chatMessage as {
-			workspaceId?: string;
-			projectId?: string;
-			threadId?: Id<"chat_messages"> | null;
-			parentId?: Id<"chat_messages"> | null;
-			isArchived?: boolean;
-			createdBy?: string;
-			workspace_id?: string;
-			project_id?: string;
-			thread_id?: Id<"chat_messages"> | null;
-			parent_id?: Id<"chat_messages"> | null;
-			is_archived?: boolean;
-			created_by?: string;
-		};
-
-		const hasLegacySnakeCaseFields =
-			value.workspace_id !== undefined ||
-			value.project_id !== undefined ||
-			value.thread_id !== undefined ||
-			value.parent_id !== undefined ||
-			value.is_archived !== undefined ||
-			value.created_by !== undefined;
-
-		if (!hasLegacySnakeCaseFields) {
-			return;
-		}
-
-		return {
-			workspaceId: value.workspaceId ?? value.workspace_id,
-			projectId: value.projectId ?? value.project_id,
-			threadId: value.threadId ?? value.thread_id ?? null,
-			parentId: value.parentId ?? value.parent_id ?? null,
-			isArchived: value.isArchived ?? value.is_archived ?? false,
-			createdBy: value.createdBy ?? value.created_by ?? "Unknown",
-			workspace_id: undefined,
-			project_id: undefined,
-			thread_id: undefined,
-			parent_id: undefined,
-			is_archived: undefined,
-			created_by: undefined,
-		} as unknown as Partial<DataModel["chat_messages"]["document"]>;
-	},
-});
-
-export const run = migrations.runner();
-
-export const run_migrate_chat_messages_drop_legacy_snake_case = migrations.runner(
-	internal.migrations.migrate_chat_messages_drop_legacy_snake_case,
-);

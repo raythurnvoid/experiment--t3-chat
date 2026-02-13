@@ -40,7 +40,11 @@ import {
 	MySearchSelectTrigger,
 } from "@/components/my-search-select.tsx";
 import { check_element_is_in_allowed_focus_area, cn, forward_ref } from "@/lib/utils.ts";
-import { pages_get_tiptap_shared_extensions, pages_tiptap_markdown_to_json } from "@/lib/pages.ts";
+import {
+	pages_get_tiptap_shared_extensions,
+	pages_tiptap_empty_doc_json,
+	pages_tiptap_markdown_to_json,
+} from "@/lib/pages.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
@@ -138,10 +142,19 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			editorProps: {
 				autofocus: autoFocus ? "end" : false,
 				extensions,
-				content: pages_tiptap_markdown_to_json({
-					markdown: "",
-					extensions,
-				}),
+				content: ((/* iife */) => {
+					const result = pages_tiptap_markdown_to_json({
+						markdown: "",
+						extensions,
+					});
+
+					if (result._nay) {
+						console.error("[AiChatComposer] Error while setting initial empty content", result._nay);
+						return pages_tiptap_empty_doc_json();
+					}
+
+					return result._yay;
+				})(),
 				editorProps: {
 					attributes: {
 						class: cn(
@@ -259,15 +272,16 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		setComposerText("");
 
 		if (currentEditor) {
-			currentEditor.commands.setContent(
-				pages_tiptap_markdown_to_json({
-					markdown: "",
-					extensions,
-				}),
-				{
-					emitUpdate: false,
-				},
-			);
+			const json = pages_tiptap_markdown_to_json({
+				markdown: "",
+				extensions,
+			});
+
+			if (json._nay) {
+				console.error("[AiChatComposer.handleSend] Error while clearing content", json._nay);
+			} else {
+				currentEditor.commands.setContent(json._yay, { emitUpdate: false });
+			}
 		}
 	};
 
@@ -325,13 +339,16 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			return;
 		}
 
-		editor.commands.setContent(
-			pages_tiptap_markdown_to_json({
-				markdown: initialValue,
-				extensions,
-			}),
-			{ emitUpdate: false },
-		);
+		const json = pages_tiptap_markdown_to_json({
+			markdown: initialValue,
+			extensions,
+		});
+
+		if (json._nay) {
+			console.error("[AiChatComposer.useEffect[editor]] Error while setting initial value", json._nay);
+		} else {
+			editor.commands.setContent(json._yay, { emitUpdate: false });
+		}
 	}, [editor]);
 
 	return (

@@ -41,7 +41,12 @@ function LayoutInner() {
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 		})
 			.then((result) => {
-				useAppGlobalStore.actions.setPagesHomeId(result.pageId);
+				if (result._nay) {
+					throw new Error("[RootLayout.ensure_home_page] Failed to ensure home page", {
+						cause: result._nay,
+					});
+				}
+				useAppGlobalStore.actions.setPagesHomeId(result._yay.pageId);
 			})
 			.catch((error) => {
 				should_never_happen("Error while initializing the home page", { error });

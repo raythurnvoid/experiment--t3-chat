@@ -666,7 +666,7 @@ export function ai_chat_tool_create_glob_pages(ctx: ActionCtx) {
 			const searchPath = server_path_normalize(args.path || "/");
 
 			// Get all pages under the search path
-			const listResult = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
+			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: searchPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -676,14 +676,14 @@ export function ai_chat_tool_create_glob_pages(ctx: ActionCtx) {
 			});
 
 			// Sort by modification time (newest first)
-			listResult.items.sort((a, b) => b.updatedAt - a.updatedAt);
+			list.items.sort((a, b) => b.updatedAt - a.updatedAt);
 
 			const output: string[] = [];
-			if (listResult.items.length === 0) {
+			if (list.items.length === 0) {
 				output.push("No pages found");
 			} else {
-				output.push(...listResult.items.map((f) => f.path));
-				if (listResult.truncated) {
+				output.push(...list.items.map((f) => f.path));
+				if (list.truncated) {
 					output.push("");
 					output.push("(Results are truncated. Consider using a more specific path or pattern.)");
 				}
@@ -692,8 +692,8 @@ export function ai_chat_tool_create_glob_pages(ctx: ActionCtx) {
 			return {
 				title: searchPath,
 				metadata: {
-					count: listResult.items.length,
-					truncated: listResult.truncated,
+					count: list.items.length,
+					truncated: list.truncated,
 				},
 				output: output.join("\n"),
 			};
@@ -769,7 +769,7 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
 
 			for (const item of list.items) {
 				// Read page content
-				const pageResult = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+				const page = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 					path: item.path,
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -777,7 +777,7 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
 				});
 
 				const pageName = path_name_of(item.path);
-				const fullText = `${pageName}\n${pageResult?.content ?? ""}`;
+				const fullText = `${pageName}\n${page?.content ?? ""}`;
 
 				// Line-based scan to produce line numbers and line snippets, similar to ripgrep output
 				const lines = fullText.split(/\r?\n/);
@@ -950,8 +950,13 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 					path,
 					userId: user.id,
 				});
+				if (created._nay) {
+					throw new Error("[server-ai-tools.ai_chat_tool_create_write_page] Error creating page by path", {
+						cause: created._nay,
+					});
+				}
 				exists = false;
-				pageId = created.pageId;
+				pageId = created._yay.pageId;
 			}
 
 			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
