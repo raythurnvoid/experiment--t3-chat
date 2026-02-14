@@ -119,6 +119,46 @@ if (result._nay) {
 }
 ```
 
+## Warning about early returns after DB writes
+
+This applies to any mutation flow, not only errors-as-values:
+
+- Any normal return (including `_nay`, `null`, `{ error: ... }`, etc.) does **not** rollback prior writes in that mutation.
+- Keep validation/fallible non-DB work first, and group DB writes at the end.
+- Avoid early returns between related DB writes unless partial writes are explicitly intended.
+- If a failure branch must rollback all writes, `throw` (prefer `ConvexError` for expected app-level failures).
+- Exception: explicit cleanup markers in `finally` can be intentional side effects; document this clearly.
+
+## Type-safe `ConvexError` pattern (this repo)
+
+For thrown `ConvexError` typing, we attach error metadata to mutation args and extract it on the client.
+
+Server side (in the mutation file):
+
+```ts
+function restore_snapshot_error() {
+	return {
+		_errors: v.optional(v.object({ message: v.literal("yjsSnapshotUpdates is not set") })),
+	};
+}
+
+export const restore_snapshot = mutation({
+	args: {
+		// ...real args
+		...({} as ReturnType<typeof restore_snapshot_error>),
+	},
+	handler: async (ctx, args) => {
+		throw new ConvexError("yjsSnapshotUpdates is not set" satisfies NonNullable<(typeof args)["_errors"]>["message"]);
+	},
+});
+```
+
+Client side:
+
+- Import `app_convex_Error` from `@/lib/app-convex-client.ts`.
+- Narrow caught errors with `instanceof ConvexError`.
+- Compare against a typed literal using `satisfies app_convex_Error<typeof app_convex_api.module.fn>["message"]`.
+
 # Migrations
 
 When the user asks for a Convex migration, you must implement it as an `internalMutation` in [../../../packages/app/convex/migrations.ts](../../../packages/app/convex/migrations.ts).

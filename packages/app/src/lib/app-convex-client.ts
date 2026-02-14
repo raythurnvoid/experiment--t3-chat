@@ -1,5 +1,4 @@
 import { ConvexReactClient } from "convex/react";
-import type { Doc as app_convex_Doc, Id as app_convex_Id } from "../../convex/_generated/dataModel.js";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
 import { Result } from "./errors-as-values-utils.ts";
 
@@ -10,6 +9,8 @@ export type {
 } from "convex/server";
 
 export type { Watch as app_convex_Watch } from "convex/react";
+
+export * from "../../shared/app-convex.ts";
 
 export const app_convex_deployment_url = import.meta.env
 	? (import.meta.env.VITE_CONVEX_URL as string)
@@ -30,10 +31,6 @@ export const app_convex = new ConvexReactClient(app_convex_deployment_url, {
 		console.error("app_convex: Convex server disconnected:", message);
 	},
 });
-
-export { api as app_convex_api } from "../../convex/_generated/api.js";
-
-export type { app_convex_Doc, app_convex_Id };
 
 // #region Convex-App adapters
 

@@ -248,18 +248,6 @@ async function do_create_page(
 
 	const initialIsArchived = false;
 
-	const pageId = await ctx.db.insert("pages", {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		parentId: args.parentId,
-		version: pages_FIRST_VERSION,
-		name: args.name,
-		isArchived: initialIsArchived,
-		createdBy: user.id,
-		updatedBy: user.name,
-		updatedAt: now,
-	});
-
 	// Create initial Yjs snapshot + sequence tracker with the page.
 	// Important: do NOT store an empty bytes blob; Yjs update decoding may throw on empty payloads.
 	const initialYjsSequence = 0;
@@ -285,6 +273,18 @@ async function do_create_page(
 	} else {
 		initialYjsSnapshotUpdate = pages_yjs_create_empty_state_update();
 	}
+
+	const pageId = await ctx.db.insert("pages", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		parentId: args.parentId,
+		version: pages_FIRST_VERSION,
+		name: args.name,
+		isArchived: initialIsArchived,
+		createdBy: user.id,
+		updatedBy: user.name,
+		updatedAt: now,
+	});
 
 	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = await Promise.all([
 		ctx.db.insert("pages_yjs_snapshots", {
@@ -1468,14 +1468,17 @@ export const yjs_snapshot_updates = internalMutation({
 		v.object({ _yay: v.null() }),
 	),
 	handler: async (ctx, args) => {
-		const now = Date.now();
-
-		const scheduleLocksPromise = ctx.db
+		const cleanScheduleLocksPromise = ctx.db
 			.query("pages_yjs_snapshot_schedules")
 			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
-			.collect();
+			.collect()
+			.then((scheduleLocks) =>
+				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id))),
+			);
 
 		try {
+			const now = Date.now();
+
 			const page = await ctx.db.get("pages", args.pageId);
 			if (
 				!page ||
@@ -1565,9 +1568,7 @@ export const yjs_snapshot_updates = internalMutation({
 
 			return Result({ _yay: null });
 		} finally {
-			await scheduleLocksPromise.then((scheduleLocks) =>
-				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id))),
-			);
+			await cleanScheduleLocksPromise;
 		}
 	},
 });

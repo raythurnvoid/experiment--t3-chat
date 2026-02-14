@@ -250,6 +250,10 @@ export const resolve_user = internalMutation({
 			}
 
 			if (!user.clerkUserId) {
+				if (user.anonymousAuthToken !== args.anonymousUserToken) {
+					return Result({ _nay: { message: "Invalid `anonymousUserToken`, cannot link to Clerk account" } });
+				}
+
 				// If a user already exists for this Clerk account (e.g. from a previous sign-in),
 				// remove it so the anonymous user can become the canonical user record.
 				const existingClerkUsers = await ctx.db
@@ -263,10 +267,6 @@ export const resolve_user = internalMutation({
 							ctx.db.delete("users", existingUser._id),
 						]);
 					}
-				}
-
-				if (user.anonymousAuthToken !== args.anonymousUserToken) {
-					return Result({ _nay: { message: "Invalid `anonymousUserToken`, cannot link to Clerk account" } });
 				}
 
 				await ctx.db.patch("users", user._id, {
