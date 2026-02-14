@@ -361,7 +361,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 			// The `parentId` is the id of the persisted message to which we want to append the new message.
 			const parentId =
-				options.trigger === "regenerate-message" ? options.messages.at(-1)?.id : options.messages.at(-2)?.id;
+				options.trigger === "regenerate-message" ? options.messages.at(-1)?.id : (options.messages.at(-2)?.id ?? null);
 
 			const metadata = options.requestMetadata as ChatRequestMetadata;
 
@@ -696,11 +696,27 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		const targetMessage = options?.messageId ? activeBranchMessages?.mapById.get(options.messageId) : null;
 		const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
 
-		chat.messages = targetMessageIndex
-			? activeBranchMessages.list.slice(0, targetMessageIndex)
-			: activeBranchMessages.list;
+		chat.messages =
+			targetMessageIndex !== undefined && targetMessageIndex >= 0
+				? activeBranchMessages.list.slice(0, targetMessageIndex)
+				: activeBranchMessages.list;
 
-		const parentId = targetMessage ? targetMessage.metadata?.convexParentId : activeBranchMessages.list.at(-1)?.id;
+		const latestMessage = activeBranchMessages.list.at(-1);
+		const parentId = targetMessage
+			? targetMessage.metadata?.convexParentId
+			: ((/* iife */) => {
+					if (!latestMessage) {
+						return undefined;
+					}
+
+					// After a manual stop, the latest assistant message can remain optimistic-only.
+					// In that case, keep threading on its resolved parent instead of its client id.
+					if (latestMessage.role === "assistant" && !latestMessage.metadata?.convexId) {
+						return latestMessage.metadata?.convexParentId ?? latestMessage.id;
+					}
+
+					return latestMessage.metadata?.convexId ?? latestMessage.id;
+				})();
 
 		chat.sendMessage(
 			{

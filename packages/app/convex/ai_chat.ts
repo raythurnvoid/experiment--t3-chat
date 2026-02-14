@@ -18,6 +18,7 @@ import {
 	smoothStream,
 	createUIMessageStream,
 	createUIMessageStreamResponse,
+	consumeStream,
 	stepCountIs,
 	convertToModelMessages,
 	validateUIMessages,
@@ -595,8 +596,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 							trigger: z.enum(["submit-message", "regenerate-message"]),
 							/**
 							 * The id of the message to which the new message should be appended.
+							 * `null` means root.
 							 */
-							parentId: z.string().optional(),
+							parentId: z.string().nullable().optional(),
 							/**
 							 * The id of the thread to which the new message should be appended.
 							 *
@@ -716,7 +718,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
-								let resolvedParentId: string | undefined = body.parentId;
+								let resolvedParentId: string | null | undefined = body.parentId;
 
 								if (threadId) {
 									do {
@@ -773,17 +775,49 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											}
 										}
 
-										uiMessages = reconstructedMessages
-											.reverse()
-											.map(
-												(msg) =>
-													({
-														...(msg.content as any),
-														id: msg._id,
-													}) as ai_chat_AiSdk5UiMessage,
-											)
-											.concat(...requestMessages);
+										uiMessages = reconstructedMessages.reverse().map(
+											(msg) =>
+												({
+													...(msg.content as any),
+													id: msg._id,
+												}) as ai_chat_AiSdk5UiMessage,
+										);
 									} while (0);
+								}
+
+								// Persist user-submitted messages before starting assistant streaming.
+								// This keeps edits durable even when the user stops generation.
+								if (requestMessages.length > 0) {
+									const requestMessagesToAdd = requestMessages.map((message) => ({
+										clientGeneratedMessageId: message.id,
+										content: message,
+									}));
+
+									const persistedRequestMessages = await ctx.runMutation(api.ai_chat.thread_messages_add, {
+										threadId: threadId as app_convex_Id<"ai_chat_threads">,
+										parentId: resolvedParentId,
+										messages: requestMessagesToAdd,
+									});
+
+									uiMessages.push(
+										...requestMessages.map((requestMessage, index) => {
+											const persistedMessageId = persistedRequestMessages.ids[index];
+											if (!persistedMessageId) {
+												throw should_never_happen("Failed to map request message to persisted message ID", {
+													threadId,
+													requestMessageId: requestMessage.id,
+													index,
+												});
+											}
+
+											return {
+												...requestMessage,
+												id: persistedMessageId,
+											};
+										}),
+									);
+
+									resolvedParentId = persistedRequestMessages.ids.at(-1) ?? resolvedParentId;
 								}
 
 								const tools = {
@@ -923,16 +957,15 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 												return;
 											}
 
-											const messagesToAdd = [...requestMessages, result.responseMessage].map((message) => ({
-												clientGeneratedMessageId: message.id,
-												content: message,
-											}));
+											const messagesToAdd = [
+												{
+													clientGeneratedMessageId: result.responseMessage.id,
+													content: result.responseMessage,
+												},
+											];
 
-											// FIX(parentId-race-condition): Use `resolvedParentId` (Convex doc ID) instead of
-											// `body.parentId` (which may be a client-generated ID).
-											//
-											// BEFORE:
-											// parentId: body.parentId,
+											// Persist the assistant response below the last persisted request message.
+											// This keeps user edits durable even when generation was previously stopped.
 											await ctx.runMutation(api.ai_chat.thread_messages_add, {
 												threadId: threadId as app_convex_Id<"ai_chat_threads">,
 												parentId: resolvedParentId,
@@ -979,6 +1012,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									return createUIMessageStreamResponse({
 										status: result.status,
 										stream: result.body,
+										consumeSseStream: consumeStream,
 									});
 								}
 
