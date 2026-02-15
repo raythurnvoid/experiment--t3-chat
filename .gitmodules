@@ -61,3 +61,6 @@
 [submodule "references-submodules/headless-tree"]
 	path = references-submodules/headless-tree
 	url = https://github.com/raythurnvoid/headless-tree.git
+[submodule "references-submodules/openchat"]
+	path = references-submodules/openchat
+	url = https://github.com/opencoredev/openchat.git

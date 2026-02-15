@@ -82,6 +82,10 @@ export const test_mocks = {
 	pages: ((/* iife */) => {
 		const base = () => {
 			const updatedAt = faker.date.recent().getTime();
+			const name = faker.lorem.words({
+				min: 1,
+				max: 3,
+			});
 
 			return make<ConvexDocUserData<"pages">>({
 				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
@@ -90,10 +94,8 @@ export const test_mocks = {
 				updatedAt: updatedAt,
 				updatedBy: test_mocks_hardcoded.user.user_1.id,
 				parentId: test_mocks_hardcoded.page.page_root_1.parentId,
-				name: faker.lorem.words({
-					min: 1,
-					max: 3,
-				}),
+				name: name,
+				path: `/${name}`,
 				version: pages_FIRST_VERSION,
 				isArchived: false,
 			});
@@ -121,6 +123,7 @@ export const test_mocks_fill_db_with = {
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1.name,
 				parentId: test_mocks_hardcoded.page.page_root_1.parentId,
+				path: `/${test_mocks_hardcoded.page.page_root_1.name}`,
 			}),
 		);
 		if (!page_root_1) throw new Error("page_root_1 not found");
@@ -134,6 +137,7 @@ export const test_mocks_fill_db_with = {
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_1.name,
 				parentId: page_root_1._id,
+				path: `/${page_root_1.name}/${test_mocks_hardcoded.page.page_root_1_child_1.name}`,
 			}),
 		);
 		if (!page_root_1_child_1) throw new Error("page_root_1_child_1 not found");
@@ -147,6 +151,7 @@ export const test_mocks_fill_db_with = {
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name,
 				parentId: page_root_1_child_1._id,
+				path: `/${page_root_1.name}/${page_root_1_child_1.name}/${test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name}`,
 			}),
 		);
 		if (!page_root_1_child_1_deep_1) throw new Error("page_root_1_child_1_deep_1 not found");
@@ -160,6 +165,7 @@ export const test_mocks_fill_db_with = {
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_2.name,
 				parentId: page_root_1._id,
+				path: `/${page_root_1.name}/${test_mocks_hardcoded.page.page_root_1_child_2.name}`,
 			}),
 		);
 		if (!page_root_1_child_2) throw new Error("page_root_1_child_2 not found");
@@ -173,6 +179,7 @@ export const test_mocks_fill_db_with = {
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_2.name,
 				parentId: test_mocks_hardcoded.page.page_root_2.parentId,
+				path: `/${test_mocks_hardcoded.page.page_root_2.name}`,
 			}),
 		);
 		if (!page_root_2) throw new Error("page_root_2 not found");

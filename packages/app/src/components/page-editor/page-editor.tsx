@@ -17,10 +17,11 @@ import {
 	pages_PresenceStore,
 	type pages_EditorView,
 } from "@/lib/pages.ts";
-import { Home, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, Home, Sparkles } from "lucide-react";
 import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
 import { MyButton } from "../my-button.tsx";
 import { MyIcon } from "../my-icon.tsx";
+import { MyIconButton } from "../my-icon-button.tsx";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
@@ -30,7 +31,7 @@ import {
 	usePresenceSessions,
 	usePresenceSessionsData,
 } from "../../hooks/presence-hooks.ts";
-import { CatchBoundary } from "@tanstack/react-router";
+import { CatchBoundary, useNavigate } from "@tanstack/react-router";
 import { PageEditorError } from "./page-editor-error.tsx";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import type { MySeparator_ClassNames } from "../my-separator.tsx";
@@ -200,17 +201,25 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 type PageEditorPendingEditsFloating_ClassNames =
 	| "PageEditorPendingEditsFloating"
 	| "PageEditorPendingEditsFloating-icon"
-	| "PageEditorPendingEditsFloating-review-button";
+	| "PageEditorPendingEditsFloating-review-button"
+	| "PageEditorPendingEditsFloating-review-pager"
+	| "PageEditorPendingEditsFloating-review-pager-button"
+	| "PageEditorPendingEditsFloating-review-pager-label";
 
 type PageEditorPendingEditsFloating_Props = {
-	updatedAt: number;
+	updatedAt?: number;
+	showReviewButton: boolean;
+	reviewPagerLabel: string;
+	canNavigate: boolean;
 	onReviewChanges: () => void;
+	onNavigatePrevious: () => void;
+	onNavigateNext: () => void;
 };
 
 function PageEditorPendingEditsFloating(props: PageEditorPendingEditsFloating_Props) {
-	const { onReviewChanges } = props;
+	const { showReviewButton, reviewPagerLabel, canNavigate, onReviewChanges, onNavigatePrevious, onNavigateNext } = props;
 
-	const handleClick = () => {
+	const handleClickReviewChanges = () => {
 		onReviewChanges();
 	};
 
@@ -225,16 +234,49 @@ function PageEditorPendingEditsFloating(props: PageEditorPendingEditsFloating_Pr
 				<Sparkles />
 			</MyIcon>
 			Agent edits are pending review
-			<MyButton
-				variant="accent"
-				data-testid="review-changes-button"
-				className={cn(
-					"PageEditorPendingEditsFloating-review-button" satisfies PageEditorPendingEditsFloating_ClassNames,
-				)}
-				onClick={handleClick}
-			>
-				Review changes
-			</MyButton>
+			{showReviewButton && (
+				<MyButton
+					variant="accent"
+					data-testid="review-changes-button"
+					className={cn(
+						"PageEditorPendingEditsFloating-review-button" satisfies PageEditorPendingEditsFloating_ClassNames,
+					)}
+					onClick={handleClickReviewChanges}
+				>
+					Review changes
+				</MyButton>
+			)}
+			<div className={cn("PageEditorPendingEditsFloating-review-pager" satisfies PageEditorPendingEditsFloating_ClassNames)}>
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Previous pending edit"
+					className={cn(
+						"PageEditorPendingEditsFloating-review-pager-button" satisfies PageEditorPendingEditsFloating_ClassNames,
+					)}
+					disabled={!canNavigate}
+					onClick={onNavigatePrevious}
+				>
+					<ChevronLeft />
+				</MyIconButton>
+				<span
+					className={cn(
+						"PageEditorPendingEditsFloating-review-pager-label" satisfies PageEditorPendingEditsFloating_ClassNames,
+					)}
+				>
+					{reviewPagerLabel}
+				</span>
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Next pending edit"
+					className={cn(
+						"PageEditorPendingEditsFloating-review-pager-button" satisfies PageEditorPendingEditsFloating_ClassNames,
+					)}
+					disabled={!canNavigate}
+					onClick={onNavigateNext}
+				>
+					<ChevronRight />
+				</MyIconButton>
+			</div>
 		</div>
 	);
 }
@@ -506,19 +548,47 @@ type PageEditor_Inner_Props = {
 	}>;
 	onEditorModeChange: PageEditorHeader_Props["onEditorModeChange"];
 	onReviewPendingEdits?: () => void;
+	onNavigatePendingEdits?: (args: { pageId: app_convex_Id<"pages">; forceDiffEditor: boolean }) => void;
 	onDiffExit?: () => void;
 };
 
 function PageEditor_Inner(props: PageEditor_Inner_Props) {
-	const { pageId, editorMode, presenceStore, onlineUsers, onEditorModeChange, onReviewPendingEdits, onDiffExit } =
-		props;
+	const {
+		pageId,
+		editorMode,
+		presenceStore,
+		onlineUsers,
+		onEditorModeChange,
+		onReviewPendingEdits,
+		onNavigatePendingEdits,
+		onDiffExit,
+	} = props;
 
 	const pendingEditsResult = useQuery(app_convex_api.ai_chat.get_ai_pending_edit, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
 	});
-	const hasPendingEdits = !!(pendingEditsResult && editorMode !== "diff_editor");
+	const allPendingEditsResult = useQuery(app_convex_api.ai_chat.list_ai_pending_edits, {
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+	});
+
+	const pendingEditsOrdered = ((/* iife */) => {
+		if (allPendingEditsResult && allPendingEditsResult.length > 0) {
+			return allPendingEditsResult.toReversed();
+		}
+		return pendingEditsResult ? [pendingEditsResult] : [];
+	})();
+	const hasAnyPendingEdits = pendingEditsOrdered.length > 0;
+	const hasPendingEdits = hasAnyPendingEdits && editorMode !== "diff_editor";
+	const currentPendingEditIndex = pendingEditsOrdered.findIndex((pendingEdit) => pendingEdit.pageId === pageId);
+	const hasCurrentPendingEdits = currentPendingEditIndex >= 0;
+	const activePendingEditIndex = hasCurrentPendingEdits ? currentPendingEditIndex : 0;
+	const canNavigatePendingEdits = pendingEditsOrdered.length > 1;
+	const reviewPagerLabel = hasCurrentPendingEdits
+		? `Review ${activePendingEditIndex + 1} of ${pendingEditsOrdered.length}`
+		: "Review pending edits";
 
 	const diffEditorRef = useRef<PageEditorDiff_Ref | null>(null);
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
@@ -526,6 +596,39 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	const handleDiffExit = () => {
 		onEditorModeChange("rich_text_editor");
 		onDiffExit?.();
+	};
+
+	const handleNavigatePendingEdits = (direction: "prev" | "next") => {
+		if (!onNavigatePendingEdits) {
+			return;
+		}
+
+		const navCount = pendingEditsOrdered.length;
+		if (navCount <= 1) {
+			return;
+		}
+
+		const nextIndex =
+			direction === "prev"
+				? (activePendingEditIndex - 1 + navCount) % navCount
+				: (activePendingEditIndex + 1) % navCount;
+		const nextPendingEdit = pendingEditsOrdered[nextIndex];
+		if (!nextPendingEdit) {
+			return;
+		}
+
+		onNavigatePendingEdits({
+			pageId: nextPendingEdit.pageId,
+			forceDiffEditor: !hasCurrentPendingEdits,
+		});
+	};
+
+	const handleNavigatePendingEditsPrevious = () => {
+		handleNavigatePendingEdits("prev");
+	};
+
+	const handleNavigatePendingEditsNext = () => {
+		handleNavigatePendingEdits("next");
 	};
 
 	useEffect(() => {
@@ -537,10 +640,15 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	}, [editorMode, pendingEditsResult?.modifiedContent]);
 
 	const topStickyFloatingSlot =
-		hasPendingEdits && pendingEditsResult ? (
+		hasPendingEdits ? (
 			<PageEditorPendingEditsFloating
-				updatedAt={pendingEditsResult.updatedAt}
+				updatedAt={pendingEditsResult?.updatedAt}
+				showReviewButton={hasCurrentPendingEdits}
+				reviewPagerLabel={reviewPagerLabel}
+				canNavigate={canNavigatePendingEdits}
 				onReviewChanges={onReviewPendingEdits ?? (() => {})}
+				onNavigatePrevious={handleNavigatePendingEditsPrevious}
+				onNavigateNext={handleNavigatePendingEditsNext}
 			/>
 		) : null;
 
@@ -643,6 +751,7 @@ export type PageEditor_Props = {
 export function PageEditor(props: PageEditor_Props) {
 	const { ref, pageId, editorMode, onEditorModeChange } = props;
 
+	const navigate = useNavigate();
 	const authenticated = AppAuthProvider.useAuthenticated();
 
 	useImperativeHandle(
@@ -657,6 +766,19 @@ export function PageEditor(props: PageEditor_Props) {
 		onEditorModeChange("diff_editor");
 	};
 
+	const handleNavigatePendingEdits: NonNullable<PageEditor_Inner_Props["onNavigatePendingEdits"]> = (args) => {
+		const nextView = args.forceDiffEditor ? "diff_editor" : editorMode;
+		const nextSearch = {
+			pageId: args.pageId,
+			view: nextView === "rich_text_editor" ? undefined : nextView,
+		};
+
+		navigate({
+			to: "/pages",
+			search: nextSearch,
+		}).catch(console.error);
+	};
+
 	return pageId ? (
 		<PageEditorPresenceSupplier userId={authenticated.userId} pageId={pageId}>
 			{({ presenceStore, onlineUsers }) => (
@@ -667,6 +789,7 @@ export function PageEditor(props: PageEditor_Props) {
 					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
 					onReviewPendingEdits={handleReviewPendingEdits}
+					onNavigatePendingEdits={handleNavigatePendingEdits}
 				/>
 			)}
 		</PageEditorPresenceSupplier>

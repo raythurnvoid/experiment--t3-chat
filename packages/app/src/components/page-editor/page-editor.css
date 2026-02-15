@@ -198,7 +198,20 @@
 		box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
 	}
 
-	.PageEditorPendingEditsFloating-review-button {
+	.PageEditorPendingEditsFloating-review-pager {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+
+		user-select: none;
+	}
+
+	.PageEditorPendingEditsFloating-review-pager-label {
+		min-width: 128px;
+
+		text-align: center;
+		font-size: 0.75rem;
+		color: var(--color-fg-08);
 	}
 	/* #endregion pending edits floating */
 }

@@ -863,6 +863,10 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			targetParentId: pages_sidebar_to_parent_id(args.targetParentId),
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
+		}).then((result) => {
+			if (result._nay) {
+				throw new Error("[PagesSidebar.movePagesToParent] Error moving pages", { cause: result._nay });
+			}
 		});
 	};
 
@@ -930,6 +934,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				pageId: pages_sidebar_to_page_id(item.getId()),
 				name: trimmedValue,
 			})
+				.then((result) => {
+					if (result._nay) {
+						throw new Error("[PagesSidebar.onRename] Error renaming page", { cause: result._nay });
+					}
+				})
 				.catch(console.error)
 				.finally(() => {
 					unmarkPageAsPending(item.getId());
@@ -1050,6 +1059,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 			pageId: pages_sidebar_to_page_id(pageId),
 		})
+			.then((result) => {
+				if (result._nay) {
+					throw new Error("[PagesSidebar.handleUnarchive] Error unarchiving page", { cause: result._nay });
+				}
+			})
 			.catch(console.error)
 			.finally(() => {
 				unmarkPageAsPending(pageId);

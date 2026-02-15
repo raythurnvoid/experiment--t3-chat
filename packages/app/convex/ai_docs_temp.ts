@@ -59,60 +59,81 @@ import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 
-async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; projectId: string; path: string }) {
-	if (args.path === "/") return null;
-
-	const segments = path_extract_segments_from(args.path);
-
-	let pageId: Id<"pages"> | null = null;
-	let currentNode: Doc<"pages">["parentId"] = pages_ROOT_ID;
-
-	for (const segment of segments) {
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("parentId", currentNode)
-					.eq("name", segment),
-			)
-			.unique();
-
-		if (!page) return null;
-		currentNode = page._id;
-		pageId = page._id;
+function pages_materialized_path_join(parentPath: string, pageName: string) {
+	if (parentPath === "/") {
+		const encodedName = encode_path_segment(pageName);
+		return encodedName === "" ? "/" : `/${encodedName}`;
 	}
 
-	return pageId;
+	const encodedName = encode_path_segment(pageName);
+	return encodedName === "" ? parentPath : `${parentPath}/${encodedName}`;
+}
+
+function pages_is_home_page(page: Pick<Doc<"pages">, "parentId" | "name">) {
+	return page.parentId === pages_ROOT_ID && page.name === "";
+}
+
+type pages_QueryOrMutationCtx = QueryCtx | MutationCtx;
+
+async function find_active_pages_by_path(
+	ctx: pages_QueryOrMutationCtx,
+	args: { workspaceId: string; projectId: string; path: string },
+) {
+	return ctx.db
+		.query("pages")
+		.withIndex("by_workspaceId_projectId_path", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("path", args.path),
+		)
+		.filter((q) => q.eq(q.field("isArchived"), false))
+		.collect();
+}
+
+async function find_active_page_by_path(
+	ctx: pages_QueryOrMutationCtx,
+	args: { workspaceId: string; projectId: string; path: string },
+) {
+	const activePages = await find_active_pages_by_path(ctx, args);
+	return activePages.at(0) ?? null;
+}
+
+async function find_active_path_conflict(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		path: string;
+		excludePageIds?: Array<Id<"pages">>;
+	},
+) {
+	const activePages = await find_active_pages_by_path(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: args.path,
+	});
+	const excludePageIdsSet = new Set(args.excludePageIds ?? []);
+	for (const activePage of activePages) {
+		if (excludePageIdsSet.has(activePage._id)) {
+			continue;
+		}
+		return activePage;
+	}
+	return null;
+}
+
+async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; projectId: string; path: string }) {
+	if (args.path === "/") {
+		return null;
+	}
+
+	const activePageByMaterializedPath = await find_active_page_by_path(ctx, args);
+	return activePageByMaterializedPath?._id ?? null;
 }
 
 async function resolve_page_id_from_path_fn(
 	ctx: QueryCtx,
 	args: { workspaceId: string; projectId: string; path: string },
 ) {
-	const segments = path_extract_segments_from(args.path);
-
-	let pageId: Id<"pages"> | null = null;
-	let currentNode: Doc<"pages">["parentId"] = pages_ROOT_ID;
-
-	for (const segment of segments) {
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("parentId", currentNode)
-					.eq("name", segment),
-			)
-			.unique();
-		if (!page) return null;
-		currentNode = page._id;
-		pageId = page._id;
-	}
-
-	return pageId;
+	return resolve_id_from_path(ctx, args);
 }
 
 export const resolve_page_id_from_path = internalQuery({
@@ -126,26 +147,13 @@ async function resolve_tree_node_id_from_path_fn(
 	args: { workspaceId: string; projectId: string; path: string },
 ) {
 	if (args.path === "/") return pages_ROOT_ID;
-	const segments = path_extract_segments_from(args.path);
 
-	let currentNode: Doc<"pages">["parentId"] = pages_ROOT_ID;
-
-	for (const segment of segments) {
-		const page = await ctx.db
-			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("parentId", currentNode)
-					.eq("name", segment),
-			)
-			.unique();
-		if (!page) return null;
-		currentNode = page._id;
+	const pageByMaterializedPath = await find_active_page_by_path(ctx, args);
+	if (pageByMaterializedPath) {
+		return pageByMaterializedPath._id;
 	}
 
-	return currentNode;
+	return null;
 }
 
 export const resolve_tree_node_id_from_path = internalQuery({
@@ -159,17 +167,76 @@ async function resolve_path_from_page_id(
 	args: { workspaceId: string; projectId: string; pageId: Id<"pages"> },
 ): Promise<string> {
 	if (!args.pageId) return "/";
-	const segments: string[] = [];
-	let currentId: Id<"pages"> | null = args.pageId;
-	while (currentId) {
-		const page: Doc<"pages"> | null = await ctx.db.get("pages", currentId);
-		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-			break;
-		}
-		segments.unshift(page.name);
-		currentId = page.parentId === pages_ROOT_ID ? null : page.parentId;
+
+	const page = await ctx.db.get("pages", args.pageId);
+	if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+		return "/";
 	}
-	return segments.length === 0 ? "/" : `/${segments.join("/")}`;
+	return page.path;
+}
+
+async function resolve_parent_path_from_parent_id(
+	ctx: QueryCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		parentId: Doc<"pages">["parentId"];
+	},
+) {
+	if (args.parentId === pages_ROOT_ID) {
+		return "/";
+	}
+
+	const parentPage = await ctx.db.get("pages", args.parentId);
+	if (!parentPage || parentPage.workspaceId !== args.workspaceId || parentPage.projectId !== args.projectId) {
+		return null;
+	}
+
+	return parentPage.path;
+}
+
+async function cascade_page_descendants_path(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		parentId: Id<"pages">;
+		parentPath: string;
+	},
+) {
+	const stack: Array<{ parentId: Id<"pages">; parentPath: string }> = [
+		{ parentId: args.parentId, parentPath: args.parentPath },
+	];
+
+	while (stack.length > 0) {
+		const frame = stack.pop();
+		if (!frame) {
+			continue;
+		}
+
+		const children = await ctx.db
+			.query("pages")
+			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("parentId", frame.parentId),
+			)
+			.collect();
+
+		await Promise.all(
+			children.map(async (child) => {
+				const childPath = pages_materialized_path_join(frame.parentPath, child.name);
+				await ctx.db.patch("pages", child._id, {
+					path: childPath,
+				});
+				stack.push({
+					parentId: child._id,
+					parentPath: childPath,
+				});
+			}),
+		);
+	}
 }
 
 const get_tree_items_list_validator = v.array(
@@ -247,6 +314,33 @@ async function do_create_page(
 	const now = Date.now();
 
 	const initialIsArchived = false;
+	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		parentId: args.parentId,
+	});
+	if (parentPath == null) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "[do_create_page] Parent page not found",
+			},
+		});
+	}
+	const pagePath = pages_materialized_path_join(parentPath, args.name);
+	const activePathConflict = await find_active_path_conflict(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: pagePath,
+	});
+	if (activePathConflict) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "[do_create_page] Failed to create page because path already exists",
+			},
+		});
+	}
 
 	// Create initial Yjs snapshot + sequence tracker with the page.
 	// Important: do NOT store an empty bytes blob; Yjs update decoding may throw on empty payloads.
@@ -278,6 +372,7 @@ async function do_create_page(
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		parentId: args.parentId,
+		path: pagePath,
 		version: pages_FIRST_VERSION,
 		name: args.name,
 		isArchived: initialIsArchived,
@@ -370,6 +465,7 @@ export const create_page_quick = mutation({
 			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", pages_ROOT_ID).eq("name", ".tmp"),
 			)
+			.filter((q) => q.eq(q.field("isArchived"), false))
 			.first();
 
 		let tmpPageId = null;
@@ -418,30 +514,58 @@ export const rename_page = mutation({
 		pageId: v.id("pages"),
 		name: v.string(),
 	},
+	returns: v.union(v.object({ _yay: v.null() }), v.object({ _nay: v.object({ name: v.string(), message: v.string() }) })),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const page = await ctx.db.get("pages", args.pageId);
+		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+			return Result({ _yay: null });
+		}
 
-		// Check if this is the homepage (path "/") and ignore if so
-		const path = await resolve_path_from_page_id(ctx, {
+		if (pages_is_home_page(page)) {
+			// Ignore rename requests for homepage
+			return Result({ _yay: null });
+		}
+
+		const parentPath = await resolve_parent_path_from_parent_id(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			pageId: args.pageId,
+			parentId: page.parentId,
 		});
-
-		if (path === "/") {
-			// Ignore rename requests for homepage
-			return;
+		if (parentPath == null) {
+			return Result({ _yay: null });
 		}
-
-		const page = await ctx.db.get("pages", args.pageId);
-
-		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
-			await ctx.db.patch("pages", args.pageId, {
-				name: args.name,
-				updatedBy: user.name,
-				updatedAt: Date.now(),
+		const renamedPath = pages_materialized_path_join(parentPath, args.name);
+		if (!page.isArchived) {
+			const activePathConflict = await find_active_path_conflict(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				path: renamedPath,
+				excludePageIds: [args.pageId],
 			});
+			if (activePathConflict) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "[rename_page] Failed to rename page because path already exists",
+					},
+				});
+			}
 		}
+
+		await ctx.db.patch("pages", args.pageId, {
+			name: args.name,
+			path: renamedPath,
+			updatedBy: user.name,
+			updatedAt: Date.now(),
+		});
+		await cascade_page_descendants_path(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: args.pageId,
+			parentPath: renamedPath,
+		});
+		return Result({ _yay: null });
 	},
 });
 
@@ -452,31 +576,83 @@ export const move_pages = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
+	returns: v.union(v.object({ _yay: v.null() }), v.object({ _nay: v.object({ name: v.string(), message: v.string() }) })),
 	handler: async (ctx, args) => {
-		for (const itemId of args.itemIds) {
-			// Check if this is the homepage (path "/") and skip if so
-			const path = await resolve_path_from_page_id(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageId: itemId,
-			});
+		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: args.targetParentId,
+		});
+		if (targetParentPath == null) {
+			return Result({ _yay: null });
+		}
 
-			if (path === "/") {
+		const pagesToMove: Array<{ itemId: Id<"pages">; page: Doc<"pages">; movedPath: string }> = [];
+
+		for (const itemId of args.itemIds) {
+			const page = await ctx.db.get("pages", itemId);
+			if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+				continue;
+			}
+			if (pages_is_home_page(page)) {
 				// Skip move requests for homepage
 				continue;
 			}
 
-			const page = await ctx.db.get("pages", itemId);
+			const movedPath = pages_materialized_path_join(targetParentPath, page.name);
+			pagesToMove.push({ itemId, page, movedPath });
+		}
 
-			if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
-				await ctx.db.patch("pages", itemId, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					parentId: args.targetParentId,
-					updatedAt: Date.now(),
+		const movingPageIds = pagesToMove.map((page) => page.itemId);
+		const movedPathByPageId = new Map<string, Id<"pages">>();
+		for (const pageToMove of pagesToMove) {
+			if (pageToMove.page.isArchived) {
+				continue;
+			}
+
+			const duplicateTargetPageId = movedPathByPageId.get(pageToMove.movedPath);
+			if (duplicateTargetPageId && duplicateTargetPageId !== pageToMove.itemId) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "[move_pages] Failed to move pages because path already exists",
+					},
+				});
+			}
+			movedPathByPageId.set(pageToMove.movedPath, pageToMove.itemId);
+
+			const activePathConflict = await find_active_path_conflict(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				path: pageToMove.movedPath,
+				excludePageIds: movingPageIds,
+			});
+			if (activePathConflict) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "[move_pages] Failed to move pages because path already exists",
+					},
 				});
 			}
 		}
+
+		for (const pageToMove of pagesToMove) {
+			await ctx.db.patch("pages", pageToMove.itemId, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				parentId: args.targetParentId,
+				path: pageToMove.movedPath,
+				updatedAt: Date.now(),
+			});
+			await cascade_page_descendants_path(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				parentId: pageToMove.itemId,
+				parentPath: pageToMove.movedPath,
+			});
+		}
+		return Result({ _yay: null });
 	},
 });
 
@@ -519,6 +695,7 @@ export const unarchive_pages = mutation({
 		projectId: v.string(),
 		pageId: v.id("pages"),
 	},
+	returns: v.union(v.object({ _yay: v.null() }), v.object({ _nay: v.object({ name: v.string(), message: v.string() }) })),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
@@ -531,18 +708,38 @@ export const unarchive_pages = mutation({
 
 		if (path === "/") {
 			// Ignore unarchive requests for homepage
-			return;
+			return Result({ _yay: null });
 		}
 
 		const page = await ctx.db.get("pages", args.pageId);
 
 		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
+			if (!page.isArchived) {
+				return Result({ _yay: null });
+			}
+
+			const activePathConflict = await find_active_path_conflict(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				path: page.path,
+				excludePageIds: [args.pageId],
+			});
+			if (activePathConflict) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "[unarchive_pages] Failed to unarchive page because path already exists",
+					},
+				});
+			}
+
 			await ctx.db.patch("pages", args.pageId, {
 				isArchived: false,
 				updatedBy: user.name,
 				updatedAt: Date.now(),
 			});
 		}
+		return Result({ _yay: null });
 	},
 });
 
@@ -1037,14 +1234,9 @@ export const text_search_pages = internalQuery({
 		const items: Array<{ path: string; preview: string }> = await Promise.all(
 			matches.map(async (page): Promise<{ path: string; preview: string }> => {
 				const pageDoc = await ctx.db.get("pages", page.page_id);
-				if (!pageDoc) {
+				if (!pageDoc || pageDoc.workspaceId !== args.workspaceId || pageDoc.projectId !== args.projectId) {
 					return { path: "/", preview: page.content.slice(0, 160) };
 				}
-				const path: string = await resolve_path_from_page_id(ctx, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					pageId: pageDoc._id,
-				});
 				const pending = await ctx.db
 					.query("ai_chat_pending_edits")
 					.withIndex("by_workspace_project_user_page", (q) =>
@@ -1056,7 +1248,7 @@ export const text_search_pages = internalQuery({
 					)
 					.first();
 				const preview = (pending?.modifiedContent ?? page.content).slice(0, 160);
-				return { path, preview };
+				return { path: pageDoc.path, preview };
 			}),
 		);
 
@@ -1091,7 +1283,8 @@ export const create_page_by_path = internalMutation({
 				.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
 					q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", currentParent).eq("name", name),
 				)
-				.unique();
+				.filter((q) => q.eq(q.field("isArchived"), false))
+				.first();
 
 			if (!existing) {
 				// Create missing segment
@@ -1149,6 +1342,7 @@ export const ensure_home_page = mutation({
 					.eq("parentId", pages_ROOT_ID)
 					.eq("name", ""),
 			)
+			.filter((q) => q.eq(q.field("isArchived"), false))
 			.first();
 
 		if (homepage) {

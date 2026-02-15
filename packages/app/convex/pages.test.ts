@@ -1,10 +1,11 @@
 import { expect, test } from "vitest";
-import { internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with, test_mocks_hardcoded } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
 import type { ActionCtx } from "./_generated/server";
+import { pages_ROOT_ID } from "../server/pages.ts";
 
 test("list_pages", async () => {
 	const t = test_convex();
@@ -123,6 +124,425 @@ test("list_pages_new", async () => {
 	});
 });
 
+test("resolve_page_id_from_path uses materialized paths", async () => {
+	const t = test_convex();
+
+	await t.run(async (ctx) => {
+		const db = await test_mocks_fill_db_with.nested_pages(ctx);
+
+		const root1Path = `/${db.pages.page_root_1.name}`;
+		const child1Path = `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`;
+		const deep1Path = `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`;
+
+		const [root1Id, child1Id, deep1Id] = await Promise.all([
+			ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
+				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+				projectId: test_mocks_hardcoded.project_id.project_1,
+				path: root1Path,
+			}),
+			ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
+				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+				projectId: test_mocks_hardcoded.project_id.project_1,
+				path: child1Path,
+			}),
+			ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
+				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+				projectId: test_mocks_hardcoded.project_id.project_1,
+				path: deep1Path,
+			}),
+		]);
+
+		expect(root1Id).toBe(db.pages.page_root_1._id);
+		expect(child1Id).toBe(db.pages.page_root_1_child_1._id);
+		expect(deep1Id).toBe(db.pages.page_root_1_child_1_deep_1._id);
+	});
+});
+
+test("rename_page updates descendants materialized paths", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const renamedRootName = "renamed_root";
+	await asUser.mutation(api.ai_docs_temp.rename_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_1._id,
+		name: renamedRootName,
+	});
+
+	await t.run(async (ctx) => {
+		const [renamedRoot, renamedChild, renamedDeep] = await Promise.all([
+			ctx.db.get("pages", db.pages.page_root_1._id),
+			ctx.db.get("pages", db.pages.page_root_1_child_1._id),
+			ctx.db.get("pages", db.pages.page_root_1_child_1_deep_1._id),
+		]);
+
+		expect(renamedRoot?.path).toBe(`/${renamedRootName}`);
+		expect(renamedChild?.path).toBe(`/${renamedRootName}/${db.pages.page_root_1_child_1.name}`);
+		expect(renamedDeep?.path).toBe(
+			`/${renamedRootName}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
+		);
+	});
+});
+
+test("move_pages updates descendants materialized paths", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.move_pages, {
+		itemIds: [db.pages.page_root_1_child_1._id],
+		targetParentId: db.pages.page_root_2._id,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+
+	await t.run(async (ctx) => {
+		const [movedChild, movedDeep] = await Promise.all([
+			ctx.db.get("pages", db.pages.page_root_1_child_1._id),
+			ctx.db.get("pages", db.pages.page_root_1_child_1_deep_1._id),
+		]);
+
+		expect(movedChild?.path).toBe(`/${db.pages.page_root_2.name}/${db.pages.page_root_1_child_1.name}`);
+		expect(movedDeep?.path).toBe(
+			`/${db.pages.page_root_2.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
+		);
+	});
+});
+
+test("homepage path stays immutable on rename and move", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const ensuredHomepage = await asUser.mutation(api.ai_docs_temp.ensure_home_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+	if (ensuredHomepage._nay) {
+		throw new Error("ensure_home_page failed in test");
+	}
+	const homepageId = ensuredHomepage._yay.pageId;
+
+	await asUser.mutation(api.ai_docs_temp.rename_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: homepageId,
+		name: "renamed_home",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.move_pages, {
+		itemIds: [homepageId],
+		targetParentId: db.pages.page_root_1._id,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+
+	await t.run(async (ctx) => {
+		const homepage = await ctx.db.get("pages", homepageId);
+		expect(homepage?.name).toBe("");
+		expect(homepage?.path).toBe("/");
+		expect(homepage?.parentId).toBe(pages_ROOT_ID);
+	});
+});
+
+test("create_page rejects duplicate active path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const duplicateCreation = await asUser.mutation(api.ai_docs_temp.create_page, {
+		parentId: pages_ROOT_ID,
+		name: db.pages.page_root_1.name,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+
+	if (duplicateCreation._yay) {
+		throw new Error("Expected duplicate creation to fail");
+	}
+
+	expect(duplicateCreation._nay.message).toContain("path already exists");
+});
+
+test("archived pages can share path with a new active page", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+	const duplicateName = "archived_duplicate_allowed";
+
+	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {
+		parentId: pages_ROOT_ID,
+		name: duplicateName,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+	if (createdPage._nay) {
+		throw new Error("Expected initial page creation to succeed");
+	}
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: createdPage._yay.pageId,
+	});
+
+	const recreatedPage = await asUser.mutation(api.ai_docs_temp.create_page, {
+		parentId: pages_ROOT_ID,
+		name: duplicateName,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+	if (recreatedPage._nay) {
+		throw new Error("Expected recreated page creation to succeed");
+	}
+
+	await t.run(async (ctx) => {
+		const path = `/${duplicateName}`;
+		const pagesAtPath = await ctx.db
+			.query("pages")
+			.withIndex("by_workspaceId_projectId_path", (q) =>
+				q
+					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
+					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+					.eq("path", path),
+			)
+			.collect();
+
+		expect(pagesAtPath).toHaveLength(2);
+		expect(pagesAtPath.filter((page) => page.isArchived)).toHaveLength(1);
+		expect(pagesAtPath.filter((page) => !page.isArchived)).toHaveLength(1);
+	});
+});
+
+test("rename_page returns conflict and keeps original path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const renameResult = await asUser.mutation(api.ai_docs_temp.rename_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+		name: db.pages.page_root_1.name,
+	});
+	if (!("_nay" in renameResult)) {
+		throw new Error("Expected rename to fail with path conflict");
+	}
+
+	const renameError = renameResult._nay;
+	if (!renameError) {
+		throw new Error("Expected rename error details");
+	}
+	expect(renameError.message).toContain("path already exists");
+
+	await t.run(async (ctx) => {
+		const pageRoot2 = await ctx.db.get("pages", db.pages.page_root_2._id);
+		expect(pageRoot2?.name).toBe(db.pages.page_root_2.name);
+		expect(pageRoot2?.path).toBe(`/${db.pages.page_root_2.name}`);
+	});
+});
+
+test("move_pages returns conflict and keeps original path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const conflictingSibling = await asUser.mutation(api.ai_docs_temp.create_page, {
+		parentId: db.pages.page_root_2._id,
+		name: db.pages.page_root_1_child_1.name,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+	if (conflictingSibling._nay) {
+		throw new Error("Expected conflicting sibling creation to succeed");
+	}
+
+	const moveResult = await asUser.mutation(api.ai_docs_temp.move_pages, {
+		itemIds: [db.pages.page_root_1_child_1._id],
+		targetParentId: db.pages.page_root_2._id,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+	if (!("_nay" in moveResult)) {
+		throw new Error("Expected move to fail with path conflict");
+	}
+
+	const moveError = moveResult._nay;
+	if (!moveError) {
+		throw new Error("Expected move error details");
+	}
+	expect(moveError.message).toContain("path already exists");
+
+	await t.run(async (ctx) => {
+		const child1 = await ctx.db.get("pages", db.pages.page_root_1_child_1._id);
+		expect(child1?.parentId).toBe(db.pages.page_root_1._id);
+		expect(child1?.path).toBe(`/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`);
+	});
+});
+
+test("unarchive_pages returns conflict when active page already has the same path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+	});
+
+	const renameArchived = await asUser.mutation(api.ai_docs_temp.rename_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+		name: db.pages.page_root_1.name,
+	});
+	if (renameArchived._nay) {
+		throw new Error("Expected archived rename to succeed");
+	}
+
+	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+	});
+	if (!("_nay" in unarchiveResult)) {
+		throw new Error("Expected unarchive to fail with path conflict");
+	}
+
+	const unarchiveError = unarchiveResult._nay;
+	if (!unarchiveError) {
+		throw new Error("Expected unarchive error details");
+	}
+	expect(unarchiveError.message).toContain("path already exists");
+
+	await t.run(async (ctx) => {
+		const pageRoot2 = await ctx.db.get("pages", db.pages.page_root_2._id);
+		expect(pageRoot2?.isArchived).toBe(true);
+	});
+});
+
+test("resolve_page_id_from_path ignores archived pages with duplicate path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+	});
+
+	const renameArchived = await asUser.mutation(api.ai_docs_temp.rename_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+		name: db.pages.page_root_1.name,
+	});
+	if (renameArchived._nay) {
+		throw new Error("Expected archived rename to succeed");
+	}
+
+	const resolvedRoot1 = await t.run(async (ctx) =>
+		ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
+			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+			projectId: test_mocks_hardcoded.project_id.project_1,
+			path: `/${db.pages.page_root_1.name}`,
+		}),
+	);
+
+	expect(resolvedRoot1).toBe(db.pages.page_root_1._id);
+});
+
+test("create_page_by_path reuses only active pages", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_2._id,
+	});
+
+	const createByPath = await asUser.mutation(internal.ai_docs_temp.create_page_by_path, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		path: `/${db.pages.page_root_2.name}/new_leaf`,
+		userId: String(db.pages.page_root_1.createdBy),
+	});
+	if (createByPath._nay) {
+		throw new Error("Expected create_page_by_path to succeed with archived duplicate ancestor");
+	}
+
+	await t.run(async (ctx) => {
+		const root2Path = `/${db.pages.page_root_2.name}`;
+		const pagesAtRoot2Path = await ctx.db
+			.query("pages")
+			.withIndex("by_workspaceId_projectId_path", (q) =>
+				q
+					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
+					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+					.eq("path", root2Path),
+			)
+			.collect();
+		expect(pagesAtRoot2Path).toHaveLength(2);
+
+		const activeRoot2 = pagesAtRoot2Path.find((page) => !page.isArchived);
+		if (!activeRoot2) {
+			throw new Error("Expected active root2 page to exist");
+		}
+
+		expect(activeRoot2._id).not.toBe(db.pages.page_root_2._id);
+
+		const createdLeaf = await ctx.db.get("pages", createByPath._yay.pageId);
+		expect(createdLeaf?.parentId).toBe(activeRoot2._id);
+		expect(createdLeaf?.path).toBe(`/${db.pages.page_root_2.name}/new_leaf`);
+	});
+});
+
 async function list_dir(
 	ctx: ActionCtx,
 	args: {
@@ -153,9 +573,7 @@ async function list_dir(
 
 	// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
 	// so we fetch one child at a time for the current parent, then dive deeper first.
-	const stack: Array<{ parentId: string; absPath: string; cursor: string | null; depth: number }> = [
-		{ parentId: startNodeId, absPath: basePath, cursor: null, depth: 0 },
-	];
+	const stack = [{ parentId: startNodeId, absPath: basePath, cursor: null as string | null, depth: 0 }];
 
 	while (stack.length > 0) {
 		const frame = stack.pop();

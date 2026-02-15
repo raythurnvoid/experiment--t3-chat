@@ -70,7 +70,9 @@ const app_convex_schema = defineSchema({
 		baseContent: v.string(),
 		modifiedContent: v.string(),
 		updatedAt: v.number(),
-	}).index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
+	})
+		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"])
+		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks to remove a user's pending edits.
@@ -88,6 +90,8 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		/** Project ID extracted from roomId */
 		projectId: v.string(),
+		/** Materialized absolute path used for path resolution */
+		path: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
 		/** ID of the markdown content for the page */
@@ -111,6 +115,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_workspaceId_projectId_parentId_and_name", ["workspaceId", "projectId", "parentId", "name"])
 		.index("by_workspaceId_projectId_parentId_and_isArchived", ["workspaceId", "projectId", "parentId", "isArchived"])
+		.index("by_workspaceId_projectId_path", ["workspaceId", "projectId", "path"])
 		.index("by_workspaceId_projectId_and_name", ["workspaceId", "projectId", "name"]),
 	/**
 	 * Table to store markdown content for pages.
