@@ -51,10 +51,33 @@ Keep it short and evaluable:
 - **Decisions** — non-obvious choices (only if relevant)
 - **Issues** — anything unexpected, incomplete, or needing follow-up
 
+# Self-learning protocol (durable memory)
+
+When you hit a coding failure, recurring mistake, or preventable slowdown, improve this spec file with a durable rule.
+
+Only persist a lesson if **all** are true:
+
+1. It is durable (applies beyond the current task/PR and likely survives normal code churn).
+2. It is actionable (`if/when X, do Y`) and meaningfully improves implementation reliability.
+3. It captures stable repo conventions, tooling constraints, or workflow guardrails.
+4. It is validated by successful application (or clear root-cause analysis).
+
+Do **not** persist:
+
+- One-off bug details, temporary product copy, or task-specific implementation notes.
+- Branch-local states, timestamps, IDs, logs, or historical timeline entries.
+- Rules that duplicate existing guidance without adding new durable behavior.
+
+How to update:
+
+- Integrate by refining existing rules whenever possible; avoid additive run-log style growth.
+- Keep guidance concise and high-signal; prune stale or superseded rules.
+- If a note helps only this task, report it to the parent instead of storing it in this spec.
+
 # Spec hygiene (critical)
 
 This file is a stable execution contract, not a run log.
 
-- Do not store dated implementation notes, one-off discoveries, or historical memory here.
+- Do not store dated implementation notes, one-off discoveries, or run-log style memory here.
 - Keep instructions durable and generally applicable across app iterations.
 - If behavior changes, update the relevant rule directly instead of appending timeline entries.

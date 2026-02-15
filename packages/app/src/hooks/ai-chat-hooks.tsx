@@ -17,7 +17,7 @@ import {
 } from "@/lib/utils.ts";
 import { useLiveRef, useRenderPromise } from "./utils-hooks.ts";
 import { generate_id } from "../lib/utils.ts";
-import { type ai_chat_AiSdk5UiMessage, type ai_chat_Message, type ai_chat_Thread } from "@/lib/ai-chat.ts";
+import { type ai_chat_AiSdk5UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
 export type ai_chat_UiMessageMetadata = NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
 
@@ -143,26 +143,6 @@ const thread_session_create = (args?: {
 		optimisticThread: args?.optimisticThread,
 	} satisfies ThreadSession;
 };
-
-function merge_metadata(base: Record<string, unknown> | undefined, overlay: Record<string, unknown> | undefined) {
-	if (!base && !overlay) {
-		return undefined;
-	}
-
-	return { ...base, ...overlay };
-}
-
-function convex_message_to_ui_message(message: ai_chat_Message, metadata?: ai_chat_UiMessageMetadata) {
-	const mergedMetadata = merge_metadata(message.content.metadata, metadata);
-
-	return {
-		id: message._id,
-		role: message.content.role,
-		// TODO: improve types
-		parts: message.content.parts as ai_chat_AiSdk5UiMessage["parts"],
-		...(mergedMetadata !== undefined ? { metadata: mergedMetadata } : {}),
-	} satisfies ai_chat_AiSdk5UiMessage;
-}
 
 function create_chat_instance(args: {
 	chatId: string | null;
@@ -318,10 +298,18 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		};
 
 		for (const message of persistedThreadMessages.messages) {
-			const uiMessage = convex_message_to_ui_message(message, {
-				convexId: message._id,
-				convexParentId: message.parentId,
-			});
+			// Convert DB message to AI SDK UI message
+			const dbMessageContent = message.content as ai_chat_AiSdk5UiMessage;
+			const uiMessage = {
+				id: message._id,
+				role: dbMessageContent.role,
+				parts: dbMessageContent.parts,
+				metadata: {
+					convexId: message._id,
+					convexParentId: message.parentId,
+					parentClientGeneratedId: dbMessageContent.metadata?.parentClientGeneratedId ?? null,
+				} satisfies ai_chat_UiMessageMetadata,
+			} satisfies ai_chat_AiSdk5UiMessage;
 
 			result.mapById.set(message._id, uiMessage);
 
@@ -431,6 +419,9 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		const result = {
 			list: [] as ai_chat_AiSdk5UiMessage[],
 			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
+			/**
+			 * The key can be either a convex id or a client-generated id.
+			 */
 			childrenByParentId: new Map<string | null, ai_chat_AiSdk5UiMessage[]>(),
 		};
 
@@ -447,7 +438,26 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 			result.mapById.set(message.id, message);
 
-			const parentIdOrRoot = ai_chat_get_parent_id(message.metadata?.convexParentId);
+			const parentIdOrRoot = ((/* iife */) => {
+				let parentId = undefined;
+
+				if (message.metadata?.convexParentId) {
+					// When the parent message is persisted but convex is not synced yet,
+					// the `convexParentId` is valorized but it will not resolve to any message,
+					// to be sure it resolve to a message we check into `persistedMessagesData.mapById`
+					parentId = persistedMessagesData?.mapById.get(message.metadata.convexParentId)?.id;
+				}
+
+				// When the parent message is persisted but convex is not synced yet
+				// we have to fallback to associate this message to the clientGeneratedId
+				// of the parent because the parent message is not yet coming from
+				// the `persistedMessagesData` but is present only in the
+				// AI SDK chat object, therefore it displays still as a pending message.
+				if (!parentId) parentId = message.metadata?.parentClientGeneratedId;
+
+				return ai_chat_get_parent_id(parentId);
+			})();
+
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
 				result.childrenByParentId.get(parentIdOrRoot)?.push(message);
 			} else {
@@ -477,10 +487,25 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			while (current) {
 				mapById.set(current.id, current);
 				tail.push(current);
-				current = current.metadata?.convexParentId
-					? (pendingMessagesData.mapById.get(current.metadata.convexParentId) ??
-						persistedMessagesData.mapById.get(current.metadata.convexParentId))
-					: undefined;
+				current = ((/* iife */) => {
+					let parentMessage = undefined;
+
+					if (current.metadata?.convexParentId) {
+						parentMessage = pendingMessagesData.mapById.get(current.metadata.convexParentId);
+						if (!parentMessage) parentMessage = persistedMessagesData?.mapById.get(current.metadata.convexParentId);
+					}
+
+					// When sending a user message, in the convex BE we save it
+					// immidiately, the assistant message will stream with a convex id
+					// already set but the convex sync engine might not have synced it yed
+					// so we need to fallback to the client-generated id to get it from
+					// the pending messages data.
+					if (current.metadata?.parentClientGeneratedId && !parentMessage) {
+						parentMessage = pendingMessagesData.mapById.get(current.metadata.parentClientGeneratedId);
+					}
+
+					return parentMessage;
+				})();
 			}
 		}
 
@@ -542,7 +567,10 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				{
 					role: "user",
 					parts: [{ type: "text", text: message }],
-					metadata: {} satisfies ai_chat_UiMessageMetadata,
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
+					} satisfies ai_chat_UiMessageMetadata,
 				},
 				{
 					metadata: {
@@ -702,20 +730,32 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				: activeBranchMessages.list;
 
 		const latestMessage = activeBranchMessages.list.at(-1);
-		const parentId = targetMessage
-			? targetMessage.metadata?.convexParentId
+		const parentMessageIds = targetMessage
+			? {
+					convexParentId: targetMessage.metadata?.convexParentId ?? null,
+					parentClientGeneratedId: targetMessage.metadata?.parentClientGeneratedId ?? null,
+				}
 			: ((/* iife */) => {
 					if (!latestMessage) {
-						return undefined;
+						return {
+							convexParentId: null,
+							parentClientGeneratedId: null,
+						};
 					}
 
 					// After a manual stop, the latest assistant message can remain optimistic-only.
 					// In that case, keep threading on its resolved parent instead of its client id.
 					if (latestMessage.role === "assistant" && !latestMessage.metadata?.convexId) {
-						return latestMessage.metadata?.convexParentId ?? latestMessage.id;
+						return {
+							convexParentId: latestMessage.metadata?.convexParentId ?? latestMessage.id,
+							parentClientGeneratedId: latestMessage.metadata?.parentClientGeneratedId ?? null,
+						};
 					}
 
-					return latestMessage.metadata?.convexId ?? latestMessage.id;
+					return {
+						convexParentId: latestMessage.metadata?.convexId ?? latestMessage.id,
+						parentClientGeneratedId: latestMessage.metadata?.parentClientGeneratedId ?? null,
+					};
 				})();
 
 		chat.sendMessage(
@@ -723,7 +763,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				role: "user",
 				parts: [{ type: "text", text: value }],
 				metadata: {
-					convexParentId: parentId,
+					convexParentId: parentMessageIds.convexParentId,
+					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
 				} satisfies ai_chat_UiMessageMetadata,
 			},
 			{

@@ -279,7 +279,7 @@ export const thread_branch = mutation({
 			const content = msg.content as unknown as ai_chat_AiSdk5UiMessage;
 			const nextId = get_id_generator("ai_message")();
 			const metadata = content.metadata
-				? omit_properties(content.metadata as Record<string, unknown>, ["convexParentId", "convexId"])
+				? omit_properties(content.metadata, ["convexParentId", "convexId", "parentClientGeneratedId"])
 				: undefined;
 
 			messages.push({
@@ -740,6 +740,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 								// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
 								let resolvedParentId: string | null | undefined = body.parentId;
+								let resolvedParentClientGeneratedId: string | null = null;
 
 								if (threadId) {
 									do {
@@ -793,6 +794,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											const parentMsg = messagesMap.get(body.parentId);
 											if (parentMsg) {
 												resolvedParentId = parentMsg._id;
+												if (parentMsg.clientGeneratedMessageId) {
+													resolvedParentClientGeneratedId = parentMsg.clientGeneratedMessageId;
+												}
 											}
 										}
 
@@ -839,6 +843,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									);
 
 									resolvedParentId = persistedRequestMessages.ids.at(-1) ?? resolvedParentId;
+									resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
 								}
 
 								const tools = {
@@ -883,6 +888,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											type: "message-metadata",
 											messageMetadata: {
 												convexParentId: uiMessages.at(-1)?.id,
+												parentClientGeneratedId: resolvedParentClientGeneratedId,
 											},
 										});
 

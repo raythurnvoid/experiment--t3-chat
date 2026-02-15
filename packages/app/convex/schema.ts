@@ -46,7 +46,7 @@ const app_convex_schema = defineSchema({
 		/**
 		 * Necessary to link the optimistic update to the persisted message.
 		 */
-		clientGeneratedMessageId: v.optional(v.string()),
+		clientGeneratedMessageId: v.string(),
 
 		/**
 		 * AI SDK 5 {@link ai_chat_AiSdk5UiMessage}.
