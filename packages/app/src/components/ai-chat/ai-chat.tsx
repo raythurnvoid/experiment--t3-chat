@@ -1,7 +1,7 @@
 import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
-import { useState, useEffect, useEffectEvent, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ArrowDown, Menu, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -12,6 +12,7 @@ import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor 
 import { cn } from "@/lib/utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { ai_chat_get_parent_id, useAiChatController, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import { useUiStickToBottom } from "@/hooks/ui-hooks.tsx";
 import {
 	AiChatComposer,
 	type AiChatComposer_ClassNames,
@@ -277,117 +278,42 @@ function useAutoScroll(props: useAutoScroll_Props) {
 	const isRunning = controller.isRunning;
 	const threadId = controller.selectedThreadId;
 
-	const [isAtBottom, setIsAtBottom] = useState(true);
+	const { isAtBottom, scrollToBottom } = useUiStickToBottom({
+		scrollEl,
+		contentEl,
+		bottomMargin: AUTO_SCROLL_BOTTOM_MARGIN,
+		enable,
+		stickOnContentResize: isRunning,
+	});
+
 	const isAtBottomRef = useRef(isAtBottom);
-
 	const wasRunningRef = useRef(isRunning);
-	const lastScrollTopRef = useRef(0);
-
-	// stores the scroll behavior to reuse during content resize, or null if not scrolling
-	const scrollingToBottomBehaviorRef = useRef<ScrollBehavior | null>(null);
 
 	useEffect(() => {
 		isAtBottomRef.current = isAtBottom;
 	}, [isAtBottom]);
 
-	const scrollToBottom = (behavior: ScrollBehavior = "auto") => {
-		if (!scrollEl) {
-			return;
-		}
-
-		scrollingToBottomBehaviorRef.current = behavior;
-		scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior });
-	};
-
-	const handleScroll = useEffectEvent(() => {
-		if (!scrollEl) {
-			return;
-		}
-
-		const newIsAtBottom =
-			scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= AUTO_SCROLL_BOTTOM_MARGIN ||
-			scrollEl.scrollHeight <= scrollEl.clientHeight;
-
-		if (!newIsAtBottom && lastScrollTopRef.current < scrollEl.scrollTop) {
-			// ignore scroll down
-		} else {
-			if (newIsAtBottom) {
-				scrollingToBottomBehaviorRef.current = null;
-			}
-
-			const shouldUpdate = newIsAtBottom || scrollingToBottomBehaviorRef.current === null;
-
-			if (shouldUpdate) {
-				setIsAtBottom(newIsAtBottom);
-			}
-		}
-
-		lastScrollTopRef.current = scrollEl.scrollTop;
-	});
-
-	const handleContentResize = useEffectEvent(() => {
-		if (!enable) {
-			handleScroll();
-			return;
-		}
-
-		const scrollBehavior = scrollingToBottomBehaviorRef.current;
-		if (scrollBehavior) {
-			scrollToBottom(scrollBehavior);
-		} else if (isAtBottomRef.current) {
-			scrollToBottom("instant");
-		}
-
-		handleScroll();
-	});
-
 	useEffect(() => {
-		const el = scrollEl;
-		if (!el) {
-			return;
-		}
-
-		lastScrollTopRef.current = el.scrollTop;
-
-		handleScroll();
-		el.addEventListener("scroll", handleScroll, { passive: true });
-		return () => el.removeEventListener("scroll", handleScroll);
-	}, [scrollEl]);
-
-	useEffect(() => {
-		if (!contentEl) {
-			return;
-		}
-
-		const resizeObserver = new ResizeObserver(handleContentResize);
-		resizeObserver.observe(contentEl);
-
-		return () => {
-			resizeObserver.disconnect();
-		};
-	}, [contentEl]);
-
-	useEffect(() => {
-		wasRunningRef.current = isRunning;
-
-		if (!enable) {
-			return;
-		}
-
 		const wasRunning = wasRunningRef.current;
+		wasRunningRef.current = isRunning;
+		const justStopped = wasRunning && !isRunning;
+		const justStarted = !wasRunning && isRunning;
 
-		if (!wasRunning && isRunning) {
+		if (!enable) {
+			return;
+		}
+
+		if (justStarted) {
 			if (!isAtBottomRef.current) {
 				return;
 			}
 
-			scrollingToBottomBehaviorRef.current = "auto";
 			requestAnimationFrame(() => {
 				scrollToBottom("auto");
 			});
 		}
 
-		if (wasRunning && !isRunning) {
+		if (justStopped) {
 			if (!isAtBottomRef.current) {
 				return;
 			}
@@ -401,7 +327,6 @@ function useAutoScroll(props: useAutoScroll_Props) {
 			return;
 		}
 
-		scrollingToBottomBehaviorRef.current = "instant";
 		requestAnimationFrame(() => {
 			scrollToBottom("instant");
 		});
@@ -432,6 +357,10 @@ export type AiChatThread_Props = {
 	scrollableContainer: HTMLElement | null;
 };
 
+export type AiChatThread_CustomAttributes = {
+	"data-thread-id": string;
+};
+
 export function AiChatThread(props: AiChatThread_Props) {
 	const { variant = "default", controller, scrollableContainer } = props;
 
@@ -445,7 +374,6 @@ export function AiChatThread(props: AiChatThread_Props) {
 		scrollEl: scrollableContainer,
 		contentEl: messagesListEl,
 		controller,
-		enable: controller.isRunning,
 	});
 
 	const handleScrollToBottom = () => {
@@ -739,6 +667,9 @@ export function AiChatThread(props: AiChatThread_Props) {
 				variant === "default" && ("AiChatThread-variant-default" satisfies AiChatThread_ClassNames),
 				variant === "sidebar" && ("AiChatThread-variant-sidebar" satisfies AiChatThread_ClassNames),
 			)}
+			{...((selectedThreadId
+				? { "data-thread-id": selectedThreadId }
+				: {}) satisfies Partial<AiChatThread_CustomAttributes>)}
 			onKeyDown={handleKeyDown}
 		>
 			<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>

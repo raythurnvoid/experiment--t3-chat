@@ -1,8 +1,9 @@
-import "./diff-monospace-block.css";
+import "./monospace-block-diff.css";
 
-import type { ComponentPropsWithRef, CSSProperties, Ref } from "react";
-import { cn } from "@/lib/utils.ts";
+import { useState, type ComponentPropsWithRef, type CSSProperties, type Ref } from "react";
+import { cn, forward_ref } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
+import { useUiStickToBottom } from "@/hooks/ui-hooks.tsx";
 
 type DiffMonospaceBlock_ClassNames =
 	| "DiffMonospaceBlock"
@@ -25,19 +26,27 @@ export type DiffMonospaceBlock_Props = Omit<ComponentPropsWithRef<"pre">, "child
 	id?: string;
 	className?: string;
 	diffText: string;
+	stickToBottom?: boolean;
 	maxHeight?: string;
 	style?: CSSProperties & Partial<DiffMonospaceBlock_CssVars>;
 };
 
 export function DiffMonospaceBlock(props: DiffMonospaceBlock_Props) {
-	const { ref, id, className, diffText, maxHeight, style, ...rest } = props;
+	const { ref, id, className, diffText, stickToBottom = false, maxHeight, style, ...rest } = props;
+	const [scrollEl, setScrollEl] = useState<HTMLPreElement | null>(null);
 
 	const normalizedDiffText = diffText.replace(/\r\n?/g, "\n");
 	const lines = normalizedDiffText.split("\n");
 
+	useUiStickToBottom({
+		scrollEl,
+		contentKey: normalizedDiffText,
+		enable: stickToBottom,
+	});
+
 	return (
 		<pre
-			ref={ref}
+			ref={(node) => forward_ref(node, ref, setScrollEl)}
 			id={id}
 			className={cn(
 				"DiffMonospaceBlock" satisfies DiffMonospaceBlock_ClassNames,

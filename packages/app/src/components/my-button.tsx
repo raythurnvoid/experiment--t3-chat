@@ -6,6 +6,7 @@ import { MyIcon } from "@/components/my-icon.tsx";
 
 export type MyButton_ClassNames =
 	| "MyButton"
+	| "MyButton-state-disabled"
 	| "MyButton-variant-default"
 	| "MyButton-variant-accent"
 	| "MyButton-variant-destructive"

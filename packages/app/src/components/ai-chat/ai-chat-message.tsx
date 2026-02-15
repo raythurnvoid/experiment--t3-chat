@@ -1,7 +1,16 @@
 import "./ai-chat-message.css";
 
 import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
-import { ArrowUpRight, ChevronLeft, ChevronRight, FileText, GitBranch, RefreshCw, ShieldQuestion } from "lucide-react";
+import {
+	ArrowUpRight,
+	ChevronLeft,
+	ChevronRight,
+	FilePenLine,
+	FileText,
+	GitBranch,
+	RefreshCw,
+	ShieldQuestion,
+} from "lucide-react";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import {
 	isDataUIPart,
@@ -21,11 +30,12 @@ import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { ai_chat_get_parent_id } from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
-import { DiffMonospaceBlock } from "@/components/diff-monospace-block.tsx";
+import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
+import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
-import { MyButtonIcon } from "../my-button.tsx";
+import { MyButtonIcon, type MyButton_ClassNames } from "../my-button.tsx";
 
 // #region tool chip
 type AiChatMessagePartToolChip_ClassNames = "AiChatMessagePartToolChip";
@@ -58,15 +68,20 @@ type AiChatMessagePartToolUiState = ToolUIPart["state"] | "approval-requested" |
 
 type AiChatMessagePartToolStatus_Props = {
 	state: AiChatMessagePartToolUiState;
+	isChatRunning: boolean;
 };
 
 function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
-	const { state } = props;
+	const { state, isChatRunning } = props;
 
 	switch (state) {
 		// Loading states: spinner only, no text
 		case "input-streaming":
 		case "input-available":
+			if (!isChatRunning) {
+				return null;
+			}
+
 			return (
 				<span
 					className={cn(
@@ -153,16 +168,17 @@ type AiChatMessagePartToolDisclosureButton_ClassNames =
 	| "AiChatMessagePartToolDisclosureButton-label";
 
 type AiChatMessagePartToolDisclosureButton_Props = {
+	className?: string | undefined;
 	title: string;
 	text?: string;
 	state: AiChatMessagePartToolUiState;
-	className?: string | undefined;
+	isChatRunning: boolean;
 };
 
 function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDisclosureButton_Props) {
-	const { className, title, text, state } = props;
+	const { className, title, text, state, isChatRunning } = props;
 
-	const isLoading = state === "input-streaming" || state === "input-available";
+	const isLoading = isChatRunning && (state === "input-streaming" || state === "input-available");
 
 	const handleClick: ComponentPropsWithRef<"summary">["onClick"] = (e) => {
 		if (isLoading) {
@@ -190,7 +206,7 @@ function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDiscl
 					{text && `:`}
 				</b>
 				<span> {text}</span>
-				<AiChatMessagePartToolStatus state={state} />
+				<AiChatMessagePartToolStatus state={state} isChatRunning={isChatRunning} />
 			</div>
 		</summary>
 	);
@@ -265,12 +281,11 @@ function AiChatMessagePartToolTextAreaSection(props: AiChatMessagePartToolTextAr
 			>
 				{label}
 			</h6>
-			<textarea
+			<TextMonospaceBlock
 				className={
 					"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
 				}
-				value={code}
-				readOnly
+				text={code}
 			/>
 		</section>
 	);
@@ -285,11 +300,12 @@ type AiChatMessagePartToolReadPage_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-read_page" }>["input"];
 	result: ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
 		<AiChatMessagePartToolDisclosure
@@ -299,6 +315,7 @@ function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Prop
 				title="Read Page"
 				text={args?.path ? path_name_of(args.path) : undefined}
 				state={toolState}
+				isChatRunning={isChatRunning}
 			/>
 			<AiChatMessagePartToolBody>
 				{result?.metadata?.pageId && (
@@ -333,11 +350,12 @@ type AiChatMessagePartToolListPages_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-list_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
 		<AiChatMessagePartToolDisclosure
@@ -347,6 +365,7 @@ function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Pr
 				title="List Pages"
 				text={args?.path ? path_name_of(args.path) || "/ (Home) " : undefined}
 				state={toolState}
+				isChatRunning={isChatRunning}
 			/>
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
@@ -368,17 +387,18 @@ type AiChatMessagePartToolGlobPages_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-glob_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolGlobPages" satisfies AiChatMessagePartToolGlobPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-glob_pages" state={toolState} />
+			<AiChatMessagePartToolDisclosureButton title="tool-glob_pages" state={toolState} isChatRunning={isChatRunning} />
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
@@ -399,17 +419,18 @@ type AiChatMessagePartToolGrepPages_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-grep_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolGrepPages" satisfies AiChatMessagePartToolGrepPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-grep_pages" state={toolState} />
+			<AiChatMessagePartToolDisclosureButton title="tool-grep_pages" state={toolState} isChatRunning={isChatRunning} />
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
@@ -430,11 +451,12 @@ type AiChatMessagePartToolTextSearchPages_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-text_search_pages" }>["input"];
 	result: ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSearchPages_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
 		<AiChatMessagePartToolDisclosure
@@ -443,7 +465,11 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 				className,
 			)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-text_search_pages" state={toolState} />
+			<AiChatMessagePartToolDisclosureButton
+				title="tool-text_search_pages"
+				state={toolState}
+				isChatRunning={isChatRunning}
+			/>
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
@@ -471,11 +497,12 @@ type AiChatMessagePartToolWritePage_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-write_page" }>["input"];
 	result: ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const pageName = result?.metadata.path
 		? path_name_of(result.metadata.path)
@@ -483,7 +510,7 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 			? path_name_of(args.path)
 			: "Writing page";
 	const pageId = result?.metadata?.pageId;
-	const diffText = result?.metadata?.diff ?? result?.output;
+	const output = result?.metadata?.diff ?? result?.output;
 
 	return (
 		<div
@@ -515,7 +542,7 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 							"AiChatMessagePartToolWritePage-header-actions" satisfies AiChatMessagePartToolWritePage_ClassNames
 						}
 					>
-						<AiChatMessagePartToolStatus state={toolState} />
+						<AiChatMessagePartToolStatus state={toolState} isChatRunning={isChatRunning} />
 						<MyButtonIcon
 							className={
 								"AiChatMessagePartToolWritePage-header-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
@@ -527,15 +554,19 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 				</MyLink>
 			) : (
 				<div
-					className={"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames}
-					aria-disabled="true"
+					className={cn(
+						"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames,
+						"MyButton" satisfies MyButton_ClassNames,
+						"MyButton-variant-ghost-accent" satisfies MyButton_ClassNames,
+						"MyButton-state-disabled" satisfies MyButton_ClassNames,
+					)}
 				>
 					<MyButtonIcon
 						className={
 							"AiChatMessagePartToolWritePage-header-file-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
 						}
 					>
-						<FileText />
+						<FilePenLine />
 					</MyButtonIcon>
 					<span
 						className={
@@ -549,22 +580,25 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 							"AiChatMessagePartToolWritePage-header-actions" satisfies AiChatMessagePartToolWritePage_ClassNames
 						}
 					>
-						<AiChatMessagePartToolStatus state={toolState} />
-						<MyButtonIcon
-							className={
-								"AiChatMessagePartToolWritePage-header-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
-							}
-						>
-							<ArrowUpRight />
-						</MyButtonIcon>
+						<AiChatMessagePartToolStatus state={toolState} isChatRunning={isChatRunning} />
 					</span>
 				</div>
 			)}
+
 			{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-			{diffText && (
+			{output ? (
 				<DiffMonospaceBlock
 					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
-					diffText={diffText}
+					diffText={output}
+					stickToBottom={toolState === "input-streaming" || toolState === "input-available"}
+					maxHeight="16lh"
+				/>
+			) : (
+				<TextMonospaceBlock
+					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
+					text={args?.content ?? ""}
+					stickToBottom={toolState === "input-streaming" || toolState === "input-available"}
+					maxHeight="16lh"
 				/>
 			)}
 		</div>
@@ -580,11 +614,12 @@ type AiChatMessagePartToolEditPage_Props = {
 	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-edit_page" }>["input"];
 	result: ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
 function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Props) {
-	const { className, args, result, toolState, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const resultCode = result?.metadata?.diff ?? result?.output;
 
@@ -592,7 +627,7 @@ function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Prop
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolEditPage" satisfies AiChatMessagePartToolEditPage_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-edit_page" state={toolState} />
+			<AiChatMessagePartToolDisclosureButton title="tool-edit_page" state={toolState} isChatRunning={isChatRunning} />
 			<AiChatMessagePartToolBody>
 				{result?.metadata?.pageId && (
 					<MyLink
@@ -622,10 +657,11 @@ type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | 
 type AiChatMessagePartToolUnknown_Props = {
 	className?: string | undefined;
 	part: ToolUIPart<ai_chat_AiSdk5UiTools> | DynamicToolUIPart;
+	isChatRunning: boolean;
 };
 
 function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props) {
-	const { className, part } = props;
+	const { className, part, isChatRunning } = props;
 
 	const toolName = part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length);
 	const output = part.state === "output-available" ? part.output : undefined;
@@ -637,7 +673,11 @@ function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props)
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolUnknown" satisfies AiChatMessagePartToolUnknown_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title={`tool-${toolName}`} state={part.state} />
+			<AiChatMessagePartToolDisclosureButton
+				title={`tool-${toolName}`}
+				state={part.state}
+				isChatRunning={isChatRunning}
+			/>
 			<AiChatMessagePartToolBody>
 				<div className={"AiChatMessagePartToolUnknown-meta" satisfies AiChatMessagePartToolUnknown_ClassNames}>
 					<AiChatMessagePartToolChip>type: {part.type}</AiChatMessagePartToolChip>
@@ -795,6 +835,7 @@ type AiChatMessagePart_Props = {
 	role: "assistant" | "user" | "system";
 	part: ai_chat_AiSdk5UiMessage["parts"][number];
 	message: ai_chat_AiSdk5UiMessage;
+	isChatRunning: boolean;
 	onToolOutput: AiChatController["addToolOutput"];
 	onToolResumeStream: AiChatController["resumeStream"];
 	onToolStop: AiChatController["stop"];
@@ -825,100 +866,93 @@ function AiChatMessagePart(props: AiChatMessagePart_Props) {
 }
 
 function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
-	const { role, part } = props;
+	const { role, part, isChatRunning } = props;
 
 	if (isToolOrDynamicToolUIPart(part)) {
 		if (part.type === "dynamic-tool") {
-			return <AiChatMessagePartToolUnknown part={part} />;
+			return <AiChatMessagePartToolUnknown part={part} isChatRunning={isChatRunning} />;
 		}
 
 		switch (part.type) {
 			case "tool-read_page": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolReadPage
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			case "tool-list_pages": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolListPages
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			case "tool-glob_pages": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolGlobPages
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			case "tool-grep_pages": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolGrepPages
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			case "tool-text_search_pages": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolTextSearchPages
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			case "tool-write_page": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolWritePage
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			case "tool-edit_page": {
-				const result = part.state === "output-available" ? part.output : undefined;
-				const errorText = part.state === "output-error" ? part.errorText : undefined;
 				return (
 					<AiChatMessagePartToolEditPage
 						args={part.input}
-						result={result as ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined}
+						result={part.output}
 						toolState={part.state}
-						errorText={errorText}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
 					/>
 				);
 			}
 			default:
-				return <AiChatMessagePartToolUnknown part={part} />;
+				return <AiChatMessagePartToolUnknown part={part} isChatRunning={isChatRunning} />;
 		}
 	}
 
@@ -999,6 +1033,7 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 	message: ai_chat_AiSdk5UiMessage;
+	isChatRunning: boolean;
 	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
 	onToolStop: AiChatMessagePart_Props["onToolStop"];
@@ -1006,7 +1041,18 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 };
 
 function AiChatMessageContent(props: AiChatMessageContent_Props) {
-	const { ref, id, className, message, onToolOutput, onToolResumeStream, onToolStop, children, ...rest } = props;
+	const {
+		ref,
+		id,
+		className,
+		message,
+		isChatRunning,
+		onToolOutput,
+		onToolResumeStream,
+		onToolStop,
+		children,
+		...rest
+	} = props;
 
 	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
 
@@ -1024,9 +1070,10 @@ function AiChatMessageContent(props: AiChatMessageContent_Props) {
 						// and this will prevent them from being unmounted when the message is
 						// persisted after stream
 						key={index}
-						part={part}
 						role={message.role}
+						part={part}
 						message={message}
+						isChatRunning={isChatRunning}
 						onToolOutput={onToolOutput}
 						onToolResumeStream={onToolResumeStream}
 						onToolStop={onToolStop}
@@ -1201,6 +1248,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 			>
 				<AiChatMessageContent
 					message={message}
+					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
@@ -1231,20 +1279,20 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
 					<CopyIconButton
+						className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+						iconClassName={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames}
 						variant="ghost-highlightable"
 						tooltipCopy="Copy message"
 						text={text ?? undefined}
-						className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-						iconClassName={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames}
 					/>
 					{showBranchControls && (
 						<div className={"AiChatMessageUser-branch-controls" satisfies AiChatMessageUser_ClassNames}>
 							<MyIconButton
+								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
 								variant="ghost-highlightable"
 								tooltip="Previous variant"
-								onClick={handleBranchPrev}
 								disabled={isRunning}
-								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+								onClick={handleBranchPrev}
 							>
 								<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
 							</MyIconButton>
@@ -1252,11 +1300,11 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 								{branchLabel}
 							</span>
 							<MyIconButton
+								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
 								variant="ghost-highlightable"
 								tooltip="Next variant"
-								onClick={handleBranchNext}
 								disabled={isRunning}
-								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+								onClick={handleBranchNext}
 							>
 								<ChevronRight className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
 							</MyIconButton>
@@ -1273,6 +1321,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 type AiChatMessageAgent_ClassNames =
 	| "AiChatMessageAgent"
 	| "AiChatMessageAgent-bubble"
+	| "AiChatMessageAgent-stream-interrupted-message"
 	| "AiChatMessageAgent-actions"
 	| "AiChatMessageAgent-action-button"
 	| "AiChatMessageAgent-action-icon"
@@ -1327,6 +1376,7 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 		} satisfies AiChatMessage_BranchMetadata;
 	})();
 
+	// TODO: Allow copying tool data even when there is no message text.
 	const text = ai_chat_get_message_text(message);
 
 	const handleReload = () => {
@@ -1378,6 +1428,11 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 
 	const showBranchControls = Boolean(branchMetadata && branchMetadata.variantCount > 1);
 	const branchLabel = branchMetadata ? `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}` : "";
+	const hasLoadingToolPart = message.parts.some(
+		(part) => isToolOrDynamicToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available"),
+	);
+	// TODO: Distinguish user-initiated stop from unexpected stream interruption.
+	const isStreamInterruptedWithPendingTools = !isRunning && hasLoadingToolPart;
 
 	return (
 		<AiChatMessageContainer
@@ -1389,35 +1444,41 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
 				<AiChatMessageContent
 					message={message}
+					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
 				/>
+				{isStreamInterruptedWithPendingTools && (
+					<small className={"AiChatMessageAgent-stream-interrupted-message" satisfies AiChatMessageAgent_ClassNames}>
+						The stream was interrupted.
+					</small>
+				)}
 				<div className={"AiChatMessageAgent-actions" satisfies AiChatMessageAgent_ClassNames} hidden={isEditing}>
 					<CopyIconButton
+						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
+						iconClassName={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames}
 						variant="ghost"
 						tooltipCopy="Copy message"
 						text={text ?? undefined}
-						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
-						iconClassName={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames}
 					/>
 					<MyIconButton
+						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 						variant="ghost"
 						tooltip="Branch chat here"
-						onClick={handleBranchChat}
 						disabled={!selectedThreadId || isRunning}
-						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
+						onClick={handleBranchChat}
 					>
 						<GitBranch className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 					</MyIconButton>
 					{showBranchControls && (
 						<div className={"AiChatMessageAgent-branch-controls" satisfies AiChatMessageAgent_ClassNames}>
 							<MyIconButton
+								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 								variant="ghost"
 								tooltip="Previous variant"
-								onClick={handleBranchPrev}
 								disabled={isRunning}
-								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
+								onClick={handleBranchPrev}
 							>
 								<ChevronLeft className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 							</MyIconButton>
@@ -1425,21 +1486,21 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 								{branchLabel}
 							</span>
 							<MyIconButton
+								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 								variant="ghost"
 								tooltip="Next variant"
-								onClick={handleBranchNext}
 								disabled={isRunning}
-								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
+								onClick={handleBranchNext}
 							>
 								<ChevronRight className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 							</MyIconButton>
 						</div>
 					)}
 					<MyIconButton
+						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 						variant="ghost"
 						tooltip="Regenerate response"
 						onClick={handleReload}
-						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 					>
 						<RefreshCw className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 					</MyIconButton>
@@ -1469,7 +1530,7 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 };
 
 function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
-	const { ref, id, className, message, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
+	const { ref, id, className, message, isRunning, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
 
 	return (
 		<AiChatMessageContainer
@@ -1481,6 +1542,7 @@ function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 			<AiChatMessageBubble className={"AiChatMessageSystem-bubble" satisfies AiChatMessageSystem_ClassNames}>
 				<AiChatMessageContent
 					message={message}
+					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}

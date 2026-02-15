@@ -1,5 +1,4 @@
 @layer components {
-	/* #region root */
 	.DiffMonospaceBlock {
 		box-sizing: border-box;
 
@@ -47,5 +46,4 @@
 	.DiffMonospaceBlock-line-context {
 		color: var(--color-fg-10);
 	}
-	/* #endregion root */
 }

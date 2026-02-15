@@ -99,6 +99,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 	const rootRef = useRef<HTMLFormElement | null>(null);
 	const editorRef = useRef<Editor | null>(null);
 	const composerSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const composerTextRef = useRef(initialValue);
 
 	const [composerText, setComposerText] = useState(initialValue);
 	const isEmpty = composerText.trim().length === 0;
@@ -120,6 +121,12 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 
 	const getMarkdownFromEditor = (currentEditor: Editor) => {
 		return currentEditor.getMarkdown();
+	};
+
+	const syncComposerText = (value: string) => {
+		composerTextRef.current = value;
+		setComposerText(value);
+		onValueChange?.(value);
 	};
 
 	const [{ extensions, editorProps }] = useState<{
@@ -235,12 +242,21 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 						clearTimeout(composerSyncTimeoutRef.current);
 					}
 
+					const markdown = getMarkdownFromEditor(editor);
+					const previousIsEmpty = composerTextRef.current.trim().length === 0;
+					const nextIsEmpty = markdown.trim().length === 0;
+
+					// Update immediately when the composer goes from
+					// empty to non-empty or vice versa.
+					if (previousIsEmpty !== nextIsEmpty) {
+						syncComposerText(markdown);
+						return;
+					}
+
 					composerSyncTimeoutRef.current = setTimeout(() => {
 						composerSyncTimeoutRef.current = null;
 
-						const markdown = getMarkdownFromEditor(editor);
-						setComposerText(markdown);
-						onValueChange?.(markdown);
+						syncComposerText(markdown);
 					}, 350);
 				},
 			},
@@ -262,13 +278,13 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 
 			if (currentEditor) {
 				nextComposerText = getMarkdownFromEditor(currentEditor);
-				setComposerText(nextComposerText);
-				onValueChange?.(nextComposerText);
+				syncComposerText(nextComposerText);
 			}
 		}
 
 		onSubmit(nextComposerText);
 
+		composerTextRef.current = "";
 		setComposerText("");
 
 		if (currentEditor) {

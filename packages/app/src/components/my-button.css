@@ -21,7 +21,7 @@
 		transition: background-color 0.1s linear;
 		outline: none;
 
-		&:disabled {
+		&:is(:disabled, .MyButton-state-disabled) {
 			cursor: default;
 		}
 
@@ -39,7 +39,7 @@
 		background: var(--color-base-1-07);
 		color: var(--color-fg-10);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-1-08);
@@ -52,7 +52,7 @@
 			}
 		}
 
-		&:disabled {
+		&:is(:disabled, .MyButton-state-disabled) {
 			background: var(--color-base-1-04);
 			color: var(--color-fg-03);
 		}
@@ -64,7 +64,7 @@
 		border-color: var(--color-accent-02);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:focus-visible {
 				background: var(--color-accent-02);
 			}
@@ -87,7 +87,7 @@
 			}
 		}
 
-		&:disabled {
+		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-04);
 			background: var(--color-base-1-03);
 			border-color: var(--color-base-1-03);
@@ -120,7 +120,7 @@
 		border-color: var(--color-fg-04);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover {
 				color: var(--color-fg-10);
 				background: var(--color-base-1-04);
@@ -144,7 +144,7 @@
 			}
 		}
 
-		&:disabled {
+		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-04);
 			background: var(--color-base-1-03);
 			border-color: var(--color-base-1-03);
@@ -161,7 +161,7 @@
 		color: var(--color-fg-10);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-1-09);
@@ -179,7 +179,7 @@
 		background: var(--color-base-alt-1-05);
 		color: var(--color-fg-09);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-alt-1-06);
@@ -196,7 +196,7 @@
 	.MyButton-variant-ghost {
 		background: transparent;
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-1-06);
@@ -212,8 +212,8 @@
 			}
 		}
 
-		&:disabled {
-			color: var(--color-fg-05);
+		&:is(:disabled, .MyButton-state-disabled) {
+			color: var(--color-fg-04);
 		}
 	}
 
@@ -221,7 +221,7 @@
 		background: transparent;
 		color: var(--color-accent-06);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-1-04);
@@ -234,8 +234,8 @@
 			}
 		}
 
-		&:disabled {
-			color: var(--color-accent-03);
+		&:is(:disabled, .MyButton-state-disabled) {
+			color: var(--color-fg-04);
 		}
 	}
 
@@ -243,7 +243,7 @@
 		background: transparent;
 		color: var(--color-fg-09);
 
-		&:not(:disabled) {
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-1-07);
@@ -256,7 +256,7 @@
 			}
 		}
 
-		&:disabled {
+		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-04);
 		}
 	}
