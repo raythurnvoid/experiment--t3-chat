@@ -5,51 +5,97 @@ description: Handles the Pages agent-edit review lifecycle (pending banner, diff
 
 # Pages Agent Pending Edits
 
-## What This Skill Covers
+## Architecture overview
 
-Use this skill for the `/pages` editor workflow where AI tools propose page edits and users review them in diff mode before persisting.
+This feature implements a reviewable AI-edit pipeline for `/pages`:
 
-## Core Data Flow
+1. AI tools propose markdown changes for a page path.
+2. Proposed content is persisted as a pending edit row.
+3. Editor surfaces pending state in normal editor mode.
+4. User opens diff mode and decides to accept-save or discard.
+5. Pending row is cleared after a terminal action.
 
-1. AI tools (`write_page` / `edit_page`) in `packages/app/server/server-ai-tools.ts` generate proposed markdown.
-2. Proposals are stored in `ai_chat_pending_edits` via `internal.ai_chat.upsert_ai_pending_edit`.
-3. `PageEditor` queries `ai_chat.get_ai_pending_edit` and shows the pending-review banner.
-4. User opens diff mode and reviews changes in `PageEditorDiff`.
-5. On accepted-save or discard-all, pending edits must be explicitly cleared via `ai_chat.clear_ai_pending_edit`.
+The goal is to keep AI writes explicit and user-reviewable before persistence.
 
-## Expected UX Invariants
+## Core data flow
 
-- Pending banner appears in rich/plain editor when a pending edit exists.
-- Clicking `Review changes` switches to `view=diff_editor`.
-- `Accept all + save` persists to Yjs and removes pending edit DB state.
-- `Discard all` removes pending edit DB state without persisting AI proposal.
-- After clear, pending banner/CTA should not return on refresh unless a newer pending edit was created.
+1. `write_page` / `edit_page` in `packages/app/server/server-ai-tools.ts` produce proposed markdown.
+2. Server stores proposal via `internal.ai_chat.upsert_ai_pending_edit` (table: `ai_chat_pending_edits`).
+3. UI queries pending state through `ai_chat.get_ai_pending_edit`.
+4. Rich/plain editor shows pending banner and review CTA.
+5. Diff editor compares current content vs pending proposal.
+6. Terminal actions clear pending state through `ai_chat.clear_ai_pending_edit`.
 
-## Implementation Notes
+## State model and transitions
 
-- Use guarded clear to avoid races:
-	- `clear_ai_pending_edit` accepts `expectedUpdatedAt`.
-	- Clear only if current pending row matches expected timestamp.
-- Normalize line endings at tool boundary (`\r\n` and `\r` -> `\n`) before diff creation and pending persistence to reduce noisy newline diffs.
-- Keep changes minimal and colocated:
-	- Convex lifecycle logic in `packages/app/convex/ai_chat.ts`
-	- Tool normalization in `packages/app/server/server-ai-tools.ts`
-	- Diff flow UX/actions in `packages/app/src/components/page-editor/page-editor.tsx` and `packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx`
+States:
 
-## Playwriter QA Checklist
+- `idle`: no pending row for `(workspaceId, projectId, pagePath)`.
+- `pending`: pending row exists; editor shows review affordance.
+- `reviewing`: user is in `view=diff_editor`.
+- `resolved`: accept-save or discard cleared pending row.
 
-- Create a unique page on `/pages`.
-- Use Agent sidebar chat to trigger `write_page`.
-- Confirm pending banner appears (`Agent edits are pending review`).
-- Open review, verify diff view opens.
-- Run `Accept all + save`, refresh, confirm banner remains gone.
-- Repeat with `Discard all`, confirm banner remains gone.
-- Check diff for unexpected newline-only churn.
+Transitions:
 
-## Useful Stable Hooks
+- `idle -> pending`: AI tool upsert.
+- `pending -> reviewing`: `Review changes`.
+- `reviewing -> resolved`: `Accept all + save` or `Discard all`.
+- `resolved -> pending`: a newer AI tool proposal is created.
+
+## Data consistency and race protection
+
+- Pending clear is guarded by `expectedUpdatedAt` so stale clients cannot clear newer proposals.
+- Clear operation should be a no-op if timestamps do not match current row.
+- UI should treat pending presence as source of truth and re-check on refresh/reload.
+
+## Diff correctness and normalization
+
+- Normalize line endings at tool boundary before persistence/diffing:
+	- `\r\n` -> `\n`
+	- `\r` -> `\n`
+- This reduces noisy newline-only churn and keeps diff semantics stable across OS/editor sources.
+
+## UI integration points
+
+- Pending indicators live in editor mode (rich/plain).
+- `Review changes` switches route/query to diff editor mode.
+- Diff editor exposes accept/discard controls and should clear pending state on terminal actions.
+
+Stable hooks:
 
 - `data-testid="pending-edits-banner"`
 - `data-testid="review-changes-button"`
 - `data-testid="page-diff-editor"`
 - `data-testid="accept-all-save-button"`
 - `data-testid="discard-all-button"`
+
+## Source files
+
+- `packages/app/server/server-ai-tools.ts`
+- `packages/app/convex/ai_chat.ts`
+- `packages/app/src/components/page-editor/page-editor.tsx`
+- `packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx`
+
+## Architectural invariants
+
+- Pending UI appears iff pending row exists for the current page context.
+- `Review changes` must always navigate to diff editor mode.
+- Accept-save persists proposal and clears pending state.
+- Discard clears pending state without persisting proposal.
+- Cleared pending state must remain cleared after refresh unless a newer proposal exists.
+- Guarded clear (`expectedUpdatedAt`) must remain enforced.
+
+## Failure modes to watch
+
+- Pending banner reappears after accept/discard due to clear race or stale query state.
+- Diff view opens but terminal actions do not clear DB state.
+- Newline normalization regression causing unstable/noisy diffs.
+- Baseline/proposal source mismatch causing confusing or incorrect hunks.
+
+## Verification checklist
+
+- Trigger proposal from AI tool and confirm pending banner appears.
+- Open review and verify diff editor mode and controls render.
+- Accept-save path: confirm content persisted and pending state cleared after refresh.
+- Discard path: confirm proposal not persisted and pending state cleared after refresh.
+- Repeat with a rapid successive proposal to validate guarded clear behavior.

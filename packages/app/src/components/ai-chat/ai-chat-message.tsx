@@ -1,6 +1,6 @@
 import "./ai-chat-message.css";
 
-import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
+import { useDeferredValue, type ComponentPropsWithRef, type ReactNode, type Ref } from "react";
 import {
 	ArrowUpRight,
 	ChevronLeft,
@@ -504,6 +504,8 @@ type AiChatMessagePartToolWritePage_Props = {
 function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Props) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const deferredContent = useDeferredValue(args?.content);
+
 	const pageName = result?.metadata.path
 		? path_name_of(result.metadata.path)
 		: args?.path
@@ -590,13 +592,15 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 				<DiffMonospaceBlock
 					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
 					diffText={output}
-					stickToBottom={toolState === "input-streaming" || toolState === "input-available"}
+					stickToBottom={
+						toolState === "input-streaming" || toolState === "input-available" || toolState === "output-available"
+					}
 					maxHeight="16lh"
 				/>
 			) : (
 				<TextMonospaceBlock
 					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
-					text={args?.content ?? ""}
+					text={deferredContent}
 					stickToBottom={toolState === "input-streaming" || toolState === "input-available"}
 					maxHeight="16lh"
 				/>
@@ -701,11 +705,13 @@ type AiChatMessagePartMarkdown_ClassNames = "AiChatMessagePartMarkdown";
 type AiChatMessagePartMarkdown_Props = AiChatMarkdown_Props;
 
 function AiChatMessagePartMarkdown(props: AiChatMessagePartMarkdown_Props) {
-	const { className, ...rest } = props;
+	const { className, text, ...rest } = props;
+	const deferredText = useDeferredValue(text);
 
 	return (
 		<AiChatMarkdown
 			className={cn("AiChatMessagePartMarkdown" satisfies AiChatMessagePartMarkdown_ClassNames, className)}
+			text={deferredText}
 			{...rest}
 		/>
 	);
@@ -1054,7 +1060,12 @@ function AiChatMessageContent(props: AiChatMessageContent_Props) {
 		...rest
 	} = props;
 
-	const displayParts = message.parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
+	const deferredAssistantParts = useDeferredValue(message.parts);
+
+	const parts = message.role === "assistant" ? deferredAssistantParts : message.parts;
+	const displayParts = children
+		? []
+		: parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
 
 	return (
 		<div
@@ -1428,11 +1439,6 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 
 	const showBranchControls = Boolean(branchMetadata && branchMetadata.variantCount > 1);
 	const branchLabel = branchMetadata ? `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}` : "";
-	const hasLoadingToolPart = message.parts.some(
-		(part) => isToolOrDynamicToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available"),
-	);
-	// TODO: Distinguish user-initiated stop from unexpected stream interruption.
-	const isStreamInterruptedWithPendingTools = !isRunning && hasLoadingToolPart;
 
 	return (
 		<AiChatMessageContainer
@@ -1449,11 +1455,6 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
 				/>
-				{isStreamInterruptedWithPendingTools && (
-					<small className={"AiChatMessageAgent-stream-interrupted-message" satisfies AiChatMessageAgent_ClassNames}>
-						The stream was interrupted.
-					</small>
-				)}
 				<div className={"AiChatMessageAgent-actions" satisfies AiChatMessageAgent_ClassNames} hidden={isEditing}>
 					<CopyIconButton
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}

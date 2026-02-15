@@ -19,7 +19,7 @@ export type TextMonospaceBlock_Props = Omit<ComponentPropsWithRef<"pre">, "child
 	ref?: Ref<HTMLPreElement>;
 	id?: string;
 	className?: string;
-	text: string;
+	text: string | undefined;
 	stickToBottom?: boolean;
 	maxHeight?: string;
 	style?: CSSProperties & Partial<TextMonospaceBlock_CssVars>;
@@ -30,8 +30,8 @@ export function TextMonospaceBlock(props: TextMonospaceBlock_Props) {
 
 	const [scrollEl, setScrollEl] = useState<HTMLPreElement | null>(null);
 
-	const normalizedText = text.replace(/\r\n?/g, "\n");
-	const lines = normalizedText.split("\n");
+	const normalizedText = text?.replace(/\r\n?/g, "\n");
+	const lines = normalizedText?.split("\n");
 
 	useUiStickToBottom({
 		scrollEl,
@@ -58,7 +58,7 @@ export function TextMonospaceBlock(props: TextMonospaceBlock_Props) {
 			}}
 			{...rest}
 		>
-			{lines.map((line, index) => {
+			{lines?.map((line, index) => {
 				const lineText = index === lines.length - 1 ? line : `${line}\n`;
 				return (
 					<span key={index} className={"TextMonospaceBlock-line" satisfies TextMonospaceBlock_ClassNames}>

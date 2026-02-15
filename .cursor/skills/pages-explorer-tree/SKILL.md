@@ -13,39 +13,29 @@ Primary:
 - `../../../packages/app/shared/pages.ts`
 - `../../../packages/app/src/lib/pages.ts`
 
-Related contracts used by the sidebar:
+# Architecture overview
 
-- Convex API typing import via `app_convex_api` in `pages-sidebar.tsx`
-- `pages_TreeItem` from `ai_docs_temp.ts` (re-exported from `src/lib/pages.ts`)
-- `pages_ROOT_ID` and `pages_create_tree_placeholder_child` from shared pages helpers
+The Pages sidebar is implemented in `pages-sidebar.tsx` on top of `@headless-tree` with Convex-backed data.
+
+- Tree engine: `@headless-tree/core` + `@headless-tree/react`
+- Backend data: Convex `ai_docs_temp` query/mutations
+- Item types: `"root" | "page" | "placeholder"`
+- Only `"page"` items are mutable tree entities
 
 # Data model and contracts
 
-Sidebar tree item shape:
+- `pages_TreeItem` shape is defined in `../../../packages/app/convex/ai_docs_temp.ts`.
+- `pages_ROOT_ID` and `pages_create_tree_placeholder_child` are in `../../../packages/app/shared/pages.ts` (re-exported by `../../../packages/app/src/lib/pages.ts`).
+- Backend returns root/page items only; placeholder rows are client-generated.
+- Placeholder nodes are structural UI helpers and must never be mutation targets.
 
-- `pages_TreeItem` lives in `../../../packages/app/convex/ai_docs_temp.ts`
-- Item `type` is one of: `"root" | "page" | "placeholder"`
-- Sidebar behavior treats only `"page"` items as mutable tree nodes (drag, rename, archive, create child)
+# Component and helper structure
 
-Root/placeholder contracts:
+Main component:
 
-- `pages_ROOT_ID` is defined in `../../../packages/app/shared/pages.ts`
-- `pages_create_tree_placeholder_child(parentId)` is defined in `../../../packages/app/shared/pages.ts` and re-exported by `../../../packages/app/src/lib/pages.ts`
-- Placeholders are **client-generated only** to show empty page containers
+- `PagesSidebar`
 
-Important backend/client split:
-
-- Convex `get_tree_items_list` returns root + page items
-- Convex does **not** return placeholder items
-- Client builds `treeCollection` and injects placeholder children where needed
-
-# Component architecture
-
-All current sidebar UI lives in `pages-sidebar.tsx`. Main exported component:
-
-- `PagesSidebar` (root component)
-
-Extracted tree-related components:
+Tree components (same file):
 
 - `PagesSidebarTreeArea`
 - `PagesSidebarTreeItem`
@@ -55,107 +45,76 @@ Extracted tree-related components:
 - `PagesSidebarTreeItemPrimaryActionContent`
 - `PagesSidebarTreeItemActionIconButton`
 
-Helper layer (same file):
+Core helpers:
 
-- Collection and sorting helpers (`pages_sidebar_build_collection`, `pages_sidebar_sort_children`)
-- Convex ID conversion helpers (`pages_sidebar_to_page_id`, `pages_sidebar_to_parent_id`)
-- Flicker reduction comparator (`pages_sidebar_are_tree_items_lists_equal`)
+- `pages_sidebar_build_collection`
+- `pages_sidebar_sort_children`
+- `pages_sidebar_to_page_id`
+- `pages_sidebar_to_parent_id`
+- `pages_sidebar_are_tree_items_lists_equal`
 
 # State and behavior flows
 
-## Query + fallback flow (flicker reduction)
+## Query fallback and flicker control
 
-- Sidebar queries `ai_docs_temp.get_tree_items_list`
-- It stores a local `resolvedTreeItemsList`
-- Effective list is `queriedTreeItemsList ?? resolvedTreeItemsList`
-- An effect updates `resolvedTreeItemsList` only when item snapshots actually differ (shallow field-based comparison)
+- Sidebar queries `ai_docs_temp.get_tree_items_list`.
+- Effective source is `queriedTreeItemsList ?? resolvedTreeItemsList`.
+- `resolvedTreeItemsList` updates only when snapshots differ.
+- This prevents transient undefined-query windows from flashing the tree empty.
 
-Why this exists:
+## Collection construction
 
-- During transient undefined query windows, sidebar keeps previous tree data and avoids UI flicker/reset.
+- Build normalized collection keyed by item index.
+- Filter archived rows unless archived mode is enabled.
+- Re-parent detached/orphan pages under root.
+- Sort children consistently (locale/numeric/case-insensitive), placeholders last.
+- Inject placeholder child for page nodes with no children.
 
-## Collection construction flow
+## Search
 
-- `pages_sidebar_build_collection` builds a normalized map keyed by `index`
-- Filters out archived pages unless `showArchived` is enabled
-- Re-parents detached/orphaned pages back under root
-- Sorts children (locale, numeric, case-insensitive), with placeholders last
-- Injects placeholder child for page nodes that have no children
+- Search computes a visible ID set with descendant-aware matching.
+- Ancestors of matched descendants remain visible.
+- Placeholder nodes are excluded from search matching.
 
-## Search flow
+## Selection and primary action
 
-- `searchQuery` is local state
-- Search computes `visibleIds` with recursive descendant matching
-- Placeholder items are excluded from search matching
-- Render pass filters tree items against `visibleIds`
-- Empty-state text changes based on whether search is active
+- Primary click implements single select, toggle-select, and shift-range.
+- Non-modifier click runs primary action for page nodes.
+- `F2` starts rename on focused page.
+- Blur outside tree clears selection/focus styling state.
 
-## Selection and primary action flow
+## Create, rename, archive, unarchive
 
-- Primary click manually handles single-select, toggle-select, and shift range select
-- Non-modifier primary click triggers `onPrimaryAction` for page nodes (navigation/open)
-- F2 on focused page starts rename mode
-- Blur outside tree container clears selection and focus styling state
+- Create: `ai_docs_temp.create_page`, then navigate and start rename.
+- Rename: headless-tree `onRename` -> `ai_docs_temp.rename_page`.
+- Archive/unarchive: `ai_docs_temp.archive_pages` / `ai_docs_temp.unarchive_pages`.
+- Multi-select archive uses batched async operations over selected page IDs.
+- Pending UI state is split across `isBusy` (global) and `pendingActionPageIds` (per-item).
 
-## Create / rename / archive / unarchive flow
+## Drag and drop
 
-- Create calls `ai_docs_temp.create_page`, then navigates to new page and starts rename
-- Rename comes from headless-tree `onRename`, calling `ai_docs_temp.rename_page`
-- Archive/unarchive call `ai_docs_temp.archive_pages` / `ai_docs_temp.unarchive_pages`
-- Multi-select archive uses `Promise.all` over selected page IDs
-- Per-page pending state is tracked by `pendingActionPageIds` plus coarse `isBusy` flags
+- In-tree DnD: headless-tree `onDrop` -> `movePagesToParent` -> `ai_docs_temp.move_pages`.
+- Root drop-zone path is handled on the outer tree area.
+- Root drop reads `tree.getState().dnd?.draggedItems` and moves to `pages_ROOT_ID`.
+- In-tree and root-drop paths must stay behaviorally aligned.
 
-## Drag and drop flow
+# Headless-tree configuration highlights
 
-- In-tree drops use headless-tree `onDrop` -> `movePagesToParent` -> `ai_docs_temp.move_pages`
-- Root drop zone is handled manually on the outer tree area element
-- Root drop path reads current dragged items from `tree.getState().dnd?.draggedItems`
-- Drop to root calls same `movePagesToParent` with `targetParentId: pages_ROOT_ID`
-
-# Headless-tree configuration details
-
-`useTree<pages_TreeItem>` is configured in `PagesSidebar` with:
+`useTree<pages_TreeItem>` configuration includes:
 
 - `rootItemId: pages_ROOT_ID`
-- `initialState.expandedItems: [pages_ROOT_ID]`
-- `canReorder: true`
-- `dataLoader` backed by `treeCollection`
-- Features:
-  - `syncDataLoaderFeature`
-  - `selectionFeature`
-  - `hotkeysCoreFeature`
-  - `dragAndDropFeature`
-  - `renamingFeature`
-  - `expandAllFeature`
-
-Behavior callbacks:
-
-- `getItemName`: `item.getItemData().title`
-- `isItemFolder`: all non-placeholder items
-- `canDrag`: page items only
-- `canDrop`:
-  - target must be root or page
-  - cannot drop onto self
-  - cannot drop onto descendant of dragged item
-- `onDrop`: server move mutation call
-- `canRename`: page items only
-- `onRename`: trim/no-op checks, then server rename mutation
-- `onPrimaryAction`: page items only
-
-Rendering model:
-
-- Tree DOM is rendered by mapping `tree.getItems()` into `PagesSidebarTreeItem`
-- Root item is not rendered as a row (container only)
-- `tree.getDragLineStyle()` drives the visual between-row DnD indicator
-- `tree.scheduleRebuildTree()` is called each render cycle to sync the latest loader data
+- initial expanded root
+- sync data loader + selection + hotkeys + DnD + renaming + expand-all features
+- page-only `canDrag` and `canRename`
+- guarded `canDrop` (target type, self-drop, descendant-drop protection)
 
 # Convex integration details
 
-Query used by sidebar:
+Query:
 
 - `ai_docs_temp.get_tree_items_list`
 
-Mutations used by sidebar:
+Mutations:
 
 - `ai_docs_temp.create_page`
 - `ai_docs_temp.rename_page`
@@ -163,128 +122,55 @@ Mutations used by sidebar:
 - `ai_docs_temp.archive_pages`
 - `ai_docs_temp.unarchive_pages`
 
-ID conversion in client:
+Additional notes:
 
-- Local helper converts string tree IDs to `Id<"pages">`
-- Parent conversion accepts either page ID or `pages_ROOT_ID`
-- Always pass workspace/project IDs with each mutation
+- Client converts tree IDs to Convex page IDs and passes workspace/project IDs for mutations.
+- Backend may ignore protected operations (for example home page path); UI should not assume all requested mutations apply.
 
-Backend behavior to keep in mind (from `ai_docs_temp.ts`):
+# Architectural invariants
 
-- Some operations skip the home page (`path === "/"`) server-side
-- UI should not assume every requested move/rename/archive is applied if server ignores protected page operations
+1. Keep placeholder behavior client-only and non-mutable.
+2. Keep fallback list behavior to avoid tree flicker/reset.
+3. Preserve ancestor-aware search visibility.
+4. Preserve custom selection semantics and keyboard rename behavior.
+5. Keep DnD safety guards (self/descendant/type) and root-drop support.
+6. Keep pending state split (`isBusy` and `pendingActionPageIds`) for correct UI gating.
+7. Do not reintroduce outdated tree/data-provider architecture patterns.
 
-# Critical invariants and gotchas
+# Change playbooks
 
-1. **Do not treat placeholders as real pages**
+## Add per-item action
 
-   - Never send placeholder IDs to mutations
-   - Drag/rename/archive/create-child actions should remain page-only
+1. Add button in `PagesSidebarTreeItem` actions.
+2. Gate to page items.
+3. Wire per-item pending disable state.
+4. Rely on Convex refresh for final source of truth.
 
-2. **Placeholders are client-only**
+## Change filtering/search
 
-   - Backend list query intentionally has no placeholder rows
-   - Placeholder logic belongs in collection-building only
+1. Update collection/search logic together.
+2. Preserve orphan re-parenting and sort guarantees.
+3. Re-check archived mode behavior with search.
 
-3. **Keep `resolvedTreeItemsList` fallback behavior**
+## Change drag/drop rules
 
-   - Removing it reintroduces loading flicker and transient empty trees
+1. Update `canDrop` first.
+2. Keep all safety guards.
+3. Validate in-tree and root-drop-zone paths separately.
 
-4. **Root drop zone depends on exact event target**
+## Change create/rename
 
-   - Root-drop handler checks `event.target === rootElement.current`
-   - Changes to structure/event bubbling can break root-drop behavior silently
+1. Keep create -> navigate -> rename-start flow.
+2. Preserve trim/empty/unchanged rename no-op guards.
+3. Preserve async pending marker lifecycle.
 
-5. **Search visibility is ancestor-aware**
+# Verification checklist
 
-   - Visible set includes ancestors of matching descendants
-   - Avoid flat filtering that hides parent context for matches
-
-6. **Pending-state UX is split**
-
-   - `isBusy` gates bulk/global actions
-   - `pendingActionPageIds` gates item-level controls
-   - Keep both if you add async actions
-
-7. **Selection model is custom**
-
-   - Primary click logic includes range anchor handling via `tree.getDataRef()`
-   - Modifier-click semantics should be preserved when extending click behavior
-
-8. **Do not reintroduce outdated tree architecture**
-   - Current implementation is `@headless-tree`, not React Complex Tree/data-provider patterns
-
-# Safe change playbooks
-
-## Add a new per-item action button
-
-1. Add button in `PagesSidebarTreeItem` action row using `PagesSidebarTreeItemActionIconButton`
-2. Gate it for page items only
-3. Add pending-state integration:
-   - mark/unmark page in `pendingActionPageIds` for async action
-   - disable button when `isPending`
-4. If action changes tree structure, rely on Convex + query refresh (do not mutate collection ad hoc)
-
-## Change archive/filtering behavior
-
-1. Update filtering logic in `pages_sidebar_build_collection`
-2. Keep detached-page reattachment and sorting steps intact
-3. Verify `archivedCount`, `showArchived`, and `shouldForceShowArchived` behavior together
-4. Ensure search still operates on the post-filter collection
-
-## Adjust drag-and-drop rules
-
-1. Update `canDrop` guard first (self/descendant/type checks)
-2. Keep `canDrag` page-only unless backend supports more types
-3. If changing drop targets, align both:
-   - tree `onDrop` path
-   - manual root-drop-zone path
-4. Re-test root drop separately from in-tree drop
-
-## Change create-page flow
-
-1. Update `createPage` mutation args and post-create navigation together
-2. Preserve pending rename startup (`pendingRenamePageId` + effect)
-3. Keep busy-state handling around async create
-
-## Change rename behavior
-
-1. Update `onRename` checks (trim, empty, unchanged) deliberately
-2. Keep page-only guard
-3. Preserve pending marker lifecycle for per-item disabled state
-
-# Verification checklist after edits
-
-Run through this after any sidebar change:
-
-- Query load:
-  - Initial load shows pages
-  - No flash-to-empty while query is temporarily undefined
-- Search:
-  - Matching leaf shows ancestor chain
-  - No placeholder-only false matches
-  - Empty-state messages are correct
-- Selection:
-  - Single click selects + opens
-  - Ctrl/Cmd toggles selection
-  - Shift range selection works
-  - Blur outside tree clears selection
-- Rename:
-  - F2 starts rename on focused page
-  - Empty/unchanged rename does nothing
-  - Successful rename persists via Convex
-- Create:
-  - New page appears under expected parent
-  - Sidebar navigates to new page
-  - Rename starts automatically for created page
-- Archive/unarchive:
-  - Per-item archive toggles correctly
-  - Multi-select archive works
-  - Show/hide archived toggle behaves correctly
-- Drag/drop:
-  - In-tree move works
-  - Illegal drops are blocked (self/descendant/non-page)
-  - Root drop zone accepts dragged page items
-- Visual + pending states:
-  - Pending item actions disable correctly
-  - Drag-over/focused/selected classes still apply as expected
+- Query fallback prevents flash-to-empty.
+- Search keeps ancestor chain for matching leaves.
+- Selection modes (single/toggle/range) behave correctly.
+- `F2` rename and rename guards behave correctly.
+- Create navigates and starts rename.
+- Archive/unarchive and archived filter/toggle behavior is correct.
+- DnD allows legal moves, blocks illegal moves, and root drop still works.
+- Placeholder nodes are never sent to mutations.

@@ -1,7 +1,7 @@
 import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useDeferredValue } from "react";
 import { ArrowDown, Menu, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -212,8 +212,16 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 		...rest
 	} = props;
 
+	// TODO: Not sure if while the chat is not running we should use the non deferred values??
+	const deferredActiveBranchMessagesList = useDeferredValue(activeBranchMessages.list);
+	const deferredMessagesChildrenByParentId = useDeferredValue(messagesChildrenByParentId);
+
 	const messageCount = activeBranchMessages.list.length;
-	const shouldShowSkeleton = status === "loading" && messageCount === 0;
+
+	// Make sure to always show the skeleton when switching between threads,
+	// we cannot rely on `messageCount === 0` because we might have optimistic message,
+	// stored that might prevent the skeleton from being shown.
+	const shouldShowSkeleton = status === "loading" && !isRunning;
 
 	const handleSuggestionClick = (action: string) => {
 		onClickSuggestion(action);
@@ -234,7 +242,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 			) : messageCount === 0 ? (
 				<AiChatWelcome onClickSuggestion={handleSuggestionClick} />
 			) : (
-				activeBranchMessages.list.map((message, index) => (
+				deferredActiveBranchMessagesList.map((message, index) => (
 					<AiChatMessage
 						// index is better in this case because the messages follow a static order
 						// and this will prevent them from being unmounted when the message is
@@ -244,7 +252,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 						selectedThreadId={selectedThreadId}
 						isRunning={isRunning}
 						isEditing={editingMessageId === message.id}
-						messagesChildrenByParentId={messagesChildrenByParentId}
+						messagesChildrenByParentId={deferredMessagesChildrenByParentId}
 						onToolOutput={onToolOutput}
 						onToolResumeStream={onToolResumeStream}
 						onToolStop={onToolStop}
@@ -283,7 +291,6 @@ function useAutoScroll(props: useAutoScroll_Props) {
 		contentEl,
 		bottomMargin: AUTO_SCROLL_BOTTOM_MARGIN,
 		enable,
-		stickOnContentResize: isRunning,
 	});
 
 	const isAtBottomRef = useRef(isAtBottom);

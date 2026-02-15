@@ -56,7 +56,7 @@ function PageEditorRichTextSidebarAgentThreadPicker(props: PageEditorRichTextSid
 		>
 			<MySearchSelect value={controller.selectedThreadId ?? undefined} setValue={handleSelectValue}>
 				<MySearchSelectTrigger>
-					<MyIconButton variant="ghost-highlightable" tooltip="Chat history">
+					<MyIconButton variant="ghost-highlightable" tooltip="Past chats">
 						<MyIcon>
 							<Clock />
 						</MyIcon>
