@@ -124,6 +124,28 @@ export function useAutoRevertingState<T = undefined>(
 }
 
 /**
+ * Returns a debounced version of a value.
+ *
+ * @param value - The input value to debounce.
+ * @param timeoutMs - Optional debounce timeout in milliseconds.
+ */
+export function useDebouncedValue<T>(value: T, timeoutMs?: number) {
+	const [debouncedValue, setDebouncedValue] = useState(value);
+
+	useEffect(() => {
+		const timeoutId = setTimeout(() => {
+			setDebouncedValue(value);
+		}, timeoutMs);
+
+		return () => {
+			clearTimeout(timeoutId);
+		};
+	}, [value, timeoutMs]);
+
+	return debouncedValue;
+}
+
+/**
  * Hook that provides a ref containing a promise that resolves after each render.
  * The promise is created on each render and resolved via useEffect.
  *

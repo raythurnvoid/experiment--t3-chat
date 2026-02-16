@@ -37,6 +37,7 @@ This is a monorepo project with the following essential structure that you must 
   - [convex/](packages/app/convex) - Convex backend code and functions
   - [shared/](packages/app/shared) - Shared code between frontend and backend
   - [vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
+  - [vendor/headless-tree/](packages/app/vendor/headless-tree) - Headless Tree submodule (full repo for reference)
   - [vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
   - [vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
 
@@ -69,6 +70,18 @@ The app should **not** depend on `@assistant-ui/*` packages; use normal `node_mo
   - Examples folders:
     - [examples/](packages/app/vendor/liveblocks/examples)
     - [starter-kits/](packages/app/vendor/liveblocks/starter-kits)
+
+- [packages/app/vendor/headless-tree/](packages/app/vendor/headless-tree) - Headless Tree submodule
+
+  - Importing: Use standard node_modules imports in the app, submodule is for reference
+    - Correct:
+      ```ts
+      import { createTree } from "@headless-tree/core";
+      import { useTree } from "@headless-tree/react/react-compiler";
+      ```
+  - Package folders:
+    - [packages/core/](packages/app/vendor/headless-tree/packages/core)
+    - [packages/react/](packages/app/vendor/headless-tree/packages/react)
 
 - [references-submodules/ai/](references-submodules/ai) - AI SDK repository
 
@@ -129,7 +142,7 @@ Documentation Sources
 
 - [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
 - You may assume `+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
-- Submodules - [references-submodules/assistant-ui/](references-submodules/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [references-submodules/ai/](references-submodules/ai), [references-submodules/convex-backend/](references-submodules/convex-backend), [references-submodules/convex-helpers/](references-submodules/convex-helpers), [references-submodules/convex-js/](references-submodules/convex-js), and [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
+- Submodules - [references-submodules/assistant-ui/](references-submodules/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [packages/app/vendor/headless-tree/](packages/app/vendor/headless-tree), [references-submodules/ai/](references-submodules/ai), [references-submodules/convex-backend/](references-submodules/convex-backend), [references-submodules/convex-helpers/](references-submodules/convex-helpers), [references-submodules/convex-js/](references-submodules/convex-js), and [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 
 Research Process

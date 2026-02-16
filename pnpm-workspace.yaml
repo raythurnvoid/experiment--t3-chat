@@ -3,6 +3,7 @@ packages:
   - "packages/app/vendor/novel/packages/*"
   - "packages/app/vendor/liveblocks/packages/*"
   - "packages/app/vendor/liveblocks/shared/*"
+  - "packages/app/vendor/headless-tree/packages/*"
   - "packages/app/vendor/remix/packages/*"
   - "packages/app/vendor/tiptap/packages/*"
   - "packages/app/vendor/tiptap/packages-deprecated/*"

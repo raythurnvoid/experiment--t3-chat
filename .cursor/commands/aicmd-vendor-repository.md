@@ -147,6 +147,7 @@ This same pattern applies to:
 
 - `novel` - Already configured
 - `liveblocks` - Already configured
+- `headless-tree` - Now configured
 - `remix` - Now configured
 
 All follow the same structure:

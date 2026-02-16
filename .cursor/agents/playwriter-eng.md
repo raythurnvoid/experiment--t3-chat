@@ -26,17 +26,6 @@ Context continuity:
 - For multi-step work, resume the same subagent by agent ID to preserve browser/session state.
 - Reference: https://cursor.com/docs/context/subagents
 
-# Durable selector anchors (`/pages`)
-
-Prefer semantic locators first, but these CSS anchors are considered stable in this repo:
-
-- `.PagesSidebarTreeItem`
-- `.PagesSidebarTreeItem-primary-action-interactive-area`
-- `.PagesSidebarTreeItemPrimaryActionContent-title`
-- `.PagesSidebarTreeRenameInput-input`
-- `.PageEditorRichText-editor-content[contenteditable="true"]`
-- `.PageEditorCommentsThread-summary`
-
 # Fast execution defaults
 
 1. Prefer `getByRole` / `getByLabel` / `getByPlaceholder` before CSS selectors.
@@ -47,6 +36,114 @@ Prefer semantic locators first, but these CSS anchors are considered stable in t
 6. On failure, capture minimal evidence (URL + key counts + one screenshot), retry once, then report.
 7. Clean up test artifacts created during the run.
 
+# Learning
+
+All durable testing learnings are consolidated here. Keep this section compact, actionable, and reusable.
+
+## General DnD playbook
+
+Use this as the default strategy for drag-and-drop testing on any surface.
+
+Discovery checklist:
+
+1. Identify draggable source selectors.
+2. Identify valid/invalid target zones.
+3. Identify visual indicators (highlight, insertion marker, ghost/cursor state).
+4. Identify success signals (class/state change, reorder/persist, callback/network side effect).
+
+Zone taxonomy:
+
+- `source`
+- `valid-target`
+- `invalid-target`
+- `container-empty`
+- `outside`
+
+Instrumentation template:
+
+1. `MutationObserver` for DnD indicator classes/attributes.
+2. Event timeline: `dragstart`, `dragenter`, `dragleave`, `dragover`, `drop`, `dragend`.
+3. Zone tagging for each event/probe using container/item membership.
+4. Stable-window sampling during hold phases to separate traversal churn from true instability.
+
+Run matrix:
+
+1. `source -> valid-target (hold)`
+2. `source -> outside -> back`
+3. `source -> container-empty -> valid-target`
+4. Cross-container drag when multiple containers exist
+
+Pass/fail criteria:
+
+1. Stable hover has no rapid churn (`remove -> add` or `remove -> add -> remove`) without a true zone change.
+2. Indicators clear when leaving target/outside and do not persist incorrectly.
+3. Indicators appear only in valid zones.
+4. Clear behavior is immediate or near-immediate on zone change.
+
+Anti-flake:
+
+1. Use bounded waits and short polling.
+2. Run each path 2-3 times.
+3. Use explicit hold windows.
+4. Keep paths deterministic (fixed source/target set where possible).
+5. Always clean observers/listeners/helpers and release drag state.
+
+## `/pages` DnD application
+
+Apply the general playbook above with the `/pages` sidebar tree semantics.
+
+Implementation anchor:
+
+- `/pages` tree behavior is built on vendored Headless Tree sources in `packages/app/vendor/headless-tree/packages/core` and `packages/app/vendor/headless-tree/packages/react`.
+
+Durable selector anchors (`/pages`):
+
+- `.PagesSidebarTreeItem`
+- `.PagesSidebarTreeItem-primary-action-interactive-area`
+- `.PagesSidebarTreeItemPrimaryActionContent-title`
+- `.PagesSidebarTreeRenameInput-input`
+- `.PageEditorRichText-editor-content[contenteditable="true"]`
+- `.PageEditorCommentsThread-summary`
+
+Reproduction paths:
+
+1. `item -> item (hold)` for item-target stability.
+2. `item -> root-empty -> item` for root-highlight clear behavior.
+3. `item -> outside tree -> back` for cleanup and re-entry behavior.
+
+`/pages` instrumentation focus:
+
+1. Observe `.PagesSidebarTreeItem-content-dragging-target`.
+2. Observe `.PagesSidebarTree-dragging-root-target`.
+3. Log `dragenter`/`dragleave`/`dragover` with `target` + `currentTarget` labels/classes.
+4. Zone tags: `item`, `root-empty`, `outside`.
+
+`/pages` pass/fail focus:
+
+1. Item target class stays on the stable hovered row.
+2. Root highlight appears in `root-empty` and clears immediately or near-immediately on items.
+3. Item target class does not remain latched while pointer is outside the tree.
+
+Session continuity:
+
+- Prefer resumed subagent sessions for multi-run DnD debugging to preserve browser/context state.
+
+Minimal reusable checks (`/pages`):
+
+1. Row click does not toggle expand/collapse (arrow label unchanged).
+2. Arrow click toggles expand/collapse (arrow label changes).
+3. Nested creation works to depth 3 (`aria-level` 1/2/3).
+4. Rename works with `F2` on focused row.
+5. Ctrl/Cmd multi-select still works.
+6. Cleanup removes or archives all test entities created by the run.
+
+Troubleshooting heuristics:
+
+1. Re-check readiness after `domcontentloaded` with short polling.
+2. Confirm active route and key container presence before interaction.
+3. Re-locate targets to avoid stale element assumptions; retry once.
+4. Report exact step, locator, observed behavior, and expected behavior.
+
 # Artifact storage location
 
 When saving screenshots, recordings, or any file output from Playwriter work:
@@ -56,26 +153,6 @@ When saving screenshots, recordings, or any file output from Playwriter work:
 - Create the directory if it does not exist.
 - Organize outputs in subfolders as needed (for example by date, task, or run ID).
 - Prefer stable, descriptive filenames so artifacts are easy to review later.
-
-# Minimal reusable checks (`/pages`)
-
-Run these when validating sidebar behavior unless the task says otherwise:
-
-1. Row click does not toggle expand/collapse (arrow label unchanged).
-2. Arrow click toggles expand/collapse (arrow label changes).
-3. Nested creation works to depth 3 (`aria-level` 1/2/3).
-4. Rename works with `F2` on focused row.
-5. Ctrl/Cmd multi-select still works.
-6. Cleanup removes or archives all test entities created by the run.
-
-# Lightweight troubleshooting
-
-If behavior is flaky or assertions fail:
-
-1. Re-check readiness after `domcontentloaded` with short polling.
-2. Confirm the active route and key container presence before interaction.
-3. Re-locate target elements (avoid stale handles) and retry once.
-4. Report exact step, locator, observed behavior, expected behavior.
 
 # Debug instrumentation and simulation
 
@@ -103,7 +180,9 @@ Return concise output with:
 
 # Self-learning protocol (durable memory)
 
-When you encounter a failure, struggle, or repeated friction, update this spec file so future runs are more effective.
+When you encounter a failure, struggle, or repeated friction, proactively update this spec file so future runs are more effective.
+Persist durable lessons in `# Learning`, which is the canonical destination for reusable guidance.
+Do this proactively when criteria are met; do not wait for manual user intervention.
 
 Only persist a lesson if **all** are true:
 

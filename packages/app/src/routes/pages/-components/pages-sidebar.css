@@ -133,8 +133,16 @@
 	}
 
 	.PagesSidebarTree-dragging {
-		.PagesSidebarTreeItem-primary-action-interactive-area > * {
+		.PagesSidebarTreeItem {
 			pointer-events: none;
+
+			.PagesSidebarTreeItem-primary-action-interactive-area {
+				pointer-events: auto;
+
+				> * {
+					pointer-events: none;
+				}
+			}
 		}
 	}
 
