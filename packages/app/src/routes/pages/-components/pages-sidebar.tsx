@@ -808,7 +808,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const movePages = useMutation(app_convex_api.ai_docs_temp.move_pages);
 	const renamePage = useMutation(app_convex_api.ai_docs_temp.rename_page);
 	const createPage = useMutation(app_convex_api.ai_docs_temp.create_page);
-	const archivePage = useMutation(app_convex_api.ai_docs_temp.archive_pages);
+	const archivePages = useMutation(app_convex_api.ai_docs_temp.archive_pages);
 	const unarchivePage = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
 
 	const [searchQuery, setSearchQuery] = useState("");
@@ -1062,45 +1062,37 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	const handleArchive: PagesSidebarTree_Props["onArchive"] = (pageId) => {
 		const shouldArchiveSelectedPages = selectedPageIds.length > 1 && selectedPageIds.includes(pageId);
+		const pageIdsToArchive = shouldArchiveSelectedPages ? selectedPageIds : [pageId];
 
 		if (shouldArchiveSelectedPages) {
 			setIsArchivingSelection(true);
-
-			Promise.all(
-				selectedPageIds.map((selectedId) =>
-					archivePage({
-						workspaceId: ai_chat_HARDCODED_ORG_ID,
-						projectId: ai_chat_HARDCODED_PROJECT_ID,
-						pageId: pages_sidebar_to_page_id(selectedId),
-					}),
-				),
-			)
-				.then(() => {
-					if (selectedPageId && selectedPageIds.includes(selectedPageId)) {
-						onArchive(selectedPageId);
-					}
-				})
-				.catch(console.error)
-				.finally(() => {
-					tree().setSelectedItems([]);
-					setIsArchivingSelection(false);
-				});
-
-			return;
+		} else {
+			markPageAsPending(pageId);
 		}
 
-		markPageAsPending(pageId);
-
-		archivePage({
+		archivePages({
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pages_sidebar_to_page_id(pageId),
+			pageIds: pageIdsToArchive.map((currentPageId) => pages_sidebar_to_page_id(currentPageId)),
 		})
 			.then(() => {
-				onArchive(pageId);
+				if (selectedPageId && pageIdsToArchive.includes(selectedPageId)) {
+					onArchive(selectedPageId);
+					return;
+				}
+
+				if (!shouldArchiveSelectedPages) {
+					onArchive(pageId);
+				}
 			})
 			.catch(console.error)
 			.finally(() => {
+				if (shouldArchiveSelectedPages) {
+					tree().setSelectedItems([]);
+					setIsArchivingSelection(false);
+					return;
+				}
+
 				unmarkPageAsPending(pageId);
 			});
 	};

@@ -131,7 +131,7 @@ function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensio
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "[tiptap_markdown_to_html] Error while parsing markdown to HTML",
+				message: "Error while parsing markdown to HTML",
 				cause: error,
 			},
 		});
@@ -322,7 +322,7 @@ export function pages_yjs_doc_get_markdown(args: { yjsDoc: YDoc }) {
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "[pages_yjs_doc_get_markdown] Error while extracting markdown from Y.Doc",
+				message: "Error while extracting markdown from Y.Doc",
 				cause: error,
 			},
 		});
@@ -352,7 +352,7 @@ export function pages_yjs_doc_update_from_markdown(args: { markdown: string; mut
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "[pages_yjs_doc_update_from_markdown] Error while updating Y.Doc from tiptap editor",
+				message: "Error while updating Y.Doc from tiptap editor",
 				cause: error,
 			},
 		});
@@ -373,7 +373,7 @@ export function pages_yjs_doc_create_from_markdown(args: { markdown: string }) {
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "[pages_yjs_doc_create_from_markdown] Error while creating Y.Doc from tiptap editor",
+				message: "Error while creating Y.Doc from tiptap editor",
 				cause: error,
 			},
 		});

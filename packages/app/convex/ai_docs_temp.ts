@@ -162,19 +162,6 @@ export const resolve_tree_node_id_from_path = internalQuery({
 	handler: (ctx, args) => resolve_tree_node_id_from_path_fn(ctx, args),
 });
 
-async function resolve_path_from_page_id(
-	ctx: QueryCtx,
-	args: { workspaceId: string; projectId: string; pageId: Id<"pages"> },
-): Promise<string> {
-	if (!args.pageId) return "/";
-
-	const page = await ctx.db.get("pages", args.pageId);
-	if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-		return "/";
-	}
-	return page.path;
-}
-
 async function resolve_parent_path_from_parent_id(
 	ctx: QueryCtx,
 	args: {
@@ -217,10 +204,7 @@ async function cascade_page_descendants_path(
 		const children = await ctx.db
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("parentId", frame.parentId),
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
 			)
 			.collect();
 
@@ -323,7 +307,7 @@ async function do_create_page(
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "[do_create_page] Parent page not found",
+				message: "Parent page not found",
 			},
 		});
 	}
@@ -337,7 +321,7 @@ async function do_create_page(
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "[do_create_page] Failed to create page because path already exists",
+				message: "Failed to create page because path already exists",
 			},
 		});
 	}
@@ -514,7 +498,10 @@ export const rename_page = mutation({
 		pageId: v.id("pages"),
 		name: v.string(),
 	},
-	returns: v.union(v.object({ _yay: v.null() }), v.object({ _nay: v.object({ name: v.string(), message: v.string() }) })),
+	returns: v.union(
+		v.object({ _yay: v.null() }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
+	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const page = await ctx.db.get("pages", args.pageId);
@@ -547,7 +534,7 @@ export const rename_page = mutation({
 				return Result({
 					_nay: {
 						name: "nay",
-						message: "[rename_page] Failed to rename page because path already exists",
+						message: "Path already exists",
 					},
 				});
 			}
@@ -576,7 +563,10 @@ export const move_pages = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.union(v.object({ _yay: v.null() }), v.object({ _nay: v.object({ name: v.string(), message: v.string() }) })),
+	returns: v.union(
+		v.object({ _yay: v.null() }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
+	),
 	handler: async (ctx, args) => {
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
 			workspaceId: args.workspaceId,
@@ -615,7 +605,7 @@ export const move_pages = mutation({
 				return Result({
 					_nay: {
 						name: "nay",
-						message: "[move_pages] Failed to move pages because path already exists",
+						message: "Path already exists",
 					},
 				});
 			}
@@ -631,7 +621,7 @@ export const move_pages = mutation({
 				return Result({
 					_nay: {
 						name: "nay",
-						message: "[move_pages] Failed to move pages because path already exists",
+						message: "Path already exists",
 					},
 				});
 			}
@@ -660,32 +650,51 @@ export const archive_pages = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		pageIds: v.array(v.id("pages")),
 	},
+	returns: v.union(
+		v.object({ _yay: v.null() }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.any() }) }),
+	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		// Check if this is the homepage (path "/") and ignore if so
-		const path = await resolve_path_from_page_id(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageId: args.pageId,
-		});
+		const pages = await Promise.all(
+			args.pageIds.map(async (pageId) => {
+				return ctx.db.get("pages", pageId).then((page) => {
+					if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+						return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+					}
 
-		if (path === "/") {
-			// Ignore archive requests for homepage
-			return;
+					return Result({ _yay: page });
+				});
+			}),
+		);
+
+		const nayResult = pages.find((page) => page._nay !== undefined);
+		if (nayResult) {
+			return nayResult;
 		}
 
-		const page = await ctx.db.get("pages", args.pageId);
+		await Promise.all(
+			pages.map(async (page) => {
+				if (page._yay) {
+					// Check if this is the homepage (path "/") and ignore if so
+					if (page._yay.path === "/") {
+						// Ignore archive requests for homepage
+						return Result({ _yay: null });
+					}
 
-		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
-			await ctx.db.patch("pages", args.pageId, {
-				isArchived: true,
-				updatedBy: user.name,
-				updatedAt: Date.now(),
-			});
-		}
+					await ctx.db.patch("pages", page._yay._id, {
+						isArchived: true,
+						updatedBy: user.name,
+						updatedAt: Date.now(),
+					});
+				}
+			}),
+		);
+
+		return Result({ _yay: null });
 	},
 });
 
@@ -695,16 +704,26 @@ export const unarchive_pages = mutation({
 		projectId: v.string(),
 		pageId: v.id("pages"),
 	},
-	returns: v.union(v.object({ _yay: v.null() }), v.object({ _nay: v.object({ name: v.string(), message: v.string() }) })),
+	returns: v.union(
+		v.object({ _yay: v.null() }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
+	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		// Check if this is the homepage (path "/") and ignore if so
-		const path = await resolve_path_from_page_id(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageId: args.pageId,
+		const path = await ctx.db.get("pages", args.pageId).then((page) => {
+			if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+				return null;
+			}
+			return page.path;
 		});
+
+		if (!path) {
+			return Result({
+				_nay: { name: "nay", message: "Page not found" },
+			});
+		}
 
 		if (path === "/") {
 			// Ignore unarchive requests for homepage
@@ -728,7 +747,7 @@ export const unarchive_pages = mutation({
 				return Result({
 					_nay: {
 						name: "nay",
-						message: "[unarchive_pages] Failed to unarchive page because path already exists",
+						message: "Failed to unarchive page because path already exists",
 					},
 				});
 			}
