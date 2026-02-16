@@ -217,7 +217,7 @@ return Result({ _yay: value });
 return Result({
 	_nay: {
 		name: "nay",
-		message: "[OwnerSymbol.operation] Error while doing something",
+		message: "Error while doing something",
 		cause: error,
 	},
 });
@@ -235,7 +235,7 @@ At boundaries where you must throw (for example integration boundaries), throw a
 
 ```ts
 if (result._nay) {
-	throw new Error("[OwnerSymbol.operation] Failed to perform operation", {
+	throw new Error("Failed to perform operation", {
 		cause: result._nay,
 	});
 }
@@ -248,14 +248,19 @@ Never throw raw `_nay.message` directly:
 throw new Error(result._nay.message);
 ```
 
-### Message string format
+### Message and log string format
 
-For both `_nay.message` and throw messages:
+For `_nay.message` and throw messages:
 
-- Start with `[OwnerSymbol.operation]`
+- Do not prefix with `[OwnerSymbol.operation]`
 - Describe the failed operation in clear terms (`Failed to ...`, `Error while ...`)
 - Keep the message stable and concise (do not embed volatile payloads)
 - Put details in `cause` and structured logs, not in the message text
+
+For log messages:
+
+- Start with `[OwnerSymbol.operation]`
+- Keep logs stable and concise; include variable details as structured metadata
 
 ## Consistency requirement (same-author rule)
 

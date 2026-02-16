@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { Activity, useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
 	Archive,
 	ArchiveRestore,
@@ -50,6 +50,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, sx } from "
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
+import { useDebounce } from "@/hooks/utils-hooks.ts";
 import {
 	pages_ROOT_ID,
 	pages_create_tree_placeholder_child,
@@ -333,6 +334,7 @@ type PagesSidebarTreeItemArrow_Props = {
 	tree: PagesSidebarTree_Shared;
 	isPending: boolean;
 	isTabbable: boolean;
+	isHidden: boolean;
 };
 
 function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
@@ -414,6 +416,7 @@ type PagesSidebarTreeItem_Props = {
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
 	isTreeDragging: boolean;
+	isHidden: boolean;
 	onCreatePage: (parentPageId: string) => void;
 	onArchive: (pageId: string) => void;
 	onUnarchive: (pageId: string) => void;
@@ -428,6 +431,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		isBusy,
 		pendingActionPageIds,
 		isTreeDragging,
+		isHidden,
 		onCreatePage,
 		onArchive,
 		onUnarchive,
@@ -467,111 +471,118 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	);
 
 	return (
-		<div
-			key={itemId}
-			className={cn(
-				"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
-				isPlaceholder && ("PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames),
-				isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
-				!isPlaceholder &&
-					isDragTarget &&
-					("PagesSidebarTreeItem-content-dragging-target" satisfies PagesSidebarTreeItem_ClassNames),
-				isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
-			)}
-			style={sx({
-				"--PagesSidebarTreeItem-content-depth": depth,
-			} satisfies Partial<PagesSidebar_CssVars>)}
-		>
-			{isPlaceholder ? (
-				<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
-			) : (
-				<>
-					{item.isRenaming() ? (
-						<div
-							className={
-								"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames
-							}
-						>
+		<Activity mode={isHidden ? "hidden" : "visible"}>
+			<div
+				className={cn(
+					"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
+					isPlaceholder && ("PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames),
+					isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
+					!isPlaceholder &&
+						isDragTarget &&
+						("PagesSidebarTreeItem-content-dragging-target" satisfies PagesSidebarTreeItem_ClassNames),
+					isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
+				)}
+				style={sx({
+					"--PagesSidebarTreeItem-content-depth": depth,
+				} satisfies Partial<PagesSidebar_CssVars>)}
+			>
+				{isPlaceholder ? (
+					<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
+				) : (
+					<>
+						{item.isRenaming() ? (
 							<div
 								className={
-									"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
+									"PagesSidebarTreeItem-primary-action-interactive-area" satisfies PagesSidebarTreeItem_ClassNames
 								}
 							>
-								<PagesSidebarTreeItemIcon />
-								<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
-									<PagesSidebarTreeRenameInput itemId={itemId} tree={tree} />
+								<div
+									className={
+										"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
+									}
+								>
+									<PagesSidebarTreeItemIcon />
+									<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
+										<PagesSidebarTreeRenameInput itemId={itemId} tree={tree} />
+									</div>
 								</div>
 							</div>
+						) : (
+							primaryAction
+						)}
+
+						<PagesSidebarTreeItemArrow
+							itemId={itemId}
+							tree={tree}
+							isPending={isPending}
+							isTabbable={isTabbableRow}
+							isHidden={isHidden}
+						/>
+
+						<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
+							<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
+								{metaText}
+							</div>
 						</div>
-					) : (
-						primaryAction
-					)}
 
-					<PagesSidebarTreeItemArrow itemId={itemId} tree={tree} isPending={isPending} isTabbable={isTabbableRow} />
-
-					<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
-						<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
-							{metaText}
-						</div>
-					</div>
-
-					<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
-						<PagesSidebarTreeItemActionIconButton
-							tooltip="Add child"
-							isActive={isTabbableRow}
-							disabled={isPending}
-							onClick={() => onCreatePage(itemId)}
-						>
-							<Plus />
-						</PagesSidebarTreeItemActionIconButton>
-						<MyMenu>
-							<MyMenuTrigger tabIndex={isTabbableRow ? 0 : -1}>
-								<MyIconButton
-									className={cn(
-										"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames,
-									)}
-									variant="ghost-highlightable"
-									tooltip="More actions"
-									disabled={isPending}
-								>
-									<MyIconButtonIcon>
-										<EllipsisVertical />
-									</MyIconButtonIcon>
-								</MyIconButton>
-							</MyMenuTrigger>
-							<MyMenuPopover>
-								<MyMenuPopoverContent>
-									<MyMenuItem disabled={isPending} onClick={() => item.startRenaming()}>
-										<MyMenuItemContent>
-											<MyMenuItemContentIcon>
-												<Edit2 />
-											</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
-										</MyMenuItemContent>
-									</MyMenuItem>
-									<MyMenuItem
-										variant={isArchived ? "default" : "destructive"}
+						<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
+							<PagesSidebarTreeItemActionIconButton
+								tooltip="Add child"
+								isActive={isTabbableRow}
+								disabled={isPending}
+								onClick={() => onCreatePage(itemId)}
+							>
+								<Plus />
+							</PagesSidebarTreeItemActionIconButton>
+							<MyMenu>
+								<MyMenuTrigger tabIndex={isTabbableRow ? 0 : -1}>
+									<MyIconButton
+										className={cn(
+											"PagesSidebarTreeItemActionIconButton" satisfies PagesSidebarTreeItemActionIconButton_ClassNames,
+										)}
+										variant="ghost-highlightable"
+										tooltip={isHidden ? undefined : "More actions"}
 										disabled={isPending}
-										onClick={() => {
-											if (isArchived) {
-												onUnarchive(itemId);
-											} else {
-												onArchive(itemId);
-											}
-										}}
 									>
-										<MyMenuItemContent>
-											<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
-										</MyMenuItemContent>
-									</MyMenuItem>
-								</MyMenuPopoverContent>
-							</MyMenuPopover>
-						</MyMenu>
-					</div>
-				</>
-			)}
-		</div>
+										<MyIconButtonIcon>
+											<EllipsisVertical />
+										</MyIconButtonIcon>
+									</MyIconButton>
+								</MyMenuTrigger>
+								<MyMenuPopover>
+									<MyMenuPopoverContent>
+										<MyMenuItem disabled={isPending} onClick={() => item.startRenaming()}>
+											<MyMenuItemContent>
+												<MyMenuItemContentIcon>
+													<Edit2 />
+												</MyMenuItemContentIcon>
+												<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
+											</MyMenuItemContent>
+										</MyMenuItem>
+										<MyMenuItem
+											variant={isArchived ? "default" : "destructive"}
+											disabled={isPending}
+											onClick={() => {
+												if (isArchived) {
+													onUnarchive(itemId);
+												} else {
+													onArchive(itemId);
+												}
+											}}
+										>
+											<MyMenuItemContent>
+												<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
+												<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+											</MyMenuItemContent>
+										</MyMenuItem>
+									</MyMenuPopoverContent>
+								</MyMenuPopover>
+							</MyMenu>
+						</div>
+					</>
+				)}
+			</div>
+		</Activity>
 	);
 }
 // #endregion tree item
@@ -589,7 +600,9 @@ type PagesSidebarTree_Props = {
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	searchQuery: string;
-	renderedTreeItemIds: string[];
+	treeItemIds: string[];
+	visibleTreeItemIds: Set<string>;
+	visibleIds: Set<string> | null;
 	selectedPageId: string | null;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
@@ -607,7 +620,9 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		isTreeLoading,
 		showEmptyState,
 		searchQuery,
-		renderedTreeItemIds,
+		treeItemIds,
+		visibleTreeItemIds,
+		visibleIds,
 		selectedPageId,
 		isBusy,
 		pendingActionPageIds,
@@ -616,6 +631,7 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		onUnarchive,
 		onTreeItemPrimaryClick,
 	} = props;
+	const isSearchActive = searchQuery.trim().length > 0;
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
 
 	const [treeElement, setTreeElement] = useState<HTMLDivElement | null>(null);
@@ -737,26 +753,30 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 
 			{isTreeLoading ? (
 				<div className={cn("PagesSidebarTree-empty-state" satisfies PagesSidebarTree_ClassNames)}>Loading pages...</div>
-			) : showEmptyState ? (
-				<div className={cn("PagesSidebarTree-empty-state" satisfies PagesSidebarTree_ClassNames)}>
-					{searchQuery.trim() ? "No pages match your search." : "No pages yet."}
-				</div>
 			) : (
-				renderedTreeItemIds.map((itemId) => (
-					<PagesSidebarTreeItem
-						key={itemId}
-						itemId={itemId}
-						tree={tree}
-						selectedPageId={selectedPageId}
-						isBusy={isBusy}
-						pendingActionPageIds={pendingActionPageIds}
-						isTreeDragging={isTreeDragging}
-						onCreatePage={onCreatePage}
-						onArchive={onArchive}
-						onUnarchive={onUnarchive}
-						onTreeItemPrimaryClick={onTreeItemPrimaryClick}
-					/>
-				))
+				<>
+					{showEmptyState ? (
+						<div className={cn("PagesSidebarTree-empty-state" satisfies PagesSidebarTree_ClassNames)}>
+							{searchQuery.trim() ? "No pages match your search." : "No pages yet."}
+						</div>
+					) : null}
+					{treeItemIds.map((itemId) => (
+						<PagesSidebarTreeItem
+							key={itemId}
+							itemId={itemId}
+							tree={tree}
+							selectedPageId={selectedPageId}
+							isBusy={isBusy}
+							pendingActionPageIds={pendingActionPageIds}
+							isTreeDragging={isTreeDragging}
+							isHidden={!visibleTreeItemIds.has(itemId) || (isSearchActive && !!visibleIds && !visibleIds.has(itemId))}
+							onCreatePage={onCreatePage}
+							onArchive={onArchive}
+							onUnarchive={onUnarchive}
+							onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+						/>
+					))}
+				</>
 			)}
 		</div>
 	);
@@ -820,6 +840,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const [, setTreeRebuildVersion] = useState(0);
 
 	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
+	const expandedItemsBeforeSearchRef = useRef<string[] | null>(null);
 
 	const baseTreeCollection = ((/* iife */) => {
 		return create_collection({
@@ -978,14 +999,25 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const hasPendingRenamePageInTree = !!(pendingRenamePageId && treeCollection[pendingRenamePageId]);
 
 	const treeItems = tree().getItems();
+	const visibleTreeItemIds = new Set(
+		treeItems
+			.map((item) => item.getId())
+			.filter((itemId) => {
+				return itemId !== pages_ROOT_ID;
+			}),
+	);
 
-	const visibleIds = ((/* iife */) => {
-		const searchTerm = searchQuery.trim().toLowerCase();
-		if (!searchTerm) {
+	const searchQueryDebounced = useDebounce(searchQuery, 300);
+	const searchQueryDeferred = useDeferredValue(searchQueryDebounced);
+
+	const searchFilter = ((/* iife */) => {
+		const searchQueryNormalized = searchQueryDeferred.trim().toLowerCase();
+		if (!searchQueryNormalized) {
 			return null;
 		}
 
-		const result = new Set<string>();
+		const visibleIds = new Set<string>();
+		const expandedIds = new Set<string>([pages_ROOT_ID]);
 		const isVisible = (id: string): boolean => {
 			const current = treeCollection[id];
 			if (!current) {
@@ -995,24 +1027,31 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				return false;
 			}
 
-			const selfMatch = current.data.title.toLowerCase().includes(searchTerm);
+			const selfMatch = current.data.title.toLowerCase().includes(searchQueryNormalized);
 			let childMatch = false;
 			for (const childId of current.children) {
 				if (isVisible(childId)) {
 					childMatch = true;
+					expandedIds.add(id);
 				}
 			}
 
 			const visible = selfMatch || childMatch;
 			if (visible) {
-				result.add(id);
+				visibleIds.add(id);
 			}
 			return visible;
 		};
 
 		isVisible(pages_ROOT_ID);
-		return result;
+		return {
+			visibleIds,
+			expandedIds: [...expandedIds],
+		};
 	})();
+
+	const visibleIds = searchFilter?.visibleIds ?? null;
+	const isSearchActive = searchQuery.trim().length > 0;
 
 	const selectedPageIds = treeItems
 		.filter((item) => item.isSelected() && item.getItemData().type === "page")
@@ -1021,18 +1060,33 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const multiSelectionCount = selectedPageIds.length;
 	const isBusy = isCreatingPage || isArchivingSelection;
 	const isTreeLoading = treeItemsList === undefined;
-	const renderedTreeItemIds = treeItems
-		.map((item) => item.getId())
-		.filter((itemId) => {
-			if (itemId === pages_ROOT_ID) {
-				return false;
+	const treeItemIds = ((/* iife */) => {
+		const allItemIds: string[] = [];
+		const visitedIds = new Set<string>();
+
+		const visit = (itemId: string) => {
+			const childrenIds = treeCollection[itemId]?.children ?? [];
+			for (const childId of childrenIds) {
+				if (childId === pages_ROOT_ID || visitedIds.has(childId)) {
+					continue;
+				}
+
+				visitedIds.add(childId);
+				allItemIds.push(childId);
+				visit(childId);
 			}
-			if (visibleIds && !visibleIds.has(itemId)) {
-				return false;
-			}
-			return true;
-		});
-	const showEmptyState = !isTreeLoading && renderedTreeItemIds.length === 0;
+		};
+
+		visit(pages_ROOT_ID);
+		return allItemIds;
+	})();
+	const visibleTreeItemCount = treeItemIds.filter((itemId) => {
+		if (!visibleTreeItemIds.has(itemId)) {
+			return false;
+		}
+		return !isSearchActive || !visibleIds || visibleIds.has(itemId);
+	}).length;
+	const showEmptyState = !isTreeLoading && visibleTreeItemCount === 0;
 
 	const handleCreatePageClick: PagesSidebarTree_Props["onCreatePage"] = (parentPageId) => {
 		setIsCreatingPage(true);
@@ -1157,7 +1211,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			return;
 		}
 
-		tree().scheduleRebuildTree();
+		tree().rebuildTree();
 		setTreeRebuildVersion((oldValue) => oldValue + 1);
 	}, [isArchivedShown, treeItemsList]);
 
@@ -1176,6 +1230,50 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			return queriedTreeItemsList;
 		});
 	}, [queriedTreeItemsList]);
+
+	useLayoutEffect(() => {
+		const treeInstance = tree();
+		const searchExpandedIds = searchFilter?.expandedIds;
+		if (!searchExpandedIds) {
+			const expandedItemsBeforeSearch = expandedItemsBeforeSearchRef.current;
+			if (!expandedItemsBeforeSearch) {
+				return;
+			}
+			const currentExpandedItems = treeInstance.getState().expandedItems;
+			const hasSameExpandedItems =
+				currentExpandedItems.length === expandedItemsBeforeSearch.length &&
+				currentExpandedItems.every((itemId) => expandedItemsBeforeSearch.includes(itemId));
+
+			expandedItemsBeforeSearchRef.current = null;
+			if (hasSameExpandedItems) {
+				return;
+			}
+			treeInstance.applySubStateUpdate("expandedItems", [...expandedItemsBeforeSearch]);
+			treeInstance.rebuildTree();
+			return;
+		}
+
+		if (!expandedItemsBeforeSearchRef.current) {
+			expandedItemsBeforeSearchRef.current = [...treeInstance.getState().expandedItems];
+		}
+
+		const currentExpandedItems = treeInstance.getState().expandedItems;
+		const nextExpandedItemsSet = new Set(currentExpandedItems);
+		let hasNewExpandedItem = false;
+		for (const itemId of searchExpandedIds) {
+			if (nextExpandedItemsSet.has(itemId)) {
+				continue;
+			}
+			nextExpandedItemsSet.add(itemId);
+			hasNewExpandedItem = true;
+		}
+		if (!hasNewExpandedItem) {
+			return;
+		}
+
+		treeInstance.applySubStateUpdate("expandedItems", [...nextExpandedItemsSet]);
+		treeInstance.rebuildTree();
+	}, [searchFilter, tree]);
 
 	useEffect(() => {
 		if (!selectedPageId || !hasSelectedPageInTree) {
@@ -1322,7 +1420,9 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 						isTreeLoading={isTreeLoading}
 						showEmptyState={showEmptyState}
 						searchQuery={searchQuery}
-						renderedTreeItemIds={renderedTreeItemIds}
+						treeItemIds={treeItemIds}
+						visibleTreeItemIds={visibleTreeItemIds}
+						visibleIds={visibleIds}
 						selectedPageId={selectedPageId}
 						isBusy={isBusy}
 						pendingActionPageIds={pendingActionPageIds}

@@ -14,6 +14,8 @@ export default defineConfig({
 			verboseFileRoutes: false,
 		}),
 		react({
+			// Keep default node_modules exclusion, but allow Ariakit modules through Babel transforms.
+			exclude: /node_modules[\\/](?!\.pnpm[\\/]@ariakit\+|@ariakit[\\/])/,
 			// https://react.dev/learn/react-compiler
 			babel: {
 				plugins: [
@@ -25,15 +27,9 @@ export default defineConfig({
 							// 	logEvent(filename, event) {
 							// 		if (!filename) return;
 
-							// 		// By default, keep logs focused to avoid noise.
-							// 		// Set `REACT_COMPILER_LOG_ALL=1` to log for all compiled files.
-							// 		const logAll = process.env.REACT_COMPILER_LOG_ALL === "1";
-							// 		if (!logAll) {
-							// 			const appAuthPath = path.resolve(__dirname, "src/components/app-auth.tsx");
-							// 			if (filename !== appAuthPath) return;
+							// 		if (filename.includes(`ariakit`)) {
+							// 			console.log("ariakit", filename);
 							// 		}
-
-							// 		log_react_compiler_event(filename, event);
 							// 	},
 							// } satisfies Logger,
 							environment: {
@@ -44,7 +40,9 @@ export default defineConfig({
 								return (
 									filename.startsWith(path.resolve(__dirname, "src")) ||
 									filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
-									filename.startsWith(path.resolve(__dirname, "vendor/tiptap"))
+									filename.startsWith(path.resolve(__dirname, "vendor/tiptap")) ||
+									filename.includes(`${path.sep}node_modules${path.sep}@ariakit${path.sep}`) ||
+									filename.includes(`${path.sep}.pnpm${path.sep}@ariakit+`)
 								);
 							},
 						},
@@ -55,6 +53,7 @@ export default defineConfig({
 		tailwindcss(),
 	],
 	resolve: {
+		dedupe: ["react", "react-dom"],
 		alias: [
 			{
 				find: "@",
@@ -80,6 +79,8 @@ export default defineConfig({
 		exclude: [
 			// Exclude vendored packages from pre-bundling so they're treated as source files
 			"@convex-dev/presence",
+			"@ariakit/react",
+			"@ariakit/react-core",
 
 			"novel",
 

@@ -305,7 +305,7 @@ test("archived pages can share path with a new active page", async () => {
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		pageId: createdPage._yay.pageId,
+		pageIds: [createdPage._yay.pageId],
 	});
 
 	const recreatedPage = await asUser.mutation(api.ai_docs_temp.create_page, {
@@ -422,7 +422,7 @@ test("unarchive_pages returns conflict when active page already has the same pat
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		pageId: db.pages.page_root_2._id,
+		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const renameArchived = await asUser.mutation(api.ai_docs_temp.rename_page, {
@@ -468,7 +468,7 @@ test("resolve_page_id_from_path ignores archived pages with duplicate path", asy
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		pageId: db.pages.page_root_2._id,
+		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const renameArchived = await asUser.mutation(api.ai_docs_temp.rename_page, {
@@ -504,7 +504,7 @@ test("create_page_by_path reuses only active pages", async () => {
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		pageId: db.pages.page_root_2._id,
+		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const createByPath = await asUser.mutation(internal.ai_docs_temp.create_page_by_path, {
