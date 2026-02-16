@@ -301,4 +301,16 @@ export function MySelect(props: MySelect_Props) {
 		</Ariakit.SelectProvider>
 	);
 }
+
+MySelect.useStore = () => {
+	const context = Ariakit.useSelectContext();
+
+	if (!context) {
+		throw new Error("[MySelect.useStore] Must be used within MySelect");
+	}
+
+	return context;
+};
+
+MySelect.useStoreState = Ariakit.useStoreState;
 // #endregion root

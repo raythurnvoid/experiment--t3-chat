@@ -12,12 +12,16 @@ Primary:
 - `../../../packages/app/convex/ai_docs_temp.ts`
 - `../../../packages/app/shared/pages.ts`
 - `../../../packages/app/src/lib/pages.ts`
+- `../../../packages/app/vendor/headless-tree/packages/core/src/index.ts`
+- `../../../packages/app/vendor/headless-tree/packages/react/src/index.ts`
+- `../../../packages/app/vendor/headless-tree/packages/react/src/react-compiler/index.tsx`
 
 # Architecture overview
 
 The Pages sidebar is implemented in `pages-sidebar.tsx` on top of `@headless-tree` with Convex-backed data.
 
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
+- Vendored sources: `../../../packages/app/vendor/headless-tree/packages/*`
 - Backend data: Convex `ai_docs_temp` query/mutations
 - Item types: `"root" | "page" | "placeholder"`
 - Only `"page"` items are mutable tree entities

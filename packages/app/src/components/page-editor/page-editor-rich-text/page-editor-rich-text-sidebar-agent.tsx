@@ -35,6 +35,19 @@ type PageEditorRichTextSidebarAgentThreadPickerItem_Props = {
 
 function PageEditorRichTextSidebarAgentThreadPickerItem(props: PageEditorRichTextSidebarAgentThreadPickerItem_Props) {
 	const { controller, thread } = props;
+	const selectStore = MySearchSelect.useStore();
+
+	const isActiveItem =
+		MySearchSelect.useStoreState(selectStore, (state) => {
+			if (!state?.activeId) {
+				return false;
+			}
+
+			const activeItem = selectStore.item(state.activeId);
+			return activeItem?.value === thread._id;
+		}) ?? false;
+
+	const actionTabIndex = isActiveItem ? 0 : -1;
 
 	const threadTitle = controller.streamingTitleByThreadId[thread._id] ?? (thread.title || "New Chat");
 	const isOptimisticThread = ai_chat_is_optimistic_thread(thread);
@@ -99,6 +112,7 @@ function PageEditorRichTextSidebarAgentThreadPickerItem(props: PageEditorRichTex
 						className={cn(
 							"PageEditorRichTextSidebarAgentThreadPicker-item-action" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames,
 						)}
+						tabIndex={actionTabIndex}
 						variant="ghost-highlightable"
 						aria-pressed={isStarred}
 						tooltip={starButtonLabel}
@@ -114,6 +128,7 @@ function PageEditorRichTextSidebarAgentThreadPickerItem(props: PageEditorRichTex
 						className={cn(
 							"PageEditorRichTextSidebarAgentThreadPicker-item-action" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames,
 						)}
+						tabIndex={actionTabIndex}
 						variant="ghost-highlightable"
 						tooltip={archiveLabel}
 						onMouseDown={handleActionMouseDown}

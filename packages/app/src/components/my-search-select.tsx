@@ -5,6 +5,7 @@ import type { ExtractStrict } from "type-fest";
 
 import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import {
+	MySelect,
 	MySelectItem,
 	type MySelectItem_Props,
 	MySelectLabel,
@@ -186,8 +187,14 @@ export function MySearchSelect(props: MySearchSelect_Props) {
 
 	return (
 		<Ariakit.ComboboxProvider>
-			<Ariakit.SelectProvider {...rest}>{children}</Ariakit.SelectProvider>
+			<MySelect {...rest}>{children}</MySelect>
 		</Ariakit.ComboboxProvider>
 	);
 }
+
+MySearchSelect.useStore = () => {
+	return MySelect.useStore();
+};
+
+MySearchSelect.useStoreState = MySelect.useStoreState;
 // #endregion root

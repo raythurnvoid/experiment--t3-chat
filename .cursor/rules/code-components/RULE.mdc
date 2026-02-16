@@ -569,6 +569,39 @@ Use this pattern for list rows where:
 - Apply hover/selected backgrounds to `.Row` (not the primary button) so the visual highlight includes the actions area too.
 - Use a shared icon button component for secondary actions (e.g. `MyIconButton`/`MyIconButtonIcon`) to keep hover/focus colors consistent.
 
+## Ariakit composites with inline row actions (Select/Combobox)
+
+When a `MySelectItem` / `MySearchSelectItem` row also contains secondary action buttons (favorite/archive/etc.), implement actions with composite-safe behavior:
+
+- Keep the row as the composite primary action (`MySelectItem`/`MySearchSelectItem` with `value`).
+- Mark action buttons with a component-owned `data-*` attribute and gate row click behavior via `hideOnClick` + `setValueOnClick`.
+- Prevent action `mousedown` from stealing focus from the composite item (`event.preventDefault()` + `event.stopPropagation()`).
+- Keep action buttons out of tab order unless their row is the current active composite item.
+- In feature components, prefer wrapper static hooks (`MySearchSelect.useStore`, `MySearchSelect.useStoreState`) instead of directly using Ariakit context/store hooks.
+
+### Required wiring template
+
+```tsx
+const selectStore = MySearchSelect.useStore();
+
+const isActiveItem =
+	MySearchSelect.useStoreState(selectStore, (state) => {
+		if (!state?.activeId) return false;
+		const activeItem = selectStore.item(state.activeId);
+		return activeItem?.value === rowValue;
+	}) ?? false;
+
+const handleItemClickBehavior = (event: MouseEvent<HTMLElement>) => {
+	const target = event.target;
+	if (!(target instanceof HTMLElement)) return true;
+	return !target.closest("[data-row-action]");
+};
+
+<MySearchSelectItem hideOnClick={handleItemClickBehavior} setValueOnClick={handleItemClickBehavior} value={rowValue}>
+	<MyIconButton data-row-action tabIndex={isActiveItem ? 0 : -1} onMouseDown={handleActionMouseDown} />
+</MySearchSelectItem>;
+```
+
 # React 19 Context Patterns
 
 ## Modern Context with use Hook
