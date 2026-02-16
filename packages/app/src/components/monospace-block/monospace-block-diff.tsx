@@ -3,7 +3,7 @@ import "./monospace-block-diff.css";
 import { useState, type ComponentPropsWithRef, type CSSProperties, type Ref } from "react";
 import { cn, forward_ref } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
-import { useUiStickToBottom } from "@/hooks/ui-hooks.tsx";
+import { useUiStickToBottom } from "@/lib/ui.tsx";
 
 type DiffMonospaceBlock_ClassNames =
 	| "DiffMonospaceBlock"

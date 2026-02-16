@@ -49,6 +49,7 @@ import {
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import {
 	pages_ROOT_ID,
 	pages_create_tree_placeholder_child,
@@ -589,22 +590,17 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 }
 // #endregion tree item
 
-// #region tree area
-type PagesSidebarTreeArea_ClassNames =
-	| "PagesSidebarTreeArea"
-	| "PagesSidebarTreeArea-drag-over"
-	| "PagesSidebarTreeArea-empty-state"
-	| "PagesSidebarTreeArea-container"
-	| "PagesSidebarTreeArea-container-focused"
-	| "PagesSidebarTreeArea-container-dragging";
+// #region tree
+type PagesSidebarTree_ClassNames =
+	| "PagesSidebarTree"
+	| "PagesSidebarTree-focused"
+	| "PagesSidebarTree-dragging"
+	| "PagesSidebarTree-dragging-root-target"
+	| "PagesSidebarTree-empty-state";
 
-type PagesSidebarTreeArea_Props = {
-	rootElement: React.RefObject<HTMLDivElement | null>;
+type PagesSidebarTree_Props = {
 	tree: PagesSidebarTree_Shared;
 	visualDragTargetItemId: string | null;
-	isDraggingOverRootArea: boolean;
-	isTreeDragging: boolean;
-	isTreeFocused: boolean;
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	searchQuery: string;
@@ -612,129 +608,166 @@ type PagesSidebarTreeArea_Props = {
 	selectedPageId: string | null;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
-	onSetIsDraggingOverRootArea: React.Dispatch<React.SetStateAction<boolean>>;
-	onSetIsTreeDragging: React.Dispatch<React.SetStateAction<boolean>>;
 	onSetVisualDragTargetItemId: (itemId: string | null) => void;
-	onDragOverRootArea: (event: React.DragEvent<HTMLDivElement>) => void;
-	onDropOnRootArea: (event: React.DragEvent<HTMLDivElement>) => void;
-	onSetIsTreeFocused: React.Dispatch<React.SetStateAction<boolean>>;
 	onCreatePage: (parentPageId: string) => void;
 	onArchive: (pageId: string) => void;
 	onUnarchive: (pageId: string) => void;
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
-function PagesSidebarTreeArea({
-	rootElement,
-	tree,
-	visualDragTargetItemId,
-	isDraggingOverRootArea,
-	isTreeDragging,
-	isTreeFocused,
-	isTreeLoading,
-	showEmptyState,
-	searchQuery,
-	renderedTreeItemIds,
-	selectedPageId,
-	isBusy,
-	pendingActionPageIds,
-	onSetIsDraggingOverRootArea,
-	onSetIsTreeDragging,
-	onSetVisualDragTargetItemId,
-	onDragOverRootArea,
-	onDropOnRootArea,
-	onSetIsTreeFocused,
-	onCreatePage,
-	onArchive,
-	onUnarchive,
-	onTreeItemPrimaryClick,
-}: PagesSidebarTreeArea_Props) {
+function PagesSidebarTree(props: PagesSidebarTree_Props) {
+	const {
+		tree,
+		visualDragTargetItemId,
+		isTreeLoading,
+		showEmptyState,
+		searchQuery,
+		renderedTreeItemIds,
+		selectedPageId,
+		isBusy,
+		pendingActionPageIds,
+		onSetVisualDragTargetItemId,
+		onCreatePage,
+		onArchive,
+		onUnarchive,
+		onTreeItemPrimaryClick,
+	} = props;
+	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
+
+	const [treeElement, setTreeElement] = useState<HTMLDivElement | null>(null);
+	const [isTreeFocused, setIsTreeFocused] = useState(false);
+	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
+	const isDraggingOverRootZoneRef = useRef(false);
+
+	useUiInteractedOutside(
+		treeElement,
+		() => {
+			tree().setSelectedItems([]);
+		},
+		{ enable: isTreeFocused },
+	);
+
+	const handleFocus = () => {
+		setIsTreeFocused(true);
+	};
+
+	const handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+		const nextFocusedElement = event.relatedTarget;
+		if (event.currentTarget.contains(nextFocusedElement)) {
+			return;
+		}
+
+		setIsTreeFocused(false);
+	};
+
+	const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+		if (event.key !== "F2") {
+			return;
+		}
+
+		const focusedItem = tree().getFocusedItem();
+		if (focusedItem.getItemData().type !== "page") {
+			return;
+		}
+
+		event.preventDefault();
+		focusedItem.startRenaming();
+	};
+
+	const handleSetIsDraggingOverRootZone = (nextValue: boolean) => {
+		if (isDraggingOverRootZoneRef.current === nextValue) {
+			return;
+		}
+
+		isDraggingOverRootZoneRef.current = nextValue;
+		setIsDraggingOverRootZone(nextValue);
+	};
+
+	const handleDragOverCapture = (event: React.DragEvent<HTMLDivElement>) => {
+		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
+		if (draggedItems.length === 0) {
+			handleSetIsDraggingOverRootZone(false);
+			return;
+		}
+
+		const target = event.target;
+		const isOverTreeItem = target instanceof Element && !!target.closest(".PagesSidebarTreeItem");
+		handleSetIsDraggingOverRootZone(!isOverTreeItem);
+	};
+
+	const handleDragLeaveCapture = (event: React.DragEvent<HTMLDivElement>) => {
+		const nextHoveredElement = event.relatedTarget;
+		if (nextHoveredElement instanceof Node && event.currentTarget.contains(nextHoveredElement)) {
+			return;
+		}
+
+		handleSetIsDraggingOverRootZone(false);
+	};
+
+	const handleDragEndCapture = () => {
+		handleSetIsDraggingOverRootZone(false);
+	};
+
+	const handleDropCapture = () => {
+		handleSetIsDraggingOverRootZone(false);
+	};
+
+	useEffect(() => {
+		if (isTreeDragging) {
+			return;
+		}
+
+		handleSetIsDraggingOverRootZone(false);
+	}, [isTreeDragging]);
+
 	return (
 		<div
-			ref={rootElement}
+			ref={setTreeElement}
 			className={cn(
-				"PagesSidebarTreeArea" satisfies PagesSidebarTreeArea_ClassNames,
-				isDraggingOverRootArea && ("PagesSidebarTreeArea-drag-over" satisfies PagesSidebarTreeArea_ClassNames),
+				"PagesSidebarTree" satisfies PagesSidebarTree_ClassNames,
+				isTreeFocused && ("PagesSidebarTree-focused" satisfies PagesSidebarTree_ClassNames),
+				isTreeDragging && ("PagesSidebarTree-dragging" satisfies PagesSidebarTree_ClassNames),
+				isDraggingOverRootZone && ("PagesSidebarTree-dragging-root-target" satisfies PagesSidebarTree_ClassNames),
 			)}
-			onDragOver={onDragOverRootArea}
-			onDragLeave={(event) => {
-				if (event.target === rootElement.current) {
-					onSetIsDraggingOverRootArea(false);
-				}
-			}}
-			onDragEnd={(event) => {
-				onSetIsDraggingOverRootArea(false);
-				onSetIsTreeDragging(false);
-				onSetVisualDragTargetItemId(null);
-			}}
-			onDrop={(event) => {
-				onDropOnRootArea(event);
-				onSetIsTreeDragging(false);
-				onSetVisualDragTargetItemId(null);
-			}}
+			{...tree().getContainerProps("Pages")}
+			onFocus={handleFocus}
+			onBlur={handleBlur}
+			onKeyDown={handleKeyDown}
+			onDragOverCapture={handleDragOverCapture}
+			onDragLeaveCapture={handleDragLeaveCapture}
+			onDragEndCapture={handleDragEndCapture}
+			onDropCapture={handleDropCapture}
 		>
-			<div
-				{...tree().getContainerProps("Pages")}
-				className={cn(
-					"PagesSidebarTreeArea-container" satisfies PagesSidebarTreeArea_ClassNames,
-					isTreeFocused && ("PagesSidebarTreeArea-container-focused" satisfies PagesSidebarTreeArea_ClassNames),
-					isTreeDragging && ("PagesSidebarTreeArea-container-dragging" satisfies PagesSidebarTreeArea_ClassNames),
-				)}
-				onFocus={() => onSetIsTreeFocused(true)}
-				onBlur={(event) => {
-					const relatedTarget = event.relatedTarget as HTMLElement | null;
-					if (!relatedTarget || !event.currentTarget.contains(relatedTarget)) {
-						onSetIsTreeFocused(false);
-						tree().setSelectedItems([]);
-					}
-				}}
-				onKeyDown={(event) => {
-					if (event.key !== "F2") {
-						return;
-					}
+			<AssistiveTreeDescription tree={tree()} />
 
-					const focusedItem = tree().getFocusedItem();
-					if (focusedItem.getItemData().type !== "page") {
-						return;
-					}
-
-					event.preventDefault();
-					focusedItem.startRenaming();
-				}}
-			>
-				<AssistiveTreeDescription tree={tree()} />
-
-				{isTreeLoading ? (
-					<div className={cn("PagesSidebarTreeArea-empty-state" satisfies PagesSidebarTreeArea_ClassNames)}>
-						Loading pages...
-					</div>
-				) : showEmptyState ? (
-					<div className={cn("PagesSidebarTreeArea-empty-state" satisfies PagesSidebarTreeArea_ClassNames)}>
-						{searchQuery.trim() ? "No pages match your search." : "No pages yet."}
-					</div>
-				) : (
-					renderedTreeItemIds.map((itemId) => (
-						<PagesSidebarTreeItem
-							key={itemId}
-							itemId={itemId}
-							tree={tree}
-							visualDragTargetItemId={visualDragTargetItemId}
-							selectedPageId={selectedPageId}
-							isBusy={isBusy}
-							pendingActionPageIds={pendingActionPageIds}
-							onSetVisualDragTargetItemId={onSetVisualDragTargetItemId}
-							onCreatePage={onCreatePage}
-							onArchive={onArchive}
-							onUnarchive={onUnarchive}
-							onTreeItemPrimaryClick={onTreeItemPrimaryClick}
-						/>
-					))
-				)}
-			</div>
+			{isTreeLoading ? (
+				<div className={cn("PagesSidebarTree-empty-state" satisfies PagesSidebarTree_ClassNames)}>Loading pages...</div>
+			) : showEmptyState ? (
+				<div className={cn("PagesSidebarTree-empty-state" satisfies PagesSidebarTree_ClassNames)}>
+					{searchQuery.trim() ? "No pages match your search." : "No pages yet."}
+				</div>
+			) : (
+				renderedTreeItemIds.map((itemId) => (
+					<PagesSidebarTreeItem
+						key={itemId}
+						itemId={itemId}
+						tree={tree}
+						visualDragTargetItemId={visualDragTargetItemId}
+						selectedPageId={selectedPageId}
+						isBusy={isBusy}
+						pendingActionPageIds={pendingActionPageIds}
+						onSetVisualDragTargetItemId={onSetVisualDragTargetItemId}
+						onCreatePage={onCreatePage}
+						onArchive={onArchive}
+						onUnarchive={onUnarchive}
+						onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+					/>
+				))
+			)}
 		</div>
 	);
 }
-// #endregion tree area
+// #endregion tree
 
 // #region root
 type PagesSidebar_ClassNames =
@@ -788,15 +821,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const [showArchived, setShowArchived] = useState(false);
 	const [isCreatingPage, setIsCreatingPage] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
-	const [isTreeFocused, setIsTreeFocused] = useState(false);
-	const [isTreeDragging, setIsTreeDragging] = useState(false);
-	const [isDraggingOverRootArea, setIsDraggingOverRootArea] = useState(false);
 	const [visualDragTargetItemId, setVisualDragTargetItemId] = useState<string | null>(null);
 	const [pendingRenamePageId, setPendingRenamePageId] = useState<string | null>(null);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
 	const [, setTreeRebuildVersion] = useState(0);
 
-	const rootElement = useRef<HTMLDivElement>(null);
 	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
 
 	const baseTreeCollection = ((/* iife */) => {
@@ -1037,7 +1066,36 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	};
 
 	const handleArchive = (pageId: string) => {
+		const shouldArchiveSelectedPages = selectedPageIds.length > 1 && selectedPageIds.includes(pageId);
+
+		if (shouldArchiveSelectedPages) {
+			setIsArchivingSelection(true);
+
+			Promise.all(
+				selectedPageIds.map((selectedId) =>
+					serverArchivePage({
+						workspaceId: ai_chat_HARDCODED_ORG_ID,
+						projectId: ai_chat_HARDCODED_PROJECT_ID,
+						pageId: pages_sidebar_to_page_id(selectedId),
+					}),
+				),
+			)
+				.then(() => {
+					if (selectedPageId && selectedPageIds.includes(selectedPageId)) {
+						onArchive(selectedPageId);
+					}
+				})
+				.catch(console.error)
+				.finally(() => {
+					tree().setSelectedItems([]);
+					setIsArchivingSelection(false);
+				});
+
+			return;
+		}
+
 		markPageAsPending(pageId);
+
 		serverArchivePage({
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -1070,67 +1128,8 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			});
 	};
 
-	const handleArchiveAll = () => {
-		const selectedIds = selectedPageIds;
-		if (selectedIds.length === 0) {
-			return;
-		}
-
-		setIsArchivingSelection(true);
-		Promise.all(
-			selectedIds.map((pageId) =>
-				serverArchivePage({
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					pageId: pages_sidebar_to_page_id(pageId),
-				}),
-			),
-		)
-			.then(() => {
-				if (selectedPageId && selectedIds.includes(selectedPageId)) {
-					onArchive(selectedPageId);
-				}
-			})
-			.catch(console.error)
-			.finally(() => {
-				tree().setSelectedItems([]);
-				setIsArchivingSelection(false);
-			});
-	};
-
-	const handleDragOverRootArea = (event: React.DragEvent<HTMLDivElement>) => {
-		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
-		if (draggedItems.length === 0) {
-			return;
-		}
-
-		setIsTreeDragging(true);
-		if (event.target === rootElement.current) {
-			event.preventDefault();
-			setIsDraggingOverRootArea(true);
-		}
-	};
-
 	const handleSetVisualDragTargetItemId = (itemId: string | null) => {
 		setVisualDragTargetItemId(itemId);
-	};
-
-	const handleDropOnRootArea = (event: React.DragEvent<HTMLDivElement>) => {
-		setIsDraggingOverRootArea(false);
-		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
-		if (event.target !== rootElement.current) {
-			return;
-		}
-
-		event.preventDefault();
-		if (draggedItems.length === 0) {
-			return;
-		}
-
-		movePagesToParent({
-			pageIds: draggedItems.map((item) => item.getId()),
-			targetParentId: pages_ROOT_ID,
-		}).catch(console.error);
 	};
 
 	const handleTreeItemPrimaryClick = (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => {
@@ -1210,11 +1209,13 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		setPendingRenamePageId(null);
 	}, [hasPendingRenamePageInTree, pendingRenamePageId]);
 
+	const dndDraggedItemsCount = tree().getState().dnd?.draggedItems?.length ?? 0;
+
 	useEffect(() => {
-		if ((tree().getState().dnd?.draggedItems?.length ?? 0) === 0) {
+		if (dndDraggedItemsCount === 0) {
 			setVisualDragTargetItemId(null);
 		}
-	}, [isTreeDragging, tree]);
+	}, [dndDraggedItemsCount]);
 
 	return (
 		<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
@@ -1303,17 +1304,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 									<MyIconButton
 										className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
 										variant="secondary"
-										tooltip="Archive all"
-										onClick={handleArchiveAll}
-										disabled={isBusy}
-									>
-										<MyIconButtonIcon>
-											<ArchiveRestore />
-										</MyIconButtonIcon>
-									</MyIconButton>
-									<MyIconButton
-										className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
-										variant="secondary"
 										tooltip="Clear"
 										onClick={() => tree().setSelectedItems([])}
 										disabled={isBusy}
@@ -1352,13 +1342,9 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				</MySidebarHeader>
 
 				<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
-					<PagesSidebarTreeArea
-						rootElement={rootElement}
+					<PagesSidebarTree
 						tree={tree}
 						visualDragTargetItemId={visualDragTargetItemId}
-						isDraggingOverRootArea={isDraggingOverRootArea}
-						isTreeDragging={isTreeDragging}
-						isTreeFocused={isTreeFocused}
 						isTreeLoading={isTreeLoading}
 						showEmptyState={showEmptyState}
 						searchQuery={searchQuery}
@@ -1366,12 +1352,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 						selectedPageId={selectedPageId}
 						isBusy={isBusy}
 						pendingActionPageIds={pendingActionPageIds}
-						onSetIsDraggingOverRootArea={setIsDraggingOverRootArea}
-						onSetIsTreeDragging={setIsTreeDragging}
 						onSetVisualDragTargetItemId={handleSetVisualDragTargetItemId}
-						onDragOverRootArea={handleDragOverRootArea}
-						onDropOnRootArea={handleDropOnRootArea}
-						onSetIsTreeFocused={setIsTreeFocused}
 						onCreatePage={createPage}
 						onArchive={handleArchive}
 						onUnarchive={handleUnarchive}

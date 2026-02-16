@@ -10,9 +10,9 @@ import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
+import { useUiStickToBottom } from "@/lib/ui.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { ai_chat_get_parent_id, useAiChatController, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
-import { useUiStickToBottom } from "@/hooks/ui-hooks.tsx";
 import {
 	AiChatComposer,
 	type AiChatComposer_ClassNames,

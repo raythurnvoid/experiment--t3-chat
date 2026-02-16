@@ -66,5 +66,6 @@
 	"workbench.colorCustomizations": {
 		"activityBar.background": "#2d3748",
 		"activityBar.foreground": "#ffffff",
-	}
+	},
+	"vsicons.presets.angular": true
 }

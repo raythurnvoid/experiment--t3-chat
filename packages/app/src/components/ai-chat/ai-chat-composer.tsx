@@ -39,15 +39,15 @@ import {
 	MySearchSelectSearch,
 	MySearchSelectTrigger,
 } from "@/components/my-search-select.tsx";
-import { check_element_is_in_allowed_focus_area, cn, forward_ref } from "@/lib/utils.ts";
+import { cn, forward_ref } from "@/lib/utils.ts";
 import {
 	pages_get_tiptap_shared_extensions,
 	pages_tiptap_empty_doc_json,
 	pages_tiptap_markdown_to_json,
 } from "@/lib/pages.ts";
-import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
-import { useGlobalEventList } from "@/lib/global-event.tsx";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { useUiInteractedOutside } from "@/lib/ui.tsx";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"
@@ -324,26 +324,10 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		editor.commands.focus();
 	};
 
-	useGlobalEventList(
-		["pointerdown", "focusin"],
-		(event) => {
-			if (!onInteractedOutside) {
-				return;
-			}
-
-			if (
-				check_element_is_in_allowed_focus_area(event.target, {
-					allowedAreas: [rootRef.current, editor.view.dom],
-					restrictionScope: document.getElementById("root" satisfies AppElementId),
-				})
-			) {
-				return;
-			}
-
-			onInteractedOutside(event);
-		},
-		{ capture: true },
-	);
+	useUiInteractedOutside(rootRef, onInteractedOutside, {
+		allowedAreas: [editor?.view.dom],
+		enable: Boolean(onInteractedOutside),
+	});
 
 	useEffect(() => {
 		if (!editor) {

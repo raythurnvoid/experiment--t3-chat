@@ -1,11 +1,11 @@
 import "./page-editor-rich-text-sidebar-agent.css";
 
-import { useEffect, useRef, useState } from "react";
-import { Clock, Plus } from "lucide-react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { ArchiveIcon, ArchiveRestoreIcon, Clock, Plus, Star } from "lucide-react";
 
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MySearchSelect,
 	MySearchSelectItem,
@@ -15,16 +15,123 @@ import {
 	MySearchSelectPopoverScrollableArea,
 	MySearchSelectSearch,
 	MySearchSelectTrigger,
+	type MySearchSelectItem_Props,
 	type MySearchSelect_Props,
 } from "@/components/my-search-select.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { cn } from "@/lib/utils.ts";
 
+// #region thread picker item
+type PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames =
+	| "PageEditorRichTextSidebarAgentThreadPicker-item"
+	| "PageEditorRichTextSidebarAgentThreadPicker-item-title"
+	| "PageEditorRichTextSidebarAgentThreadPicker-item-actions"
+	| "PageEditorRichTextSidebarAgentThreadPicker-item-action";
+
+type PageEditorRichTextSidebarAgentThreadPickerItem_Props = {
+	controller: AiChatController;
+	thread: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"][number];
+};
+
+function PageEditorRichTextSidebarAgentThreadPickerItem(props: PageEditorRichTextSidebarAgentThreadPickerItem_Props) {
+	const { controller, thread } = props;
+
+	const threadTitle = controller.streamingTitleByThreadId[thread._id] ?? (thread.title || "New Chat");
+	const isOptimisticThread = ai_chat_is_optimistic_thread(thread);
+	const isStarred = thread.starred === true;
+	const isArchived = thread.archived === true;
+	const starButtonLabel = isStarred ? "Remove from favorites" : "Add to favorites";
+	const archiveLabel = isArchived ? "Unarchive" : "Archive";
+
+	const handleItemClickBehavior: NonNullable<MySearchSelectItem_Props["setValueOnClick"]> = (event) => {
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) {
+			return true;
+		}
+		return !target.closest("[data-page-editor-rich-text-sidebar-agent-thread-picker-action]");
+	};
+
+	const handleActionMouseDown = (event: MouseEvent<HTMLButtonElement>) => {
+		event.preventDefault();
+		event.stopPropagation();
+	};
+
+	const handleToggleStar = (event: MouseEvent<HTMLButtonElement>) => {
+		event.stopPropagation();
+		if (isOptimisticThread) {
+			return;
+		}
+
+		controller.setThreadStarred(thread._id, !isStarred);
+	};
+
+	const handleToggleArchive = (event: MouseEvent<HTMLButtonElement>) => {
+		event.stopPropagation();
+		if (isOptimisticThread) {
+			return;
+		}
+
+		controller.archiveThread(thread._id, !isArchived);
+	};
+
+	return (
+		<MySearchSelectItem
+			value={thread._id}
+			hideOnClick={handleItemClickBehavior}
+			setValueOnClick={handleItemClickBehavior}
+			className={cn("PageEditorRichTextSidebarAgentThreadPicker-item" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames)}
+		>
+			<span
+				className={cn(
+					"PageEditorRichTextSidebarAgentThreadPicker-item-title" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames,
+				)}
+			>
+				{threadTitle}
+			</span>
+			{!isOptimisticThread ? (
+				<div
+					className={cn(
+						"PageEditorRichTextSidebarAgentThreadPicker-item-actions" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames,
+					)}
+				>
+					<MyIconButton
+						data-page-editor-rich-text-sidebar-agent-thread-picker-action
+						className={cn(
+							"PageEditorRichTextSidebarAgentThreadPicker-item-action" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames,
+						)}
+						variant="ghost-highlightable"
+						aria-pressed={isStarred}
+						tooltip={starButtonLabel}
+						onMouseDown={handleActionMouseDown}
+						onClick={handleToggleStar}
+					>
+						<MyIconButtonIcon>
+							<Star fill={isStarred ? "currentColor" : "none"} />
+						</MyIconButtonIcon>
+					</MyIconButton>
+					<MyIconButton
+						data-page-editor-rich-text-sidebar-agent-thread-picker-action
+						className={cn(
+							"PageEditorRichTextSidebarAgentThreadPicker-item-action" satisfies PageEditorRichTextSidebarAgentThreadPickerItem_ClassNames,
+						)}
+						variant="ghost-highlightable"
+						tooltip={archiveLabel}
+						onMouseDown={handleActionMouseDown}
+						onClick={handleToggleArchive}
+					>
+						<MyIconButtonIcon>{isArchived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}</MyIconButtonIcon>
+					</MyIconButton>
+				</div>
+			) : null}
+		</MySearchSelectItem>
+	);
+}
+// #endregion thread picker item
+
 // #region thread picker
 type PageEditorRichTextSidebarAgentThreadPicker_ClassNames =
 	| "PageEditorRichTextSidebarAgentThreadPicker"
-	| "PageEditorRichTextSidebarAgentThreadPicker-item"
-	| "PageEditorRichTextSidebarAgentThreadPicker-item-title"
+	| "PageEditorRichTextSidebarAgentThreadPicker-popover-content"
 	| "PageEditorRichTextSidebarAgentThreadPicker-item-empty";
 
 type PageEditorRichTextSidebarAgentThreadPicker_Props = {
@@ -64,7 +171,11 @@ function PageEditorRichTextSidebarAgentThreadPicker(props: PageEditorRichTextSid
 				</MySearchSelectTrigger>
 				<MySearchSelectPopover>
 					<MySearchSelectPopoverScrollableArea>
-						<MySearchSelectPopoverContent>
+						<MySearchSelectPopoverContent
+							className={cn(
+								"PageEditorRichTextSidebarAgentThreadPicker-popover-content" satisfies PageEditorRichTextSidebarAgentThreadPicker_ClassNames,
+							)}
+						>
 							<MySearchSelectSearch placeholder="Search chats..." />
 							{threads.length === 0 ? (
 								<div
@@ -77,27 +188,17 @@ function PageEditorRichTextSidebarAgentThreadPicker(props: PageEditorRichTextSid
 							) : (
 								<MySearchSelectList>
 									{threads.map((thread) => {
-										const threadTitle = controller.streamingTitleByThreadId[thread._id] ?? (thread.title || "New Chat");
-										const threadKey = ai_chat_is_optimistic_thread(thread)
+										const isOptimisticThread = ai_chat_is_optimistic_thread(thread);
+										const threadKey = isOptimisticThread
 											? (thread.clientGeneratedId ?? thread._id)
 											: thread._id;
 
 										return (
-											<MySearchSelectItem
+											<PageEditorRichTextSidebarAgentThreadPickerItem
 												key={threadKey}
-												value={thread._id}
-												className={cn(
-													"PageEditorRichTextSidebarAgentThreadPicker-item" satisfies PageEditorRichTextSidebarAgentThreadPicker_ClassNames,
-												)}
-											>
-												<span
-													className={cn(
-														"PageEditorRichTextSidebarAgentThreadPicker-item-title" satisfies PageEditorRichTextSidebarAgentThreadPicker_ClassNames,
-													)}
-												>
-													{threadTitle}
-												</span>
-											</MySearchSelectItem>
+												controller={controller}
+												thread={thread}
+											/>
 										);
 									})}
 								</MySearchSelectList>

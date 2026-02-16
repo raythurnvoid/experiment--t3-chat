@@ -176,6 +176,23 @@ Exceptions (add an explicit return type when it helps):
 
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
+## Global DOM ids: `AppElementId` + `satisfies`
+
+When selecting a DOM element by a global static id (non-dynamic id), the id must be declared in `AppElementId` and used with `satisfies AppElementId` at the call site.
+
+- Add every global static id to `packages/app/src/lib/dom-utils.ts` in `AppElementId`.
+- Use `"some_id" satisfies AppElementId` when calling DOM APIs (for example `document.getElementById(...)`).
+- Do not use raw string literals for global static ids without `satisfies`.
+- Dynamic/runtime-generated ids are excluded from this rule.
+
+```ts
+// ✅ correct
+const rootElement = document.getElementById("root" satisfies AppElementId);
+
+// ❌ incorrect
+const rootElement = document.getElementById("root");
+```
+
 ## Errors as values (`Result`) pattern
 
 This codebase uses the `Result` helper from `packages/app/shared/errors-as-values-utils.ts` for recoverable errors.

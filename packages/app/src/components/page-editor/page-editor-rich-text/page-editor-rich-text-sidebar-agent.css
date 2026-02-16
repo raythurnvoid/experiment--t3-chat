@@ -41,11 +41,41 @@
 	/* #endregion root */
 
 	/* #region thread picker */
+	.PageEditorRichTextSidebarAgentThreadPicker-popover-content {
+		max-width: 600px;
+	}
+
+	.PageEditorRichTextSidebarAgentThreadPicker-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
 	.PageEditorRichTextSidebarAgentThreadPicker-item-title {
+		flex: 1;
+		min-width: 0;
+
 		overflow: hidden;
 
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.PageEditorRichTextSidebarAgentThreadPicker-item-actions {
+		display: flex;
+		align-items: center;
+		margin-left: auto;
+	}
+
+	.PageEditorRichTextSidebarAgentThreadPicker-item-action.MyIconButton.MyButton {
+		width: 28px;
+		height: 28px;
+		padding: 4px;
+	}
+
+	.PageEditorRichTextSidebarAgentThreadPicker-item-action .MyIconButtonIcon {
+		width: 14px;
+		height: 14px;
 	}
 
 	.PageEditorRichTextSidebarAgentThreadPicker-item-empty {

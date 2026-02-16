@@ -1,6 +1,7 @@
 @reference "@/app.css";
 
 @layer components {
+	/* #region root */
 	.PagesSidebar {
 		height: 100%;
 
@@ -86,22 +87,64 @@
 		gap: 8px;
 	}
 
-	.PagesSidebar-content {
+	.PagesSidebar-multi-selection-counter {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
 		flex: 1;
-		overflow: auto;
 	}
 
-	.PagesSidebarTreeArea-drag-over {
-		border-color: var(--color-sidebar-accent-foreground);
-		background-color: var(--color-sidebar-accent);
+	.PagesSidebar-multi-selection-counter-label {
+		font-weight: 500;
+		font-size: 14px;
 	}
 
-	.PagesSidebarTreeArea-empty-state {
+	.PagesSidebar-content {
+		padding: 0;
+	}
+	/* #endregion root */
+
+	/* #region tree */
+	.PagesSidebarTree {
+		min-height: 100%;
+		padding: 8px;
+	}
+
+	.PagesSidebarTree-empty-state {
 		padding: 8px 12px;
 		color: var(--color-fg-07);
 		font-size: 0.875rem;
 	}
 
+	.PagesSidebarTree:not(:has(.PagesSidebarTreeRenameInput-input:focus)) {
+		.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
+			font-weight: 500;
+			color: var(--color-fg-10);
+		}
+
+		&:focus-within {
+			.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
+				font-weight: 500;
+				color: var(--color-fg-11);
+			}
+		}
+	}
+
+	.PagesSidebarTree-dragging {
+		.PagesSidebarTreeItem-primary-action-interactive-area > * {
+			pointer-events: none;
+		}
+	}
+
+	.PagesSidebarTree-dragging-root-target {
+		background-color: var(--color-sidebar-accent);
+		box-shadow: inset 0 0 0 1px var(--color-sidebar-accent-foreground);
+	}
+	/* #endregion tree */
+
+	/* #region tree item */
 	.PagesSidebarTreeItem {
 		position: relative;
 		height: 44px;
@@ -139,57 +182,11 @@
 		}
 	}
 
-	.PagesSidebarTreeArea-container:not(:has(.PagesSidebarTreeRenameInput-input:focus)) {
-		.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
-			font-weight: 500;
-			color: var(--color-fg-10);
-		}
-
-		&:focus-within {
-			.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
-				font-weight: 500;
-				color: var(--color-fg-11);
-			}
-		}
-	}
-
-	.PagesSidebarTreeArea-container-dragging {
-		.PagesSidebarTreeItem-primary-action-interactive-area > * {
-			pointer-events: none;
-		}
-	}
-
-	.PagesSidebarTreeItemArrow {
-		grid-row: 1 / 3;
-		grid-column: 1;
-	}
-
-	.PagesSidebarTreeItemPrimaryActionContent {
-		grid-row: 1;
-		grid-column: 2;
-
-		display: flex;
-		gap: 4px;
-		align-items: center;
-
-		font-size: 0.875rem;
-		outline: none;
-
-		min-width: 0;
-	}
-
-	.PagesSidebarTreeItemPrimaryActionContent-title-container {
-		flex: 1;
-		min-width: 0;
-		contain: content;
-
-		text-align: left;
-	}
-
-	.PagesSidebarTreeItemPrimaryActionContent-title {
-		contain: content;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	.PagesSidebarTreeItem-content-placeholder {
+		color: var(--color-fg-07);
+		font-style: italic;
+		cursor: default;
+		user-select: none;
 	}
 
 	.PagesSidebarTreeItem-primary-action-interactive-area {
@@ -236,33 +233,53 @@
 		align-items: center;
 		justify-content: flex-end;
 	}
+	/* #endregion tree item */
 
-	.PagesSidebar-multi-selection-counter {
+	/* #region tree item arrow */
+	.PagesSidebarTreeItemArrow {
+		grid-row: 1 / 3;
+		grid-column: 1;
+	}
+	/* #endregion tree item arrow */
+
+	/* #region tree item primary action content */
+	.PagesSidebarTreeItemPrimaryActionContent {
+		grid-row: 1;
+		grid-column: 2;
+
 		display: flex;
-		justify-content: space-between;
+		gap: 4px;
 		align-items: center;
-		justify-content: end;
-		gap: 8px;
+
+		font-size: 0.875rem;
+		outline: none;
+
+		min-width: 0;
+	}
+
+	.PagesSidebarTreeItemPrimaryActionContent-title-container {
 		flex: 1;
+		min-width: 0;
+		contain: content;
+
+		text-align: left;
 	}
 
-	.PagesSidebar-multi-selection-counter-label {
-		font-weight: 500;
-		font-size: 14px;
+	.PagesSidebarTreeItemPrimaryActionContent-title {
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
+	/* #endregion tree item primary action content */
 
+	/* #region tree item icon */
 	.PagesSidebarTreeItemIcon {
 		width: 16px;
 		height: 16px;
 	}
+	/* #endregion tree item icon */
 
-	.PagesSidebarTreeItem-content-placeholder {
-		color: var(--color-fg-07);
-		font-style: italic;
-		cursor: default;
-		user-select: none;
-	}
-
+	/* #region tree rename input */
 	.PagesSidebarTreeRenameInput {
 		display: flex;
 		width: 100%;
@@ -276,4 +293,5 @@
 			padding: 2px;
 		}
 	}
+	/* #endregion tree rename input */
 }
