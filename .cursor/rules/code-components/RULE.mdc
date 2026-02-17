@@ -899,8 +899,11 @@ In those cases, **attach the extra symbols as properties on the component** via 
 
 ```tsx
 export function MyContextProvider(props: MyContextProvider_Props) {
+	const { children } = props;
+
 	// ...
-	return props.children;
+
+	return children;
 }
 
 MyContextProvider.useContext = function useContext() {

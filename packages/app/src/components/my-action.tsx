@@ -39,7 +39,7 @@ export function MyPrimaryAction(props: MyPrimaryAction_Props) {
 	return (
 		<MyTooltip timeout={tooltipTimeout} placement="bottom">
 			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
-			<MyTooltipContent>{tooltip}</MyTooltipContent>
+			<MyTooltipContent unmountOnHide>{tooltip}</MyTooltipContent>
 		</MyTooltip>
 	);
 }

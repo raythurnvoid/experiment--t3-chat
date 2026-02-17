@@ -39,7 +39,9 @@ export function MyIconButton(props: MyIconButton_Props) {
 	return (
 		<MyTooltip timeout={tooltipTimeout} placement={side}>
 			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
-			<MyTooltipContent>{tooltip}</MyTooltipContent>
+			<MyTooltipContent unmountOnHide>
+				<>{tooltip}</>
+			</MyTooltipContent>
 		</MyTooltip>
 	);
 }

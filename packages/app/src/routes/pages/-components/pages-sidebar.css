@@ -106,6 +106,12 @@
 	}
 	/* #endregion root */
 
+	/* #region search */
+	.PagesSidebarSearch {
+		width: 100%;
+	}
+	/* #endregion search */
+
 	/* #region tree */
 	.PagesSidebarTree {
 		min-height: 100%;
@@ -136,7 +142,7 @@
 		.PagesSidebarTreeItem {
 			pointer-events: none;
 
-			.PagesSidebarTreeItem-primary-action-interactive-area {
+			.PagesSidebarTreeItemPrimaryAction {
 				pointer-events: auto;
 
 				> * {
@@ -159,6 +165,9 @@
 		border-radius: 8px;
 		color: var(--color-fg-08);
 
+		content-visibility: auto;
+		contain-intrinsic-height: auto 44px;
+
 		&:not(:has(> .PagesSidebarTreeItemArrow)) {
 			padding-left: calc((var(--PagesSidebarTreeItem-content-depth) + 1) * 16px);
 		}
@@ -178,7 +187,7 @@
 			align-items: center;
 		}
 
-		&.PagesSidebarTreeItem-content-dragging-target > .PagesSidebarTreeItem-primary-action-interactive-area {
+		&.PagesSidebarTreeItem-content-dragging-target > .PagesSidebarTreeItemPrimaryAction {
 			border-style: dashed;
 			border-color: var(--color-fg-09);
 			background-color: var(--color-base-1-05);
@@ -195,17 +204,6 @@
 		font-style: italic;
 		cursor: default;
 		user-select: none;
-	}
-
-	.PagesSidebarTreeItem-primary-action-interactive-area {
-		grid-row: 1 / 4;
-		grid-column: 1 / 4;
-
-		display: grid;
-		grid-template-columns: subgrid;
-		grid-template-rows: subgrid;
-
-		outline: none;
 	}
 
 	.PagesSidebarTreeItem-meta-label {
@@ -242,6 +240,37 @@
 		justify-content: flex-end;
 	}
 	/* #endregion tree item */
+
+	/* #region tree item primary action */
+	.PagesSidebarTreeItemPrimaryAction {
+		grid-row: 1 / 4;
+		grid-column: 1 / 4;
+
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
+
+		outline: none;
+	}
+	/* #endregion tree item primary action */
+
+	/* #region tree item secondary action */
+	.PagesSidebarTreeItemSecondaryAction {
+		display: inline-flex;
+	}
+	/* #endregion tree item secondary action */
+
+	/* #region tree item secondary action create page */
+	.PagesSidebarTreeItemSecondaryActionCreatePage {
+		display: inline-flex;
+	}
+	/* #endregion tree item secondary action create page */
+
+	/* #region tree item more action */
+	.PagesSidebarTreeItemMoreAction {
+		display: inline-flex;
+	}
+	/* #endregion tree item more action */
 
 	/* #region tree item arrow */
 	.PagesSidebarTreeItemArrow {

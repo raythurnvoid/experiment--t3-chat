@@ -16,6 +16,26 @@ export function useLiveRef<T>(value: T) {
 	return ref;
 }
 
+/**
+ * Dramatically improves performance by returning a stable reference to a function
+ * that can be passed down as prop to children components avoiding unnecessary re-renders.
+ *
+ * @example
+ * ```tsx
+ * const handleClick = useFn<MyIconButton_Props["onClick"]>(() => {
+ * 	console.log("clicked", someUnstableValue.val);
+ * });
+ *
+ * // in the template:
+ * <MyIconButton onClick={handleClick} />
+ * ```
+ *
+ */
+export function useFn<T extends null | undefined | ((...args: any[]) => any)>(handler: T) {
+	const handlerRef = useLiveRef(handler);
+	return (...args: Parameters<NonNullable<T>>) => handlerRef.current?.(...args);
+}
+
 function is_update_function<T>(value: T | ((oldValue: T) => T)): value is (oldValue: T) => T {
 	return typeof value === "function";
 }
