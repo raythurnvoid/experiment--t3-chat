@@ -162,18 +162,27 @@
 	.PagesSidebarTreeItem {
 		position: relative;
 		height: 44px;
-		border-radius: 8px;
 		color: var(--color-fg-08);
 
 		content-visibility: auto;
 		contain-intrinsic-height: auto 44px;
 
+		background-image: repeating-linear-gradient(
+			to right,
+			var(--color-base-1-03) 0px 0px,
+			var(--color-fg-02) 0px 2px,
+			var(--color-base-1-03) 2px 12px
+		);
+		background-size: calc((var(--PagesSidebarTreeItem-content-depth)) * 12px) 100%;
+		background-repeat: no-repeat;
+		background-position: left top;
+
 		&:not(:has(> .PagesSidebarTreeItemArrow)) {
-			padding-left: calc((var(--PagesSidebarTreeItem-content-depth) + 1) * 16px);
+			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) + 28px);
 		}
 
 		&:has(> .PagesSidebarTreeItemArrow) {
-			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 16px) - 20px);
+			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) - 12px);
 		}
 
 		&:not(.PagesSidebarTreeItem-content-placeholder) {
@@ -249,6 +258,8 @@
 		display: grid;
 		grid-template-columns: subgrid;
 		grid-template-rows: subgrid;
+
+		border-radius: 8px;
 
 		outline: none;
 	}
