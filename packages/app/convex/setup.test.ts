@@ -97,7 +97,7 @@ export const test_mocks = {
 				name: name,
 				path: `/${name}`,
 				version: pages_FIRST_VERSION,
-				isArchived: false,
+				archiveOperationId: undefined,
 			});
 		};
 

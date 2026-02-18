@@ -102,8 +102,8 @@ const app_convex_schema = defineSchema({
 		yjsSnapshotId: v.optional(v.id("pages_yjs_snapshots")),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
-		/** Whether document is archived */
-		isArchived: v.boolean(),
+		/** Archive operation UUID. Undefined means active */
+		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent page `_id` */
 		parentId: v.union(v.id("pages"), v.literal("root")),
 		/** Created by user ID */
@@ -114,8 +114,24 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_workspaceId_projectId_parentId_name", ["workspaceId", "projectId", "parentId", "name"])
-		.index("by_workspaceId_projectId_parentId_isArchived", ["workspaceId", "projectId", "parentId", "isArchived"])
-		.index("by_workspaceId_projectId_path_isArchived", ["workspaceId", "projectId", "path", "isArchived"])
+		.index("by_workspaceId_projectId_parentId_archiveOperationId", [
+			"workspaceId",
+			"projectId",
+			"parentId",
+			"archiveOperationId",
+		])
+		.index("by_workspaceId_projectId_path_archiveOperationId", [
+			"workspaceId",
+			"projectId",
+			"path",
+			"archiveOperationId",
+		])
+		.index("by_workspaceId_projectId_archiveOperationId_path", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"path",
+		])
 		.index("by_workspaceId_projectId_name", ["workspaceId", "projectId", "name"]),
 	/**
 	 * Table to store markdown content for pages.

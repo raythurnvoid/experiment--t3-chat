@@ -107,7 +107,7 @@ function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; 
 		index: pages_ROOT_ID,
 		parentId: "",
 		title: "Pages",
-		isArchived: false,
+		archiveOperationId: undefined,
 		updatedAt: Date.now(),
 		updatedBy: "system",
 		_id: null,
@@ -123,7 +123,7 @@ function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; 
 
 	const pageItems = args.treeItemsList?.filter((item) => item.type === "page") ?? [];
 	for (const pageItem of pageItems) {
-		if (pageItem.isArchived && !args.showArchived) {
+		if (pageItem.archiveOperationId !== undefined && !args.showArchived) {
 			continue;
 		}
 
@@ -135,7 +135,7 @@ function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; 
 	}
 
 	for (const pageItem of pageItems) {
-		if (pageItem.isArchived && !args.showArchived) {
+		if (pageItem.archiveOperationId !== undefined && !args.showArchived) {
 			continue;
 		}
 		if (!collection[pageItem.index]) {
@@ -205,7 +205,7 @@ function pages_sidebar_are_tree_items_lists_equal(
 
 	const fields =
 		options?.fields ??
-		(["index", "parentId", "title", "isArchived", "updatedAt", "updatedBy"] satisfies Array<keyof pages_TreeItem>);
+		(["index", "parentId", "title", "archiveOperationId", "updatedAt", "updatedBy"] satisfies Array<keyof pages_TreeItem>);
 
 	const rightById = new Map<string, pages_TreeItem>();
 	for (const item of right) {
@@ -326,7 +326,7 @@ function PagesSidebarTreeItemSecondaryActionCreatePage(props: PagesSidebarTreeIt
 type PagesSidebarTreeItemMoreAction_ClassNames = "PagesSidebarTreeItemMoreAction";
 
 type PagesSidebarTreeItemMoreAction_Props = {
-	isArchived: boolean;
+	archiveOperationId: string | undefined;
 	isPending: boolean;
 	isTabbable: boolean;
 	onRename: () => void;
@@ -335,7 +335,8 @@ type PagesSidebarTreeItemMoreAction_Props = {
 };
 
 function PagesSidebarTreeItemMoreAction(props: PagesSidebarTreeItemMoreAction_Props) {
-	const { isArchived, isPending, isTabbable, onRename, onArchive, onUnarchive } = props;
+	const { archiveOperationId, isPending, isTabbable, onRename, onArchive, onUnarchive } = props;
+	const isArchived = archiveOperationId !== undefined;
 
 	const handleArchiveUnarchiveClick = useFn<MyMenuItem_Props["onClick"]>(() => {
 		if (isArchived) {
@@ -548,7 +549,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const item = tree().getItemInstance(itemId);
 	const itemData = item.getItemData();
 	const isPlaceholder = itemData.type === "placeholder";
-	const isArchived = itemData.isArchived;
+	const isArchived = itemData.archiveOperationId !== undefined;
 	const isNavigated = selectedPageId === itemId;
 	const isPending = isBusy || pendingActionPageIds.has(itemId);
 	const isTabbableRow = item.isFocused();
@@ -655,7 +656,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 							onClick={handleCreatePageClick}
 						/>
 						<PagesSidebarTreeItemMoreAction
-							isArchived={isArchived}
+							archiveOperationId={itemData.archiveOperationId}
 							isPending={isPending}
 							isTabbable={isTabbableRow}
 							onRename={handleRenameClick}
@@ -969,7 +970,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		if (!treeItemsList) {
 			return 0;
 		}
-		return treeItemsList.filter((item) => item.type === "page" && item.isArchived).length;
+		return treeItemsList.filter((item) => item.type === "page" && item.archiveOperationId !== undefined).length;
 	})();
 
 	const shouldForceShowArchived =
@@ -1287,7 +1288,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		unarchivePage({
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pages_sidebar_to_page_id(pageId),
+			pageIds: [pages_sidebar_to_page_id(pageId)],
 		})
 			.then((result) => {
 				if (result._nay) {
@@ -1352,7 +1353,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		const shouldRebuild =
 			lastIsArchivedShownRef.current !== isArchivedShown ||
 			!pages_sidebar_are_tree_items_lists_equal(lastTreeItemsListRef.current, treeItemsList, {
-				fields: ["type", "index", "parentId", "title", "isArchived"],
+				fields: ["type", "index", "parentId", "title", "archiveOperationId"],
 			});
 
 		lastIsArchivedShownRef.current = isArchivedShown;
@@ -1373,7 +1374,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		setResolvedTreeItemsList((currentValue) => {
 			if (
 				pages_sidebar_are_tree_items_lists_equal(currentValue, queriedTreeItemsList, {
-					fields: ["index", "parentId", "title", "isArchived", "updatedAt", "updatedBy"],
+					fields: ["index", "parentId", "title", "archiveOperationId", "updatedAt", "updatedBy"],
 				})
 			) {
 				return currentValue;

@@ -322,7 +322,7 @@ test("archived pages can share path with a new active page", async () => {
 		const path = `/${duplicateName}`;
 		const pagesAtPath = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_path", (q) =>
+			.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 				q
 					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
 					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
@@ -331,8 +331,8 @@ test("archived pages can share path with a new active page", async () => {
 			.collect();
 
 		expect(pagesAtPath).toHaveLength(2);
-		expect(pagesAtPath.filter((page) => page.isArchived)).toHaveLength(1);
-		expect(pagesAtPath.filter((page) => !page.isArchived)).toHaveLength(1);
+		expect(pagesAtPath.filter((page) => page.archiveOperationId !== undefined)).toHaveLength(1);
+		expect(pagesAtPath.filter((page) => page.archiveOperationId === undefined)).toHaveLength(1);
 	});
 });
 
@@ -359,7 +359,7 @@ test("rename_page returns conflict and keeps original path", async () => {
 	if (!renameError) {
 		throw new Error("Expected rename error details");
 	}
-	expect(renameError.message).toContain("path already exists");
+	expect(renameError.message).toContain("Path already exists");
 
 	await t.run(async (ctx) => {
 		const pageRoot2 = await ctx.db.get("pages", db.pages.page_root_2._id);
@@ -401,7 +401,7 @@ test("move_pages returns conflict and keeps original path", async () => {
 	if (!moveError) {
 		throw new Error("Expected move error details");
 	}
-	expect(moveError.message).toContain("path already exists");
+	expect(moveError.message).toContain("Path already exists");
 
 	await t.run(async (ctx) => {
 		const child1 = await ctx.db.get("pages", db.pages.page_root_1_child_1._id);
@@ -438,7 +438,7 @@ test("unarchive_pages returns conflict when active page already has the same pat
 	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		pageId: db.pages.page_root_2._id,
+		pageIds: [db.pages.page_root_2._id],
 	});
 	if (!("_nay" in unarchiveResult)) {
 		throw new Error("Expected unarchive to fail with path conflict");
@@ -452,7 +452,48 @@ test("unarchive_pages returns conflict when active page already has the same pat
 
 	await t.run(async (ctx) => {
 		const pageRoot2 = await ctx.db.get("pages", db.pages.page_root_2._id);
-		expect(pageRoot2?.isArchived).toBe(true);
+		expect(pageRoot2?.archiveOperationId).not.toBeUndefined();
+	});
+});
+
+test("unarchive_pages excludes unrequested ancestors from archive operation", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_1._id],
+	});
+
+	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_1_child_1._id],
+	});
+	if (unarchiveResult._nay) {
+		throw new Error("Expected unarchive of child subtree to succeed");
+	}
+
+	await t.run(async (ctx) => {
+		const pageRoot1 = await ctx.db.get("pages", db.pages.page_root_1._id);
+		const pageRoot1Child1 = await ctx.db.get("pages", db.pages.page_root_1_child_1._id);
+		const pageRoot1Child1Deep1 = await ctx.db.get("pages", db.pages.page_root_1_child_1_deep_1._id);
+
+		expect(pageRoot1?.archiveOperationId).not.toBeUndefined();
+		expect(pageRoot1Child1?.archiveOperationId).toBeUndefined();
+		expect(pageRoot1Child1Deep1?.archiveOperationId).toBeUndefined();
+		expect(pageRoot1Child1?.parentId).toBe(pages_ROOT_ID);
+		expect(pageRoot1Child1?.path).toBe(`/${db.pages.page_root_1_child_1.name}`);
+		expect(pageRoot1Child1Deep1?.parentId).toBe(db.pages.page_root_1_child_1._id);
+		expect(pageRoot1Child1Deep1?.path).toBe(
+			`/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
+		);
 	});
 });
 
@@ -521,7 +562,7 @@ test("create_page_by_path reuses only active pages", async () => {
 		const root2Path = `/${db.pages.page_root_2.name}`;
 		const pagesAtRoot2Path = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_path", (q) =>
+			.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 				q
 					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
 					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
@@ -530,7 +571,7 @@ test("create_page_by_path reuses only active pages", async () => {
 			.collect();
 		expect(pagesAtRoot2Path).toHaveLength(2);
 
-		const activeRoot2 = pagesAtRoot2Path.find((page) => !page.isArchived);
+		const activeRoot2 = pagesAtRoot2Path.find((page) => page.archiveOperationId === undefined);
 		if (!activeRoot2) {
 			throw new Error("Expected active root2 page to exist");
 		}

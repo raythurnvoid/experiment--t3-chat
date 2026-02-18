@@ -49,7 +49,7 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 }
 
 export function server_path_normalize(path: string): string {
-	return `/${path_extract_segments_from(path).join("/")}`;
+	return `/${path_extract_segments_from(path.trim()).join("/")}`;
 }
 
 export function server_path_parent_of(path: string): string {

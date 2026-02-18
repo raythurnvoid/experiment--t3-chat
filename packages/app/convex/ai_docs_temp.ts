@@ -69,33 +69,54 @@ function pages_materialized_path_join(parentPath: string, pageName: string) {
 	return encodedName === "" ? parentPath : `${parentPath}/${encodedName}`;
 }
 
-function pages_materialized_path_prefix_upper_bound(pathPrefix: string) {
-	return `${pathPrefix}\uffff`;
-}
-
-function pages_materialized_path_rebase(args: { fromBasePath: string; toBasePath: string; path: string }) {
+/**
+ * Rebase an absolute path from one base path to another.
+ *
+ * @example
+ * ```ts
+ * // valid rebase
+ * path_rebase({
+ * 	fromBasePath: "/docs",
+ * 	toBasePath: "/archive",
+ * 	path: "/docs/guides/getting-started",
+ * }); // => "/archive/guides/getting-started"
+ * ```
+ *
+ * @example
+ * ```ts
+ * // invalid rebase (path is outside fromBasePath)
+ * path_rebase({
+ * 	fromBasePath: "/docs",
+ * 	toBasePath: "/archive",
+ * 	path: "/notes/todo",
+ * }); // => null
+ * ```
+ *
+ * Path format: absolute (`/`-prefixed) and no trailing `/` for non-root paths.
+ *
+ * @param args.fromBasePath - Base path that `args.path` must match (same path format).
+ * @param args.toBasePath - Base path used in the rebased result (same path format).
+ * @param args.path - Absolute path to rebase (same path format).
+ *
+ * @returns The rebased path, or `null` when `args.path` does not start with `args.fromBasePath`.
+ */
+function path_rebase(args: { fromBasePath: string; toBasePath: string; path: string }) {
 	if (args.path === args.fromBasePath) {
 		return args.toBasePath;
 	}
 
-	const fromBasePrefix = `${args.fromBasePath}/`;
-	if (!args.path.startsWith(fromBasePrefix)) {
-		throw should_never_happen("Failed to rebase page path because source base path does not match", {
-			fromBasePath: args.fromBasePath,
-			toBasePath: args.toBasePath,
-			path: args.path,
-		});
+	if (!args.path.startsWith(`${args.fromBasePath}/`)) {
+		return null;
 	}
 
-	const suffix = args.path.slice(fromBasePrefix.length);
-	if (args.toBasePath === "/") {
-		return `/${suffix}`;
-	}
-	return `${args.toBasePath}/${suffix}`;
+	const suffix = args.path.slice(args.fromBasePath.length + 1);
+	return `${args.toBasePath}${args.toBasePath === "/" ? "" : "/"}${suffix}`;
 }
 
-function pages_is_home_page(page: Pick<Doc<"pages">, "parentId" | "name">) {
-	return page.parentId === pages_ROOT_ID && page.name === "";
+function is_home_page(page: Pick<Doc<"pages">, "path">): boolean;
+function is_home_page(page: Pick<Doc<"pages">, "parentId" | "name">): boolean;
+function is_home_page(page: Partial<Pick<Doc<"pages">, "path" | "parentId" | "name">>) {
+	return page.path === "/" || (page.parentId === pages_ROOT_ID && page.name === "");
 }
 
 type pages_QueryOrMutationCtx = QueryCtx | MutationCtx;
@@ -106,12 +127,12 @@ async function find_active_pages_by_path(
 ) {
 	return ctx.db
 		.query("pages")
-		.withIndex("by_workspaceId_projectId_path_isArchived", (q) =>
+		.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("path", args.path)
-				.eq("isArchived", false),
+				.eq("archiveOperationId", undefined),
 		)
 		.collect();
 }
@@ -257,7 +278,7 @@ const get_tree_items_list_validator = v.array(
 		index: v.string(),
 		parentId: v.string(),
 		title: v.string(),
-		isArchived: v.boolean(),
+		archiveOperationId: v.optional(v.string()),
 		updatedAt: v.number(),
 		updatedBy: v.string(),
 		_id: v.union(v.id("pages"), v.null()),
@@ -288,7 +309,7 @@ export const get_tree_items_list = query({
 				index: pages_ROOT_ID,
 				parentId: "",
 				title: "Pages",
-				isArchived: false,
+				archiveOperationId: undefined,
 				updatedAt: Date.now(),
 				updatedBy: "system",
 				_id: null,
@@ -300,7 +321,7 @@ export const get_tree_items_list = query({
 						index: page._id,
 						parentId: page.parentId === pages_ROOT_ID ? pages_ROOT_ID : page.parentId,
 						title: page.name || "Untitled",
-						isArchived: page.isArchived,
+						archiveOperationId: page.archiveOperationId,
 						updatedAt: page.updatedAt,
 						updatedBy: page.updatedBy,
 						_id: page._id,
@@ -324,8 +345,6 @@ async function do_create_page(
 ) {
 	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 	const now = Date.now();
-
-	const initialIsArchived = false;
 	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
@@ -387,7 +406,7 @@ async function do_create_page(
 		path: pagePath,
 		version: pages_FIRST_VERSION,
 		name: args.name,
-		isArchived: initialIsArchived,
+		archiveOperationId: undefined,
 		createdBy: user.id,
 		updatedBy: user.name,
 		updatedAt: now,
@@ -415,7 +434,7 @@ async function do_create_page(
 			project_id: args.projectId,
 			page_id: pageId,
 			content: args.markdown_content,
-			is_archived: initialIsArchived,
+			is_archived: false,
 			yjs_sequence: initialYjsSequence,
 			updated_by: user.name,
 			updated_at: now,
@@ -477,7 +496,7 @@ export const create_page_quick = mutation({
 			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", pages_ROOT_ID).eq("name", ".tmp"),
 			)
-			.filter((q) => q.eq(q.field("isArchived"), false))
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 
 		let tmpPageId = null;
@@ -528,7 +547,7 @@ export const rename_page = mutation({
 	},
 	returns: v.union(
 		v.object({ _yay: v.null() }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.optional(v.any()) }) }),
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -537,7 +556,7 @@ export const rename_page = mutation({
 			return Result({ _yay: null });
 		}
 
-		if (pages_is_home_page(page)) {
+		if (is_home_page(page)) {
 			// Ignore rename requests for homepage
 			return Result({ _yay: null });
 		}
@@ -551,7 +570,7 @@ export const rename_page = mutation({
 			return Result({ _yay: null });
 		}
 		const renamedPath = pages_materialized_path_join(parentPath, args.name);
-		if (!page.isArchived) {
+		if (page.archiveOperationId === undefined) {
 			const activePathConflict = await find_active_path_conflict(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
@@ -612,7 +631,7 @@ export const move_pages = mutation({
 			if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
 				continue;
 			}
-			if (pages_is_home_page(page)) {
+			if (is_home_page(page)) {
 				// Skip move requests for homepage
 				continue;
 			}
@@ -624,7 +643,7 @@ export const move_pages = mutation({
 		const movingPageIds = pagesToMove.map((page) => page.itemId);
 		const movedPathByPageId = new Map<string, Id<"pages">>();
 		for (const pageToMove of pagesToMove) {
-			if (pageToMove.page.isArchived) {
+			if (pageToMove.page.archiveOperationId !== undefined) {
 				continue;
 			}
 
@@ -685,6 +704,7 @@ export const archive_pages = mutation({
 		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.any() }) }),
 	),
 	handler: async (ctx, args) => {
+		const now = Date.now();
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const pages = await Promise.all(
@@ -704,6 +724,7 @@ export const archive_pages = mutation({
 			return nayResult;
 		}
 
+		const archiveOperationId = crypto.randomUUID();
 		const pageIdsToArchive = new Set<Id<"pages">>();
 
 		for (const page of pages) {
@@ -711,36 +732,44 @@ export const archive_pages = mutation({
 				continue;
 			}
 
-			if (pages_is_home_page(page._yay)) {
+			if (is_home_page(page._yay)) {
 				// Ignore archive requests for homepage
+				continue;
+			}
+
+			if (page._yay.archiveOperationId !== undefined) {
 				continue;
 			}
 
 			pageIdsToArchive.add(page._yay._id);
 
+			// All descendants page needs to be archived too
 			const descendantsPathPrefix = `${page._yay.path}/`;
 			const descendantPages = await ctx.db
 				.query("pages")
-				.withIndex("by_workspaceId_projectId_path_isArchived", (q) =>
+				.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.gte("path", descendantsPathPrefix)
-						.lt("path", pages_materialized_path_prefix_upper_bound(descendantsPathPrefix)),
+						.lt("path", `${descendantsPathPrefix}\uffff`),
 				)
 				.collect();
+
 			for (const descendantPage of descendantPages) {
+				if (descendantPage.archiveOperationId !== undefined) {
+					continue;
+				}
 				pageIdsToArchive.add(descendantPage._id);
 			}
 		}
 
-		const updatedAt = Date.now();
 		await Promise.all(
 			[...pageIdsToArchive].map(async (pageId) => {
 				await ctx.db.patch("pages", pageId, {
-					isArchived: true,
+					archiveOperationId,
 					updatedBy: user.name,
-					updatedAt,
+					updatedAt: now,
 				});
 			}),
 		);
@@ -753,7 +782,7 @@ export const unarchive_pages = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		pageIds: v.array(v.id("pages")),
 	},
 	returns: v.union(
 		v.object({ _yay: v.null() }),
@@ -762,121 +791,226 @@ export const unarchive_pages = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const page = await ctx.db.get("pages", args.pageId);
-		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-			return Result({
-				_nay: { name: "nay", message: "Page not found" },
-			});
-		}
-
-		if (pages_is_home_page(page)) {
-			// Ignore unarchive requests for homepage
+		if (args.pageIds.length === 0) {
 			return Result({ _yay: null });
 		}
 
-		const descendantsPathPrefix = `${page.path}/`;
-		const descendantPages = await ctx.db
-			.query("pages")
-			.withIndex("by_workspaceId_projectId_path_isArchived", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.gte("path", descendantsPathPrefix)
-					.lt("path", pages_materialized_path_prefix_upper_bound(descendantsPathPrefix)),
-			)
-			.collect();
-
-		const pagesToUnarchive = [page, ...descendantPages];
-		const pageIdsToUnarchive = pagesToUnarchive.map((currentPage) => currentPage._id);
-
-		let shouldMoveToRoot = false;
-		if (page.parentId !== pages_ROOT_ID) {
-			const parentPage = await ctx.db.get("pages", page.parentId);
-			shouldMoveToRoot =
-				!parentPage ||
-				parentPage.workspaceId !== args.workspaceId ||
-				parentPage.projectId !== args.projectId ||
-				parentPage.isArchived;
-		}
-
-		const targetParentId: Doc<"pages">["parentId"] = shouldMoveToRoot ? pages_ROOT_ID : page.parentId;
-		const targetPath = shouldMoveToRoot ? pages_materialized_path_join("/", page.name) : page.path;
-
-		const nextPathByPageId = new Map<Id<"pages">, string>();
-		const pageIdByNextPath = new Map<string, Id<"pages">>();
-		for (const currentPage of pagesToUnarchive) {
-			const nextPath = pages_materialized_path_rebase({
-				fromBasePath: page.path,
-				toBasePath: targetPath,
-				path: currentPage.path,
-			});
-
-			const duplicatedPathPageId = pageIdByNextPath.get(nextPath);
-			if (duplicatedPathPageId && duplicatedPathPageId !== currentPage._id) {
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Failed to unarchive page because path already exists",
-					},
-				});
-			}
-			pageIdByNextPath.set(nextPath, currentPage._id);
-			nextPathByPageId.set(currentPage._id, nextPath);
-
-			const activePathConflict = await find_active_path_conflict(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				path: nextPath,
-				excludePageIds: pageIdsToUnarchive,
-			});
-			if (activePathConflict) {
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Failed to unarchive page because path already exists",
-					},
-				});
-			}
-		}
-
-		const pagesToPatch = pagesToUnarchive.filter((currentPage) => {
-			const nextPath = nextPathByPageId.get(currentPage._id);
-			if (!nextPath) {
-				return false;
-			}
-			if (currentPage.isArchived) {
-				return true;
-			}
-			if (nextPath !== currentPage.path) {
-				return true;
-			}
-			if (currentPage._id === page._id && currentPage.parentId !== targetParentId) {
-				return true;
-			}
-			return false;
-		});
-		if (pagesToPatch.length === 0) {
-			return Result({ _yay: null });
-		}
-
-		const updatedAt = Date.now();
-		await Promise.all(
-			pagesToPatch.map(async (currentPage) => {
-				const nextPath = nextPathByPageId.get(currentPage._id);
-				if (!nextPath) {
-					return;
-				}
-
-				await ctx.db.patch("pages", currentPage._id, {
-					isArchived: false,
-					updatedBy: user.name,
-					updatedAt,
-					...(nextPath !== currentPage.path ? { path: nextPath } : {}),
-					...(currentPage._id === page._id && currentPage.parentId !== targetParentId
-						? { parentId: targetParentId }
-						: {}),
+		const pages = await Promise.all(
+			args.pageIds.map(async (pageId) => {
+				return ctx.db.get("pages", pageId).then((page) => {
+					if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+						return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+					}
+					return Result({ _yay: page });
 				});
 			}),
+		);
+		const nayResult = pages.find((page) => page._nay !== undefined);
+		if (nayResult) {
+			return nayResult;
+		}
+
+		// Find the top most shared ancestor for each page requested.
+		const topMostSharedAncestorsByPath = new Map<string, Doc<"pages">>();
+		for (const page of pages) {
+			if (!page._yay) {
+				continue;
+			}
+
+			const currentPage = page._yay;
+
+			// Ignore unarchive requests for homepage.
+			if (is_home_page(currentPage)) {
+				continue;
+			}
+
+			if (currentPage.archiveOperationId === undefined) {
+				continue;
+			}
+
+			const conflictedCurrentPage = topMostSharedAncestorsByPath.get(currentPage.path);
+			if (conflictedCurrentPage) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Failed to unarchive page because it would conflict with another unarchiving page",
+						data: {
+							requestedPageIds: args.pageIds,
+							pageId: currentPage._id,
+							pagePath: currentPage.path,
+							targetPath: currentPage.path,
+							conflictingPageId: conflictedCurrentPage._id,
+							conflictingPagePath: conflictedCurrentPage.path,
+						},
+					},
+				});
+			}
+
+			let isDescendantOfCurrentRoot = false;
+			for (const currentRootPath of topMostSharedAncestorsByPath.keys()) {
+				if (currentPage.path.startsWith(`${currentRootPath}/`)) {
+					isDescendantOfCurrentRoot = true;
+					break;
+				}
+			}
+			if (isDescendantOfCurrentRoot) {
+				continue;
+			}
+
+			for (const currentRootPath of topMostSharedAncestorsByPath.keys()) {
+				if (currentRootPath.startsWith(`${currentPage.path}/`)) {
+					topMostSharedAncestorsByPath.delete(currentRootPath);
+				}
+			}
+
+			topMostSharedAncestorsByPath.set(currentPage.path, currentPage);
+		}
+
+		if (topMostSharedAncestorsByPath.size === 0) {
+			return Result({ _yay: null });
+		}
+
+		// Build one plan entry per page to unarchive.
+		const plans: Array<{
+			page: Doc<"pages">;
+			targetParentId: Doc<"pages">["parentId"];
+			targetPath: string;
+		}> = [];
+		const ancestorsPagesByTargetPath = new Map<string, Doc<"pages">>();
+
+		for (const ancestorPage of topMostSharedAncestorsByPath.values()) {
+			const archiveOperationId = ancestorPage.archiveOperationId;
+			if (archiveOperationId === undefined) {
+				continue;
+			}
+
+			// For each ancestor find all descendants to unarchive.
+			const descendantsPathPrefix = `${ancestorPage.path}/`;
+			const descendantPages = await ctx.db
+				.query("pages")
+				.withIndex("by_workspaceId_projectId_archiveOperationId_path", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("archiveOperationId", archiveOperationId)
+						.gte("path", descendantsPathPrefix)
+						.lt("path", `${descendantsPathPrefix}\uffff`),
+				)
+				.collect();
+
+			let shouldMoveToRoot = false;
+			if (ancestorPage.parentId !== pages_ROOT_ID) {
+				const parentPage = await ctx.db.get("pages", ancestorPage.parentId);
+				// If parent is still archived or invalid, move this subtree to root when unarchiving.
+				shouldMoveToRoot =
+					!parentPage ||
+					parentPage.workspaceId !== args.workspaceId ||
+					parentPage.projectId !== args.projectId ||
+					parentPage.archiveOperationId !== undefined;
+			}
+
+			const ancestorTargetParentId = shouldMoveToRoot ? pages_ROOT_ID : ancestorPage.parentId;
+			let ancestorTargetPath = ancestorPage.path;
+			if (shouldMoveToRoot) {
+				const ancestorPathName = path_extract_segments_from(ancestorPage.path).at(-1);
+				if (!ancestorPathName) {
+					throw should_never_happen("Failed to move page to root because path does not include a name segment", {
+						pageId: ancestorPage._id,
+						path: ancestorPage.path,
+					});
+				}
+				ancestorTargetPath = `/${ancestorPathName}`;
+			}
+
+			const conflictedAncestorPage = ancestorsPagesByTargetPath.get(ancestorTargetPath);
+			if (conflictedAncestorPage) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Failed to unarchive page because it would conflict with another unarchiving page",
+						data: {
+							requestedPageIds: args.pageIds,
+							pageId: ancestorPage._id,
+							pagePath: ancestorPage.path,
+							targetPath: ancestorTargetPath,
+							conflictingPageId: conflictedAncestorPage._id,
+							conflictingPagePath: conflictedAncestorPage.path,
+						},
+					},
+				});
+			}
+			ancestorsPagesByTargetPath.set(ancestorTargetPath, ancestorPage);
+
+			plans.push({
+				page: ancestorPage,
+				targetParentId: ancestorTargetParentId,
+				targetPath: ancestorTargetPath,
+			});
+
+			for (const page of descendantPages) {
+				const targetPath = path_rebase({
+					fromBasePath: ancestorPage.path,
+					toBasePath: ancestorTargetPath,
+					path: page.path,
+				});
+
+				if (!targetPath) {
+					throw should_never_happen("Failed to rebase descendants pages", {
+						ancestorPageId: ancestorPage._id,
+						ancestorPath: ancestorPage.path,
+						ancestorTargetPath,
+						ancestorTargetParentId,
+						descendantPageId: page._id,
+						descendantPagePath: page.path,
+					});
+				}
+
+				plans.push({
+					page,
+					targetParentId: page.parentId,
+					targetPath,
+				});
+			}
+		}
+
+		// Validate top-most ancestor conflicts against currently not archived pages outside this operation.
+		for (const [ancestorTargetPath, ancestorPage] of ancestorsPagesByTargetPath) {
+			const conflictPage = await find_active_path_conflict(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				path: ancestorTargetPath,
+			});
+
+			if (conflictPage) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Failed to unarchive page because path already exists",
+						data: {
+							requestedPageIds: args.pageIds,
+							pageId: ancestorPage._id,
+							pagePath: ancestorPage.path,
+							targetPath: ancestorTargetPath,
+							conflictingPageId: conflictPage._id,
+							conflictingPagePath: conflictPage.path,
+						},
+					},
+				});
+			}
+		}
+
+		// Preconditions passed, apply all patches.
+		const updatedAt = Date.now();
+		await Promise.all(
+			plans.map(async (plan) =>
+				ctx.db.patch("pages", plan.page._id, {
+					archiveOperationId: undefined,
+					updatedBy: user.name,
+					updatedAt,
+					...(plan.targetPath !== plan.page.path ? { path: plan.targetPath } : {}),
+					...(plan.targetParentId !== plan.page.parentId ? { parentId: plan.targetParentId } : {}),
+				}),
+			),
 		);
 
 		return Result({ _yay: null });
@@ -913,7 +1047,7 @@ export const get_page_by_path = query({
 			projectId: v.union(v.string(), v.null()),
 			pageId: v.id("pages"),
 			name: v.string(),
-			isArchived: v.boolean(),
+			archiveOperationId: v.optional(v.string()),
 		}),
 		v.null(),
 	),
@@ -933,7 +1067,7 @@ export const get_page_by_path = query({
 					projectId: page.projectId,
 					pageId: page._id,
 					name: page.name,
-					isArchived: page.isArchived,
+					archiveOperationId: page.archiveOperationId,
 				}
 			: null;
 	},
@@ -956,12 +1090,12 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_isArchived", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_archiveOperationId", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("parentId", nodeId)
-					.eq("isArchived", false),
+					.eq("archiveOperationId", undefined),
 			)
 			.collect();
 
@@ -982,12 +1116,12 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_isArchived", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_archiveOperationId", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("parentId", args.parentId)
-					.eq("isArchived", false),
+					.eq("archiveOperationId", undefined),
 			)
 			.paginate({
 				cursor: args.cursor,
@@ -1057,12 +1191,12 @@ export const list_pages = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("pages")
-						.withIndex("by_workspaceId_projectId_parentId_isArchived", (q) =>
+						.withIndex("by_workspaceId_projectId_parentId_archiveOperationId", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("parentId", frame.parentId)
-								.eq("isArchived", false),
+								.eq("archiveOperationId", undefined),
 						)
 						[Symbol.asyncIterator]();
 
@@ -1151,7 +1285,7 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		const page = await ctx.db.get("pages", convexId);
 
 		if (!page) return null;
-		if (page.isArchived) return null;
+		if (page.archiveOperationId !== undefined) return null;
 
 		if (!page.markdownContentId) {
 			throw should_never_happen("page.markdownContentId is not set", {
@@ -1409,7 +1543,8 @@ export const create_page_by_path = internalMutation({
 	),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
-		const segments = path_extract_segments_from(args.path);
+		const path = args.path.trim();
+		const segments = path_extract_segments_from(path);
 
 		let currentParent: Doc<"pages">["parentId"] = pages_ROOT_ID;
 		let lastPageId: Id<"pages"> | null = null;
@@ -1423,7 +1558,7 @@ export const create_page_by_path = internalMutation({
 				.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 					q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", currentParent).eq("name", name),
 				)
-				.filter((q) => q.eq(q.field("isArchived"), false))
+				.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 				.first();
 
 			if (!existing) {
@@ -1482,7 +1617,7 @@ export const ensure_home_page = mutation({
 					.eq("parentId", pages_ROOT_ID)
 					.eq("name", ""),
 			)
-			.filter((q) => q.eq(q.field("isArchived"), false))
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 
 		if (homepage) {

@@ -568,8 +568,7 @@ export function ai_chat_tool_create_list_pages(ctx: ActionCtx) {
 				return ignores.some((pattern) => minimatch(path, pattern));
 			};
 
-			// const normalizedPath = server_path_normalize(args.path ?? "/");
-			const path = args.path;
+			const path = server_path_normalize(args.path || "/");
 
 			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: path,

@@ -22,7 +22,7 @@ test("server_path_extract_segments_from preserves escaped slashes", () => {
 	expect(path_extract_segments_from(input)).toEqual(["foo", "a\\/b", "bar"]);
 });
 
-test("server_path_normalize trims and csollapses", () => {
+test("server_path_normalize trims and collapses", () => {
 	expect(server_path_normalize("  /foo//bar/  ")).toBe("/foo/bar");
 	expect(server_path_normalize("foo/bar")).toBe("/foo/bar");
 	expect(server_path_normalize("/")).toBe("/");

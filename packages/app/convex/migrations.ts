@@ -27,8 +27,42 @@ const audit_active_duplicate_materialized_paths_returns_validator = v.object({
 	),
 });
 
+const unset_pages_is_archived_flags_returns_validator = v.object({
+	scanned: v.number(),
+	patched: v.number(),
+});
+
+/**
+ * Compatibility migration for the rollout phase where `pages.isArchived` is still optional.
+ * Run this before dropping `isArchived` from the schema.
+ */
+async function unset_pages_is_archived_flags_fn(ctx: MutationCtx) {
+	const pages = await ctx.db.query("pages").collect();
+	let patched = 0;
+
+	for (const page of pages) {
+		if (!Object.prototype.hasOwnProperty.call(page as Record<string, unknown>, "isArchived")) {
+			continue;
+		}
+
+		await ctx.db.patch(
+			"pages",
+			page._id,
+			({
+				["isArchived"]: undefined,
+			} as unknown as Partial<Doc<"pages">>),
+		);
+		patched += 1;
+	}
+
+	return {
+		scanned: pages.length,
+		patched,
+	};
+}
+
 async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
-	const archivedPages = (await ctx.db.query("pages").collect()).filter((page) => page.isArchived);
+	const archivedPages = (await ctx.db.query("pages").collect()).filter((page) => page.archiveOperationId !== undefined);
 	if (archivedPages.length === 0) {
 		return {
 			pages: 0,
@@ -219,7 +253,7 @@ async function backfill_pages_materialized_path(ctx: MutationCtx) {
 }
 
 async function audit_active_duplicate_materialized_paths_fn(ctx: MutationCtx) {
-	const activePages = (await ctx.db.query("pages").collect()).filter((page) => !page.isArchived);
+	const activePages = (await ctx.db.query("pages").collect()).filter((page) => page.archiveOperationId === undefined);
 	const duplicateGroupsByKey = new Map<
 		string,
 		{
@@ -268,6 +302,12 @@ export const delete_all_archived_pages = internalMutation({
 	args: {},
 	returns: delete_all_archived_pages_returns_validator,
 	handler: (ctx) => delete_all_archived_pages_and_linked_rows(ctx),
+});
+
+export const unset_pages_is_archived_flags = internalMutation({
+	args: {},
+	returns: unset_pages_is_archived_flags_returns_validator,
+	handler: (ctx) => unset_pages_is_archived_flags_fn(ctx),
 });
 
 export const audit_active_duplicate_materialized_paths = internalMutation({
