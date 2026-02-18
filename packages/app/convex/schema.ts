@@ -113,10 +113,10 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
 	})
-		.index("by_workspaceId_projectId_parentId_and_name", ["workspaceId", "projectId", "parentId", "name"])
-		.index("by_workspaceId_projectId_parentId_and_isArchived", ["workspaceId", "projectId", "parentId", "isArchived"])
-		.index("by_workspaceId_projectId_path", ["workspaceId", "projectId", "path"])
-		.index("by_workspaceId_projectId_and_name", ["workspaceId", "projectId", "name"]),
+		.index("by_workspaceId_projectId_parentId_name", ["workspaceId", "projectId", "parentId", "name"])
+		.index("by_workspaceId_projectId_parentId_isArchived", ["workspaceId", "projectId", "parentId", "isArchived"])
+		.index("by_workspaceId_projectId_path_isArchived", ["workspaceId", "projectId", "path", "isArchived"])
+		.index("by_workspaceId_projectId_name", ["workspaceId", "projectId", "name"]),
 	/**
 	 * Table to store markdown content for pages.
 	 */
@@ -146,7 +146,7 @@ const app_convex_schema = defineSchema({
 		created_by: v.string(),
 		updated_by: v.string(),
 		updated_at: v.number(),
-	}).index("by_workspace_project_and_page_id_and_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
+	}).index("by_workspace_project_page_id_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
 
 	pages_yjs_updates: defineTable({
 		workspace_id: v.string(),
@@ -173,14 +173,14 @@ const app_convex_schema = defineSchema({
 		),
 		created_by: v.string(),
 		created_at: v.number(),
-	}).index("by_workspace_project_and_page_id_and_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
+	}).index("by_workspace_project_page_id_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
 
 	pages_yjs_docs_last_sequences: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),
 		page_id: v.id("pages"),
 		last_sequence: v.number(),
-	}).index("by_workspace_project_and_page_id", ["workspace_id", "project_id", "page_id"]),
+	}).index("by_workspace_project_page_id", ["workspace_id", "project_id", "page_id"]),
 
 	/**
 	 * Internal table to track scheduled YJS snapshot updates.
@@ -198,7 +198,7 @@ const app_convex_schema = defineSchema({
 		is_archived: v.optional(v.boolean()),
 	})
 		.index("by_page_id", ["page_id"])
-		.index("by_page_id_and_is_archived", ["page_id", "is_archived"])
+		.index("by_page_id_is_archived", ["page_id", "is_archived"])
 		.index("by_workspace_project", ["workspace_id", "project_id"]),
 
 	pages_snapshots_contents: defineTable({
@@ -207,7 +207,7 @@ const app_convex_schema = defineSchema({
 		page_snapshot_id: v.id("pages_snapshots"),
 		content: v.string(),
 		page_id: v.id("pages"),
-	}).index("by_workspace_project_and_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
+	}).index("by_workspace_project_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
 	// #endregion Pages
 
 	// #region Chat Messages

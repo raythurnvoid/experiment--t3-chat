@@ -69,6 +69,31 @@ function pages_materialized_path_join(parentPath: string, pageName: string) {
 	return encodedName === "" ? parentPath : `${parentPath}/${encodedName}`;
 }
 
+function pages_materialized_path_prefix_upper_bound(pathPrefix: string) {
+	return `${pathPrefix}\uffff`;
+}
+
+function pages_materialized_path_rebase(args: { fromBasePath: string; toBasePath: string; path: string }) {
+	if (args.path === args.fromBasePath) {
+		return args.toBasePath;
+	}
+
+	const fromBasePrefix = `${args.fromBasePath}/`;
+	if (!args.path.startsWith(fromBasePrefix)) {
+		throw should_never_happen("Failed to rebase page path because source base path does not match", {
+			fromBasePath: args.fromBasePath,
+			toBasePath: args.toBasePath,
+			path: args.path,
+		});
+	}
+
+	const suffix = args.path.slice(fromBasePrefix.length);
+	if (args.toBasePath === "/") {
+		return `/${suffix}`;
+	}
+	return `${args.toBasePath}/${suffix}`;
+}
+
 function pages_is_home_page(page: Pick<Doc<"pages">, "parentId" | "name">) {
 	return page.parentId === pages_ROOT_ID && page.name === "";
 }
@@ -81,10 +106,13 @@ async function find_active_pages_by_path(
 ) {
 	return ctx.db
 		.query("pages")
-		.withIndex("by_workspaceId_projectId_path", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("path", args.path),
+		.withIndex("by_workspaceId_projectId_path_isArchived", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("path", args.path)
+				.eq("isArchived", false),
 		)
-		.filter((q) => q.eq(q.field("isArchived"), false))
 		.collect();
 }
 
@@ -203,7 +231,7 @@ async function cascade_page_descendants_path(
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
 			)
 			.collect();
@@ -247,7 +275,7 @@ export const get_tree_items_list = query({
 	handler: async (ctx, args) => {
 		const pages = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_and_name", (q) =>
+			.withIndex("by_workspaceId_projectId_name", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
 			)
 			.order("asc")
@@ -446,7 +474,7 @@ export const create_page_quick = mutation({
 		// Ensure ".tmp" under root exists
 		const tmp = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", pages_ROOT_ID).eq("name", ".tmp"),
 			)
 			.filter((q) => q.eq(q.field("isArchived"), false))
@@ -676,21 +704,44 @@ export const archive_pages = mutation({
 			return nayResult;
 		}
 
-		await Promise.all(
-			pages.map(async (page) => {
-				if (page._yay) {
-					// Check if this is the homepage (path "/") and ignore if so
-					if (page._yay.path === "/") {
-						// Ignore archive requests for homepage
-						return Result({ _yay: null });
-					}
+		const pageIdsToArchive = new Set<Id<"pages">>();
 
-					await ctx.db.patch("pages", page._yay._id, {
-						isArchived: true,
-						updatedBy: user.name,
-						updatedAt: Date.now(),
-					});
-				}
+		for (const page of pages) {
+			if (!page._yay) {
+				continue;
+			}
+
+			if (pages_is_home_page(page._yay)) {
+				// Ignore archive requests for homepage
+				continue;
+			}
+
+			pageIdsToArchive.add(page._yay._id);
+
+			const descendantsPathPrefix = `${page._yay.path}/`;
+			const descendantPages = await ctx.db
+				.query("pages")
+				.withIndex("by_workspaceId_projectId_path_isArchived", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.gte("path", descendantsPathPrefix)
+						.lt("path", pages_materialized_path_prefix_upper_bound(descendantsPathPrefix)),
+				)
+				.collect();
+			for (const descendantPage of descendantPages) {
+				pageIdsToArchive.add(descendantPage._id);
+			}
+		}
+
+		const updatedAt = Date.now();
+		await Promise.all(
+			[...pageIdsToArchive].map(async (pageId) => {
+				await ctx.db.patch("pages", pageId, {
+					isArchived: true,
+					updatedBy: user.name,
+					updatedAt,
+				});
 			}),
 		);
 
@@ -711,37 +762,72 @@ export const unarchive_pages = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		// Check if this is the homepage (path "/") and ignore if so
-		const path = await ctx.db.get("pages", args.pageId).then((page) => {
-			if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-				return null;
-			}
-			return page.path;
-		});
-
-		if (!path) {
+		const page = await ctx.db.get("pages", args.pageId);
+		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
 			return Result({
 				_nay: { name: "nay", message: "Page not found" },
 			});
 		}
 
-		if (path === "/") {
+		if (pages_is_home_page(page)) {
 			// Ignore unarchive requests for homepage
 			return Result({ _yay: null });
 		}
 
-		const page = await ctx.db.get("pages", args.pageId);
+		const descendantsPathPrefix = `${page.path}/`;
+		const descendantPages = await ctx.db
+			.query("pages")
+			.withIndex("by_workspaceId_projectId_path_isArchived", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.gte("path", descendantsPathPrefix)
+					.lt("path", pages_materialized_path_prefix_upper_bound(descendantsPathPrefix)),
+			)
+			.collect();
 
-		if (page && page.workspaceId === args.workspaceId && page.projectId === args.projectId) {
-			if (!page.isArchived) {
-				return Result({ _yay: null });
+		const pagesToUnarchive = [page, ...descendantPages];
+		const pageIdsToUnarchive = pagesToUnarchive.map((currentPage) => currentPage._id);
+
+		let shouldMoveToRoot = false;
+		if (page.parentId !== pages_ROOT_ID) {
+			const parentPage = await ctx.db.get("pages", page.parentId);
+			shouldMoveToRoot =
+				!parentPage ||
+				parentPage.workspaceId !== args.workspaceId ||
+				parentPage.projectId !== args.projectId ||
+				parentPage.isArchived;
+		}
+
+		const targetParentId: Doc<"pages">["parentId"] = shouldMoveToRoot ? pages_ROOT_ID : page.parentId;
+		const targetPath = shouldMoveToRoot ? pages_materialized_path_join("/", page.name) : page.path;
+
+		const nextPathByPageId = new Map<Id<"pages">, string>();
+		const pageIdByNextPath = new Map<string, Id<"pages">>();
+		for (const currentPage of pagesToUnarchive) {
+			const nextPath = pages_materialized_path_rebase({
+				fromBasePath: page.path,
+				toBasePath: targetPath,
+				path: currentPage.path,
+			});
+
+			const duplicatedPathPageId = pageIdByNextPath.get(nextPath);
+			if (duplicatedPathPageId && duplicatedPathPageId !== currentPage._id) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Failed to unarchive page because path already exists",
+					},
+				});
 			}
+			pageIdByNextPath.set(nextPath, currentPage._id);
+			nextPathByPageId.set(currentPage._id, nextPath);
 
 			const activePathConflict = await find_active_path_conflict(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
-				path: page.path,
-				excludePageIds: [args.pageId],
+				path: nextPath,
+				excludePageIds: pageIdsToUnarchive,
 			});
 			if (activePathConflict) {
 				return Result({
@@ -751,13 +837,48 @@ export const unarchive_pages = mutation({
 					},
 				});
 			}
-
-			await ctx.db.patch("pages", args.pageId, {
-				isArchived: false,
-				updatedBy: user.name,
-				updatedAt: Date.now(),
-			});
 		}
+
+		const pagesToPatch = pagesToUnarchive.filter((currentPage) => {
+			const nextPath = nextPathByPageId.get(currentPage._id);
+			if (!nextPath) {
+				return false;
+			}
+			if (currentPage.isArchived) {
+				return true;
+			}
+			if (nextPath !== currentPage.path) {
+				return true;
+			}
+			if (currentPage._id === page._id && currentPage.parentId !== targetParentId) {
+				return true;
+			}
+			return false;
+		});
+		if (pagesToPatch.length === 0) {
+			return Result({ _yay: null });
+		}
+
+		const updatedAt = Date.now();
+		await Promise.all(
+			pagesToPatch.map(async (currentPage) => {
+				const nextPath = nextPathByPageId.get(currentPage._id);
+				if (!nextPath) {
+					return;
+				}
+
+				await ctx.db.patch("pages", currentPage._id, {
+					isArchived: false,
+					updatedBy: user.name,
+					updatedAt,
+					...(nextPath !== currentPage.path ? { path: nextPath } : {}),
+					...(currentPage._id === page._id && currentPage.parentId !== targetParentId
+						? { parentId: targetParentId }
+						: {}),
+				});
+			}),
+		);
+
 		return Result({ _yay: null });
 	},
 });
@@ -835,7 +956,7 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_isArchived", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_isArchived", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -861,7 +982,7 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_isArchived", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_isArchived", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -936,7 +1057,7 @@ export const list_pages = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("pages")
-						.withIndex("by_workspaceId_projectId_parentId_and_isArchived", (q) =>
+						.withIndex("by_workspaceId_projectId_parentId_isArchived", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
@@ -1159,7 +1280,7 @@ export const try_get_markdown_content_or_fallback_to_yjs_data = query({
 
 			const yjsUpdatesDocs = await ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
 					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 				)
 				.order("asc")
@@ -1299,7 +1420,7 @@ export const create_page_by_path = internalMutation({
 			// Does this segment exist?
 			const existing = await ctx.db
 				.query("pages")
-				.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
+				.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 					q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", currentParent).eq("name", name),
 				)
 				.filter((q) => q.eq(q.field("isArchived"), false))
@@ -1354,7 +1475,7 @@ export const ensure_home_page = mutation({
 		// Find homepage (empty name under root)
 		const homepage = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_and_name", (q) =>
+			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -1453,7 +1574,7 @@ async function do_get_page_snapshot_content(
 ) {
 	const content = await ctx.db
 		.query("pages_snapshots_contents")
-		.withIndex("by_workspace_project_and_page_snapshot_id", (q) =>
+		.withIndex("by_workspace_project_page_snapshot_id", (q) =>
 			q
 				.eq("workspace_id", args.workspace_id)
 				.eq("project_id", args.project_id)
@@ -1584,7 +1705,7 @@ async function write_markdown_to_yjs_sync(
 	// Reconstruct the latest Y.Doc from last snapshot
 	const pageYjsData = await ctx.db
 		.query("pages_yjs_snapshots")
-		.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+		.withIndex("by_workspace_project_page_id_sequence", (q) =>
 			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 		)
 		.order("desc")
@@ -1661,7 +1782,7 @@ export const yjs_get_doc_last_snapshot = query({
 	handler: async (ctx, args) => {
 		return await ctx.db
 			.query("pages_yjs_snapshots")
-			.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+			.withIndex("by_workspace_project_page_id_sequence", (q) =>
 				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
@@ -1711,7 +1832,7 @@ export const yjs_snapshot_updates = internalMutation({
 			// Load latest snapshot
 			const yjsSnapshotData = await ctx.db
 				.query("pages_yjs_snapshots")
-				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
 					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 				)
 				.order("desc")
@@ -1729,7 +1850,7 @@ export const yjs_snapshot_updates = internalMutation({
 			// Fetch updates since snapshot up to uptoSeq
 			const updateDataList = await ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
 					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 				)
 				.order("asc")
@@ -1792,7 +1913,7 @@ async function yjs_increment_or_create_last_sequence(
 ) {
 	let lastSequenceData = await ctx.db
 		.query("pages_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_and_page_id", (q) =>
+		.withIndex("by_workspace_project_page_id", (q) =>
 			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 		)
 		.order("desc")
@@ -1900,7 +2021,7 @@ export const yjs_get_incremental_updates = query({
 	handler: async (ctx, args) => {
 		const updates = await ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+			.withIndex("by_workspace_project_page_id_sequence", (q) =>
 				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
@@ -2108,7 +2229,7 @@ export const cleanup_old_snapshots = internalMutation({
 					// TODO: If we save the content id in the snapshot doc we can use the more efficient .get
 					ctx.db
 						.query("pages_snapshots_contents")
-						.withIndex("by_workspace_project_and_page_snapshot_id", (q) =>
+						.withIndex("by_workspace_project_page_snapshot_id", (q) =>
 							q
 								.eq("workspace_id", snapshot.workspace_id)
 								.eq("project_id", snapshot.project_id)

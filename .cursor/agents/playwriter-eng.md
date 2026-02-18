@@ -144,6 +144,34 @@ Troubleshooting heuristics:
 3. Re-locate targets to avoid stale element assumptions; retry once.
 4. Report exact step, locator, observed behavior, and expected behavior.
 
+Reusable tree flow defaults (`/pages` and similar sidebars):
+
+1. Selector priority:
+	- Prefer semantic locators first (`getByRole`, `getByLabel`, `getByPlaceholder`) scoped to the tree container.
+	- Use stable item identity (URL `pageId`, item id/key, or equivalent metadata) to disambiguate rows.
+	- Do not target rows by title text alone when labels can repeat (for example multiple `New Page` rows).
+2. Inline-rename/transient state normalization:
+	- After create actions, immediately check if the new item is in inline rename mode.
+	- Normalize before next action (commit/blur rename), then re-query row/action locators.
+	- Use bounded polling (200-400ms) for state stabilization; avoid long static waits.
+3. Tree flow loop:
+	- Follow `act -> re-query -> checkpoint` for every step that mutates the tree.
+	- Re-locate row action controls after each mutation; do not reuse stale row locators.
+4. Robust archive/move assertions:
+	- Validate with multiple signals: row visibility/presence, hierarchy indicator (`aria-level` or depth), and route/id state when available.
+	- For parent-child operations, assert both sides: source parent removal/hidden state and child destination state.
+5. Cleanup policy:
+	- Track created artifact identities during the run.
+	- Cleanup in reverse creation order when practical.
+	- Verify each cleanup action by checking artifact non-visibility/non-presence before ending the run.
+6. Minimal failure protocol:
+	- On first failure, capture minimal diagnostics (URL, visible row count, targeted item identity, one screenshot), then retry once with fresh locators.
+	- If retry fails, stop and report exact failing step with expected vs observed behavior.
+7. Anti-patterns to avoid:
+	- Brittle CSS/deep DOM assumptions as primary selectors.
+	- Fixed sleeps as synchronization strategy.
+	- Run-specific IDs/titles/order assumptions codified as durable guidance.
+
 # Artifact storage location
 
 When saving screenshots, recordings, or any file output from Playwriter work:

@@ -142,36 +142,15 @@ function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; 
 			continue;
 		}
 
-		const parentId = pageItem.parentId && collection[pageItem.parentId] ? pageItem.parentId : pages_ROOT_ID;
+		const parentId = pageItem.parentId;
+		if (parentId === pages_ROOT_ID) {
+			collection[pages_ROOT_ID]?.children.push(pageItem.index);
+			continue;
+		}
+		if (!parentId || !collection[parentId]) {
+			continue;
+		}
 		collection[parentId]?.children.push(pageItem.index);
-	}
-
-	const reachablePageIds = new Set<string>();
-	const reachableStack = [...(collection[pages_ROOT_ID]?.children ?? [])];
-	while (reachableStack.length > 0) {
-		const currentId = reachableStack.pop();
-		if (!currentId || reachablePageIds.has(currentId)) {
-			continue;
-		}
-		reachablePageIds.add(currentId);
-
-		const current = collection[currentId];
-		if (!current || current.data.type !== "page") {
-			continue;
-		}
-
-		reachableStack.push(...current.children);
-	}
-
-	const detachedPageIds = Object.keys(collection).filter((itemId) => {
-		const current = collection[itemId];
-		if (!current || current.data.type !== "page") {
-			return false;
-		}
-		return !reachablePageIds.has(itemId);
-	});
-	if (detachedPageIds.length > 0) {
-		collection[pages_ROOT_ID]?.children.push(...detachedPageIds);
 	}
 
 	for (const key of Object.keys(collection)) {

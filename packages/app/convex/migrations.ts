@@ -68,19 +68,19 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			page.markdownContentId ? ctx.db.get("pages_markdown_content", page.markdownContentId) : null,
 			ctx.db
 				.query("pages_yjs_snapshots")
-				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
 					q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
 				)
 				.collect(),
 			ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_and_page_id_and_sequence", (q) =>
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
 					q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
 				)
 				.collect(),
 			ctx.db
 				.query("pages_yjs_docs_last_sequences")
-				.withIndex("by_workspace_project_and_page_id", (q) =>
+				.withIndex("by_workspace_project_page_id", (q) =>
 					q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
 				)
 				.collect(),
@@ -99,7 +99,7 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			pageSnapshotRows.map((row) =>
 				ctx.db
 					.query("pages_snapshots_contents")
-					.withIndex("by_workspace_project_and_page_snapshot_id", (q) =>
+					.withIndex("by_workspace_project_page_snapshot_id", (q) =>
 						q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_snapshot_id", row._id),
 					)
 					.collect(),
