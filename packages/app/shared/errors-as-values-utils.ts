@@ -171,6 +171,26 @@ export function Result_try_promise<T>(promise: Promise<T>): Promise<
 		});
 }
 
+export function Result_all<const T extends ReadonlyArray<unknown>>(results: T) {
+	const yays = [] as Array<
+		Exclude<T[number], { _yay: unknown } | { _nay: unknown }> | Extract<T[number], { _yay: unknown }>["_yay"]
+	>;
+
+	for (const result of results) {
+		if (result && typeof result === "object" && "_nay" in result) {
+			return result as Extract<T[number], { _nay: unknown }>;
+		}
+
+		if (result && typeof result === "object" && "_yay" in result) {
+			yays.push(result._yay as (typeof yays)[number]);
+		} else {
+			yays.push(result as (typeof yays)[number]);
+		}
+	}
+
+	return Result({ _yay: yays });
+}
+
 export function Result_nay_from(error_or_nay: unknown) {
 	if (error_or_nay == null) {
 		return null;

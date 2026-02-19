@@ -108,6 +108,83 @@ When calling Result-returning helpers:
 - Bubble `_nay` when possible.
 - If bubbling is not possible at that boundary, at least log `_nay` with context.
 
+## Fail-fast concurrent Result loop (Result_all + Promise.all)
+
+When processing many items concurrently and each item can fail with `_nay`, prefer this pattern:
+
+```ts
+const results = Result_all(
+	await Promise.all(
+		(function* (/* iife */) {
+			let nayResult = undefined;
+
+			for (const item of items) {
+				yield (async (/* iife */) => {
+					const value = await doStep(item);
+					if (nayResult) return nayResult;
+
+					if (!value) {
+						return (nayResult = Result({
+							_nay: { name: "nay", message: "Item not found", data: { item } },
+						}));
+					}
+
+					return Result({ _yay: value });
+				})();
+			}
+		})(),
+	),
+);
+
+if (results._nay) {
+	return results;
+}
+```
+
+Use this when you want to:
+
+- fan out work concurrently;
+- bubble one `_nay` quickly and consistently;
+- avoid additional expensive work in in-flight tasks after first failure (`if (nayResult) return nayResult`).
+
+Important caveat:
+
+- This does not cancel already started promises; it only short-circuits subsequent logic inside each task.
+- Keep this phase validation-only when possible, and perform related DB writes after the `_nay` check.
+
+## Regular `Result_all` flatten (no fail-fast guard)
+
+Use `Result_all` by itself to convert `Array<Result<...>>` into one `Result`:
+
+```ts
+const results = Result_all(
+	await Promise.all(
+		items.map(async (item) => {
+			const value = await doStep(item);
+			if (!value) {
+				return Result({
+					_nay: { name: "nay", message: "Item not found", data: { item } },
+				});
+			}
+
+			return Result({ _yay: value });
+		}),
+	),
+);
+
+if (results._nay) {
+	return results;
+}
+
+const values = results._yay;
+```
+
+Use this variant when:
+
+- you want all tasks to run fully;
+- you do not need the shared `nayResult` short-circuit guard inside each task;
+- you still want one flat `Result` at the end.
+
 When throwing because of `_nay`, do not throw `_nay.message` directly.
 Throw an ad hoc message and pass `_nay` via `cause`:
 

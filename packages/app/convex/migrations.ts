@@ -34,6 +34,7 @@ const unset_pages_is_archived_flags_returns_validator = v.object({
 
 /**
  * Compatibility migration for the rollout phase where `pages.isArchived` is still optional.
+ *
  * Run this before dropping `isArchived` from the schema.
  */
 async function unset_pages_is_archived_flags_fn(ctx: MutationCtx) {
@@ -45,13 +46,9 @@ async function unset_pages_is_archived_flags_fn(ctx: MutationCtx) {
 			continue;
 		}
 
-		await ctx.db.patch(
-			"pages",
-			page._id,
-			({
-				["isArchived"]: undefined,
-			} as unknown as Partial<Doc<"pages">>),
-		);
+		await ctx.db.patch("pages", page._id, {
+			["isArchived"]: undefined,
+		} as unknown as Partial<Doc<"pages">>);
 		patched += 1;
 	}
 
@@ -118,8 +115,14 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 					q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
 				)
 				.collect(),
-			ctx.db.query("pages_yjs_snapshot_schedules").withIndex("by_page_id", (q) => q.eq("page_id", page._id)).collect(),
-			ctx.db.query("pages_snapshots").withIndex("by_page_id", (q) => q.eq("page_id", page._id)).collect(),
+			ctx.db
+				.query("pages_yjs_snapshot_schedules")
+				.withIndex("by_page_id", (q) => q.eq("page_id", page._id))
+				.collect(),
+			ctx.db
+				.query("pages_snapshots")
+				.withIndex("by_page_id", (q) => q.eq("page_id", page._id))
+				.collect(),
 			ctx.db
 				.query("ai_chat_pending_edits")
 				.withIndex("by_workspace_project_user_page", (q) =>

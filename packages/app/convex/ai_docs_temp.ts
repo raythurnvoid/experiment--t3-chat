@@ -49,7 +49,7 @@ import {
 	pages_yjs_compute_diff_update_from_state_vector,
 } from "../server/pages.ts";
 import { minimatch } from "minimatch";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import type { Editor } from "@tiptap/core";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -795,29 +795,41 @@ export const unarchive_pages = mutation({
 			return Result({ _yay: null });
 		}
 
-		const pages = await Promise.all(
-			args.pageIds.map(async (pageId) => {
-				return ctx.db.get("pages", pageId).then((page) => {
-					if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-						return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+		const pages = Result_all(
+			await Promise.all(
+				(function* (/* iife */) {
+					let nayResult = undefined;
+
+					for (const pageId of args.pageIds) {
+						yield (async (/* iife */) => {
+							const page = await ctx.db.get("pages", pageId);
+							if (nayResult) return nayResult;
+
+							if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+								return (nayResult = Result({
+									_nay: { name: "nay", message: "Page not found", data: { pageId } },
+								}));
+							}
+
+							return Result({ _yay: page });
+						})();
 					}
-					return Result({ _yay: page });
-				});
-			}),
+				})(),
+			),
 		);
-		const nayResult = pages.find((page) => page._nay !== undefined);
-		if (nayResult) {
-			return nayResult;
+
+		if (pages._nay) {
+			return pages;
 		}
 
 		// Find the top most shared ancestor for each page requested.
 		const topMostSharedAncestorsByPath = new Map<string, Doc<"pages">>();
-		for (const page of pages) {
-			if (!page._yay) {
+		for (const page of pages._yay) {
+			if (!page) {
 				continue;
 			}
 
-			const currentPage = page._yay;
+			const currentPage = page;
 
 			// Ignore unarchive requests for homepage.
 			if (is_home_page(currentPage)) {
@@ -878,99 +890,118 @@ export const unarchive_pages = mutation({
 		}> = [];
 		const ancestorsPagesByTargetPath = new Map<string, Doc<"pages">>();
 
-		for (const ancestorPage of topMostSharedAncestorsByPath.values()) {
-			const archiveOperationId = ancestorPage.archiveOperationId;
-			if (archiveOperationId === undefined) {
-				continue;
-			}
+		const plansResults = Result_all(
+			await Promise.all(
+				(function* (/* iife */) {
+					let nayResult = undefined;
 
-			// For each ancestor find all descendants to unarchive.
-			const descendantsPathPrefix = `${ancestorPage.path}/`;
-			const descendantPages = await ctx.db
-				.query("pages")
-				.withIndex("by_workspaceId_projectId_archiveOperationId_path", (q) =>
-					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
-						.eq("archiveOperationId", archiveOperationId)
-						.gte("path", descendantsPathPrefix)
-						.lt("path", `${descendantsPathPrefix}\uffff`),
-				)
-				.collect();
+					for (const ancestorPage of topMostSharedAncestorsByPath.values()) {
+						if (ancestorPage.archiveOperationId === undefined) {
+							continue;
+						}
 
-			let shouldMoveToRoot = false;
-			if (ancestorPage.parentId !== pages_ROOT_ID) {
-				const parentPage = await ctx.db.get("pages", ancestorPage.parentId);
-				// If parent is still archived or invalid, move this subtree to root when unarchiving.
-				shouldMoveToRoot =
-					!parentPage ||
-					parentPage.workspaceId !== args.workspaceId ||
-					parentPage.projectId !== args.projectId ||
-					parentPage.archiveOperationId !== undefined;
-			}
+						yield (async (/* iife */) => {
+							let shouldMoveToRoot = false;
+							if (ancestorPage.parentId !== pages_ROOT_ID) {
+								const parentPage = await ctx.db.get("pages", ancestorPage.parentId);
+								if (nayResult) return nayResult;
 
-			const ancestorTargetParentId = shouldMoveToRoot ? pages_ROOT_ID : ancestorPage.parentId;
-			let ancestorTargetPath = ancestorPage.path;
-			if (shouldMoveToRoot) {
-				const ancestorPathName = path_extract_segments_from(ancestorPage.path).at(-1);
-				if (!ancestorPathName) {
-					throw should_never_happen("Failed to move page to root because path does not include a name segment", {
-						pageId: ancestorPage._id,
-						path: ancestorPage.path,
-					});
-				}
-				ancestorTargetPath = `/${ancestorPathName}`;
-			}
+								// If parent is still archived or invalid, move this subtree to root when unarchiving.
+								shouldMoveToRoot =
+									!parentPage ||
+									parentPage.workspaceId !== args.workspaceId ||
+									parentPage.projectId !== args.projectId ||
+									parentPage.archiveOperationId !== undefined;
+							}
 
-			const conflictedAncestorPage = ancestorsPagesByTargetPath.get(ancestorTargetPath);
-			if (conflictedAncestorPage) {
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Failed to unarchive page because it would conflict with another unarchiving page",
-						data: {
-							requestedPageIds: args.pageIds,
-							pageId: ancestorPage._id,
-							pagePath: ancestorPage.path,
-							targetPath: ancestorTargetPath,
-							conflictingPageId: conflictedAncestorPage._id,
-							conflictingPagePath: conflictedAncestorPage.path,
-						},
-					},
-				});
-			}
-			ancestorsPagesByTargetPath.set(ancestorTargetPath, ancestorPage);
+							const ancestorTargetParentId = shouldMoveToRoot ? pages_ROOT_ID : ancestorPage.parentId;
+							let ancestorTargetPath = ancestorPage.path;
+							if (shouldMoveToRoot) {
+								const ancestorPathName = path_extract_segments_from(ancestorPage.path).at(-1);
+								if (!ancestorPathName) {
+									throw should_never_happen(
+										"Failed to move page to root because path does not include a name segment",
+										{
+											pageId: ancestorPage._id,
+											path: ancestorPage.path,
+										},
+									);
+								}
+								ancestorTargetPath = `/${ancestorPathName}`;
+							}
 
-			plans.push({
-				page: ancestorPage,
-				targetParentId: ancestorTargetParentId,
-				targetPath: ancestorTargetPath,
-			});
+							const conflictedAncestorPage = ancestorsPagesByTargetPath.get(ancestorTargetPath);
+							if (conflictedAncestorPage) {
+								return (nayResult = Result({
+									_nay: {
+										name: "nay",
+										message: "Failed to unarchive page because it would conflict with another unarchiving page",
+										data: {
+											requestedPageIds: args.pageIds,
+											pageId: ancestorPage._id,
+											pagePath: ancestorPage.path,
+											targetPath: ancestorTargetPath,
+											conflictingPageId: conflictedAncestorPage._id,
+											conflictingPagePath: conflictedAncestorPage.path,
+										},
+									},
+								}));
+							}
+							ancestorsPagesByTargetPath.set(ancestorTargetPath, ancestorPage);
 
-			for (const page of descendantPages) {
-				const targetPath = path_rebase({
-					fromBasePath: ancestorPage.path,
-					toBasePath: ancestorTargetPath,
-					path: page.path,
-				});
+							plans.push({
+								page: ancestorPage,
+								targetParentId: ancestorTargetParentId,
+								targetPath: ancestorTargetPath,
+							});
 
-				if (!targetPath) {
-					throw should_never_happen("Failed to rebase descendants pages", {
-						ancestorPageId: ancestorPage._id,
-						ancestorPath: ancestorPage.path,
-						ancestorTargetPath,
-						ancestorTargetParentId,
-						descendantPageId: page._id,
-						descendantPagePath: page.path,
-					});
-				}
+							const descendantPages = await ctx.db
+								.query("pages")
+								.withIndex("by_workspaceId_projectId_archiveOperationId_path", (q) =>
+									q
+										.eq("workspaceId", args.workspaceId)
+										.eq("projectId", args.projectId)
+										.eq("archiveOperationId", ancestorPage.archiveOperationId)
+										.gte("path", `${ancestorPage.path}/`)
+										.lt("path", `${ancestorPage.path}/\uffff`),
+								)
+								.collect();
+							if (nayResult) return nayResult;
 
-				plans.push({
-					page,
-					targetParentId: page.parentId,
-					targetPath,
-				});
-			}
+							for (const page of descendantPages) {
+								const targetPath = path_rebase({
+									fromBasePath: ancestorPage.path,
+									toBasePath: ancestorTargetPath,
+									path: page.path,
+								});
+
+								if (!targetPath) {
+									throw should_never_happen("Failed to rebase descendants pages", {
+										ancestorPageId: ancestorPage._id,
+										ancestorPath: ancestorPage.path,
+										ancestorTargetPath,
+										ancestorTargetParentId,
+										descendantPageId: page._id,
+										descendantPagePath: page.path,
+									});
+								}
+
+								plans.push({
+									page,
+									targetParentId: page.parentId,
+									targetPath,
+								});
+							}
+
+							return Result({ _yay: null });
+						})();
+					}
+				})(),
+			),
+		);
+
+		if (plansResults._nay) {
+			return plansResults;
 		}
 
 		// Validate top-most ancestor conflicts against currently not archived pages outside this operation.
