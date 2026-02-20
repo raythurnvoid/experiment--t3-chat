@@ -673,3 +673,133 @@ async function list_dir(
 		},
 	};
 }
+
+test("N07 rename_page idempotency: same name no-op", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const before = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_1._id));
+
+	const renameResult = await asUser.mutation(api.ai_docs_temp.rename_page, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageId: db.pages.page_root_1._id,
+		name: db.pages.page_root_1.name,
+	});
+	expect(renameResult).not.toHaveProperty("_nay");
+
+	const after = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_1._id));
+	expect(after?.path).toBe(before?.path);
+	expect(after?.name).toBe(before?.name);
+});
+
+test("N08 move_pages idempotency: same parent no-op", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const before = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_1_child_1._id));
+
+	const moveResult = await asUser.mutation(api.ai_docs_temp.move_pages, {
+		itemIds: [db.pages.page_root_1_child_1._id],
+		targetParentId: db.pages.page_root_1._id,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+	});
+	expect(moveResult).not.toHaveProperty("_nay");
+
+	const after = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_1_child_1._id));
+	expect(after?.parentId).toBe(before?.parentId);
+	expect(after?.path).toBe(before?.path);
+});
+
+test("N09 archive/unarchive idempotency", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_2._id],
+	});
+
+	const archiveAgain = await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_2._id],
+	});
+	expect(archiveAgain).not.toHaveProperty("_nay");
+
+	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_2._id],
+	});
+	expect(unarchiveResult).not.toHaveProperty("_nay");
+
+	const unarchiveAgain = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_2._id],
+	});
+	expect(unarchiveAgain).not.toHaveProperty("_nay");
+
+	await t.run(async (ctx) => {
+		const p = await ctx.db.get("pages", db.pages.page_root_2._id);
+		expect(p?.archiveOperationId).toBeUndefined();
+	});
+});
+
+test("N02 archive child then parent then unarchive parent restores hierarchy", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_1_child_1._id],
+	});
+
+	await asUser.mutation(api.ai_docs_temp.archive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_1._id],
+	});
+
+	await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		pageIds: [db.pages.page_root_1._id],
+	});
+
+	await t.run(async (ctx) => {
+		const pageRoot1 = await ctx.db.get("pages", db.pages.page_root_1._id);
+		const pageRoot1Child1 = await ctx.db.get("pages", db.pages.page_root_1_child_1._id);
+		const pageRoot1Child1Deep1 = await ctx.db.get("pages", db.pages.page_root_1_child_1_deep_1._id);
+
+		expect(pageRoot1?.archiveOperationId).toBeUndefined();
+		expect(pageRoot1Child1?.archiveOperationId).toBeUndefined();
+		expect(pageRoot1Child1Deep1?.archiveOperationId).toBeUndefined();
+		expect(pageRoot1Child1?.parentId).toBe(pageRoot1?._id);
+		expect(pageRoot1Child1Deep1?.parentId).toBe(pageRoot1Child1?._id);
+	});
+});

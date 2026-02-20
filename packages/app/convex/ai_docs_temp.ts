@@ -957,11 +957,10 @@ export const unarchive_pages = mutation({
 
 							const descendantPages = await ctx.db
 								.query("pages")
-								.withIndex("by_workspaceId_projectId_archiveOperationId_path", (q) =>
+								.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 									q
 										.eq("workspaceId", args.workspaceId)
 										.eq("projectId", args.projectId)
-										.eq("archiveOperationId", ancestorPage.archiveOperationId)
 										.gte("path", `${ancestorPage.path}/`)
 										.lt("path", `${ancestorPage.path}/\uffff`),
 								)
@@ -969,6 +968,10 @@ export const unarchive_pages = mutation({
 							if (nayResult) return nayResult;
 
 							for (const page of descendantPages) {
+								if (page.archiveOperationId === undefined) {
+									continue;
+								}
+
 								const targetPath = path_rebase({
 									fromBasePath: ancestorPage.path,
 									toBasePath: ancestorTargetPath,

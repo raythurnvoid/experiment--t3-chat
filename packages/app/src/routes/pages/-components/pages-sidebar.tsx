@@ -76,10 +76,48 @@ function pages_sidebar_to_page_id(pageId: string) {
 	return pageId as app_convex_Id<"pages">;
 }
 
+function pages_sidebar_normalize_parent_id(parentId: string) {
+	return parentId.endsWith("-placeholder") ? parentId.slice(0, -"-placeholder".length) : parentId;
+}
+
 function pages_sidebar_to_parent_id(parentId: string) {
-	return (parentId === pages_ROOT_ID ? pages_ROOT_ID : pages_sidebar_to_page_id(parentId)) as
+	const normalizedParentId = pages_sidebar_normalize_parent_id(parentId);
+
+	return (normalizedParentId === pages_ROOT_ID ? pages_ROOT_ID : pages_sidebar_to_page_id(normalizedParentId)) as
 		| app_convex_Id<"pages">
 		| typeof pages_ROOT_ID;
+}
+
+function pages_sidebar_get_default_page_name(args: { parentId: string; treeCollection: PagesSidebar_Collection }) {
+	const normalizedParentId = pages_sidebar_normalize_parent_id(args.parentId);
+	const siblingIds = args.treeCollection[normalizedParentId]?.children ?? [];
+	const activeSiblingNames = new Set<string>();
+
+	for (const siblingId of siblingIds) {
+		const siblingItem = args.treeCollection[siblingId];
+		if (!siblingItem || siblingItem.data.type !== "page") {
+			continue;
+		}
+		if (siblingItem.data.archiveOperationId !== undefined) {
+			continue;
+		}
+
+		activeSiblingNames.add(siblingItem.data.title.trim().toLowerCase());
+	}
+
+	const baseName = "New Page";
+	if (!activeSiblingNames.has(baseName.toLowerCase())) {
+		return baseName;
+	}
+
+	let suffix = 2;
+	for (;;) {
+		const candidateName = `${baseName} ${suffix}`;
+		if (!activeSiblingNames.has(candidateName.toLowerCase())) {
+			return candidateName;
+		}
+		suffix += 1;
+	}
 }
 
 function sort_children(args: { children: string[]; collection: PagesSidebar_Collection }) {
@@ -122,6 +160,7 @@ function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; 
 	};
 
 	const pageItems = args.treeItemsList?.filter((item) => item.type === "page") ?? [];
+	const pageItemsById = new Map(pageItems.map((item) => [item.index, item]));
 	for (const pageItem of pageItems) {
 		if (pageItem.archiveOperationId !== undefined && !args.showArchived) {
 			continue;
@@ -147,10 +186,31 @@ function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; 
 			collection[pages_ROOT_ID]?.children.push(pageItem.index);
 			continue;
 		}
-		if (!parentId || !collection[parentId]) {
+
+		const visitedParentIds = new Set<string>();
+		let resolvedParentId = parentId;
+		while (resolvedParentId && resolvedParentId !== pages_ROOT_ID && !collection[resolvedParentId]) {
+			if (visitedParentIds.has(resolvedParentId)) {
+				resolvedParentId = pages_ROOT_ID;
+				break;
+			}
+			visitedParentIds.add(resolvedParentId);
+
+			const currentParentItem = pageItemsById.get(resolvedParentId);
+			if (!currentParentItem) {
+				resolvedParentId = pages_ROOT_ID;
+				break;
+			}
+
+			resolvedParentId = currentParentItem.parentId;
+		}
+
+		if (!resolvedParentId || resolvedParentId === pages_ROOT_ID) {
+			collection[pages_ROOT_ID]?.children.push(pageItem.index);
 			continue;
 		}
-		collection[parentId]?.children.push(pageItem.index);
+
+		collection[resolvedParentId]?.children.push(pageItem.index);
 	}
 
 	for (const key of Object.keys(collection)) {
@@ -205,7 +265,9 @@ function pages_sidebar_are_tree_items_lists_equal(
 
 	const fields =
 		options?.fields ??
-		(["index", "parentId", "title", "archiveOperationId", "updatedAt", "updatedBy"] satisfies Array<keyof pages_TreeItem>);
+		(["index", "parentId", "title", "archiveOperationId", "updatedAt", "updatedBy"] satisfies Array<
+			keyof pages_TreeItem
+		>);
 
 	const rightById = new Map<string, pages_TreeItem>();
 	for (const item of right) {
@@ -338,6 +400,12 @@ function PagesSidebarTreeItemMoreAction(props: PagesSidebarTreeItemMoreAction_Pr
 	const { archiveOperationId, isPending, isTabbable, onRename, onArchive, onUnarchive } = props;
 	const isArchived = archiveOperationId !== undefined;
 
+	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
+		setTimeout(() => {
+			onRename();
+		}, 0);
+	});
+
 	const handleArchiveUnarchiveClick = useFn<MyMenuItem_Props["onClick"]>(() => {
 		if (isArchived) {
 			onUnarchive();
@@ -362,7 +430,7 @@ function PagesSidebarTreeItemMoreAction(props: PagesSidebarTreeItemMoreAction_Pr
 			</MyMenuTrigger>
 			<MyMenuPopover unmountOnHide>
 				<MyMenuPopoverContent>
-					<MyMenuItem disabled={isPending} onClick={onRename}>
+					<MyMenuItem disabled={isPending} onClick={handleRenameClick}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
 								<Edit2 />
@@ -537,7 +605,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const {
 		itemId,
 		tree,
-		treeRebuildVersion,
 		selectedPageId,
 		isBusy,
 		pendingActionPageIds,
@@ -615,7 +682,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 				<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
 			) : (
 				<>
-					{item.isRenaming() && treeRebuildVersion >= 0 ? (
+					{item.isRenaming() ? (
 						<div className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}>
 							<div
 								className={
@@ -1241,10 +1308,15 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const showEmptyState = !isTreeLoading && visibleTreeItemCount === 0;
 
 	const handleCreatePageClick = useFn<PagesSidebarTree_Props["onCreatePage"]>((parentPageId) => {
+		const nextPageName = pages_sidebar_get_default_page_name({
+			parentId: parentPageId,
+			treeCollection,
+		});
+
 		setIsCreatingPage(true);
 		createPage({
 			parentId: pages_sidebar_to_parent_id(parentPageId),
-			name: "New Page",
+			name: nextPageName,
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 		})
