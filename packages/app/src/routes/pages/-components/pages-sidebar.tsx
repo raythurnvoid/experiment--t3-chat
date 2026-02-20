@@ -520,12 +520,14 @@ type PagesSidebar_CssVars = {
 type PagesSidebarTreeItem_Props = {
 	itemId: string;
 	tree: PagesSidebarTree_Shared;
+	treeRebuildVersion: number;
 	selectedPageId: string | null;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
 	isTreeDragging: boolean;
 	isHidden: boolean;
 	onCreatePage: (parentPageId: string) => void;
+	onStartRename: (itemId: string) => void;
 	onArchive: (pageId: string) => void;
 	onUnarchive: (pageId: string) => void;
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
@@ -535,12 +537,14 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const {
 		itemId,
 		tree,
+		treeRebuildVersion,
 		selectedPageId,
 		isBusy,
 		pendingActionPageIds,
 		isTreeDragging,
 		isHidden,
 		onCreatePage,
+		onStartRename,
 		onArchive,
 		onUnarchive,
 		onTreeItemPrimaryClick,
@@ -571,7 +575,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	});
 
 	const handleRenameClick = useFn<PagesSidebarTreeItemMoreAction_Props["onRename"]>(() => {
-		item.startRenaming();
+		onStartRename(itemId);
 	});
 
 	const handleArchiveClick = useFn<PagesSidebarTreeItemMoreAction_Props["onArchive"]>(() => {
@@ -611,7 +615,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 				<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
 			) : (
 				<>
-					{item.isRenaming() ? (
+					{item.isRenaming() && treeRebuildVersion >= 0 ? (
 						<div className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}>
 							<div
 								className={
@@ -716,6 +720,7 @@ type PagesSidebarTree_ClassNames =
 
 type PagesSidebarTree_Props = {
 	tree: PagesSidebarTree_Shared;
+	treeRebuildVersion: number;
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	isSearchActive: boolean;
@@ -726,6 +731,7 @@ type PagesSidebarTree_Props = {
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
 	onCreatePage: (parentPageId: string) => void;
+	onStartRename: (itemId: string) => void;
 	onArchive: (pageId: string) => void;
 	onUnarchive: (pageId: string) => void;
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
@@ -736,6 +742,7 @@ type PagesSidebarTree_DivProps = React.ComponentProps<"div">;
 function PagesSidebarTree(props: PagesSidebarTree_Props) {
 	const {
 		tree,
+		treeRebuildVersion,
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
@@ -746,6 +753,7 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		isBusy,
 		pendingActionPageIds,
 		onCreatePage,
+		onStartRename,
 		onArchive,
 		onUnarchive,
 		onTreeItemPrimaryClick,
@@ -789,7 +797,7 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		}
 
 		event.preventDefault();
-		focusedItem.startRenaming();
+		onStartRename(focusedItem.getId());
 	};
 
 	const handleSetIsDraggingOverRootZone = (nextValue: PagesSidebarTree_Props["isBusy"]) => {
@@ -883,12 +891,14 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 							key={itemId}
 							itemId={itemId}
 							tree={tree}
+							treeRebuildVersion={treeRebuildVersion}
 							selectedPageId={selectedPageId}
 							isBusy={isBusy}
 							pendingActionPageIds={pendingActionPageIds}
 							isTreeDragging={isTreeDragging}
 							isHidden={!visibleTreeItemIds.has(itemId) || (!!visibleIds && !visibleIds.has(itemId))}
 							onCreatePage={onCreatePage}
+							onStartRename={onStartRename}
 							onArchive={onArchive}
 							onUnarchive={onUnarchive}
 							onTreeItemPrimaryClick={onTreeItemPrimaryClick}
@@ -954,7 +964,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingRenamePageId, setPendingRenamePageId] = useState<string | null>(null);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
-	const [, setTreeRebuildVersion] = useState(0);
+	const [treeRebuildVersion, setTreeRebuildVersion] = useState(0);
 
 	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
 	const expandedItemsBeforeSearchRef = useRef<string[] | null>(null);
@@ -1126,6 +1136,16 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		canRename,
 		onRename: handleRename,
 		onPrimaryAction: handlePrimaryAction,
+	});
+
+	const handleStartRename = useFn<PagesSidebarTree_Props["onStartRename"]>((itemId) => {
+		const item = tree().getItemInstance(itemId);
+		if (item.getItemData().type !== "page") {
+			return;
+		}
+
+		item.startRenaming();
+		setTreeRebuildVersion((oldValue) => oldValue + 1);
 	});
 
 	const hasSelectedPageInTree = !!(selectedPageId && treeCollection[selectedPageId]);
@@ -1438,7 +1458,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		if (!pendingRenamePageId || !hasPendingRenamePageInTree) {
 			return;
 		}
-		tree().getItemInstance(pendingRenamePageId).startRenaming();
+		handleStartRename(pendingRenamePageId);
 		setPendingRenamePageId(null);
 	}, [hasPendingRenamePageInTree, pendingRenamePageId]);
 
@@ -1557,6 +1577,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 					<PagesSidebarTree
 						tree={tree}
+						treeRebuildVersion={treeRebuildVersion}
 						isTreeLoading={isTreeLoading}
 						showEmptyState={showEmptyState}
 						isSearchActive={isSearchActive}
@@ -1567,6 +1588,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 						isBusy={isBusy}
 						pendingActionPageIds={pendingActionPageIds}
 						onCreatePage={handleCreatePageClick}
+						onStartRename={handleStartRename}
 						onArchive={handleArchive}
 						onUnarchive={handleUnarchive}
 						onTreeItemPrimaryClick={handleTreeItemPrimaryClick}
