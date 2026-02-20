@@ -4,7 +4,6 @@ export default defineConfig({
 	test: {
 		exclude: [...configDefaults.exclude],
 		passWithNoTests: true,
-		// exclude: [...configDefaults.exclude, "+personal/**/*"],
 		projects: [
 			{
 				extends: true,

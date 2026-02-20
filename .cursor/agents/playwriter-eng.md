@@ -147,37 +147,41 @@ Troubleshooting heuristics:
 Reusable tree flow defaults (`/pages` and similar sidebars):
 
 1. Selector priority:
-	- Prefer semantic locators first (`getByRole`, `getByLabel`, `getByPlaceholder`) scoped to the tree container.
-	- Use stable item identity (URL `pageId`, item id/key, or equivalent metadata) to disambiguate rows.
-	- Do not target rows by title text alone when labels can repeat (for example multiple `New Page` rows).
+   - Prefer semantic locators first (`getByRole`, `getByLabel`, `getByPlaceholder`) scoped to the tree container.
+   - Use stable item identity (URL `pageId`, item id/key, or equivalent metadata) to disambiguate rows.
+   - Do not target rows by title text alone when labels can repeat (for example multiple `New Page` rows).
 2. Inline-rename/transient state normalization:
-	- After create actions, immediately check if the new item is in inline rename mode.
-	- Normalize before next action (commit/blur rename), then re-query row/action locators.
-	- Use bounded polling (200-400ms) for state stabilization; avoid long static waits.
+   - After create actions, immediately check if the new item is in inline rename mode.
+   - Normalize before next action (commit/blur rename), then re-query row/action locators.
+   - Use bounded polling (200-400ms) for state stabilization; avoid long static waits.
 3. Tree flow loop:
-	- Follow `act -> re-query -> checkpoint` for every step that mutates the tree.
-	- Re-locate row action controls after each mutation; do not reuse stale row locators.
+   - Follow `act -> re-query -> checkpoint` for every step that mutates the tree.
+   - Re-locate row action controls after each mutation; do not reuse stale row locators.
 4. Robust archive/move assertions:
-	- Validate with multiple signals: row visibility/presence, hierarchy indicator (`aria-level` or depth), and route/id state when available.
-	- For parent-child operations, assert both sides: source parent removal/hidden state and child destination state.
+   - Validate with multiple signals: row visibility/presence, hierarchy indicator (`aria-level` or depth), and route/id state when available.
+   - For parent-child operations, assert both sides: source parent removal/hidden state and child destination state.
 5. Cleanup policy:
-	- Track created artifact identities during the run.
-	- Cleanup in reverse creation order when practical.
-	- Verify each cleanup action by checking artifact non-visibility/non-presence before ending the run.
+   - Track created artifact identities during the run.
+   - Cleanup in reverse creation order when practical.
+   - Verify each cleanup action by checking artifact non-visibility/non-presence before ending the run.
 6. Minimal failure protocol:
-	- On first failure, capture minimal diagnostics (URL, visible row count, targeted item identity, one screenshot), then retry once with fresh locators.
-	- If retry fails, stop and report exact failing step with expected vs observed behavior.
+   - On first failure, capture minimal diagnostics (URL, visible row count, targeted item identity, one screenshot), then retry once with fresh locators.
+   - If retry fails, stop and report exact failing step with expected vs observed behavior.
 7. Anti-patterns to avoid:
-	- Brittle CSS/deep DOM assumptions as primary selectors.
-	- Fixed sleeps as synchronization strategy.
-	- Run-specific IDs/titles/order assumptions codified as durable guidance.
+   - Brittle CSS/deep DOM assumptions as primary selectors.
+   - Fixed sleeps as synchronization strategy.
+   - Run-specific IDs/titles/order assumptions codified as durable guidance.
+8. Inline rename validation (value + commit):
+   - Validate typing as a data flow, not just input visibility: after each keystroke, assert the visible input value changed from the previous value.
+   - After Enter, assert commit outcome explicitly by reading the row title and comparing against the expected final value.
+   - Always assert post-commit title on the same stable row identity (`data-item-id` or equivalent id), not by title text lookup alone.
 
 # Artifact storage location
 
 When saving screenshots, recordings, or any file output from Playwriter work:
 
 - Never write to OS temp directories.
-- Always write under `+personal/+ai/playwriter-eng`.
+- Always write under `../t3-chat-+personal/+ai/playwriter-eng`.
 - Create the directory if it does not exist.
 - Organize outputs in subfolders as needed (for example by date, task, or run ID).
 - Prefer stable, descriptive filenames so artifacts are easy to review later.
@@ -186,17 +190,31 @@ When saving screenshots, recordings, or any file output from Playwriter work:
 
 When reproducing hard-to-reach code paths, you may temporarily modify app code to increase observability.
 
-- You may add temporary `console.log` instrumentation.
+- Default to temporary `console.log` instrumentation when behavior is unclear; do not rely only on screenshots/snapshots for runtime debugging.
 - For Convex/server paths, read logs from terminal output.
 - For client/browser paths, read logs using Playwriter log tools.
 - You may temporarily hardcode values/branches to emulate specific scenarios.
 
+Protocol (runtime evidence):
+
+1. Add temporary logs at key points in the failing flow (typical: 2-6 logs, hard limit: 10).
+2. Emit structured payloads with `console.log`, using this shape: `{ runId, location, message, data, timestamp }`.
+3. Use `runId: "pre-fix"` during initial reproduction and `runId: "post-fix"` for verification runs.
+4. Keep instrumentation active while fixing; verify with a `post-fix` run before cleanup.
+5. If you need stricter hypothesis-driven debugging, use full debug mode in the parent chat.
+
 Guardrails:
 
-1. Mark temporary debug edits with a clear token comment (for example `PLAYWRIGHT_DEBUG_TEMP`).
-2. Before ending the run, remove all temporary logs/hardcodes and verify cleanup is complete.
-3. If cleanup cannot be completed now, report exact files and markers to the parent agent, and explicitly ask the parent to resume this same subagent agent ID later for cleanup.
-4. Never treat temporary debug edits as durable product behavior.
+1. Pick one stable debug name per investigation, in kebab-case (for example `pages-dnd-hover-churn`).
+2. Wrap temporary debug code in a named region using that stable marker so cleanup is reliable:
+   - `// #region PLAYWRIGHT_DEBUG_TEMP:<debug-name>`
+   - temporary logs/hardcodes
+   - `// #endregion PLAYWRIGHT_DEBUG_TEMP:<debug-name>`
+3. Prefix temporary logs with the same marker and payload (for example `console.log("[PLAYWRIGHT_DEBUG_TEMP:<debug-name>]", { runId, location, message, data, timestamp: Date.now() })`).
+4. Keep logs in place until post-fix verification proves the issue is resolved.
+5. Before ending the run, remove all temporary logs/hardcodes and verify cleanup with `rg "PLAYWRIGHT_DEBUG_TEMP"` in touched files/directories.
+6. If cleanup cannot be completed now, report exact files and markers to the parent agent, and explicitly ask the parent to resume this same subagent agent ID later for cleanup.
+7. Never treat temporary debug edits as durable product behavior.
 
 # Reporting format
 
@@ -207,6 +225,8 @@ Return concise output with:
 - `Cleanup`
 
 # Self-learning protocol (durable memory)
+
+You are responsible to maintain and improve this spec file over time: `.cursor/agents/playwriter-eng.md`.
 
 When you encounter a failure, struggle, or repeated friction, proactively update this spec file so future runs are more effective.
 Persist durable lessons in `# Learning`, which is the canonical destination for reusable guidance.

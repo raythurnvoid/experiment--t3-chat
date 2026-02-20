@@ -27,7 +27,7 @@ const main = async () => {
 	await read_stdin().catch(() => "");
 
 	const projectDir = process.env.CURSOR_PROJECT_DIR || process.cwd();
-	const readmePath = path.join(projectDir, "+personal", "sources", "README.md");
+	const readmePath = path.join(projectDir, "..", "t3-chat-+personal", "sources", "README.md");
 	const exists = await file_exists(readmePath);
 
 	if (!exists) {

@@ -11,15 +11,13 @@
 	"editor.pasteAs.enabled": true,
 	"editor.codeActionsOnSave": {
 		"source.fixAll.eslint": "always",
-		"source.fixAll.ts": "always"
+		"source.fixAll.ts": "never"
 	},
 	"files.eol": "\n",
 	"files.watcherExclude": {
 		"**/.git/objects/**": true,
 		"**/.git/subtree-cache/**": true,
-		"**/.hg/store/**": true,
-		// Cursor relies on the vscode watcher to auto index files
-		"+personal/sources/**": true
+		"**/.hg/store/**": true
 	},
 	"files.associations": {
 		"*.css": "tailwindcss",

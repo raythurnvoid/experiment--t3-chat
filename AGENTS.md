@@ -45,11 +45,11 @@ This is a monorepo project with the following essential structure that you must 
 
   - [assistant-ui/](references-submodules/assistant-ui) - Assistant UI submodule (reference-only)
 
-- [+personal/](+personal) - DOCUMENTATION & RESEARCH FOLDER
-  - [+personal/+ai/](+personal/+ai) - Only writable subfolder for AI-generated content
-  - [+personal/sources/](+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes
-  - [+personal/sources/README.md](+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the [+personal/sources/](+personal/sources) folder to have an idea of what the packages are
-  - DO NOT MODIFY other files in +personal/ - they are reference material only
+- [../t3-chat-+personal/](../t3-chat-+personal) - DOCUMENTATION & RESEARCH FOLDER
+  - [../t3-chat-+personal/+ai/](../t3-chat-+personal/+ai) - Only writable subfolder for AI-generated content
+  - [../t3-chat-+personal/sources/](../t3-chat-+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes
+  - [../t3-chat-+personal/sources/README.md](../t3-chat-+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the [../t3-chat-+personal/sources/](../t3-chat-+personal/sources) folder to have an idea of what the packages are
+  - DO NOT MODIFY other files in ../t3-chat-+personal/ - they are reference material only
 
 ## Submodules (Special Import Handling)
 
@@ -140,8 +140,8 @@ When users ask about 3rd party libraries or request implementations using extern
 
 Documentation Sources
 
-- [+personal/sources](+personal/sources) - read [+personal/sources/README.md](+personal/sources/README.md) when reading inside the folder
-- You may assume `+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
+- [../t3-chat-+personal/sources](../t3-chat-+personal/sources) - read [../t3-chat-+personal/sources/README.md](../t3-chat-+personal/sources/README.md) when reading inside the folder
+- You may assume `../t3-chat-+personal/sources/` matches runtime versions (e.g. `node_modules/.pnpm`).
 - Submodules - [references-submodules/assistant-ui/](references-submodules/assistant-ui), [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks), [packages/app/vendor/headless-tree/](packages/app/vendor/headless-tree), [references-submodules/ai/](references-submodules/ai), [references-submodules/convex-backend/](references-submodules/convex-backend), [references-submodules/convex-helpers/](references-submodules/convex-helpers), [references-submodules/convex-js/](references-submodules/convex-js), and [packages/app/vendor/opencode/](packages/app/vendor/opencode), and [packages/app/vendor/novel/](packages/app/vendor/novel) have full repos for reference
 - Web search - For external documentation when not available locally
 

@@ -61,21 +61,8 @@ export default defineConfig({
 			},
 		],
 	},
-	server: {
-		// Ignore +personal folder for dev server
-		fs: {
-			deny: ["+personal/**"],
-		},
-		// Exclude +personal folder from being watched, they need to be absolute paths globs
-		watch: {
-			ignored: [path.resolve("+personal/**")],
-		},
-	},
 	optimizeDeps: {
-		entries: [
-			// Necessary to prevent vite from crawling the `+personal` folder
-			"./index.html",
-		],
+		entries: ["./index.html"],
 		exclude: [
 			// Exclude vendored packages from pre-bundling so they're treated as source files
 			"@convex-dev/presence",
