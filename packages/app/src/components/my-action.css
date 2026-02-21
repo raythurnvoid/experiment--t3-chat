@@ -17,6 +17,8 @@
 		outline: none;
 		cursor: pointer;
 
+		contain: content;
+
 		&[data-selected] {
 			background: var(--color-base-1-05);
 			color: var(--color-fg-09);

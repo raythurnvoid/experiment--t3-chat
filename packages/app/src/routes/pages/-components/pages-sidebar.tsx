@@ -469,18 +469,17 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 	const { isExpanded, isPending, isTabbable, onClick } = props;
 
 	return (
-		<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>
-			<MyIconButton
-				tooltip={isExpanded ? "Collapse page" : "Expand page"}
-				side="bottom"
-				variant="ghost-highlightable"
-				tabIndex={isTabbable ? 0 : -1}
-				onClick={onClick}
-				disabled={isPending}
-			>
-				<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
-			</MyIconButton>
-		</div>
+		<MyIconButton
+			className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
+			tooltip={isExpanded ? "Collapse page" : "Expand page"}
+			side="bottom"
+			variant="ghost-highlightable"
+			tabIndex={isTabbable ? 0 : -1}
+			onClick={onClick}
+			disabled={isPending}
+		>
+			<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
+		</MyIconButton>
 	);
 }
 // #endregion tree item arrow
@@ -501,18 +500,19 @@ function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 	const itemData = useVal(() => item.getItemData());
 
 	return (
-		<div className={"PagesSidebarTreeItemTitle" satisfies PagesSidebarTreeItemTitle_ClassNames}>
-			<MyInput variant="transparent">
-				<MyInputBox />
-				<MyInputControl
-					{...(isRenaming ? renameInputProps : null)}
-					className={"PagesSidebarTreeItemTitle-input" satisfies PagesSidebarTreeItemTitle_ClassNames}
-					readOnly={!isRenaming}
-					tabIndex={isRenaming ? undefined : -1}
-					value={!isRenaming ? itemData.title : undefined}
-				/>
-			</MyInput>
-		</div>
+		<MyInput
+			className={"PagesSidebarTreeItemTitle" satisfies PagesSidebarTreeItemTitle_ClassNames}
+			variant="transparent"
+		>
+			<MyInputBox />
+			<MyInputControl
+				{...(isRenaming ? renameInputProps : null)}
+				className={"PagesSidebarTreeItemTitle-input" satisfies PagesSidebarTreeItemTitle_ClassNames}
+				readOnly={!isRenaming}
+				tabIndex={isRenaming ? undefined : -1}
+				value={!isRenaming ? itemData.title : undefined}
+			/>
+		</MyInput>
 	);
 }
 // #endregion tree item title
@@ -521,22 +521,20 @@ function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 type PagesSidebarTreeItemPrimaryContent_ClassNames = "PagesSidebarTreeItemPrimaryContent";
 
 type PagesSidebarTreeItemPrimaryContent_Props = {
-	title: React.ReactNode;
+	tree: PagesSidebarTree_Shared;
+	item: PagesSidebarTreeItem_Instance;
 };
 
 function PagesSidebarTreeItemPrimaryContent(props: PagesSidebarTreeItemPrimaryContent_Props) {
-	const { title } = props;
+	const { tree, item } = props;
 
 	return (
 		<div
-			className={
-				"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames
-			}
+			className={"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames}
+			aria-hidden="true"
 		>
 			<PagesSidebarTreeItemIcon />
-			<div className="PagesSidebarTreeItemPrimaryContent-title-container">
-				<div className="PagesSidebarTreeItemPrimaryContent-title">{title}</div>
-			</div>
+			<PagesSidebarTreeItemTitle tree={tree} item={item} />
 		</div>
 	);
 }
@@ -546,41 +544,98 @@ function PagesSidebarTreeItemPrimaryContent(props: PagesSidebarTreeItemPrimaryCo
 type PagesSidebarTreeItemPrimaryAction_ClassNames = "PagesSidebarTreeItemPrimaryAction";
 
 type PagesSidebarTreeItemPrimaryAction_Props = {
-	itemId: string;
+	tree: PagesSidebarTree_Shared;
 	item: PagesSidebarTreeItem_Instance;
-	title: string;
 	isPending: boolean;
 	isTreeDragging: boolean;
-	tooltipContent: string | undefined;
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
 function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAction_Props) {
-	const { itemId, item, title, isPending, isTreeDragging, tooltipContent, onTreeItemPrimaryClick } = props;
+	const { item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
+
 	const itemProps = useVal(() => item.getProps());
 	const isSelected = useVal(() => item.isSelected());
+	const itemData = useVal(() => item.getItemData());
 
 	const handleClick: MyPrimaryAction_Props["onClick"] = (event) => {
-		onTreeItemPrimaryClick(event, itemId);
+		onTreeItemPrimaryClick(event, item.getId());
 	};
 
 	return (
-		<>
-			<MyPrimaryAction
-				{...itemProps}
-				selected={isSelected}
-				className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
-				disabled={isPending}
-				tooltip={isTreeDragging ? undefined : tooltipContent}
-				tooltipTimeout={2000}
-				aria-label={title}
-				onClick={handleClick}
-			></MyPrimaryAction>
-			<PagesSidebarTreeItemPrimaryContent title={title} />
-		</>
+		<MyPrimaryAction
+			{...itemProps}
+			selected={isSelected}
+			className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
+			disabled={isPending}
+			tooltip={
+				isTreeDragging
+					? undefined
+					: `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`
+			}
+			tooltipTimeout={2000}
+			aria-label={itemData.title}
+			onClick={handleClick}
+		></MyPrimaryAction>
 	);
 }
 // #endregion tree item primary action
+
+// #region tree item meta label
+type PagesSidebarTreeItemMetaLabel_ClassNames = "PagesSidebarTreeItemMetaLabel" | "PagesSidebarTreeItemMetaLabel-text";
+
+type PagesSidebarTreeItemMetaLabel_Props = {
+	metaText: string;
+};
+
+function PagesSidebarTreeItemMetaLabel(props: PagesSidebarTreeItemMetaLabel_Props) {
+	const { metaText } = props;
+
+	return (
+		<div className={"PagesSidebarTreeItemMetaLabel" satisfies PagesSidebarTreeItemMetaLabel_ClassNames}>
+			<div className={"PagesSidebarTreeItemMetaLabel-text" satisfies PagesSidebarTreeItemMetaLabel_ClassNames}>
+				{metaText}
+			</div>
+		</div>
+	);
+}
+// #endregion tree item meta label
+
+// #region tree item actions
+type PagesSidebarTreeItemActions_ClassNames = "PagesSidebarTreeItemActions";
+
+type PagesSidebarTreeItemActions_Props = {
+	archiveOperationId: PagesSidebarTreeItemMoreAction_Props["archiveOperationId"];
+	isPending: boolean;
+	isTabbable: boolean;
+	onCreatePage: PagesSidebarTreeItemSecondaryAction_Props["onClick"];
+	onRename: PagesSidebarTreeItemMoreAction_Props["onRename"];
+	onArchive: PagesSidebarTreeItemMoreAction_Props["onArchive"];
+	onUnarchive: PagesSidebarTreeItemMoreAction_Props["onUnarchive"];
+};
+
+function PagesSidebarTreeItemActions(props: PagesSidebarTreeItemActions_Props) {
+	const { archiveOperationId, isPending, isTabbable, onCreatePage, onRename, onArchive, onUnarchive } = props;
+
+	return (
+		<div className={"PagesSidebarTreeItemActions" satisfies PagesSidebarTreeItemActions_ClassNames}>
+			<PagesSidebarTreeItemSecondaryActionCreatePage
+				isActive={isTabbable}
+				disabled={isPending}
+				onClick={onCreatePage}
+			/>
+			<PagesSidebarTreeItemMoreAction
+				archiveOperationId={archiveOperationId}
+				isPending={isPending}
+				isTabbable={isTabbable}
+				onRename={onRename}
+				onArchive={onArchive}
+				onUnarchive={onUnarchive}
+			/>
+		</div>
+	);
+}
+// #endregion tree item actions
 
 // #region tree item
 type PagesSidebarTreeItem_ClassNames =
@@ -588,10 +643,7 @@ type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem-content-navigated"
 	| "PagesSidebarTreeItem-content-dragging-target"
 	| "PagesSidebarTreeItem-content-archived"
-	| "PagesSidebarTreeItem-content-placeholder"
-	| "PagesSidebarTreeItem-meta-label"
-	| "PagesSidebarTreeItem-meta-label-text"
-	| "PagesSidebarTreeItem-actions";
+	| "PagesSidebarTreeItem-content-placeholder";
 
 type PagesSidebarTreeItem_CustomAttributes = {
 	"data-item-id": string;
@@ -649,9 +701,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const metaText = shouldRenderMeta
 		? `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`
 		: "";
-	const tooltipContent = shouldRenderMeta
-		? `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`
-		: undefined;
+
 	const isExpanded = tree().getState().expandedItems.includes(itemId);
 
 	const handleCreatePageClick = useFn<PagesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
@@ -699,18 +749,18 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 			} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
 		>
 			{isPlaceholder ? (
-				<PagesSidebarTreeItemPrimaryContent title={itemData.title} />
+				<PagesSidebarTreeItemPrimaryContent tree={tree} item={item} />
 			) : (
 				<>
 					<PagesSidebarTreeItemPrimaryAction
-						itemId={itemId}
+						tree={tree}
 						item={item}
-						title={<PagesSidebarTreeItemTitle tree={tree} item={item} />}
 						isPending={isPending}
 						isTreeDragging={isTreeDragging}
-						tooltipContent={tooltipContent}
 						onTreeItemPrimaryClick={onTreeItemPrimaryClick}
 					/>
+
+					<PagesSidebarTreeItemPrimaryContent tree={tree} item={item} />
 
 					<PagesSidebarTreeItemArrow
 						isExpanded={isExpanded}
@@ -719,27 +769,17 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 						onClick={handleTreeItemArrowClick}
 					/>
 
-					<div className={"PagesSidebarTreeItem-meta-label" satisfies PagesSidebarTreeItem_ClassNames}>
-						<div className={"PagesSidebarTreeItem-meta-label-text" satisfies PagesSidebarTreeItem_ClassNames}>
-							{metaText}
-						</div>
-					</div>
+					<PagesSidebarTreeItemMetaLabel metaText={metaText} />
 
-					<div className={"PagesSidebarTreeItem-actions" satisfies PagesSidebarTreeItem_ClassNames}>
-						<PagesSidebarTreeItemSecondaryActionCreatePage
-							isActive={isTabbableRow}
-							disabled={isPending}
-							onClick={handleCreatePageClick}
-						/>
-						<PagesSidebarTreeItemMoreAction
-							archiveOperationId={itemData.archiveOperationId}
-							isPending={isPending}
-							isTabbable={isTabbableRow}
-							onRename={handleRenameClick}
-							onArchive={handleArchiveClick}
-							onUnarchive={handleUnarchiveClick}
-						/>
-					</div>
+					<PagesSidebarTreeItemActions
+						archiveOperationId={itemData.archiveOperationId}
+						isPending={isPending}
+						isTabbable={isTabbableRow}
+						onCreatePage={handleCreatePageClick}
+						onRename={handleRenameClick}
+						onArchive={handleArchiveClick}
+						onUnarchive={handleUnarchiveClick}
+					/>
 				</>
 			)}
 		</div>
