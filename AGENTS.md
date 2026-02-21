@@ -848,6 +848,14 @@ By default, a component must only use class names from its own `_ClassNames` typ
 
 If you need a class name for a subcomponent, create a dedicated `<SubcomponentName>_ClassNames` type for that subcomponent and use that type inside the subcomponent implementation.
 
+## Extraction rename rule (mandatory)
+
+When extracting JSX into a new component (same file or new file), rename class literals to the new component prefix and update matching CSS selectors in the same change.
+
+- The extracted component must own `NewComponent*` class names in `NewComponent_ClassNames`.
+- Do not leave only `OldComponent*` classes inside the extracted component.
+- If reuse is intentional, apply both classes (`NewComponent*` + `OldComponent*`) and satisfy both class contracts.
+
 ✅ Good: subcomponent owns its class names
 
 ```tsx
