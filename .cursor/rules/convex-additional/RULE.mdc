@@ -88,10 +88,7 @@ Example:
 ```ts
 export const create_page = mutation({
 	args: { name: v.string() },
-	returns: v.union(
-		v.object({ _yay: v.object({ pageId: v.id("pages") }) }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const page = await do_create_page(ctx, args);
 		if (page._nay) {

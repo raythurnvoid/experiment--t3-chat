@@ -43,7 +43,9 @@ export function CopyIconButton(props: CopyIconButton_Props) {
 		setCopyState(undefined);
 		copy_to_clipboard({ text })
 			.then((res) => setCopyState(res))
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[CopyIconButton.handleCopy] Error copying text", { error });
+			});
 	};
 
 	return (

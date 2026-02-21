@@ -392,7 +392,9 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 				.then(() => {
 					composerRef.current?.focus();
 				})
-				.catch(console.error);
+				.catch((error) => {
+					console.error("[PageEditorCommentsThread.handleToggle] Error focusing composer", { error });
+				});
 
 			// @ts-expect-error onClick is from liveblocks expects a MouseEvent
 			// but this works fine as well

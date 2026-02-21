@@ -540,7 +540,9 @@ function PageEditorRichTextDragHandleMenuPopover(props: PageEditorRichTextDragHa
 					"text/plain": new Blob([text], { type: "text/plain" }),
 				}),
 			])
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[PageEditorRichTextDragHandle.handleCopy] Error copying node to clipboard", { error });
+			});
 	};
 
 	const handleDelete = () => {

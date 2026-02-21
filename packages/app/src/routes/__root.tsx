@@ -42,9 +42,11 @@ function LayoutInner() {
 		})
 			.then((result) => {
 				if (result._nay) {
-					throw new Error("[RootLayout.ensure_home_page] Failed to ensure home page", {
-						cause: result._nay,
+					console.error("[RootLayout.ensure_home_page] Failed to ensure home page", {
+						result,
 					});
+					setCriticalError("Error while initializing the home page");
+					return;
 				}
 				useAppGlobalStore.actions.setPagesHomeId(result._yay.pageId);
 			})

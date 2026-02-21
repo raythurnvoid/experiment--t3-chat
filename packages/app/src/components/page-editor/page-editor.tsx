@@ -785,7 +785,9 @@ export function PageEditor(props: PageEditor_Props) {
 		navigate({
 			to: "/pages",
 			search: nextSearch,
-		}).catch(console.error);
+		}).catch((error) => {
+			console.error("[PageEditor_Inner.handleNavigatePendingEdits] Error navigating to pending edits", { error });
+		});
 	};
 
 	return pageId ? (

@@ -267,7 +267,9 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			.then(() => {
 				updateBubbleMenuPosition();
 			})
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[PageEditorRichText.handleClickAi] Error updating bubble menu position", { error });
+			});
 	};
 
 	const handleClickComment: MyButton_Props["onClick"] = () => {
@@ -279,7 +281,9 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			.then(() => {
 				updateBubbleMenuPosition();
 			})
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[PageEditorRichText.handleClickComment] Error updating bubble menu position", { error });
+			});
 	};
 
 	const handleDiscardAi: () => void = () => {

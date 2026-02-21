@@ -103,7 +103,7 @@ export function useStateRef<T>(initialValue: T) {
  * 	navigator.clipboard
  * 		.writeText("Hello")
  * 		.then(() => setIsCopied(true))
- * 		.catch(console.error);
+ * 		.catch((error) => console.error("[Example.handleCopy] Error copying to clipboard", { error }));
  * };
  *
  * return (
@@ -417,7 +417,9 @@ export function useAsyncEffect(effect: (signal: AbortSignal) => Promise<void>, d
 	useEffect(() => {
 		const abortController = new AbortController();
 
-		effect(abortController.signal).catch(console.error);
+		effect(abortController.signal).catch((error) => {
+			console.error("[useAsyncEffect] Error in async effect", { error });
+		});
 
 		return () => {
 			abortController.abort();

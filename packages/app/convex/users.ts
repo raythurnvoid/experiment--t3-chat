@@ -16,6 +16,7 @@ import {
 } from "../shared/users.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { Id } from "./_generated/dataModel";
+import { v_result } from "../server/convex-utils.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
 	throw new Error("ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env");
@@ -221,10 +222,7 @@ export const resolve_user = internalMutation({
 		anonymousUserToken: v.optional(v.string()),
 		displayName: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.object({ userId: v.id("users") }) }),
-		v.object({ _nay: v.object({ message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.object({ userId: v.id("users") }), _nay: { includeName: false } }),
 	handler: async (ctx, args) => {
 		let resultUserId: Id<"users"> | undefined;
 

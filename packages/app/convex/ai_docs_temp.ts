@@ -59,6 +59,7 @@ import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
+import { v_result } from "../server/convex-utils.ts";
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
 	if (parentPath === "/") {
@@ -460,10 +461,7 @@ export const create_page = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.object({ pageId: v.id("pages") }) }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const nameValidationResult = pages_validate_name(args.name);
 		if (nameValidationResult._nay) {
@@ -491,10 +489,7 @@ export const create_page_quick = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.object({ pageId: v.id("pages") }) }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 
@@ -553,10 +548,7 @@ export const rename_page = mutation({
 		pageId: v.id("pages"),
 		name: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.null() }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.optional(v.any()) }) }),
-	),
+	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const page = await ctx.db.get("pages", args.pageId);
@@ -623,10 +615,7 @@ export const move_pages = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.null() }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
 			workspaceId: args.workspaceId,
@@ -712,10 +701,7 @@ export const archive_pages = mutation({
 		projectId: v.string(),
 		pageIds: v.array(v.id("pages")),
 	},
-	returns: v.union(
-		v.object({ _yay: v.null() }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.any() }) }),
-	),
+	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -797,10 +783,7 @@ export const unarchive_pages = mutation({
 		projectId: v.string(),
 		pageIds: v.array(v.id("pages")),
 	},
-	returns: v.union(
-		v.object({ _yay: v.null() }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.optional(v.any()) }) }),
-	),
+	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
@@ -1584,10 +1567,7 @@ export const create_page_by_path = internalMutation({
 		path: v.string(),
 		userId: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.object({ pageId: v.id("pages") }) }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const { workspaceId, projectId } = args;
 		const path = args.path.trim();
@@ -1655,10 +1635,7 @@ export const ensure_home_page = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.union(
-		v.object({ _yay: v.object({ pageId: v.id("pages") }) }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-	),
+	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		// Find homepage (empty name under root)
 		const homepage = await ctx.db
@@ -1985,10 +1962,7 @@ export const yjs_snapshot_updates = internalMutation({
 		projectId: v.string(),
 		pageId: v.id("pages"),
 	},
-	returns: v.union(
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
-		v.object({ _yay: v.null() }),
-	),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const cleanScheduleLocksPromise = ctx.db
 			.query("pages_yjs_snapshot_schedules")
@@ -2254,17 +2228,7 @@ export const restore_snapshot = mutation({
 		sessionId: v.string(),
 		currentMarkdownContent: v.string(),
 	},
-	returns: v.union(
-		v.object({
-			_yay: v.null(),
-		}),
-		v.object({
-			_nay: v.object({
-				name: v.string(),
-				message: v.string(),
-			}),
-		}),
-	),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 

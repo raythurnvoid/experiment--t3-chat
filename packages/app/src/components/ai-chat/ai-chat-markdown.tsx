@@ -62,7 +62,9 @@ const useCopyToClipboard = ({
 				setIsCopied(true);
 				setTimeout(() => setIsCopied(false), copiedDuration);
 			})
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[AiChatMarkdown.useCopyToClipboard] Error copying to clipboard", { error });
+			});
 	};
 
 	return { isCopied, copyToClipboard };

@@ -586,7 +586,9 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			.then((result) => {
 				selectThread(result.threadId);
 			})
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[useAiChatController.branchChat] Error branching chat", { error, threadId, messageId });
+			});
 	};
 
 	const selectThread = (threadId: string) => {
@@ -632,7 +634,9 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	};
 
 	const setThreadStarred = (threadId: string, starred: boolean) => {
-		updateThread({ threadId, starred }).catch(console.error);
+		updateThread({ threadId, starred }).catch((error) => {
+			console.error("[useAiChatController.setThreadStarred] Error updating thread star", { error, threadId, starred });
+		});
 	};
 
 	const archiveThread = (threadId: string, isArchived: boolean) => {
@@ -655,7 +659,9 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			useAiChatStore.setState(() => ({ selectedThreadId: null }));
 		}
 
-		updateThread({ threadId, isArchived }).catch(console.error);
+		updateThread({ threadId, isArchived }).catch((error) => {
+			console.error("[useAiChatController.archiveThread] Error updating archive status", { error, threadId, isArchived });
+		});
 	};
 
 	const regenerate = (threadId: string, messageId: string) => {
@@ -688,7 +694,9 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				messageId,
 				metadata: { isOptimistic: session.optimisticThread ? true : false } satisfies ChatRequestMetadata,
 			})
-			.catch(console.error);
+			.catch((error) => {
+				console.error("[useAiChatController.regenerate] Error regenerating message", { error, threadId, messageId });
+			});
 
 		useAiChatStore.actions.setSession(threadId, (prev) => {
 			if (!prev) {

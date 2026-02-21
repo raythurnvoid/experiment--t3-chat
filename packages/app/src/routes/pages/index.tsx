@@ -98,7 +98,9 @@ function RoutePages() {
 		navigate({
 			to: "/pages",
 			search: { pageId, view },
-		}).catch(console.error);
+		}).catch((error) => {
+			console.error("[PagesRoute.navigateToPage] Error navigating to page", { error, pageId, view });
+		});
 	};
 
 	const navigateToView = (nextView: pages_EditorView) => {
@@ -107,7 +109,9 @@ function RoutePages() {
 		navigate({
 			to: "/pages",
 			search: { pageId, view },
-		}).catch(console.error);
+		}).catch((error) => {
+			console.error("[PagesRoute.navigateToView] Error navigating to view", { error, pageId, view });
+		});
 	};
 
 	const handleArchive = (itemId: string) => {
