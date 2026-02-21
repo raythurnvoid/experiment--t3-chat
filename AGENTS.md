@@ -338,6 +338,31 @@ For log messages:
 
 - Start with `[OwnerSymbol.operation]`
 - Keep logs stable and concise; include variable details as structured metadata
+- Do not use `.catch(console.error)` in promise chains; prefer explicit handlers like `.catch((error) => { console.error("[OwnerSymbol.operation] ...", { error, ...context }); })` so failures include operation context
+
+### Promise error-handling style
+
+For promise chains in frontend/component handlers, prefer logging + early return over throwing for expected `Result._nay` branches.
+
+- In `.then((result) => { ... })`, when `result._nay` is an expected/recoverable branch, use `console.error` with context and `return` early.
+- Do not `throw new Error(...)` inside `.then(...)` for expected `Result._nay` branches in UI handlers.
+- Keep `.catch(...)` for unexpected exceptions/rejections, and make it contextual (no bare `console.error` pass-through).
+- Reserve throws for true boundary layers where an exception is required (see "Throwing because of `_nay`").
+
+```ts
+someAsyncOperation()
+	.then((result) => {
+		if (result._nay) {
+			console.error("[OwnerSymbol.operation] Failed to perform operation", { result, ...context });
+			return;
+		}
+
+		// success path
+	})
+	.catch((error) => {
+		console.error("[OwnerSymbol.operation] Unexpected async error", { error, ...context });
+	});
+```
 
 ## Consistency requirement (same-author rule)
 
@@ -650,3 +675,13 @@ window.matchMedia("(prefers-color-scheme: dark)").matches;
 # Use Playwright / browser tools
 
 Do not use Playwright or any browser automation tools unless the user explicitly requests it.
+
+# Debug mode logging (Convex exception)
+
+When working in debug mode, follow hypothesis-driven runtime debugging and use temporary instrumentation logs.
+
+- For frontend/client JavaScript or TypeScript paths, use the configured debug ingestion endpoint/log-file workflow when requested by the session.
+- **For Convex code paths, do not use fetch-based debug logging to localhost ingestion endpoints.**
+- For Convex debugging, add temporary structured `console.log` instrumentation in Convex code, then read those logs from the terminal output while `pnpx convex dev` is running.
+- If Convex logs are needed, inspect the relevant terminal output file (the terminal stream contains Convex server logs).
+- Keep temporary logs during verification runs, then clean them up after the fix is confirmed.

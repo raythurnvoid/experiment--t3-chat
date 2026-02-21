@@ -136,6 +136,7 @@ Minimal reusable checks (`/pages`):
 4. Rename works with `F2` on focused row.
 5. Ctrl/Cmd multi-select still works.
 6. Cleanup removes or archives all test entities created by the run.
+7. If pending-edit affordances appear missing, verify URL `view` first: pending banner is intentionally hidden in `diff_editor` mode and shown in rich/plain modes.
 
 Troubleshooting heuristics:
 

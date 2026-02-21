@@ -15,7 +15,7 @@ import {
 	Search,
 	X,
 } from "lucide-react";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useQuery } from "convex/react";
 import {
 	dragAndDropFeature,
 	expandAllFeature,
@@ -51,7 +51,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, sx } from "
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
-import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
+import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	pages_ROOT_ID,
 	pages_create_tree_placeholder_child,
@@ -490,21 +490,24 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 type PagesSidebarTreeRenameInput_ClassNames = "PagesSidebarTreeRenameInput" | "PagesSidebarTreeRenameInput-input";
 
 type PagesSidebarTreeRenameInput_Props = {
+	tree: PagesSidebarTree_Shared;
 	item: PagesSidebarTreeItem_Instance;
 };
 
 function PagesSidebarTreeRenameInput(props: PagesSidebarTreeRenameInput_Props) {
 	const { item } = props;
 
+	const renameInputProps = useVal(() => item.getRenameInputProps());
+
 	return (
-		<form className={"PagesSidebarTreeRenameInput" satisfies PagesSidebarTreeRenameInput_ClassNames}>
+		<div className={"PagesSidebarTreeRenameInput" satisfies PagesSidebarTreeRenameInput_ClassNames}>
 			<MyInput>
 				<MyInputControl
-					{...item.getRenameInputProps()}
+					{...renameInputProps}
 					className={"PagesSidebarTreeRenameInput-input" satisfies PagesSidebarTreeRenameInput_ClassNames}
 				/>
 			</MyInput>
-		</form>
+		</div>
 	);
 }
 // #endregion tree rename input
@@ -549,6 +552,8 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 
 function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAction_Props) {
 	const { itemId, item, title, isPending, isTreeDragging, tooltipContent, onTreeItemPrimaryClick } = props;
+	const itemProps = useVal(() => item.getProps());
+	const isSelected = useVal(() => item.isSelected());
 
 	const handleClick: MyPrimaryAction_Props["onClick"] = (event) => {
 		onTreeItemPrimaryClick(event, itemId);
@@ -556,8 +561,8 @@ function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAct
 
 	return (
 		<MyPrimaryAction
-			{...item.getProps()}
-			selected={item.isSelected()}
+			{...itemProps}
+			selected={isSelected}
 			className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
 			disabled={isPending}
 			tooltip={isTreeDragging ? undefined : tooltipContent}
@@ -581,6 +586,11 @@ type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem-meta-label-text"
 	| "PagesSidebarTreeItem-actions";
 
+type PagesSidebarTreeItem_CustomAttributes = {
+	"data-item-id": string;
+	"data-page-id": string;
+};
+
 type PagesSidebar_CssVars = {
 	"--PagesSidebarTreeItem-content-depth": number;
 };
@@ -588,7 +598,7 @@ type PagesSidebar_CssVars = {
 type PagesSidebarTreeItem_Props = {
 	itemId: string;
 	tree: PagesSidebarTree_Shared;
-	treeRebuildVersion: number;
+	item: PagesSidebarTreeItem_Instance;
 	selectedPageId: string | null;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
@@ -605,6 +615,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const {
 		itemId,
 		tree,
+		item,
 		selectedPageId,
 		isBusy,
 		pendingActionPageIds,
@@ -617,16 +628,16 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		onTreeItemPrimaryClick,
 	} = props;
 
-	const item = tree().getItemInstance(itemId);
-	const itemData = item.getItemData();
+	const itemData = useVal(() => item.getItemData());
 	const isPlaceholder = itemData.type === "placeholder";
 	const isArchived = itemData.archiveOperationId !== undefined;
 	const isNavigated = selectedPageId === itemId;
 	const isPending = isBusy || pendingActionPageIds.has(itemId);
-	const isTabbableRow = item.isFocused();
-	const depth = item.getItemMeta().level;
-
-	const isDragTarget = item.isDraggingOver();
+	const isTabbableRow = useVal(() => item.isFocused());
+	const depth = useVal(() => item.getItemMeta().level);
+	const pageIdForDebug = itemData.type === "placeholder" ? itemData.parentId : itemId;
+	const isRenaming = useVal(() => item.isRenaming());
+	const isDragTarget = useVal(() => item.isDraggingOver());
 
 	const shouldRenderMeta = !isPlaceholder;
 	const metaText = shouldRenderMeta
@@ -636,6 +647,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		? `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`
 		: undefined;
 	const isExpanded = tree().getState().expandedItems.includes(itemId);
+	const previousRenameBranchRef = useRef(isRenaming);
 
 	const handleCreatePageClick = useFn<PagesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreatePage(itemId);
@@ -661,6 +673,32 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		}
 	});
 
+	useEffect(() => {
+		if (itemData.type !== "page") {
+			return;
+		}
+
+		const renamingItemId = tree().getState().renamingItem ?? null;
+		const isRenamingFromItem = item.isRenaming();
+		const didSwitchBranch = previousRenameBranchRef.current !== isRenaming;
+		const isCurrentRenamingItem = renamingItemId === itemId;
+		if (!didSwitchBranch && !isCurrentRenamingItem) {
+			return;
+		}
+
+		console.info("[PagesSidebarTreeItem.rename-mode]", {
+			itemId,
+			title: itemData.title,
+			renderBranch: isRenaming ? "input" : "primary-action",
+			isRenamingProp: isRenaming,
+			isRenamingFromItem,
+			renamingItemId,
+			didSwitchBranch,
+		});
+
+		previousRenameBranchRef.current = isRenaming;
+	}, [item]);
+
 	return (
 		<div
 			hidden={isHidden}
@@ -676,13 +714,16 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 			style={sx({
 				"--PagesSidebarTreeItem-content-depth": depth,
 			} satisfies Partial<PagesSidebar_CssVars>)}
-			data-item-id={itemId}
+			{...({
+				"data-item-id": itemId,
+				"data-page-id": pageIdForDebug,
+			} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
 		>
 			{isPlaceholder ? (
 				<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
 			) : (
 				<>
-					{item.isRenaming() ? (
+					{isRenaming ? (
 						<div className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}>
 							<div
 								className={
@@ -691,7 +732,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 							>
 								<PagesSidebarTreeItemIcon />
 								<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
-									<PagesSidebarTreeRenameInput item={item} />
+									<PagesSidebarTreeRenameInput tree={tree} item={item} />
 								</div>
 							</div>
 						</div>
@@ -787,7 +828,6 @@ type PagesSidebarTree_ClassNames =
 
 type PagesSidebarTree_Props = {
 	tree: PagesSidebarTree_Shared;
-	treeRebuildVersion: number;
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	isSearchActive: boolean;
@@ -809,11 +849,9 @@ type PagesSidebarTree_DivProps = React.ComponentProps<"div">;
 function PagesSidebarTree(props: PagesSidebarTree_Props) {
 	const {
 		tree,
-		treeRebuildVersion,
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
-		treeItemIds,
 		visibleTreeItemIds,
 		visibleIds,
 		selectedPageId,
@@ -953,24 +991,26 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 							{isSearchActive ? "No pages match your search." : "No pages yet."}
 						</div>
 					) : null}
-					{treeItemIds.map((itemId) => (
-						<PagesSidebarTreeItem
-							key={itemId}
-							itemId={itemId}
-							tree={tree}
-							treeRebuildVersion={treeRebuildVersion}
-							selectedPageId={selectedPageId}
-							isBusy={isBusy}
-							pendingActionPageIds={pendingActionPageIds}
-							isTreeDragging={isTreeDragging}
-							isHidden={!visibleTreeItemIds.has(itemId) || (!!visibleIds && !visibleIds.has(itemId))}
-							onCreatePage={onCreatePage}
-							onStartRename={onStartRename}
-							onArchive={onArchive}
-							onUnarchive={onUnarchive}
-							onTreeItemPrimaryClick={onTreeItemPrimaryClick}
-						/>
-					))}
+					{tree()
+						.getItems()
+						.map((item) => (
+							<PagesSidebarTreeItem
+								key={item.getId()}
+								itemId={item.getId()}
+								tree={tree}
+								item={item}
+								selectedPageId={selectedPageId}
+								isBusy={isBusy}
+								pendingActionPageIds={pendingActionPageIds}
+								isTreeDragging={isTreeDragging}
+								isHidden={!visibleTreeItemIds.has(item.getId()) || (!!visibleIds && !visibleIds.has(item.getId()))}
+								onCreatePage={onCreatePage}
+								onStartRename={onStartRename}
+								onArchive={onArchive}
+								onUnarchive={onUnarchive}
+								onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+							/>
+						))}
 				</>
 			)}
 		</div>
@@ -1009,6 +1049,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const { selectedPageId, state = "expanded", view, onClose, onArchive, onPrimaryAction } = props;
 
 	const navigate = useNavigate();
+	const convex = useConvex();
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
 
@@ -1019,19 +1060,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const [resolvedTreeItemsList, setResolvedTreeItemsList] = useState<typeof queriedTreeItemsList>(undefined);
 	const treeItemsList = queriedTreeItemsList ?? resolvedTreeItemsList;
 
-	const movePages = useMutation(app_convex_api.ai_docs_temp.move_pages);
-	const renamePage = useMutation(app_convex_api.ai_docs_temp.rename_page);
-	const createPage = useMutation(app_convex_api.ai_docs_temp.create_page);
-	const archivePages = useMutation(app_convex_api.ai_docs_temp.archive_pages);
-	const unarchivePage = useMutation(app_convex_api.ai_docs_temp.unarchive_pages);
-
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
 	const [isCreatingPage, setIsCreatingPage] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
-	const [pendingRenamePageId, setPendingRenamePageId] = useState<string | null>(null);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
-	const [treeRebuildVersion, setTreeRebuildVersion] = useState(0);
 
 	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
 	const expandedItemsBeforeSearchRef = useRef<string[] | null>(null);
@@ -1089,24 +1122,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		});
 	};
 
-	const movePagesToParent = (args: { pageIds: string[]; targetParentId: string }) => {
-		const movedPageIds = args.pageIds.filter((pageId) => treeCollection[pageId]?.data.type === "page");
-		if (movedPageIds.length === 0) {
-			return Promise.resolve();
-		}
-
-		return movePages({
-			itemIds: movedPageIds.map((itemId) => pages_sidebar_to_page_id(itemId)),
-			targetParentId: pages_sidebar_to_parent_id(args.targetParentId),
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-		}).then((result) => {
-			if (result._nay) {
-				throw new Error("[PagesSidebar.movePagesToParent] Error moving pages", { cause: result._nay });
-			}
-		});
-	};
-
 	const canDrag = useFn<NonNullable<Parameters<typeof useTree<pages_TreeItem>>[0]["canDrag"]>>((items) => {
 		return items.every((item) => item.getItemData().type === "page");
 	});
@@ -1133,10 +1148,28 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	});
 
 	const handleDrop = useFn<NonNullable<Parameters<typeof useTree<pages_TreeItem>>[0]["onDrop"]>>((items, target) => {
-		movePagesToParent({
-			pageIds: items.map((item) => item.getId()),
-			targetParentId: target.item.getId(),
-		}).catch(console.error);
+		const pageIds = items.map((item) => item.getId());
+		const targetParentId = target.item.getId();
+
+		const movedPageIds = pageIds.filter((pageId) => treeCollection[pageId]?.data.type === "page");
+		if (movedPageIds.length === 0) {
+			return;
+		}
+
+		return convex
+			.mutation(app_convex_api.ai_docs_temp.move_pages, {
+				itemIds: movedPageIds.map((itemId) => pages_sidebar_to_page_id(itemId)),
+				targetParentId: pages_sidebar_to_parent_id(targetParentId),
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[PagesSidebar.movePagesToParent] Failed to move pages", { result });
+					return;
+				}
+			})
+			.catch((error) => console.error("[PagesSidebar.movePagesToParent] Error moving pages", { error }));
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<pages_TreeItem>>[0]["canRename"]>>((item) => {
@@ -1146,6 +1179,12 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const handleRename = useFn<NonNullable<Parameters<typeof useTree<pages_TreeItem>>[0]["onRename"]>>((item, value) => {
 		const trimmedValue = value.trim();
 		const itemData = item.getItemData();
+		console.info("[PagesSidebarRenameDebug.onRename]", {
+			itemId: item.getId(),
+			value,
+			trimmedValue,
+			currentTitle: itemData.title,
+		});
 		if (itemData.type !== "page") {
 			return;
 		}
@@ -1154,18 +1193,48 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		}
 
 		markPageAsPending(item.getId());
-		renamePage({
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId: pages_sidebar_to_page_id(item.getId()),
-			name: trimmedValue,
-		})
+		convex
+			.mutation(
+				app_convex_api.ai_docs_temp.rename_page,
+				{
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					pageId: pages_sidebar_to_page_id(item.getId()),
+					name: trimmedValue,
+				},
+				{
+					optimisticUpdate: (localStore, args) => {
+						const treeItemsList = localStore.getQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
+							workspaceId: ai_chat_HARDCODED_ORG_ID,
+							projectId: ai_chat_HARDCODED_PROJECT_ID,
+						});
+						if (!treeItemsList) {
+							return;
+						}
+						localStore.setQuery(
+							app_convex_api.ai_docs_temp.get_tree_items_list,
+							{
+								workspaceId: ai_chat_HARDCODED_ORG_ID,
+								projectId: ai_chat_HARDCODED_PROJECT_ID,
+							},
+							treeItemsList.map((treeItem) => {
+								return {
+									...treeItem,
+									title: args.name,
+								};
+							}),
+						);
+					},
+				},
+			)
 			.then((result) => {
 				if (result._nay) {
-					throw new Error("[PagesSidebar.onRename] Error renaming page", { cause: result._nay });
+					console.error("[PagesSidebar.handleRename] Failed to rename page", { result });
 				}
 			})
-			.catch(console.error)
+			.catch((error) => {
+				console.error("[PagesSidebar.handleRename] Error on rename page", { error });
+			})
 			.finally(() => {
 				unmarkPageAsPending(item.getId());
 			});
@@ -1205,18 +1274,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		onPrimaryAction: handlePrimaryAction,
 	});
 
-	const handleStartRename = useFn<PagesSidebarTree_Props["onStartRename"]>((itemId) => {
-		const item = tree().getItemInstance(itemId);
-		if (item.getItemData().type !== "page") {
-			return;
-		}
-
-		item.startRenaming();
-		setTreeRebuildVersion((oldValue) => oldValue + 1);
-	});
-
 	const hasSelectedPageInTree = !!(selectedPageId && treeCollection[selectedPageId]);
-	const hasPendingRenamePageInTree = !!(pendingRenamePageId && treeCollection[pendingRenamePageId]);
 
 	const treeItems = tree().getItems();
 	const visibleTreeItemIds = new Set(
@@ -1307,6 +1365,20 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	}).length;
 	const showEmptyState = !isTreeLoading && visibleTreeItemCount === 0;
 
+	const startRename = useFn((itemId: string) => {
+		const item = tree().getItemInstance(itemId);
+		if (item.getItemData().type !== "page") {
+			return;
+		}
+
+		item.setFocused();
+		item.startRenaming();
+	});
+
+	const handleStartRename = useFn<PagesSidebarTree_Props["onStartRename"]>((itemId) => {
+		startRename(itemId);
+	});
+
 	const handleCreatePageClick = useFn<PagesSidebarTree_Props["onCreatePage"]>((parentPageId) => {
 		const nextPageName = pages_sidebar_get_default_page_name({
 			parentId: parentPageId,
@@ -1314,25 +1386,31 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		});
 
 		setIsCreatingPage(true);
-		createPage({
-			parentId: pages_sidebar_to_parent_id(parentPageId),
-			name: nextPageName,
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-		})
+		convex
+			.mutation(app_convex_api.ai_docs_temp.create_page, {
+				parentId: pages_sidebar_to_parent_id(parentPageId),
+				name: nextPageName,
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			})
 			.then((result) => {
 				if (result._nay) {
-					throw new Error("[PagesSidebar.handleCreatePageClick] Error creating page", {
-						cause: result._nay,
+					console.error("[PagesSidebar.handleCreatePageClick] Error creating page", {
+						result,
 					});
+					return;
 				}
-				setPendingRenamePageId(result._yay.pageId);
+
 				return navigate({
 					to: "/pages",
 					search: { pageId: result._yay.pageId, view },
+				}).then(() => {
+					return startRename(result._yay.pageId);
 				});
 			})
-			.catch(console.error)
+			.catch((error) => {
+				console.error("[PagesSidebar.handleCreatePageClick] Error creating page", { error });
+			})
 			.finally(() => {
 				setIsCreatingPage(false);
 			});
@@ -1348,11 +1426,12 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			markPageAsPending(pageId);
 		}
 
-		archivePages({
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageIds: pageIdsToArchive.map((currentPageId) => pages_sidebar_to_page_id(currentPageId)),
-		})
+		convex
+			.mutation(app_convex_api.ai_docs_temp.archive_pages, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageIds: pageIdsToArchive.map((currentPageId) => pages_sidebar_to_page_id(currentPageId)),
+			})
 			.then(() => {
 				if (selectedPageId && pageIdsToArchive.includes(selectedPageId)) {
 					onArchive(selectedPageId);
@@ -1363,7 +1442,12 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 					onArchive(pageId);
 				}
 			})
-			.catch(console.error)
+			.catch((error) => {
+				console.error("[PagesSidebar.handleArchive] Error archiving pages", {
+					error,
+					pageIdsToArchive,
+				});
+			})
 			.finally(() => {
 				if (shouldArchiveSelectedPages) {
 					tree().setSelectedItems([]);
@@ -1377,17 +1461,21 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	const handleUnarchive = useFn<PagesSidebarTree_Props["onUnarchive"]>((pageId) => {
 		markPageAsPending(pageId);
-		unarchivePage({
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageIds: [pages_sidebar_to_page_id(pageId)],
-		})
+		convex
+			.mutation(app_convex_api.ai_docs_temp.unarchive_pages, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageIds: [pages_sidebar_to_page_id(pageId)],
+			})
 			.then((result) => {
 				if (result._nay) {
-					throw new Error("[PagesSidebar.handleUnarchive] Error unarchiving page", { cause: result._nay });
+					console.error("[PagesSidebar.handleUnarchive] Error unarchiving page", { result, pageId });
+					return;
 				}
 			})
-			.catch(console.error)
+			.catch((error) => {
+				console.error("[PagesSidebar.handleUnarchive] Error unarchiving page", { error, pageId });
+			})
 			.finally(() => {
 				unmarkPageAsPending(pageId);
 			});
@@ -1422,7 +1510,11 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	});
 
 	const handleExpandAllClick = useFn(() => {
-		tree().expandAll().catch(console.error);
+		tree()
+			.expandAll()
+			.catch((error) => {
+				console.error("[PagesSidebar.handleExpandAllClick] Error expanding tree", { error });
+			});
 	});
 
 	const handleCollapseAllClick = useFn(() => {
@@ -1456,7 +1548,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		}
 
 		tree().rebuildTree();
-		setTreeRebuildVersion((oldValue) => oldValue + 1);
 	}, [isArchivedShown, treeItemsList]);
 
 	useEffect(() => {
@@ -1525,14 +1616,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		}
 		tree().getItemInstance(selectedPageId).setFocused();
 	}, [hasSelectedPageInTree, selectedPageId]);
-
-	useEffect(() => {
-		if (!pendingRenamePageId || !hasPendingRenamePageInTree) {
-			return;
-		}
-		handleStartRename(pendingRenamePageId);
-		setPendingRenamePageId(null);
-	}, [hasPendingRenamePageInTree, pendingRenamePageId]);
 
 	return (
 		<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
@@ -1649,7 +1732,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 					<PagesSidebarTree
 						tree={tree}
-						treeRebuildVersion={treeRebuildVersion}
 						isTreeLoading={isTreeLoading}
 						showEmptyState={showEmptyState}
 						isSearchActive={isSearchActive}

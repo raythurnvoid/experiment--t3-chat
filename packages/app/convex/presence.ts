@@ -20,7 +20,8 @@ export const heartbeat = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		// Cancel any scheduled pending-edits cleanup for this user on heartbeat
+		// If the user reconnects before cleanup runs (for example after a quick refresh),
+		// cancel the scheduled pending-edits cleanup so they do not lose unsaved work.
 		const scheduled = await ctx.db
 			.query("ai_chat_pending_edits_cleanup_tasks")
 			.withIndex("by_userId", (q) => q.eq("userId", user.id))
@@ -229,7 +230,8 @@ export const disconnect = mutation({
 		// Let presence handle the disconnect first
 		const result = await presence.disconnect(ctx, args.sessionToken);
 
-		// Schedule pending edits cleanup in 10s for the current user
+		// Delete pending edits when a user disconnects so stale pending overlays do not linger forever.
+		// Keep a grace window so quick reconnects (for example page refresh) can cancel this cleanup.
 		const effective = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const userId = effective.id;
 		const existing = await ctx.db
@@ -243,7 +245,7 @@ export const disconnect = mutation({
 
 		console.info("disconnect", userId);
 
-		const scheduledId = await ctx.scheduler.runAfter(10_000, internal.presence.remove_pending_edits_if_offline, {
+		const scheduledId = await ctx.scheduler.runAfter(30_000, internal.presence.remove_pending_edits_if_offline, {
 			userId,
 		});
 
@@ -277,7 +279,7 @@ export const remove_pending_edits_if_offline = internalMutation({
 
 		if (isOnline) return;
 
-		// Remove pending edits for this user
+		// User remained offline after the grace window, so clear pending edits.
 		const pending = await ctx.db
 			.query("ai_chat_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>

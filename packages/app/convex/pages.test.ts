@@ -282,6 +282,50 @@ test("create_page rejects duplicate active path", async () => {
 	expect(duplicateCreation._nay.message).toContain("path already exists");
 });
 
+test("create_page rejects names containing path separator characters", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+	const invalidNames = ["invalid/name", "invalid\\name"];
+
+	for (const invalidName of invalidNames) {
+		const result = await asUser.mutation(api.ai_docs_temp.create_page, {
+			parentId: pages_ROOT_ID,
+			name: invalidName,
+			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+			projectId: test_mocks_hardcoded.project_id.project_1,
+		});
+
+		if (result._yay) {
+			throw new Error("Expected create_page to fail for invalid page name");
+		}
+
+		expect(result._nay.message).toContain("Invalid page name");
+	}
+
+	await t.run(async (ctx) => {
+		for (const invalidName of invalidNames) {
+			const invalidPages = await ctx.db
+				.query("pages")
+				.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+					q
+						.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
+						.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+						.eq("parentId", pages_ROOT_ID)
+						.eq("name", invalidName),
+				)
+				.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+				.collect();
+
+			expect(invalidPages).toHaveLength(0);
+		}
+	});
+});
+
 test("archived pages can share path with a new active page", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
@@ -366,6 +410,38 @@ test("rename_page returns conflict and keeps original path", async () => {
 		expect(pageRoot2?.name).toBe(db.pages.page_root_2.name);
 		expect(pageRoot2?.path).toBe(`/${db.pages.page_root_2.name}`);
 	});
+});
+
+test("rename_page rejects names containing path separator characters and keeps original values", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+	const invalidNames = ["invalid/name", "invalid\\name"];
+
+	const before = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_2._id));
+
+	for (const invalidName of invalidNames) {
+		const renameResult = await asUser.mutation(api.ai_docs_temp.rename_page, {
+			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+			projectId: test_mocks_hardcoded.project_id.project_1,
+			pageId: db.pages.page_root_2._id,
+			name: invalidName,
+		});
+
+		if (renameResult._yay !== undefined) {
+			throw new Error("Expected rename_page to fail for invalid page name");
+		}
+
+		expect(renameResult._nay.message).toContain("Invalid page name");
+	}
+
+	const after = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_2._id));
+	expect(after?.name).toBe(before?.name);
+	expect(after?.path).toBe(before?.path);
 });
 
 test("move_pages returns conflict and keeps original path", async () => {
@@ -531,6 +607,46 @@ test("resolve_page_id_from_path ignores archived pages with duplicate path", asy
 	);
 
 	expect(resolvedRoot1).toBe(db.pages.page_root_1._id);
+});
+
+test("create_page_by_path rejects invalid path segments", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const invalidPath = "/invalid_parent/invalid\\name";
+	const createByPath = await asUser.mutation(internal.ai_docs_temp.create_page_by_path, {
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		path: invalidPath,
+		userId: String(db.pages.page_root_1.createdBy),
+	});
+
+	if (createByPath._yay) {
+		throw new Error("Expected create_page_by_path to fail for invalid path segment");
+	}
+
+	expect(createByPath._nay.message).toContain("Invalid page name");
+
+	await t.run(async (ctx) => {
+		const invalidParentRows = await ctx.db
+			.query("pages")
+			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+				q
+					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
+					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+					.eq("parentId", pages_ROOT_ID)
+					.eq("name", "invalid_parent"),
+			)
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.collect();
+
+		expect(invalidParentRows).toHaveLength(0);
+	});
 });
 
 test("create_page_by_path reuses only active pages", async () => {

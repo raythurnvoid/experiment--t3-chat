@@ -581,11 +581,11 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		return pendingEditsResult ? [pendingEditsResult] : [];
 	})();
 	const hasAnyPendingEdits = pendingEditsOrdered.length > 0;
-	const hasPendingEdits = hasAnyPendingEdits && editorMode !== "diff_editor";
+	const hasPendingEdits = hasAnyPendingEdits;
 	const currentPendingEditIndex = pendingEditsOrdered.findIndex((pendingEdit) => pendingEdit.pageId === pageId);
 	const hasCurrentPendingEdits = currentPendingEditIndex >= 0;
 	const activePendingEditIndex = hasCurrentPendingEdits ? currentPendingEditIndex : 0;
-	const canNavigatePendingEdits = pendingEditsOrdered.length > 1;
+	const canNavigatePendingEdits = pendingEditsOrdered.length > 1 || (pendingEditsOrdered.length === 1 && !hasCurrentPendingEdits);
 	const reviewPagerLabel = hasCurrentPendingEdits
 		? `Review ${activePendingEditIndex + 1} of ${pendingEditsOrdered.length}`
 		: "Review pending edits";
@@ -605,6 +605,15 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 
 		const navCount = pendingEditsOrdered.length;
 		if (navCount <= 1) {
+			const onlyPendingEdit = pendingEditsOrdered[0];
+			if (!onlyPendingEdit || hasCurrentPendingEdits) {
+				return;
+			}
+
+			onNavigatePendingEdits({
+				pageId: onlyPendingEdit.pageId,
+				forceDiffEditor: true,
+			});
 			return;
 		}
 
@@ -643,7 +652,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		hasPendingEdits ? (
 			<PageEditorPendingEditsFloating
 				updatedAt={pendingEditsResult?.updatedAt}
-				showReviewButton={hasCurrentPendingEdits}
+				showReviewButton={hasCurrentPendingEdits && editorMode !== "diff_editor"}
 				reviewPagerLabel={reviewPagerLabel}
 				canNavigate={canNavigatePendingEdits}
 				onReviewChanges={onReviewPendingEdits ?? (() => {})}

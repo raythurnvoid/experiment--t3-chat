@@ -38,6 +38,7 @@ import {
 import {
 	pages_FIRST_VERSION,
 	pages_ROOT_ID,
+	pages_validate_name,
 	pages_headless_tiptap_editor_create,
 	pages_u8_to_array_buffer,
 	pages_headless_tiptap_editor_set_content_from_markdown,
@@ -121,9 +122,9 @@ function is_home_page(page: Partial<Pick<Doc<"pages">, "path" | "parentId" | "na
 
 type pages_QueryOrMutationCtx = QueryCtx | MutationCtx;
 
-async function find_active_pages_by_path(
+function db_query_pages_by_path(
 	ctx: pages_QueryOrMutationCtx,
-	args: { workspaceId: string; projectId: string; path: string },
+	args: { workspaceId: string; projectId: string; path: string; archiveOperationId: string | undefined },
 ) {
 	return ctx.db
 		.query("pages")
@@ -132,17 +133,8 @@ async function find_active_pages_by_path(
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("path", args.path)
-				.eq("archiveOperationId", undefined),
-		)
-		.collect();
-}
-
-async function find_active_page_by_path(
-	ctx: pages_QueryOrMutationCtx,
-	args: { workspaceId: string; projectId: string; path: string },
-) {
-	const activePages = await find_active_pages_by_path(ctx, args);
-	return activePages.at(0) ?? null;
+				.eq("archiveOperationId", args.archiveOperationId),
+		);
 }
 
 async function find_active_path_conflict(
@@ -154,11 +146,12 @@ async function find_active_path_conflict(
 		excludePageIds?: Array<Id<"pages">>;
 	},
 ) {
-	const activePages = await find_active_pages_by_path(ctx, {
+	const activePages = await db_query_pages_by_path(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: args.path,
-	});
+		archiveOperationId: undefined,
+	}).collect();
 	const excludePageIdsSet = new Set(args.excludePageIds ?? []);
 	for (const activePage of activePages) {
 		if (excludePageIdsSet.has(activePage._id)) {
@@ -174,7 +167,12 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; 
 		return null;
 	}
 
-	const activePageByMaterializedPath = await find_active_page_by_path(ctx, args);
+	const activePageByMaterializedPath = await db_query_pages_by_path(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: args.path,
+		archiveOperationId: undefined,
+	}).first();
 	return activePageByMaterializedPath?._id ?? null;
 }
 
@@ -197,7 +195,12 @@ async function resolve_tree_node_id_from_path_fn(
 ) {
 	if (args.path === "/") return pages_ROOT_ID;
 
-	const pageByMaterializedPath = await find_active_page_by_path(ctx, args);
+	const pageByMaterializedPath = await db_query_pages_by_path(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: args.path,
+		archiveOperationId: undefined,
+	}).first();
 	if (pageByMaterializedPath) {
 		return pageByMaterializedPath._id;
 	}
@@ -462,6 +465,11 @@ export const create_page = mutation({
 		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
 	),
 	handler: async (ctx, args) => {
+		const nameValidationResult = pages_validate_name(args.name);
+		if (nameValidationResult._nay) {
+			return nameValidationResult;
+		}
+
 		const page = await do_create_page(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -559,6 +567,11 @@ export const rename_page = mutation({
 		if (is_home_page(page)) {
 			// Ignore rename requests for homepage
 			return Result({ _yay: null });
+		}
+
+		const nameValidationResult = pages_validate_name(args.name);
+		if (nameValidationResult._nay) {
+			return nameValidationResult;
 		}
 
 		const parentPath = await resolve_parent_path_from_parent_id(ctx, {
@@ -786,7 +799,7 @@ export const unarchive_pages = mutation({
 	},
 	returns: v.union(
 		v.object({ _yay: v.null() }),
-		v.object({ _nay: v.object({ name: v.string(), message: v.string() }) }),
+		v.object({ _nay: v.object({ name: v.string(), message: v.string(), data: v.optional(v.any()) }) }),
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -1579,6 +1592,12 @@ export const create_page_by_path = internalMutation({
 		const { workspaceId, projectId } = args;
 		const path = args.path.trim();
 		const segments = path_extract_segments_from(path);
+		for (const segment of segments) {
+			const nameValidationResult = pages_validate_name(segment);
+			if (nameValidationResult._nay) {
+				return nameValidationResult;
+			}
+		}
 
 		let currentParent: Doc<"pages">["parentId"] = pages_ROOT_ID;
 		let lastPageId: Id<"pages"> | null = null;

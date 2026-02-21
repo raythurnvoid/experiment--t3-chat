@@ -60,6 +60,19 @@ export function pages_create_room_id(workspaceId: string, projectId: string, pag
 	return `pages::${workspaceId}::${projectId}::${pageId}`;
 }
 
+export function pages_validate_name(name: string) {
+	if (name.includes("/") || name.includes("\\")) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Invalid page name: `/` and `\\` are not allowed",
+			},
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
 /**
  * Shared marked instance configured for pages.
  *

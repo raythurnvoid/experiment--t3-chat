@@ -36,6 +36,20 @@ export function useFn<T extends null | undefined | ((...args: any[]) => any)>(ha
 	return (...args: Parameters<NonNullable<T>>) => handlerRef.current?.(...args);
 }
 
+/**
+ * Returns the latest computed value for each render.
+ *
+ * Useful when reading values from stable object instances so the value is re-evaluated on every render.
+ *
+ * @example
+ * ```tsx
+ * const itemData = useVal(() => item.getItemData());
+ * ```
+ */
+export function useVal<T>(value: () => T) {
+	return value();
+}
+
 function is_update_function<T>(value: T | ((oldValue: T) => T)): value is (oldValue: T) => T {
 	return typeof value === "function";
 }
