@@ -1,8 +1,37 @@
 @layer common_components {
+	/* #region root */
 	.MyInput {
 		contain: content;
 	}
+	/* #endregion root */
 
+	/* #region label */
+	.MyInputLabel {
+		display: block;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+
+		margin-bottom: 12px;
+	}
+	/* #endregion label */
+
+	/* #region helper text */
+	.MyInputHelperText {
+		display: block;
+		font-size: 0.75rem;
+		color: var(--muted-foreground);
+		margin-top: 12px;
+	}
+	/* #endregion helper text */
+
+	/* #region icon */
+	.MyInputIcon {
+		color: var(--muted-foreground);
+	}
+	/* #endregion icon */
+
+	/* #region box */
 	.MyInputBox {
 		position: absolute;
 		z-index: -1;
@@ -13,40 +42,31 @@
 
 		pointer-events: none;
 
-		background: transparent;
+		background: var(--color-base-1-05);
 
 		border: 2px solid var(--color-fg-01);
 		border-radius: 6px;
 
-		@media (prefers-color-scheme: dark) {
-			background: color-mix(in oklab, var(--input) 30%, transparent);
-		}
-	}
-
-	/* Focus ring */
-	.MyInput:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) {
-		& .MyInputBox {
+		&:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) {
 			border-color: var(--color-fg-12);
 		}
-	}
 
-	/* Invalid state ring */
-	.MyInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
-		border-color: var(--color-red-06);
-		box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.2);
-	}
+		.MyInput-variant-surface & {
+			background: var(--color-base-1-01);
+		}
 
-	/* Dark mode invalid state */
-	@media (prefers-color-scheme: dark) {
-		.MyInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
-			box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.4);
+		.MyInput-variant-transparent & {
+			background: transparent;
+		}
+
+		.MyInput:has([aria-invalid="true"], :user-invalid) & {
+			border-color: var(--color-red-06);
+			box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.2);
 		}
 	}
+	/* #endregion box */
 
-	.MyInput-variant-surface .MyInputBox {
-		background: var(--color-base-1-01);
-	}
-
+	/* #region area */
 	.MyInputArea {
 		position: relative;
 
@@ -61,7 +81,9 @@
 
 		cursor: text;
 	}
+	/* #endregion area */
 
+	/* #region control */
 	.MyInputControl,
 	.MyInputTextAreaControl {
 		position: relative;
@@ -114,7 +136,9 @@
 		*/
 		height: 28px;
 	}
+	/* #endregion control */
 
+	/* #region textarea control */
 	.MyInputTextAreaControl {
 		height: auto;
 		/*
@@ -124,24 +148,5 @@
 		min-height: 28px;
 		resize: vertical;
 	}
-
-	.MyInputLabel {
-		display: block;
-
-		font-size: 0.875rem;
-		font-weight: 500;
-
-		margin-bottom: 12px;
-	}
-
-	.MyInputHelperText {
-		display: block;
-		font-size: 0.75rem;
-		color: var(--muted-foreground);
-		margin-top: 12px;
-	}
-
-	.MyInputIcon {
-		color: var(--muted-foreground);
-	}
+	/* #endregion textarea control */
 }

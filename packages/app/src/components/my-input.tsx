@@ -5,7 +5,7 @@ import { createContext, use, useId } from "react";
 import { cn, type XCustomEventLike } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
 
-// #region Context
+// #region context
 /**
  * Context for MyInput to share IDs between components
  */
@@ -20,50 +20,9 @@ interface MyInputContext {
  * Context used to share the input field IDs with child components.
  */
 const MyInputContext = createContext<MyInputContext | null>(null);
-// #endregion Context
+// #endregion context
 
-// #region MyInput
-type MyInput_ClassNames = "MyInput" | "MyInput-variant-surface";
-
-export type MyInput_Props = ComponentPropsWithRef<"div"> & {
-	variant?: "default" | "surface";
-};
-
-export function MyInput(props: MyInput_Props) {
-	const { className, variant = "default", children, ...rest } = props;
-
-	const reactId = useId();
-	const rootId = `MyInput-${reactId}`;
-	const inputId = `${rootId}-input`;
-	const labelId = `${rootId}-label`;
-	const helperTextId = `${rootId}-helper-text`;
-
-	const contextValue = {
-		rootId,
-		inputId,
-		labelId,
-		helperTextId,
-	};
-
-	return (
-		<MyInputContext.Provider value={contextValue}>
-			<div
-				id={rootId}
-				className={cn(
-					"MyInput" satisfies MyInput_ClassNames,
-					variant === "surface" && ("MyInput-variant-surface" satisfies MyInput_ClassNames),
-					className,
-				)}
-				{...rest}
-			>
-				{children}
-			</div>
-		</MyInputContext.Provider>
-	);
-}
-// #endregion MyInput
-
-// #region Label
+// #region label
 type MyInputLabel_ClassNames = "MyInputLabel";
 
 export type MyInputLabel_Props = Omit<ComponentPropsWithRef<"label">, "id">;
@@ -88,9 +47,9 @@ export function MyInputLabel(props: MyInputLabel_Props) {
 		</label>
 	);
 }
-// #endregion Label
+// #endregion label
 
-// #region HelperText
+// #region helper text
 type MyInputHelperText_ClassNames = "MyInputHelperText";
 
 export type MyInputHelperText_Props = Omit<ComponentPropsWithRef<"div">, "id">;
@@ -114,9 +73,9 @@ export function MyInputHelperText(props: MyInputHelperText_Props) {
 		</div>
 	);
 }
-// #endregion HelperText
+// #endregion helper text
 
-// #region Icon
+// #region icon
 export type MyInputIcon_ClassNames = "MyInputIcon";
 
 export type MyInputIcon_Props = ComponentPropsWithRef<typeof MyIcon>;
@@ -126,9 +85,9 @@ export function MyInputIcon(props: MyInputIcon_Props) {
 
 	return <MyIcon className={cn("MyInputIcon" satisfies MyInputIcon_ClassNames, className)} {...rest} />;
 }
-// #endregion Icon
+// #endregion icon
 
-// #region Box
+// #region box
 export type MyInputBox_ClassNames = "MyInputBox";
 
 export type MyInputBox_Props = ComponentPropsWithRef<"div">;
@@ -142,9 +101,9 @@ export function MyInputBox(props: MyInputBox_Props) {
 		</div>
 	);
 }
-// #endregion Box
+// #endregion box
 
-// #region Area
+// #region area
 export type MyInputArea_ClassNames = "MyInputArea";
 
 export type MyInputArea_Props = ComponentPropsWithRef<"div"> & {
@@ -214,9 +173,9 @@ export function MyInputArea(props: MyInputArea_Props) {
 		</div>
 	);
 }
-// #endregion Area
+// #endregion area
 
-// #region Control
+// #region control
 export type MyInputControl_ClassNames = "MyInputControl";
 
 export type MyInputControl_Props = Omit<ComponentPropsWithRef<"input">, "size" | "id">;
@@ -238,9 +197,9 @@ export function MyInputControl(props: MyInputControl_Props) {
 		/>
 	);
 }
-// #endregion Control
+// #endregion control
 
-// #region TextAreaControl
+// #region textarea control
 export type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 
 export type MyInputTextAreaControl_Props = Omit<ComponentPropsWithRef<"textarea">, "size" | "id">;
@@ -262,4 +221,46 @@ export function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
 		/>
 	);
 }
-// #endregion TextAreaControl
+// #endregion textarea control
+
+// #region root
+type MyInput_ClassNames = "MyInput" | "MyInput-variant-surface" | "MyInput-variant-transparent";
+
+export type MyInput_Props = ComponentPropsWithRef<"div"> & {
+	variant?: "default" | "surface" | "transparent";
+};
+
+export function MyInput(props: MyInput_Props) {
+	const { className, variant = "default", children, ...rest } = props;
+
+	const reactId = useId();
+	const rootId = `MyInput-${reactId}`;
+	const inputId = `${rootId}-input`;
+	const labelId = `${rootId}-label`;
+	const helperTextId = `${rootId}-helper-text`;
+
+	const contextValue = {
+		rootId,
+		inputId,
+		labelId,
+		helperTextId,
+	};
+
+	return (
+		<MyInputContext.Provider value={contextValue}>
+			<div
+				id={rootId}
+				className={cn(
+					"MyInput" satisfies MyInput_ClassNames,
+					variant === "surface" && ("MyInput-variant-surface" satisfies MyInput_ClassNames),
+					variant === "transparent" && ("MyInput-variant-transparent" satisfies MyInput_ClassNames),
+					className,
+				)}
+				{...rest}
+			>
+				{children}
+			</div>
+		</MyInputContext.Provider>
+	);
+}
+// #endregion root

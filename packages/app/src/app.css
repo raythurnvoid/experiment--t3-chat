@@ -90,7 +90,6 @@
 	--destructive: var(--red-500);
 	--destructive-foreground: var(--gray-700);
 	--border: red;
-	--input: var(--gray-200);
 	--ring: var(--gray-050);
 	--chart-1: 12 76% 61%;
 	--chart-2: 173 58% 39%;
@@ -296,7 +295,6 @@
 	--destructive: var(--red-400);
 	--destructive-foreground: var(--gray-700);
 	--border: red;
-	--input: var(--gray-300);
 	--ring: var(--gray-700);
 	--chart-1: 220 70% 50%;
 	--chart-2: 160 60% 45%;
@@ -357,7 +355,6 @@
 	--color-destructive: var(--destructive);
 	--color-destructive-foreground: var(--destructive-foreground);
 	--color-border: var(--border);
-	--color-input: var(--input);
 	--color-ring: var(--ring);
 	--color-chart-1: hsl(var(--chart-1));
 	--color-chart-2: hsl(var(--chart-2));

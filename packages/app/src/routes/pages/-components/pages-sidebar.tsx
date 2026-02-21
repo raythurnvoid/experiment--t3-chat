@@ -471,7 +471,6 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 	return (
 		<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>
 			<MyIconButton
-				className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
 				tooltip={isExpanded ? "Collapse page" : "Expand page"}
 				side="bottom"
 				variant="ghost-highlightable"
@@ -486,56 +485,62 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 }
 // #endregion tree item arrow
 
-// #region tree rename input
-type PagesSidebarTreeRenameInput_ClassNames = "PagesSidebarTreeRenameInput" | "PagesSidebarTreeRenameInput-input";
+// #region tree item title
+type PagesSidebarTreeItemTitle_ClassNames = "PagesSidebarTreeItemTitle" | "PagesSidebarTreeItemTitle-input";
 
-type PagesSidebarTreeRenameInput_Props = {
+type PagesSidebarTreeItemTitle_Props = {
 	tree: PagesSidebarTree_Shared;
 	item: PagesSidebarTreeItem_Instance;
 };
 
-function PagesSidebarTreeRenameInput(props: PagesSidebarTreeRenameInput_Props) {
+function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 	const { item } = props;
 
 	const renameInputProps = useVal(() => item.getRenameInputProps());
+	const isRenaming = useVal(() => item.isRenaming());
+	const itemData = useVal(() => item.getItemData());
 
 	return (
-		<div className={"PagesSidebarTreeRenameInput" satisfies PagesSidebarTreeRenameInput_ClassNames}>
-			<MyInput>
+		<div className={"PagesSidebarTreeItemTitle" satisfies PagesSidebarTreeItemTitle_ClassNames}>
+			<MyInput variant="transparent">
+				<MyInputBox />
 				<MyInputControl
-					{...renameInputProps}
-					className={"PagesSidebarTreeRenameInput-input" satisfies PagesSidebarTreeRenameInput_ClassNames}
+					{...(isRenaming ? renameInputProps : null)}
+					className={"PagesSidebarTreeItemTitle-input" satisfies PagesSidebarTreeItemTitle_ClassNames}
+					readOnly={!isRenaming}
+					tabIndex={isRenaming ? undefined : -1}
+					value={!isRenaming ? itemData.title : undefined}
 				/>
 			</MyInput>
 		</div>
 	);
 }
-// #endregion tree rename input
+// #endregion tree item title
 
-// #region tree item primary action content
-type PagesSidebarTreeItemPrimaryActionContent_ClassNames = "PagesSidebarTreeItemPrimaryActionContent";
+// #region tree item primary content
+type PagesSidebarTreeItemPrimaryContent_ClassNames = "PagesSidebarTreeItemPrimaryContent";
 
-type PagesSidebarTreeItemPrimaryActionContent_Props = {
+type PagesSidebarTreeItemPrimaryContent_Props = {
 	title: React.ReactNode;
 };
 
-function PagesSidebarTreeItemPrimaryActionContent(props: PagesSidebarTreeItemPrimaryActionContent_Props) {
+function PagesSidebarTreeItemPrimaryContent(props: PagesSidebarTreeItemPrimaryContent_Props) {
 	const { title } = props;
 
 	return (
 		<div
 			className={
-				"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
+				"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames
 			}
 		>
 			<PagesSidebarTreeItemIcon />
-			<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
-				<div className="PagesSidebarTreeItemPrimaryActionContent-title">{title}</div>
+			<div className="PagesSidebarTreeItemPrimaryContent-title-container">
+				<div className="PagesSidebarTreeItemPrimaryContent-title">{title}</div>
 			</div>
 		</div>
 	);
 }
-// #endregion tree item primary action content
+// #endregion tree item primary content
 
 // #region tree item primary action
 type PagesSidebarTreeItemPrimaryAction_ClassNames = "PagesSidebarTreeItemPrimaryAction";
@@ -543,7 +548,7 @@ type PagesSidebarTreeItemPrimaryAction_ClassNames = "PagesSidebarTreeItemPrimary
 type PagesSidebarTreeItemPrimaryAction_Props = {
 	itemId: string;
 	item: PagesSidebarTreeItem_Instance;
-	title: React.ReactNode;
+	title: string;
 	isPending: boolean;
 	isTreeDragging: boolean;
 	tooltipContent: string | undefined;
@@ -560,17 +565,19 @@ function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAct
 	};
 
 	return (
-		<MyPrimaryAction
-			{...itemProps}
-			selected={isSelected}
-			className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
-			disabled={isPending}
-			tooltip={isTreeDragging ? undefined : tooltipContent}
-			tooltipTimeout={2000}
-			onClick={handleClick}
-		>
-			<PagesSidebarTreeItemPrimaryActionContent title={title} />
-		</MyPrimaryAction>
+		<>
+			<MyPrimaryAction
+				{...itemProps}
+				selected={isSelected}
+				className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
+				disabled={isPending}
+				tooltip={isTreeDragging ? undefined : tooltipContent}
+				tooltipTimeout={2000}
+				aria-label={title}
+				onClick={handleClick}
+			></MyPrimaryAction>
+			<PagesSidebarTreeItemPrimaryContent title={title} />
+		</>
 	);
 }
 // #endregion tree item primary action
@@ -636,7 +643,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const isTabbableRow = useVal(() => item.isFocused());
 	const depth = useVal(() => item.getItemMeta().level);
 	const pageIdForDebug = itemData.type === "placeholder" ? itemData.parentId : itemId;
-	const isRenaming = useVal(() => item.isRenaming());
 	const isDragTarget = useVal(() => item.isDraggingOver());
 
 	const shouldRenderMeta = !isPlaceholder;
@@ -647,7 +653,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		? `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`
 		: undefined;
 	const isExpanded = tree().getState().expandedItems.includes(itemId);
-	const previousRenameBranchRef = useRef(isRenaming);
 
 	const handleCreatePageClick = useFn<PagesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreatePage(itemId);
@@ -673,32 +678,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		}
 	});
 
-	useEffect(() => {
-		if (itemData.type !== "page") {
-			return;
-		}
-
-		const renamingItemId = tree().getState().renamingItem ?? null;
-		const isRenamingFromItem = item.isRenaming();
-		const didSwitchBranch = previousRenameBranchRef.current !== isRenaming;
-		const isCurrentRenamingItem = renamingItemId === itemId;
-		if (!didSwitchBranch && !isCurrentRenamingItem) {
-			return;
-		}
-
-		console.info("[PagesSidebarTreeItem.rename-mode]", {
-			itemId,
-			title: itemData.title,
-			renderBranch: isRenaming ? "input" : "primary-action",
-			isRenamingProp: isRenaming,
-			isRenamingFromItem,
-			renamingItemId,
-			didSwitchBranch,
-		});
-
-		previousRenameBranchRef.current = isRenaming;
-	}, [item]);
-
 	return (
 		<div
 			hidden={isHidden}
@@ -720,33 +699,18 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 			} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
 		>
 			{isPlaceholder ? (
-				<PagesSidebarTreeItemPrimaryActionContent title={itemData.title} />
+				<PagesSidebarTreeItemPrimaryContent title={itemData.title} />
 			) : (
 				<>
-					{isRenaming ? (
-						<div className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}>
-							<div
-								className={
-									"PagesSidebarTreeItemPrimaryActionContent" satisfies PagesSidebarTreeItemPrimaryActionContent_ClassNames
-								}
-							>
-								<PagesSidebarTreeItemIcon />
-								<div className="PagesSidebarTreeItemPrimaryActionContent-title-container">
-									<PagesSidebarTreeRenameInput tree={tree} item={item} />
-								</div>
-							</div>
-						</div>
-					) : (
-						<PagesSidebarTreeItemPrimaryAction
-							itemId={itemId}
-							item={item}
-							title={itemData.title}
-							isPending={isPending}
-							isTreeDragging={isTreeDragging}
-							tooltipContent={tooltipContent}
-							onTreeItemPrimaryClick={onTreeItemPrimaryClick}
-						/>
-					)}
+					<PagesSidebarTreeItemPrimaryAction
+						itemId={itemId}
+						item={item}
+						title={<PagesSidebarTreeItemTitle tree={tree} item={item} />}
+						isPending={isPending}
+						isTreeDragging={isTreeDragging}
+						tooltipContent={tooltipContent}
+						onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+					/>
 
 					<PagesSidebarTreeItemArrow
 						isExpanded={isExpanded}
@@ -1218,10 +1182,13 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 								projectId: ai_chat_HARDCODED_PROJECT_ID,
 							},
 							treeItemsList.map((treeItem) => {
-								return {
-									...treeItem,
-									title: args.name,
-								};
+								if (treeItem._id === item.getId()) {
+									return {
+										...treeItem,
+										title: args.name,
+									};
+								}
+								return treeItem;
 							}),
 						);
 					},

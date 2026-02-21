@@ -124,7 +124,7 @@
 		font-size: 0.875rem;
 	}
 
-	.PagesSidebarTree:not(:has(.PagesSidebarTreeRenameInput-input:focus)) {
+	.PagesSidebarTree:not(:has(.PagesSidebarTreeItemTitle-input:focus)) {
 		.PagesSidebarTreeItem.PagesSidebarTreeItem-content-navigated {
 			font-weight: 500;
 			color: var(--color-fg-10);
@@ -287,11 +287,13 @@
 	.PagesSidebarTreeItemArrow {
 		grid-row: 1 / 3;
 		grid-column: 1;
+
+		place-content: center;
 	}
 	/* #endregion tree item arrow */
 
-	/* #region tree item primary action content */
-	.PagesSidebarTreeItemPrimaryActionContent {
+	/* #region tree item primary content */
+	.PagesSidebarTreeItemPrimaryContent {
 		grid-row: 1;
 		grid-column: 2;
 
@@ -305,7 +307,7 @@
 		min-width: 0;
 	}
 
-	.PagesSidebarTreeItemPrimaryActionContent-title-container {
+	.PagesSidebarTreeItemPrimaryContent-title-container {
 		flex: 1;
 		min-width: 0;
 		contain: content;
@@ -313,12 +315,12 @@
 		text-align: left;
 	}
 
-	.PagesSidebarTreeItemPrimaryActionContent-title {
+	.PagesSidebarTreeItemPrimaryContent-title {
 		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* #endregion tree item primary action content */
+	/* #endregion tree item primary content */
 
 	/* #region tree item icon */
 	.PagesSidebarTreeItemIcon {
@@ -327,19 +329,28 @@
 	}
 	/* #endregion tree item icon */
 
-	/* #region tree rename input */
-	.PagesSidebarTreeRenameInput {
+	/* #region tree item title */
+	.PagesSidebarTreeItemTitle {
 		display: flex;
 		width: 100%;
-	}
 
-	.PagesSidebarTreeRenameInput-input {
-		flex: 1;
+		.MyInputBox {
+			border-color: transparent;
+		}
 
-		&:focus {
-			border: 2px solid var(--color-fg-10);
-			padding: 2px;
+		&:has(.PagesSidebarTreeItemTitle-input:not([readonly])) {
+			.MyInputBox {
+				border-color: var(--color-fg-01);
+			}
 		}
 	}
-	/* #endregion tree rename input */
+
+	.PagesSidebarTreeItemTitle-input {
+		flex: 1;
+
+		&[readonly] {
+			pointer-events: none;
+		}
+	}
+	/* #endregion tree item title */
 }
