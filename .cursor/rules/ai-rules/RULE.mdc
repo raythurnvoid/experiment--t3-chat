@@ -112,6 +112,14 @@ Rule files communicate exclusively with you, the AI assistant. Structure instruc
 
 Frame user interactions using the pattern: "When the user requests X, you must do Y"
 
+## Prefer Generalized Rules Over Narrow Examples
+
+Write directives so they generalize across similar cases, instead of anchoring behavior to a single prop name, component name, or one-off pattern.
+
+- Prefer principle-first wording that applies broadly.
+- Use examples only to clarify intent, not to limit scope.
+- Avoid example-heavy language that could bias implementation toward a narrow interpretation.
+
 ## Clear Role Distinction
 
 Maintain clear distinction between the AI assistant ("you") and the user ("the user") throughout all instructions.
@@ -180,13 +188,13 @@ When referencing files or directories in rule files, use the MDC link format to 
 
 ## Link Guidelines
 
-Write descriptive link text that identifies the file's purpose or content. Ensure paths are correct and relative to the project root. Always prefix paths with `mdc:` to activate the special link format.
+Write descriptive link text, and use correct project-relative paths. Use one link style consistently within the file.
 
 ### Examples of Proper MDC Links
 
 ```markdown
 [Button component](src/components/ui/button.tsx)
-[CSS guidelines](.cursor/rules/code-css/RULE.md)
+[CSS guidelines](AGENTS.md)
 [Components directory](src/components)
 ```
 
