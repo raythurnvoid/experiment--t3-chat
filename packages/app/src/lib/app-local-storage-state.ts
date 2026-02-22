@@ -7,12 +7,14 @@ type app_local_storage_state_State = {
 	pages_last_open: string | null;
 	ai_chat_last_open: string | null;
 	pages_last_tab: AppElementId | null;
+	presence_enabled: boolean;
 };
 
 const app_local_storage_state_KEYS = {
 	pages_last_open: "app_state::pages_last_open",
 	ai_chat_last_open: "app_state::ai_chat_last_open",
 	pages_last_tab: "app_state::pages_last_tab",
+	presence_enabled: "app::presence::enabled",
 } as const satisfies Record<string, storage_local_Key>;
 
 export const useAppLocalStorageState = ((/* iife */) => {
@@ -32,10 +34,15 @@ export const useAppLocalStorageState = ((/* iife */) => {
 		}
 	};
 
+	const parsePresenceEnabled = (value: string | null): boolean => {
+		return value !== "0";
+	};
+
 	const initialState = {
 		pages_last_open: storage.getItem(app_local_storage_state_KEYS.pages_last_open),
 		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
 		pages_last_tab: parsePagesLastTab(storage.getItem(app_local_storage_state_KEYS.pages_last_tab)),
+		presence_enabled: parsePresenceEnabled(storage.getItem(app_local_storage_state_KEYS.presence_enabled)),
 	} satisfies app_local_storage_state_State;
 
 	const store = create<app_local_storage_state_State>(() => initialState);
@@ -66,6 +73,10 @@ export const useAppLocalStorageState = ((/* iife */) => {
 
 		if (state.pages_last_tab !== prev.pages_last_tab) {
 			writeValue(app_local_storage_state_KEYS.pages_last_tab, state.pages_last_tab);
+		}
+
+		if (state.presence_enabled !== prev.presence_enabled) {
+			writeValue(app_local_storage_state_KEYS.presence_enabled, state.presence_enabled ? "1" : "0");
 		}
 	});
 
@@ -109,6 +120,18 @@ export const useAppLocalStorageState = ((/* iife */) => {
 
 					suppressWrite = true;
 					store.setState({ pages_last_tab: nextValue });
+					suppressWrite = false;
+					return;
+				}
+				case app_local_storage_state_KEYS.presence_enabled: {
+					const nextValue = parsePresenceEnabled(event.newValue);
+					const current = store.getState().presence_enabled;
+					if (current === nextValue) {
+						return;
+					}
+
+					suppressWrite = true;
+					store.setState({ presence_enabled: nextValue });
 					suppressWrite = false;
 					return;
 				}

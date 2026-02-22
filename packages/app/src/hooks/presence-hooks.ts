@@ -2,9 +2,21 @@ import { useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { usePresence as usePresenceBase } from "@convex-dev/presence/react";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
+
+export function app_presence_get_enabled() {
+	return useAppLocalStorageState.getState().presence_enabled;
+}
+
+export function app_presence_set_enabled(enabled: boolean) {
+	useAppLocalStorageState.setState({ presence_enabled: enabled });
+}
+
+export function usePresenceEnabled() {
+	return useAppLocalStorageState((state) => state.presence_enabled);
+}
 
 type usePresenceBase_Props = Parameters<typeof usePresenceBase>[0];
-
 export type usePresence_Props = {
 	roomId: usePresenceBase_Props["roomId"];
 	userId: usePresenceBase_Props["userId"];

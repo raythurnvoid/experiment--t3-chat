@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
 import {
 	usePresence,
+	usePresenceEnabled,
 	usePresenceList,
 	usePresenceSessions,
 	usePresenceSessionsData,
@@ -299,7 +300,7 @@ type PageEditorPresenceSupplier_Props = {
 	}) => React.ReactNode;
 };
 
-function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
+function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Props) {
 	const { userId, pageId, children } = props;
 
 	const roomId = pages_create_room_id(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, pageId);
@@ -453,6 +454,56 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 	]);
 
 	return children({ presenceStore, onlineUsers });
+}
+
+function PageEditorPresenceSupplier_Disabled(props: PageEditorPresenceSupplier_Props) {
+	const { userId, children } = props;
+
+	const [presenceStore] = useState(() => {
+		const localSessionId = crypto.randomUUID();
+		const localUserId = userId ?? "presence-disabled-user";
+
+		type PageEditorPresenceSupplier_Disabled_PresenceStoreData =
+			ConstructorParameters<typeof pages_PresenceStore>[0]["data"];
+
+		return new pages_PresenceStore({
+			data: {
+				sessionToken: "presence-disabled-session-token",
+				sessions: [{ sessionId: localSessionId, userId: localUserId }],
+				sessionsData: {
+					[localSessionId]: {
+						color: "var(--color-base-1-10)",
+					},
+				},
+				usersAnagraphics: {
+					[localUserId]: {
+						displayName: "Presence disabled",
+						avatarUrl: undefined,
+					} as PageEditorPresenceSupplier_Disabled_PresenceStoreData["usersAnagraphics"][string],
+				},
+			},
+			localSessionId,
+			onSetSessionData: () => {},
+		});
+	});
+
+	useEffect(() => {
+		return () => {
+			presenceStore.dispose();
+		};
+	}, [presenceStore]);
+
+	return children({ presenceStore, onlineUsers: [] });
+}
+
+function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
+	const presenceEnabled = usePresenceEnabled();
+
+	if (!presenceEnabled) {
+		return <PageEditorPresenceSupplier_Disabled {...props} />;
+	}
+
+	return <PageEditorPresenceSupplier_Enabled {...props} />;
 }
 
 // #endregion presence supplier

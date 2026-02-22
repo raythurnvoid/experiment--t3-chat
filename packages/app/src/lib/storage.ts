@@ -7,6 +7,7 @@
 export type storage_local_Key =
 	| "app::auth::anonymous_token"
 	| "app::auth::anonymous_token_user_id"
+	| "app::presence::enabled"
 	| `app_state::${string}`;
 
 /**

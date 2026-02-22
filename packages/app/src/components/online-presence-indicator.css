@@ -1,11 +1,39 @@
 @layer common_components {
 	.OnlinePresenceIndicator {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.OnlinePresenceIndicator-status {
 		padding: 4px 8px;
 
 		font-size: 0.875rem;
 		line-height: 1.25rem;
 
 		color: var(--color-fg-11);
+	}
+
+	.OnlinePresenceIndicator-button {
+		height: 24px;
+		padding: 0 8px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+
+		background: var(--color-base-1-03);
+		color: var(--color-fg-10);
+		font-size: 0.75rem;
+		line-height: 1rem;
+		cursor: pointer;
+
+		&:hover {
+			background: var(--color-base-1-04);
+		}
+
+		&:focus-visible {
+			outline: 1px solid var(--color-fg-10);
+			outline-offset: 1px;
+		}
 	}
 
 	.OnlinePresenceIndicator-list {
