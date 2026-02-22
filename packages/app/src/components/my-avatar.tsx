@@ -1,6 +1,7 @@
 import "./my-avatar.css";
 import {
 	createContext,
+	memo,
 	use,
 	useLayoutEffect,
 	useRef,
@@ -34,7 +35,7 @@ export type MyAvatarImage_Props = ComponentPropsWithRef<"img"> & {
 	fallbackDelay?: boolean;
 };
 
-export function MyAvatarImage(props: MyAvatarImage_Props) {
+export const MyAvatarImage = memo(function MyAvatarImage(props: MyAvatarImage_Props) {
 	const { ref, className, src, srcSet, fallbackDelay = true, ...rest } = props;
 
 	const context = use(AvatarContext);
@@ -97,7 +98,7 @@ export function MyAvatarImage(props: MyAvatarImage_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion Image
 
 // #region Loading
@@ -110,7 +111,7 @@ export type MyAvatarLoading_Props = ComponentPropsWithRef<"span"> & {
 	inert?: boolean;
 };
 
-export function MyAvatarLoading(props: MyAvatarLoading_Props) {
+export const MyAvatarLoading = memo(function MyAvatarLoading(props: MyAvatarLoading_Props) {
 	const { ref, id, className, children, inert = true, ...rest } = props;
 
 	const context = use(AvatarContext);
@@ -130,7 +131,7 @@ export function MyAvatarLoading(props: MyAvatarLoading_Props) {
 			</span>
 		)
 	);
-}
+});
 // #endregion Loading
 
 // #region Skeleton
@@ -138,11 +139,11 @@ export type MyAvatarSkeleton_ClassNames = "MyAvatarSkeleton";
 
 export type MyAvatarSkeleton_Props = MySkeleton_Props;
 
-export function MyAvatarSkeleton(props: MyAvatarSkeleton_Props) {
+export const MyAvatarSkeleton = memo(function MyAvatarSkeleton(props: MyAvatarSkeleton_Props) {
 	const { className } = props;
 
 	return <MySkeleton className={cn("MyAvatarSkeleton" satisfies MyAvatarSkeleton_ClassNames, className)} />;
-}
+});
 // #endregion Skeleton
 
 // #region Fallback
@@ -155,7 +156,7 @@ export type MyAvatarFallback_Props = ComponentPropsWithRef<"span"> & {
 	inert?: boolean;
 };
 
-export function MyAvatarFallback(props: MyAvatarFallback_Props) {
+export const MyAvatarFallback = memo(function MyAvatarFallback(props: MyAvatarFallback_Props) {
 	const { ref, id, className, children, inert = true, ...rest } = props;
 
 	const context = use(AvatarContext);
@@ -175,7 +176,7 @@ export function MyAvatarFallback(props: MyAvatarFallback_Props) {
 			</span>
 		)
 	);
-}
+});
 
 // #endregion Fallback
 
@@ -200,7 +201,7 @@ export type MyAvatar_Props = ComponentPropsWithRef<"span"> & {
 	size?: string;
 };
 
-export function MyAvatar(props: MyAvatar_Props) {
+export const MyAvatar = memo(function MyAvatar(props: MyAvatar_Props) {
 	const { ref, className, style, size, children, ...rest } = props;
 
 	const [imageStatus, setImageStatus] = useState<ImageLoadingStatus | null>(null);
@@ -233,5 +234,5 @@ export function MyAvatar(props: MyAvatar_Props) {
 			</span>
 		</AvatarContext.Provider>
 	);
-}
+});
 // #endregion MyAvatar

@@ -1,6 +1,6 @@
 import "./my-modal.css";
 import * as Ariakit from "@ariakit/react";
-import type { ComponentPropsWithRef } from "react";
+import { memo, type ComponentPropsWithRef } from "react";
 import { cn } from "@/lib/utils.ts";
 import { MyIconButton } from "./my-icon-button.tsx";
 import { X } from "lucide-react";
@@ -10,11 +10,11 @@ export type MyModal_ClassNames = "MyModal";
 
 export type MyModal_Props = Ariakit.DialogProviderProps;
 
-export function MyModal(props: MyModal_Props) {
+export const MyModal = memo(function MyModal(props: MyModal_Props) {
 	const { children, ...rest } = props;
 
 	return <Ariakit.DialogProvider {...rest}>{children}</Ariakit.DialogProvider>;
-}
+});
 
 export type MyModalTrigger_ClassNames = "MyModalTrigger";
 
@@ -25,7 +25,7 @@ export type MyModalTrigger_Props = Omit<
 	children?: Ariakit.DialogDisclosureProps["render"];
 };
 
-export function MyModalTrigger(props: MyModalTrigger_Props) {
+export const MyModalTrigger = memo(function MyModalTrigger(props: MyModalTrigger_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -35,13 +35,13 @@ export function MyModalTrigger(props: MyModalTrigger_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 
 export type MyModalBackdrop_ClassNames = "MyModalBackdrop";
 
 export type MyModalBackdrop_Props = ComponentPropsWithRef<"div">;
 
-export function MyModalBackdrop(props: MyModalBackdrop_Props) {
+export const MyModalBackdrop = memo(function MyModalBackdrop(props: MyModalBackdrop_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -49,13 +49,13 @@ export function MyModalBackdrop(props: MyModalBackdrop_Props) {
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyModalPopover_ClassNames = "MyModalPopover";
 
 export type MyModalPopover_Props = Omit<Ariakit.DialogProps, "modal" | "portal">;
 
-export function MyModalPopover(props: MyModalPopover_Props) {
+export const MyModalPopover = memo(function MyModalPopover(props: MyModalPopover_Props) {
 	const { className, children, backdrop, ...rest } = props;
 
 	return (
@@ -69,13 +69,13 @@ export function MyModalPopover(props: MyModalPopover_Props) {
 			{children}
 		</Ariakit.Dialog>
 	);
-}
+});
 
 export type MyModalHeader_ClassNames = "MyModalHeader";
 
 export type MyModalHeader_Props = ComponentPropsWithRef<"div">;
 
-export function MyModalHeader(props: MyModalHeader_Props) {
+export const MyModalHeader = memo(function MyModalHeader(props: MyModalHeader_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -83,13 +83,13 @@ export function MyModalHeader(props: MyModalHeader_Props) {
 			{children}
 		</header>
 	);
-}
+});
 
 export type MyModalScrollableArea_ClassNames = "MyModalScrollableArea";
 
 export type MyModalScrollableArea_Props = ComponentPropsWithRef<"div">;
 
-export function MyModalScrollableArea(props: MyModalScrollableArea_Props) {
+export const MyModalScrollableArea = memo(function MyModalScrollableArea(props: MyModalScrollableArea_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -102,13 +102,13 @@ export function MyModalScrollableArea(props: MyModalScrollableArea_Props) {
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyModalFooter_ClassNames = "MyModalFooter";
 
 export type MyModalFooter_Props = ComponentPropsWithRef<"div">;
 
-export function MyModalFooter(props: MyModalFooter_Props) {
+export const MyModalFooter = memo(function MyModalFooter(props: MyModalFooter_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -116,13 +116,13 @@ export function MyModalFooter(props: MyModalFooter_Props) {
 			{children}
 		</footer>
 	);
-}
+});
 
 export type MyModalHeading_ClassNames = "MyModalHeading";
 
 export type MyModalHeading_Props = ComponentPropsWithRef<"h1">;
 
-export function MyModalHeading(props: MyModalHeading_Props) {
+export const MyModalHeading = memo(function MyModalHeading(props: MyModalHeading_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -135,13 +135,13 @@ export function MyModalHeading(props: MyModalHeading_Props) {
 			{children}
 		</Ariakit.DialogHeading>
 	);
-}
+});
 
 export type MyModalDescription_ClassNames = "MyModalDescription";
 
 export type MyModalDescription_Props = ComponentPropsWithRef<"p">;
 
-export function MyModalDescription(props: MyModalDescription_Props) {
+export const MyModalDescription = memo(function MyModalDescription(props: MyModalDescription_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -154,7 +154,7 @@ export function MyModalDescription(props: MyModalDescription_Props) {
 			{children}
 		</Ariakit.DialogDescription>
 	);
-}
+});
 
 export type MyModalCloseTrigger_ClassNames = "MyModalCloseTrigger";
 
@@ -165,7 +165,7 @@ export type MyModalCloseTrigger_Props = Omit<
 	children?: Ariakit.DialogDismissProps["render"];
 };
 
-export function MyModalCloseTrigger(props: MyModalCloseTrigger_Props) {
+export const MyModalCloseTrigger = memo(function MyModalCloseTrigger(props: MyModalCloseTrigger_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -181,4 +181,4 @@ export function MyModalCloseTrigger(props: MyModalCloseTrigger_Props) {
 			{...rest}
 		></Ariakit.DialogDismiss>
 	);
-}
+});

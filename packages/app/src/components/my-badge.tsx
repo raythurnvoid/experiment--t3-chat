@@ -1,5 +1,5 @@
 import "./my-badge.css";
-import type { ComponentPropsWithRef, Ref } from "react";
+import { memo, type ComponentPropsWithRef, type Ref } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -18,7 +18,7 @@ export type MyBadge_Props = ComponentPropsWithRef<"span"> & {
 	variant?: "default" | "secondary" | "destructive" | "outline";
 };
 
-export function MyBadge(props: MyBadge_Props) {
+export const MyBadge = memo(function MyBadge(props: MyBadge_Props) {
 	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
@@ -38,5 +38,5 @@ export function MyBadge(props: MyBadge_Props) {
 			{children}
 		</span>
 	);
-}
+});
 // #endregion root

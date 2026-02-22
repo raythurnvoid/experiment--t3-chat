@@ -1,6 +1,7 @@
 import "./my-search-select.css";
 
 import * as Ariakit from "@ariakit/react";
+import { memo } from "react";
 import type { ExtractStrict } from "type-fest";
 
 import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
@@ -26,7 +27,7 @@ export type MySearchSelectItem_ClassNames = "MySearchSelectItem";
 
 export type MySearchSelectItem_Props = Omit<MySelectItem_Props, ExtractStrict<keyof MySelectItem_Props, "render">>;
 
-export function MySearchSelectItem(props: MySearchSelectItem_Props) {
+export const MySearchSelectItem = memo(function MySearchSelectItem(props: MySearchSelectItem_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -36,7 +37,7 @@ export function MySearchSelectItem(props: MySearchSelectItem_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion item
 
 // #region list
@@ -44,7 +45,7 @@ export type MySearchSelectList_ClassNames = "MySearchSelectList";
 
 export type MySearchSelectList_Props = Ariakit.ComboboxListProps;
 
-export function MySearchSelectList(props: MySearchSelectList_Props) {
+export const MySearchSelectList = memo(function MySearchSelectList(props: MySearchSelectList_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -53,7 +54,7 @@ export function MySearchSelectList(props: MySearchSelectList_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion list
 
 // #region search
@@ -64,7 +65,7 @@ export type MySearchSelectSearch_Props = {
 	inputClassName?: string;
 } & Omit<Ariakit.ComboboxProps, ExtractStrict<keyof Ariakit.ComboboxProps, "className" | "render">>;
 
-export function MySearchSelectSearch(props: MySearchSelectSearch_Props) {
+export const MySearchSelectSearch = memo(function MySearchSelectSearch(props: MySearchSelectSearch_Props) {
 	const { className, inputClassName, autoFocus = true, autoSelect = true, ...rest } = props;
 
 	return (
@@ -86,7 +87,7 @@ export function MySearchSelectSearch(props: MySearchSelectSearch_Props) {
 			</MyInput>
 		</div>
 	);
-}
+});
 // #endregion search
 
 // #region popover
@@ -94,7 +95,7 @@ export type MySearchSelectPopover_ClassNames = "MySearchSelectPopover";
 
 export type MySearchSelectPopover_Props = MySelectPopover_Props;
 
-export function MySearchSelectPopover(props: MySearchSelectPopover_Props) {
+export const MySearchSelectPopover = memo(function MySearchSelectPopover(props: MySearchSelectPopover_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -103,14 +104,16 @@ export function MySearchSelectPopover(props: MySearchSelectPopover_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 
 // #region popover scrollable area
 export type MySearchSelectPopoverScrollableArea_ClassNames = "MySearchSelectPopoverScrollableArea";
 
 export type MySearchSelectPopoverScrollableArea_Props = MySelectPopoverScrollableArea_Props;
 
-export function MySearchSelectPopoverScrollableArea(props: MySearchSelectPopoverScrollableArea_Props) {
+export const MySearchSelectPopoverScrollableArea = memo(function MySearchSelectPopoverScrollableArea(
+	props: MySearchSelectPopoverScrollableArea_Props,
+) {
 	const { className, ...rest } = props;
 
 	return (
@@ -122,7 +125,7 @@ export function MySearchSelectPopoverScrollableArea(props: MySearchSelectPopover
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion popover scrollable area
 
 // #region popover content
@@ -130,7 +133,9 @@ export type MySearchSelectPopoverContent_ClassNames = "MySearchSelectPopoverCont
 
 export type MySearchSelectPopoverContent_Props = MySelectPopoverContent_Props;
 
-export function MySearchSelectPopoverContent(props: MySearchSelectPopoverContent_Props) {
+export const MySearchSelectPopoverContent = memo(function MySearchSelectPopoverContent(
+	props: MySearchSelectPopoverContent_Props,
+) {
 	const { className, ...rest } = props;
 
 	return (
@@ -139,7 +144,7 @@ export function MySearchSelectPopoverContent(props: MySearchSelectPopoverContent
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion popover content
 // #endregion popover
 
@@ -148,7 +153,7 @@ export type MySearchSelectTrigger_ClassNames = "MySearchSelectTrigger";
 
 export type MySearchSelectTrigger_Props = MySelectTrigger_Props;
 
-export function MySearchSelectTrigger(props: MySearchSelectTrigger_Props) {
+export const MySearchSelectTrigger = memo(function MySearchSelectTrigger(props: MySearchSelectTrigger_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -157,7 +162,7 @@ export function MySearchSelectTrigger(props: MySearchSelectTrigger_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion trigger
 
 // #region label
@@ -165,7 +170,7 @@ export type MySearchSelectLabel_ClassNames = "MySearchSelectLabel";
 
 export type MySearchSelectLabel_Props = MySelectLabel_Props;
 
-export function MySearchSelectLabel(props: MySearchSelectLabel_Props) {
+export const MySearchSelectLabel = memo(function MySearchSelectLabel(props: MySearchSelectLabel_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -174,7 +179,7 @@ export function MySearchSelectLabel(props: MySearchSelectLabel_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion label
 
 // #region root
@@ -182,19 +187,23 @@ export type MySearchSelect_ClassNames = "MySearchSelect";
 
 export type MySearchSelect_Props = Ariakit.SelectProviderProps<string>;
 
-export function MySearchSelect(props: MySearchSelect_Props) {
-	const { children, ...rest } = props;
+const MySearchSelect = Object.assign(
+	memo(function MySearchSelect(props: MySearchSelect_Props) {
+		const { children, ...rest } = props;
 
-	return (
-		<Ariakit.ComboboxProvider>
-			<MySelect {...rest}>{children}</MySelect>
-		</Ariakit.ComboboxProvider>
-	);
-}
+		return (
+			<Ariakit.ComboboxProvider>
+				<MySelect {...rest}>{children}</MySelect>
+			</Ariakit.ComboboxProvider>
+		);
+	}),
+	{
+		useStore: () => {
+			return MySelect.useStore();
+		},
+		useStoreState: MySelect.useStoreState,
+	},
+);
 
-MySearchSelect.useStore = () => {
-	return MySelect.useStore();
-};
-
-MySearchSelect.useStoreState = MySelect.useStoreState;
+export { MySearchSelect };
 // #endregion root

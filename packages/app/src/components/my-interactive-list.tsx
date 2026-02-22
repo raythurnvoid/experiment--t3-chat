@@ -1,6 +1,6 @@
 import "./my-interactive-list.css";
 
-import type { ComponentPropsWithRef } from "react";
+import { memo, type ComponentPropsWithRef } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -9,7 +9,7 @@ type MyInteractiveList_ClassNames = "MyInteractiveList";
 
 export type MyInteractiveList_Props = ComponentPropsWithRef<"ul">;
 
-export function MyInteractiveList(props: MyInteractiveList_Props) {
+export const MyInteractiveList = memo(function MyInteractiveList(props: MyInteractiveList_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -22,7 +22,7 @@ export function MyInteractiveList(props: MyInteractiveList_Props) {
 			{children}
 		</ul>
 	);
-}
+});
 // #endregion list
 
 // #region item
@@ -30,7 +30,7 @@ type MyInteractiveListItem_ClassNames = "MyInteractiveListItem";
 
 export type MyInteractiveListItem_Props = ComponentPropsWithRef<"li">;
 
-export function MyInteractiveListItem(props: MyInteractiveListItem_Props) {
+export const MyInteractiveListItem = memo(function MyInteractiveListItem(props: MyInteractiveListItem_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -43,5 +43,5 @@ export function MyInteractiveListItem(props: MyInteractiveListItem_Props) {
 			{children}
 		</li>
 	);
-}
+});
 // #endregion item

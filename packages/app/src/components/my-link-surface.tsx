@@ -1,6 +1,6 @@
 import "@/components/my-button.css";
 import "./my-link-surface.css";
-import React from "react";
+import React, { memo } from "react";
 import { cn } from "@/lib/utils.ts";
 import type { MyButton_ClassNames } from "@/components/my-button.tsx";
 
@@ -16,7 +16,7 @@ export type MyLinkSurface_Props = React.ComponentProps<"span"> & {
 	variant?: "default" | "button-tertiary" | "button-ghost" | "button-ghost-accent" | "button-ghost-highlightable";
 };
 
-export function MyLinkSurface(props: MyLinkSurface_Props) {
+export const MyLinkSurface = memo(function MyLinkSurface(props: MyLinkSurface_Props) {
 	const { variant = "default", className, children, ...rest } = props;
 
 	return (
@@ -43,4 +43,4 @@ export function MyLinkSurface(props: MyLinkSurface_Props) {
 			{children}
 		</span>
 	);
-}
+});

@@ -2,7 +2,7 @@ import "./my-sidebar.css";
 
 import { Slot } from "@radix-ui/react-slot";
 import { PanelLeftIcon } from "lucide-react";
-import { useEffect, useState, type CSSProperties, type ComponentPropsWithRef } from "react";
+import { memo, useEffect, useState, type CSSProperties, type ComponentPropsWithRef } from "react";
 
 import { Separator } from "@/components/ui/separator.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
@@ -30,7 +30,7 @@ export type MySidebarMenuSubButton_Props = ComponentPropsWithRef<"a"> & {
 	isActive?: boolean;
 };
 
-export function MySidebarMenuSubButton(props: MySidebarMenuSubButton_Props) {
+export const MySidebarMenuSubButton = memo(function MySidebarMenuSubButton(props: MySidebarMenuSubButton_Props) {
 	const { ref, id, className, asChild = false, size = "md", isActive = false, children, ...rest } = props;
 	const Comp = asChild ? Slot : "a";
 
@@ -46,7 +46,7 @@ export function MySidebarMenuSubButton(props: MySidebarMenuSubButton_Props) {
 			{children}
 		</Comp>
 	);
-}
+});
 // #endregion menu sub button
 
 // #region menu sub item
@@ -54,7 +54,7 @@ type MySidebarMenuSubItem_ClassNames = "MySidebarMenuSubItem";
 
 export type MySidebarMenuSubItem_Props = ComponentPropsWithRef<"li">;
 
-export function MySidebarMenuSubItem(props: MySidebarMenuSubItem_Props) {
+export const MySidebarMenuSubItem = memo(function MySidebarMenuSubItem(props: MySidebarMenuSubItem_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -67,7 +67,7 @@ export function MySidebarMenuSubItem(props: MySidebarMenuSubItem_Props) {
 			{children}
 		</li>
 	);
-}
+});
 // #endregion menu sub item
 
 // #region menu sub
@@ -75,7 +75,7 @@ type MySidebarMenuSub_ClassNames = "MySidebarMenuSub";
 
 export type MySidebarMenuSub_Props = ComponentPropsWithRef<"ul">;
 
-export function MySidebarMenuSub(props: MySidebarMenuSub_Props) {
+export const MySidebarMenuSub = memo(function MySidebarMenuSub(props: MySidebarMenuSub_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -83,7 +83,7 @@ export function MySidebarMenuSub(props: MySidebarMenuSub_Props) {
 			{children}
 		</ul>
 	);
-}
+});
 // #endregion menu sub
 
 // #region menu skeleton
@@ -96,7 +96,7 @@ export type MySidebarMenuSkeleton_Props = ComponentPropsWithRef<"div"> & {
 	showIcon?: boolean;
 };
 
-export function MySidebarMenuSkeleton(props: MySidebarMenuSkeleton_Props) {
+export const MySidebarMenuSkeleton = memo(function MySidebarMenuSkeleton(props: MySidebarMenuSkeleton_Props) {
 	const { ref, id, className, showIcon = false, ...rest } = props;
 	const width = "60%";
 
@@ -114,7 +114,7 @@ export function MySidebarMenuSkeleton(props: MySidebarMenuSkeleton_Props) {
 			/>
 		</div>
 	);
-}
+});
 // #endregion menu skeleton
 
 // #region menu badge
@@ -122,7 +122,7 @@ type MySidebarMenuBadge_ClassNames = "MySidebarMenuBadge";
 
 export type MySidebarMenuBadge_Props = ComponentPropsWithRef<"div">;
 
-export function MySidebarMenuBadge(props: MySidebarMenuBadge_Props) {
+export const MySidebarMenuBadge = memo(function MySidebarMenuBadge(props: MySidebarMenuBadge_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -130,7 +130,7 @@ export function MySidebarMenuBadge(props: MySidebarMenuBadge_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion menu badge
 
 // #region menu action
@@ -141,7 +141,7 @@ export type MySidebarMenuAction_Props = ComponentPropsWithRef<"button"> & {
 	showOnHover?: boolean;
 };
 
-export function MySidebarMenuAction(props: MySidebarMenuAction_Props) {
+export const MySidebarMenuAction = memo(function MySidebarMenuAction(props: MySidebarMenuAction_Props) {
 	const { ref, id, className, asChild = false, showOnHover = false, children, ...rest } = props;
 	const Comp = asChild ? Slot : "button";
 
@@ -160,7 +160,7 @@ export function MySidebarMenuAction(props: MySidebarMenuAction_Props) {
 			{children}
 		</Comp>
 	);
-}
+});
 // #endregion menu action
 
 // #region menu button
@@ -178,7 +178,7 @@ export type MySidebarMenuButton_Props = ComponentPropsWithRef<"button"> & {
 	tooltip?: TooltipLikeProps;
 };
 
-export function MySidebarMenuButton(props: MySidebarMenuButton_Props) {
+export const MySidebarMenuButton = memo(function MySidebarMenuButton(props: MySidebarMenuButton_Props) {
 	const {
 		ref,
 		id,
@@ -228,7 +228,7 @@ export function MySidebarMenuButton(props: MySidebarMenuButton_Props) {
 			<TooltipContent align="center" side="right" {...tooltipProps} />
 		</Tooltip>
 	);
-}
+});
 // #endregion menu button
 
 // #region menu item
@@ -236,7 +236,7 @@ type MySidebarMenuItem_ClassNames = "MySidebarMenuItem";
 
 export type MySidebarMenuItem_Props = ComponentPropsWithRef<"li">;
 
-export function MySidebarMenuItem(props: MySidebarMenuItem_Props) {
+export const MySidebarMenuItem = memo(function MySidebarMenuItem(props: MySidebarMenuItem_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -244,7 +244,7 @@ export function MySidebarMenuItem(props: MySidebarMenuItem_Props) {
 			{children}
 		</li>
 	);
-}
+});
 // #endregion menu item
 
 // #region menu
@@ -252,7 +252,7 @@ type MySidebarMenu_ClassNames = "MySidebarMenu";
 
 export type MySidebarMenu_Props = ComponentPropsWithRef<"ul">;
 
-export function MySidebarMenu(props: MySidebarMenu_Props) {
+export const MySidebarMenu = memo(function MySidebarMenu(props: MySidebarMenu_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -260,7 +260,7 @@ export function MySidebarMenu(props: MySidebarMenu_Props) {
 			{children}
 		</ul>
 	);
-}
+});
 // #endregion menu
 
 // #region group content
@@ -268,7 +268,7 @@ type MySidebarGroupContent_ClassNames = "MySidebarGroupContent";
 
 export type MySidebarGroupContent_Props = ComponentPropsWithRef<"div">;
 
-export function MySidebarGroupContent(props: MySidebarGroupContent_Props) {
+export const MySidebarGroupContent = memo(function MySidebarGroupContent(props: MySidebarGroupContent_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -281,7 +281,7 @@ export function MySidebarGroupContent(props: MySidebarGroupContent_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion group content
 
 // #region group action
@@ -291,7 +291,7 @@ export type MySidebarGroupAction_Props = ComponentPropsWithRef<"button"> & {
 	asChild?: boolean;
 };
 
-export function MySidebarGroupAction(props: MySidebarGroupAction_Props) {
+export const MySidebarGroupAction = memo(function MySidebarGroupAction(props: MySidebarGroupAction_Props) {
 	const { ref, id, className, asChild = false, children, ...rest } = props;
 	const Comp = asChild ? Slot : "button";
 
@@ -306,7 +306,7 @@ export function MySidebarGroupAction(props: MySidebarGroupAction_Props) {
 			{children}
 		</Comp>
 	);
-}
+});
 // #endregion group action
 
 // #region group label
@@ -316,7 +316,7 @@ export type MySidebarGroupLabel_Props = ComponentPropsWithRef<"div"> & {
 	asChild?: boolean;
 };
 
-export function MySidebarGroupLabel(props: MySidebarGroupLabel_Props) {
+export const MySidebarGroupLabel = memo(function MySidebarGroupLabel(props: MySidebarGroupLabel_Props) {
 	const { ref, id, className, asChild = false, children, ...rest } = props;
 	const Comp = asChild ? Slot : "div";
 
@@ -330,7 +330,7 @@ export function MySidebarGroupLabel(props: MySidebarGroupLabel_Props) {
 			{children}
 		</Comp>
 	);
-}
+});
 // #endregion group label
 
 // #region group
@@ -338,7 +338,7 @@ type MySidebarGroup_ClassNames = "MySidebarGroup";
 
 export type MySidebarGroup_Props = ComponentPropsWithRef<"div">;
 
-export function MySidebarGroup(props: MySidebarGroup_Props) {
+export const MySidebarGroup = memo(function MySidebarGroup(props: MySidebarGroup_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -346,7 +346,7 @@ export function MySidebarGroup(props: MySidebarGroup_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion group
 
 // #region separator
@@ -354,7 +354,7 @@ type MySidebarSeparator_ClassNames = "MySidebarSeparator";
 
 export type MySidebarSeparator_Props = ComponentPropsWithRef<typeof Separator>;
 
-export function MySidebarSeparator(props: MySidebarSeparator_Props) {
+export const MySidebarSeparator = memo(function MySidebarSeparator(props: MySidebarSeparator_Props) {
 	const { ref, id, className, ...rest } = props;
 
 	return (
@@ -365,7 +365,7 @@ export function MySidebarSeparator(props: MySidebarSeparator_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion separator
 
 // #region content
@@ -373,7 +373,7 @@ type MySidebarContent_ClassNames = "MySidebarContent";
 
 export type MySidebarContent_Props = ComponentPropsWithRef<"div">;
 
-export function MySidebarContent(props: MySidebarContent_Props) {
+export const MySidebarContent = memo(function MySidebarContent(props: MySidebarContent_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -381,7 +381,7 @@ export function MySidebarContent(props: MySidebarContent_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion content
 
 // #region footer
@@ -389,7 +389,7 @@ type MySidebarFooter_ClassNames = "MySidebarFooter";
 
 export type MySidebarFooter_Props = ComponentPropsWithRef<"div">;
 
-export function MySidebarFooter(props: MySidebarFooter_Props) {
+export const MySidebarFooter = memo(function MySidebarFooter(props: MySidebarFooter_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -397,7 +397,7 @@ export function MySidebarFooter(props: MySidebarFooter_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion footer
 
 // #region header
@@ -405,7 +405,7 @@ type MySidebarHeader_ClassNames = "MySidebarHeader";
 
 export type MySidebarHeader_Props = ComponentPropsWithRef<"div">;
 
-export function MySidebarHeader(props: MySidebarHeader_Props) {
+export const MySidebarHeader = memo(function MySidebarHeader(props: MySidebarHeader_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -413,7 +413,7 @@ export function MySidebarHeader(props: MySidebarHeader_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion header
 
 // #region trigger
@@ -421,7 +421,7 @@ type MySidebarTrigger_ClassNames = "MySidebarTrigger";
 
 export type MySidebarTrigger_Props = ComponentPropsWithRef<"button">;
 
-export function MySidebarTrigger(props: MySidebarTrigger_Props) {
+export const MySidebarTrigger = memo(function MySidebarTrigger(props: MySidebarTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -435,7 +435,7 @@ export function MySidebarTrigger(props: MySidebarTrigger_Props) {
 			{children ?? <PanelLeftIcon size={16} />}
 		</button>
 	);
-}
+});
 // #endregion trigger
 
 // #region rail
@@ -443,7 +443,7 @@ type MySidebarRail_ClassNames = "MySidebarRail";
 
 export type MySidebarRail_Props = ComponentPropsWithRef<"button">;
 
-export function MySidebarRail(props: MySidebarRail_Props) {
+export const MySidebarRail = memo(function MySidebarRail(props: MySidebarRail_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -457,7 +457,7 @@ export function MySidebarRail(props: MySidebarRail_Props) {
 			{children}
 		</button>
 	);
-}
+});
 // #endregion rail
 
 // #region inset
@@ -465,7 +465,7 @@ type MySidebarInset_ClassNames = "MySidebarInset";
 
 export type MySidebarInset_Props = ComponentPropsWithRef<"main">;
 
-export function MySidebarInset(props: MySidebarInset_Props) {
+export const MySidebarInset = memo(function MySidebarInset(props: MySidebarInset_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -473,7 +473,7 @@ export function MySidebarInset(props: MySidebarInset_Props) {
 			{children}
 		</main>
 	);
-}
+});
 // #endregion inset
 
 // #region root
@@ -489,7 +489,7 @@ export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
 	state: "closed" | "collapsed" | "expanded";
 };
 
-export function MySidebar(props: MySidebar_Props) {
+export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
 	const { ref, id, className, state, children, style, ...rest } = props;
 	const [isMounted, setIsMounted] = useState(false);
 
@@ -523,5 +523,5 @@ export function MySidebar(props: MySidebar_Props) {
 			<div className={cn("MySidebar-inner" satisfies MySidebar_ClassNames)}>{children}</div>
 		</aside>
 	);
-}
+});
 // #endregion root

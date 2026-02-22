@@ -1,6 +1,6 @@
 import "./my-combobox.css";
 import "./my-input.css";
-import type { ComponentPropsWithRef, PointerEvent, ReactNode } from "react";
+import { memo, type ComponentPropsWithRef, type PointerEvent, type ReactNode } from "react";
 import * as Ariakit from "@ariakit/react";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
@@ -15,17 +15,17 @@ export type MyCombobox_ClassNames = "MyCombobox";
 
 export type MyCombobox_Props = Ariakit.ComboboxProviderProps;
 
-export function MyCombobox(props: MyCombobox_Props) {
+export const MyCombobox = memo(function MyCombobox(props: MyCombobox_Props) {
 	const { children, ...rest } = props;
 
 	return <Ariakit.ComboboxProvider {...rest}>{children}</Ariakit.ComboboxProvider>;
-}
+});
 
 export type MyComboboxLabel_ClassNames = "MyComboboxLabel";
 
 export type MyComboboxLabel_Props = Ariakit.ComboboxLabelProps;
 
-export function MyComboboxLabel(props: MyComboboxLabel_Props) {
+export const MyComboboxLabel = memo(function MyComboboxLabel(props: MyComboboxLabel_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -33,7 +33,7 @@ export function MyComboboxLabel(props: MyComboboxLabel_Props) {
 			{children}
 		</Ariakit.ComboboxLabel>
 	);
-}
+});
 
 export type MyComboboxInput_ClassNames = "MyComboboxInput";
 
@@ -41,7 +41,7 @@ export type MyComboboxInput_Props = ComponentPropsWithRef<"div"> & {
 	children?: ReactNode;
 };
 
-export function MyComboboxInput(props: MyComboboxInput_Props) {
+export const MyComboboxInput = memo(function MyComboboxInput(props: MyComboboxInput_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -49,13 +49,13 @@ export function MyComboboxInput(props: MyComboboxInput_Props) {
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyComboboxInputBox_ClassNames = "MyComboboxInputBox";
 
 export type MyComboboxInputBox_Props = ComponentPropsWithRef<"div">;
 
-export function MyComboboxInputBox(props: MyComboboxInputBox_Props) {
+export const MyComboboxInputBox = memo(function MyComboboxInputBox(props: MyComboboxInputBox_Props) {
 	const { ref, className, ...rest } = props;
 
 	return (
@@ -69,7 +69,7 @@ export function MyComboboxInputBox(props: MyComboboxInputBox_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 
 export type MyComboboxInputArea_ClassNames = "MyComboboxInputArea";
 
@@ -84,7 +84,7 @@ export type MyComboboxInputArea_Props = ComponentPropsWithRef<"div"> & {
 	focusForwarding?: boolean;
 };
 
-export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
+export const MyComboboxInputArea = memo(function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 	const { ref, className, style, focusForwarding = true, onPointerDown, children, ...rest } = props;
 
 	const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -128,7 +128,7 @@ export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyComboboxInputIcon_ClassNames = "MyComboboxInputIcon";
 
@@ -136,7 +136,7 @@ export type MyComboboxInputIcon_Props = ComponentPropsWithRef<"span"> & {
 	children?: ReactNode;
 };
 
-export function MyComboboxInputIcon(props: MyComboboxInputIcon_Props) {
+export const MyComboboxInputIcon = memo(function MyComboboxInputIcon(props: MyComboboxInputIcon_Props) {
 	const { ref, className, children, ...rest } = props;
 
 	return (
@@ -152,7 +152,7 @@ export function MyComboboxInputIcon(props: MyComboboxInputIcon_Props) {
 			{children}
 		</span>
 	);
-}
+});
 
 export type MyComboboxInputControl_ClassNames = "MyComboboxInputControl";
 
@@ -163,7 +163,7 @@ export type MyComboboxInputControl_Props = Omit<
 	className?: string;
 };
 
-export function MyComboboxInputControl(props: MyComboboxInputControl_Props) {
+export const MyComboboxInputControl = memo(function MyComboboxInputControl(props: MyComboboxInputControl_Props) {
 	const { ref, id, className, ...rest } = props;
 
 	return (
@@ -178,13 +178,13 @@ export function MyComboboxInputControl(props: MyComboboxInputControl_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 
 export type MyComboboxList_ClassNames = "MyComboboxList";
 
 export type MyComboboxList_Props = Ariakit.ComboboxListProps;
 
-export function MyComboboxList(props: MyComboboxList_Props) {
+export const MyComboboxList = memo(function MyComboboxList(props: MyComboboxList_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -192,13 +192,13 @@ export function MyComboboxList(props: MyComboboxList_Props) {
 			{children}
 		</Ariakit.ComboboxList>
 	);
-}
+});
 
 export type MyComboboxPopover_ClassNames = "MyComboboxPopover";
 
 export type MyComboboxPopover_Props = Ariakit.ComboboxPopoverProps;
 
-export function MyComboboxPopover(props: MyComboboxPopover_Props) {
+export const MyComboboxPopover = memo(function MyComboboxPopover(props: MyComboboxPopover_Props) {
 	const { className, portal = true, sameWidth = false, gutter = 4, children, ...rest } = props;
 
 	return (
@@ -212,7 +212,7 @@ export function MyComboboxPopover(props: MyComboboxPopover_Props) {
 			{children}
 		</Ariakit.ComboboxPopover>
 	);
-}
+});
 
 export type MyComboboxPopoverScrollableArea_ClassNames = "MyComboboxPopoverScrollableArea";
 
@@ -221,7 +221,7 @@ export type MyComboboxPopoverScrollableArea_Props = {
 	className?: string;
 };
 
-export function MyComboboxPopoverScrollableArea(props: MyComboboxPopoverScrollableArea_Props) {
+export const MyComboboxPopoverScrollableArea = memo(function MyComboboxPopoverScrollableArea(props: MyComboboxPopoverScrollableArea_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -232,7 +232,7 @@ export function MyComboboxPopoverScrollableArea(props: MyComboboxPopoverScrollab
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyComboboxPopoverContent_ClassNames = "MyComboboxPopoverContent";
 
@@ -241,7 +241,7 @@ export type MyComboboxPopoverContent_Props = {
 	className?: string;
 };
 
-export function MyComboboxPopoverContent(props: MyComboboxPopoverContent_Props) {
+export const MyComboboxPopoverContent = memo(function MyComboboxPopoverContent(props: MyComboboxPopoverContent_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -249,13 +249,13 @@ export function MyComboboxPopoverContent(props: MyComboboxPopoverContent_Props) 
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyComboboxItem_ClassNames = "MyComboboxItem";
 
 export type MyComboboxItem_Props = Ariakit.ComboboxItemProps;
 
-export function MyComboboxItem(props: MyComboboxItem_Props) {
+export const MyComboboxItem = memo(function MyComboboxItem(props: MyComboboxItem_Props) {
 	const { className, value, children, ...rest } = props;
 
 	return (
@@ -268,7 +268,7 @@ export function MyComboboxItem(props: MyComboboxItem_Props) {
 			{children}
 		</Ariakit.ComboboxItem>
 	);
-}
+});
 
 export type MyComboboxEmpty_ClassNames = "MyComboboxEmpty";
 
@@ -277,7 +277,7 @@ export type MyComboboxEmpty_Props = {
 	className?: string;
 };
 
-export function MyComboboxEmpty(props: MyComboboxEmpty_Props) {
+export const MyComboboxEmpty = memo(function MyComboboxEmpty(props: MyComboboxEmpty_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -285,7 +285,7 @@ export function MyComboboxEmpty(props: MyComboboxEmpty_Props) {
 			{children}
 		</div>
 	);
-}
+});
 
 export type MyComboboxGroup_ClassNames = "MyComboboxGroup" | "MyComboboxGroup-separator" | "MyComboboxGroupHeading";
 
@@ -296,7 +296,7 @@ export type MyComboboxGroup_Props = {
 	heading?: ReactNode;
 } & Omit<Ariakit.ComboboxGroupProps, "children" | "className">;
 
-export function MyComboboxGroup(props: MyComboboxGroup_Props) {
+export const MyComboboxGroup = memo(function MyComboboxGroup(props: MyComboboxGroup_Props) {
 	const { className, children, separator = false, heading, ...rest } = props;
 
 	return (
@@ -312,7 +312,7 @@ export function MyComboboxGroup(props: MyComboboxGroup_Props) {
 			{children}
 		</Ariakit.ComboboxGroup>
 	);
-}
+});
 
 export type MyComboboxGroupHeading_ClassNames = "MyComboboxGroupHeading";
 
@@ -321,7 +321,7 @@ export type MyComboboxGroupHeading_Props = {
 	className?: string;
 } & Omit<Ariakit.ComboboxGroupLabelProps, "children" | "className">;
 
-export function MyComboboxGroupHeading(props: MyComboboxGroupHeading_Props) {
+export const MyComboboxGroupHeading = memo(function MyComboboxGroupHeading(props: MyComboboxGroupHeading_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -332,13 +332,13 @@ export function MyComboboxGroupHeading(props: MyComboboxGroupHeading_Props) {
 			{children}
 		</Ariakit.ComboboxGroupLabel>
 	);
-}
+});
 
 export type MyComboboxCancel_ClassNames = "MyComboboxCancel";
 
 export type MyComboboxCancel_Props = Ariakit.ComboboxCancelProps;
 
-export function MyComboboxCancel(props: MyComboboxCancel_Props) {
+export const MyComboboxCancel = memo(function MyComboboxCancel(props: MyComboboxCancel_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -349,4 +349,4 @@ export function MyComboboxCancel(props: MyComboboxCancel_Props) {
 			{children}
 		</Ariakit.ComboboxCancel>
 	);
-}
+});

@@ -1,5 +1,6 @@
 import "./my-popover.css";
 import * as Ariakit from "@ariakit/react";
+import { memo } from "react";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 
@@ -7,11 +8,11 @@ export type MyPopover_ClassNames = "MyPopover";
 
 export type MyPopover_Props = Ariakit.PopoverProviderProps;
 
-export function MyPopover(props: MyPopover_Props) {
+export const MyPopover = memo(function MyPopover(props: MyPopover_Props) {
 	const { children, ...rest } = props;
 
 	return <Ariakit.PopoverProvider {...rest}>{children}</Ariakit.PopoverProvider>;
-}
+});
 
 export type MyPopoverTrigger_ClassNames = "MyPopoverTrigger";
 
@@ -19,7 +20,7 @@ export type MyPopoverTrigger_Props = {
 	children?: Ariakit.PopoverDisclosureProps["render"];
 } & Omit<Ariakit.PopoverDisclosureProps, ExtractStrict<keyof Ariakit.PopoverDisclosureProps, "render" | "children">>;
 
-export function MyPopoverTrigger(props: MyPopoverTrigger_Props) {
+export const MyPopoverTrigger = memo(function MyPopoverTrigger(props: MyPopoverTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -31,7 +32,7 @@ export function MyPopoverTrigger(props: MyPopoverTrigger_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 
 export type MyPopoverContent_ClassNames = "MyPopoverContent";
 
@@ -40,7 +41,7 @@ export type MyPopoverContent_Props = {
 	className?: string;
 } & Omit<Ariakit.PopoverProps, "children" | "className">;
 
-export function MyPopoverContent(props: MyPopoverContent_Props) {
+export const MyPopoverContent = memo(function MyPopoverContent(props: MyPopoverContent_Props) {
 	const { className, portal = true, gutter = 4, children, ...rest } = props;
 
 	return (
@@ -53,7 +54,7 @@ export function MyPopoverContent(props: MyPopoverContent_Props) {
 			{children}
 		</Ariakit.Popover>
 	);
-}
+});
 
 export type MyPopoverClose_ClassNames = "MyPopoverClose";
 
@@ -62,7 +63,7 @@ export type MyPopoverClose_Props = {
 	className?: string;
 } & Omit<Ariakit.PopoverDismissProps, "children" | "className">;
 
-export function MyPopoverClose(props: MyPopoverClose_Props) {
+export const MyPopoverClose = memo(function MyPopoverClose(props: MyPopoverClose_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -70,4 +71,4 @@ export function MyPopoverClose(props: MyPopoverClose_Props) {
 			{children}
 		</Ariakit.PopoverDismiss>
 	);
-}
+});

@@ -1,5 +1,5 @@
 import "./my-button.css";
-import type { ComponentPropsWithRef, Ref } from "react";
+import { memo, type ComponentPropsWithRef, type Ref } from "react";
 
 import { cn } from "@/lib/utils.ts";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -45,7 +45,7 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	"aria-busy"?: boolean;
 };
 
-export function MyButton(props: MyButton_Props) {
+export const MyButton = memo(function MyButton(props: MyButton_Props) {
 	const { ref, id, className, type = "button", variant = "default", children, ...rest } = props;
 
 	return (
@@ -73,7 +73,7 @@ export function MyButton(props: MyButton_Props) {
 			{children}
 		</button>
 	);
-}
+});
 
 export type MyButtonIcon_ClassNames = "MyButtonIcon";
 
@@ -85,7 +85,7 @@ export type MyButtonIcon_Props = ComponentPropsWithRef<"span"> & {
 	children?: React.ReactNode;
 };
 
-export function MyButtonIcon(props: MyButtonIcon_Props) {
+export const MyButtonIcon = memo(function MyButtonIcon(props: MyButtonIcon_Props) {
 	const { ref, id, className, innerHtml, children, ...rest } = props;
 
 	return (
@@ -99,4 +99,4 @@ export function MyButtonIcon(props: MyButtonIcon_Props) {
 			{children}
 		</MyIcon>
 	);
-}
+});

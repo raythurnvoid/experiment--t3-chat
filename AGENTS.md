@@ -648,6 +648,29 @@ Do not add `useMemo` / `useCallback` just to avoid recomputation or to stabilize
 
 Only add `useMemo` / `useCallback` when there is a concrete semantic requirement that cannot rely on the compiler (e.g. bridging to non-React APIs that store identities and must not be re-registered), and include a short comment explaining why it is required.
 
+This guidance applies to hook-level memoization (`useMemo` / `useCallback`). Component declarations are still required to use `memo(...)` (see Component declaration style below).
+
+### Component declaration style (mandatory)
+
+All React components must be exported with `memo` using a named function expression.
+
+```tsx
+export const MyComponent = memo(function MyComponent(props: MyComponent_Props) {
+	const { className, ...rest } = props;
+	return <div className={className} {...rest} />;
+});
+```
+
+For propsless components:
+
+```tsx
+export const MyComponent = memo(function MyComponent() {
+	return <div />;
+});
+```
+
+Exception for components with attached static exports (for example `Component.useStore`): use `Object.assign(memo(function Component(...) { ... }), { ...staticFields })` and then export with a separate named export (`export { Component };`) (see [Component attached exports (Fast Refresh / HMR-friendly)](#component-attached-exports-fast-refresh--hmr-friendly)).
+
 ### Effect dependency rule (React Compiler-first)
 
 When evaluating effect dependencies in this repo:
@@ -697,7 +720,7 @@ The following rules are mandatory across this codebase:
 
 ## Do
 
-- Use named function declarations for components.
+- Export components with `memo(function ComponentName(...) { ... })` using a named function expression.
 - For components that accept props: accept a single `props` parameter; destructure on the first line inside the function body.
 - For propsless components: do not add an empty `props` arg or empty props type; omit the parameter.
 - Keep `...rest` last and forward DOM-compatible props as needed.
@@ -709,7 +732,7 @@ The following rules are mandatory across this codebase:
 ## Don't
 
 - Use `React.FC` or `FC`.
-- Wrap components with `React.memo`.
+- Export non-memoized components; all components must be wrapped with `memo`.
 - Destructure props in the function signature.
 - Export anonymous arrow component expressions for top-level components.
 - Use `function foo()` declarations inside components (they are hoisted; prefer `const foo = () => {}`).
@@ -1627,37 +1650,38 @@ export function Example(props: { value: string }) {
 
 ## Component attached exports (Fast Refresh / HMR-friendly)
 
-In those cases, **attach the extra symbols as properties on the component** via dot-notation assignments. This keeps leaf imports ergonomic and avoids scattering context/hooks across multiple modules.
+When a component needs attached exports (for example `Component.useStore`), keep them on the component via dot notation.
+
+For memoized components with attached static exports, use this pattern:
+
+1. Create one symbol with `Object.assign(memo(function Component(...) { ... }), { ...staticFields })`.
+2. Export that symbol with a separate named export line (`export { Component };`).
+3. Keep static fields stable and colocated in the `Object.assign` object.
 
 - Prefer `MyContextProvider.useContext` over a separate `export function useMyContext()`.
 - Attach only _stable_ helpers/hooks/constants that are conceptually owned by the component.
 
 ```tsx
-export function MyContextProvider(props: MyContextProvider_Props) {
-	const { children } = props;
+const MyContextProvider = Object.assign(
+	memo(function MyContextProvider(props: MyContextProvider_Props) {
+		const { children } = props;
 
-	// ...
+		// ...
 
-	return children;
-}
+		return children;
+	}),
+	{
+		useContext: function useContext() {
+			// ... read context ...
+			return {};
+		},
+		DEFAULTS: {
+			mode: "default",
+		} as const,
+	},
+);
 
-MyContextProvider.useContext = function useContext() {
-	// ... read context ...
-	return {};
-};
-
-MyContextProvider.DEFAULTS = {
-	// ... constants ...
-} as const;
-```
-
-If TypeScript complains about missing properties on the function, add a **type-only** declaration for the attached fields (no runtime export):
-
-```ts
-declare namespace MyContextProvider {
-	export const DEFAULTS: typeof MyContextProvider.DEFAULTS;
-	export const useContext: typeof MyContextProvider.useContext;
-}
+export { MyContextProvider };
 ```
 
 # Convex Environment Variables

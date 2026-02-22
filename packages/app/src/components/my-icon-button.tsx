@@ -1,6 +1,6 @@
 import "./my-icon-button.css";
 
-import type { ComponentPropsWithRef, Ref } from "react";
+import { memo, type ComponentPropsWithRef, type Ref } from "react";
 import type * as Ariakit from "@ariakit/react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -17,7 +17,7 @@ export type MyIconButton_Props = ComponentPropsWithRef<typeof MyButton> & {
 	side?: "top" | "bottom" | "left" | "right";
 };
 
-export function MyIconButton(props: MyIconButton_Props) {
+export const MyIconButton = memo(function MyIconButton(props: MyIconButton_Props) {
 	const { ref, id, className, tooltip, tooltipTimeout, side = "bottom", children, ...rest } = props;
 	const buttonElement = (
 		<MyButton
@@ -44,7 +44,7 @@ export function MyIconButton(props: MyIconButton_Props) {
 			</MyTooltipContent>
 		</MyTooltip>
 	);
-}
+});
 
 type MyIconButtonIcon_ClassNames = "MyIconButtonIcon";
 
@@ -56,7 +56,7 @@ export type MyIconButtonIcon_Props = ComponentPropsWithRef<"span"> & {
 	children?: React.ReactNode;
 };
 
-export function MyIconButtonIcon(props: MyIconButtonIcon_Props) {
+export const MyIconButtonIcon = memo(function MyIconButtonIcon(props: MyIconButtonIcon_Props) {
 	const { ref, id, className, innerHtml, children, ...rest } = props;
 
 	return (
@@ -70,4 +70,4 @@ export function MyIconButtonIcon(props: MyIconButtonIcon_Props) {
 			{children}
 		</MyIcon>
 	);
-}
+});

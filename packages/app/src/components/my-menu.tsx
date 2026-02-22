@@ -1,5 +1,6 @@
 import "./my-menu.css";
 import * as Ariakit from "@ariakit/react";
+import { memo } from "react";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { ChevronRight } from "lucide-react";
@@ -12,7 +13,7 @@ export type MyMenuItemsGroup_Props = {
 	separator?: boolean;
 } & Ariakit.MenuGroupProps;
 
-export function MyMenuItemsGroup(props: MyMenuItemsGroup_Props) {
+export const MyMenuItemsGroup = memo(function MyMenuItemsGroup(props: MyMenuItemsGroup_Props) {
 	const { className, children, separator = false, ...rest } = props;
 
 	return (
@@ -27,14 +28,14 @@ export function MyMenuItemsGroup(props: MyMenuItemsGroup_Props) {
 			{children}
 		</Ariakit.MenuGroup>
 	);
-}
+});
 
 // #region items group text
 export type MyMenuItemsGroupText_ClassNames = "MyMenuItemsGroupText";
 
 export type MyMenuItemsGroupText_Props = Ariakit.MenuGroupLabelProps;
 
-export function MyMenuItemsGroupText(props: MyMenuItemsGroupText_Props) {
+export const MyMenuItemsGroupText = memo(function MyMenuItemsGroupText(props: MyMenuItemsGroupText_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -47,7 +48,7 @@ export function MyMenuItemsGroupText(props: MyMenuItemsGroupText_Props) {
 			{children}
 		</Ariakit.MenuGroupLabel>
 	);
-}
+});
 // #endregion items group text
 // #endregion items group
 
@@ -58,7 +59,7 @@ export type MyMenuItem_Props = Ariakit.MenuItemProps & {
 	variant?: "default" | "destructive";
 };
 
-export function MyMenuItem(props: MyMenuItem_Props) {
+export const MyMenuItem = memo(function MyMenuItem(props: MyMenuItem_Props) {
 	const { className, variant = "default", children, ...rest } = props;
 
 	return (
@@ -73,14 +74,14 @@ export function MyMenuItem(props: MyMenuItem_Props) {
 			{children}
 		</Ariakit.MenuItem>
 	);
-}
+});
 
 // #region item sub menu indicator
 export type MyMenuItemSubMenuIndicator_ClassNames = "MyMenuItemSubMenuIndicator";
 
 export type MyMenuItemSubMenuIndicator_Props = MyIcon_Props;
 
-export function MyMenuItemSubMenuIndicator(props: MyMenuItemSubMenuIndicator_Props) {
+export const MyMenuItemSubMenuIndicator = memo(function MyMenuItemSubMenuIndicator(props: MyMenuItemSubMenuIndicator_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -91,7 +92,7 @@ export function MyMenuItemSubMenuIndicator(props: MyMenuItemSubMenuIndicator_Pro
 			{children ?? <ChevronRight />}
 		</MyIcon>
 	);
-}
+});
 // #endregion item sub menu indicator
 
 // #region item content
@@ -102,7 +103,7 @@ export type MyMenuItemContent_Props = {
 	className?: string;
 };
 
-export function MyMenuItemContent(props: MyMenuItemContent_Props) {
+export const MyMenuItemContent = memo(function MyMenuItemContent(props: MyMenuItemContent_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -110,7 +111,7 @@ export function MyMenuItemContent(props: MyMenuItemContent_Props) {
 			{children}
 		</div>
 	);
-}
+});
 
 // #region item content primary
 export type MyMenuItemContentPrimary_ClassNames = "MyMenuItemContentPrimary";
@@ -120,7 +121,7 @@ export type MyMenuItemContentPrimary_Props = {
 	className?: string;
 };
 
-export function MyMenuItemContentPrimary(props: MyMenuItemContentPrimary_Props) {
+export const MyMenuItemContentPrimary = memo(function MyMenuItemContentPrimary(props: MyMenuItemContentPrimary_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -128,7 +129,7 @@ export function MyMenuItemContentPrimary(props: MyMenuItemContentPrimary_Props) 
 			{children}
 		</div>
 	);
-}
+});
 // #endregion item content primary
 
 // #region item content secondary
@@ -139,7 +140,7 @@ export type MyMenuItemContentSecondary_Props = {
 	className?: string;
 };
 
-export function MyMenuItemContentSecondary(props: MyMenuItemContentSecondary_Props) {
+export const MyMenuItemContentSecondary = memo(function MyMenuItemContentSecondary(props: MyMenuItemContentSecondary_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -150,7 +151,7 @@ export function MyMenuItemContentSecondary(props: MyMenuItemContentSecondary_Pro
 			{children}
 		</div>
 	);
-}
+});
 // #endregion item content secondary
 
 // #region item content icon
@@ -161,7 +162,7 @@ export type MyMenuItemContentIcon_Props = {
 	className?: string;
 };
 
-export function MyMenuItemContentIcon(props: MyMenuItemContentIcon_Props) {
+export const MyMenuItemContentIcon = memo(function MyMenuItemContentIcon(props: MyMenuItemContentIcon_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -169,7 +170,7 @@ export function MyMenuItemContentIcon(props: MyMenuItemContentIcon_Props) {
 			{children}
 		</MyIcon>
 	);
-}
+});
 // #endregion item content icon
 // #endregion item content
 // #endregion item
@@ -179,7 +180,7 @@ export type MyMenuPopover_ClassNames = "MyMenuPopover";
 
 export type MyMenuPopover_Props = Ariakit.MenuProps;
 
-export function MyMenuPopover(props: MyMenuPopover_Props) {
+export const MyMenuPopover = memo(function MyMenuPopover(props: MyMenuPopover_Props) {
 	const { ref, id, className, portal = true, children, ...rest } = props;
 
 	return (
@@ -194,7 +195,7 @@ export function MyMenuPopover(props: MyMenuPopover_Props) {
 			{children}
 		</Ariakit.Menu>
 	);
-}
+});
 
 // #region popover scrollable area
 export type MyMenuPopoverScrollableArea_ClassNames = "MyMenuPopoverScrollableArea";
@@ -204,7 +205,7 @@ export type MyMenuPopoverScrollableArea_Props = {
 	className?: string;
 };
 
-export function MyMenuPopoverScrollableArea(props: MyMenuPopoverScrollableArea_Props) {
+export const MyMenuPopoverScrollableArea = memo(function MyMenuPopoverScrollableArea(props: MyMenuPopoverScrollableArea_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -215,7 +216,7 @@ export function MyMenuPopoverScrollableArea(props: MyMenuPopoverScrollableArea_P
 			{children}
 		</div>
 	);
-}
+});
 // #endregion popover scrollable area
 
 // #region popover content
@@ -226,7 +227,7 @@ export type MyMenuPopoverContent_Props = {
 	className?: string;
 };
 
-export function MyMenuPopoverContent(props: MyMenuPopoverContent_Props) {
+export const MyMenuPopoverContent = memo(function MyMenuPopoverContent(props: MyMenuPopoverContent_Props) {
 	const { className, children, ...rest } = props;
 
 	return (
@@ -234,7 +235,7 @@ export function MyMenuPopoverContent(props: MyMenuPopoverContent_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion popover content
 // #endregion popover
 
@@ -245,7 +246,7 @@ export type MyMenuTrigger_Props = {
 	children?: Ariakit.MenuButtonProps["render"];
 } & Omit<Ariakit.MenuButtonProps, ExtractStrict<keyof Ariakit.MenuButtonProps, "render">>;
 
-export function MyMenuTrigger(props: MyMenuTrigger_Props) {
+export const MyMenuTrigger = memo(function MyMenuTrigger(props: MyMenuTrigger_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -257,7 +258,7 @@ export function MyMenuTrigger(props: MyMenuTrigger_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion trigger
 
 // #region root
@@ -265,7 +266,7 @@ export type MyMenu_ClassNames = "MyMenu";
 
 export type MyMenu_Props = Ariakit.MenuProviderProps;
 
-export function MyMenu(props: MyMenu_Props) {
+export const MyMenu = memo(function MyMenu(props: MyMenu_Props) {
 	const { virtualFocus = true, children, ...rest } = props;
 
 	return (
@@ -273,5 +274,5 @@ export function MyMenu(props: MyMenu_Props) {
 			{children}
 		</Ariakit.MenuProvider>
 	);
-}
+});
 // #endregion root

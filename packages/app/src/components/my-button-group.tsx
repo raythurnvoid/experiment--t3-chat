@@ -1,7 +1,6 @@
 import "@/components/my-button.css";
 import "./my-button-group.css";
-import type { ComponentPropsWithRef } from "react";
-import { createContext, use, useId } from "react";
+import { createContext, memo, use, useId, type ComponentPropsWithRef } from "react";
 
 import type { MyButton_ClassNames } from "@/components/my-button.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -26,7 +25,7 @@ export type MyButtonGroup_Props = ComponentPropsWithRef<"div"> & {
 	disabled?: boolean;
 };
 
-export function MyButtonGroup(props: MyButtonGroup_Props) {
+export const MyButtonGroup = memo(function MyButtonGroup(props: MyButtonGroup_Props) {
 	const { className, value, onValueChange, disabled = false, children, ...rest } = props;
 
 	const reactId = useId();
@@ -44,7 +43,7 @@ export function MyButtonGroup(props: MyButtonGroup_Props) {
 			</div>
 		</MyButtonGroupContext.Provider>
 	);
-}
+});
 // #endregion group
 
 // #region item
@@ -63,7 +62,7 @@ export type MyButtonGroupItem_Props = Omit<
 	children?: React.ReactNode;
 };
 
-export function MyButtonGroupItem(props: MyButtonGroupItem_Props) {
+export const MyButtonGroupItem = memo(function MyButtonGroupItem(props: MyButtonGroupItem_Props) {
 	const { className, inputClassName, value, disabled, id, onChange, children, ...rest } = props;
 
 	const context = use(MyButtonGroupContext);
@@ -111,5 +110,5 @@ export function MyButtonGroupItem(props: MyButtonGroupItem_Props) {
 			</label>
 		</span>
 	);
-}
+});
 // #endregion item

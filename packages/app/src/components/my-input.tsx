@@ -1,6 +1,6 @@
 import "./my-input.css";
 import type { ComponentPropsWithRef } from "react";
-import { createContext, use, useId } from "react";
+import { createContext, memo, use, useId } from "react";
 
 import { cn, type XCustomEventLike } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
@@ -27,7 +27,7 @@ type MyInputLabel_ClassNames = "MyInputLabel";
 
 export type MyInputLabel_Props = Omit<ComponentPropsWithRef<"label">, "id">;
 
-export function MyInputLabel(props: MyInputLabel_Props) {
+export const MyInputLabel = memo(function MyInputLabel(props: MyInputLabel_Props) {
 	const { ref, className, children, ...rest } = props;
 
 	const context = use(MyInputContext);
@@ -46,7 +46,7 @@ export function MyInputLabel(props: MyInputLabel_Props) {
 			{children}
 		</label>
 	);
-}
+});
 // #endregion label
 
 // #region helper text
@@ -54,7 +54,7 @@ type MyInputHelperText_ClassNames = "MyInputHelperText";
 
 export type MyInputHelperText_Props = Omit<ComponentPropsWithRef<"div">, "id">;
 
-export function MyInputHelperText(props: MyInputHelperText_Props) {
+export const MyInputHelperText = memo(function MyInputHelperText(props: MyInputHelperText_Props) {
 	const { ref, className, children, ...rest } = props;
 
 	const context = use(MyInputContext);
@@ -72,7 +72,7 @@ export function MyInputHelperText(props: MyInputHelperText_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion helper text
 
 // #region icon
@@ -80,11 +80,11 @@ export type MyInputIcon_ClassNames = "MyInputIcon";
 
 export type MyInputIcon_Props = ComponentPropsWithRef<typeof MyIcon>;
 
-export function MyInputIcon(props: MyInputIcon_Props) {
+export const MyInputIcon = memo(function MyInputIcon(props: MyInputIcon_Props) {
 	const { className, ...rest } = props;
 
 	return <MyIcon className={cn("MyInputIcon" satisfies MyInputIcon_ClassNames, className)} {...rest} />;
-}
+});
 // #endregion icon
 
 // #region box
@@ -92,7 +92,7 @@ export type MyInputBox_ClassNames = "MyInputBox";
 
 export type MyInputBox_Props = ComponentPropsWithRef<"div">;
 
-export function MyInputBox(props: MyInputBox_Props) {
+export const MyInputBox = memo(function MyInputBox(props: MyInputBox_Props) {
 	const { ref, className, children, ...rest } = props;
 
 	return (
@@ -100,7 +100,7 @@ export function MyInputBox(props: MyInputBox_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion box
 
 // #region area
@@ -117,7 +117,7 @@ export type MyInputArea_Props = ComponentPropsWithRef<"div"> & {
 	onFocusForward?: (event: XCustomEventLike<{ originalEvent: React.PointerEvent<HTMLDivElement> }>) => void;
 };
 
-export function MyInputArea(props: MyInputArea_Props) {
+export const MyInputArea = memo(function MyInputArea(props: MyInputArea_Props) {
 	const { ref, className, style, focusForwarding = true, onPointerDown, onFocusForward, children, ...rest } = props;
 	const context = use(MyInputContext);
 	if (!context) {
@@ -172,7 +172,7 @@ export function MyInputArea(props: MyInputArea_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion area
 
 // #region control
@@ -180,7 +180,7 @@ export type MyInputControl_ClassNames = "MyInputControl";
 
 export type MyInputControl_Props = Omit<ComponentPropsWithRef<"input">, "size" | "id">;
 
-export function MyInputControl(props: MyInputControl_Props) {
+export const MyInputControl = memo(function MyInputControl(props: MyInputControl_Props) {
 	const { ref, className, ...rest } = props;
 
 	const context = use(MyInputContext);
@@ -196,7 +196,7 @@ export function MyInputControl(props: MyInputControl_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion control
 
 // #region textarea control
@@ -204,7 +204,7 @@ export type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 
 export type MyInputTextAreaControl_Props = Omit<ComponentPropsWithRef<"textarea">, "size" | "id">;
 
-export function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
+export const MyInputTextAreaControl = memo(function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
 	const { ref, className, ...rest } = props;
 
 	const context = use(MyInputContext);
@@ -220,7 +220,7 @@ export function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion textarea control
 
 // #region root
@@ -230,7 +230,7 @@ export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 	variant?: "default" | "surface" | "transparent";
 };
 
-export function MyInput(props: MyInput_Props) {
+export const MyInput = memo(function MyInput(props: MyInput_Props) {
 	const { className, variant = "default", children, ...rest } = props;
 
 	const reactId = useId();
@@ -262,5 +262,5 @@ export function MyInput(props: MyInput_Props) {
 			</div>
 		</MyInputContext.Provider>
 	);
-}
+});
 // #endregion root

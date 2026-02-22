@@ -1,6 +1,6 @@
 import "./my-action.css";
 
-import type { ComponentPropsWithRef } from "react";
+import { memo, type ComponentPropsWithRef } from "react";
 import type * as Ariakit from "@ariakit/react";
 
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
@@ -16,7 +16,7 @@ export type MyPrimaryAction_Props = ComponentPropsWithRef<"button"> & {
 	tooltipDisabled?: boolean;
 };
 
-export function MyPrimaryAction(props: MyPrimaryAction_Props) {
+export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAction_Props) {
 	const {
 		ref,
 		id,
@@ -28,6 +28,7 @@ export function MyPrimaryAction(props: MyPrimaryAction_Props) {
 		children,
 		...rest
 	} = props;
+
 	const buttonElement = (
 		<button
 			ref={ref}
@@ -53,5 +54,5 @@ export function MyPrimaryAction(props: MyPrimaryAction_Props) {
 			<MyTooltipContent unmountOnHide>{tooltip}</MyTooltipContent>
 		</MyTooltip>
 	);
-}
+});
 // #endregion primary action

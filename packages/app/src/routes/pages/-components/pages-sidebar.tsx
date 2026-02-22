@@ -1,5 +1,5 @@
 import "./pages-sidebar.css";
-import React, { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
 	Archive,
 	ArchiveRestore,
@@ -146,13 +146,13 @@ function sort_children(args: { children: string[]; itemById: Map<string, pages_T
 // #region tree item icon
 type PagesSidebarTreeItemIcon_ClassNames = "PagesSidebarTreeItemIcon";
 
-function PagesSidebarTreeItemIcon() {
+const PagesSidebarTreeItemIcon = memo(function PagesSidebarTreeItemIcon() {
 	return (
 		<MyIcon className={"PagesSidebarTreeItemIcon" satisfies PagesSidebarTreeItemIcon_ClassNames}>
 			<FileText />
 		</MyIcon>
 	);
-}
+});
 // #endregion tree item icon
 
 // #region tree item secondary action
@@ -167,7 +167,9 @@ type PagesSidebarTreeItemSecondaryAction_Props = {
 	onClick: () => void;
 };
 
-function PagesSidebarTreeItemSecondaryAction(props: PagesSidebarTreeItemSecondaryAction_Props) {
+const PagesSidebarTreeItemSecondaryAction = memo(function PagesSidebarTreeItemSecondaryAction(
+	props: PagesSidebarTreeItemSecondaryAction_Props,
+) {
 	const { className, children, tooltip, isActive, disabled, onClick } = props;
 
 	const handleClick = useFn<MyIconButton_Props["onClick"]>(() => {
@@ -190,7 +192,7 @@ function PagesSidebarTreeItemSecondaryAction(props: PagesSidebarTreeItemSecondar
 			<MyIconButtonIcon>{children}</MyIconButtonIcon>
 		</MyIconButton>
 	);
-}
+});
 // #endregion tree item secondary action
 
 // #region tree item secondary action create page
@@ -202,7 +204,9 @@ type PagesSidebarTreeItemSecondaryActionCreatePage_Props = {
 	onClick: () => void;
 };
 
-function PagesSidebarTreeItemSecondaryActionCreatePage(props: PagesSidebarTreeItemSecondaryActionCreatePage_Props) {
+const PagesSidebarTreeItemSecondaryActionCreatePage = memo(function PagesSidebarTreeItemSecondaryActionCreatePage(
+	props: PagesSidebarTreeItemSecondaryActionCreatePage_Props,
+) {
 	const { isActive, disabled, onClick } = props;
 
 	return (
@@ -218,7 +222,7 @@ function PagesSidebarTreeItemSecondaryActionCreatePage(props: PagesSidebarTreeIt
 			<Plus />
 		</PagesSidebarTreeItemSecondaryAction>
 	);
-}
+});
 // #endregion tree item secondary action create page
 
 // #region tree item more action
@@ -233,7 +237,9 @@ type PagesSidebarTreeItemMoreAction_Props = {
 	onUnarchive: () => void;
 };
 
-function PagesSidebarTreeItemMoreAction(props: PagesSidebarTreeItemMoreAction_Props) {
+const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAction(
+	props: PagesSidebarTreeItemMoreAction_Props,
+) {
 	const { archiveOperationId, isPending, isTabbable, onRename, onArchive, onUnarchive } = props;
 	const isArchived = archiveOperationId !== undefined;
 
@@ -289,7 +295,7 @@ function PagesSidebarTreeItemMoreAction(props: PagesSidebarTreeItemMoreAction_Pr
 			</MyMenuPopover>
 		</MyMenu>
 	);
-}
+});
 // #endregion tree item more action
 
 // #region tree item arrow
@@ -302,7 +308,7 @@ type PagesSidebarTreeItemArrow_Props = {
 	onClick: () => void;
 };
 
-function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
+const PagesSidebarTreeItemArrow = memo(function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 	const { isExpanded, isPending, isTabbable, onClick } = props;
 
 	return (
@@ -318,7 +324,7 @@ function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
 			<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 		</MyIconButton>
 	);
-}
+});
 // #endregion tree item arrow
 
 // #region tree item title
@@ -329,7 +335,7 @@ type PagesSidebarTreeItemTitle_Props = {
 	item: PagesSidebarTreeItem_Instance;
 };
 
-function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
+const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 	const { item } = props;
 
 	const renameInputProps = useVal(() => item.getRenameInputProps());
@@ -351,7 +357,7 @@ function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 			/>
 		</MyInput>
 	);
-}
+});
 // #endregion tree item title
 
 // #region tree item primary content
@@ -362,7 +368,9 @@ type PagesSidebarTreeItemPrimaryContent_Props = {
 	item: PagesSidebarTreeItem_Instance;
 };
 
-function PagesSidebarTreeItemPrimaryContent(props: PagesSidebarTreeItemPrimaryContent_Props) {
+const PagesSidebarTreeItemPrimaryContent = memo(function PagesSidebarTreeItemPrimaryContent(
+	props: PagesSidebarTreeItemPrimaryContent_Props,
+) {
 	const { tree, item } = props;
 
 	const itemData = useVal(() => item.getItemData());
@@ -380,7 +388,7 @@ function PagesSidebarTreeItemPrimaryContent(props: PagesSidebarTreeItemPrimaryCo
 			)}
 		</div>
 	);
-}
+});
 // #endregion tree item primary content
 
 // #region tree item primary action
@@ -393,7 +401,9 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
-function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAction_Props) {
+const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrimaryAction(
+	props: PagesSidebarTreeItemPrimaryAction_Props,
+) {
 	const { item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
 
 	const itemProps = useVal(() => item.getProps());
@@ -421,6 +431,31 @@ function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAct
 	// 	item.setFocused();
 	// };
 
+	// Event listeners in `itemProps` are not stable and cause unnecessary re-renders
+	const handleDragStart = useFn<MyPrimaryAction_Props["onDragStart"]>((event) => {
+		itemProps.onDragStart?.(event);
+	});
+
+	const handleDragEnd = useFn<MyPrimaryAction_Props["onDragEnd"]>((event) => {
+		itemProps.onDragEnd?.(event);
+	});
+
+	const handleDragEnter = useFn<MyPrimaryAction_Props["onDragEnter"]>((event) => {
+		itemProps.onDragEnter?.(event);
+	});
+
+	const handleDragLeave = useFn<MyPrimaryAction_Props["onDragLeave"]>((event) => {
+		itemProps.onDragLeave?.(event);
+	});
+
+	const handleDragOver = useFn<MyPrimaryAction_Props["onDragOver"]>((event) => {
+		itemProps.onDragOver?.(event);
+	});
+
+	const handleDrop = useFn<MyPrimaryAction_Props["onDrop"]>((event) => {
+		itemProps.onDrop?.(event);
+	});
+
 	return (
 		<MyPrimaryAction
 			{...itemProps}
@@ -432,9 +467,15 @@ function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAct
 			tooltipDisabled={isTreeDragging}
 			aria-label={itemData.title}
 			onClick={handleClick}
+			onDragStart={handleDragStart}
+			onDragEnd={handleDragEnd}
+			onDragEnter={handleDragEnter}
+			onDragLeave={handleDragLeave}
+			onDragOver={handleDragOver}
+			onDrop={handleDrop}
 		></MyPrimaryAction>
 	);
-}
+});
 // #endregion tree item primary action
 
 // #region tree item meta label
@@ -444,7 +485,9 @@ type PagesSidebarTreeItemMetaLabel_Props = {
 	metaText: string;
 };
 
-function PagesSidebarTreeItemMetaLabel(props: PagesSidebarTreeItemMetaLabel_Props) {
+const PagesSidebarTreeItemMetaLabel = memo(function PagesSidebarTreeItemMetaLabel(
+	props: PagesSidebarTreeItemMetaLabel_Props,
+) {
 	const { metaText } = props;
 
 	return (
@@ -454,7 +497,7 @@ function PagesSidebarTreeItemMetaLabel(props: PagesSidebarTreeItemMetaLabel_Prop
 			</div>
 		</div>
 	);
-}
+});
 // #endregion tree item meta label
 
 // #region tree item actions
@@ -470,7 +513,9 @@ type PagesSidebarTreeItemActions_Props = {
 	onUnarchive: PagesSidebarTreeItemMoreAction_Props["onUnarchive"];
 };
 
-function PagesSidebarTreeItemActions(props: PagesSidebarTreeItemActions_Props) {
+const PagesSidebarTreeItemActions = memo(function PagesSidebarTreeItemActions(
+	props: PagesSidebarTreeItemActions_Props,
+) {
 	const { archiveOperationId, isPending, isTabbable, onCreatePage, onRename, onArchive, onUnarchive } = props;
 
 	return (
@@ -490,7 +535,7 @@ function PagesSidebarTreeItemActions(props: PagesSidebarTreeItemActions_Props) {
 			/>
 		</div>
 	);
-}
+});
 // #endregion tree item actions
 
 // #region tree item track
@@ -505,7 +550,7 @@ type PagesSidebarTreeItemTrack_Props = {
 	activeTracksPageIds: Set<string>;
 };
 
-function PagesSidebarTreeItemTrack(props: PagesSidebarTreeItemTrack_Props) {
+const PagesSidebarTreeItemTrack = memo(function PagesSidebarTreeItemTrack(props: PagesSidebarTreeItemTrack_Props) {
 	const { item, activeTracksPageIds } = props;
 
 	const ancestorIds = ((/* iife */) => {
@@ -534,7 +579,7 @@ function PagesSidebarTreeItemTrack(props: PagesSidebarTreeItemTrack_Props) {
 			))}
 		</div>
 	);
-}
+});
 // #endregion tree item track
 
 // #region tree item
@@ -570,7 +615,7 @@ type PagesSidebarTreeItem_Props = {
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
-function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
+const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const {
 		itemId,
 		tree,
@@ -684,7 +729,7 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 			<PagesSidebarTreeItemTrack tree={tree} item={item} activeTracksPageIds={activeTracksPageIds} />
 		</div>
 	);
-}
+});
 // #endregion tree item
 
 // #region tree
@@ -712,7 +757,7 @@ type PagesSidebarTree_Props = {
 
 type PagesSidebarTree_DivProps = React.ComponentProps<"div">;
 
-function PagesSidebarTree(props: PagesSidebarTree_Props) {
+const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_Props) {
 	const {
 		tree,
 		isTreeLoading,
@@ -878,7 +923,7 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 			)}
 		</div>
 	);
-}
+});
 // #endregion tree
 
 // #region search
@@ -888,7 +933,7 @@ type PagesSidebarSearch_Props = {
 	onSearchQueryChange: (searchQuery: string) => void;
 };
 
-function PagesSidebarSearch(props: PagesSidebarSearch_Props) {
+const PagesSidebarSearch = memo(function PagesSidebarSearch(props: PagesSidebarSearch_Props) {
 	const { onSearchQueryChange } = props;
 
 	const [searchQuery, setSearchQuery] = useState("");
@@ -913,7 +958,7 @@ function PagesSidebarSearch(props: PagesSidebarSearch_Props) {
 			</MyInputArea>
 		</MyInput>
 	);
-}
+});
 // #endregion search
 
 // #region header
@@ -950,7 +995,7 @@ type PagesSidebarHeader_Props = {
 	onArchiveToggleClick: () => void;
 };
 
-function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
+const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
 	const {
 		homePageId,
 		view,
@@ -1088,7 +1133,7 @@ function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
 			) : null}
 		</MySidebarHeader>
 	);
-}
+});
 // #endregion header
 
 // #region root
@@ -1103,7 +1148,7 @@ export type PagesSidebar_Props = {
 	onPrimaryAction: (itemId: string, itemType: string) => void;
 };
 
-export function PagesSidebar(props: PagesSidebar_Props) {
+export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props) {
 	const { selectedPageId, state = "expanded", view, onClose, onArchive, onPrimaryAction } = props;
 
 	const navigate = useNavigate();
@@ -1794,5 +1839,5 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			</MySidebarContent>
 		</MySidebar>
 	);
-}
+});
 // #endregion root

@@ -1,5 +1,5 @@
 import "./my-separator.css";
-import type { ComponentPropsWithRef, Ref } from "react";
+import { memo, type ComponentPropsWithRef, type Ref } from "react";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -13,7 +13,7 @@ export type MySeparator_Props = ComponentPropsWithRef<"div"> & {
 	orientation?: "horizontal" | "vertical";
 };
 
-export function MySeparator(props: MySeparator_Props) {
+export const MySeparator = memo(function MySeparator(props: MySeparator_Props) {
 	const { ref, id, className, orientation = "horizontal", children, ...rest } = props;
 
 	return (
@@ -31,7 +31,7 @@ export function MySeparator(props: MySeparator_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion MySeparator
 
 // #region MySeparatorHr
@@ -44,7 +44,7 @@ export type MySeparatorHr_Props = ComponentPropsWithRef<"hr"> & {
 	orientation?: "horizontal" | "vertical";
 };
 
-export function MySeparatorHr(props: MySeparatorHr_Props) {
+export const MySeparatorHr = memo(function MySeparatorHr(props: MySeparatorHr_Props) {
 	const { ref, id, className, orientation = "horizontal", children, ...rest } = props;
 
 	return (
@@ -64,5 +64,5 @@ export function MySeparatorHr(props: MySeparatorHr_Props) {
 			{children}
 		</hr>
 	);
-}
+});
 // #endregion MySeparatorHr

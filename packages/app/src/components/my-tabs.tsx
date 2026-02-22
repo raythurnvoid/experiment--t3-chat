@@ -1,5 +1,5 @@
 import "./my-tabs.css";
-import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
+import { memo, type ComponentPropsWithRef, type ReactNode, type Ref } from "react";
 import * as Ariakit from "@ariakit/react";
 import { cn } from "@/lib/utils.ts";
 
@@ -8,7 +8,7 @@ export type MyTabsTab_ClassNames = "MyTabsTab";
 
 export type MyTabsTab_Props = Ariakit.TabProps;
 
-export function MyTabsTab(props: MyTabsTab_Props) {
+export const MyTabsTab = memo(function MyTabsTab(props: MyTabsTab_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -16,7 +16,7 @@ export function MyTabsTab(props: MyTabsTab_Props) {
 			{children}
 		</Ariakit.Tab>
 	);
-}
+});
 // #endregion tab
 
 // #region panel
@@ -24,7 +24,7 @@ export type MyTabsPanel_ClassNames = "MyTabsPanel";
 
 export type MyTabsPanel_Props = Ariakit.TabPanelProps;
 
-export function MyTabsPanel(props: MyTabsPanel_Props) {
+export const MyTabsPanel = memo(function MyTabsPanel(props: MyTabsPanel_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -37,7 +37,7 @@ export function MyTabsPanel(props: MyTabsPanel_Props) {
 			{children}
 		</Ariakit.TabPanel>
 	);
-}
+});
 // #endregion panel
 
 // #region list
@@ -45,7 +45,7 @@ export type MyTabsList_ClassNames = "MyTabsList";
 
 export type MyTabsList_Props = Ariakit.TabListProps;
 
-export function MyTabsList(props: MyTabsList_Props) {
+export const MyTabsList = memo(function MyTabsList(props: MyTabsList_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -58,7 +58,7 @@ export function MyTabsList(props: MyTabsList_Props) {
 			{children}
 		</Ariakit.TabList>
 	);
-}
+});
 // #endregion list
 
 // #region panels
@@ -71,7 +71,7 @@ export type MyTabsPanels_Props = ComponentPropsWithRef<"div"> & {
 	children?: ReactNode;
 };
 
-export function MyTabsPanels(props: MyTabsPanels_Props) {
+export const MyTabsPanels = memo(function MyTabsPanels(props: MyTabsPanels_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -79,7 +79,7 @@ export function MyTabsPanels(props: MyTabsPanels_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion panels
 
 // #region root
@@ -87,9 +87,9 @@ export type MyTabs_ClassNames = "MyTabs";
 
 export type MyTabs_Props = Ariakit.TabProviderProps;
 
-export function MyTabs(props: MyTabs_Props) {
+export const MyTabs = memo(function MyTabs(props: MyTabs_Props) {
 	const { children, ...rest } = props;
 
 	return <Ariakit.TabProvider {...rest}>{children}</Ariakit.TabProvider>;
-}
+});
 // #endregion root
