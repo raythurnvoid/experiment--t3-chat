@@ -287,7 +287,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		return result;
 	}, [threadById]);
 
-	const persistedMessagesData = ((/* iife */) => {
+	const persistedMessagesLookup = ((/* iife */) => {
 		if (!persistedThreadMessages) return undefined;
 
 		const result = {
@@ -415,7 +415,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 	const chat = useChat<ai_chat_AiSdk5UiMessage>({ chat: activeChatInstance });
 
-	const pendingMessagesData = ((/* iife */) => {
+	const pendingMessagesLookup = ((/* iife */) => {
 		const result = {
 			list: [] as ai_chat_AiSdk5UiMessage[],
 			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
@@ -428,11 +428,14 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		// Read messages from the newest to the oldest.
 		for (const message of chat.messages.toReversed()) {
 			// Skip alredy persisted messages
-			if (persistedMessagesData?.clientGeneratedIds.has(message.id) || persistedMessagesData?.mapById.has(message.id)) {
+			if (
+				persistedMessagesLookup?.clientGeneratedIds.has(message.id) ||
+				persistedMessagesLookup?.mapById.has(message.id)
+			) {
 				continue;
 			}
 
-			if (!persistedMessagesData?.mapById.has(message.id)) {
+			if (!persistedMessagesLookup?.mapById.has(message.id)) {
 				result.list.push(message);
 			}
 
@@ -444,14 +447,14 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				if (message.metadata?.convexParentId) {
 					// When the parent message is persisted but convex is not synced yet,
 					// the `convexParentId` is valorized but it will not resolve to any message,
-					// to be sure it resolve to a message we check into `persistedMessagesData.mapById`
-					parentId = persistedMessagesData?.mapById.get(message.metadata.convexParentId)?.id;
+					// to be sure it resolve to a message we check into `persistedMessagesLookup.mapById`
+					parentId = persistedMessagesLookup?.mapById.get(message.metadata.convexParentId)?.id;
 				}
 
 				// When the parent message is persisted but convex is not synced yet
 				// we have to fallback to associate this message to the clientGeneratedId
 				// of the parent because the parent message is not yet coming from
-				// the `persistedMessagesData` but is present only in the
+				// the `persistedMessagesLookup` but is present only in the
 				// AI SDK chat object, therefore it displays still as a pending message.
 				if (!parentId) parentId = message.metadata?.parentClientGeneratedId;
 
@@ -468,10 +471,10 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		return result;
 	})();
 
-	const anchorMessage = persistedMessagesData
+	const anchorMessage = persistedMessagesLookup
 		? session?.anchorId
-			? (persistedMessagesData.mapById.get(session.anchorId) ?? null)
-			: (pendingMessagesData.list.at(0) ?? persistedMessagesData.list.at(0) ?? null)
+			? (persistedMessagesLookup.mapById.get(session.anchorId) ?? null)
+			: (pendingMessagesLookup.list.at(0) ?? persistedMessagesLookup.list.at(0) ?? null)
 		: null;
 
 	const activeBranchMessages = ((/* iife */) => {
@@ -480,10 +483,10 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		const mapById = new Map<string, ai_chat_AiSdk5UiMessage>();
 
 		// Find tail messages from persisted messages.
-		if (persistedMessagesData) {
+		if (persistedMessagesLookup) {
 			// Since we move upward and messages are ordered from newest to oldest
 			// we should start from the newest (0).
-			let current = anchorMessage ?? persistedMessagesData.list.at(0);
+			let current = anchorMessage ?? persistedMessagesLookup.list.at(0);
 			while (current) {
 				mapById.set(current.id, current);
 				tail.push(current);
@@ -491,17 +494,17 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 					let parentMessage = undefined;
 
 					if (current.metadata?.convexParentId) {
-						parentMessage = pendingMessagesData.mapById.get(current.metadata.convexParentId);
-						if (!parentMessage) parentMessage = persistedMessagesData?.mapById.get(current.metadata.convexParentId);
+						parentMessage = pendingMessagesLookup.mapById.get(current.metadata.convexParentId);
+						if (!parentMessage) parentMessage = persistedMessagesLookup?.mapById.get(current.metadata.convexParentId);
 					}
 
 					// When sending a user message, in the convex BE we save it
 					// immidiately, the assistant message will stream with a convex id
 					// already set but the convex sync engine might not have synced it yed
 					// so we need to fallback to the client-generated id to get it from
-					// the pending messages data.
+					// the pending messages lookup.
 					if (current.metadata?.parentClientGeneratedId && !parentMessage) {
-						parentMessage = pendingMessagesData.mapById.get(current.metadata.parentClientGeneratedId);
+						parentMessage = pendingMessagesLookup.mapById.get(current.metadata.parentClientGeneratedId);
 					}
 
 					return parentMessage;
@@ -513,7 +516,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		{
 			// Since we move downward and messages are ordered from newest to oldest
 			// we should start from the oldest (-1).
-			let current = anchorMessage ?? pendingMessagesData.list.at(-1);
+			let current = anchorMessage ?? pendingMessagesLookup.list.at(-1);
 			while (current) {
 				// The anchor is already included in the tail
 				if (current !== anchorMessage) {
@@ -523,8 +526,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 				// Find the most recent child message.
 				current =
-					pendingMessagesData.childrenByParentId.get(current.id)?.at(0) ??
-					persistedMessagesData?.childrenByParentId.get(current.id)?.at(0);
+					pendingMessagesLookup.childrenByParentId.get(current.id)?.at(0) ??
+					persistedMessagesLookup?.childrenByParentId.get(current.id)?.at(0);
 			}
 		}
 
@@ -538,13 +541,13 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const messagesChildrenByParentId = ((/* iife */) => {
 		const result = new Map<string | null, ai_chat_AiSdk5UiMessage[]>();
 
-		if (persistedMessagesData) {
-			for (const [parentId, children] of persistedMessagesData.childrenByParentId.entries()) {
+		if (persistedMessagesLookup) {
+			for (const [parentId, children] of persistedMessagesLookup.childrenByParentId.entries()) {
 				result.set(parentId, children.toReversed());
 			}
 		}
 
-		for (const [parentId, children] of pendingMessagesData.childrenByParentId.entries()) {
+		for (const [parentId, children] of pendingMessagesLookup.childrenByParentId.entries()) {
 			result.set(parentId, [...(result.get(parentId) ?? []), ...children.toReversed()]);
 		}
 
@@ -677,7 +680,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
-		const messageToRegenerate = persistedMessagesData?.mapById.get(messageId) ?? null;
+		const messageToRegenerate = persistedMessagesLookup?.mapById.get(messageId) ?? null;
 		if (!messageToRegenerate) {
 			should_never_happen("[useAiChatController.regenerate] Missing Convex message", {
 				threadId,
