@@ -23,6 +23,7 @@ import {
 	renamingFeature,
 	selectionFeature,
 	syncDataLoaderFeature,
+	type TreeConfig,
 	type TreeInstance,
 } from "@headless-tree/core";
 import { AssistiveTreeDescription } from "@headless-tree/react";
@@ -47,7 +48,7 @@ import {
 	MyMenuTrigger,
 	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, sx } from "@/lib/utils.ts";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
@@ -64,13 +65,12 @@ type PagesSidebarTree_Shared = () => TreeInstance<pages_TreeItem>;
 type PagesSidebarTreeItem_Instance = ReturnType<TreeInstance<pages_TreeItem>["getItemInstance"]>;
 
 // #region helpers
-type PagesSidebar_CollectionItem = {
-	index: string;
-	data: pages_TreeItem;
-	children: string[];
+type PagesSidebar_TreeItems = {
+	list: pages_TreeItem[] | undefined;
+	itemsByParentId: Map<string, pages_TreeItem[]>;
+	sortedItemsIdsByParentId: Map<string, string[]>;
+	itemById: Map<string, pages_TreeItem>;
 };
-
-type PagesSidebar_Collection = Record<string, PagesSidebar_CollectionItem>;
 
 function pages_sidebar_to_page_id(pageId: string) {
 	return pageId as app_convex_Id<"pages">;
@@ -88,21 +88,21 @@ function pages_sidebar_to_parent_id(parentId: string) {
 		| typeof pages_ROOT_ID;
 }
 
-function pages_sidebar_get_default_page_name(args: { parentId: string; treeCollection: PagesSidebar_Collection }) {
+function pages_sidebar_get_default_page_name(args: { parentId: string; treeItems: PagesSidebar_TreeItems }) {
 	const normalizedParentId = pages_sidebar_normalize_parent_id(args.parentId);
-	const siblingIds = args.treeCollection[normalizedParentId]?.children ?? [];
+	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(normalizedParentId) ?? [];
 	const activeSiblingNames = new Set<string>();
 
 	for (const siblingId of siblingIds) {
-		const siblingItem = args.treeCollection[siblingId];
-		if (!siblingItem || siblingItem.data.type !== "page") {
+		const siblingItem = args.treeItems.itemById.get(siblingId);
+		if (!siblingItem || siblingItem.type !== "page") {
 			continue;
 		}
-		if (siblingItem.data.archiveOperationId !== undefined) {
+		if (siblingItem.archiveOperationId !== undefined) {
 			continue;
 		}
 
-		activeSiblingNames.add(siblingItem.data.title.trim().toLowerCase());
+		activeSiblingNames.add(siblingItem.title.trim().toLowerCase());
 	}
 
 	const baseName = "New Page";
@@ -120,130 +120,23 @@ function pages_sidebar_get_default_page_name(args: { parentId: string; treeColle
 	}
 }
 
-function sort_children(args: { children: string[]; collection: PagesSidebar_Collection }) {
+function sort_children(args: { children: string[]; itemById: Map<string, pages_TreeItem> }) {
 	return [...args.children].sort((a, b) => {
-		const itemA = args.collection[a];
-		const itemB = args.collection[b];
+		const itemA = args.itemById.get(a);
+		const itemB = args.itemById.get(b);
 		if (!itemA || !itemB) {
 			return 0;
 		}
-		if (itemA.data.type === "placeholder") return 1;
-		if (itemB.data.type === "placeholder") return -1;
+		if (itemA.type === "placeholder") return 1;
+		if (itemB.type === "placeholder") return -1;
 
-		const titleA = itemA.data.title || "";
-		const titleB = itemB.data.title || "";
+		const titleA = itemA.title || "";
+		const titleB = itemB.title || "";
 		return titleA.localeCompare(titleB, undefined, {
 			numeric: true,
 			sensitivity: "base",
 		});
 	});
-}
-
-function create_collection(args: { treeItemsList: pages_TreeItem[] | undefined; showArchived: boolean }) {
-	const rootItem = args.treeItemsList?.find((item) => item.type === "root") ?? {
-		type: "root" as const,
-		index: pages_ROOT_ID,
-		parentId: "",
-		title: "Pages",
-		archiveOperationId: undefined,
-		updatedAt: Date.now(),
-		updatedBy: "system",
-		_id: null,
-	};
-
-	const collection: PagesSidebar_Collection = {
-		[pages_ROOT_ID]: {
-			index: pages_ROOT_ID,
-			data: rootItem,
-			children: [],
-		},
-	};
-
-	const pageItems = args.treeItemsList?.filter((item) => item.type === "page") ?? [];
-	const pageItemsById = new Map(pageItems.map((item) => [item.index, item]));
-	for (const pageItem of pageItems) {
-		if (pageItem.archiveOperationId !== undefined && !args.showArchived) {
-			continue;
-		}
-
-		collection[pageItem.index] = {
-			index: pageItem.index,
-			data: pageItem,
-			children: [],
-		};
-	}
-
-	for (const pageItem of pageItems) {
-		if (pageItem.archiveOperationId !== undefined && !args.showArchived) {
-			continue;
-		}
-		if (!collection[pageItem.index]) {
-			continue;
-		}
-
-		const parentId = pageItem.parentId;
-		if (parentId === pages_ROOT_ID) {
-			collection[pages_ROOT_ID]?.children.push(pageItem.index);
-			continue;
-		}
-
-		const visitedParentIds = new Set<string>();
-		let resolvedParentId = parentId;
-		while (resolvedParentId && resolvedParentId !== pages_ROOT_ID && !collection[resolvedParentId]) {
-			if (visitedParentIds.has(resolvedParentId)) {
-				resolvedParentId = pages_ROOT_ID;
-				break;
-			}
-			visitedParentIds.add(resolvedParentId);
-
-			const currentParentItem = pageItemsById.get(resolvedParentId);
-			if (!currentParentItem) {
-				resolvedParentId = pages_ROOT_ID;
-				break;
-			}
-
-			resolvedParentId = currentParentItem.parentId;
-		}
-
-		if (!resolvedParentId || resolvedParentId === pages_ROOT_ID) {
-			collection[pages_ROOT_ID]?.children.push(pageItem.index);
-			continue;
-		}
-
-		collection[resolvedParentId]?.children.push(pageItem.index);
-	}
-
-	for (const key of Object.keys(collection)) {
-		const current = collection[key];
-		if (!current || current.data.type === "placeholder") {
-			continue;
-		}
-
-		current.children = sort_children({
-			children: current.children,
-			collection,
-		});
-	}
-
-	for (const key of Object.keys(collection)) {
-		const current = collection[key];
-		if (!current || current.data.type !== "page") {
-			continue;
-		}
-		if (current.children.length > 0) {
-			continue;
-		}
-
-		const placeholder = pages_create_tree_placeholder_child(current.index);
-		collection[placeholder.index] = {
-			index: placeholder.index,
-			data: placeholder,
-			children: [],
-		};
-		current.children.push(placeholder.index);
-	}
-
-	return collection;
 }
 
 function pages_sidebar_are_tree_items_lists_equal(
@@ -544,7 +437,6 @@ function PagesSidebarTreeItemPrimaryContent(props: PagesSidebarTreeItemPrimaryCo
 type PagesSidebarTreeItemPrimaryAction_ClassNames = "PagesSidebarTreeItemPrimaryAction";
 
 type PagesSidebarTreeItemPrimaryAction_Props = {
-	tree: PagesSidebarTree_Shared;
 	item: PagesSidebarTreeItem_Instance;
 	isPending: boolean;
 	isTreeDragging: boolean;
@@ -552,7 +444,7 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 };
 
 function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAction_Props) {
-	const { tree, item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
+	const { item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
 
 	const itemProps = useVal(() => item.getProps());
 	const isSelected = useVal(() => item.isSelected());
@@ -676,7 +568,6 @@ type PagesSidebarTreeItem_Props = {
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
 	isTreeDragging: boolean;
-	isHidden: boolean;
 	onCreatePage: (parentPageId: string) => void;
 	onStartRename: (itemId: string) => void;
 	onArchive: (pageId: string) => void;
@@ -693,7 +584,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 		isBusy,
 		pendingActionPageIds,
 		isTreeDragging,
-		isHidden,
 		onCreatePage,
 		onStartRename,
 		onArchive,
@@ -744,7 +634,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 
 	return (
 		<div
-			hidden={isHidden}
 			className={cn(
 				"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
 				isPlaceholder && ("PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames),
@@ -767,7 +656,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 			) : (
 				<>
 					<PagesSidebarTreeItemPrimaryAction
-						tree={tree}
 						item={item}
 						isPending={isPending}
 						isTreeDragging={isTreeDragging}
@@ -849,8 +737,6 @@ type PagesSidebarTree_Props = {
 	showEmptyState: boolean;
 	isSearchActive: boolean;
 	treeItemIds: string[];
-	visibleTreeItemIds: Set<string>;
-	visibleIds: Set<string> | null;
 	selectedPageId: string | null;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
@@ -869,8 +755,6 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
-		visibleTreeItemIds,
-		visibleIds,
 		selectedPageId,
 		isBusy,
 		pendingActionPageIds,
@@ -1018,7 +902,6 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 								isBusy={isBusy}
 								pendingActionPageIds={pendingActionPageIds}
 								isTreeDragging={isTreeDragging}
-								isHidden={!visibleTreeItemIds.has(item.getId()) || (!!visibleIds && !visibleIds.has(item.getId()))}
 								onCreatePage={onCreatePage}
 								onStartRename={onStartRename}
 								onArchive={onArchive}
@@ -1068,27 +951,111 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	const { toggleSidebar } = MainAppSidebar.useSidebar();
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
 
-	const queriedTreeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
-	});
-	const [resolvedTreeItemsList, setResolvedTreeItemsList] = useState<typeof queriedTreeItemsList>(undefined);
-	const treeItemsList = queriedTreeItemsList ?? resolvedTreeItemsList;
-
 	const [searchQuery, setSearchQuery] = useState("");
+	const searchQueryDeferred = useDeferredValue(searchQuery);
+	const lastSearchQueryDeferredRef = useRef(searchQueryDeferred);
+
 	const [showArchived, setShowArchived] = useState(false);
+	const lastShowArchivedRef = useRef(showArchived);
+
 	const [isCreatingPage, setIsCreatingPage] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
 
-	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
-	const expandedItemsBeforeSearchRef = useRef<string[] | null>(null);
+	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+	});
 
-	const baseTreeCollection = ((/* iife */) => {
-		return create_collection({
-			treeItemsList,
-			showArchived,
-		});
+	const lastTreeItemsListRef = useRef<typeof treeItemsList>(undefined);
+	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
+	const selectedPageIdAutoExpandedRef = useRef<string | null>(null);
+
+	const treeItems = ((/* iife */) => {
+		if (!treeItemsList) {
+			return treeItemsList;
+		}
+
+		const rootItem = treeItemsList?.find((item) => item.type === "root") ?? {
+			type: "root" as const,
+			index: pages_ROOT_ID,
+			parentId: "",
+			title: "Pages",
+			archiveOperationId: undefined,
+			updatedAt: 0,
+			updatedBy: "system",
+			_id: null,
+		};
+		const result: PagesSidebar_TreeItems = {
+			list: treeItemsList,
+			itemsByParentId: new Map<string, pages_TreeItem[]>(),
+			sortedItemsIdsByParentId: new Map<string, string[]>(),
+			itemById: new Map<string, pages_TreeItem>(),
+		};
+
+		result.itemById.set(pages_ROOT_ID, rootItem);
+		result.itemsByParentId.set(pages_ROOT_ID, []);
+		result.sortedItemsIdsByParentId.set(pages_ROOT_ID, []);
+
+		// Collect all items from the list to the maps
+		for (const item of treeItemsList) {
+			if (item.type !== "page" || (item.archiveOperationId !== undefined && !showArchived)) {
+				continue;
+			}
+
+			let siblings = result.itemsByParentId.get(item.parentId);
+			if (!siblings) {
+				siblings = [];
+				result.itemsByParentId.set(item.parentId, siblings);
+			}
+
+			let siblingsIds = result.sortedItemsIdsByParentId.get(item.parentId);
+			if (!siblingsIds) {
+				siblingsIds = [];
+				result.sortedItemsIdsByParentId.set(item.parentId, siblingsIds);
+			}
+
+			siblings.push(item);
+			siblingsIds.push(item.index);
+			result.itemById.set(item.index, item);
+			if (!result.itemsByParentId.has(item.index)) {
+				result.itemsByParentId.set(item.index, []);
+			}
+			if (!result.sortedItemsIdsByParentId.has(item.index)) {
+				result.sortedItemsIdsByParentId.set(item.index, []);
+			}
+		}
+
+		// Add placeholders and sort the `sortedItemsIdsByParentId` map
+		for (const [itemId, item] of result.itemById.entries()) {
+			if (item.type === "placeholder") {
+				continue;
+			}
+
+			const children = result.sortedItemsIdsByParentId.get(itemId);
+			const childrenIds = result.sortedItemsIdsByParentId.get(itemId);
+			if (!childrenIds || !children) {
+				continue;
+			}
+
+			if (children.length) {
+				result.sortedItemsIdsByParentId.set(
+					itemId,
+					sort_children({
+						children,
+						itemById: result.itemById,
+					}),
+				);
+			} else {
+				if (item.type === "page") {
+					const placeholder = pages_create_tree_placeholder_child(itemId);
+					result.itemById.set(placeholder.index, placeholder);
+					result.sortedItemsIdsByParentId.set(itemId, [placeholder.index]);
+				}
+			}
+		}
+
+		return result;
 	})();
 
 	const archivedCount = ((/* iife */) => {
@@ -1098,28 +1065,56 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		return treeItemsList.filter((item) => item.type === "page" && item.archiveOperationId !== undefined).length;
 	})();
 
-	const shouldForceShowArchived =
-		!showArchived && archivedCount > 0 && (baseTreeCollection[pages_ROOT_ID]?.children.length ?? 0) === 0;
-
-	const treeCollection = ((/* iife */) => {
-		if (!shouldForceShowArchived) {
-			return baseTreeCollection;
+	/**
+	 * Filtered items ids from search query
+	 */
+	const visiblePagesIds = ((/* iife */) => {
+		if (!treeItems) {
+			return treeItems;
 		}
 
-		return create_collection({
-			treeItemsList,
-			showArchived: true,
-		});
+		const searchQueryNormalized = searchQueryDeferred.trim().toLowerCase();
+		if (!searchQueryNormalized) {
+			return null;
+		}
+
+		const result = new Set<string>();
+		for (const item of treeItems.list ?? []) {
+			if (!treeItems.itemById.has(item.index) || item.type === "placeholder") {
+				continue;
+			}
+
+			// If item does not match search query, skip
+			if (!item.title.toLowerCase().includes(searchQueryNormalized)) {
+				continue;
+			}
+
+			result.add(item.index);
+
+			// If we are at the root, skip the ancestors step
+			if (item.type !== "page") {
+				continue;
+			}
+
+			// Add all ancestors of a matching item to the visible items set
+			let currentParentId = item.parentId;
+			while (currentParentId) {
+				const parentItem = treeItems.itemById.get(currentParentId);
+				if (!parentItem || parentItem.type === "placeholder" || result.has(currentParentId)) {
+					break;
+				}
+
+				result.add(currentParentId);
+				if (parentItem.type !== "page") {
+					break;
+				}
+
+				currentParentId = parentItem.parentId;
+			}
+		}
+
+		return result;
 	})();
-
-	const isArchivedShown = showArchived || shouldForceShowArchived;
-	const lastIsArchivedShownRef = useRef(isArchivedShown);
-
-	const dataLoader = {
-		getItem: (itemId: string) =>
-			treeCollection[itemId]?.data ?? pages_create_tree_placeholder_child(itemId.replace("-placeholder", "")),
-		getChildren: (itemId: string) => treeCollection[itemId]?.children ?? [],
-	};
 
 	const markPageAsPending = (pageId: string) => {
 		setPendingActionPageIds((oldValue) => {
@@ -1163,10 +1158,15 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	});
 
 	const handleDrop = useFn<NonNullable<Parameters<typeof useTree<pages_TreeItem>>[0]["onDrop"]>>((items, target) => {
+		if (!treeItems) {
+			console.error(should_never_happen("[PagesSidebar.handleDrop] missing deps", { treeItems }));
+			return;
+		}
+
 		const pageIds = items.map((item) => item.getId());
 		const targetParentId = target.item.getId();
 
-		const movedPageIds = pageIds.filter((pageId) => treeCollection[pageId]?.data.type === "page");
+		const movedPageIds = pageIds.filter((pageId) => treeItems.itemById.get(pageId)?.type === "page");
 		if (movedPageIds.length === 0) {
 			return;
 		}
@@ -1267,6 +1267,18 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		},
 	);
 
+	const dataLoader = {
+		getItem: (itemId: string) =>
+			treeItems?.itemById.get(itemId) ?? pages_create_tree_placeholder_child(itemId.replace("-placeholder", "")),
+		getChildren: (itemId: string) => {
+			const children = treeItems?.sortedItemsIdsByParentId.get(itemId) ?? [];
+			if (!visiblePagesIds) {
+				return children;
+			}
+			return children.filter((childId) => visiblePagesIds.has(childId));
+		},
+	} satisfies TreeConfig<pages_TreeItem>["dataLoader"];
+
 	const tree = useTree<pages_TreeItem>({
 		rootItemId: pages_ROOT_ID,
 		initialState: {
@@ -1292,75 +1304,29 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		onPrimaryAction: handlePrimaryAction,
 	});
 
-	const hasSelectedPageInTree = !!(selectedPageId && treeCollection[selectedPageId]);
-
-	const treeItems = tree().getItems();
-	const visibleTreeItemIds = new Set(
-		treeItems
-			.map((item) => item.getId())
-			.filter((itemId) => {
-				return itemId !== pages_ROOT_ID;
-			}),
+	const hasSelectedPageInTree = !!(
+		selectedPageId &&
+		treeItems?.itemById.has(selectedPageId) &&
+		(!visiblePagesIds || visiblePagesIds.has(selectedPageId))
 	);
 
-	const searchQueryDeferred = useDeferredValue(searchQuery);
+	const renderedTreeItems = tree().getItems();
 
-	const searchFilter = ((/* iife */) => {
-		const searchQueryNormalized = searchQueryDeferred.trim().toLowerCase();
-		if (!searchQueryNormalized) {
-			return null;
-		}
-
-		const visibleIds = new Set<string>();
-		const expandedIds = new Set<string>([pages_ROOT_ID]);
-		const isVisible = (id: string): boolean => {
-			const current = treeCollection[id];
-			if (!current) {
-				return false;
-			}
-			if (current.data.type === "placeholder") {
-				return false;
-			}
-
-			const selfMatch = current.data.title.toLowerCase().includes(searchQueryNormalized);
-			let childMatch = false;
-			for (const childId of current.children) {
-				if (isVisible(childId)) {
-					childMatch = true;
-					expandedIds.add(id);
-				}
-			}
-
-			const visible = selfMatch || childMatch;
-			if (visible) {
-				visibleIds.add(id);
-			}
-			return visible;
-		};
-
-		isVisible(pages_ROOT_ID);
-		return {
-			visibleIds,
-			expandedIds: [...expandedIds],
-		};
-	})();
-
-	const visibleIds = searchFilter?.visibleIds ?? null;
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
 
-	const selectedPageIds = treeItems
-		.filter((item) => item.isSelected() && item.getItemData().type === "page")
-		.map((item) => item.getId());
+	const selectedPageIds = new Set(
+		renderedTreeItems
+			.filter((item) => item.isSelected() && item.getItemData().type === "page")
+			.map((item) => item.getId()),
+	);
 
-	const multiSelectionCount = selectedPageIds.length;
 	const isBusy = isCreatingPage || isArchivingSelection;
-	const isTreeLoading = treeItemsList === undefined;
 	const treeItemIds = ((/* iife */) => {
 		const allItemIds: string[] = [];
 		const visitedIds = new Set<string>();
 
 		const visit = (itemId: string) => {
-			const childrenIds = treeCollection[itemId]?.children ?? [];
+			const childrenIds = treeItems?.sortedItemsIdsByParentId.get(itemId) ?? [];
 			for (const childId of childrenIds) {
 				if (childId === pages_ROOT_ID || visitedIds.has(childId)) {
 					continue;
@@ -1375,13 +1341,8 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		visit(pages_ROOT_ID);
 		return allItemIds;
 	})();
-	const visibleTreeItemCount = treeItemIds.filter((itemId) => {
-		if (!visibleTreeItemIds.has(itemId)) {
-			return false;
-		}
-		return !isSearchActive || !visibleIds || visibleIds.has(itemId);
-	}).length;
-	const showEmptyState = !isTreeLoading && visibleTreeItemCount === 0;
+
+	const showEmptyState = treeItemsList !== undefined && (!visiblePagesIds || visiblePagesIds.size === 0);
 
 	const startRename = useFn((itemId: string) => {
 		const item = tree().getItemInstance(itemId);
@@ -1398,9 +1359,14 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	});
 
 	const handleCreatePageClick = useFn<PagesSidebarTree_Props["onCreatePage"]>((parentPageId) => {
+		if (!treeItems) {
+			console.error(should_never_happen("[PagesSidebar.handleCreatePageClick] missing deps", { treeItems }));
+			return;
+		}
+
 		const nextPageName = pages_sidebar_get_default_page_name({
 			parentId: parentPageId,
-			treeCollection,
+			treeItems,
 		});
 
 		setIsCreatingPage(true);
@@ -1413,7 +1379,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			})
 			.then((result) => {
 				if (result._nay) {
-					console.error("[PagesSidebar.handleCreatePageClick] Error creating page", {
+					console.error("[PagesSidebar.handleCreatePageClick] Failed to create page", {
 						result,
 					});
 					return;
@@ -1435,8 +1401,8 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 	});
 
 	const handleArchive = useFn<PagesSidebarTree_Props["onArchive"]>((pageId) => {
-		const shouldArchiveSelectedPages = selectedPageIds.length > 1 && selectedPageIds.includes(pageId);
-		const pageIdsToArchive = shouldArchiveSelectedPages ? selectedPageIds : [pageId];
+		const shouldArchiveSelectedPages = selectedPageIds.has(pageId);
+		const pageIdsToArchive = shouldArchiveSelectedPages ? selectedPageIds : new Set([pageId]);
 
 		if (shouldArchiveSelectedPages) {
 			setIsArchivingSelection(true);
@@ -1448,10 +1414,19 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			.mutation(app_convex_api.ai_docs_temp.archive_pages, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageIds: pageIdsToArchive.map((currentPageId) => pages_sidebar_to_page_id(currentPageId)),
+				pageIds: Array.from(pageIdsToArchive),
 			})
-			.then(() => {
-				if (selectedPageId && pageIdsToArchive.includes(selectedPageId)) {
+			.then((result) => {
+				if (result._nay) {
+					console.error("[PagesSidebar.handleArchive] Failed to archive pages", {
+						result,
+						pageId,
+						pageIdsToArchive,
+					});
+					return;
+				}
+
+				if (selectedPageId && pageIdsToArchive.has(selectedPageId)) {
 					onArchive(selectedPageId);
 					return;
 				}
@@ -1487,7 +1462,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 			})
 			.then((result) => {
 				if (result._nay) {
-					console.error("[PagesSidebar.handleUnarchive] Error unarchiving page", { result, pageId });
+					console.error("[PagesSidebar.handleUnarchive] Failed to unarchive page", { result, pageId });
 					return;
 				}
 			})
@@ -1531,7 +1506,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		tree()
 			.expandAll()
 			.catch((error) => {
-				console.error("[PagesSidebar.handleExpandAllClick] Error expanding tree", { error });
+				console.error("[PagesSidebar.handleExpandAllClick] Failed to expand tree", { error });
 			});
 	});
 
@@ -1553,12 +1528,14 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	useLayoutEffect(() => {
 		const shouldRebuild =
-			lastIsArchivedShownRef.current !== isArchivedShown ||
+			lastShowArchivedRef.current !== showArchived ||
+			lastSearchQueryDeferredRef.current !== searchQueryDeferred ||
 			!pages_sidebar_are_tree_items_lists_equal(lastTreeItemsListRef.current, treeItemsList, {
 				fields: ["type", "index", "parentId", "title", "archiveOperationId"],
 			});
 
-		lastIsArchivedShownRef.current = isArchivedShown;
+		lastShowArchivedRef.current = showArchived;
+		lastSearchQueryDeferredRef.current = searchQueryDeferred;
 		lastTreeItemsListRef.current = treeItemsList;
 
 		if (!shouldRebuild) {
@@ -1566,74 +1543,120 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 		}
 
 		tree().rebuildTree();
-	}, [isArchivedShown, treeItemsList]);
-
-	useEffect(() => {
-		if (queriedTreeItemsList === undefined) {
-			return;
-		}
-		setResolvedTreeItemsList((currentValue) => {
-			if (
-				pages_sidebar_are_tree_items_lists_equal(currentValue, queriedTreeItemsList, {
-					fields: ["index", "parentId", "title", "archiveOperationId", "updatedAt", "updatedBy"],
-				})
-			) {
-				return currentValue;
-			}
-			return queriedTreeItemsList;
-		});
-	}, [queriedTreeItemsList]);
+	}, [showArchived, searchQueryDeferred, treeItemsList]);
 
 	useLayoutEffect(() => {
-		const treeInstance = tree();
-		const searchExpandedIds = searchFilter?.expandedIds;
-		if (!searchExpandedIds) {
-			const expandedItemsBeforeSearch = expandedItemsBeforeSearchRef.current;
-			if (!expandedItemsBeforeSearch) {
-				return;
-			}
-			const currentExpandedItems = treeInstance.getState().expandedItems;
-			const hasSameExpandedItems =
-				currentExpandedItems.length === expandedItemsBeforeSearch.length &&
-				currentExpandedItems.every((itemId) => expandedItemsBeforeSearch.includes(itemId));
-
-			expandedItemsBeforeSearchRef.current = null;
-			if (hasSameExpandedItems) {
-				return;
-			}
-			treeInstance.applySubStateUpdate("expandedItems", [...expandedItemsBeforeSearch]);
-			treeInstance.scheduleRebuildTree();
+		if (!treeItems) {
 			return;
 		}
 
-		if (!expandedItemsBeforeSearchRef.current) {
-			expandedItemsBeforeSearchRef.current = [...treeInstance.getState().expandedItems];
+		const treeInstance = tree();
+		const currentExpandedItems = new Set(treeInstance.getState().expandedItems);
+		let nextExpandedItemsSet = new Set(currentExpandedItems);
+
+		// When search closes, restore whatever expansion state existed before entering search mode.
+		if (!visiblePagesIds) {
+			const expandedItemsBeforeSearch = expandedItemsBeforeSearchRef.current;
+			if (expandedItemsBeforeSearch) {
+				nextExpandedItemsSet = new Set(expandedItemsBeforeSearch);
+				expandedItemsBeforeSearchRef.current = null;
+			}
+		}
+		// When search opens, snapshot current expansion once, then force-expand ancestors of visible items.
+		else {
+			if (!expandedItemsBeforeSearchRef.current) {
+				expandedItemsBeforeSearchRef.current = new Set(currentExpandedItems);
+			}
+
+			nextExpandedItemsSet = new Set<string>([pages_ROOT_ID]);
+			for (const pageId of visiblePagesIds) {
+				const item = treeItems.itemById.get(pageId);
+				if (!item) continue;
+
+				if ((treeItems.sortedItemsIdsByParentId.get(pageId) ?? []).some((childId) => visiblePagesIds.has(childId))) {
+					nextExpandedItemsSet.add(pageId);
+				}
+			}
 		}
 
-		const currentExpandedItems = treeInstance.getState().expandedItems;
-		const nextExpandedItemsSet = new Set(currentExpandedItems);
-		let hasNewExpandedItem = false;
-		for (const itemId of searchExpandedIds) {
-			if (nextExpandedItemsSet.has(itemId)) {
-				continue;
-			}
-			nextExpandedItemsSet.add(itemId);
-			hasNewExpandedItem = true;
+		// Reset the one-time selected-page auto-expand marker when there is no selection.
+		if (!selectedPageId) {
+			selectedPageIdAutoExpandedRef.current = null;
 		}
-		if (!hasNewExpandedItem) {
+
+		// Auto-expand selected-page ancestors once per selected page id.
+		const shouldAutoExpandSelectedPagePath =
+			!!selectedPageId && hasSelectedPageInTree && selectedPageIdAutoExpandedRef.current !== selectedPageId;
+		if (shouldAutoExpandSelectedPagePath) {
+			const visitedParentIds = new Set<string>();
+			let currentItemId = selectedPageId;
+
+			// Walk up the selected page's parent chain and ensure each ancestor is expanded.
+			while (currentItemId) {
+				const currentItem = treeItems.itemById.get(currentItemId);
+				if (!currentItem || currentItem.type !== "page") {
+					break;
+				}
+
+				const parentId = currentItem.parentId;
+				if (!parentId || parentId === pages_ROOT_ID) {
+					break;
+				}
+				if (visitedParentIds.has(parentId)) {
+					break;
+				}
+
+				visitedParentIds.add(parentId);
+				if (!nextExpandedItemsSet.has(parentId)) {
+					nextExpandedItemsSet.add(parentId);
+				}
+				currentItemId = parentId;
+			}
+
+			// Keep root expanded so ancestor expansion remains visible in the rendered tree.
+			if (!nextExpandedItemsSet.has(pages_ROOT_ID)) {
+				nextExpandedItemsSet.add(pages_ROOT_ID);
+			}
+
+			// Mark this selected page id as already auto-expanded.
+			selectedPageIdAutoExpandedRef.current = selectedPageId;
+		}
+
+		// Skip state updates when nothing changed to avoid unnecessary rebuilds.
+		if (currentExpandedItems.symmetricDifference(nextExpandedItemsSet).size === 0) {
 			return;
 		}
 
 		treeInstance.applySubStateUpdate("expandedItems", [...nextExpandedItemsSet]);
 		treeInstance.scheduleRebuildTree();
-	}, [searchFilter, tree]);
+	}, [hasSelectedPageInTree, visiblePagesIds, selectedPageId, tree, treeItems]);
 
 	useEffect(() => {
-		if (!selectedPageId || !hasSelectedPageInTree) {
+		const treeInstance = tree();
+		const activeElement = document.activeElement;
+		const treeElement = treeInstance.getElement();
+		const shouldMoveDomFocus =
+			activeElement === document.body ||
+			(treeElement instanceof HTMLElement && activeElement instanceof Node && treeElement.contains(activeElement));
+		if (!shouldMoveDomFocus) {
 			return;
 		}
-		tree().getItemInstance(selectedPageId).setFocused();
-	}, [hasSelectedPageInTree, selectedPageId]);
+
+		const nextFocusedItemId = (() => {
+			if (selectedPageId && hasSelectedPageInTree) {
+				return selectedPageId;
+			}
+			return treeInstance
+				.getItems()
+				.find((item) => item.getItemData().type === "page")
+				?.getId();
+		})();
+		if (!nextFocusedItemId) {
+			return;
+		}
+
+		treeInstance.getItemInstance(nextFocusedItemId).setFocused();
+	}, [hasSelectedPageInTree, selectedPageId, renderedTreeItems.length]);
 
 	return (
 		<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
@@ -1701,10 +1724,10 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 							</MyIconButton>
 						</div>
 
-						{multiSelectionCount > 1 ? (
+						{selectedPageIds.size > 1 ? (
 							<div className={cn("PagesSidebar-multi-selection-counter" satisfies PagesSidebar_ClassNames)}>
 								<span className={cn("PagesSidebar-multi-selection-counter-label" satisfies PagesSidebar_ClassNames)}>
-									{multiSelectionCount} items selected
+									{selectedPageIds.size} items selected
 								</span>
 								<div className={cn("PagesSidebar-actions-group" satisfies PagesSidebar_ClassNames)}>
 									<MyIconButton
@@ -1742,7 +1765,7 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 							onClick={handleArchiveToggleClick}
 							disabled={isBusy}
 						>
-							{isArchivedShown ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
+							{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
 						</MyButton>
 					) : null}
 				</MySidebarHeader>
@@ -1750,12 +1773,10 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 				<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 					<PagesSidebarTree
 						tree={tree}
-						isTreeLoading={isTreeLoading}
+						isTreeLoading={treeItemsList === undefined}
 						showEmptyState={showEmptyState}
 						isSearchActive={isSearchActive}
 						treeItemIds={treeItemIds}
-						visibleTreeItemIds={visibleTreeItemIds}
-						visibleIds={visibleIds}
 						selectedPageId={selectedPageId}
 						isBusy={isBusy}
 						pendingActionPageIds={pendingActionPageIds}
