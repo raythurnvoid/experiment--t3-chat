@@ -648,6 +648,15 @@ Do not add `useMemo` / `useCallback` just to avoid recomputation or to stabilize
 
 Only add `useMemo` / `useCallback` when there is a concrete semantic requirement that cannot rely on the compiler (e.g. bridging to non-React APIs that store identities and must not be re-registered), and include a short comment explaining why it is required.
 
+### Effect dependency rule (React Compiler-first)
+
+When evaluating effect dependencies in this repo:
+
+- Assume derived values and closures are compiler-memoized by semantics.
+- Do not add "stability guard" dependencies (for example object/function identities) unless required by a concrete non-React API contract.
+- Prefer semantic dependencies (derived values such as visible IDs) over broad source-input fanout dependencies.
+- If adding extra dependencies, justify them with a concrete failure mode in this codebase.
+
 ### Avoid derived-state effects
 
 Do not use `useEffect` to keep derived state in sync.

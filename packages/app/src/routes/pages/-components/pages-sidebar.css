@@ -115,7 +115,6 @@
 	/* #region tree */
 	.PagesSidebarTree {
 		min-height: 100%;
-		padding: 8px;
 	}
 
 	.PagesSidebarTree-empty-state {
@@ -163,26 +162,17 @@
 		position: relative;
 		height: 44px;
 		color: var(--color-fg-08);
+		padding: 0 8px;
 
 		content-visibility: auto;
 		contain-intrinsic-height: auto 44px;
 
-		background-image: repeating-linear-gradient(
-			to right,
-			var(--color-base-1-03) 0px 0px,
-			var(--color-fg-02) 0px 2px,
-			var(--color-base-1-03) 2px 12px
-		);
-		background-size: calc((var(--PagesSidebarTreeItem-content-depth)) * 12px) 100%;
-		background-repeat: no-repeat;
-		background-position: left top;
-
 		&:not(:has(> .PagesSidebarTreeItemArrow)) {
-			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) + 28px);
+			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) + 36px);
 		}
 
 		&:has(> .PagesSidebarTreeItemArrow) {
-			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) - 12px);
+			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) - 4px);
 		}
 
 		&:not(.PagesSidebarTreeItem-content-placeholder) {
@@ -252,6 +242,29 @@
 	}
 	/* #endregion tree item */
 
+	/* #region tree item track */
+	.PagesSidebarTreeItemTrack {
+		position: absolute;
+		inset: 0 auto 0 12px;
+
+		display: flex;
+		width: 100%;
+
+		pointer-events: none;
+	}
+
+	.PagesSidebarTreeItemTrack-guide {
+		box-sizing: border-box;
+		width: 12px;
+		height: 100%;
+		border-left: 2px solid var(--color-fg-04);
+	}
+
+	.PagesSidebarTreeItemTrack-guide-active {
+		border-color: var(--color-fg-07);
+	}
+	/* #endregion tree item track */
+
 	/* #region tree item primary action */
 	.PagesSidebarTreeItemPrimaryAction {
 		grid-row: 1 / 4;
@@ -260,6 +273,8 @@
 		border-radius: 8px;
 
 		outline: none;
+
+		clip-path: inset(0 0 0 5px);
 
 		contain: strict;
 	}
@@ -293,6 +308,8 @@
 		contain: strict;
 
 		place-self: center;
+
+		clip-path: inset(0 0 0 5px);
 	}
 	/* #endregion tree item arrow */
 
