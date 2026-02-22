@@ -552,28 +552,42 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 };
 
 function PagesSidebarTreeItemPrimaryAction(props: PagesSidebarTreeItemPrimaryAction_Props) {
-	const { item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
+	const { tree, item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
 
 	const itemProps = useVal(() => item.getProps());
 	const isSelected = useVal(() => item.isSelected());
 	const itemData = useVal(() => item.getItemData());
 
+	const tooltipContent = `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`;
+
 	const handleClick: MyPrimaryAction_Props["onClick"] = (event) => {
 		onTreeItemPrimaryClick(event, item.getId());
 	};
 
+	// const handleMouseDown: MyPrimaryAction_Props["onMouseDown"] = (event) => {
+	// 	if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) {
+	// 		return;
+	// 	}
+
+	// 	const itemId = item.getId();
+	// 	const selectedItems = tree().getState().selectedItems ?? [];
+	// 	const isItemSelected = selectedItems.includes(itemId);
+	// 	if (!isItemSelected) {
+	// 		tree().setSelectedItems([itemId]);
+	// 	}
+
+	// 	item.setFocused();
+	// };
+
 	return (
 		<MyPrimaryAction
 			{...itemProps}
-			selected={isSelected}
 			className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
+			selected={isSelected}
 			disabled={isPending}
-			tooltip={
-				isTreeDragging
-					? undefined
-					: `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`
-			}
+			tooltip={tooltipContent}
 			tooltipTimeout={2000}
+			tooltipDisabled={isTreeDragging}
 			aria-label={itemData.title}
 			onClick={handleClick}
 		></MyPrimaryAction>
@@ -825,7 +839,6 @@ function PagesSidebarSearch(props: PagesSidebarSearch_Props) {
 // #region tree
 type PagesSidebarTree_ClassNames =
 	| "PagesSidebarTree"
-	| "PagesSidebarTree-focused"
 	| "PagesSidebarTree-dragging"
 	| "PagesSidebarTree-dragging-root-target"
 	| "PagesSidebarTree-empty-state";
@@ -870,20 +883,19 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
 
 	const [treeElement, setTreeElement] = useState<HTMLDivElement | null>(null);
-	const [isTreeFocused, setIsTreeFocused] = useState(false);
+	const isTreeFocusedRef = useRef(false);
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
 
-	useUiInteractedOutside(
-		treeElement,
-		() => {
-			tree().setSelectedItems([]);
-		},
-		{ enable: isTreeFocused },
-	);
+	useUiInteractedOutside(treeElement, () => {
+		if (!isTreeFocusedRef.current) {
+			return;
+		}
+		tree().setSelectedItems([]);
+	});
 
 	const handleFocus = () => {
-		setIsTreeFocused(true);
+		isTreeFocusedRef.current = true;
 	};
 
 	const handleBlur: NonNullable<PagesSidebarTree_DivProps["onBlur"]> = (event) => {
@@ -892,7 +904,7 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 			return;
 		}
 
-		setIsTreeFocused(false);
+		isTreeFocusedRef.current = false;
 	};
 
 	const handleKeyDown: NonNullable<PagesSidebarTree_DivProps["onKeyDown"]> = (event) => {
@@ -970,7 +982,6 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 			ref={setTreeElement}
 			className={cn(
 				"PagesSidebarTree" satisfies PagesSidebarTree_ClassNames,
-				isTreeFocused && ("PagesSidebarTree-focused" satisfies PagesSidebarTree_ClassNames),
 				isTreeDragging && ("PagesSidebarTree-dragging" satisfies PagesSidebarTree_ClassNames),
 				isDraggingOverRootZone && ("PagesSidebarTree-dragging-root-target" satisfies PagesSidebarTree_ClassNames),
 			)}

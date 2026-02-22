@@ -13,10 +13,21 @@ export type MyPrimaryAction_Props = ComponentPropsWithRef<"button"> & {
 	selected?: boolean;
 	tooltip?: string;
 	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipDisabled?: boolean;
 };
 
 export function MyPrimaryAction(props: MyPrimaryAction_Props) {
-	const { ref, id, className, selected = false, tooltip, tooltipTimeout, children, ...rest } = props;
+	const {
+		ref,
+		id,
+		className,
+		selected = false,
+		tooltip,
+		tooltipTimeout,
+		tooltipDisabled = false,
+		children,
+		...rest
+	} = props;
 	const buttonElement = (
 		<button
 			ref={ref}
@@ -37,7 +48,7 @@ export function MyPrimaryAction(props: MyPrimaryAction_Props) {
 	}
 
 	return (
-		<MyTooltip timeout={tooltipTimeout} placement="bottom">
+		<MyTooltip timeout={tooltipTimeout} placement="bottom" open={tooltipDisabled ? false : undefined}>
 			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
 			<MyTooltipContent unmountOnHide>{tooltip}</MyTooltipContent>
 		</MyTooltip>

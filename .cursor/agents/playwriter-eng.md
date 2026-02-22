@@ -88,6 +88,29 @@ Anti-flake:
 4. Keep paths deterministic (fixed source/target set where possible).
 5. Always clean observers/listeners/helpers and release drag state.
 
+## Cross-project DnD + tooltip rules
+
+Use these rules on any product, not just `/pages`.
+
+1. Verify both lifecycle and cleanup in every DnD test:
+   - Lifecycle: `dragstart -> dragenter/dragover -> drop/dragend`
+   - Cleanup: no lingering drag classes/state within 1-2s
+2. Capture preconditions at `dragstart`:
+   - active element/focus zone
+   - selection count
+   - current drag-indicator counts/classes
+3. Run one deterministic gesture variant when debugging flaky drag:
+   - focus-first
+   - short hold before move (~150-300ms)
+   - alternate source anchor point
+4. Treat hover tooltips/popovers as interference signals during drag:
+   - probe for visible tooltip content while dragging
+   - fail if tooltip appears when drag should suppress hover UI
+5. Validate multi-select continuity separately from drop behavior:
+   - assert selected-count before drag and at `dragstart`
+   - then assert drag lifecycle and cleanup
+6. Prefer bounded polling loops over long fixed sleeps for readiness and cleanup checks.
+
 ## `/pages` DnD application
 
 Apply the general playbook above with the `/pages` sidebar tree semantics.
