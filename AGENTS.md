@@ -811,6 +811,10 @@ You must not style a new module by importing another component’s CSS file unle
 
 When both paired files use regions, keep region labels aligned between TSX (`// #region ...`) and CSS (`/* #region ... */`) with exact matching label text (including casing/spacing). Do not add extra CSS regions that do not exist in the paired TSX module.
 
+When extracting JSX into a dedicated subcomponent region in the same file (for example `// #region header`), move its selectors into a dedicated matching CSS region in the paired stylesheet in the same change (for example `/* #region header */`).
+
+Do not keep extracted subcomponent selectors inside `/* #region root */`; keep `root` focused on the root component selectors only.
+
 ✅ Good: the module imports its own paired CSS
 
 ```tsx

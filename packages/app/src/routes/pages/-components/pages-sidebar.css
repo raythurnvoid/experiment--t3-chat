@@ -22,11 +22,17 @@
 		}
 	}
 
-	.PagesSidebar-header {
+	.PagesSidebar-content {
+		padding: 0;
+	}
+	/* #endregion root */
+
+	/* #region header */
+	.PagesSidebarHeader-header {
 		border-bottom: 1px solid hsl(var(--border));
 	}
 
-	.PagesSidebar-actions {
+	.PagesSidebarHeader-actions {
 		margin-bottom: 8px;
 		display: flex;
 		align-items: center;
@@ -34,39 +40,39 @@
 		height: 36px;
 	}
 
-	.PagesSidebar-actions-group {
+	.PagesSidebarHeader-actions-group {
 		display: flex;
 		gap: 4px;
 	}
 
-	.PagesSidebar-actions-icon-button {
+	.PagesSidebarHeader-actions-icon-button {
 		width: 36px;
 		height: 36px;
 	}
 
-	.PagesSidebar-action-new-page {
+	.PagesSidebarHeader-action-new-page {
 		flex: 1;
 		justify-content: center;
 		gap: 8px;
 	}
 
-	.PagesSidebar-title {
+	.PagesSidebarHeader-title {
 		font-size: 1.125rem;
 		font-weight: 600;
 
 		padding: 4px;
 	}
 
-	.PagesSidebar-close-button {
+	.PagesSidebarHeader-close-button {
 		height: 32px;
 		width: 32px;
 	}
 
-	.PagesSidebar-archive-toggle {
+	.PagesSidebarHeader-archive-toggle {
 		align-self: start;
 	}
 
-	.PagesSidebar-hamburger-button {
+	.PagesSidebarHeader-hamburger-button {
 		height: 32px;
 		width: 32px;
 
@@ -75,19 +81,19 @@
 		}
 	}
 
-	.PagesSidebar-top-section {
+	.PagesSidebarHeader-top-section {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 	}
 
-	.PagesSidebar-top-section-left {
+	.PagesSidebarHeader-top-section-left {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 	}
 
-	.PagesSidebar-multi-selection-counter {
+	.PagesSidebarHeader-multi-selection-counter {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
@@ -96,15 +102,11 @@
 		flex: 1;
 	}
 
-	.PagesSidebar-multi-selection-counter-label {
+	.PagesSidebarHeader-multi-selection-counter-label {
 		font-weight: 500;
 		font-size: 14px;
 	}
-
-	.PagesSidebar-content {
-		padding: 0;
-	}
-	/* #endregion root */
+	/* #endregion header */
 
 	/* #region search */
 	.PagesSidebarSearch {

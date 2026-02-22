@@ -60,6 +60,7 @@ import {
 	type pages_TreeItem,
 } from "@/lib/pages.ts";
 import { format_relative_time } from "@/lib/date.ts";
+import type { FunctionReturnType } from "convex/server";
 
 type PagesSidebarTree_Shared = () => TreeInstance<pages_TreeItem>;
 type PagesSidebarTreeItem_Instance = ReturnType<TreeInstance<pages_TreeItem>["getItemInstance"]>;
@@ -686,41 +687,6 @@ function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 }
 // #endregion tree item
 
-// #region search
-type PagesSidebarSearch_ClassNames = "PagesSidebarSearch";
-
-type PagesSidebarSearch_Props = {
-	onSearchQueryChange: (searchQuery: string) => void;
-};
-
-function PagesSidebarSearch(props: PagesSidebarSearch_Props) {
-	const { onSearchQueryChange } = props;
-
-	const [searchQuery, setSearchQuery] = useState("");
-	const searchQueryDebounced = useDebounce(searchQuery, 300);
-
-	const handleInputChange = useFn<React.ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
-		setSearchQuery(event.target.value);
-	});
-
-	useEffect(() => {
-		onSearchQueryChange(searchQueryDebounced);
-	}, [searchQueryDebounced]);
-
-	return (
-		<MyInput className={cn("PagesSidebarSearch" satisfies PagesSidebarSearch_ClassNames)} variant="surface">
-			<MyInputArea>
-				<MyInputBox />
-				<MyInputIcon>
-					<Search />
-				</MyInputIcon>
-				<MyInputControl placeholder="Search pages" value={searchQuery} onChange={handleInputChange} />
-			</MyInputArea>
-		</MyInput>
-	);
-}
-// #endregion search
-
 // #region tree
 type PagesSidebarTree_ClassNames =
 	| "PagesSidebarTree"
@@ -915,23 +881,218 @@ function PagesSidebarTree(props: PagesSidebarTree_Props) {
 }
 // #endregion tree
 
+// #region search
+type PagesSidebarSearch_ClassNames = "PagesSidebarSearch";
+
+type PagesSidebarSearch_Props = {
+	onSearchQueryChange: (searchQuery: string) => void;
+};
+
+function PagesSidebarSearch(props: PagesSidebarSearch_Props) {
+	const { onSearchQueryChange } = props;
+
+	const [searchQuery, setSearchQuery] = useState("");
+	const searchQueryDebounced = useDebounce(searchQuery, 300);
+
+	const handleInputChange = useFn<React.ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
+		setSearchQuery(event.target.value);
+	});
+
+	useEffect(() => {
+		onSearchQueryChange(searchQueryDebounced);
+	}, [searchQueryDebounced]);
+
+	return (
+		<MyInput className={cn("PagesSidebarSearch" satisfies PagesSidebarSearch_ClassNames)} variant="surface">
+			<MyInputArea>
+				<MyInputBox />
+				<MyInputIcon>
+					<Search />
+				</MyInputIcon>
+				<MyInputControl placeholder="Search pages" value={searchQuery} onChange={handleInputChange} />
+			</MyInputArea>
+		</MyInput>
+	);
+}
+// #endregion search
+
+// #region header
+type PagesSidebarHeader_ClassNames =
+	| "PagesSidebarHeader"
+	| "PagesSidebarHeader-header"
+	| "PagesSidebarHeader-top-section"
+	| "PagesSidebarHeader-top-section-left"
+	| "PagesSidebarHeader-hamburger-button"
+	| "PagesSidebarHeader-title"
+	| "PagesSidebarHeader-close-button"
+	| "PagesSidebarHeader-actions"
+	| "PagesSidebarHeader-actions-group"
+	| "PagesSidebarHeader-actions-icon-button"
+	| "PagesSidebarHeader-action-new-page"
+	| "PagesSidebarHeader-archive-toggle"
+	| "PagesSidebarHeader-multi-selection-counter"
+	| "PagesSidebarHeader-multi-selection-counter-label";
+
+type PagesSidebarHeader_Props = {
+	homePageId: string | undefined;
+	view: pages_EditorView;
+	selectedPageIdsCount: number;
+	isBusy: boolean;
+	treeItemsList: FunctionReturnType<typeof app_convex_api.ai_docs_temp.get_tree_items_list> | undefined;
+	showArchived: boolean;
+	onToggleSidebar: () => void;
+	onClose: () => void;
+	onSearchQueryChange: (searchQuery: string) => void;
+	onExpandAllClick: () => void;
+	onCollapseAllClick: () => void;
+	onClearSelectionClick: () => void;
+	onCreateRootPageClick: () => void;
+	onArchiveToggleClick: () => void;
+};
+
+function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
+	const {
+		homePageId,
+		view,
+		selectedPageIdsCount,
+		isBusy,
+		treeItemsList,
+		showArchived,
+		onToggleSidebar,
+		onClose,
+		onSearchQueryChange,
+		onExpandAllClick,
+		onCollapseAllClick,
+		onClearSelectionClick,
+		onCreateRootPageClick,
+		onArchiveToggleClick,
+	} = props;
+
+	const archivedCount =
+		treeItemsList?.filter((item) => item.type === "page" && item.archiveOperationId !== undefined).length ?? 0;
+
+	return (
+		<MySidebarHeader
+			className={cn(
+				"PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames,
+				"PagesSidebarHeader-header" satisfies PagesSidebarHeader_ClassNames,
+			)}
+		>
+			<div className={cn("PagesSidebarHeader-top-section" satisfies PagesSidebarHeader_ClassNames)}>
+				<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
+					<MyIconButton
+						className={"PagesSidebarHeader-hamburger-button" satisfies PagesSidebarHeader_ClassNames}
+						variant="ghost"
+						tooltip="Main Menu"
+						onClick={onToggleSidebar}
+					>
+						<Menu />
+					</MyIconButton>
+
+					<MyLink
+						className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
+						variant="button-tertiary"
+						to="/pages"
+						search={{ pageId: homePageId, view }}
+					>
+						Pages
+					</MyLink>
+				</div>
+
+				<MyIconButton
+					variant="ghost"
+					onClick={onClose}
+					tooltip="Close"
+					className={cn("PagesSidebarHeader-close-button" satisfies PagesSidebarHeader_ClassNames)}
+				>
+					<MyIconButtonIcon>
+						<X />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</div>
+
+			<PagesSidebarSearch onSearchQueryChange={onSearchQueryChange} />
+
+			<div className={cn("PagesSidebarHeader-actions" satisfies PagesSidebarHeader_ClassNames)}>
+				<div className={cn("PagesSidebarHeader-actions-group" satisfies PagesSidebarHeader_ClassNames)}>
+					<MyIconButton
+						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+						variant="secondary-subtle"
+						tooltip="Unfold"
+						onClick={onExpandAllClick}
+						disabled={isBusy}
+					>
+						<MyIconButtonIcon>
+							<ChevronsDown />
+						</MyIconButtonIcon>
+					</MyIconButton>
+
+					<MyIconButton
+						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+						variant="secondary-subtle"
+						tooltip="Fold"
+						onClick={onCollapseAllClick}
+						disabled={isBusy}
+					>
+						<MyIconButtonIcon>
+							<ChevronsUp />
+						</MyIconButtonIcon>
+					</MyIconButton>
+				</div>
+
+				{selectedPageIdsCount > 1 ? (
+					<div className={cn("PagesSidebarHeader-multi-selection-counter" satisfies PagesSidebarHeader_ClassNames)}>
+						<span
+							className={cn("PagesSidebarHeader-multi-selection-counter-label" satisfies PagesSidebarHeader_ClassNames)}
+						>
+							{selectedPageIdsCount} items selected
+						</span>
+						<div className={cn("PagesSidebarHeader-actions-group" satisfies PagesSidebarHeader_ClassNames)}>
+							<MyIconButton
+								className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+								variant="secondary"
+								tooltip="Clear"
+								onClick={onClearSelectionClick}
+								disabled={isBusy}
+							>
+								<MyIconButtonIcon>
+									<X />
+								</MyIconButtonIcon>
+							</MyIconButton>
+						</div>
+					</div>
+				) : (
+					<MyButton
+						className={cn("PagesSidebarHeader-action-new-page" satisfies PagesSidebarHeader_ClassNames)}
+						variant="secondary"
+						onClick={onCreateRootPageClick}
+						disabled={isBusy}
+					>
+						<MyButtonIcon>
+							<Plus />
+						</MyButtonIcon>
+						New Page
+					</MyButton>
+				)}
+			</div>
+
+			{archivedCount ? (
+				<MyButton
+					className={cn("PagesSidebarHeader-archive-toggle" satisfies PagesSidebarHeader_ClassNames)}
+					variant="ghost"
+					onClick={onArchiveToggleClick}
+					disabled={isBusy}
+				>
+					{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
+				</MyButton>
+			) : null}
+		</MySidebarHeader>
+	);
+}
+// #endregion header
+
 // #region root
-type PagesSidebar_ClassNames =
-	| "PagesSidebar"
-	| "PagesSidebar-header"
-	| "PagesSidebar-top-section"
-	| "PagesSidebar-top-section-left"
-	| "PagesSidebar-hamburger-button"
-	| "PagesSidebar-title"
-	| "PagesSidebar-close-button"
-	| "PagesSidebar-actions"
-	| "PagesSidebar-actions-group"
-	| "PagesSidebar-actions-icon-button"
-	| "PagesSidebar-action-new-page"
-	| "PagesSidebar-archive-toggle"
-	| "PagesSidebar-multi-selection-counter"
-	| "PagesSidebar-multi-selection-counter-label"
-	| "PagesSidebar-content";
+type PagesSidebar_ClassNames = "PagesSidebar" | "PagesSidebar-content";
 
 export type PagesSidebar_Props = {
 	state: MySidebar_Props["state"];
@@ -1050,9 +1211,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 		return result;
 	}, [treeItemsList, showArchived]);
-
-	const archivedCount =
-		treeItemsList?.filter((item) => item.type === "page" && item.archiveOperationId !== undefined).length ?? 0;
 
 	/**
 	 * Filtered items ids from search query
@@ -1519,7 +1677,6 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	// Rebuild tree when the pages to show change
 	useLayoutEffect(() => {
-		debugger;
 		tree().rebuildTree();
 	}, [visiblePagesIds]);
 
@@ -1601,134 +1758,40 @@ export function PagesSidebar(props: PagesSidebar_Props) {
 
 	return (
 		<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
-			<div className={cn("PagesSidebar" satisfies PagesSidebar_ClassNames)}>
-				<MySidebarHeader className={cn("PagesSidebar-header" satisfies PagesSidebar_ClassNames)}>
-					<div className={cn("PagesSidebar-top-section" satisfies PagesSidebar_ClassNames)}>
-						<div className={cn("PagesSidebar-top-section-left" satisfies PagesSidebar_ClassNames)}>
-							<MyIconButton
-								className={"PagesSidebar-hamburger-button" satisfies PagesSidebar_ClassNames}
-								variant="ghost"
-								tooltip="Main Menu"
-								onClick={toggleSidebar}
-							>
-								<Menu />
-							</MyIconButton>
+			<PagesSidebarHeader
+				homePageId={homePageId}
+				view={view}
+				selectedPageIdsCount={selectedPageIds.size}
+				isBusy={isBusy}
+				treeItemsList={treeItemsList}
+				showArchived={showArchived}
+				onToggleSidebar={toggleSidebar}
+				onClose={onClose}
+				onSearchQueryChange={setSearchQuery}
+				onExpandAllClick={handleExpandAllClick}
+				onCollapseAllClick={handleCollapseAllClick}
+				onClearSelectionClick={handleClearSelectionClick}
+				onCreateRootPageClick={handleCreateRootPageClick}
+				onArchiveToggleClick={handleArchiveToggleClick}
+			/>
 
-							<MyLink
-								className={cn("PagesSidebar-title" satisfies PagesSidebar_ClassNames)}
-								variant="button-tertiary"
-								to="/pages"
-								search={{ pageId: homePageId, view }}
-							>
-								Pages
-							</MyLink>
-						</div>
-
-						<MyIconButton
-							variant="ghost"
-							onClick={onClose}
-							tooltip="Close"
-							className={cn("PagesSidebar-close-button" satisfies PagesSidebar_ClassNames)}
-						>
-							<MyIconButtonIcon>
-								<X />
-							</MyIconButtonIcon>
-						</MyIconButton>
-					</div>
-
-					<PagesSidebarSearch onSearchQueryChange={setSearchQuery} />
-
-					<div className={cn("PagesSidebar-actions" satisfies PagesSidebar_ClassNames)}>
-						<div className={cn("PagesSidebar-actions-group" satisfies PagesSidebar_ClassNames)}>
-							<MyIconButton
-								className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
-								variant="secondary-subtle"
-								tooltip="Unfold"
-								onClick={handleExpandAllClick}
-								disabled={isBusy}
-							>
-								<MyIconButtonIcon>
-									<ChevronsDown />
-								</MyIconButtonIcon>
-							</MyIconButton>
-
-							<MyIconButton
-								className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
-								variant="secondary-subtle"
-								tooltip="Fold"
-								onClick={handleCollapseAllClick}
-								disabled={isBusy}
-							>
-								<MyIconButtonIcon>
-									<ChevronsUp />
-								</MyIconButtonIcon>
-							</MyIconButton>
-						</div>
-
-						{selectedPageIds.size > 1 ? (
-							<div className={cn("PagesSidebar-multi-selection-counter" satisfies PagesSidebar_ClassNames)}>
-								<span className={cn("PagesSidebar-multi-selection-counter-label" satisfies PagesSidebar_ClassNames)}>
-									{selectedPageIds.size} items selected
-								</span>
-								<div className={cn("PagesSidebar-actions-group" satisfies PagesSidebar_ClassNames)}>
-									<MyIconButton
-										className={cn("PagesSidebar-actions-icon-button" satisfies PagesSidebar_ClassNames)}
-										variant="secondary"
-										tooltip="Clear"
-										onClick={handleClearSelectionClick}
-										disabled={isBusy}
-									>
-										<MyIconButtonIcon>
-											<X />
-										</MyIconButtonIcon>
-									</MyIconButton>
-								</div>
-							</div>
-						) : (
-							<MyButton
-								className={cn("PagesSidebar-action-new-page" satisfies PagesSidebar_ClassNames)}
-								variant="secondary"
-								onClick={handleCreateRootPageClick}
-								disabled={isBusy}
-							>
-								<MyButtonIcon>
-									<Plus />
-								</MyButtonIcon>
-								New Page
-							</MyButton>
-						)}
-					</div>
-
-					{archivedCount ? (
-						<MyButton
-							className={cn("PagesSidebar-archive-toggle" satisfies PagesSidebar_ClassNames)}
-							variant="ghost"
-							onClick={handleArchiveToggleClick}
-							disabled={isBusy}
-						>
-							{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
-						</MyButton>
-					) : null}
-				</MySidebarHeader>
-
-				<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
-					<PagesSidebarTree
-						tree={tree}
-						isTreeLoading={treeItemsList === undefined}
-						showEmptyState={showEmptyState}
-						isSearchActive={isSearchActive}
-						activeTracksPageIds={activeTracksPageIds}
-						selectedPageId={selectedPageId}
-						isBusy={isBusy}
-						pendingActionPageIds={pendingActionPageIds}
-						onCreatePage={handleCreatePageClick}
-						onStartRename={handleStartRename}
-						onArchive={handleArchive}
-						onUnarchive={handleUnarchive}
-						onTreeItemPrimaryClick={handleTreeItemPrimaryClick}
-					/>
-				</MySidebarContent>
-			</div>
+			<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
+				<PagesSidebarTree
+					tree={tree}
+					isTreeLoading={treeItemsList === undefined}
+					showEmptyState={showEmptyState}
+					isSearchActive={isSearchActive}
+					activeTracksPageIds={activeTracksPageIds}
+					selectedPageId={selectedPageId}
+					isBusy={isBusy}
+					pendingActionPageIds={pendingActionPageIds}
+					onCreatePage={handleCreatePageClick}
+					onStartRename={handleStartRename}
+					onArchive={handleArchive}
+					onUnarchive={handleUnarchive}
+					onTreeItemPrimaryClick={handleTreeItemPrimaryClick}
+				/>
+			</MySidebarContent>
 		</MySidebar>
 	);
 }
