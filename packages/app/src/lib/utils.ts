@@ -60,8 +60,8 @@ export function forward_ref(refValue: any, ...targetRefs: (React.Ref<any> | unde
  *
  * @returns `true` if the element is in the allowed areas, `false` otherwise.
  */
-export function check_element_is_in_allowed_focus_area(
-	element: EventTarget | null,
+export function check_element_is_in_allowed_areas(
+	element: Node | null,
 	options: {
 		allowedAreas: Array<Element | null | undefined>;
 		restrictionScope?: Element | null;

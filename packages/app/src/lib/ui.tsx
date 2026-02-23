@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
 import type { AppElementId } from "./dom-utils.ts";
 import { useGlobalEventList } from "./global-event.tsx";
-import { check_element_is_in_allowed_focus_area } from "./utils.ts";
+import { check_element_is_in_allowed_areas } from "./utils.ts";
 
 // #region useUiStickToBottom
 /**
@@ -202,7 +202,7 @@ export function useUiInteractedOutside(
 
 			const rootElement = document.getElementById("root" satisfies AppElementId);
 			if (
-				check_element_is_in_allowed_focus_area(event.target, {
+				check_element_is_in_allowed_areas(event.target, {
 					allowedAreas: [containerElement, ...allowedAreas],
 					restrictionScope: rootElement,
 				})

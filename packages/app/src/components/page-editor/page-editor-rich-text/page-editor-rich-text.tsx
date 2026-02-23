@@ -31,7 +31,7 @@ import { AI_NAME } from "./constants.ts";
 import {
 	ai_chat_HARDCODED_ORG_ID,
 	ai_chat_HARDCODED_PROJECT_ID,
-	check_element_is_in_allowed_focus_area,
+	check_element_is_in_allowed_areas,
 	cn,
 } from "@/lib/utils.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
@@ -219,7 +219,7 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		// We should not check if the focus is in the editor otherwise we end-up
 		// showing the bubble everytime the selection is in the editor.
 		if (
-			check_element_is_in_allowed_focus_area(document.activeElement, {
+			check_element_is_in_allowed_areas(document.activeElement, {
 				allowedAreas: [bubbleSurfaceRef.current],
 				restrictionScope: document.getElementById("root" satisfies AppElementId),
 			})
@@ -297,6 +297,8 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	// On mount
 	useEffect(() => {
+		const rootElement = document.getElementById("root" satisfies AppElementId);
+
 		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
 		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
 		const plugin = new Plugin({
@@ -334,14 +336,31 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		const clearEventListeners = global_event_listen_all(
 			["keydown", "pointerdown"],
 			(event) => {
-				const isInManagedAreas = check_element_is_in_allowed_focus_area(event.target, {
+				if (!isShownRef.current) {
+					return;
+				}
+
+				const targetIsInManagedAreas = check_element_is_in_allowed_areas(event.target as HTMLElement, {
 					allowedAreas: [bubbleSurfaceRef.current, editor.view.dom],
-					restrictionScope: document.getElementById("root" satisfies AppElementId),
+					restrictionScope: rootElement,
 				});
 
+				const activeElementIsInManagedAreasOnPointerDown =
+					event instanceof PointerEvent
+						? check_element_is_in_allowed_areas(document.activeElement, {
+								allowedAreas: [bubbleSurfaceRef.current, editor.view.dom],
+								restrictionScope: rootElement,
+							})
+						: undefined;
+
+				const focusMovingOutOfManagedAreasOnPointerDown =
+					event instanceof PointerEvent
+						? activeElementIsInManagedAreasOnPointerDown === true && targetIsInManagedAreas === false
+						: undefined;
+
 				if (
-					(event instanceof KeyboardEvent && event.key === "Escape" && isInManagedAreas) ||
-					(event instanceof PointerEvent && isInManagedAreas === false)
+					(event instanceof KeyboardEvent && event.key === "Escape" && targetIsInManagedAreas) ||
+					(event instanceof PointerEvent && focusMovingOutOfManagedAreasOnPointerDown === true)
 				) {
 					setRendered(false);
 					PageEditorRichText.clearDecorationHighlightProperly(editor);
@@ -710,6 +729,11 @@ PageEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 	// document.getSelection()?.removeAllRanges();
 
 	setTimeout(() => {
+		const hasDecorationHighlight = editor.view.dom.querySelector("[data-decoration-highlight='true']");
+		if (!hasDecorationHighlight) {
+			return;
+		}
+
 		const activeElement = document.activeElement;
 		const isTriggerActive = triggerElement && activeElement === triggerElement;
 		const elementSetDecorationHighlight =
