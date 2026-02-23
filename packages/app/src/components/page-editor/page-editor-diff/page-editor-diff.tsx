@@ -467,6 +467,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		modified: monaco_editor.ITextModel;
 	} | null>(null);
 
+	const pendingModifiedContentRef = useRef<string | null>(null);
+
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = pages_headless_tiptap_editor_create({ initialContent: { markdown } });
 
@@ -1088,6 +1090,13 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		editor.setModel(modelsRef.current);
 		prevModels.forEach((model) => model?.dispose());
 
+		// If there were "pending edits" to show pending,
+		// show them and clear the pending value.
+		if (pendingModifiedContentRef.current != null) {
+			pushChangeToUnstagedEditor(pendingModifiedContentRef.current);
+			pendingModifiedContentRef.current = null;
+		}
+
 		updateThreadIds(initialData.markdown);
 
 		monacoListenersDisposeAbortControllers.current?.abort();
@@ -1219,16 +1228,25 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			modelsRef.current?.original.dispose();
 			modelsRef.current?.modified.dispose();
 			modelsRef.current = null;
+			pendingModifiedContentRef.current = null;
 		};
 	}, []);
 
 	useImperativeHandle(
 		ref,
-		() => ({
-			setModifiedContent: (value: string) => {
-				pushChangeToUnstagedEditor(value);
-			},
-		}),
+		() =>
+			({
+				setModifiedContent: (value: string) => {
+					// If the editor is mounted we can apply the diff value immediately.
+					if (editorRef.current) {
+						pushChangeToUnstagedEditor(value);
+					}
+					// Otherwise, we need to wait for the editor to be mounted to apply the changes.
+					else {
+						pendingModifiedContentRef.current = value;
+					}
+				},
+			}) satisfies PageEditorDiff_Ref,
 		[],
 	);
 
