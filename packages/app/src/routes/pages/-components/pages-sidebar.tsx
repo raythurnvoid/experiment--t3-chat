@@ -33,6 +33,8 @@ import {
 	renamingFeature,
 	selectionFeature,
 	syncDataLoaderFeature,
+	type FeatureImplementation,
+	type SelectionDataRef,
 	type TreeConfig,
 	type TreeInstance,
 } from "@headless-tree/core";
@@ -46,7 +48,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
-import { MyPrimaryAction, type MyPrimaryAction_Props } from "@/components/my-action.tsx";
+import { MyPrimaryAction } from "@/components/my-action.tsx";
 import {
 	MyMenu,
 	MyMenuItem,
@@ -344,6 +346,8 @@ type PagesSidebarTreeItemTitle_Props = {
 const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 	const { renameInputProps, isRenaming, title } = props;
 
+	const value = isRenaming ? renameInputProps.value ?? "" : title;
+
 	return (
 		<MyInput
 			className={"PagesSidebarTreeItemTitle" satisfies PagesSidebarTreeItemTitle_ClassNames}
@@ -355,7 +359,7 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 				className={"PagesSidebarTreeItemTitle-input" satisfies PagesSidebarTreeItemTitle_ClassNames}
 				readOnly={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
-				value={!isRenaming ? title : undefined}
+				value={value}
 			/>
 		</MyInput>
 	);
@@ -377,10 +381,7 @@ const PagesSidebarTreeItemPrimaryContent = memo(function PagesSidebarTreeItemPri
 	const { title, renameInputProps, isRenaming } = props;
 
 	return (
-		<div
-			className={"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames}
-			aria-hidden="true"
-		>
+		<div className={"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames}>
 			<PagesSidebarTreeItemIcon />
 			<PagesSidebarTreeItemTitle renameInputProps={renameInputProps} isRenaming={isRenaming} title={title} />
 		</div>
@@ -392,7 +393,6 @@ const PagesSidebarTreeItemPrimaryContent = memo(function PagesSidebarTreeItemPri
 type PagesSidebarTreeItemPrimaryAction_ClassNames = "PagesSidebarTreeItemPrimaryAction";
 
 type PagesSidebarTreeItemPrimaryAction_Props = {
-	itemId: string;
 	itemProps: ReturnType<PagesSidebarTreeItem_Instance["getProps"]>;
 	title: string;
 	updatedAt: pages_TreeItem["updatedAt"];
@@ -400,29 +400,14 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 	isPending: boolean;
 	isSelected: boolean;
 	isTreeDragging: boolean;
-	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
 const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrimaryAction(
 	props: PagesSidebarTreeItemPrimaryAction_Props,
 ) {
-	const {
-		itemId,
-		itemProps,
-		title,
-		updatedAt,
-		updatedBy,
-		isPending,
-		isSelected,
-		isTreeDragging,
-		onTreeItemPrimaryClick,
-	} = props;
+	const { itemProps, title, updatedAt, updatedBy, isPending, isSelected, isTreeDragging } = props;
 
 	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedBy || "Unknown"}`;
-
-	const handleClick: MyPrimaryAction_Props["onClick"] = (event) => {
-		onTreeItemPrimaryClick(event, itemId);
-	};
 
 	return (
 		<MyPrimaryAction
@@ -435,7 +420,6 @@ const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrim
 			tooltipDisabled={isTreeDragging}
 			aria-label={title}
 			aria-selected={isSelected ? "true" : "false"}
-			onClick={handleClick}
 		></MyPrimaryAction>
 	);
 });
@@ -544,7 +528,6 @@ type PagesSidebarTreeItemPlaceholder_CssVars = {
 
 type PagesSidebarTreeItemPlaceholder_Props = {
 	itemId: string;
-	depth: number;
 	ancestorIds: string[];
 	trackActivePagesIds: Set<string>;
 	onDragEnter: ComponentProps<"div">["onDragEnter"];
@@ -556,15 +539,16 @@ type PagesSidebarTreeItemPlaceholder_Props = {
 const PagesSidebarTreeItemPlaceholder = memo(function PagesSidebarTreeItemPlaceholder(
 	props: PagesSidebarTreeItemPlaceholder_Props,
 ) {
-	const { itemId, depth, ancestorIds, trackActivePagesIds, onDragEnter, onDragOver, onDragLeave, onDrop } = props;
+	const { itemId, ancestorIds, trackActivePagesIds, onDragEnter, onDragOver, onDragLeave, onDrop } = props;
 
 	const trackPagesIds = [...ancestorIds, itemId];
+	const placeholderDepth = trackPagesIds.length;
 
 	return (
 		<div
 			className={"PagesSidebarTreeItemPlaceholder" satisfies PagesSidebarTreeItemPlaceholder_ClassNames}
 			style={sx({
-				"--PagesSidebarTreeItemPlaceholder-depth": depth,
+				"--PagesSidebarTreeItemPlaceholder-depth": placeholderDepth,
 			} satisfies Partial<PagesSidebarTreeItemPlaceholder_CssVars>)}
 			onDragEnter={onDragEnter}
 			onDragOver={onDragOver}
@@ -614,7 +598,6 @@ type PagesSidebarTreeItem_Props = {
 	onStartRename: (itemId: string) => void;
 	onArchive: (pageId: string) => void;
 	onUnarchive: (pageId: string) => void;
-	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
 const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
@@ -632,7 +615,6 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 		onStartRename,
 		onArchive,
 		onUnarchive,
-		onTreeItemPrimaryClick,
 	} = props;
 
 	const itemId = useVal(() => item.getId());
@@ -665,6 +647,7 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 
 		return result.reverse();
 	})();
+	const normalizedAncestorIds = ancestorIds.slice(Math.max(ancestorIds.length - depth, 0));
 
 	const handleCreatePageClick = useFn<PagesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreatePage(itemId);
@@ -724,7 +707,6 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 				} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
 			>
 				<PagesSidebarTreeItemPrimaryAction
-					itemId={itemId}
 					itemProps={itemProps}
 					title={itemData.title}
 					updatedAt={itemData.updatedAt}
@@ -732,7 +714,6 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					isPending={isPending}
 					isSelected={isSelected}
 					isTreeDragging={isTreeDragging}
-					onTreeItemPrimaryClick={onTreeItemPrimaryClick}
 				/>
 
 				<PagesSidebarTreeItemPrimaryContent
@@ -760,14 +741,13 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					onUnarchive={handleUnarchiveClick}
 				/>
 
-				<PagesSidebarTreeItemTrack trackPagesIds={ancestorIds} trackActivePagesIds={trackActivePagesIds} />
+				<PagesSidebarTreeItemTrack trackPagesIds={normalizedAncestorIds} trackActivePagesIds={trackActivePagesIds} />
 			</div>
 
 			{shouldRenderPlaceholder ? (
 				<PagesSidebarTreeItemPlaceholder
 					itemId={itemId}
-					depth={depth}
-					ancestorIds={ancestorIds}
+					ancestorIds={normalizedAncestorIds}
 					trackActivePagesIds={trackActivePagesIds}
 					onDragEnter={handlePlaceholderDragEnter}
 					onDragOver={handlePlaceholderDragOver}
@@ -801,7 +781,6 @@ type PagesSidebarTree_Props = {
 	onStartRename: (itemId: string) => void;
 	onArchive: (pageId: string) => void;
 	onUnarchive: (pageId: string) => void;
-	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
 type PagesSidebarTree_DivProps = ComponentProps<"div">;
@@ -821,7 +800,6 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 		onStartRename,
 		onArchive,
 		onUnarchive,
-		onTreeItemPrimaryClick,
 	} = props;
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
 
@@ -957,7 +935,6 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 									onStartRename={onStartRename}
 									onArchive={onArchive}
 									onUnarchive={onUnarchive}
-									onTreeItemPrimaryClick={onTreeItemPrimaryClick}
 								/>
 							);
 						})}
@@ -1207,7 +1184,6 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const [isCreatingPage, setIsCreatingPage] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
-	const [selectionAnchorPageId, setSelectionAnchorPageId] = useState<string | null>(null);
 	const isBusy = isCreatingPage || isArchivingSelection;
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
@@ -1490,6 +1466,45 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 		},
 	);
 
+	const [clickBehaviorFeature] = useState(
+		() =>
+			({
+				key: "pages-sidebar-click-behavior",
+
+				itemInstance: {
+					getProps: ({ tree, item, itemId, prev }) => {
+						const prevProps = prev?.() ?? {};
+
+						return {
+							...prevProps,
+							onClick: (event: MouseEvent) => {
+								const isModifierClick = event.shiftKey || event.ctrlKey || event.metaKey;
+
+								if (event.shiftKey) {
+									item.selectUpTo(event.ctrlKey || event.metaKey);
+								} else if (event.ctrlKey || event.metaKey) {
+									item.toggleSelect();
+								} else {
+									tree.setSelectedItems([itemId]);
+								}
+
+								if (!isModifierClick) {
+									tree.getDataRef<SelectionDataRef>().current.selectUpToAnchorId = itemId;
+								}
+
+								item.setFocused();
+								if (isModifierClick) {
+									return;
+								}
+
+								item.primaryAction();
+							},
+						};
+					},
+				},
+			}) satisfies FeatureImplementation<pages_TreeItem>,
+	);
+
 	const dataLoader = {
 		getItem: (itemId: string) =>
 			treeItems?.itemById.get(itemId) ?? treeItems?.itemById.get(pages_ROOT_ID) ?? pages_create_tree_root(),
@@ -1516,6 +1531,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			dragAndDropFeature,
 			renamingFeature,
 			expandAllFeature,
+			clickBehaviorFeature,
 			propMemoizationFeature,
 		],
 		getItemName: (item) => item.getItemData().title,
@@ -1538,6 +1554,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			.filter((item) => item.isSelected() && item.getItemData().type === "page")
 			.map((item) => item.getId()),
 	);
+	const selectionAnchorPageId = tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId ?? null;
 
 	/**
 	 * The pages ids used as the source for active tree tracks.
@@ -1737,36 +1754,6 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			});
 	});
 
-	const handleTreeItemPrimaryClick = useFn<PagesSidebarTree_Props["onTreeItemPrimaryClick"]>((event, itemId) => {
-		const item = tree().getItemInstance(itemId);
-		const isModifierClick = event.shiftKey || event.ctrlKey || event.metaKey;
-		const selectionDataRef = tree().getDataRef() as { current: { selectUpToAnchorId?: string | null } };
-
-		if (event.shiftKey) {
-			item.selectUpTo(event.ctrlKey || event.metaKey);
-		} else if (event.ctrlKey || event.metaKey) {
-			item.toggleSelect();
-		} else {
-			tree().setSelectedItems([itemId]);
-		}
-
-		if (!isModifierClick) {
-			selectionDataRef.current.selectUpToAnchorId = itemId;
-		}
-
-		setSelectionAnchorPageId(selectionDataRef.current.selectUpToAnchorId ?? null);
-
-		item.setFocused();
-		if (isModifierClick) {
-			return;
-		}
-
-		const itemData = item.getItemData();
-		if (itemData.type === "page") {
-			onPrimaryAction(itemId, itemData.type);
-		}
-	});
-
 	const handleExpandAllClick = useFn(() => {
 		tree()
 			.expandAll()
@@ -1907,7 +1894,6 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 					onStartRename={handleStartRename}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
-					onTreeItemPrimaryClick={handleTreeItemPrimaryClick}
 				/>
 			</MySidebarContent>
 		</MySidebar>
