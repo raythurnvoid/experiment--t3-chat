@@ -151,6 +151,10 @@
 				}
 			}
 		}
+
+		.PagesSidebarTreeItemPlaceholder {
+			pointer-events: auto;
+		}
 	}
 
 	.PagesSidebarTree-dragging-root-target {
@@ -160,7 +164,8 @@
 	/* #endregion tree */
 
 	/* #region tree item */
-	.PagesSidebarTreeItem {
+	.PagesSidebarTreeItem,
+	.PagesSidebarTreeItemPlaceholder {
 		--PagesSidebarTreeItem-content-depth-zero-indent-left-adjustment: calc(
 			(1 - min(var(--PagesSidebarTreeItem-content-depth), 1)) * 8px
 		);
@@ -185,17 +190,11 @@
 					var(--PagesSidebarTreeItem-content-depth-zero-indent-left-adjustment)
 			);
 		}
+	}
 
-		&:not(.PagesSidebarTreeItem-content-placeholder) {
-			display: grid;
-			grid-template-columns: auto 1fr auto;
-		}
-
-		&.PagesSidebarTreeItem-content-placeholder {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-		}
+	.PagesSidebarTreeItem {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
 
 		&.PagesSidebarTreeItem-content-dragging-target > .PagesSidebarTreeItemPrimaryAction {
 			border-style: dashed;
@@ -209,17 +208,9 @@
 		}
 	}
 
-	.PagesSidebarTreeItem-content-placeholder {
-		color: var(--color-fg-07);
-		font-style: italic;
-		cursor: default;
-		user-select: none;
+	/* #endregion tree item */
 
-		> .PagesSidebarTreeItemPrimaryContent {
-			padding-left: var(--PagesSidebarTreeItem-content-indent-left);
-		}
-	}
-
+	/* #region tree item meta label */
 	.PagesSidebarTreeItemMetaLabel {
 		grid-row: 2;
 		grid-column: 2;
@@ -246,7 +237,9 @@
 		white-space: nowrap;
 		min-width: 0;
 	}
+	/* #endregion tree item meta label */
 
+	/* #region tree item actions */
 	.PagesSidebarTreeItemActions {
 		grid-row: 1 / 3;
 		grid-column: 3;
@@ -257,7 +250,26 @@
 
 		contain: layout style;
 	}
-	/* #endregion tree item */
+	/* #endregion tree item actions */
+
+	/* #region tree item placeholder */
+	.PagesSidebarTreeItemPlaceholder {
+		--PagesSidebarTreeItem-content-depth: var(--PagesSidebarTreeItemPlaceholder-depth);
+
+		display: flex;
+		gap: 8px;
+		align-items: center;
+
+		color: var(--color-fg-07);
+		font-style: italic;
+		cursor: default;
+		user-select: none;
+
+		> .PagesSidebarTreeItemPrimaryContent {
+			padding-left: var(--PagesSidebarTreeItem-content-indent-left);
+		}
+	}
+	/* #endregion tree item placeholder */
 
 	/* #region tree item track */
 	.PagesSidebarTreeItemTrack {

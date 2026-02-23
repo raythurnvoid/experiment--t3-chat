@@ -43,19 +43,6 @@ export function pages_create_tree_root(): pages_TreeItem {
 	};
 }
 
-export function pages_create_tree_placeholder_child(itemId: string): pages_TreeItem {
-	return {
-		type: "placeholder",
-		index: `${itemId}-placeholder`,
-		parentId: itemId,
-		title: "No files inside",
-		archiveOperationId: undefined,
-		updatedAt: 0,
-		updatedBy: "",
-		_id: null,
-	};
-}
-
 export function pages_create_room_id(workspaceId: string, projectId: string, pageId: string): string {
 	return `pages::${workspaceId}::${projectId}::${pageId}`;
 }

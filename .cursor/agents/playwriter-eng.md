@@ -139,6 +139,7 @@ Implementation anchor:
 Durable selector anchors (`/pages`):
 
 - `.PagesSidebarTreeItem`
+- `.PagesSidebarTreeItemPlaceholder`
 - `.PagesSidebarTreeItem-primary-action-interactive-area`
 - `.PagesSidebarTreeItemPrimaryActionContent-title`
 - `.PagesSidebarTreeRenameInput-input`
@@ -216,6 +217,10 @@ Reusable tree flow defaults (`/pages` and similar sidebars):
    - Validate typing as a data flow, not just input visibility: after each keystroke, assert the visible input value changed from the previous value.
    - After Enter, assert commit outcome explicitly by reading the row title and comparing against the expected final value.
    - Always assert post-commit title on the same stable row identity (`data-item-id` or equivalent id), not by title text lookup alone.
+9. Placeholder-target validation:
+   - Do not anchor placeholder interactions by UI copy (placeholder text can change).
+   - Anchor by placeholder structural selectors (for example `.PagesSidebarTreeItemPlaceholder`) and map owner via stable adjacency/identity.
+   - During placeholder hover, assert both signals together: root-zone class stays off and drag-target maps to the owner row identity.
 
 # Artifact storage location
 

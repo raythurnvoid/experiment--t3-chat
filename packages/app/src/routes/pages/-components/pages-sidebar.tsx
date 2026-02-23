@@ -1,5 +1,14 @@
 import "./pages-sidebar.css";
-import React, { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, {
+	memo,
+	useDeferredValue,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ComponentProps,
+} from "react";
 import {
 	Archive,
 	ArchiveRestore,
@@ -20,6 +29,7 @@ import {
 	dragAndDropFeature,
 	expandAllFeature,
 	hotkeysCoreFeature,
+	propMemoizationFeature,
 	renamingFeature,
 	selectionFeature,
 	syncDataLoaderFeature,
@@ -414,46 +424,6 @@ const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrim
 		onTreeItemPrimaryClick(event, itemId);
 	};
 
-	// const handleMouseDown: MyPrimaryAction_Props["onMouseDown"] = (event) => {
-	// 	if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) {
-	// 		return;
-	// 	}
-
-	// 	const itemId = item.getId();
-	// 	const selectedItems = tree().getState().selectedItems ?? [];
-	// 	const isItemSelected = selectedItems.includes(itemId);
-	// 	if (!isItemSelected) {
-	// 		tree().setSelectedItems([itemId]);
-	// 	}
-
-	// 	item.setFocused();
-	// };
-
-	// Event listeners in `itemProps` are not stable and cause unnecessary re-renders
-	const handleDragStart = useFn<MyPrimaryAction_Props["onDragStart"]>((event) => {
-		itemProps.onDragStart?.(event);
-	});
-
-	const handleDragEnd = useFn<MyPrimaryAction_Props["onDragEnd"]>((event) => {
-		itemProps.onDragEnd?.(event);
-	});
-
-	const handleDragEnter = useFn<MyPrimaryAction_Props["onDragEnter"]>((event) => {
-		itemProps.onDragEnter?.(event);
-	});
-
-	const handleDragLeave = useFn<MyPrimaryAction_Props["onDragLeave"]>((event) => {
-		itemProps.onDragLeave?.(event);
-	});
-
-	const handleDragOver = useFn<MyPrimaryAction_Props["onDragOver"]>((event) => {
-		itemProps.onDragOver?.(event);
-	});
-
-	const handleDrop = useFn<MyPrimaryAction_Props["onDrop"]>((event) => {
-		itemProps.onDrop?.(event);
-	});
-
 	return (
 		<MyPrimaryAction
 			{...itemProps}
@@ -466,12 +436,6 @@ const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrim
 			aria-label={title}
 			aria-selected={isSelected ? "true" : "false"}
 			onClick={handleClick}
-			onDragStart={handleDragStart}
-			onDragEnd={handleDragEnd}
-			onDragEnter={handleDragEnter}
-			onDragLeave={handleDragLeave}
-			onDragOver={handleDragOver}
-			onDrop={handleDrop}
 		></MyPrimaryAction>
 	);
 });
@@ -572,36 +536,47 @@ const PagesSidebarTreeItemTrack = memo(function PagesSidebarTreeItemTrack(props:
 // #endregion tree item track
 
 // #region tree item placeholder
+type PagesSidebarTreeItemPlaceholder_ClassNames = "PagesSidebarTreeItemPlaceholder";
+
+type PagesSidebarTreeItemPlaceholder_CssVars = {
+	"--PagesSidebarTreeItemPlaceholder-depth": number;
+};
+
 type PagesSidebarTreeItemPlaceholder_Props = {
 	itemId: string;
 	depth: number;
 	ancestorIds: string[];
 	trackActivePagesIds: Set<string>;
+	onDragEnter: ComponentProps<"div">["onDragEnter"];
+	onDragOver: ComponentProps<"div">["onDragOver"];
+	onDragLeave: ComponentProps<"div">["onDragLeave"];
+	onDrop: ComponentProps<"div">["onDrop"];
 };
 
 const PagesSidebarTreeItemPlaceholder = memo(function PagesSidebarTreeItemPlaceholder(
 	props: PagesSidebarTreeItemPlaceholder_Props,
 ) {
-	const { itemId, depth, ancestorIds, trackActivePagesIds } = props;
+	const { itemId, depth, ancestorIds, trackActivePagesIds, onDragEnter, onDragOver, onDragLeave, onDrop } = props;
 
 	const trackPagesIds = [...ancestorIds, itemId];
 
 	return (
 		<div
-			className={cn(
-				"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
-				"PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames,
-			)}
+			className={"PagesSidebarTreeItemPlaceholder" satisfies PagesSidebarTreeItemPlaceholder_ClassNames}
 			style={sx({
-				"--PagesSidebarTreeItem-content-depth": depth,
-			} satisfies Partial<PagesSidebar_CssVars>)}
+				"--PagesSidebarTreeItemPlaceholder-depth": depth,
+			} satisfies Partial<PagesSidebarTreeItemPlaceholder_CssVars>)}
+			onDragEnter={onDragEnter}
+			onDragOver={onDragOver}
+			onDragLeave={onDragLeave}
+			onDrop={onDrop}
 		>
 			<div
 				className={"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames}
 				aria-hidden="true"
 			>
 				<PagesSidebarTreeItemIcon />
-				<span>No files inside</span>
+				<span>No pages inside</span>
 			</div>
 			<PagesSidebarTreeItemTrack trackPagesIds={trackPagesIds} trackActivePagesIds={trackActivePagesIds} />
 		</div>
@@ -614,8 +589,7 @@ type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem"
 	| "PagesSidebarTreeItem-content-navigated"
 	| "PagesSidebarTreeItem-content-dragging-target"
-	| "PagesSidebarTreeItem-content-archived"
-	| "PagesSidebarTreeItem-content-placeholder";
+	| "PagesSidebarTreeItem-content-archived";
 
 type PagesSidebarTreeItem_CustomAttributes = {
 	"data-item-id": string;
@@ -716,6 +690,22 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 		}
 	});
 
+	const handlePlaceholderDragEnter = useFn<ComponentProps<"div">["onDragEnter"]>((event) => {
+		itemProps.onDragEnter?.(event);
+	});
+
+	const handlePlaceholderDragOver = useFn<ComponentProps<"div">["onDragOver"]>((event) => {
+		itemProps.onDragOver?.(event);
+	});
+
+	const handlePlaceholderDragLeave = useFn<ComponentProps<"div">["onDragLeave"]>((event) => {
+		itemProps.onDragLeave?.(event);
+	});
+
+	const handlePlaceholderDrop = useFn<ComponentProps<"div">["onDrop"]>((event) => {
+		itemProps.onDrop?.(event);
+	});
+
 	return (
 		<>
 			<div
@@ -779,6 +769,10 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					depth={depth}
 					ancestorIds={ancestorIds}
 					trackActivePagesIds={trackActivePagesIds}
+					onDragEnter={handlePlaceholderDragEnter}
+					onDragOver={handlePlaceholderDragOver}
+					onDragLeave={handlePlaceholderDragLeave}
+					onDrop={handlePlaceholderDrop}
 				/>
 			) : null}
 		</>
@@ -810,7 +804,7 @@ type PagesSidebarTree_Props = {
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
 
-type PagesSidebarTree_DivProps = React.ComponentProps<"div">;
+type PagesSidebarTree_DivProps = ComponentProps<"div">;
 
 const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_Props) {
 	const {
@@ -856,20 +850,6 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 		isTreeFocusedRef.current = false;
 	};
 
-	const handleKeyDown: NonNullable<PagesSidebarTree_DivProps["onKeyDown"]> = (event) => {
-		if (event.key !== "F2") {
-			return;
-		}
-
-		const focusedItem = tree().getFocusedItem();
-		if (focusedItem.getItemData().type !== "page") {
-			return;
-		}
-
-		event.preventDefault();
-		onStartRename(focusedItem.getId());
-	};
-
 	const handleSetIsDraggingOverRootZone = (nextValue: PagesSidebarTree_Props["isBusy"]) => {
 		if (isDraggingOverRootZoneRef.current === nextValue) {
 			return;
@@ -886,7 +866,10 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 			return;
 		}
 
-		const hoveredItemElement = event.target instanceof Element ? event.target.closest(".PagesSidebarTreeItem") : null;
+		const hoveredItemElement =
+			event.target instanceof Element
+				? event.target.closest(".PagesSidebarTreeItem, .PagesSidebarTreeItemPlaceholder")
+				: null;
 		const treeRootElement = event.currentTarget;
 
 		const isPointerOverTreeItem = hoveredItemElement instanceof Element && treeRootElement.contains(hoveredItemElement);
@@ -937,7 +920,6 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 			{...tree().getContainerProps("Pages")}
 			onFocus={handleFocus}
 			onBlur={handleBlur}
-			onKeyDown={handleKeyDown}
 			onDragEnterCapture={handleDragEnterCapture}
 			onDragOverCapture={handleDragOverCapture}
 			onDragLeaveCapture={handleDragLeaveCapture}
@@ -999,7 +981,7 @@ const PagesSidebarSearch = memo(function PagesSidebarSearch(props: PagesSidebarS
 	const [searchQuery, setSearchQuery] = useState("");
 	const searchQueryDebounced = useDebounce(searchQuery, 300);
 
-	const handleInputChange = useFn<React.ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
+	const handleInputChange = useFn<ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
 		setSearchQuery(event.target.value);
 	});
 
@@ -1534,6 +1516,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			dragAndDropFeature,
 			renamingFeature,
 			expandAllFeature,
+			propMemoizationFeature,
 		],
 		getItemName: (item) => item.getItemData().title,
 		isItemFolder: (item) => item.getItemData().type === "page",
