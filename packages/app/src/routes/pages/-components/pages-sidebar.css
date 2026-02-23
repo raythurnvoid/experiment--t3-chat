@@ -24,6 +24,12 @@
 
 	.PagesSidebar-content {
 		padding: 0;
+
+		/* 
+		Significantly improves performance
+		when rendering many items inside the tree
+		*/
+		contain: strict;
 	}
 	/* #endregion root */
 
@@ -116,7 +122,7 @@
 
 	/* #region tree */
 	.PagesSidebarTree {
-		min-height: 100%;
+		flex: 1;
 	}
 
 	.PagesSidebarTree-empty-state {
