@@ -40,6 +40,23 @@ Context continuity:
 
 All durable testing learnings are consolidated here. Keep this section compact, actionable, and reusable.
 
+## Abort-path invariants for stateful interactions
+
+Use this for any stateful UI mode (for example drag/drop, resize, inline-edit, selection mode, modal mode, keyboard mode).
+
+Test matrix:
+
+1. Success path.
+2. At least one abort path (`Escape`, outside click/release, invalid action).
+3. Optional re-entry path (abort, then retry success immediately).
+
+Post-abort assertions:
+
+1. Verify cleanup twice: immediate and delayed (200-400ms) to catch timer/race reactivation.
+2. Assert mode-gating state returned to neutral (no lingering state/classes/attrs that suppress neighboring controls).
+3. Re-run baseline controls near the feature (keyboard nav, click/hover, shortcuts) and expect pre-action behavior.
+4. If success passes but abort fails, classify as cleanup-race and capture minimal evidence (event timeline + state snapshots) before retry.
+
 ## General DnD playbook
 
 Use this as the default strategy for drag-and-drop testing on any surface.

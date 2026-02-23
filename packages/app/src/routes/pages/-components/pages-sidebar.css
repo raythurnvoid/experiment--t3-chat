@@ -161,7 +161,17 @@
 
 	/* #region tree item */
 	.PagesSidebarTreeItem {
+		--PagesSidebarTreeItem-content-depth-zero-indent-left-adjustment: calc(
+			(1 - min(var(--PagesSidebarTreeItem-content-depth), 1)) * 8px
+		);
+		--PagesSidebarTreeItem-track-inset-left: 24px;
+		--PagesSidebarTreeItem-content-indent-left: calc(
+			(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) - 4px) -
+				var(--PagesSidebarTreeItem-content-depth-zero-indent-left-adjustment)
+		);
+
 		position: relative;
+		isolation: isolate;
 		height: 44px;
 		color: var(--color-fg-08);
 		padding: 0 8px;
@@ -170,11 +180,10 @@
 		contain-intrinsic-height: auto 44px;
 
 		&:not(:has(> .PagesSidebarTreeItemArrow)) {
-			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) + 36px);
-		}
-
-		&:has(> .PagesSidebarTreeItemArrow) {
-			padding-left: calc(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) - 4px);
+			--PagesSidebarTreeItem-content-indent-left: calc(
+				(((var(--PagesSidebarTreeItem-content-depth) + 1) * 12px) + 36px) -
+					var(--PagesSidebarTreeItem-content-depth-zero-indent-left-adjustment)
+			);
 		}
 
 		&:not(.PagesSidebarTreeItem-content-placeholder) {
@@ -205,6 +214,10 @@
 		font-style: italic;
 		cursor: default;
 		user-select: none;
+
+		> .PagesSidebarTreeItemPrimaryContent {
+			padding-left: var(--PagesSidebarTreeItem-content-indent-left);
+		}
 	}
 
 	.PagesSidebarTreeItemMetaLabel {
@@ -241,13 +254,15 @@
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
+
+		contain: layout style;
 	}
 	/* #endregion tree item */
 
 	/* #region tree item track */
 	.PagesSidebarTreeItemTrack {
 		position: absolute;
-		inset: 0 auto 0 12px;
+		inset: 0 auto 0 var(--PagesSidebarTreeItem-track-inset-left);
 
 		display: flex;
 		width: 100%;
@@ -259,11 +274,15 @@
 		box-sizing: border-box;
 		width: 12px;
 		height: 100%;
-		border-left: 2px solid var(--color-fg-04);
+		border-left: 2px solid color-mix(in oklch, var(--color-fg-07) 45%, transparent);
+	}
+
+	.PagesSidebarTreeItemTrack-guide-depth-zero {
+		width: 20px;
 	}
 
 	.PagesSidebarTreeItemTrack-guide-active {
-		border-color: var(--color-fg-07);
+		border-color: color-mix(in oklch, var(--color-fg-10) 60%, transparent);
 	}
 	/* #endregion tree item track */
 
@@ -271,12 +290,12 @@
 	.PagesSidebarTreeItemPrimaryAction {
 		grid-row: 1 / 4;
 		grid-column: 1 / 4;
+		margin-inline: -8px;
+		width: calc(100% + 16px);
 
 		border-radius: 8px;
 
 		outline: none;
-
-		clip-path: inset(0 0 0 5px);
 
 		contain: strict;
 	}
@@ -305,13 +324,20 @@
 		grid-row: 1 / 3;
 		grid-column: 1;
 
+		padding-left: var(--PagesSidebarTreeItem-content-indent-left);
+		pointer-events: none;
+
 		place-content: center;
 
-		contain: strict;
+		contain: content;
 
-		place-self: center;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 
-		clip-path: inset(0 0 0 5px);
+		> .PagesSidebarTreeItemArrow-icon-button {
+			pointer-events: auto;
+		}
 	}
 	/* #endregion tree item arrow */
 
@@ -346,6 +372,8 @@
 	/* #region tree item title */
 	.PagesSidebarTreeItemTitle {
 		display: flex;
+		flex: 1;
+		min-width: 0;
 		width: 100%;
 
 		color: inherit;
@@ -363,6 +391,11 @@
 
 	.PagesSidebarTreeItemTitle-input {
 		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 
 		&[readonly] {
 			pointer-events: none;

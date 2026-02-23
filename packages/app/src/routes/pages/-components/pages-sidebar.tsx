@@ -53,12 +53,7 @@ import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
-import {
-	pages_ROOT_ID,
-	pages_create_tree_placeholder_child,
-	type pages_EditorView,
-	type pages_TreeItem,
-} from "@/lib/pages.ts";
+import { pages_ROOT_ID, pages_create_tree_root, type pages_EditorView, type pages_TreeItem } from "@/lib/pages.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import type { FunctionReturnType } from "convex/server";
 
@@ -129,8 +124,6 @@ function sort_children(args: { children: string[]; itemById: Map<string, pages_T
 		if (!itemA || !itemB) {
 			return 0;
 		}
-		if (itemA.type === "placeholder") return 1;
-		if (itemB.type === "placeholder") return -1;
 
 		const titleA = itemA.title || "";
 		const titleB = itemB.title || "";
@@ -299,7 +292,7 @@ const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAct
 // #endregion tree item more action
 
 // #region tree item arrow
-type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow";
+type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow" | "PagesSidebarTreeItemArrow-icon-button";
 
 type PagesSidebarTreeItemArrow_Props = {
 	isExpanded: boolean;
@@ -312,17 +305,19 @@ const PagesSidebarTreeItemArrow = memo(function PagesSidebarTreeItemArrow(props:
 	const { isExpanded, isPending, isTabbable, onClick } = props;
 
 	return (
-		<MyIconButton
-			className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}
-			tooltip={isExpanded ? "Collapse page" : "Expand page"}
-			side="bottom"
-			variant="ghost-highlightable"
-			tabIndex={isTabbable ? 0 : -1}
-			onClick={onClick}
-			disabled={isPending}
-		>
-			<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
-		</MyIconButton>
+		<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>
+			<MyIconButton
+				className={"PagesSidebarTreeItemArrow-icon-button" satisfies PagesSidebarTreeItemArrow_ClassNames}
+				tooltip={isExpanded ? "Collapse page" : "Expand page"}
+				side="bottom"
+				variant="ghost-highlightable"
+				tabIndex={isTabbable ? 0 : -1}
+				onClick={onClick}
+				disabled={isPending}
+			>
+				<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
+			</MyIconButton>
+		</div>
 	);
 });
 // #endregion tree item arrow
@@ -331,16 +326,13 @@ const PagesSidebarTreeItemArrow = memo(function PagesSidebarTreeItemArrow(props:
 type PagesSidebarTreeItemTitle_ClassNames = "PagesSidebarTreeItemTitle" | "PagesSidebarTreeItemTitle-input";
 
 type PagesSidebarTreeItemTitle_Props = {
-	tree: PagesSidebarTree_Shared;
-	item: PagesSidebarTreeItem_Instance;
+	renameInputProps: ReturnType<PagesSidebarTreeItem_Instance["getRenameInputProps"]>;
+	isRenaming: boolean;
+	title: string;
 };
 
 const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
-	const { item } = props;
-
-	const renameInputProps = useVal(() => item.getRenameInputProps());
-	const isRenaming = useVal(() => item.isRenaming());
-	const itemData = useVal(() => item.getItemData());
+	const { renameInputProps, isRenaming, title } = props;
 
 	return (
 		<MyInput
@@ -353,7 +345,7 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 				className={"PagesSidebarTreeItemTitle-input" satisfies PagesSidebarTreeItemTitle_ClassNames}
 				readOnly={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
-				value={!isRenaming ? itemData.title : undefined}
+				value={!isRenaming ? title : undefined}
 			/>
 		</MyInput>
 	);
@@ -364,16 +356,15 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 type PagesSidebarTreeItemPrimaryContent_ClassNames = "PagesSidebarTreeItemPrimaryContent";
 
 type PagesSidebarTreeItemPrimaryContent_Props = {
-	tree: PagesSidebarTree_Shared;
-	item: PagesSidebarTreeItem_Instance;
+	title: string;
+	renameInputProps: ReturnType<PagesSidebarTreeItem_Instance["getRenameInputProps"]>;
+	isRenaming: boolean;
 };
 
 const PagesSidebarTreeItemPrimaryContent = memo(function PagesSidebarTreeItemPrimaryContent(
 	props: PagesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const { tree, item } = props;
-
-	const itemData = useVal(() => item.getItemData());
+	const { title, renameInputProps, isRenaming } = props;
 
 	return (
 		<div
@@ -381,11 +372,7 @@ const PagesSidebarTreeItemPrimaryContent = memo(function PagesSidebarTreeItemPri
 			aria-hidden="true"
 		>
 			<PagesSidebarTreeItemIcon />
-			{itemData.type === "placeholder" ? (
-				<span>{itemData.title}</span>
-			) : (
-				<PagesSidebarTreeItemTitle tree={tree} item={item} />
-			)}
+			<PagesSidebarTreeItemTitle renameInputProps={renameInputProps} isRenaming={isRenaming} title={title} />
 		</div>
 	);
 });
@@ -395,8 +382,13 @@ const PagesSidebarTreeItemPrimaryContent = memo(function PagesSidebarTreeItemPri
 type PagesSidebarTreeItemPrimaryAction_ClassNames = "PagesSidebarTreeItemPrimaryAction";
 
 type PagesSidebarTreeItemPrimaryAction_Props = {
-	item: PagesSidebarTreeItem_Instance;
+	itemId: string;
+	itemProps: ReturnType<PagesSidebarTreeItem_Instance["getProps"]>;
+	title: string;
+	updatedAt: pages_TreeItem["updatedAt"];
+	updatedBy: pages_TreeItem["updatedBy"];
 	isPending: boolean;
+	isSelected: boolean;
 	isTreeDragging: boolean;
 	onTreeItemPrimaryClick: (event: React.MouseEvent<HTMLButtonElement>, itemId: string) => void;
 };
@@ -404,16 +396,22 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrimaryAction(
 	props: PagesSidebarTreeItemPrimaryAction_Props,
 ) {
-	const { item, isPending, isTreeDragging, onTreeItemPrimaryClick } = props;
+	const {
+		itemId,
+		itemProps,
+		title,
+		updatedAt,
+		updatedBy,
+		isPending,
+		isSelected,
+		isTreeDragging,
+		onTreeItemPrimaryClick,
+	} = props;
 
-	const itemProps = useVal(() => item.getProps());
-	const isSelected = useVal(() => item.isSelected());
-	const itemData = useVal(() => item.getItemData());
-
-	const tooltipContent = `Updated ${format_relative_time(itemData.updatedAt, { prefixForDatesPast7Days: "the " })} by ${itemData.updatedBy || "Unknown"}`;
+	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedBy || "Unknown"}`;
 
 	const handleClick: MyPrimaryAction_Props["onClick"] = (event) => {
-		onTreeItemPrimaryClick(event, item.getId());
+		onTreeItemPrimaryClick(event, itemId);
 	};
 
 	// const handleMouseDown: MyPrimaryAction_Props["onMouseDown"] = (event) => {
@@ -465,7 +463,8 @@ const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrim
 			tooltip={tooltipContent}
 			tooltipTimeout={2000}
 			tooltipDisabled={isTreeDragging}
-			aria-label={itemData.title}
+			aria-label={title}
+			aria-selected={isSelected ? "true" : "false"}
 			onClick={handleClick}
 			onDragStart={handleDragStart}
 			onDragEnd={handleDragEnd}
@@ -542,37 +541,27 @@ const PagesSidebarTreeItemActions = memo(function PagesSidebarTreeItemActions(
 type PagesSidebarTreeItemTrack_ClassNames =
 	| "PagesSidebarTreeItemTrack"
 	| "PagesSidebarTreeItemTrack-guide"
+	| "PagesSidebarTreeItemTrack-guide-depth-zero"
 	| "PagesSidebarTreeItemTrack-guide-active";
 
 type PagesSidebarTreeItemTrack_Props = {
-	tree: PagesSidebarTree_Shared;
-	item: PagesSidebarTreeItem_Instance;
-	activeTracksPageIds: Set<string>;
+	trackPagesIds: string[];
+	trackActivePagesIds: Set<string>;
 };
 
 const PagesSidebarTreeItemTrack = memo(function PagesSidebarTreeItemTrack(props: PagesSidebarTreeItemTrack_Props) {
-	const { item, activeTracksPageIds } = props;
-
-	const ancestorIds = ((/* iife */) => {
-		const result: string[] = [];
-		let parent = item.getParent();
-
-		while (parent) {
-			result.push(parent.getId());
-			parent = parent.getParent();
-		}
-
-		return result.reverse();
-	})();
+	const { trackPagesIds, trackActivePagesIds } = props;
 
 	return (
 		<div className={"PagesSidebarTreeItemTrack" satisfies PagesSidebarTreeItemTrack_ClassNames} aria-hidden="true">
-			{ancestorIds.map((ancestorId) => (
+			{trackPagesIds.map((ancestorId, ancestorIndex) => (
 				<span
 					key={ancestorId}
 					className={cn(
 						"PagesSidebarTreeItemTrack-guide" satisfies PagesSidebarTreeItemTrack_ClassNames,
-						activeTracksPageIds.has(ancestorId) &&
+						ancestorIndex === 0 &&
+							("PagesSidebarTreeItemTrack-guide-depth-zero" satisfies PagesSidebarTreeItemTrack_ClassNames),
+						trackActivePagesIds.has(ancestorId) &&
 							("PagesSidebarTreeItemTrack-guide-active" satisfies PagesSidebarTreeItemTrack_ClassNames),
 					)}
 				/>
@@ -581,6 +570,44 @@ const PagesSidebarTreeItemTrack = memo(function PagesSidebarTreeItemTrack(props:
 	);
 });
 // #endregion tree item track
+
+// #region tree item placeholder
+type PagesSidebarTreeItemPlaceholder_Props = {
+	itemId: string;
+	depth: number;
+	ancestorIds: string[];
+	trackActivePagesIds: Set<string>;
+};
+
+const PagesSidebarTreeItemPlaceholder = memo(function PagesSidebarTreeItemPlaceholder(
+	props: PagesSidebarTreeItemPlaceholder_Props,
+) {
+	const { itemId, depth, ancestorIds, trackActivePagesIds } = props;
+
+	const trackPagesIds = [...ancestorIds, itemId];
+
+	return (
+		<div
+			className={cn(
+				"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
+				"PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames,
+			)}
+			style={sx({
+				"--PagesSidebarTreeItem-content-depth": depth,
+			} satisfies Partial<PagesSidebar_CssVars>)}
+		>
+			<div
+				className={"PagesSidebarTreeItemPrimaryContent" satisfies PagesSidebarTreeItemPrimaryContent_ClassNames}
+				aria-hidden="true"
+			>
+				<PagesSidebarTreeItemIcon />
+				<span>No files inside</span>
+			</div>
+			<PagesSidebarTreeItemTrack trackPagesIds={trackPagesIds} trackActivePagesIds={trackActivePagesIds} />
+		</div>
+	);
+});
+// #endregion tree item placeholder
 
 // #region tree item
 type PagesSidebarTreeItem_ClassNames =
@@ -600,11 +627,12 @@ type PagesSidebar_CssVars = {
 };
 
 type PagesSidebarTreeItem_Props = {
-	itemId: string;
 	tree: PagesSidebarTree_Shared;
 	item: PagesSidebarTreeItem_Instance;
-	activeTracksPageIds: Set<string>;
+	trackActivePagesIds: Set<string>;
 	selectedPageId: string | null;
+	isSelected: boolean;
+	isSearchActive: boolean;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
 	isTreeDragging: boolean;
@@ -617,11 +645,12 @@ type PagesSidebarTreeItem_Props = {
 
 const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const {
-		itemId,
 		tree,
 		item,
-		activeTracksPageIds,
+		trackActivePagesIds,
 		selectedPageId,
+		isSelected,
+		isSearchActive,
 		isBusy,
 		pendingActionPageIds,
 		isTreeDragging,
@@ -632,22 +661,36 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 		onTreeItemPrimaryClick,
 	} = props;
 
+	const itemId = useVal(() => item.getId());
 	const itemData = useVal(() => item.getItemData());
-	const isPlaceholder = itemData.type === "placeholder";
+	const itemProps = useVal(() => item.getProps());
+	const renameInputProps = useVal(() => item.getRenameInputProps());
+	const isRenaming = useVal(() => item.isRenaming());
 	const isArchived = itemData.archiveOperationId !== undefined;
 	const isNavigated = selectedPageId === itemId;
 	const isPending = isBusy || pendingActionPageIds.has(itemId);
 	const isTabbableRow = useVal(() => item.isFocused());
 	const depth = useVal(() => item.getItemMeta().level);
-	const pageIdForDebug = itemData.type === "placeholder" ? itemData.parentId : itemId;
+	const pageIdForDebug = itemId;
 	const isDragTarget = useVal(() => item.isDraggingOver());
+	const hasChildren = useVal(() => item.getChildren().length > 0);
 
-	const shouldRenderMeta = !isPlaceholder;
-	const metaText = shouldRenderMeta
-		? `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`
-		: "";
-
+	const metaText = `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
 	const isExpanded = tree().getState().expandedItems.includes(itemId);
+	const shouldRenderPlaceholder = !isSearchActive && itemData.type === "page" && !hasChildren && isExpanded;
+	const ancestorIds = ((/* iife */) => {
+		const result: string[] = [];
+		let parent = undefined;
+		do {
+			parent = (parent ?? item).getParent();
+
+			if (parent && parent.getId() !== pages_ROOT_ID) {
+				result.push(parent.getId());
+			}
+		} while (parent);
+
+		return result.reverse();
+	})();
 
 	const handleCreatePageClick = useFn<PagesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreatePage(itemId);
@@ -674,60 +717,71 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 	});
 
 	return (
-		<div
-			className={cn(
-				"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
-				isPlaceholder && ("PagesSidebarTreeItem-content-placeholder" satisfies PagesSidebarTreeItem_ClassNames),
-				isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
-				!isPlaceholder &&
-					isDragTarget &&
-					("PagesSidebarTreeItem-content-dragging-target" satisfies PagesSidebarTreeItem_ClassNames),
-				isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
-			)}
-			style={sx({
-				"--PagesSidebarTreeItem-content-depth": depth,
-			} satisfies Partial<PagesSidebar_CssVars>)}
-			{...({
-				"data-item-id": itemId,
-				"data-page-id": pageIdForDebug,
-			} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
-		>
-			{isPlaceholder ? (
-				<PagesSidebarTreeItemPrimaryContent tree={tree} item={item} />
-			) : (
-				<>
-					<PagesSidebarTreeItemPrimaryAction
-						item={item}
-						isPending={isPending}
-						isTreeDragging={isTreeDragging}
-						onTreeItemPrimaryClick={onTreeItemPrimaryClick}
-					/>
+		<>
+			<div
+				className={cn(
+					"PagesSidebarTreeItem" satisfies PagesSidebarTreeItem_ClassNames,
+					isNavigated && ("PagesSidebarTreeItem-content-navigated" satisfies PagesSidebarTreeItem_ClassNames),
+					isDragTarget && ("PagesSidebarTreeItem-content-dragging-target" satisfies PagesSidebarTreeItem_ClassNames),
+					isArchived && ("PagesSidebarTreeItem-content-archived" satisfies PagesSidebarTreeItem_ClassNames),
+				)}
+				style={sx({
+					"--PagesSidebarTreeItem-content-depth": depth,
+				} satisfies Partial<PagesSidebar_CssVars>)}
+				{...({
+					"data-item-id": itemId,
+					"data-page-id": pageIdForDebug,
+				} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
+			>
+				<PagesSidebarTreeItemPrimaryAction
+					itemId={itemId}
+					itemProps={itemProps}
+					title={itemData.title}
+					updatedAt={itemData.updatedAt}
+					updatedBy={itemData.updatedBy}
+					isPending={isPending}
+					isSelected={isSelected}
+					isTreeDragging={isTreeDragging}
+					onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+				/>
 
-					<PagesSidebarTreeItemPrimaryContent tree={tree} item={item} />
+				<PagesSidebarTreeItemPrimaryContent
+					title={itemData.title}
+					renameInputProps={renameInputProps}
+					isRenaming={isRenaming}
+				/>
 
-					<PagesSidebarTreeItemArrow
-						isExpanded={isExpanded}
-						isPending={isPending}
-						isTabbable={isTabbableRow}
-						onClick={handleTreeItemArrowClick}
-					/>
+				<PagesSidebarTreeItemArrow
+					isExpanded={isExpanded}
+					isPending={isPending}
+					isTabbable={isTabbableRow}
+					onClick={handleTreeItemArrowClick}
+				/>
 
-					<PagesSidebarTreeItemMetaLabel metaText={metaText} />
+				<PagesSidebarTreeItemMetaLabel metaText={metaText} />
 
-					<PagesSidebarTreeItemActions
-						archiveOperationId={itemData.archiveOperationId}
-						isPending={isPending}
-						isTabbable={isTabbableRow}
-						onCreatePage={handleCreatePageClick}
-						onRename={handleRenameClick}
-						onArchive={handleArchiveClick}
-						onUnarchive={handleUnarchiveClick}
-					/>
-				</>
-			)}
+				<PagesSidebarTreeItemActions
+					archiveOperationId={itemData.archiveOperationId}
+					isPending={isPending}
+					isTabbable={isTabbableRow}
+					onCreatePage={handleCreatePageClick}
+					onRename={handleRenameClick}
+					onArchive={handleArchiveClick}
+					onUnarchive={handleUnarchiveClick}
+				/>
 
-			<PagesSidebarTreeItemTrack tree={tree} item={item} activeTracksPageIds={activeTracksPageIds} />
-		</div>
+				<PagesSidebarTreeItemTrack trackPagesIds={ancestorIds} trackActivePagesIds={trackActivePagesIds} />
+			</div>
+
+			{shouldRenderPlaceholder ? (
+				<PagesSidebarTreeItemPlaceholder
+					itemId={itemId}
+					depth={depth}
+					ancestorIds={ancestorIds}
+					trackActivePagesIds={trackActivePagesIds}
+				/>
+			) : null}
+		</>
 	);
 });
 // #endregion tree item
@@ -744,8 +798,9 @@ type PagesSidebarTree_Props = {
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	isSearchActive: boolean;
-	activeTracksPageIds: Set<string>;
+	trackActivePagesIds: Set<string>;
 	selectedPageId: string | null;
+	selectedPageIds: Set<string>;
 	isBusy: boolean;
 	pendingActionPageIds: Set<string>;
 	onCreatePage: (parentPageId: string) => void;
@@ -763,8 +818,9 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
-		activeTracksPageIds,
+		trackActivePagesIds,
 		selectedPageId,
+		selectedPageIds,
 		isBusy,
 		pendingActionPageIds,
 		onCreatePage,
@@ -901,24 +957,28 @@ const PagesSidebarTree = memo(function PagesSidebarTree(props: PagesSidebarTree_
 					) : null}
 					{tree()
 						.getItems()
-						.map((item) => (
-							<PagesSidebarTreeItem
-								key={item.getId()}
-								itemId={item.getId()}
-								tree={tree}
-								item={item}
-								activeTracksPageIds={activeTracksPageIds}
-								selectedPageId={selectedPageId}
-								isBusy={isBusy}
-								pendingActionPageIds={pendingActionPageIds}
-								isTreeDragging={isTreeDragging}
-								onCreatePage={onCreatePage}
-								onStartRename={onStartRename}
-								onArchive={onArchive}
-								onUnarchive={onUnarchive}
-								onTreeItemPrimaryClick={onTreeItemPrimaryClick}
-							/>
-						))}
+						.map((item) => {
+							const itemId = item.getId();
+							return (
+								<PagesSidebarTreeItem
+									key={itemId}
+									tree={tree}
+									item={item}
+									trackActivePagesIds={trackActivePagesIds}
+									selectedPageId={selectedPageId}
+									isSelected={selectedPageIds.has(itemId)}
+									isSearchActive={isSearchActive}
+									isBusy={isBusy}
+									pendingActionPageIds={pendingActionPageIds}
+									isTreeDragging={isTreeDragging}
+									onCreatePage={onCreatePage}
+									onStartRename={onStartRename}
+									onArchive={onArchive}
+									onUnarchive={onUnarchive}
+									onTreeItemPrimaryClick={onTreeItemPrimaryClick}
+								/>
+							);
+						})}
 				</>
 			)}
 		</div>
@@ -1153,7 +1213,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	const navigate = useNavigate();
 	const convex = useConvex();
-	const { toggleSidebar } = MainAppSidebar.useSidebar();
+	const mainAppSidebar = MainAppSidebar.useSidebar();
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
 
 	const [searchQuery, setSearchQuery] = useState("");
@@ -1165,6 +1225,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const [isCreatingPage, setIsCreatingPage] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
+	const [selectionAnchorPageId, setSelectionAnchorPageId] = useState<string | null>(null);
 	const isBusy = isCreatingPage || isArchivingSelection;
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
@@ -1224,34 +1285,19 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			}
 		}
 
-		// Add placeholders and sort the `sortedItemsIdsByParentId` map
-		for (const [itemId, item] of result.itemById.entries()) {
-			if (item.type === "placeholder") {
+		// Sort children in `sortedItemsIdsByParentId`
+		for (const [itemId, children] of result.sortedItemsIdsByParentId.entries()) {
+			if (children.length === 0) {
 				continue;
 			}
 
-			const children = result.sortedItemsIdsByParentId.get(itemId);
-			const childrenIds = result.sortedItemsIdsByParentId.get(itemId);
-			if (!childrenIds || !children) {
-				continue;
-			}
-
-			if (children.length) {
-				result.sortedItemsIdsByParentId.set(
-					itemId,
-					sort_children({
-						children,
-						itemById: result.itemById,
-					}),
-				);
-			} else {
-				if (item.type === "page") {
-					const placeholder = pages_create_tree_placeholder_child(itemId);
-					result.itemById.set(placeholder.index, placeholder);
-					result.itemsIds.add(placeholder.index);
-					result.sortedItemsIdsByParentId.set(itemId, [placeholder.index]);
-				}
-			}
+			result.sortedItemsIdsByParentId.set(
+				itemId,
+				sort_children({
+					children,
+					itemById: result.itemById,
+				}),
+			);
 		}
 
 		return result;
@@ -1273,7 +1319,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 		const result = new Set<string>();
 		for (const item of treeItems.list ?? []) {
-			if (!treeItems.itemById.has(item.index) || item.type === "placeholder") {
+			if (!treeItems.itemById.has(item.index)) {
 				continue;
 			}
 
@@ -1293,7 +1339,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			let currentParentId = item.parentId;
 			while (currentParentId) {
 				const parentItem = treeItems.itemById.get(currentParentId);
-				if (!parentItem || parentItem.type === "placeholder" || result.has(currentParentId)) {
+				if (!parentItem || result.has(currentParentId)) {
 					break;
 				}
 
@@ -1464,7 +1510,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	const dataLoader = {
 		getItem: (itemId: string) =>
-			treeItems?.itemById.get(itemId) ?? pages_create_tree_placeholder_child(itemId.replace("-placeholder", "")),
+			treeItems?.itemById.get(itemId) ?? treeItems?.itemById.get(pages_ROOT_ID) ?? pages_create_tree_root(),
 		getChildren: (itemId: string) => {
 			const children = treeItems?.sortedItemsIdsByParentId.get(itemId) ?? [];
 			if (!isSearchActive) {
@@ -1490,7 +1536,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			expandAllFeature,
 		],
 		getItemName: (item) => item.getItemData().title,
-		isItemFolder: (item) => item.getItemData().type !== "placeholder",
+		isItemFolder: (item) => item.getItemData().type === "page",
 		canDrag,
 		canDrop,
 		onDrop: handleDrop,
@@ -1500,6 +1546,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	});
 
 	const renderedTreeItems = tree().getItems();
+	const renderedPageIds = new Set(
+		renderedTreeItems.filter((item) => item.getItemData().type === "page").map((item) => item.getId()),
+	);
 
 	const selectedPageIds = new Set(
 		renderedTreeItems
@@ -1508,17 +1557,54 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	);
 
 	/**
-	 * The pages ids with the tracks that needs to highlight
-	 * for focused and selected pages.
+	 * The pages ids used as the source for active tree tracks.
+	 * In multi-select mode, only the selection anchor drives track highlighting.
 	 */
-	const activeTracksPageIds = ((/* iife */) => {
+	const trackSourcePageIds = ((/* iife */) => {
 		const result = new Set<string>();
 
-		for (const item of renderedTreeItems) {
-			// If the page is not focused or selected, skip
-			if (!item.isSelected() && !item.isFocused()) {
-				continue;
+		if (selectedPageIds.size > 1) {
+			const anchorPageId = selectionAnchorPageId;
+			if (anchorPageId && selectedPageIds.has(anchorPageId) && renderedPageIds.has(anchorPageId)) {
+				result.add(anchorPageId);
+				return result;
 			}
+
+			for (const item of renderedTreeItems) {
+				const itemId = item.getId();
+				if (selectedPageIds.has(itemId)) {
+					result.add(itemId);
+					break;
+				}
+			}
+
+			return result;
+		}
+
+		if (selectedPageIds.size === 1) {
+			const singleSelectedPageId = selectedPageIds.values().next().value;
+			if (singleSelectedPageId) {
+				result.add(singleSelectedPageId);
+			}
+			return result;
+		}
+
+		if (selectedPageId && renderedPageIds.has(selectedPageId)) {
+			result.add(selectedPageId);
+		}
+
+		return result;
+	})();
+
+	/**
+	 * The pages ids with the tracks that needs to highlight
+	 * for selected and navigated pages.
+	 */
+	const trackActivePagesIds = ((/* iife */) => {
+		const result = new Set<string>();
+
+		for (const sourcePageId of trackSourcePageIds) {
+			const item = tree().getItemInstance(sourcePageId);
 
 			// If the page is expanded, highlight the track inside
 			if (item.isFolder() && item.getChildren().length > 0 && item.isExpanded()) {
@@ -1671,6 +1757,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const handleTreeItemPrimaryClick = useFn<PagesSidebarTree_Props["onTreeItemPrimaryClick"]>((event, itemId) => {
 		const item = tree().getItemInstance(itemId);
 		const isModifierClick = event.shiftKey || event.ctrlKey || event.metaKey;
+		const selectionDataRef = tree().getDataRef() as { current: { selectUpToAnchorId?: string | null } };
 
 		if (event.shiftKey) {
 			item.selectUpTo(event.ctrlKey || event.metaKey);
@@ -1680,10 +1767,11 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			tree().setSelectedItems([itemId]);
 		}
 
-		if (!event.shiftKey) {
-			const dataRef = tree().getDataRef() as { current: { selectUpToAnchorId?: string } };
-			dataRef.current.selectUpToAnchorId = itemId;
+		if (!isModifierClick) {
+			selectionDataRef.current.selectUpToAnchorId = itemId;
 		}
+
+		setSelectionAnchorPageId(selectionDataRef.current.selectUpToAnchorId ?? null);
 
 		item.setFocused();
 		if (isModifierClick) {
@@ -1790,6 +1878,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 		}
 	}, [hasSelectedPageInTree, visiblePagesIds, selectedPageId, tree, treeItems]);
 
+	// Auto focus page in tree on page navigation
 	useEffect(() => {
 		const nextFocusedItemId =
 			(selectedPageId && visiblePagesIds.has(selectedPageId) ? selectedPageId : undefined) ??
@@ -1810,7 +1899,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				isBusy={isBusy}
 				treeItemsList={treeItemsList}
 				showArchived={showArchived}
-				onToggleSidebar={toggleSidebar}
+				onToggleSidebar={mainAppSidebar.toggleSidebar}
 				onClose={onClose}
 				onSearchQueryChange={setSearchQuery}
 				onExpandAllClick={handleExpandAllClick}
@@ -1826,8 +1915,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 					isTreeLoading={treeItemsList === undefined}
 					showEmptyState={showEmptyState}
 					isSearchActive={isSearchActive}
-					activeTracksPageIds={activeTracksPageIds}
+					trackActivePagesIds={trackActivePagesIds}
 					selectedPageId={selectedPageId}
+					selectedPageIds={selectedPageIds}
 					isBusy={isBusy}
 					pendingActionPageIds={pendingActionPageIds}
 					onCreatePage={handleCreatePageClick}
