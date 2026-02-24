@@ -436,6 +436,10 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	const baselineYjsDocRef = useRef<YDoc>(initialData.mut_yjsDoc);
 	const baselineMarkdownRef = useRef<string>(initialData.markdown);
 
+	// We need stable state because `modifiedInitialValue` will change when there are no more "ai pending edits"
+	const [oritinalMarkdownStable] = useState(initialData.markdown);
+	const [modifiedMarkdownStable] = useState(modifiedInitialValue ?? initialData.markdown);
+
 	const [isDirtyRef, setIsDirty, isDirty] = useStateRef(false);
 
 	const [workingYjsSequence, setWorkingYjsSequence] = useState(initialData.yjsSequence);
@@ -1084,8 +1088,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 
 		const prevModels = [editor.getModel()?.original, editor.getModel()?.modified];
 		modelsRef.current = {
-			original: pages_monaco_create_editor_model(initialData.markdown),
-			modified: pages_monaco_create_editor_model(modifiedInitialValue ?? initialData.markdown),
+			original: pages_monaco_create_editor_model(oritinalMarkdownStable),
+			modified: pages_monaco_create_editor_model(modifiedMarkdownStable),
 		};
 		editor.setModel(modelsRef.current);
 		prevModels.forEach((model) => model?.dispose());
@@ -1283,8 +1287,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 						height="100%"
 						theme={app_monaco_THEME_NAME_DARK}
 						onMount={handleOnMount}
-						original={initialData.markdown}
-						modified={modifiedInitialValue ?? initialData.markdown}
+						original={oritinalMarkdownStable}
+						modified={modifiedMarkdownStable}
 						originalLanguage="markdown"
 						modifiedLanguage="markdown"
 						// We own our own models, so we need to keep them alive even after the editor is disposed,
