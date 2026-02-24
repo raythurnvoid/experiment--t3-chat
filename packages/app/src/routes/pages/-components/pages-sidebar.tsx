@@ -346,7 +346,7 @@ type PagesSidebarTreeItemTitle_Props = {
 const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props: PagesSidebarTreeItemTitle_Props) {
 	const { renameInputProps, isRenaming, title } = props;
 
-	const value = isRenaming ? renameInputProps.value ?? "" : title;
+	const value = isRenaming ? (renameInputProps.value ?? "") : title;
 
 	return (
 		<MyInput
@@ -630,11 +630,8 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 	const pageIdForDebug = itemId;
 	const isDragTarget = useVal(() => item.isDraggingOver());
 	const hasChildren = useVal(() => item.getChildren().length > 0);
-
-	const metaText = `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
-	const isExpanded = tree().getState().expandedItems.includes(itemId);
-	const shouldRenderPlaceholder = !isSearchActive && itemData.type === "page" && !hasChildren && isExpanded;
-	const ancestorIds = ((/* iife */) => {
+	const isExpanded = useVal(() => tree().getState().expandedItems.includes(itemId));
+	const ancestorIds = useVal(() => {
 		const result: string[] = [];
 		let parent = undefined;
 		do {
@@ -646,8 +643,10 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 		} while (parent);
 
 		return result.reverse();
-	})();
-	const normalizedAncestorIds = ancestorIds.slice(Math.max(ancestorIds.length - depth, 0));
+	});
+
+	const metaText = `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
+	const shouldRenderPlaceholder = !isSearchActive && itemData.type === "page" && !hasChildren && isExpanded;
 
 	const handleCreatePageClick = useFn<PagesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreatePage(itemId);
@@ -741,13 +740,13 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					onUnarchive={handleUnarchiveClick}
 				/>
 
-				<PagesSidebarTreeItemTrack trackPagesIds={normalizedAncestorIds} trackActivePagesIds={trackActivePagesIds} />
+				<PagesSidebarTreeItemTrack trackPagesIds={ancestorIds} trackActivePagesIds={trackActivePagesIds} />
 			</div>
 
 			{shouldRenderPlaceholder ? (
 				<PagesSidebarTreeItemPlaceholder
 					itemId={itemId}
-					ancestorIds={normalizedAncestorIds}
+					ancestorIds={ancestorIds}
 					trackActivePagesIds={trackActivePagesIds}
 					onDragEnter={handlePlaceholderDragEnter}
 					onDragOver={handlePlaceholderDragOver}
@@ -1185,6 +1184,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
 	const isBusy = isCreatingPage || isArchivingSelection;
+	const [expandedItems, setExpandedItems] = useState<string[]>([]);
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedPagePathAutoExpandedOnMountRef = useRef(false);
@@ -1519,9 +1519,10 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	const tree = useTree<pages_TreeItem>({
 		rootItemId: pages_ROOT_ID,
-		initialState: {
-			expandedItems: [],
+		state: {
+			expandedItems,
 		},
+		setExpandedItems,
 		canReorder: false,
 		dataLoader,
 		features: [
@@ -1778,10 +1779,10 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 		setShowArchived((oldValue) => !oldValue);
 	});
 
-	// Rebuild tree when the pages to show change
+	// Rebuild tree when visible pages or controlled expansion state changes.
 	useLayoutEffect(() => {
 		tree().rebuildTree();
-	}, [visiblePagesIds]);
+	}, [expandedItems, visiblePagesIds]);
 
 	// Auto expand pages on search or mount
 	useLayoutEffect(() => {
@@ -1789,8 +1790,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			return;
 		}
 
-		const treeInstance = tree();
-		const currentExpandedItems = new Set(treeInstance.getState().expandedItems);
+		const currentExpandedItems = new Set(expandedItems);
 		let nextExpandedItemsSet = new Set(currentExpandedItems);
 
 		// When search closes, restore whatever expansion state existed before entering search mode.
@@ -1843,10 +1843,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 		// Skip state updates when nothing changed to avoid unnecessary rebuilds.
 		if (currentExpandedItems.symmetricDifference(nextExpandedItemsSet).size > 0) {
-			treeInstance.applySubStateUpdate("expandedItems", [...nextExpandedItemsSet]);
-			treeInstance.scheduleRebuildTree();
+			setExpandedItems([...nextExpandedItemsSet]);
 		}
-	}, [hasSelectedPageInTree, visiblePagesIds, selectedPageId, tree, treeItems]);
+	}, [expandedItems, hasSelectedPageInTree, selectedPageId, setExpandedItems, treeItems, visiblePagesIds]);
 
 	// Auto focus page in tree on page navigation
 	useEffect(() => {
