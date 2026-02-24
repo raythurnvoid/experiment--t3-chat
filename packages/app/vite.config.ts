@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 
 // https://vite.dev/config/
 export default defineConfig({
+	base: "/experiment--t3-chat/",
 	plugins: [
 		tanstackRouter({
 			target: "react",
@@ -60,9 +61,10 @@ export default defineConfig({
 		target: "esnext",
 		cssTarget: "esnext",
 		cssMinify: false,
+		minify: false,
 	},
 	resolve: {
-		dedupe: ["react", "react-dom"],
+		dedupe: ["react", "react-dom", "convex"],
 		alias: [
 			{
 				find: "@",
