@@ -5,6 +5,7 @@ import type { app_convex_Id } from "../lib/app-convex-client.ts";
 
 export type pages_Yjs = {
 	yjsProvider: LiveblocksYjsProvider;
+	providerPageId: app_convex_Id<"pages">;
 	syncStatus: ReturnType<LiveblocksYjsProvider["getStatus"]>;
 	syncChanged: boolean;
 };
@@ -20,6 +21,7 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 	const { pageId, workspaceId, projectId, presenceStore } = props;
 
 	const [yjsProvider, setYjsProvider] = useState<LiveblocksYjsProvider | undefined>(undefined);
+	const [providerPageId, setProviderPageId] = useState<app_convex_Id<"pages"> | undefined>(undefined);
 	const [syncStatus, setSyncStatus] = useState<ReturnType<LiveblocksYjsProvider["getStatus"]>>("loading");
 	const [syncChanged, setSyncChanged] = useState(false);
 	const lastStatusRef = useRef<ReturnType<LiveblocksYjsProvider["getStatus"]>>("loading");
@@ -27,6 +29,12 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 	const onDestroyRef = useRef<() => void>(null);
 
 	useEffect(() => {
+		// setYjsProvider(undefined);
+		// setProviderPageId(undefined);
+		// setSyncStatus("loading");
+		// setSyncChanged(false);
+		// lastStatusRef.current = "loading";
+
 		const reactStrictWorkaroundTimer = setTimeout(() => {
 			const yjsProvider = new LiveblocksYjsProvider({
 				pageId: pageId,
@@ -36,6 +44,7 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 			});
 
 			setYjsProvider(yjsProvider);
+			setProviderPageId(pageId);
 
 			function handleStatus() {
 				const status = yjsProvider.getStatus();
@@ -61,5 +70,12 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 		};
 	}, [pageId, workspaceId, projectId, presenceStore]);
 
-	return yjsProvider ? { yjsProvider, syncStatus, syncChanged } : undefined;
+	return yjsProvider && providerPageId
+		? {
+				yjsProvider,
+				providerPageId,
+				syncStatus,
+				syncChanged,
+			}
+		: undefined;
 }

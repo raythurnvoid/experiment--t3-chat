@@ -689,8 +689,8 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 	});
 
 	return (
-		// remount on pageId to prevent stale state on page changes
-		<EditorRoot key={pageId}>
+		// remount on provider ownership to prevent stale state on page changes
+		<EditorRoot key={pagesYjs?.providerPageId ?? null}>
 			{pagesYjs ? (
 				<PageEditorRichText_Inner
 					pagesYjs={pagesYjs}

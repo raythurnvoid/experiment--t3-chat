@@ -222,6 +222,16 @@ Reusable tree flow defaults (`/pages` and similar sidebars):
    - Anchor by placeholder structural selectors (for example `.PagesSidebarTreeItemPlaceholder`) and map owner via stable adjacency/identity.
    - During placeholder hover, assert both signals together: root-zone class stays off and drag-target maps to the owner row identity.
 
+## Stale selection/content mismatch triage
+
+Use this when tree selection and URL change correctly, but editor content appears one click behind.
+
+1. Capture these checkpoints on each click: selected tree item identity, route/search `pageId`, and editor content signature (heading/first text chunk).
+2. If route `pageId` updates immediately but content lags by one step, inspect async provider hooks that feed the editor (Yjs/docs/provider state).
+3. Look for a render where the new `pageId` is paired with a previously created provider instance.
+4. Prefer a minimal guard in the provider hook: on key dependency changes, synchronously reset provider state to `undefined` + loading before creating the next provider.
+5. Validate with deterministic A/B toggles (at least 3 cycles) and fail if any cross-content is observed.
+
 # Artifact storage location
 
 When saving screenshots, recordings, or any file output from Playwriter work:

@@ -24,7 +24,7 @@ const PageEditor = React.lazy(() =>
 	})),
 );
 
-export const Route = createFileRoute({
+const Route = createFileRoute({
 	component: RoutePages,
 	validateSearch: zodValidator(
 		z.object({
@@ -33,6 +33,8 @@ export const Route = createFileRoute({
 		}),
 	),
 });
+
+export { Route };
 
 type RoutePagesContent_Props = {
 	pageId: app_convex_Id<"pages"> | null | undefined;
