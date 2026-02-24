@@ -15,7 +15,7 @@ import {
 	get_id_generator,
 	should_never_happen,
 } from "@/lib/utils.ts";
-import { useLiveRef, useRenderPromise } from "./utils-hooks.ts";
+import { useLiveRef } from "./utils-hooks.ts";
 import { generate_id } from "../lib/utils.ts";
 import { type ai_chat_AiSdk5UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
@@ -214,8 +214,6 @@ export type useAiChatController_Props = {
 };
 
 export const useAiChatController = (props?: useAiChatController_Props) => {
-	useRenderPromise();
-
 	const includeArchived = props?.includeArchived ?? true;
 
 	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
@@ -663,7 +661,11 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		}
 
 		updateThread({ threadId, isArchived }).catch((error) => {
-			console.error("[useAiChatController.archiveThread] Error updating archive status", { error, threadId, isArchived });
+			console.error("[useAiChatController.archiveThread] Error updating archive status", {
+				error,
+				threadId,
+				isArchived,
+			});
 		});
 	};
 
