@@ -7,6 +7,7 @@ import path from "node:path";
 
 // https://vite.dev/config/
 export default defineConfig({
+	base: "/experiment--t3-chat/",
 	plugins: [
 		tanstackRouter({
 			target: "react",
@@ -53,7 +54,7 @@ export default defineConfig({
 		tailwindcss(),
 	],
 	resolve: {
-		dedupe: ["react", "react-dom"],
+		dedupe: ["react", "react-dom", "convex"],
 		alias: [
 			{
 				find: "@",
@@ -113,6 +114,9 @@ export default defineConfig({
 			"@tiptap/extension-table-header",
 			"@tiptap/extension-table-row",
 		],
+	},
+	build: {
+		minify: false,
 	},
 });
 

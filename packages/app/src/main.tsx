@@ -11,7 +11,10 @@ import { ConvexProviderWithAuth } from "convex/react";
 import { AppAuthProvider } from "./components/app-auth.tsx";
 
 // Create a new router instance
-const router = createRouter({ routeTree });
+const router = createRouter({
+	routeTree,
+	basepath: import.meta.env.BASE_URL,
+});
 
 // Import your Publishable Key
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
