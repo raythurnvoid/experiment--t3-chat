@@ -32,7 +32,6 @@
 	.AiChatComposer-editor-content-container {
 		display: flex;
 		grid-area: 1 / 1 / 2 / -1;
-		align-items: center;
 
 		min-height: 36px;
 

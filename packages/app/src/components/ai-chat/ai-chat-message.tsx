@@ -699,37 +699,50 @@ function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props)
 }
 // #endregion tool unknown
 
-// #region markdown
-type AiChatMessagePartMarkdown_ClassNames = "AiChatMessagePartMarkdown";
+// #region markdown assistant
+type AiChatMessagePartMarkdownAssistant_ClassNames = "AiChatMessagePartMarkdownAssistant";
 
-type AiChatMessagePartMarkdown_Props = AiChatMarkdown_Props;
+type AiChatMessagePartMarkdownAssistant_Props = AiChatMarkdown_Props;
 
-function AiChatMessagePartMarkdown(props: AiChatMessagePartMarkdown_Props) {
+function AiChatMessagePartMarkdownAssistant(props: AiChatMessagePartMarkdownAssistant_Props) {
 	const { className, text, ...rest } = props;
+
 	const deferredText = useDeferredValue(text);
 
 	return (
 		<AiChatMarkdown
-			className={cn("AiChatMessagePartMarkdown" satisfies AiChatMessagePartMarkdown_ClassNames, className)}
+			className={cn(
+				"AiChatMessagePartMarkdownAssistant" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
+				className,
+			)}
 			text={deferredText}
 			{...rest}
 		/>
 	);
 }
-// #endregion markdown
+// #endregion markdown assistant
 
-// #region part text
-type AiChatMessagePartText_ClassNames = "AiChatMessagePartText";
+// #region markdown user
+type AiChatMessagePartMarkdownUser_ClassNames = "AiChatMessagePartMarkdownUser";
 
-type AiChatMessagePartText_Props = {
+type AiChatMessagePartMarkdownUser_Props = {
 	text: string;
 };
 
-function AiChatMessagePartText(props: AiChatMessagePartText_Props) {
-	const { text } = props;
-	return <p className={"AiChatMessagePartText" satisfies AiChatMessagePartText_ClassNames}>{text}</p>;
+function AiChatMessagePartMarkdownUser(props: AiChatMessagePartMarkdownUser_Props) {
+	const { text, ...rest } = props;
+
+	const deferredText = useDeferredValue(text);
+
+	return (
+		<AiChatMarkdown
+			className={"AiChatMessagePartMarkdownUser" satisfies AiChatMessagePartMarkdownUser_ClassNames}
+			text={deferredText}
+			{...rest}
+		/>
+	);
 }
-// #endregion part text
+// #endregion markdown user
 
 // #region part reasoning
 type AiChatMessagePartReasoning_ClassNames = "AiChatMessagePartReasoning";
@@ -963,11 +976,11 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 	}
 
 	if (isTextUIPart(part)) {
-		if (role === "assistant") {
-			return <AiChatMessagePartMarkdown text={part.text} />;
-		}
-
-		return <AiChatMessagePartText text={part.text} />;
+		return role === "assistant" ? (
+			<AiChatMessagePartMarkdownAssistant text={part.text} />
+		) : (
+			<AiChatMessagePartMarkdownUser text={part.text} />
+		);
 	}
 
 	if (isReasoningUIPart(part)) {

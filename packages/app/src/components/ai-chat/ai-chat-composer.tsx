@@ -4,7 +4,7 @@ import type { ComponentPropsWithRef, Ref } from "react";
 import { useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import Document from "@tiptap/extension-document";
-import HardBreak from "@tiptap/extension-hard-break";
+import { HardBreak } from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
@@ -59,6 +59,11 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-send-icon"
 	| "AiChatComposer-cancel-icon";
+
+const AiChatComposer_HardBreakMarkdown = HardBreak.extend({
+	// Prevent regular \n to become paragraphs
+	renderMarkdown: () => "\\\n",
+});
 
 export type AiChatComposer_Props = Omit<ComponentPropsWithRef<"form">, "onSubmit"> & {
 	ref?: Ref<HTMLFormElement>;
@@ -119,10 +124,6 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 
 	const canSend = !isRunning && !isEmpty;
 
-	const getMarkdownFromEditor = (currentEditor: Editor) => {
-		return currentEditor.getMarkdown();
-	};
-
 	const syncComposerText = (value: string) => {
 		composerTextRef.current = value;
 		setComposerText(value);
@@ -137,7 +138,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			Document,
 			Paragraph,
 			Text,
-			HardBreak,
+			AiChatComposer_HardBreakMarkdown,
 			pages_get_tiptap_shared_extensions().markdown,
 			Placeholder.configure({
 				placeholder,
@@ -242,21 +243,20 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 						clearTimeout(composerSyncTimeoutRef.current);
 					}
 
-					const markdown = getMarkdownFromEditor(editor);
 					const previousIsEmpty = composerTextRef.current.trim().length === 0;
-					const nextIsEmpty = markdown.trim().length === 0;
+					const nextIsEmpty = editor.isEmpty;
 
 					// Update immediately when the composer goes from
 					// empty to non-empty or vice versa.
 					if (previousIsEmpty !== nextIsEmpty) {
-						syncComposerText(markdown);
+						syncComposerText(editor.getMarkdown());
 						return;
 					}
 
 					composerSyncTimeoutRef.current = setTimeout(() => {
 						composerSyncTimeoutRef.current = null;
-
-						syncComposerText(markdown);
+						syncComposerText(editor.getMarkdown());
+						console.log("syncComposerText", editor.getMarkdown());
 					}, 350);
 				},
 			},
@@ -277,11 +277,12 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			composerSyncTimeoutRef.current = null;
 
 			if (currentEditor) {
-				nextComposerText = getMarkdownFromEditor(currentEditor);
+				nextComposerText = currentEditor.getMarkdown();
 				syncComposerText(nextComposerText);
 			}
 		}
 
+		debugger;
 		onSubmit(nextComposerText);
 
 		composerTextRef.current = "";
@@ -334,7 +335,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			return;
 		}
 
-		const editorMarkdown = getMarkdownFromEditor(editor);
+		const editorMarkdown = editor.getMarkdown();
 		if (editorMarkdown === initialValue) {
 			return;
 		}

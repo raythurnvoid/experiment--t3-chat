@@ -84,20 +84,11 @@ export type ai_chat_AiSdk5UiMessage = UIMessage<
 
 export function ai_chat_get_message_text(message: UIMessage) {
 	const parts = message.parts ?? [];
+
 	const textFromParts = parts
-		.filter((part) => part.type === "text" && typeof (part as { text?: unknown }).text === "string")
-		.map((part) => (part as { text: string }).text)
-		.join("\n")
-		.trim();
-	if (textFromParts.length > 0) {
-		return textFromParts;
-	}
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
 
-	const fallbackContent = (message as { content?: unknown }).content;
-	if (typeof fallbackContent === "string") {
-		const trimmed = fallbackContent.trim();
-		return trimmed.length > 0 ? trimmed : null;
-	}
-
-	return null;
+	return textFromParts;
 }

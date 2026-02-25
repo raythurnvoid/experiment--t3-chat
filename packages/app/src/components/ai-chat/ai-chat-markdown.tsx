@@ -15,12 +15,124 @@ export type AiChatMarkdown_Props = {
 	className?: string;
 };
 
+type ai_chat_markdown_MdastNode = {
+	type?: string;
+	children?: ai_chat_markdown_MdastNode[];
+	value?: string;
+};
+
+function ai_chat_markdown_remark_preserve_trailing_hard_breaks() {
+	return function transform(tree: unknown, file: unknown) {
+		const root = ai_chat_markdown_get_root_node(tree);
+		if (!root) {
+			return;
+		}
+
+		const source = ai_chat_markdown_get_source(file);
+		if (!source) {
+			return;
+		}
+
+		const trailingHardBreaks = source.match(/(?:\\\n)+$/)?.[0];
+		if (!trailingHardBreaks) {
+			return;
+		}
+
+		const trailingHardBreakCount = (trailingHardBreaks.match(/\\\n/g) ?? []).length;
+		if (trailingHardBreakCount === 0) {
+			return;
+		}
+
+		const lastParagraph = ai_chat_markdown_find_last_paragraph(root);
+		if (!lastParagraph) {
+			return;
+		}
+
+		const paragraphChildren = lastParagraph.children ?? (lastParagraph.children = []);
+		const lastChild = paragraphChildren.at(-1);
+		if (
+			lastChild?.type === "text" &&
+			typeof lastChild.value === "string" &&
+			lastChild.value.endsWith("\\")
+		) {
+			const nextValue = lastChild.value.slice(0, -1);
+			if (nextValue.length > 0) {
+				lastChild.value = nextValue;
+			} else {
+				paragraphChildren.pop();
+			}
+		}
+
+		let trailingBreakNodeCount = 0;
+		for (let index = paragraphChildren.length - 1; index >= 0; index -= 1) {
+			if (paragraphChildren[index]?.type !== "break") {
+				break;
+			}
+			trailingBreakNodeCount += 1;
+		}
+
+		const missingBreakCount = trailingHardBreakCount - trailingBreakNodeCount;
+		if (missingBreakCount <= 0) {
+			return;
+		}
+
+		for (let index = 0; index < missingBreakCount; index += 1) {
+			paragraphChildren.push({
+				type: "break",
+			});
+		}
+	};
+}
+
+function ai_chat_markdown_get_root_node(tree: unknown) {
+	if (!tree || typeof tree !== "object") {
+		return null;
+	}
+
+	const root = tree as ai_chat_markdown_MdastNode;
+	if (root.type !== "root" || !Array.isArray(root.children)) {
+		return null;
+	}
+
+	return root;
+}
+
+function ai_chat_markdown_get_source(file: unknown) {
+	if (!file || typeof file !== "object") {
+		return null;
+	}
+
+	const value = (file as { value?: unknown }).value;
+	return typeof value === "string" ? value : null;
+}
+
+function ai_chat_markdown_find_last_paragraph(root: ai_chat_markdown_MdastNode) {
+	const children = root.children ?? [];
+	for (let index = children.length - 1; index >= 0; index -= 1) {
+		const node = children[index];
+		if (node?.type !== "paragraph") {
+			continue;
+		}
+
+		if (!Array.isArray(node.children)) {
+			node.children = [];
+		}
+
+		return node;
+	}
+
+	return null;
+}
+
 export function AiChatMarkdown(props: AiChatMarkdown_Props) {
 	const { text, className } = props;
 
 	return (
 		<div className={cn("AiChatMarkdown", "app-doc" satisfies AppClassName, className)}>
-			<ReactMarkdown remarkPlugins={[remarkGfm]} components={ai_chat_markdown_components}>
+			<ReactMarkdown
+				remarkPlugins={[remarkGfm, ai_chat_markdown_remark_preserve_trailing_hard_breaks]}
+				components={ai_chat_markdown_components}
+			>
 				{text}
 			</ReactMarkdown>
 		</div>

@@ -461,7 +461,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 		if (!editingId) {
 			return;
 		}
-		const value = args.value.trim();
+		const value = args.value;
 		if (!value) {
 			return;
 		}
