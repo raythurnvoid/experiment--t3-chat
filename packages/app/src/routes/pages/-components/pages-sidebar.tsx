@@ -1393,27 +1393,26 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const handleRename = useFn<NonNullable<Parameters<typeof useTree<pages_TreeItem>>[0]["onRename"]>>((item, value) => {
 		const trimmedValue = value.trim();
 		const itemData = item.getItemData();
-		console.info("[PagesSidebarRenameDebug.onRename]", {
-			itemId: item.getId(),
-			value,
-			trimmedValue,
-			currentTitle: itemData.title,
-		});
+		const itemId = item.getId();
+
 		if (itemData.type !== "page") {
+			console.error("[PagesSidebar.handleRename] item is not a page", { itemId, itemData });
 			return;
 		}
+
 		if (!trimmedValue || trimmedValue === itemData.title) {
 			return;
 		}
 
-		markPageAsPending(item.getId());
+		item.setFocused();
+		markPageAsPending(itemId);
 		convex
 			.mutation(
 				app_convex_api.ai_docs_temp.rename_page,
 				{
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					pageId: pages_sidebar_to_page_id(item.getId()),
+					pageId: pages_sidebar_to_page_id(itemId),
 					name: trimmedValue,
 				},
 				{
@@ -1432,7 +1431,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 								projectId: ai_chat_HARDCODED_PROJECT_ID,
 							},
 							treeItemsList.map((treeItem) => {
-								if (treeItem._id === item.getId()) {
+								if (treeItem._id === itemId) {
 									return {
 										...treeItem,
 										title: args.name,
@@ -1453,7 +1452,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				console.error("[PagesSidebar.handleRename] Error on rename page", { error });
 			})
 			.finally(() => {
-				unmarkPageAsPending(item.getId());
+				unmarkPageAsPending(itemId);
 			});
 	});
 
