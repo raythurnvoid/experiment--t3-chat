@@ -62,7 +62,7 @@ export type AiChatComposer_ClassNames =
 
 const AiChatComposer_HardBreakMarkdown = HardBreak.extend({
 	// Prevent regular \n to become paragraphs
-	renderMarkdown: () => "\\\n",
+	renderMarkdown: () => "\n",
 });
 
 export type AiChatComposer_Props = Omit<ComponentPropsWithRef<"form">, "onSubmit"> & {
@@ -256,7 +256,6 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 					composerSyncTimeoutRef.current = setTimeout(() => {
 						composerSyncTimeoutRef.current = null;
 						syncComposerText(editor.getMarkdown());
-						console.log("syncComposerText", editor.getMarkdown());
 					}, 350);
 				},
 			},
