@@ -282,7 +282,6 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			}
 		}
 
-		debugger;
 		onSubmit(nextComposerText);
 
 		composerTextRef.current = "";

@@ -424,8 +424,8 @@
 		padding: 0 24px;
 	}
 
-	.AiChatMessagePartMarkdownAssistant .aui-md-p:has(> br:last-child),
-	.AiChatMessagePartMarkdownUser .aui-md-p:has(> br:last-child) {
+	.AiChatMessagePartMarkdownAssistant .AiChatMarkdown-p:has(> br:last-child),
+	.AiChatMessagePartMarkdownUser .AiChatMarkdown-p:has(> br:last-child) {
 		padding-bottom: 1lh;
 	}
 	/* #endregion markdown assistant */

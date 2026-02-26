@@ -64,3 +64,6 @@
 [submodule "references-submodules/openchat"]
 	path = references-submodules/openchat
 	url = https://github.com/opencoredev/openchat.git
+[submodule "references-submodules/streamdown"]
+	path = references-submodules/streamdown
+	url = https://github.com/vercel/streamdown.git

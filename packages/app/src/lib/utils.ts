@@ -220,32 +220,6 @@ export function make<T>(value: T): T {
 }
 
 /**
- * Log a message with the values that are `undefined` or `null`.
- * @example
- * ```ts
- * if (!someValue || !someOtherValue) {
- *   log_missing_values("someIdentifier", { someValue, someOtherValue });
- * }
- * ```
- */
-export function msg_with_nullish_values(name: string, deps: Record<string, any>) {
-	const missingValues = Object.entries(deps).reduce((acc, [_, value]) => {
-		if (value === undefined || value === null) {
-			acc.push(_);
-		}
-		return acc;
-	}, [] as string[]);
-	if (missingValues.length > 0) {
-		if (import.meta.env.DEV) {
-			// eslint-disable-next-line no-debugger
-			debugger;
-		}
-		return `[log_nullish_values] [${name}] is missing the following values: [${missingValues.toString()}]`;
-	}
-	return undefined;
-}
-
-/**
  * Calculates the scrollbar width and sets it as a CSS custom property.
  * Creates an invisible container to measure the scrollbar width accurately.
  */

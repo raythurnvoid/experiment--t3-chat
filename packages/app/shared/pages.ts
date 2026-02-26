@@ -217,8 +217,6 @@ export function pages_tiptap_markdown_to_json(args: { markdown: string; extensio
 		extensions: args.extensions,
 	});
 
-	debugger;
-
 	if (markdownToHtml._nay) {
 		return markdownToHtml;
 	}
