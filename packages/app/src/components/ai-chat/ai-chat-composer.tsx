@@ -341,6 +341,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		const json = pages_tiptap_markdown_to_json({
 			markdown: initialValue,
 			extensions,
+			replaceNewLineToBr: true,
 		});
 
 		if (json._nay) {

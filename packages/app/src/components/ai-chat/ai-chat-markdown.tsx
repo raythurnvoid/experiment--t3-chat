@@ -94,102 +94,91 @@ type markdown_MdastNode = {
 	value?: string;
 };
 
-const remark_plugin_preserve_trailing_hard_breaks = ((/* iife */) => {
+function is_mdast_node_children_an_array(
+	node: markdown_MdastNode,
+): node is markdown_MdastNode & { children: Array<markdown_MdastNode> } {
+	return Array.isArray(node.children) && node.children.length > 0;
+}
+
+function is_mdast_node(value: unknown): value is markdown_MdastNode {
+	return Boolean(value) && typeof value === "object";
+}
+
+function merge_adjacent_text_nodes(children: markdown_MdastNode[]) {
+	for (let index = children.length - 1; index > 0; index -= 1) {
+		const current = children[index];
+		const previous = children[index - 1];
+
+		if (previous?.type !== "text" || typeof previous.value !== "string") {
+			continue;
+		}
+
+		if (current?.type !== "text" || typeof current.value !== "string") {
+			continue;
+		}
+
+		previous.value += current.value;
+		children.splice(index, 1);
+	}
+}
+
+function is_mdast_node_html_break(node: markdown_MdastNode) {
+	return node.type === "html" && typeof node.value === "string" && /^<br\s*\/?>$/i.test(node.value.trim());
+}
+
+const remark_plugin_replace_break_with_newline = ((/* iife */) => {
 	function value() {
-		const plugin = (tree: unknown, file: unknown) => {
-			if (!tree || typeof tree !== "object") {
+		return (tree: unknown) => {
+			if (!is_mdast_node(tree) || !is_mdast_node_children_an_array(tree)) {
 				return;
 			}
 
-			const root = tree as markdown_MdastNode;
-			if (root.type !== "root" || !Array.isArray(root.children)) {
-				return;
-			}
+			const stack: markdown_MdastNode[] = [tree];
 
-			if (!file || typeof file !== "object") {
-				return null;
-			}
-
-			const value = (file as { value?: unknown }).value;
-			if (typeof value !== "string") {
-				return;
-			}
-
-			const source = value;
-
-			const trailingHardBreaks = source.match(/(?:\\\n)+$/)?.[0];
-			if (!trailingHardBreaks) {
-				return;
-			}
-
-			const trailingHardBreakCount = (trailingHardBreaks.match(/\\\n/g) ?? []).length;
-			if (trailingHardBreakCount === 0) {
-				return;
-			}
-
-			let lastParagraph;
-
-			const children = root.children ?? [];
-			for (let index = children.length - 1; index >= 0; index -= 1) {
-				const node = children[index];
-				if (node?.type !== "paragraph") {
+			while (stack.length > 0) {
+				const node = stack.pop();
+				if (!node || !is_mdast_node_children_an_array(node)) {
 					continue;
 				}
 
-				if (!Array.isArray(node.children)) {
-					node.children = [];
+				const children = node.children;
+
+				for (let index = 0; index < children.length; index += 1) {
+					const child = children[index];
+					if (!is_mdast_node(child)) {
+						continue;
+					}
+
+					if (child.type === "break" || is_mdast_node_html_break(child)) {
+						children[index] = {
+							type: "text",
+							value: "\n",
+						};
+						continue;
+					}
+
+					if (is_mdast_node_children_an_array(child)) {
+						stack.push(child);
+					}
 				}
 
-				lastParagraph = node;
-				break;
-			}
-
-			if (!lastParagraph) {
-				return;
-			}
-
-			const paragraphChildren = lastParagraph.children ?? (lastParagraph.children = []);
-			const lastChild = paragraphChildren.at(-1);
-			if (lastChild?.type === "text" && typeof lastChild.value === "string" && lastChild.value.endsWith("\\")) {
-				const nextValue = lastChild.value.slice(0, -1);
-				if (nextValue.length > 0) {
-					lastChild.value = nextValue;
-				} else {
-					paragraphChildren.pop();
+				if (children.length > 1) {
+					merge_adjacent_text_nodes(children);
 				}
-			}
-
-			let trailingBreakNodeCount = 0;
-			for (let index = paragraphChildren.length - 1; index >= 0; index -= 1) {
-				if (paragraphChildren[index]?.type !== "break") {
-					break;
-				}
-				trailingBreakNodeCount += 1;
-			}
-
-			const missingBreakCount = trailingHardBreakCount - trailingBreakNodeCount;
-			if (missingBreakCount <= 0) {
-				return;
-			}
-
-			for (let index = 0; index < missingBreakCount; index += 1) {
-				paragraphChildren.push({
-					type: "break",
-				});
 			}
 		};
-
-		return plugin;
 	}
 
-	let cache: ReturnType<typeof value> | undefined;
+	let cache: ReturnType<typeof value> | undefined = undefined;
 
-	return function markdown_remark_preserve_trailing_hard_breaks() {
-		return (cache ??= value());
+	return function remark_plugin_replace_break_with_newline() {
+		if (!cache) {
+			cache = value();
+		}
+
+		return cache;
 	};
 })();
-
-const markdown_remark_plugins = [...Object.values(defaultRemarkPlugins), remark_plugin_preserve_trailing_hard_breaks];
 
 export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown"
@@ -217,21 +206,187 @@ export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown-inline-code";
 
 export type AiChatMarkdown_Props = {
-	text: string;
 	className?: string;
+	markdown: string;
+	replaceNewLineToBr?: boolean;
 };
 
 export function AiChatMarkdown(props: AiChatMarkdown_Props) {
-	const { text, className } = props;
+	const { markdown, replaceNewLineToBr, className } = props;
+
+	const remarkPlugins = [
+		...Object.values(defaultRemarkPlugins),
+		...(replaceNewLineToBr ? [remark_plugin_replace_break_with_newline] : []),
+	];
+
+	let markdownToParse = markdown;
+	if (replaceNewLineToBr) {
+		markdownToParse = markdownToParse.replaceAll("\n", "<br>");
+		// For trailing br we need to add an extra one to emulate the
+		// empty line when switching to composer mode
+		if (markdownToParse.endsWith("<br>")) {
+			markdownToParse += "<br>";
+		}
+	}
 
 	return (
 		<div
 			className={cn("AiChatMarkdown" satisfies AiChatMarkdown_ClassNames, "app-doc" satisfies AppClassName, className)}
 		>
-			<Streamdown mode="static" remarkPlugins={markdown_remark_plugins}>
-				{text}
+			<Streamdown mode="static" remarkPlugins={remarkPlugins}>
+				{markdownToParse}
 			</Streamdown>
 		</div>
 	);
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest;
+
+	describe("remark_plugin_replace_break_with_newline", () => {
+		test("replaces non-trailing break nodes and merges adjacent text nodes", () => {
+			const tree = {
+				type: "root",
+				children: [
+					{
+						type: "paragraph",
+						children: [{ type: "text", value: "hello" }, { type: "break" }, { type: "text", value: "world" }],
+					},
+				],
+			} satisfies markdown_MdastNode;
+
+			remark_plugin_replace_break_with_newline()(tree);
+
+			expect(tree).toMatchInlineSnapshot(`
+				{
+				  "children": [
+				    {
+				      "children": [
+				        {
+				          "type": "text",
+				          "value": "hello
+				world",
+				        },
+				      ],
+				      "type": "paragraph",
+				    },
+				  ],
+				  "type": "root",
+				}
+			`);
+		});
+
+		test("replaces trailing break nodes with newline text", () => {
+			const tree = {
+				type: "root",
+				children: [
+					{
+						type: "paragraph",
+						children: [{ type: "text", value: "line" }, { type: "break" }, { type: "break" }],
+					},
+				],
+			} satisfies markdown_MdastNode;
+
+			remark_plugin_replace_break_with_newline()(tree);
+
+			expect(tree).toMatchInlineSnapshot(`
+				{
+				  "children": [
+				    {
+				      "children": [
+				        {
+				          "type": "text",
+				          "value": "line
+
+				",
+				        },
+				      ],
+				      "type": "paragraph",
+				    },
+				  ],
+				  "type": "root",
+				}
+			`);
+		});
+
+		test("applies the same conversion to nested mdast children", () => {
+			const tree = {
+				type: "root",
+				children: [
+					{
+						type: "blockquote",
+						children: [
+							{
+								type: "paragraph",
+								children: [{ type: "text", value: "nested" }, { type: "break" }, { type: "text", value: "line" }],
+							},
+						],
+					},
+				],
+			} satisfies markdown_MdastNode;
+
+			remark_plugin_replace_break_with_newline()(tree);
+
+			expect(tree).toMatchInlineSnapshot(`
+				{
+				  "children": [
+				    {
+				      "children": [
+				        {
+				          "children": [
+				            {
+				              "type": "text",
+				              "value": "nested
+				line",
+				            },
+				          ],
+				          "type": "paragraph",
+				        },
+				      ],
+				      "type": "blockquote",
+				    },
+				  ],
+				  "type": "root",
+				}
+			`);
+		});
+
+		test("replaces html br nodes with newline text, including trailing br", () => {
+			const tree = {
+				type: "root",
+				children: [
+					{
+						type: "paragraph",
+						children: [
+							{ type: "text", value: "line" },
+							{ type: "html", value: "<br>" },
+							{ type: "html", value: "<br />" },
+						],
+					},
+				],
+			} satisfies markdown_MdastNode;
+
+			remark_plugin_replace_break_with_newline()(tree);
+
+			expect(tree).toMatchInlineSnapshot(`
+				{
+				  "children": [
+				    {
+				      "children": [
+				        {
+				          "type": "text",
+				          "value": "line
+
+				",
+				        },
+				      ],
+				      "type": "paragraph",
+				    },
+				  ],
+				  "type": "root",
+				}
+			`);
+		});
+	});
 }
 // #endregion root

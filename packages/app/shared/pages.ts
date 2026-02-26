@@ -143,12 +143,14 @@ const pages_marked = ((/* iife */) => {
 /**
  * Parse markdown string to HTML.
  */
-function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensions }) {
-	const markdownWithoutTrailingHardBreaks = args.markdown.replace(/(?:\\\n)+$/g, "");
+function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensions; replaceNewLineToBr?: boolean }) {
+	const markdown = args.replaceNewLineToBr ? args.markdown.replaceAll("\n", "<br>") : args.markdown;
+
+	// const markdownWithoutTrailingHardBreaks = markdown.replace(/(?:\\\n)+$/g, "");
 
 	let html;
 	try {
-		html = pages_marked().parse(args.markdown, { async: false });
+		html = pages_marked().parse(markdown, { async: false });
 	} catch (error) {
 		return Result({
 			_nay: {
@@ -162,7 +164,7 @@ function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensio
 	// Preserve trailing empty lines at EOF (Markdown usually ignores them).
 	// - every 2 `\n` => 1 empty paragraph
 	// - odd counts round up
-	const trailing = /\n+$/.exec(markdownWithoutTrailingHardBreaks)?.[0] ?? "";
+	const trailing = /\n+$/.exec(markdown)?.[0] ?? "";
 	const newlineCount = trailing.length > 0 ? trailing.split("\n").length - 1 : 0;
 	if (newlineCount === 0) return Result({ _yay: html });
 
@@ -205,7 +207,11 @@ export function pages_tiptap_html_to_json(args: { html: string; extensions?: Ext
 	return json;
 }
 
-export function pages_tiptap_markdown_to_json(args: { markdown: string; extensions?: Extensions }) {
+export function pages_tiptap_markdown_to_json(args: {
+	markdown: string;
+	extensions?: Extensions;
+	replaceNewLineToBr?: boolean;
+}) {
 	if (!args.markdown) {
 		return Result({ _yay: pages_tiptap_empty_doc_json() });
 	}
@@ -215,6 +221,7 @@ export function pages_tiptap_markdown_to_json(args: { markdown: string; extensio
 	const markdownToHtml = tiptap_markdown_to_html({
 		markdown: args.markdown,
 		extensions: args.extensions,
+		replaceNewLineToBr: args.replaceNewLineToBr,
 	});
 
 	if (markdownToHtml._nay) {

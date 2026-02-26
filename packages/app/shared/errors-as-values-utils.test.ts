@@ -12,7 +12,7 @@ describe("Result", () => {
 	test("creates Result _nay with message", () => {
 		const badResult = Result({ _nay: { message: "test error" } });
 		expect(badResult._nay.message).toBe("test error");
-		expect(badResult._nay.name).toBe("nay");
+		expect(badResult._nay.name).toBeUndefined();
 		expect(badResult._nay.cause).toBeUndefined();
 		expect(badResult._nay.data).toBeUndefined();
 	});

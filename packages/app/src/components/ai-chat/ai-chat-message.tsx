@@ -705,9 +705,9 @@ type AiChatMessagePartMarkdownAssistant_ClassNames = "AiChatMessagePartMarkdownA
 type AiChatMessagePartMarkdownAssistant_Props = AiChatMarkdown_Props;
 
 function AiChatMessagePartMarkdownAssistant(props: AiChatMessagePartMarkdownAssistant_Props) {
-	const { className, text, ...rest } = props;
+	const { className, markdown, ...rest } = props;
 
-	const deferredText = useDeferredValue(text);
+	const deferredMarkdown = useDeferredValue(markdown);
 
 	return (
 		<AiChatMarkdown
@@ -715,7 +715,7 @@ function AiChatMessagePartMarkdownAssistant(props: AiChatMessagePartMarkdownAssi
 				"AiChatMessagePartMarkdownAssistant" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
 				className,
 			)}
-			text={deferredText}
+			markdown={deferredMarkdown}
 			{...rest}
 		/>
 	);
@@ -726,18 +726,19 @@ function AiChatMessagePartMarkdownAssistant(props: AiChatMessagePartMarkdownAssi
 type AiChatMessagePartMarkdownUser_ClassNames = "AiChatMessagePartMarkdownUser";
 
 type AiChatMessagePartMarkdownUser_Props = {
-	text: string;
+	markdown: string;
 };
 
 function AiChatMessagePartMarkdownUser(props: AiChatMessagePartMarkdownUser_Props) {
-	const { text, ...rest } = props;
+	const { markdown, ...rest } = props;
 
-	const deferredText = useDeferredValue(text);
+	const deferredMarkdown = useDeferredValue(markdown);
 
 	return (
 		<AiChatMarkdown
 			className={"AiChatMessagePartMarkdownUser" satisfies AiChatMessagePartMarkdownUser_ClassNames}
-			text={deferredText}
+			markdown={deferredMarkdown}
+			replaceNewLineToBr={true}
 			{...rest}
 		/>
 	);
@@ -977,9 +978,9 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 
 	if (isTextUIPart(part)) {
 		return role === "assistant" ? (
-			<AiChatMessagePartMarkdownAssistant text={part.text} />
+			<AiChatMessagePartMarkdownAssistant markdown={part.text} />
 		) : (
-			<AiChatMessagePartMarkdownUser text={part.text} />
+			<AiChatMessagePartMarkdownUser markdown={part.text} />
 		);
 	}
 
