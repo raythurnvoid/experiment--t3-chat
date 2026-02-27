@@ -1,4 +1,4 @@
-@layer components {
+@layer common_components {
 	.TextMonospaceBlock {
 		box-sizing: border-box;
 
@@ -18,14 +18,8 @@
 		line-height: 1.4;
 
 		white-space: pre-wrap;
-		word-break: break-word;
 
 		overflow: auto;
 		max-height: var(--TextMonospaceBlock-max-height);
-	}
-
-	.TextMonospaceBlock-line {
-		display: inline;
-		white-space: pre-wrap;
 	}
 }
