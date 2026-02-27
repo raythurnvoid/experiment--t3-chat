@@ -74,71 +74,40 @@ type AiChatMessagePartToolStatus_Props = {
 function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
 	const { state, isChatRunning } = props;
 
-	switch (state) {
-		// Loading states: spinner only, no text
-		case "input-streaming":
-		case "input-available":
-			if (!isChatRunning) {
-				return null;
-			}
+	const isLoading = state === "input-streaming" || state === "input-available";
+	const isSuccess = state === "approval-responded" || state === "output-available";
+	if ((isLoading && !isChatRunning) || isSuccess) {
+		return null;
+	}
 
-			return (
-				<span
-					className={cn(
-						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
-						"AiChatMessagePartToolStatus-state-loading" satisfies AiChatMessagePartToolStatus_ClassNames,
-					)}
-				>
-					<MySpinner size="14px" aria-label="Running" />
-				</span>
-			);
-
-		// Approval requested: visible indicator since it's actionable
-		case "approval-requested":
-			return (
-				<AiChatMessagePartToolChip
-					className={cn(
-						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
-						"AiChatMessagePartToolStatus-state-approval" satisfies AiChatMessagePartToolStatus_ClassNames,
-					)}
-				>
+	return (
+		<span
+			className={cn(
+				"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
+				state === "approval-requested" && ("AiChatMessagePartToolChip" satisfies AiChatMessagePartToolChip_ClassNames),
+				isLoading && ("AiChatMessagePartToolStatus-state-loading" satisfies AiChatMessagePartToolStatus_ClassNames),
+				state === "approval-requested" &&
+					("AiChatMessagePartToolStatus-state-approval" satisfies AiChatMessagePartToolStatus_ClassNames),
+				(state === "output-error" || state === "output-denied") &&
+					("AiChatMessagePartToolStatus-state-error" satisfies AiChatMessagePartToolStatus_ClassNames),
+			)}
+		>
+			{isLoading ? (
+				<MySpinner size="14px" aria-label="Running" />
+			) : state === "approval-requested" ? (
+				<>
 					<ShieldQuestion
 						className={"AiChatMessagePartToolStatus-icon" satisfies AiChatMessagePartToolStatus_ClassNames}
 					/>
-					Awaiting Approval
-				</AiChatMessagePartToolChip>
-			);
-
-		// Success states: show nothing
-		case "approval-responded":
-		case "output-available":
-			return null;
-
-		// Error states: red icon + label
-		case "output-error":
-			return (
-				<span
-					className={cn(
-						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
-						"AiChatMessagePartToolStatus-state-error" satisfies AiChatMessagePartToolStatus_ClassNames,
-					)}
-				>
-					Failed
-				</span>
-			);
-
-		case "output-denied":
-			return (
-				<span
-					className={cn(
-						"AiChatMessagePartToolStatus" satisfies AiChatMessagePartToolStatus_ClassNames,
-						"AiChatMessagePartToolStatus-state-error" satisfies AiChatMessagePartToolStatus_ClassNames,
-					)}
-				>
-					Denied
-				</span>
-			);
-	}
+					awaiting approval
+				</>
+			) : state === "output-error" ? (
+				"failed"
+			) : state === "output-denied" ? (
+				"denied"
+			) : null}
+		</span>
+	);
 }
 // #endregion tool status
 
@@ -312,8 +281,8 @@ function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Prop
 			className={cn("AiChatMessagePartToolReadPage" satisfies AiChatMessagePartToolReadPage_ClassNames, className)}
 		>
 			<AiChatMessagePartToolDisclosureButton
-				title="Read Page"
-				text={args?.path ? path_name_of(args.path) : undefined}
+				title="Read page"
+				text={args?.path ? path_name_of(args.path) : "/ (Home)"}
 				state={toolState}
 				isChatRunning={isChatRunning}
 			/>
@@ -357,13 +326,15 @@ type AiChatMessagePartToolListPages_Props = {
 function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Props) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const text = args?.path ? path_name_of(args.path) || "/ (Home) " : undefined;
+
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolListPages" satisfies AiChatMessagePartToolListPages_ClassNames, className)}
 		>
 			<AiChatMessagePartToolDisclosureButton
-				title="List Pages"
-				text={args?.path ? path_name_of(args.path) || "/ (Home) " : undefined}
+				title="List pages"
+				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
 			/>
@@ -394,11 +365,18 @@ type AiChatMessagePartToolGlobPages_Props = {
 function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Props) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const text = result?.metadata?.count ? `${result.metadata.count} results` : args?.pattern ? args.pattern : undefined;
+
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolGlobPages" satisfies AiChatMessagePartToolGlobPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-glob_pages" state={toolState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolDisclosureButton
+				title="Glob pages"
+				text={text}
+				state={toolState}
+				isChatRunning={isChatRunning}
+			/>
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
@@ -426,11 +404,22 @@ type AiChatMessagePartToolGrepPages_Props = {
 function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Props) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const text = result?.metadata?.matches
+		? `${result.metadata.matches} results`
+		: args?.pattern
+			? args.pattern
+			: undefined;
+
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolGrepPages" satisfies AiChatMessagePartToolGrepPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-grep_pages" state={toolState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolDisclosureButton
+				title="Grep pages"
+				text={text}
+				state={toolState}
+				isChatRunning={isChatRunning}
+			/>
 			<AiChatMessagePartToolBody>
 				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
@@ -458,6 +447,8 @@ type AiChatMessagePartToolTextSearchPages_Props = {
 function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSearchPages_Props) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const text = result?.metadata?.matches ? `${result.metadata.matches} results` : args?.query ? args.query : undefined;
+
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn(
@@ -466,7 +457,8 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 			)}
 		>
 			<AiChatMessagePartToolDisclosureButton
-				title="tool-text_search_pages"
+				title={"Search pages"}
+				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
 			/>
@@ -506,11 +498,12 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 
 	const deferredContent = useDeferredValue(args?.content);
 
-	const pageName = result?.metadata.path
-		? path_name_of(result.metadata.path)
+	const title = result?.metadata.path
+		? `Write page: ${path_name_of(result.metadata.path)}`
 		: args?.path
-			? path_name_of(args.path)
-			: "Writing page";
+			? `Write page: ${path_name_of(args.path)}`
+			: "Write page";
+
 	const pageId = result?.metadata?.pageId;
 	const output = result?.metadata?.diff ?? result?.output;
 
@@ -537,7 +530,7 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 							"AiChatMessagePartToolWritePage-header-title" satisfies AiChatMessagePartToolWritePage_ClassNames
 						}
 					>
-						{pageName}
+						{title}
 					</span>
 					<span
 						className={
@@ -575,7 +568,7 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 							"AiChatMessagePartToolWritePage-header-title" satisfies AiChatMessagePartToolWritePage_ClassNames
 						}
 					>
-						{pageName}
+						{title}
 					</span>
 					<span
 						className={
@@ -625,13 +618,24 @@ type AiChatMessagePartToolEditPage_Props = {
 function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Props) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const text = result?.metadata.path
+		? path_name_of(result.metadata.path)
+		: args?.path
+			? path_name_of(args.path)
+			: undefined;
+
 	const resultCode = result?.metadata?.diff ?? result?.output;
 
 	return (
 		<AiChatMessagePartToolDisclosure
 			className={cn("AiChatMessagePartToolEditPage" satisfies AiChatMessagePartToolEditPage_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton title="tool-edit_page" state={toolState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolDisclosureButton
+				title="Edit page"
+				text={text}
+				state={toolState}
+				isChatRunning={isChatRunning}
+			/>
 			<AiChatMessagePartToolBody>
 				{result?.metadata?.pageId && (
 					<MyLink
