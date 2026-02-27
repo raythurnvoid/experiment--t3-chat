@@ -700,11 +700,11 @@ function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props)
 // #endregion tool unknown
 
 // #region markdown assistant
-type AiChatMessagePartMarkdownAssistant_ClassNames = "AiChatMessagePartMarkdownAssistant";
+type AiChatMessagePartMarkdownAssistant_ClassNames = "AiChatMessagePartMarkdownAgent";
 
 type AiChatMessagePartMarkdownAssistant_Props = AiChatMarkdown_Props;
 
-function AiChatMessagePartMarkdownAssistant(props: AiChatMessagePartMarkdownAssistant_Props) {
+function AiChatMessagePartMarkdownAgent(props: AiChatMessagePartMarkdownAssistant_Props) {
 	const { className, markdown, ...rest } = props;
 
 	const deferredMarkdown = useDeferredValue(markdown);
@@ -712,7 +712,7 @@ function AiChatMessagePartMarkdownAssistant(props: AiChatMessagePartMarkdownAssi
 	return (
 		<AiChatMarkdown
 			className={cn(
-				"AiChatMessagePartMarkdownAssistant" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
+				"AiChatMessagePartMarkdownAgent" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
 				className,
 			)}
 			markdown={deferredMarkdown}
@@ -846,7 +846,8 @@ function AiChatMessagePartSourceDocument(props: AiChatMessagePartSourceDocument_
 type AiChatMessagePart_ClassNames =
 	| "AiChatMessagePart"
 	| "AiChatMessagePart-tool"
-	| "AiChatMessagePart-markdown"
+	| "AiChatMessagePart-markdown-assistant"
+	| "AiChatMessagePart-markdown-user"
 	| "AiChatMessagePart-image"
 	| "AiChatMessagePart-file"
 	| "AiChatMessagePart-source";
@@ -865,13 +866,17 @@ function AiChatMessagePart(props: AiChatMessagePart_Props) {
 	const { role, part } = props;
 
 	const partClass = ((/* iife */) => {
-		if (isToolOrDynamicToolUIPart(part)) return "AiChatMessagePart-tool" as const;
-		if (isTextUIPart(part) && role === "assistant") return "AiChatMessagePart-markdown" as const;
+		if (isToolOrDynamicToolUIPart(part)) return "AiChatMessagePart-tool" satisfies AiChatMessagePart_ClassNames;
+		if (isTextUIPart(part) && role === "assistant")
+			return "AiChatMessagePart-markdown-assistant" satisfies AiChatMessagePart_ClassNames;
+		if (isTextUIPart(part) && role === "user")
+			return "AiChatMessagePart-markdown-user" satisfies AiChatMessagePart_ClassNames;
 		if (isFileUIPart(part))
 			return part.mediaType.startsWith("image/")
-				? ("AiChatMessagePart-image" as const)
-				: ("AiChatMessagePart-file" as const);
-		if (part.type === "source-url" || part.type === "source-document") return "AiChatMessagePart-source" as const;
+				? ("AiChatMessagePart-image" satisfies AiChatMessagePart_ClassNames)
+				: ("AiChatMessagePart-file" satisfies AiChatMessagePart_ClassNames);
+		if (part.type === "source-url" || part.type === "source-document")
+			return "AiChatMessagePart-source" satisfies AiChatMessagePart_ClassNames;
 		return undefined;
 	})() satisfies AiChatMessagePart_ClassNames | undefined;
 
@@ -978,7 +983,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 
 	if (isTextUIPart(part)) {
 		return role === "assistant" ? (
-			<AiChatMessagePartMarkdownAssistant markdown={part.text} />
+			<AiChatMessagePartMarkdownAgent markdown={part.text} />
 		) : (
 			<AiChatMessagePartMarkdownUser markdown={part.text} />
 		);
@@ -1140,7 +1145,9 @@ export type AiChatMessageUser_ClassNames =
 	| "AiChatMessageUser"
 	| "AiChatMessageUser-bubble"
 	| "AiChatMessageUser-bubble-state-editing"
+	| "AiChatMessageUser-content-container"
 	| "AiChatMessageUser-edit-button"
+	| "AiChatMessageUser-edit-button-box"
 	| "AiChatMessageUser-content-composer"
 	| "AiChatMessageUser-actions"
 	| "AiChatMessageUser-action-button"
@@ -1271,28 +1278,30 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 					isEditing && ("AiChatMessageUser-bubble-state-editing" satisfies AiChatMessageUser_ClassNames),
 				)}
 			>
-				<AiChatMessageContent
-					message={message}
-					isChatRunning={isRunning}
-					onToolOutput={onToolOutput}
-					onToolResumeStream={onToolResumeStream}
-					onToolStop={onToolStop}
-				>
-					{isEditing ? (
-						<AiChatComposer
-							key={message.id}
-							className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
-							autoFocus
-							canCancel={false}
-							isRunning={false}
-							initialValue={text ?? ""}
-							onValueChange={handleEditValueChange}
-							onSubmit={handleEditSubmit}
-							onInteractedOutside={handleEditCancel}
-							onClose={handleEditCancel}
-						/>
-					) : null}
-				</AiChatMessageContent>
+				<div className={"AiChatMessageUser-content-container" satisfies AiChatMessageUser_ClassNames}>
+					<AiChatMessageContent
+						message={message}
+						isChatRunning={isRunning}
+						onToolOutput={onToolOutput}
+						onToolResumeStream={onToolResumeStream}
+						onToolStop={onToolStop}
+					>
+						{isEditing ? (
+							<AiChatComposer
+								key={message.id}
+								className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
+								autoFocus
+								canCancel={false}
+								isRunning={false}
+								initialValue={text ?? ""}
+								onValueChange={handleEditValueChange}
+								onSubmit={handleEditSubmit}
+								onInteractedOutside={handleEditCancel}
+								onClose={handleEditCancel}
+							/>
+						) : null}
+					</AiChatMessageContent>
+				</div>
 				{showEditButton && (
 					<button
 						className={"AiChatMessageUser-edit-button" satisfies AiChatMessageUser_ClassNames}
@@ -1300,7 +1309,9 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 						{...({ "data-ai-chat-message-id": message.id } satisfies Partial<AiChatMessage_CustomAttributes>)}
 						aria-label="Edit message"
 						onClick={handleStartEdit}
-					/>
+					>
+						<div className={"AiChatMessageUser-edit-button-box" satisfies AiChatMessageUser_ClassNames}></div>
+					</button>
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
 					<CopyIconButton

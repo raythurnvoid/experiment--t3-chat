@@ -29,7 +29,50 @@
 	}
 	/* #endregion bubble */
 
+	/* #region message */
+	.AiChatMessageUser-actions,
+	.AiChatMessageAgent-actions {
+		display: flex;
+		align-items: center;
+
+		/*
+			This needs to match the size of the composer actions to ensure
+			the conent is not shifted when switching in editing mode.
+			*/
+		min-height: 48px;
+
+		color: var(--color-fg-08);
+
+		contain: content;
+	}
+
+	.AiChatMessageUser-branch-controls,
+	.AiChatMessageAgent-branch-controls {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+
+		user-select: none;
+	}
+
+	.AiChatMessageUser-branch-label,
+	.AiChatMessageAgent-branch-label {
+		min-width: 32px;
+
+		text-align: center;
+
+		font-size: 0.75rem;
+		color: var(--color-fg-06);
+	}
+	/* #endregion message */
+
 	/* #region user message */
+	.AiChatMessageUser {
+		align-items: end;
+
+		padding: 8px 24px;
+	}
+
 	.AiChatMessageUser-bubble-state-editing {
 		padding: 0;
 
@@ -67,10 +110,16 @@
 			background-color: var(--color-base-1-07);
 			color: var(--color-fg-12);
 		}
+	}
 
-		& > .AiChatMessageContent {
-			grid-column: 1;
-			grid-row: 1;
+	.AiChatMessageUser-content-container {
+		grid-column: 1;
+		grid-row: 1;
+
+		padding: 10px 0 0 0;
+
+		.AiChatMessageBubble.AiChatMessageUser-bubble-state-editing > & {
+			padding: 0;
 		}
 	}
 
@@ -80,53 +129,23 @@
 		grid-column: 1;
 		grid-row: 1 / -1;
 
-		padding: 0;
-		border: 2px solid transparent;
+		padding: 2x;
 		border-radius: inherit;
 
 		&:focus-visible {
 			border-color: var(--color-fg-12);
 		}
-	}
-	/* #endregion user message */
 
-	/* #region system message */
-	.AiChatMessageSystem-bubble {
-		color: var(--color-fg-06);
-	}
-	/* #endregion system message */
-
-	/* #region content */
-	.AiChatMessageContent {
-		.AiChatMessageUser > .AiChatMessageUser-bubble:not(.AiChatMessageUser-bubble-state-editing) > & {
-			padding: 10px 10px 0 10px;
+		.AiChatMessageUser-edit-button-box {
+			border-radius: inherit;
+			border: 2px solid transparent;
 		}
 	}
-	/* #endregion content */
 
-	/* #region user message */
 	.AiChatMessageUser-content-composer .MyInputBox {
 		border-radius: 16px;
 	}
-	/* #endregion user message */
 
-	/* #region message */
-	.AiChatMessageUser-actions,
-	.AiChatMessageAgent-actions {
-		display: flex;
-		align-items: center;
-
-		/*
-		This needs to match the size of the composer actions to ensure
-		the conent is not shifted when switching in editing mode.
-		*/
-		min-height: 48px;
-
-		color: var(--color-fg-08);
-	}
-	/* #endregion message */
-
-	/* #region user message */
 	.AiChatMessageUser-actions {
 		grid-column: 1;
 		grid-row: 2;
@@ -138,26 +157,21 @@
 	}
 	/* #endregion user message */
 
-	/* #region message */
-	.AiChatMessageUser-branch-controls,
-	.AiChatMessageAgent-branch-controls {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-
-		user-select: none;
+	/* #region markdown user */
+	.AiChatMessagePartMarkdownUser {
+		white-space: pre-wrap;
 	}
+	/* #endregion markdown user */
 
-	.AiChatMessageUser-branch-label,
-	.AiChatMessageAgent-branch-label {
-		min-width: 32px;
-
-		text-align: center;
-
-		font-size: 0.75rem;
-		color: var(--color-fg-06);
+	/* #region content */
+	.AiChatMessageContent {
+		.AiChatMessageUser-bubble:not(.AiChatMessageUser-bubble-state-editing) > .AiChatMessageUser-content-container > & {
+			padding: 0px 10px 0 10px;
+			max-height: 10lh;
+			contain: content;
+		}
 	}
-	/* #endregion message */
+	/* #endregion content */
 
 	/* #region tool chip */
 	.AiChatMessagePartToolChip {
@@ -391,14 +405,6 @@
 	}
 	/* #endregion tool unknown */
 
-	/* #region user message */
-	.AiChatMessageUser {
-		align-items: end;
-
-		padding: 8px 24px;
-	}
-	/* #endregion user message */
-
 	/* #region agent message */
 	.AiChatMessageAgent {
 		align-items: start;
@@ -419,16 +425,11 @@
 	}
 	/* #endregion agent message */
 
-	/* #region markdown assistant */
-	.AiChatMessagePartMarkdownAssistant {
+	/* #region markdown agent */
+	.AiChatMessagePartMarkdownAgent {
 		padding: 0 24px;
 	}
-
-	.AiChatMessagePartMarkdownAssistant .AiChatMarkdown-p:has(> br:last-child),
-	.AiChatMessagePartMarkdownUser .AiChatMarkdown-p:has(> br:last-child) {
-		padding-bottom: 1lh;
-	}
-	/* #endregion markdown assistant */
+	/* #endregion markdown agent */
 
 	/* #region part */
 	.AiChatMessagePart {
@@ -446,6 +447,16 @@
 		border: 1px solid var(--color-base-1-05);
 
 		background: var(--color-base-1-02);
+	}
+
+	.AiChatMessagePart-markdown-user {
+		contain: content;
+
+		.AiChatMarkdown.app-doc {
+			p {
+				margin-block: 0;
+			}
+		}
 	}
 	/* #endregion part */
 
@@ -486,9 +497,12 @@
 	/* #endregion part source document */
 
 	/* #region system message */
-
 	.AiChatMessageSystem {
 		align-items: start;
+	}
+
+	.AiChatMessageSystem-bubble {
+		color: var(--color-fg-06);
 	}
 	/* #endregion system message */
 }

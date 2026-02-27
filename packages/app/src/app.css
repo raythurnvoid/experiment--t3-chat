@@ -447,6 +447,9 @@
 
 		outline: none;
 
+		font-size: 1rem;
+		line-height: 1.5;
+
 		/* Tiptap editor styles to match liveblocks example */
 		p[data-placeholder]::before {
 			content: attr(data-placeholder);

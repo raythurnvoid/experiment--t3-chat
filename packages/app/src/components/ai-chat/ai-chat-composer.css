@@ -26,27 +26,37 @@
 		grid-area: inherit;
 		gap: 0px;
 
-		padding: 0;
+		padding: 10px 0px 56px 0px;
+
+		contain: content;
 	}
 
 	.AiChatComposer-editor-content-container {
 		display: flex;
 		grid-area: 1 / 1 / 2 / -1;
 
+		padding: 0px 10px;
+
 		min-height: 36px;
 
 		position: relative;
 
-		max-height: 160px;
-		overflow-y: auto;
+		/* Base editor font styles */
+		font-size: 1rem;
+		line-height: 1.5;
+
+		/* Lines of content before the scrollbar shows */
+		max-height: 10lh;
+
 		contain: content;
+
+		overflow: hidden auto;
 	}
 
 	.AiChatComposer-editor-content {
 		min-height: min-content;
 		height: 1lh;
 		color: var(--color-fg-11);
-		padding: 10px 10px 56px 10px;
 
 		p {
 			margin: 0;
