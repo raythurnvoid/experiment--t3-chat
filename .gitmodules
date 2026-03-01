@@ -5,8 +5,8 @@
 [submodule "liveblocks"]
 	path = packages/app/vendor/liveblocks
 	url = https://github.com/raythurnvoid/liveblocks.git
-[submodule "packages/app/opencode"]
-	path = packages/app/vendor/opencode
+[submodule "references-submodules/opencode"]
+	path = references-submodules/opencode
 	url = https://github.com/sst/opencode
 [submodule "packages/app/ai"]
 	path = references-submodules/ai
@@ -67,3 +67,15 @@
 [submodule "references-submodules/streamdown"]
 	path = references-submodules/streamdown
 	url = https://github.com/vercel/streamdown.git
+[submodule "references-submodules/openclaw"]
+	path = references-submodules/openclaw
+	url = https://github.com/openclaw/openclaw.git
+[submodule "references-submodules/mastra"]
+	path = references-submodules/mastra
+	url = https://github.com/mastra-ai/mastra.git
+[submodule "references-submodules/voltagent"]
+	path = references-submodules/voltagent
+	url = https://github.com/VoltAgent/voltagent.git
+[submodule "references-submodules/reor"]
+	path = references-submodules/reor
+	url = https://github.com/reorproject/reor.git

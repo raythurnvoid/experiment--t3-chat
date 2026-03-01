@@ -33,7 +33,7 @@ packages:
   - "packages/app/vendor/liveblocks/packages/*"
   - "packages/app/vendor/liveblocks/shared/*"
   - "packages/app/vendor/remix/packages/*" # Added
-  - "packages/app/vendor/opencode"
+  - "references-submodules/opencode"
   - "packages/app/vendor/presence"
 ```
 

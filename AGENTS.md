@@ -84,14 +84,9 @@ The app runs at http://localhost:5173/ during development.
     - [src/app.css](packages/app/src/app.css) - Main app CSS file
   - [convex/](packages/app/convex) - Convex backend code and functions
   - [shared/](packages/app/shared) - Shared code between frontend and backend
-  - [vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule (full repo for reference)
-  - [vendor/headless-tree/](packages/app/vendor/headless-tree) - Headless Tree submodule (full repo for reference)
-  - [vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule (full repo for reference)
-  - [vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule (full repo for reference)
+  - [vendor/](packages/app/vendor) - Vendored submodules used as local workspace sources (see "Submodules (Special Import Handling)" below)
 
-- [references-submodules/](references-submodules) - Reference-only git submodules (docs + source scraping)
-
-  - [assistant-ui/](references-submodules/assistant-ui) - Assistant UI submodule (reference-only)
+- [references-submodules/](references-submodules) - Reference-only git submodules (docs + source scraping; see full list in "Submodules (Special Import Handling)" below)
 
 - [../t3-chat-+personal/](../t3-chat-+personal) - DOCUMENTATION & RESEARCH FOLDER
   - [../t3-chat-+personal/+ai/](../t3-chat-+personal/+ai) - Only writable subfolder for AI-generated content
@@ -101,10 +96,9 @@ The app runs at http://localhost:5173/ during development.
 
 ## Submodules (Special Import Handling)
 
-The `assistant-ui` repository is checked out as a **reference-only** submodule at `references-submodules/assistant-ui`.
-The app should **not** depend on `@assistant-ui/*` packages; use normal `node_modules` dependencies for runtime.
-
-For all submodules listed below: import from regular `node_modules` packages at runtime; these submodules are for reference only.
+The `assistant-ui` repository is kept only as a **reference-only** submodule at `references-submodules/assistant-ui`.
+The app does **not** use `@assistant-ui/*` packages at runtime; use normal `node_modules` dependencies for runtime.
+All vendored and reference submodule paths are listed below in this single section.
 
 - [packages/app/vendor/liveblocks/](packages/app/vendor/liveblocks) - Liveblocks submodule
 
@@ -121,6 +115,24 @@ For all submodules listed below: import from regular `node_modules` packages at 
   - Package folders:
     - [packages/core/](packages/app/vendor/headless-tree/packages/core)
     - [packages/react/](packages/app/vendor/headless-tree/packages/react)
+
+- [packages/app/vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule
+  - Documentation folders:
+    - [README.md](packages/app/vendor/novel/README.md)
+  - Examples folders:
+    - [apps/web/](packages/app/vendor/novel/apps/web) - Example implementation
+  - Package folders:
+    - [packages/headless/](packages/app/vendor/novel/packages/headless) - Core editor package
+
+- [references-submodules/assistant-ui/](references-submodules/assistant-ui) - Assistant UI reference submodule (not used at runtime)
+
+- [references-submodules/opencode/](references-submodules/opencode) - OpenCode development platform submodule
+
+  - Documentation folders:
+    - [README.md](references-submodules/opencode/README.md)
+    - [AGENTS.md](references-submodules/opencode/AGENTS.md)
+  - Package folders:
+    - [packages/](references-submodules/opencode/packages)
 
 - [references-submodules/ai/](references-submodules/ai) - AI SDK repository
 
@@ -148,22 +160,6 @@ For all submodules listed below: import from regular `node_modules` packages at 
     - [references-submodules/convex-tour-chat/](references-submodules/convex-tour-chat)
     - [references-submodules/convex-auth-with-role-based-permissions/](references-submodules/convex-auth-with-role-based-permissions)
     - [references-submodules/convex-tanstack-start/](references-submodules/convex-tanstack-start)
-
-- [packages/app/vendor/opencode/](packages/app/vendor/opencode) - OpenCode development platform submodule
-
-  - Documentation folders:
-    - [README.md](packages/app/vendor/opencode/README.md)
-    - [AGENTS.md](packages/app/vendor/opencode/AGENTS.md)
-  - Package folders:
-    - [packages/](packages/app/vendor/opencode/packages)
-
-- [packages/app/vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule
-  - Documentation folders:
-    - [README.md](packages/app/vendor/novel/README.md)
-  - Examples folders:
-    - [apps/web/](packages/app/vendor/novel/apps/web) - Example implementation
-  - Package folders:
-    - [packages/headless/](packages/app/vendor/novel/packages/headless) - Core editor package
 
 ## 3rd Party Documentation Research
 

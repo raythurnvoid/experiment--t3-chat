@@ -389,7 +389,7 @@ function replace_once_or_all(
 		ai_chat_tool_edit_page_replacer_escape_normalized,
 		// Optional (disabled) replacers:
 		// - ai_chat_tool_edit_page_replacer_trimmed_boundary
-		//   Source: OpenCode TrimmedBoundaryReplacer (packages/app/vendor/opencode/packages/opencode/src/tool/edit.ts)
+		//   Source: OpenCode TrimmedBoundaryReplacer (references-submodules/opencode/packages/opencode/src/tool/edit.ts)
 		//   Pros: tolerant when only outer whitespace differs
 		//   Cons: high collision risk; enable only as last fallback
 		// - ai_chat_tool_edit_page_replacer_context_aware
