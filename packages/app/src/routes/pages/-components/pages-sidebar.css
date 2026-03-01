@@ -46,15 +46,16 @@
 
 		border-bottom: 1px solid var(--color-fg-02);
 
-		height: 193px;
+		height: 185px;
 		contain: strict;
 	}
 
 	.PagesSidebarHeader-actions {
-		margin-bottom: 8px;
 		display: flex;
 		align-items: center;
 		gap: 8px;
+
+		contain: strict;
 		height: 36px;
 	}
 
@@ -84,10 +85,6 @@
 	.PagesSidebarHeader-close-button {
 		height: 32px;
 		width: 32px;
-	}
-
-	.PagesSidebarHeader-archive-toggle {
-		align-self: start;
 	}
 
 	.PagesSidebarHeader-hamburger-button {

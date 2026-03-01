@@ -278,7 +278,7 @@ async function cascade_page_descendants_path(
 
 const get_tree_items_list_validator = v.array(
 	v.object({
-		type: v.union(v.literal("root"), v.literal("page"), v.literal("placeholder")),
+		type: v.union(v.literal("root"), v.literal("page")),
 		index: v.string(),
 		parentId: v.string(),
 		title: v.string(),

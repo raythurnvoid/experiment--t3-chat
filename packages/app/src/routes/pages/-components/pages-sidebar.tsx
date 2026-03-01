@@ -14,8 +14,6 @@ import {
 	ArchiveRestore,
 	ChevronDown,
 	ChevronRight,
-	ChevronsDown,
-	ChevronsUp,
 	EllipsisVertical,
 	Edit2,
 	FileText,
@@ -23,6 +21,8 @@ import {
 	Plus,
 	Search,
 	X,
+	CopyMinus,
+	CopyPlus,
 } from "lucide-react";
 import { useConvex, useQuery } from "convex/react";
 import {
@@ -84,21 +84,14 @@ function pages_sidebar_to_page_id(pageId: string) {
 	return pageId as app_convex_Id<"pages">;
 }
 
-function pages_sidebar_normalize_parent_id(parentId: string) {
-	return parentId.endsWith("-placeholder") ? parentId.slice(0, -"-placeholder".length) : parentId;
-}
-
 function pages_sidebar_to_parent_id(parentId: string) {
-	const normalizedParentId = pages_sidebar_normalize_parent_id(parentId);
-
-	return (normalizedParentId === pages_ROOT_ID ? pages_ROOT_ID : pages_sidebar_to_page_id(normalizedParentId)) as
+	return (parentId === pages_ROOT_ID ? pages_ROOT_ID : pages_sidebar_to_page_id(parentId)) as
 		| app_convex_Id<"pages">
 		| typeof pages_ROOT_ID;
 }
 
 function pages_sidebar_get_default_page_name(args: { parentId: string; treeItems: PagesSidebar_TreeItems }) {
-	const normalizedParentId = pages_sidebar_normalize_parent_id(args.parentId);
-	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(normalizedParentId) ?? [];
+	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
 	const activeSiblingNames = new Set<string>();
 
 	for (const siblingId of siblingIds) {
@@ -236,7 +229,11 @@ type PagesSidebarTreeItemMoreAction_Props = {
 	archiveOperationId: string | undefined;
 	isPending: boolean;
 	isTabbable: boolean;
+	canExpandSubtree: boolean;
+	canCollapseSubtree: boolean;
 	onRename: () => void;
+	onExpandSubtree: () => void;
+	onCollapseSubtree: () => void;
 	onArchive: () => void;
 	onUnarchive: () => void;
 };
@@ -244,7 +241,18 @@ type PagesSidebarTreeItemMoreAction_Props = {
 const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAction(
 	props: PagesSidebarTreeItemMoreAction_Props,
 ) {
-	const { archiveOperationId, isPending, isTabbable, onRename, onArchive, onUnarchive } = props;
+	const {
+		archiveOperationId,
+		isPending,
+		isTabbable,
+		canExpandSubtree,
+		canCollapseSubtree,
+		onRename,
+		onExpandSubtree,
+		onCollapseSubtree,
+		onArchive,
+		onUnarchive,
+	} = props;
 	const isArchived = archiveOperationId !== undefined;
 
 	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
@@ -259,6 +267,14 @@ const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAct
 		} else {
 			onArchive();
 		}
+	});
+
+	const handleExpandSubtreeClick = useFn<MyMenuItem_Props["onClick"]>(() => {
+		onExpandSubtree();
+	});
+
+	const handleCollapseSubtreeClick = useFn<MyMenuItem_Props["onClick"]>(() => {
+		onCollapseSubtree();
 	});
 
 	return (
@@ -277,7 +293,7 @@ const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAct
 			</MyMenuTrigger>
 			<MyMenuPopover unmountOnHide>
 				<MyMenuPopoverContent>
-					<MyMenuItem disabled={isPending} onClick={handleRenameClick}>
+					<MyMenuItem hideOnClick onClick={handleRenameClick}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
 								<Edit2 />
@@ -285,9 +301,25 @@ const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAct
 							<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
 					</MyMenuItem>
+					<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={handleExpandSubtreeClick}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<CopyPlus />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={handleCollapseSubtreeClick}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<CopyMinus />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
 					<MyMenuItem
 						variant={isArchived ? "default" : "destructive"}
-						disabled={isPending}
+						hideOnClick
 						onClick={handleArchiveUnarchiveClick}
 					>
 						<MyMenuItemContent>
@@ -453,8 +485,12 @@ type PagesSidebarTreeItemActions_Props = {
 	archiveOperationId: PagesSidebarTreeItemMoreAction_Props["archiveOperationId"];
 	isPending: boolean;
 	isTabbable: boolean;
+	canExpandSubtree: PagesSidebarTreeItemMoreAction_Props["canExpandSubtree"];
+	canCollapseSubtree: PagesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
 	onCreatePage: PagesSidebarTreeItemSecondaryAction_Props["onClick"];
 	onRename: PagesSidebarTreeItemMoreAction_Props["onRename"];
+	onExpandSubtree: PagesSidebarTreeItemMoreAction_Props["onExpandSubtree"];
+	onCollapseSubtree: PagesSidebarTreeItemMoreAction_Props["onCollapseSubtree"];
 	onArchive: PagesSidebarTreeItemMoreAction_Props["onArchive"];
 	onUnarchive: PagesSidebarTreeItemMoreAction_Props["onUnarchive"];
 };
@@ -462,7 +498,19 @@ type PagesSidebarTreeItemActions_Props = {
 const PagesSidebarTreeItemActions = memo(function PagesSidebarTreeItemActions(
 	props: PagesSidebarTreeItemActions_Props,
 ) {
-	const { archiveOperationId, isPending, isTabbable, onCreatePage, onRename, onArchive, onUnarchive } = props;
+	const {
+		archiveOperationId,
+		isPending,
+		isTabbable,
+		canExpandSubtree,
+		canCollapseSubtree,
+		onCreatePage,
+		onRename,
+		onExpandSubtree,
+		onCollapseSubtree,
+		onArchive,
+		onUnarchive,
+	} = props;
 
 	return (
 		<div className={"PagesSidebarTreeItemActions" satisfies PagesSidebarTreeItemActions_ClassNames}>
@@ -475,7 +523,11 @@ const PagesSidebarTreeItemActions = memo(function PagesSidebarTreeItemActions(
 				archiveOperationId={archiveOperationId}
 				isPending={isPending}
 				isTabbable={isTabbable}
+				canExpandSubtree={canExpandSubtree}
+				canCollapseSubtree={canCollapseSubtree}
 				onRename={onRename}
+				onExpandSubtree={onExpandSubtree}
+				onCollapseSubtree={onCollapseSubtree}
 				onArchive={onArchive}
 				onUnarchive={onUnarchive}
 			/>
@@ -575,7 +627,6 @@ type PagesSidebarTreeItem_ClassNames =
 	| "PagesSidebarTreeItem-content-archived";
 
 type PagesSidebarTreeItem_CustomAttributes = {
-	"data-item-id": string;
 	"data-page-id": string;
 };
 
@@ -619,17 +670,23 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 	const itemId = useVal(() => item.getId());
 	const itemData = useVal(() => item.getItemData());
 	const itemProps = useVal(() => item.getProps());
+
 	const renameInputProps = useVal(() => item.getRenameInputProps());
 	const isRenaming = useVal(() => item.isRenaming());
 	const isArchived = itemData.archiveOperationId !== undefined;
 	const isNavigated = selectedPageId === itemId;
 	const isPending = isBusy || pendingActionPageIds.has(itemId);
 	const isTabbableRow = useVal(() => item.isFocused());
-	const depth = useVal(() => item.getItemMeta().level);
-	const pageIdForDebug = itemId;
 	const isDragTarget = useVal(() => item.isDraggingOver());
+	const isExpanded = useVal(() => item.isExpanded());
+
+	const depth = useVal(() => item.getItemMeta().level);
+
 	const hasChildren = useVal(() => item.getChildren().length > 0);
-	const isExpanded = useVal(() => tree().getState().expandedItems.includes(itemId));
+
+	const canExpandSubtree = useVal(() => !isExpanded || item.getChildren().some((child) => !child.isExpanded()));
+	const canCollapseSubtree = useVal(() => isExpanded && item.getChildren().some((child) => child.isExpanded()));
+
 	const ancestorIds = useVal(() => {
 		const result: string[] = [];
 		let parent = undefined;
@@ -653,6 +710,39 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 
 	const handleRenameClick = useFn<PagesSidebarTreeItemMoreAction_Props["onRename"]>(() => {
 		onStartRename(itemId);
+	});
+
+	const handleExpandSubtreeClick = useFn<PagesSidebarTreeItemMoreAction_Props["onExpandSubtree"]>(() => {
+		+(
+			// Ens the item is expanded
+			item.expand()
+		);
+		// Expand only the immediate children of the item
+		Promise.try(() => item.getTree().loadChildrenIds(itemId))
+			.then(() => {
+				for (const child of item.getChildren()) {
+					child.expand();
+				}
+			})
+			.catch((error) => {
+				console.error("[PagesSidebarTreeItem.handleExpandSubtreeClick] Failed to expand subtree", { error, itemId });
+			});
+	});
+
+	const handleCollapseSubtreeClick = useFn<PagesSidebarTreeItemMoreAction_Props["onCollapseSubtree"]>(() => {
+		// Collapse only the immediate children of the item
+		Promise.try(() => item.getTree().loadChildrenIds(itemId))
+			.then(() => {
+				for (const child of item.getChildren()) {
+					child.collapse();
+				}
+			})
+			.catch((error) => {
+				console.error("[PagesSidebarTreeItem.handleCollapseSubtreeClick] Failed to collapse subtree", {
+					error,
+					itemId,
+				});
+			});
 	});
 
 	const handleArchiveClick = useFn<PagesSidebarTreeItemMoreAction_Props["onArchive"]>(() => {
@@ -700,8 +790,7 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					"--PagesSidebarTreeItem-content-depth": depth,
 				} satisfies Partial<PagesSidebar_CssVars>)}
 				{...({
-					"data-item-id": itemId,
-					"data-page-id": pageIdForDebug,
+					"data-page-id": itemId,
 				} satisfies Partial<PagesSidebarTreeItem_CustomAttributes>)}
 			>
 				<PagesSidebarTreeItemPrimaryAction
@@ -733,8 +822,12 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					archiveOperationId={itemData.archiveOperationId}
 					isPending={isPending}
 					isTabbable={isTabbableRow}
+					canExpandSubtree={canExpandSubtree}
+					canCollapseSubtree={canCollapseSubtree}
 					onCreatePage={handleCreatePageClick}
 					onRename={handleRenameClick}
+					onExpandSubtree={handleExpandSubtreeClick}
+					onCollapseSubtree={handleCollapseSubtreeClick}
 					onArchive={handleArchiveClick}
 					onUnarchive={handleUnarchiveClick}
 				/>
@@ -999,12 +1092,14 @@ type PagesSidebarHeader_Props = {
 	view: pages_EditorView;
 	selectedPageIdsCount: number;
 	isBusy: boolean;
+	canExpandAll: boolean;
+	canCollapseAll: boolean;
 	treeItemsList: FunctionReturnType<typeof app_convex_api.ai_docs_temp.get_tree_items_list> | undefined;
 	showArchived: boolean;
 	onToggleSidebar: () => void;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
-	onExpandAllClick: () => void;
+	onExpandTopPagesClick: () => void;
 	onCollapseAllClick: () => void;
 	onClearSelectionClick: () => void;
 	onCreateRootPageClick: () => void;
@@ -1017,12 +1112,14 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 		view,
 		selectedPageIdsCount,
 		isBusy,
+		canExpandAll,
+		canCollapseAll,
 		treeItemsList,
 		showArchived,
 		onToggleSidebar,
 		onClose,
 		onSearchQueryChange,
-		onExpandAllClick,
+		onExpandTopPagesClick,
 		onCollapseAllClick,
 		onClearSelectionClick,
 		onCreateRootPageClick,
@@ -1070,32 +1167,6 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 			<PagesSidebarSearch onSearchQueryChange={onSearchQueryChange} />
 
 			<div className={cn("PagesSidebarHeader-actions" satisfies PagesSidebarHeader_ClassNames)}>
-				<div className={cn("PagesSidebarHeader-actions-group" satisfies PagesSidebarHeader_ClassNames)}>
-					<MyIconButton
-						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
-						variant="secondary-subtle"
-						tooltip="Unfold"
-						onClick={onExpandAllClick}
-						disabled={isBusy}
-					>
-						<MyIconButtonIcon>
-							<ChevronsDown />
-						</MyIconButtonIcon>
-					</MyIconButton>
-
-					<MyIconButton
-						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
-						variant="secondary-subtle"
-						tooltip="Fold"
-						onClick={onCollapseAllClick}
-						disabled={isBusy}
-					>
-						<MyIconButtonIcon>
-							<ChevronsUp />
-						</MyIconButtonIcon>
-					</MyIconButton>
-				</div>
-
 				{selectedPageIdsCount > 1 ? (
 					<div className={cn("PagesSidebarHeader-multi-selection-counter" satisfies PagesSidebarHeader_ClassNames)}>
 						<span
@@ -1132,16 +1203,44 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 				)}
 			</div>
 
-			{archivedCount ? (
-				<MyButton
-					className={cn("PagesSidebarHeader-archive-toggle" satisfies PagesSidebarHeader_ClassNames)}
-					variant="ghost"
-					onClick={onArchiveToggleClick}
-					disabled={isBusy}
-				>
-					{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
-				</MyButton>
-			) : null}
+			<div className={cn("PagesSidebarHeader-actions" satisfies PagesSidebarHeader_ClassNames)}>
+				<div className={cn("PagesSidebarHeader-actions-group" satisfies PagesSidebarHeader_ClassNames)}>
+					<MyIconButton
+						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+						variant="ghost-highlightable"
+						tooltip="Expand root pages"
+						onClick={onExpandTopPagesClick}
+						disabled={isBusy || !canExpandAll}
+					>
+						<MyIconButtonIcon>
+							<CopyPlus />
+						</MyIconButtonIcon>
+					</MyIconButton>
+
+					<MyIconButton
+						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+						variant="ghost-highlightable"
+						tooltip="Collapse all"
+						onClick={onCollapseAllClick}
+						disabled={isBusy || !canCollapseAll}
+					>
+						<MyIconButtonIcon>
+							<CopyMinus />
+						</MyIconButtonIcon>
+					</MyIconButton>
+				</div>
+
+				{archivedCount ? (
+					<MyButton
+						className={cn("PagesSidebarHeader-archive-toggle" satisfies PagesSidebarHeader_ClassNames)}
+						variant="ghost"
+						onClick={onArchiveToggleClick}
+						disabled={isBusy}
+					>
+						{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
+					</MyButton>
+				) : null}
+			</div>
 		</div>
 	);
 });
@@ -1176,7 +1275,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingActionPageIds, setPendingActionPageIds] = useState<Set<string>>(new Set());
 	const isBusy = isCreatingPage || isArchivingSelection;
+
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
+	const canCollapseAll = expandedItems.length > 1;
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedPagePathAutoExpandedOnMountRef = useRef(false);
@@ -1252,6 +1353,16 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 		return result;
 	}, [treeItemsList, showArchived]);
+
+	const canExpandAll = ((/* iife */) => {
+		const topLevelItems = treeItems?.itemsIdsByParentId.get(pages_ROOT_ID);
+
+		if (!topLevelItems || topLevelItems.size === 0) {
+			return false;
+		}
+
+		return topLevelItems.difference(new Set(expandedItems)).size > 0;
+	})();
 
 	/**
 	 * Filtered items ids from search query
@@ -1746,9 +1857,14 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			});
 	});
 
-	const handleExpandAllClick = useFn(() => {
-		tree()
-			.expandAll()
+	const handleExpandTopPagesClick = useFn(() => {
+		// Expand only the immediate children of the root page
+		Promise.try(() => tree().loadChildrenIds(pages_ROOT_ID))
+			.then(() => {
+				for (const child of tree().getRootItem().getChildren()) {
+					child.expand();
+				}
+			})
 			.catch((error) => {
 				console.error("[PagesSidebar.handleExpandAllClick] Failed to expand tree", { error });
 			});
@@ -1857,12 +1973,14 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				view={view}
 				selectedPageIdsCount={selectedPageIds.size}
 				isBusy={isBusy}
+				canExpandAll={canExpandAll}
+				canCollapseAll={canCollapseAll}
 				treeItemsList={treeItemsList}
 				showArchived={showArchived}
 				onToggleSidebar={mainAppSidebar.toggleSidebar}
 				onClose={onClose}
 				onSearchQueryChange={setSearchQuery}
-				onExpandAllClick={handleExpandAllClick}
+				onExpandTopPagesClick={handleExpandTopPagesClick}
 				onCollapseAllClick={handleCollapseAllClick}
 				onClearSelectionClick={handleClearSelectionClick}
 				onCreateRootPageClick={handleCreateRootPageClick}
