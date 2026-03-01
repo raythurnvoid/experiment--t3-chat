@@ -1,0 +1,129 @@
+@layer common_components {
+	/* #region panel group */
+	.MyPanelGroup {
+		min-width: 0;
+		min-height: 0;
+	}
+	/* #endregion panel group */
+
+	/* #region panel */
+	.MyPanel {
+		min-width: 0;
+		min-height: 0;
+
+		display: flex;
+		flex-direction: column;
+
+		contain: inline-size layout style;
+	}
+	/* #endregion panel */
+
+	/* #region background */
+	.MyPanelInfiniteBackground {
+		/*
+		Set a container to support position absolute and
+		ensure that the arbitrarily large height of the background
+		does not affect the ancestor's scrollable area size.
+		*/
+		contain: layout style size;
+		position: relative;
+
+		/* Ensure content is visible */
+		z-index: -1;
+
+		&::before {
+			content: "";
+			display: block;
+			position: absolute;
+
+			/*
+			Negative inset matches the padding of the container while
+			allows the element to grow vertically.
+			*/
+			inset: 0 0 auto 0;
+
+			background-color: var(--color-base-1-03);
+			pointer-events: none;
+
+			/*
+			Arbitrarily large height to ensure the background 
+			spans across the whole page height.
+			*/
+			height: 9999px;
+		}
+	}
+	/* #endregion background */
+
+	/* #region handle */
+	.MyPanelResizeHandleContainer {
+		contain: layout style size;
+		z-index: 2;
+
+		display: flex;
+		justify-content: center;
+		align-items: center;
+	}
+
+	.MyPanelResizeHandleContainer-orientation-vertical {
+		width: 0;
+	}
+
+	.MyPanelResizeHandleContainer-orientation-horizontal {
+		height: 0;
+	}
+
+	.MyPanelResizeHandle {
+		contain: layout style;
+		touch-action: none;
+		position: absolute;
+		background-color: transparent;
+
+		&[data-resize-handle-state="drag"] {
+			background-color: var(--color-base-alt-2-10);
+		}
+
+		&[data-resize-handle-state="hover"] {
+			background-color: var(--color-base-alt-1-07);
+		}
+
+		&::before {
+			content: "";
+			position: absolute;
+		}
+	}
+
+	.MyPanelResizeHandle-orientation-vertical {
+		height: 9999px;
+		width: 24px;
+
+		display: flex;
+		justify-content: center;
+
+		&::before {
+			height: 100%;
+			width: 2px;
+		}
+
+		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+			background-color: var(--color-base-alt-1-07);
+		}
+	}
+
+	.MyPanelResizeHandle-orientation-horizontal {
+		width: 9999px;
+		height: 24px;
+
+		display: flex;
+		align-items: center;
+
+		&::before {
+			width: 100%;
+			height: 2px;
+		}
+
+		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+			background-color: var(--color-base-alt-1-07);
+		}
+	}
+	/* #endregion handle */
+}

@@ -9,7 +9,6 @@ import { PageEditorRichTextSidebarAgent } from "../page-editor-rich-text/page-ed
 // #region root
 export type PageEditorSidebar_ClassNames =
 	| "PageEditorRichTextSidebar"
-	| "PageEditorRichTextSidebar-background"
 	| "PageEditorRichTextSidebar-toolbar"
 	| "PageEditorRichTextSidebar-toolbar-scrollable-area"
 	| "PageEditorRichTextSidebar-tabs-list"
@@ -40,7 +39,6 @@ export function PageEditorSidebar(props: PageEditorSidebar_Props) {
 
 	return (
 		<>
-			<div className={cn("PageEditorRichTextSidebar-background" satisfies PageEditorSidebar_ClassNames)}></div>
 			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
 				<div className={cn("PageEditorRichTextSidebar-toolbar" satisfies PageEditorSidebar_ClassNames)}>
 					<div

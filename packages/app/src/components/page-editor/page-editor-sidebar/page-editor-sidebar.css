@@ -59,38 +59,5 @@
 		display: flex;
 		flex-direction: column;
 	}
-
-	.PageEditorRichTextSidebar-background {
-		/*
-		Set a container to support position absolute and
-		ensure that the arbitrarily large height of the background
-		does not affect the ancestor's scrollable area size.
-		*/
-		contain: layout style size;
-
-		/* Ensure content is visible */
-		z-index: -1;
-
-		&:before {
-			content: "";
-			display: block;
-			position: absolute;
-
-			/*
-			Negative inset matches the padding of the container while
-			allows the element to grow vertically.
-			*/
-			inset: 0 0 auto 0;
-
-			background-color: var(--color-base-1-03);
-			pointer-events: none;
-
-			/*
-			Arbitrarily large height to ensure the background 
-			spans across the whole page height.
-			*/
-			height: 9999px;
-		}
-	}
 	/* #endregion root */
 }

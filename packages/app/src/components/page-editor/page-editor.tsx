@@ -34,8 +34,7 @@ import {
 } from "../../hooks/presence-hooks.ts";
 import { CatchBoundary, useNavigate } from "@tanstack/react-router";
 import { PageEditorError } from "./page-editor-error.tsx";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import type { MySeparator_ClassNames } from "../my-separator.tsx";
+import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "../my-resizable-panel-group.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
 function get_breadcrumb_path(
@@ -583,9 +582,7 @@ export type PageEditor_ClassNames =
 	| "PageEditor-editor-area"
 	| "PageEditor-panels-group"
 	| "PageEditor-content-panel"
-	| "PageEditor-sidebar"
-	| "PageEditor-panel-size-handle-container"
-	| "PageEditor-panel-size-handle";
+	| "PageEditor-sidebar";
 
 type PageEditor_Inner_Props = {
 	pageId: app_convex_Id<"pages">;
@@ -738,7 +735,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 				className={cn("PageEditor-editor-area" satisfies PageEditor_ClassNames)}
 				style={editorMode === "rich_text_editor" ? undefined : { overflowY: "visible" }}
 			>
-				<PanelGroup
+				<MyPanelGroup
 					direction="horizontal"
 					className={cn("PageEditor-panels-group" satisfies PageEditor_ClassNames)}
 					style={{
@@ -747,7 +744,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 						overflow: "visible",
 					}}
 				>
-					<Panel
+					<MyPanel
 						defaultSize={75}
 						className={cn("PageEditor-content-panel" satisfies PageEditor_ClassNames)}
 						style={leftPanelStyle}
@@ -771,17 +768,9 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 								onDiffExit={handleDiffExit}
 							/>
 						</CatchBoundary>
-					</Panel>
-					<div className={cn("PageEditor-panel-size-handle-container" satisfies PageEditor_ClassNames)}>
-						<PanelResizeHandle
-							className={cn(
-								"PageEditor-panel-size-handle" satisfies PageEditor_ClassNames,
-								"MySeparator" satisfies MySeparator_ClassNames,
-								"MySeparator-vertical" satisfies MySeparator_ClassNames,
-							)}
-						/>
-					</div>
-					<Panel
+					</MyPanel>
+					<MyPanelResizeHandle />
+					<MyPanel
 						className={"PageEditor-sidebar" satisfies PageEditor_ClassNames}
 						collapsible={false}
 						defaultSize={25}
@@ -790,8 +779,8 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 						}}
 					>
 						<PageEditorSidebar commentsContainerRef={setCommentsPortalHost} />
-					</Panel>
-				</PanelGroup>
+					</MyPanel>
+				</MyPanelGroup>
 			</div>
 		</div>
 	);

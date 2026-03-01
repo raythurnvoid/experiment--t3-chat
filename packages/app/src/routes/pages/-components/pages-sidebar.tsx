@@ -41,7 +41,6 @@ import {
 import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
-import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
@@ -982,7 +981,6 @@ const PagesSidebarSearch = memo(function PagesSidebarSearch(props: PagesSidebarS
 // #region header
 type PagesSidebarHeader_ClassNames =
 	| "PagesSidebarHeader"
-	| "PagesSidebarHeader-header"
 	| "PagesSidebarHeader-top-section"
 	| "PagesSidebarHeader-top-section-left"
 	| "PagesSidebarHeader-hamburger-button"
@@ -1035,12 +1033,7 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 		treeItemsList?.filter((item) => item.type === "page" && item.archiveOperationId !== undefined).length ?? 0;
 
 	return (
-		<MySidebarHeader
-			className={cn(
-				"PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames,
-				"PagesSidebarHeader-header" satisfies PagesSidebarHeader_ClassNames,
-			)}
-		>
+		<div className={"PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames}>
 			<div className={cn("PagesSidebarHeader-top-section" satisfies PagesSidebarHeader_ClassNames)}>
 				<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
 					<MyIconButton
@@ -1149,7 +1142,7 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 					{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
 				</MyButton>
 			) : null}
-		</MySidebarHeader>
+		</div>
 	);
 });
 // #endregion header
@@ -1158,7 +1151,6 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 type PagesSidebar_ClassNames = "PagesSidebar" | "PagesSidebar-content";
 
 export type PagesSidebar_Props = {
-	state: MySidebar_Props["state"];
 	selectedPageId: string | null;
 	view: pages_EditorView;
 	onClose: () => void;
@@ -1167,7 +1159,7 @@ export type PagesSidebar_Props = {
 };
 
 export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props) {
-	const { selectedPageId, state = "expanded", view, onClose, onArchive, onPrimaryAction } = props;
+	const { selectedPageId, view, onClose, onArchive, onPrimaryAction } = props;
 
 	const navigate = useNavigate();
 	const convex = useConvex();
@@ -1859,7 +1851,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	}, [visiblePagesIds, selectedPageId]);
 
 	return (
-		<MySidebar state={state} className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
+		<aside className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
 			<PagesSidebarHeader
 				homePageId={homePageId}
 				view={view}
@@ -1877,7 +1869,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				onArchiveToggleClick={handleArchiveToggleClick}
 			/>
 
-			<MySidebarContent className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
+			<div className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 				<PagesSidebarTree
 					tree={tree}
 					isTreeLoading={treeItemsList === undefined}
@@ -1893,8 +1885,8 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>
-			</MySidebarContent>
-		</MySidebar>
+			</div>
+		</aside>
 	);
 });
 // #endregion root

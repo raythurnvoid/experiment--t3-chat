@@ -2,8 +2,7 @@ import "./index.css";
 
 import React, { Suspense } from "react";
 import type { PageEditor_Props } from "../../components/page-editor/page-editor.tsx";
-import { PagesSidebar, type PagesSidebar_Props } from "./-components/pages-sidebar.tsx";
-import { Panel, PanelGroup } from "react-resizable-panels";
+import { PagesSidebar } from "./-components/pages-sidebar.tsx";
 import { useState, useEffect } from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { PageEditorSkeleton } from "../../components/page-editor/page-editor-skeleton.tsx";
@@ -17,6 +16,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/ut
 import { useStableQuery } from "../../hooks/convex-hooks.ts";
 import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 
 const PageEditor = React.lazy(() =>
 	import("../../components/page-editor/page-editor.tsx").then((module) => ({
@@ -58,6 +58,9 @@ function RoutePagesContent(props: RoutePagesContent_Props) {
 
 type RoutePages_ClassNames =
 	| "RoutePages-content-area"
+	| "RoutePages-panels-group"
+	| "RoutePages-sidebar-panel"
+	| "RoutePages-main-panel"
 	| "RoutePages-main-content"
 	| "RoutePages-editor-panel"
 	| "RoutePages-editor-panel-controls"
@@ -67,6 +70,8 @@ type RoutePages_ClassNames =
 	| "RoutePages-loading-text"
 	| "RoutePages-editor-wrapper";
 
+type RoutePages_SidebarState = "closed" | "expanded";
+
 function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
@@ -74,7 +79,7 @@ function RoutePages() {
 
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
-	const [pagesSidebarState, setPagesSidebarState] = useState<PagesSidebar_Props["state"]>("expanded");
+	const [pagesSidebarState, setPagesSidebarState] = useState<RoutePages_SidebarState>("expanded");
 
 	const lastOpenPageId = useAppLocalStorageState((state) => state.pages_last_open);
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
@@ -173,21 +178,29 @@ function RoutePages() {
 
 	return (
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
-			{/* Pages Sidebar - positioned between main sidebar and content with animation */}
-			<PagesSidebar
-				selectedPageId={searchPageId ?? null}
-				view={effectiveView}
-				onClose={handleCloseSidebar}
-				onArchive={handleArchive}
-				onPrimaryAction={handlePrimaryAction}
-				state={pagesSidebarState}
-			/>
-			{resolvedPageId ? (
-				// Main Content Area - takes remaining space
-				<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
-					<PanelGroup direction="horizontal" className="h-full">
-						{/* Pages Editor Panel */}
-						<Panel defaultSize={100} minSize={50}>
+			<MyPanelGroup direction="horizontal" className={"RoutePages-panels-group" satisfies RoutePages_ClassNames}>
+				<MyPanel
+					defaultSize={24}
+					className={"RoutePages-sidebar-panel" satisfies RoutePages_ClassNames}
+					isOpen={pagesSidebarState === "expanded"}
+					closeBehavior="unmount"
+				>
+					<PagesSidebar
+						selectedPageId={searchPageId ?? null}
+						view={effectiveView}
+						onClose={handleCloseSidebar}
+						onArchive={handleArchive}
+						onPrimaryAction={handlePrimaryAction}
+					/>
+				</MyPanel>
+				<MyPanelResizeHandle isOpen={pagesSidebarState === "expanded"} closeBehavior="unmount" />
+				<MyPanel
+					defaultSize={pagesSidebarState === "closed" ? 100 : 76}
+					minSize={40}
+					className={"RoutePages-main-panel" satisfies RoutePages_ClassNames}
+				>
+					{resolvedPageId ? (
+						<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
 							<div className={"RoutePages-editor-panel" satisfies RoutePages_ClassNames}>
 								{pagesSidebarState === "closed" && (
 									<div className={"RoutePages-editor-panel-controls" satisfies RoutePages_ClassNames}>
@@ -220,12 +233,12 @@ function RoutePages() {
 									/>
 								</div>
 							</div>
-						</Panel>
-					</PanelGroup>
-				</div>
-			) : searchPageId ? (
-				<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
-			) : null}
+						</div>
+					) : searchPageId ? (
+						<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
+					) : null}
+				</MyPanel>
+			</MyPanelGroup>
 		</div>
 	);
 }
