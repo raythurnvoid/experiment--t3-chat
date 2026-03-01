@@ -1,11 +1,11 @@
 @layer components {
 	/* #region root */
-	.PageEditorRichTextSidebar {
+	.PageEditorSidebar {
 		display: flex;
 		flex-direction: column;
 	}
 
-	.PageEditorRichTextSidebar-toolbar {
+	.PageEditorSidebar-toolbar {
 		height: 44px;
 		background: var(--color-base-1-04);
 		border-bottom: 1px solid var(--color-fg-02);
@@ -17,7 +17,7 @@
 		z-index: 1;
 	}
 
-	.PageEditorRichTextSidebar-toolbar-scrollable-area {
+	.PageEditorSidebar-toolbar-scrollable-area {
 		min-height: 44px;
 		max-height: calc(44px + var(--app-scrollbar-w));
 
@@ -34,30 +34,117 @@
 		min-width: 0;
 	}
 
-	.PageEditorRichTextSidebar-tabs-panels {
+	.PageEditorSidebar-tabs-panels {
 		flex: 1;
 		min-height: 0;
 	}
 
-	.PageEditorRichTextSidebar-panel {
+	.PageEditorSidebar-panel {
 		min-height: 100%;
 
 		display: flex;
 		flex-direction: column;
 	}
 
-	.PageEditorRichTextSidebar-panel-empty {
+	.PageEditorSidebar-panel-empty {
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		color: var(--color-fg-06);
 	}
 
-	.PageEditorRichTextSidebar-comments-host {
+	.PageEditorSidebar-comments-host {
 		flex: 1;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
 	}
 	/* #endregion root */
+
+	/* #region agent */
+	.PageEditorSidebarAgent {
+		display: flex;
+		flex-direction: column;
+
+		width: 100%;
+		/* 44px is the size of the sidebar toolbar */
+		height: calc(100cqh - 44px);
+
+		position: sticky;
+		/* 44px is the size of the sidebar toolbar */
+		top: 44px;
+
+		contain: strict;
+	}
+
+	.PageEditorSidebarAgent-header {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+
+		padding: 4px 8px;
+
+		border-bottom: 1px solid var(--color-base-1-06);
+	}
+
+	.PageEditorSidebarAgent-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.PageEditorSidebarAgent-chat-area {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+
+		overflow: hidden auto;
+	}
+
+	.PageEditorSidebarAgentThreadPicker-popover-content {
+		max-width: 600px;
+	}
+
+	.PageEditorSidebarAgentThreadPicker-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.PageEditorSidebarAgentThreadPicker-item-title {
+		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.PageEditorSidebarAgentThreadPicker-item-actions {
+		display: flex;
+		align-items: center;
+		margin-left: auto;
+	}
+
+	.PageEditorSidebarAgentThreadPicker-item-action.MyIconButton.MyButton {
+		width: 28px;
+		height: 28px;
+		padding: 4px;
+	}
+
+	.PageEditorSidebarAgentThreadPicker-item-action .MyIconButtonIcon {
+		width: 14px;
+		height: 14px;
+	}
+
+	.PageEditorSidebarAgentThreadPickerList-empty {
+		padding: 12px 16px;
+
+		color: var(--color-fg-06);
+
+		font-size: 0.875rem;
+		text-align: center;
+	}
+	/* #endregion agent */
 }
