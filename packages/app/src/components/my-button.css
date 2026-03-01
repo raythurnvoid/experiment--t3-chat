@@ -193,6 +193,11 @@
 		}
 	}
 
+	.MyButton-variant-ghost,
+	.MyButton-variant-ghost-highlightable {
+		color: var(--color-fg-07);
+	}
+
 	.MyButton-variant-ghost {
 		background: transparent;
 
@@ -241,7 +246,6 @@
 
 	.MyButton-variant-ghost-highlightable {
 		background: transparent;
-		color: var(--color-fg-09);
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
