@@ -48,7 +48,7 @@ The Convex backend handles:
 - Zustand - State management
 - CSS + shadcn/ui - Styling and components
 - React 19 - Frontend framework
-- React Complex Tree - Docs/file explorer
+- Headless Tree - Docs/file explorer
 - Vite - Dev/build tool
 - Playwright - UI verification
 - AI SDK + OpenAI - AI integration and streaming
@@ -454,7 +454,13 @@ The React Compiler currently has issues lowering `try { ... } catch { ... } fina
 
 Use these naming rules with one practical exception for symbols that are tightly scoped to a specific component, hook, or utility.
 
-### Root Level Module Symbols (default: snake_case)
+### Root Level Module Symbols (default: snake_case, exported and non-exported)
+
+For all root-level symbols (both exported and non-exported), use `snake_case` by default.
+
+Module namespacing prefixes (for example `pages_*`, `ai_chat_*`) are primarily for exported/public symbols where better cross-file autocomplete and discoverability matter most.
+
+For non-exported root-level helpers, keep plain descriptive `snake_case` unless the file already follows a consistent module-prefixed style for private symbols.
 
 ```ts
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
@@ -494,6 +500,9 @@ type useAutoScroll_Props = { ... };
 ```
 
 Use this pattern only for tightly related declarations. Keep shared/generic module APIs in `snake_case`.
+
+This owner-scoped pattern is allowed for private helpers but not required; prefer local file consistency and minimal renaming.
+For function-owned types, one-off shapes are often easier inline, while owner-linked names (for example `OwnerSymbol_Args` or `OwnerSymbol_Result`) can be helpful when the type is reused, exported, or notably improves readability.
 
 ### Function-local variables and helpers (camelCase)
 

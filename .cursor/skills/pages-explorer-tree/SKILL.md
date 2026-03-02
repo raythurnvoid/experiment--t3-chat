@@ -9,6 +9,7 @@ Primary:
 
 - `../../../packages/app/src/routes/pages/-components/pages-sidebar.tsx`
 - `../../../packages/app/src/routes/pages/-components/pages-sidebar.css`
+- `../../../packages/app/src/routes/pages/index.tsx`
 - `../../../packages/app/convex/ai_docs_temp.ts`
 - `../../../packages/app/shared/pages.ts`
 - `../../../packages/app/src/lib/pages.ts`
@@ -23,14 +24,17 @@ The Pages sidebar is implemented in `pages-sidebar.tsx` on top of `@headless-tre
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
 - Vendored sources: `../../../packages/app/vendor/headless-tree/packages/*`
 - Backend data: Convex `ai_docs_temp` query/mutations
-- Item types: `"root" | "page" | "placeholder"`
-- Only `"page"` items are mutable tree entities
+- Primary data source: `ai_docs_temp.get_tree_items_list` (server-driven)
+- Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
+- Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
+- Backend item types: `"root" | "page"`; placeholder rows are UI-only render artifacts
+- Only `"page"` items are mutable entities
 
 # Data model and contracts
 
 - `pages_TreeItem` shape is defined in `../../../packages/app/convex/ai_docs_temp.ts`.
-- `pages_ROOT_ID` and `pages_create_tree_placeholder_child` are in `../../../packages/app/shared/pages.ts` (re-exported by `../../../packages/app/src/lib/pages.ts`).
-- Backend returns root/page items only; placeholder rows are client-generated.
+- `pages_ROOT_ID` and `pages_create_tree_root` are in `../../../packages/app/shared/pages.ts` (re-exported by `../../../packages/app/src/lib/pages.ts`).
+- Backend returns root/page items only; placeholder rows are client-rendered.
 - Placeholder nodes are structural UI helpers and must never be mutation targets.
 
 # Component and helper structure
@@ -39,76 +43,96 @@ Main component:
 
 - `PagesSidebar`
 
-Tree components (same file):
+Main sections (same file):
 
-- `PagesSidebarTreeArea`
+- `PagesSidebarHeader`
+- `PagesSidebarSearch`
+- `PagesSidebarTree`
+
+Tree-item components (same file):
+
 - `PagesSidebarTreeItem`
 - `PagesSidebarTreeItemArrow`
-- `PagesSidebarTreeRenameInput`
+- `PagesSidebarTreeItemTitle`
 - `PagesSidebarTreeItemIcon`
-- `PagesSidebarTreeItemPrimaryActionContent`
-- `PagesSidebarTreeItemActionIconButton`
+- `PagesSidebarTreeItemPrimaryContent`
+- `PagesSidebarTreeItemPrimaryAction`
+- `PagesSidebarTreeItemMetaLabel`
+- `PagesSidebarTreeItemActions`
+- `PagesSidebarTreeItemSecondaryAction`
+- `PagesSidebarTreeItemSecondaryActionCreatePage`
+- `PagesSidebarTreeItemMoreAction`
+- `PagesSidebarTreeItemTrack`
+- `PagesSidebarTreeItemPlaceholder`
 
 Core helpers:
 
-- `pages_sidebar_build_collection`
-- `pages_sidebar_sort_children`
 - `pages_sidebar_to_page_id`
 - `pages_sidebar_to_parent_id`
-- `pages_sidebar_are_tree_items_lists_equal`
+- `pages_sidebar_get_default_page_name`
+- `sort_children`
 
 # State and behavior flows
 
-## Query fallback and flicker control
+## Server-driven data flow
 
 - Sidebar queries `ai_docs_temp.get_tree_items_list`.
-- Effective source is `queriedTreeItemsList ?? resolvedTreeItemsList`.
-- `resolvedTreeItemsList` updates only when snapshots differ.
-- This prevents transient undefined-query windows from flashing the tree empty.
+- Tree collection maps/sets are derived from query results (`useMemo`) and rebuilt from server data.
+- No local fallback mirror (for example `queried* ?? resolved*`) is maintained for tree records.
+- Loading/empty states are derived from query presence and visible IDs.
 
 ## Collection construction
 
 - Build normalized collection keyed by item index.
 - Filter archived rows unless archived mode is enabled.
-- Re-parent detached/orphan pages under root.
-- Sort children consistently (locale/numeric/case-insensitive), placeholders last.
-- Inject placeholder child for page nodes with no children.
+- Sort children consistently (locale/numeric/case-insensitive).
+- Render placeholder rows only in UI when an expanded page has no children.
 
 ## Search
 
-- Search computes a visible ID set with descendant-aware matching.
-- Ancestors of matched descendants remain visible.
+- Search input is debounced and consumed through a deferred query value.
+- Visible IDs are computed from title matches plus ancestor chain inclusion.
+- Ancestors of matched pages remain visible.
 - Placeholder nodes are excluded from search matching.
+- Search-open snapshots expansion state and auto-expands relevant parents; search-close restores prior expansion.
 
 ## Selection and primary action
 
 - Primary click implements single select, toggle-select, and shift-range.
 - Non-modifier click runs primary action for page nodes.
-- `F2` starts rename on focused page.
 - Blur outside tree clears selection/focus styling state.
+- In multi-select mode, selection anchor drives active track highlighting.
 
 ## Create, rename, archive, unarchive
 
 - Create: `ai_docs_temp.create_page`, then navigate and start rename.
+- Create naming: default `New Page` with sibling-aware numeric suffixes.
 - Rename: headless-tree `onRename` -> `ai_docs_temp.rename_page`.
+- Rename uses Convex `optimisticUpdate` for immediate title feedback.
 - Archive/unarchive: `ai_docs_temp.archive_pages` / `ai_docs_temp.unarchive_pages`.
-- Multi-select archive uses batched async operations over selected page IDs.
+- Multi-select archive sends one mutation call with selected page IDs.
 - Pending UI state is split across `isBusy` (global) and `pendingActionPageIds` (per-item).
 
 ## Drag and drop
 
-- In-tree DnD: headless-tree `onDrop` -> `movePagesToParent` -> `ai_docs_temp.move_pages`.
-- Root drop-zone path is handled on the outer tree area.
-- Root drop reads `tree.getState().dnd?.draggedItems` and moves to `pages_ROOT_ID`.
-- In-tree and root-drop paths must stay behaviorally aligned.
+- In-tree DnD: headless-tree `onDrop` -> `ai_docs_temp.move_pages`.
+- `canDrop` guards target type, self-drop, and descendant-drop.
+- Root-zone handling on outer tree area is visual feedback/state, while final move still flows through tree `onDrop`.
+
+## Header actions
+
+- New page, clear selection, expand root pages, collapse all.
+- Archived toggle with live archived count.
+- Search and top-level route/title actions.
 
 # Headless-tree configuration highlights
 
 `useTree<pages_TreeItem>` configuration includes:
 
 - `rootItemId: pages_ROOT_ID`
-- initial expanded root
-- sync data loader + selection + hotkeys + DnD + renaming + expand-all features
+- controlled `expandedItems` + `setExpandedItems`
+- `canReorder: false`
+- sync data loader + selection + hotkeys + DnD + renaming + expand-all + click behavior + prop memoization features
 - page-only `canDrag` and `canRename`
 - guarded `canDrop` (target type, self-drop, descendant-drop protection)
 
@@ -130,51 +154,63 @@ Additional notes:
 
 - Client converts tree IDs to Convex page IDs and passes workspace/project IDs for mutations.
 - Backend may ignore protected operations (for example home page path); UI should not assume all requested mutations apply.
+- Optimistic behavior should use Convex mutation `optimisticUpdate` hooks, while keeping query data as the source of truth.
 
 # Architectural invariants
 
 1. Keep placeholder behavior client-only and non-mutable.
-2. Keep fallback list behavior to avoid tree flicker/reset.
-3. Preserve ancestor-aware search visibility.
-4. Preserve custom selection semantics and keyboard rename behavior.
-5. Keep DnD safety guards (self/descendant/type) and root-drop support.
+2. Keep tree record data server-driven from Convex query; do not introduce local mirror/fallback state.
+3. Preserve ancestor-aware search visibility and search expansion-restore behavior.
+4. Preserve custom selection semantics and selection-anchor behavior.
+5. Keep DnD safety guards (self/descendant/type) and root-zone feedback behavior.
 6. Keep pending state split (`isBusy` and `pendingActionPageIds`) for correct UI gating.
-7. Do not reintroduce outdated tree/data-provider architecture patterns.
+7. Prefer Convex optimistic updates over manual local tree patching.
+8. Do not reintroduce outdated tree/data-provider architecture patterns.
 
 # Change playbooks
 
 ## Add per-item action
 
-1. Add button in `PagesSidebarTreeItem` actions.
+1. Add action in `PagesSidebarTreeItemActions` / item menu.
 2. Gate to page items.
 3. Wire per-item pending disable state.
-4. Rely on Convex refresh for final source of truth.
+4. Keep Convex query refresh as final source of truth.
 
 ## Change filtering/search
 
 1. Update collection/search logic together.
-2. Preserve orphan re-parenting and sort guarantees.
+2. Preserve ancestor chain visibility guarantees.
 3. Re-check archived mode behavior with search.
+4. Re-check search-open/search-close expansion restoration.
 
 ## Change drag/drop rules
 
 1. Update `canDrop` first.
 2. Keep all safety guards.
-3. Validate in-tree and root-drop-zone paths separately.
+3. Validate in-tree behavior and root-zone feedback behavior separately.
 
 ## Change create/rename
 
 1. Keep create -> navigate -> rename-start flow.
-2. Preserve trim/empty/unchanged rename no-op guards.
-3. Preserve async pending marker lifecycle.
+2. Preserve default sibling-aware `New Page` naming.
+3. Preserve trim/empty/unchanged rename no-op guards.
+4. Preserve async pending marker lifecycle and optimistic rename behavior.
+
+## Add optimistic behavior
+
+1. Prefer Convex mutation `optimisticUpdate` for optimistic UI.
+2. Avoid introducing local mirrored tree state for optimistic paths.
+3. Ensure query refresh reconciliation remains correct after optimistic updates.
 
 # Verification checklist
 
-- Query fallback prevents flash-to-empty.
-- Search keeps ancestor chain for matching leaves.
-- Selection modes (single/toggle/range) behave correctly.
-- `F2` rename and rename guards behave correctly.
+- Tree updates come from `get_tree_items_list` and do not depend on local mirrored data.
+- Search (debounced + deferred) keeps ancestor chain for matching leaves.
+- Search-open expands relevant branches and search-close restores prior expansion.
+- Selection modes (single/toggle/range) and anchor behavior are correct.
 - Create navigates and starts rename.
+- New page default naming remains unique among active siblings.
+- Rename guards and optimistic rename behavior are correct.
 - Archive/unarchive and archived filter/toggle behavior is correct.
-- DnD allows legal moves, blocks illegal moves, and root drop still works.
+- DnD allows legal moves, blocks illegal moves, and root-zone feedback works.
 - Placeholder nodes are never sent to mutations.

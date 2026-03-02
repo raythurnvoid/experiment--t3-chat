@@ -173,7 +173,8 @@ export function Result_try_promise<T>(promise: Promise<T>): Promise<
 
 export function Result_all<const T extends ReadonlyArray<unknown>>(results: T) {
 	const yays = [] as Array<
-		Exclude<T[number], { _yay: unknown } | { _nay: unknown }> | Extract<T[number], { _yay: unknown }>["_yay"]
+		| Exclude<T[number], { _yay: unknown } | { _nay: unknown }>
+		| Extract<T[number], { _yay: unknown; _nay?: undefined }>["_yay"]
 	>;
 
 	for (const result of results) {
@@ -188,7 +189,18 @@ export function Result_all<const T extends ReadonlyArray<unknown>>(results: T) {
 		}
 	}
 
-	return Result({ _yay: yays });
+	return Result({
+		_yay: yays as number extends T["length"]
+			? Array<
+					| Exclude<T[number], { _yay: unknown } | { _nay: unknown }>
+					| Extract<T[number], { _yay: unknown; _nay?: undefined }>["_yay"]
+				>
+			: {
+					[K in keyof T]:
+						| Exclude<T[K], { _yay: unknown } | { _nay: unknown }>
+						| Extract<T[K], { _yay: unknown; _nay?: undefined }>["_yay"];
+				},
+	});
 }
 
 export function Result_nay_from(error_or_nay: unknown) {

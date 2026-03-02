@@ -1,11 +1,14 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import { encode_path_segment } from "../server/server-utils.ts";
+import { db_upsert_page_chunks } from "./ai_docs_temp.ts";
 
 const delete_all_archived_pages_returns_validator = v.object({
 	pages: v.number(),
 	pages_markdown_content: v.number(),
+	pagesMarkdownChunks: v.number(),
+	pagesPlainTextChunks: v.number(),
 	pages_yjs_snapshots: v.number(),
 	pages_yjs_updates: v.number(),
 	pages_yjs_docs_last_sequences: v.number(),
@@ -13,23 +16,6 @@ const delete_all_archived_pages_returns_validator = v.object({
 	pages_snapshots: v.number(),
 	pages_snapshots_contents: v.number(),
 	ai_chat_pending_edits: v.number(),
-});
-
-const audit_active_duplicate_materialized_paths_returns_validator = v.object({
-	scannedActivePages: v.number(),
-	duplicateGroups: v.array(
-		v.object({
-			workspaceId: v.string(),
-			projectId: v.string(),
-			path: v.string(),
-			pageIds: v.array(v.id("pages")),
-		}),
-	),
-});
-
-const unset_pages_is_archived_flags_returns_validator = v.object({
-	scanned: v.number(),
-	patched: v.number(),
 });
 
 /**
@@ -64,6 +50,8 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 		return {
 			pages: 0,
 			pages_markdown_content: 0,
+			pagesMarkdownChunks: 0,
+			pagesPlainTextChunks: 0,
 			pages_yjs_snapshots: 0,
 			pages_yjs_updates: 0,
 			pages_yjs_docs_last_sequences: 0,
@@ -77,6 +65,8 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 	const counts = {
 		pages: 0,
 		pages_markdown_content: 0,
+		pagesMarkdownChunks: 0,
+		pagesPlainTextChunks: 0,
 		pages_yjs_snapshots: 0,
 		pages_yjs_updates: 0,
 		pages_yjs_docs_last_sequences: 0,
@@ -89,6 +79,8 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 	for (const page of archivedPages) {
 		const [
 			pageMarkdownContentRow,
+			pageMarkdownChunkRows,
+			pagePlainTextChunkRows,
 			pageYjsSnapshotRows,
 			pageYjsUpdateRows,
 			pageYjsLastSequenceRows,
@@ -97,6 +89,18 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			pagePendingEditsRows,
 		] = await Promise.all([
 			page.markdownContentId ? ctx.db.get("pages_markdown_content", page.markdownContentId) : null,
+			ctx.db
+				.query("pages_markdown_chunks")
+				.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+					q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId).eq("pageId", page._id),
+				)
+				.collect(),
+			ctx.db
+				.query("pages_plain_text_chunks")
+				.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+					q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId).eq("pageId", page._id),
+				)
+				.collect(),
 			ctx.db
 				.query("pages_yjs_snapshots")
 				.withIndex("by_workspace_project_page_id_sequence", (q) =>
@@ -146,6 +150,8 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 
 		await Promise.all([
 			...(pageMarkdownContentRow ? [ctx.db.delete("pages_markdown_content", pageMarkdownContentRow._id)] : []),
+			...pagePlainTextChunkRows.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)),
+			...pageMarkdownChunkRows.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)),
 			...pageYjsSnapshotRows.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)),
 			...pageYjsUpdateRows.map((row) => ctx.db.delete("pages_yjs_updates", row._id)),
 			...pageYjsLastSequenceRows.map((row) => ctx.db.delete("pages_yjs_docs_last_sequences", row._id)),
@@ -159,6 +165,8 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 
 		counts.pages += 1;
 		counts.pages_markdown_content += pageMarkdownContentRow ? 1 : 0;
+		counts.pagesMarkdownChunks += pageMarkdownChunkRows.length;
+		counts.pagesPlainTextChunks += pagePlainTextChunkRows.length;
 		counts.pages_yjs_snapshots += pageYjsSnapshotRows.length;
 		counts.pages_yjs_updates += pageYjsUpdateRows.length;
 		counts.pages_yjs_docs_last_sequences += pageYjsLastSequenceRows.length;
@@ -190,7 +198,7 @@ async function backfill_pages_materialized_path(ctx: MutationCtx) {
 
 	const pathByPageId = new Map<Id<"pages">, string | null>();
 
-	function resolve_path_for_page(pageId: Id<"pages">, visitingIds: Set<Id<"pages">>): string | null {
+	function resolvePathForPage(pageId: Id<"pages">, visitingIds: Set<Id<"pages">>): string | null {
 		const cached = pathByPageId.get(pageId);
 		if (cached !== undefined) {
 			return cached;
@@ -216,7 +224,7 @@ async function backfill_pages_materialized_path(ctx: MutationCtx) {
 			if (!parentPage || parentPage.workspaceId !== page.workspaceId || parentPage.projectId !== page.projectId) {
 				pagePath = null;
 			} else {
-				const parentPath: string | null = resolve_path_for_page(parentPage._id, visitingIds);
+				const parentPath: string | null = resolvePathForPage(parentPage._id, visitingIds);
 				pagePath = parentPath ? pages_materialized_path_join(parentPath, page.name) : null;
 			}
 		}
@@ -230,7 +238,7 @@ async function backfill_pages_materialized_path(ctx: MutationCtx) {
 	let skippedInvalid = 0;
 
 	for (const page of pages) {
-		const canonicalPath = resolve_path_for_page(page._id, new Set());
+		const canonicalPath = resolvePathForPage(page._id, new Set());
 		if (!canonicalPath) {
 			skippedInvalid += 1;
 			continue;
@@ -309,14 +317,106 @@ export const delete_all_archived_pages = internalMutation({
 
 export const unset_pages_is_archived_flags = internalMutation({
 	args: {},
-	returns: unset_pages_is_archived_flags_returns_validator,
+	returns: v.object({
+		scanned: v.number(),
+		patched: v.number(),
+	}),
 	handler: (ctx) => unset_pages_is_archived_flags_fn(ctx),
 });
 
 export const audit_active_duplicate_materialized_paths = internalMutation({
 	args: {},
-	returns: audit_active_duplicate_materialized_paths_returns_validator,
+	returns: v.object({
+		scannedActivePages: v.number(),
+		duplicateGroups: v.array(
+			v.object({
+				workspaceId: v.string(),
+				projectId: v.string(),
+				path: v.string(),
+				pageIds: v.array(v.id("pages")),
+			}),
+		),
+	}),
 	handler: (ctx) => audit_active_duplicate_materialized_paths_fn(ctx),
+});
+
+export const backfill_pages_chunk_rows = internalMutation({
+	args: {
+		limit: v.optional(v.number()),
+		_errors: v.optional(
+			v.object({
+				message: v.literal("Failed to upsert page chunks"),
+			}),
+		),
+	},
+	returns: v.object({
+		scanned: v.number(),
+		rebuilt: v.number(),
+		skippedArchived: v.number(),
+		skippedMissingMarkdown: v.number(),
+	}),
+	handler: async (ctx, args) => {
+		const pages = await ctx.db.query("pages").collect();
+		const limit = Math.max(1, Math.min(10_000, args.limit ?? pages.length));
+
+		let scanned = 0;
+		let rebuilt = 0;
+		let skippedArchived = 0;
+		let skippedMissingMarkdown = 0;
+
+		for (const page of pages) {
+			if (scanned >= limit) {
+				break;
+			}
+			scanned += 1;
+
+			if (page.archiveOperationId !== undefined) {
+				skippedArchived += 1;
+				continue;
+			}
+
+			if (!page.markdownContentId) {
+				skippedMissingMarkdown += 1;
+				continue;
+			}
+
+			const markdownContent = await ctx.db.get("pages_markdown_content", page.markdownContentId);
+			if (!markdownContent) {
+				skippedMissingMarkdown += 1;
+				continue;
+			}
+
+			const upsertChunksResult = await db_upsert_page_chunks(ctx, {
+				workspaceId: page.workspaceId,
+				projectId: page.projectId,
+				pageId: page._id,
+				yjsSequence: markdownContent.yjs_sequence,
+				markdownContent: markdownContent.content,
+			});
+			if (upsertChunksResult._nay) {
+				const message = "Failed to upsert page chunks" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+				console.error("[migrations.backfill_pages_chunk_rows] Failed to upsert page chunks", {
+					message,
+					upsertChunksResult,
+					workspaceId: page.workspaceId,
+					projectId: page.projectId,
+					pageId: page._id,
+					yjsSequence: markdownContent.yjs_sequence,
+				});
+				throw new ConvexError({
+					message,
+				});
+			}
+			rebuilt += 1;
+		}
+
+		return {
+			scanned,
+			rebuilt,
+			skippedArchived,
+			skippedMissingMarkdown,
+		};
+	},
 });
 
 export const migrate_pages_materialized_paths_and_delete_archived_pages = internalMutation({

@@ -4,6 +4,31 @@ import type { KeysOfUnion, LiteralUnion } from "type-fest";
 export const ai_chat_HARDCODED_ORG_ID = "app_workspace_local_dev";
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
 
+export const is_browser = ((/* iife */) => {
+	function value() {
+		if (typeof globalThis.window === "undefined") {
+			return false;
+		}
+
+		if (typeof globalThis.window.DOMParser !== "function") {
+			return false;
+		}
+
+		try {
+			new globalThis.window.DOMParser();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	let cache: ReturnType<typeof value> | undefined;
+
+	return function is_browser() {
+		return (cache ??= value());
+	};
+})();
+
 export const get_id_generator = ((/* iife */) => {
 	function value(snakeCasePrefix: string) {
 		return createIdGenerator({

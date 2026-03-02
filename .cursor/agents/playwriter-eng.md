@@ -40,6 +40,24 @@ Context continuity:
 
 All durable testing learnings are consolidated here. Keep this section compact, actionable, and reusable.
 
+## Preflight connectivity gate
+
+Run these checks before any browser-console or interaction-heavy investigation:
+
+1. Verify app reachability at `http://localhost:5173` first.
+2. Verify Playwriter extension connectivity on the active tab before running scripted actions.
+3. If either prerequisite fails, stop immediately and return the shortest unblock steps.
+4. Do not spend retries on UI flows until both prerequisites are confirmed.
+
+## External iframe CSP triage
+
+When console errors include a `frame-ancestors` CSP violation for an embedded iframe:
+
+1. Treat it as deterministic and non-retriable for the current origin.
+2. Locate the owning route/component iframe declaration and confirm `src`.
+3. For local QA, remove or gate the iframe embed so root-load console errors do not mask app regressions.
+4. Re-run initial-load capture and require zero ERROR-level console entries before continuing.
+
 ## Abort-path invariants for stateful interactions
 
 Use this for any stateful UI mode (for example drag/drop, resize, inline-edit, selection mode, modal mode, keyboard mode).

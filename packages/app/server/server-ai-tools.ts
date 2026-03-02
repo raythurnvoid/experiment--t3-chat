@@ -14,6 +14,7 @@ import {
 import { minimatch } from "minimatch";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "./server-utils.ts";
+import { pages_chunk_has_bitmask_flag, pages_chunk_BITMASK_FLAGS } from "./pages-markdown-chunking-mastra.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -836,13 +837,14 @@ export type ai_chat_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx) {
 	return tool({
 		description: dedent`\
-			Ultra-fast text search over page content using the database search index.\
-			Behaves like using grep with the expression "<search_term>.*" (the .* means any letters, using regexp syntax),\
-			but leverages Convex full-text search so it's much faster and ranked by relevance.
+			Ultra-fast text search over page content using a plain-text chunk index.\
+			Search happens on markdown-derived plain text, while results return markdown fragments with line ranges.\
+			This makes search resilient to markdown syntax and still gives exact markdown context.
 
 			Notes:\
-			- Searches the text_content field only.\
+			- Searches chunk plain text only (not raw markdown syntax).\
 			- Results are relevance-ranked by Convex and limited to the specified limit.\
+			- Result snippets include chunk line ranges and explicit fragment markers above/below.\
 			- Prefer this over grep for general keyword search; use grep for precise regex line matches.`,
 
 		inputSchema: z.object({
@@ -868,10 +870,49 @@ export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx) {
 				};
 			}
 
+			const outputBlocks = res.items.map((item) => {
+				const isCodeChunk = pages_chunk_has_bitmask_flag(item.chunkFlags, pages_chunk_BITMASK_FLAGS.isCode);
+				const isTableChunk = pages_chunk_has_bitmask_flag(item.chunkFlags, pages_chunk_BITMASK_FLAGS.isTable);
+				const hasSpecificAbove = pages_chunk_has_bitmask_flag(
+					item.chunkFlags,
+					pages_chunk_BITMASK_FLAGS.hasMoreFragmentContentAbove,
+				);
+				const hasSpecificBelow = pages_chunk_has_bitmask_flag(
+					item.chunkFlags,
+					pages_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
+				);
+
+				const blockLines = [`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chunk #${item.chunkIndex})`];
+
+				if (item.hasChunkAbove) {
+					if (hasSpecificAbove && isCodeChunk) {
+						blockLines.push("... more code block content above");
+					} else if (hasSpecificAbove && isTableChunk) {
+						blockLines.push("... more table content above");
+					} else {
+						blockLines.push("... more content above");
+					}
+				}
+
+				blockLines.push(item.markdownChunk);
+
+				if (item.hasChunkBelow) {
+					if (hasSpecificBelow && isCodeChunk) {
+						blockLines.push("... more code block content below");
+					} else if (hasSpecificBelow && isTableChunk) {
+						blockLines.push("... more table content below");
+					} else {
+						blockLines.push("... more content below");
+					}
+				}
+
+				return blockLines.join("\n");
+			});
+
 			const lines: string[] = [
-				`Found ${res.items.length} results (relevance-ranked)`,
+				`Found ${res.items.length} results (relevance-ranked plain-text chunks)`,
 				"",
-				...res.items.map((i) => `${i.path}\n  Preview: ${i.preview}`),
+				...outputBlocks,
 			];
 
 			return {

@@ -153,6 +153,46 @@ const app_convex_schema = defineSchema({
 		filterFields: ["workspace_id", "project_id", "is_archived"],
 	}),
 
+	pages_markdown_chunks: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+		yjsSequence: v.number(),
+		chunkIndex: v.number(),
+		markdownChunk: v.string(),
+		lineStart: v.number(),
+		lineEnd: v.number(),
+		chunkFlags: v.number(),
+	}).index("by_workspace_project_page_sequenceChunk", [
+		"workspaceId",
+		"projectId",
+		"pageId",
+		"yjsSequence",
+		"chunkIndex",
+	]),
+
+	pages_plain_text_chunks: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+		yjsSequence: v.number(),
+		chunkIndex: v.number(),
+		plainTextChunk: v.string(),
+		markdownChunkId: v.id("pages_markdown_chunks"),
+	})
+		.searchIndex("search_by_plain_text_chunk", {
+			searchField: "plainTextChunk",
+			filterFields: ["workspaceId", "projectId"],
+		})
+		.index("by_workspace_project_page_sequenceChunk", [
+			"workspaceId",
+			"projectId",
+			"pageId",
+			"yjsSequence",
+			"chunkIndex",
+		])
+		.index("byMarkdownChunkId", ["markdownChunkId"]),
+
 	pages_yjs_snapshots: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),

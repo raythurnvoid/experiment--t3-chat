@@ -13,8 +13,6 @@ function Index() {
 	return (
 		<div className={cn("Home-content", "flex-1 overflow-auto p-8")}>
 			<div className="container mx-auto">
-				<iframe src="https://app.dev.sybill.ai/calls?tab=ym"></iframe>
-
 				<div className="mb-8 flex items-center justify-center space-x-8">
 					<a href="https://vite.dev" target="_blank" rel="noopener noreferrer">
 						<img src={viteLogo} className="logo" alt="Vite logo" />

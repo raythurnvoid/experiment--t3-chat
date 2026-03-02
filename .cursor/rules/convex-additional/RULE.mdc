@@ -222,7 +222,9 @@ export const restore_snapshot = mutation({
 		...({} as ReturnType<typeof restore_snapshot_error>),
 	},
 	handler: async (ctx, args) => {
-		throw new ConvexError("yjsSnapshotUpdates is not set" satisfies NonNullable<(typeof args)["_errors"]>["message"]);
+		throw new ConvexError({
+			message: "yjsSnapshotUpdates is not set" satisfies NonNullable<(typeof args)["_errors"]>["message"],
+		});
 	},
 });
 ```

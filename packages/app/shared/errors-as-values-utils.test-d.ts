@@ -1,5 +1,5 @@
 import { expectTypeOf, test } from "vitest";
-import { AbortReason, Result } from "./errors-as-values-utils.ts";
+import { AbortReason, Result, Result_all } from "./errors-as-values-utils.ts";
 
 // TypeScript native type utils tests
 test("Be able to extract _nay from Result", () => {
@@ -67,4 +67,24 @@ test("Can infer data by discriminating on message", () => {
 	}
 
 	expectTypeOf(result._yay).toBeString();
+});
+
+test("Result_all infers tuple _yay for mixed values", () => {
+	const createPageRowsResult = Result_all([
+		"yjs_snapshot_id" as const,
+		"yjs_last_sequence_id" as const,
+		"markdown_content_id" as const,
+		Result({ _yay: null }),
+	] as const);
+
+	if (createPageRowsResult._nay) {
+		return;
+	}
+
+	const [yjsSnapshotId, yjsLastSequenceId, markdownContentId, upsertChunksYay] = createPageRowsResult._yay;
+
+	expectTypeOf(yjsSnapshotId).toEqualTypeOf<"yjs_snapshot_id">();
+	expectTypeOf(yjsLastSequenceId).toEqualTypeOf<"yjs_last_sequence_id">();
+	expectTypeOf(markdownContentId).toEqualTypeOf<"markdown_content_id">();
+	expectTypeOf(upsertChunksYay).toEqualTypeOf<null>();
 });

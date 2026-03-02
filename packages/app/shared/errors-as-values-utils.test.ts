@@ -2,6 +2,7 @@ import { describe, test, expect } from "vitest";
 import {
 	AbortReason,
 	Result,
+	Result_all,
 	Result_nay_from,
 	Result_try,
 	Result_try_async,
@@ -160,6 +161,37 @@ describe("AbortReason", () => {
 
 		expect(abortReason).toBeInstanceOf(AbortReason);
 		expect(abortReason.message).toBe("abort reason");
+	});
+});
+
+describe("Result_all", () => {
+	test("unwraps _yay values and preserves tuple order", () => {
+		const result = Result_all([
+			Result({ _yay: "snapshot-id" as const }),
+			Result({ _yay: 3 as const }),
+			"plain-value" as const,
+			Result({ _yay: { ok: true as const } }),
+		] as const);
+
+		if (result._nay) {
+			throw new Error("Expected _yay from Result_all");
+		}
+
+		expect(result._yay).toEqual(["snapshot-id", 3, "plain-value", { ok: true }]);
+	});
+
+	test("returns first _nay branch", () => {
+		const result = Result_all([
+			Result({ _yay: "first" }),
+			Result({ _nay: { name: "nay", message: "boom" as const } }),
+			Result({ _yay: "third" }),
+		] as const);
+
+		if (result._yay) {
+			throw new Error("Expected _nay from Result_all");
+		}
+
+		expect(result._nay.message).toBe("boom");
 	});
 });
 

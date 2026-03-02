@@ -25,7 +25,7 @@ import {
 	server_request_json_parse_and_validate,
 	encode_path_segment,
 } from "../server/server-utils.ts";
-import { v, type Infer } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import {
 	date_get_week_start_timestamp,
@@ -49,6 +49,7 @@ import {
 	pages_yjs_doc_create_from_tiptap_editor,
 	pages_yjs_compute_diff_update_from_state_vector,
 } from "../server/pages.ts";
+import { pages_chunk_markdown } from "../server/pages-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
 import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
@@ -161,6 +162,80 @@ async function find_active_path_conflict(
 		return activePage;
 	}
 	return null;
+}
+
+export async function db_upsert_page_chunks(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		pageId: Id<"pages">;
+		yjsSequence: number;
+		markdownContent: string;
+	},
+) {
+	// Delete existing chunk rows
+	await Promise.all([
+		ctx.db
+			.query("pages_plain_text_chunks")
+			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
+			)
+			.collect(),
+		ctx.db
+			.query("pages_markdown_chunks")
+			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
+			)
+			.collect(),
+	]).then(([plainTextChunkRows, markdownChunkRows]) =>
+		Promise.all([
+			...plainTextChunkRows.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)),
+			...markdownChunkRows.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)),
+		]),
+	);
+
+	// Create new chunks from markdown
+	const chunks = await pages_chunk_markdown(args.markdownContent);
+	if (chunks._nay) {
+		return chunks;
+	}
+
+	if (chunks._yay.length === 0) {
+		return Result({ _yay: null });
+	}
+
+	const markdownChunkIds = await Promise.all(
+		chunks._yay.map((chunk) =>
+			ctx.db.insert("pages_markdown_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				yjsSequence: args.yjsSequence,
+				chunkIndex: chunk.chunkIndex,
+				markdownChunk: chunk.markdownChunk,
+				lineStart: chunk.lineStart,
+				lineEnd: chunk.lineEnd,
+				chunkFlags: chunk.chunkFlags,
+			}),
+		),
+	);
+
+	await Promise.all(
+		chunks._yay.map((chunk, index) =>
+			ctx.db.insert("pages_plain_text_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				yjsSequence: args.yjsSequence,
+				chunkIndex: chunk.chunkIndex,
+				plainTextChunk: chunk.plainTextChunk,
+				markdownChunkId: markdownChunkIds[index],
+			}),
+		),
+	);
+
+	return Result({ _yay: null });
 }
 
 async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; projectId: string; path: string }) {
@@ -345,6 +420,9 @@ async function do_create_page(
 		parentId: Doc<"pages">["parentId"];
 		name: Doc<"pages">["name"];
 		markdown_content: Doc<"pages_markdown_content">["content"];
+		_errors?: {
+			message: "Failed to create page chunk rows";
+		};
 	},
 ) {
 	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -416,34 +494,61 @@ async function do_create_page(
 		updatedAt: now,
 	});
 
-	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = await Promise.all([
-		ctx.db.insert("pages_yjs_snapshots", {
-			workspace_id: args.workspaceId,
-			project_id: args.projectId,
-			page_id: pageId,
-			sequence: initialYjsSequence,
-			snapshot_update: pages_u8_to_array_buffer(initialYjsSnapshotUpdate),
-			created_by: user.name,
-			updated_by: user.name,
-			updated_at: now,
-		}),
-		ctx.db.insert("pages_yjs_docs_last_sequences", {
-			workspace_id: args.workspaceId,
-			project_id: args.projectId,
-			page_id: pageId,
-			last_sequence: initialYjsSequence,
-		}),
-		ctx.db.insert("pages_markdown_content", {
-			workspace_id: args.workspaceId,
-			project_id: args.projectId,
-			page_id: pageId,
-			content: args.markdown_content,
-			is_archived: false,
-			yjs_sequence: initialYjsSequence,
-			updated_by: user.name,
-			updated_at: now,
-		}),
-	]);
+	const createPageRowsResult = Result_all(
+		await Promise.all([
+			ctx.db.insert("pages_yjs_snapshots", {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: pageId,
+				sequence: initialYjsSequence,
+				snapshot_update: pages_u8_to_array_buffer(initialYjsSnapshotUpdate),
+				created_by: user.name,
+				updated_by: user.name,
+				updated_at: now,
+			}),
+			ctx.db.insert("pages_yjs_docs_last_sequences", {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: pageId,
+				last_sequence: initialYjsSequence,
+			}),
+			ctx.db.insert("pages_markdown_content", {
+				workspace_id: args.workspaceId,
+				project_id: args.projectId,
+				page_id: pageId,
+				content: args.markdown_content,
+				is_archived: false,
+				yjs_sequence: initialYjsSequence,
+				updated_by: user.name,
+				updated_at: now,
+			}),
+			db_upsert_page_chunks(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId,
+				yjsSequence: initialYjsSequence,
+				markdownContent: args.markdown_content,
+			}),
+		] as const),
+	);
+
+	if (createPageRowsResult._nay) {
+		const message = "Failed to create page chunk rows" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+		console.error("[ai_docs_temp.do_create_page] Failed to create page chunk rows", {
+			message,
+			createPageRowsResult,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: args.parentId,
+			pageId,
+			yjsSequence: initialYjsSequence,
+		});
+		throw new ConvexError({
+			message,
+		});
+	}
+
+	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = createPageRowsResult._yay;
 
 	await ctx.db.patch("pages", pageId, {
 		markdownContentId: markdown_content_id,
@@ -1371,11 +1476,49 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 	},
 });
 
-export const get_page_text_content_by_page_id = query({
+export const get_plain_text = query({
 	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		return "";
+		const page = await ctx.db.get("pages", args.pageId);
+		if (
+			!page ||
+			page.workspaceId !== args.workspaceId ||
+			page.projectId !== args.projectId ||
+			page.archiveOperationId !== undefined
+		) {
+			return null;
+		}
+
+		const latestChunkByPage = await ctx.db
+			.query("pages_plain_text_chunks")
+			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
+			)
+			.order("desc")
+			.first();
+
+		if (!latestChunkByPage) {
+			throw should_never_happen("Missing plain text chunks for page", {
+				pageId: args.pageId,
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+			});
+		}
+
+		const plainTextChunks = await ctx.db
+			.query("pages_plain_text_chunks")
+			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("pageId", args.pageId)
+					.eq("yjsSequence", latestChunkByPage.yjsSequence),
+			)
+			.order("asc")
+			.collect();
+
+		return plainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n\n");
 	},
 });
 
@@ -1410,6 +1553,8 @@ export const try_get_markdown_content_or_fallback_to_yjs_data = query({
 
 			if (!page || !page.markdownContentId || !page.yjsLastSequenceId) {
 				throw should_never_happen("page.markdownContentId or page.yjsLastSequenceId is not set", {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
 					pageId: args.pageId,
 					markdownContentId: page?.markdownContentId,
 					yjsLastSequenceId: page?.yjsLastSequenceId,
@@ -1514,6 +1659,8 @@ export const get_page_last_yjs_sequence = query({
 
 		if (!page.yjsLastSequenceId) {
 			throw should_never_happen("page.yjsLastSequenceId is not set", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
 				pageId: args.pageId,
 				yjsLastSequenceId: page.yjsLastSequenceId,
 			});
@@ -1526,6 +1673,8 @@ export const get_page_last_yjs_sequence = query({
 
 		if (!lastYjsSequenceDoc) {
 			throw should_never_happen("lastYjsSequenceDoc is not valorized", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
 				pageId: args.pageId,
 				yjsLastSequenceId: page.yjsLastSequenceId,
 			});
@@ -1547,42 +1696,106 @@ export const text_search_pages = internalQuery({
 		items: v.array(
 			v.object({
 				path: v.string(),
-				preview: v.string(),
+				markdownChunk: v.string(),
+				chunkIndex: v.number(),
+				lineStart: v.number(),
+				lineEnd: v.number(),
+				chunkFlags: v.number(),
+				hasChunkAbove: v.boolean(),
+				hasChunkBelow: v.boolean(),
 			}),
 		),
 	}),
-	handler: async (ctx, args): Promise<{ items: Array<{ path: string; preview: string }> }> => {
+	handler: async (
+		ctx,
+		args,
+	): Promise<{
+		items: Array<{
+			path: string;
+			markdownChunk: string;
+			chunkIndex: number;
+			lineStart: number;
+			lineEnd: number;
+			chunkFlags: number;
+			hasChunkAbove: boolean;
+			hasChunkBelow: boolean;
+		}>;
+	}> => {
+		void args.userId;
+
 		const matches = await ctx.db
-			.query("pages_markdown_content")
-			.withSearchIndex("search_by_content", (q) =>
-				q
-					.search("content", args.query)
-					.eq("workspace_id", args.workspaceId)
-					.eq("project_id", args.projectId)
-					.eq("is_archived", false),
+			.query("pages_plain_text_chunks")
+			.withSearchIndex("search_by_plain_text_chunk", (q) =>
+				q.search("plainTextChunk", args.query).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
 
-		const items: Array<{ path: string; preview: string }> = await Promise.all(
-			matches.map(async (page): Promise<{ path: string; preview: string }> => {
-				const pageDoc = await ctx.db.get("pages", page.page_id);
-				if (!pageDoc || pageDoc.workspaceId !== args.workspaceId || pageDoc.projectId !== args.projectId) {
-					return { path: "/", preview: page.content.slice(0, 160) };
-				}
-				const pending = await ctx.db
-					.query("ai_chat_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
-							.eq("userId", args.userId)
-							.eq("pageId", page.page_id),
-					)
-					.first();
-				const preview = (pending?.modifiedContent ?? page.content).slice(0, 160);
-				return { path: pageDoc.path, preview };
-			}),
-		);
+		const items = (
+			await Promise.all(
+				matches.map(async (plainTextChunk) => {
+					const [pageDoc, markdownChunkDoc] = await Promise.all([
+						ctx.db.get("pages", plainTextChunk.pageId),
+						ctx.db.get("pages_markdown_chunks", plainTextChunk.markdownChunkId),
+					]);
+
+					if (
+						!pageDoc ||
+						pageDoc.workspaceId !== args.workspaceId ||
+						pageDoc.projectId !== args.projectId ||
+						pageDoc.archiveOperationId !== undefined
+					) {
+						return null;
+					}
+
+					if (
+						!markdownChunkDoc ||
+						markdownChunkDoc.workspaceId !== args.workspaceId ||
+						markdownChunkDoc.projectId !== args.projectId ||
+						markdownChunkDoc.pageId !== plainTextChunk.pageId ||
+						markdownChunkDoc.yjsSequence !== plainTextChunk.yjsSequence ||
+						markdownChunkDoc.chunkIndex !== plainTextChunk.chunkIndex
+					) {
+						return null;
+					}
+
+					const [chunkAbove, chunkBelow] = await Promise.all([
+						ctx.db
+							.query("pages_markdown_chunks")
+							.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("pageId", plainTextChunk.pageId)
+									.eq("yjsSequence", plainTextChunk.yjsSequence)
+									.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
+							)
+							.first(),
+						ctx.db
+							.query("pages_markdown_chunks")
+							.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("pageId", plainTextChunk.pageId)
+									.eq("yjsSequence", plainTextChunk.yjsSequence)
+									.eq("chunkIndex", plainTextChunk.chunkIndex + 1),
+							)
+							.first(),
+					]);
+
+					return {
+						path: pageDoc.path,
+						markdownChunk: markdownChunkDoc.markdownChunk,
+						chunkIndex: markdownChunkDoc.chunkIndex,
+						lineStart: markdownChunkDoc.lineStart,
+						lineEnd: markdownChunkDoc.lineEnd,
+						chunkFlags: markdownChunkDoc.chunkFlags,
+						hasChunkAbove: !!chunkAbove,
+						hasChunkBelow: !!chunkBelow,
+					};
+				}),
+			)
+		).filter((item): item is NonNullable<typeof item> => item !== null);
 
 		return { items };
 	},
@@ -1983,12 +2196,17 @@ export const yjs_get_doc_last_snapshot = query({
 	},
 });
 
-export const yjs_snapshot_updates = internalMutation({
+export const update_snapshots = internalMutation({
 	args: {
 		userId: v.id("users"),
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
+		_errors: v.optional(
+			v.object({
+				message: v.literal("Failed to update the page snapshots"),
+			}),
+		),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -2062,33 +2280,55 @@ export const yjs_snapshot_updates = internalMutation({
 				return markdown;
 			}
 
-			await Promise.all([
-				// Write new snapshot row (append-only)
-				ctx.db.patch("pages_yjs_snapshots", yjsSnapshotData._id, {
-					sequence,
-					snapshot_update: snapshotUpdate,
-					updated_by: "system",
-					updated_at: now,
-				}),
+			const dbWriteResult = Result_all(
+				await Promise.all([
+					// Write new snapshot row (append-only)
+					ctx.db.patch("pages_yjs_snapshots", yjsSnapshotData._id, {
+						sequence,
+						snapshot_update: snapshotUpdate,
+						updated_by: "system",
+						updated_at: now,
+					}),
 
-				// Prune compacted updates
-				...updateDataList.map((updateData) => ctx.db.delete("pages_yjs_updates", updateData._id)),
+					// Prune compacted updates
+					...updateDataList.map((updateData) => ctx.db.delete("pages_yjs_updates", updateData._id)),
 
-				ctx.db.patch("pages_markdown_content", page.markdownContentId, {
-					content: markdown._yay,
-					yjs_sequence: sequence,
-					updated_by: "system",
-					updated_at: now,
-				}),
+					ctx.db.patch("pages_markdown_content", page.markdownContentId, {
+						content: markdown._yay,
+						yjs_sequence: sequence,
+						updated_by: "system",
+						updated_at: now,
+					}),
 
-				store_version_snapshot(ctx, {
-					workspace_id: args.workspaceId,
-					project_id: args.projectId,
-					page_id: args.pageId,
-					content: markdown._yay,
-					created_by: args.userId,
-				}),
-			]);
+					db_upsert_page_chunks(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						pageId: args.pageId,
+						yjsSequence: sequence,
+						markdownContent: markdown._yay,
+					}),
+
+					store_version_snapshot(ctx, {
+						workspace_id: args.workspaceId,
+						project_id: args.projectId,
+						page_id: args.pageId,
+						content: markdown._yay,
+						created_by: args.userId,
+					}),
+				]),
+			);
+
+			if (dbWriteResult._nay) {
+				const message = "Failed to update the page snapshots" satisfies NonNullable<
+					(typeof args)["_errors"]
+				>["message"];
+				console.error(message, {
+					dbWriteResult,
+				});
+				throw new ConvexError({
+					message,
+				});
+			}
 
 			return Result({ _yay: null });
 		} finally {
@@ -2174,16 +2414,12 @@ export const yjs_push_update = mutation({
 			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
 			.collect();
 
-		const scheduledId = await ctx.scheduler.runAfter(
-			snapshotScheduleDelayMs,
-			internal.ai_docs_temp.yjs_snapshot_updates,
-			{
-				userId: user.id,
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				pageId: args.pageId,
-			},
-		);
+		const scheduledId = await ctx.scheduler.runAfter(snapshotScheduleDelayMs, internal.ai_docs_temp.update_snapshots, {
+			userId: user.id,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			pageId: args.pageId,
+		});
 
 		await Promise.all([
 			schedules[0]
@@ -2255,6 +2491,11 @@ export const restore_snapshot = mutation({
 		pageSnapshotId: v.id("pages_snapshots"),
 		sessionId: v.string(),
 		currentMarkdownContent: v.string(),
+		_errors: v.optional(
+			v.object({
+				message: v.literal("Failed to restore page"),
+			}),
+		),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -2298,9 +2539,18 @@ export const restore_snapshot = mutation({
 			});
 		}
 
+		if (!page.yjsLastSequenceId) {
+			throw should_never_happen("page.yjsLastSequenceId is not set", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				yjsLastSequenceId: page.yjsLastSequenceId,
+			});
+		}
+
+		const now = Date.now();
 		const createdBy = user.id;
 		const updatedBy = user.name;
-		const updatedAt = Date.now();
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
@@ -2326,13 +2576,7 @@ export const restore_snapshot = mutation({
 
 			ctx.db.patch("pages", page._id, {
 				updatedBy: updatedBy,
-				updatedAt: updatedAt,
-			}),
-
-			ctx.db.patch("pages_markdown_content", page.markdownContentId, {
-				content: snapshotContent.content,
-				updated_by: updatedBy,
-				updated_at: updatedAt,
+				updatedAt: now,
 			}),
 
 			write_markdown_to_yjs_sync(ctx, {
@@ -2345,6 +2589,45 @@ export const restore_snapshot = mutation({
 				pageSnapshotId: args.pageSnapshotId,
 			}),
 		]);
+
+		const yjsLastSequenceDoc = await ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId);
+		if (!yjsLastSequenceDoc) {
+			throw should_never_happen("yjsLastSequenceDoc is not valorized", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				yjsLastSequenceId: page.yjsLastSequenceId,
+				yjsLastSequenceDoc,
+			});
+		}
+
+		const restorePageResult = Result_all(
+			await Promise.all([
+				ctx.db.patch("pages_markdown_content", page.markdownContentId, {
+					content: snapshotContent.content,
+					yjs_sequence: yjsLastSequenceDoc.last_sequence,
+					updated_by: updatedBy,
+					updated_at: now,
+				}),
+				db_upsert_page_chunks(ctx, {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					pageId: args.pageId,
+					yjsSequence: yjsLastSequenceDoc.last_sequence,
+					markdownContent: snapshotContent.content,
+				}),
+			]),
+		);
+
+		if (restorePageResult._nay) {
+			const message = "Failed to restore page" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+			console.error(message, {
+				restorePageResult,
+			});
+			throw new ConvexError({
+				message,
+			});
+		}
 
 		return Result({
 			_yay: null,

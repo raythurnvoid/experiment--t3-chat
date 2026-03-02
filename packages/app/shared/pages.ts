@@ -15,7 +15,7 @@ import { Editor, Extension, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
-import { should_never_happen } from "../shared/shared-utils.ts";
+import { is_browser, should_never_happen } from "../shared/shared-utils.ts";
 import { CommentsExtension } from "@liveblocks/react-tiptap";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
@@ -200,10 +200,11 @@ export const pages_parse_markdown_to_html = ((/* iife */) => {
 
 export function pages_tiptap_html_to_json(args: { html: string; extensions?: Extensions }) {
 	const extensions = args.extensions ?? get_tiptap_shared_extensions_list();
-	const json =
-		typeof window === "undefined"
-			? tiptap_generateJSON_server(args.html, extensions)
-			: tiptap_generateJSON_browser(args.html, extensions);
+
+	const json = is_browser()
+		? tiptap_generateJSON_browser(args.html, extensions)
+		: tiptap_generateJSON_server(args.html, extensions);
+
 	return json;
 }
 
@@ -623,6 +624,61 @@ export function pages_headless_tiptap_editor_set_content_from_markdown(args: { m
 
 	editor.commands.setContent(json._yay);
 	return Result({ _yay: json._yay });
+}
+
+/**
+ * Extract plain text from a headless Tiptap editor instance.
+ *
+ * Uses Tiptap's built-in text serialization and trims leading/trailing whitespace.
+ *
+ * @param args.mut_editor - Headless editor instance
+ * @param args.blockSeparator - Optional separator inserted between block nodes. Defaults to "\n\n".
+ * @returns Plain text content
+ */
+export function pages_headless_tiptap_editor_get_plain_text(args: { mut_editor: Editor; blockSeparator?: string }) {
+	const editor = args.mut_editor;
+	const plainText = editor.getText({
+		blockSeparator: args.blockSeparator ?? "\n\n",
+	});
+	return plainText.trim();
+}
+
+/**
+ * Convert Markdown to plain text using a headless Tiptap editor.
+ *
+ * Creates a temporary headless editor, loads Markdown content, extracts plain text,
+ * then destroys the editor before returning.
+ *
+ * @param args.markdown - Markdown string
+ * @param args.blockSeparator - Optional separator inserted between block nodes. Defaults to "\n\n".
+ * @returns A Result containing plain text or an error
+ */
+export function pages_tiptap_markdown_to_plain_text(args: { markdown: string; blockSeparator?: string }) {
+	const editor = pages_headless_tiptap_editor_create({
+		initialContent: { markdown: args.markdown },
+	});
+	if (editor._nay) {
+		return editor;
+	}
+
+	try {
+		return Result({
+			_yay: pages_headless_tiptap_editor_get_plain_text({
+				mut_editor: editor._yay,
+				blockSeparator: args.blockSeparator,
+			}),
+		});
+	} catch (error) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Error while extracting plain text from editor",
+				cause: error,
+			},
+		});
+	} finally {
+		editor._yay.destroy();
+	}
 }
 
 /**

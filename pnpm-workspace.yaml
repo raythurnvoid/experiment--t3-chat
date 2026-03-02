@@ -7,5 +7,6 @@ packages:
   - "packages/app/vendor/remix/packages/*"
   - "packages/app/vendor/tiptap/packages/*"
   - "packages/app/vendor/tiptap/packages-deprecated/*"
+  - "packages/app/vendor/mastra/packages/rag"
   - "references-submodules/opencode"
   - "packages/app/vendor/presence"

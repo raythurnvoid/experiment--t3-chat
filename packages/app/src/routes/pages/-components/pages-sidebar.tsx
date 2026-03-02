@@ -635,6 +635,7 @@ type PagesSidebar_CssVars = {
 };
 
 type PagesSidebarTreeItem_Props = {
+	/** Necessary to ensure the item is re-rendered when the tree is updated */
 	tree: PagesSidebarTree_Shared;
 	item: PagesSidebarTreeItem_Instance;
 	trackActivePagesIds: Set<string>;
@@ -652,7 +653,6 @@ type PagesSidebarTreeItem_Props = {
 
 const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSidebarTreeItem_Props) {
 	const {
-		tree,
 		item,
 		trackActivePagesIds,
 		selectedPageId,

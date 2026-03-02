@@ -1,7 +1,6 @@
 [submodule "assistant-ui"]
 	path = references-submodules/assistant-ui
 	url = ../assistant-ui.git
-	branch = main
 [submodule "liveblocks"]
 	path = packages/app/vendor/liveblocks
 	url = https://github.com/raythurnvoid/liveblocks.git
@@ -17,11 +16,9 @@
 [submodule "novel"]
 	path = packages/app/vendor/novel
 	url = https://github.com/raythurnvoid/novel.git
-	branch = main
 [submodule "packages/app/vendor/novel"]
 	path = packages/app/vendor/novel
 	url = https://github.com/raythurnvoid/novel.git
-	branch = main
 [submodule "remix"]
 	path = packages/app/vendor/remix
 	url = https://github.com/remix-run/remix.git
@@ -70,12 +67,12 @@
 [submodule "references-submodules/openclaw"]
 	path = references-submodules/openclaw
 	url = https://github.com/openclaw/openclaw.git
-[submodule "references-submodules/mastra"]
-	path = references-submodules/mastra
-	url = https://github.com/mastra-ai/mastra.git
 [submodule "references-submodules/voltagent"]
 	path = references-submodules/voltagent
 	url = https://github.com/VoltAgent/voltagent.git
 [submodule "references-submodules/reor"]
 	path = references-submodules/reor
 	url = https://github.com/reorproject/reor.git
+[submodule "packages/app/vendor/mastra"]
+	path = packages/app/vendor/mastra
+	url = https://github.com/raythurnvoid/mastra.git
