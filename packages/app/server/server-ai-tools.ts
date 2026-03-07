@@ -3,7 +3,7 @@ import z from "zod";
 import dedent from "dedent";
 import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
-import { internal } from "../convex/_generated/api.js";
+import { api, internal } from "../convex/_generated/api.js";
 import {
 	decode_path_segment,
 	path_extract_segments_from,
@@ -999,12 +999,12 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 				pageId = created._yay.pageId;
 			}
 
-			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
+			await ctx.runMutation(api.ai_chat.upsert_pages_pending_edit_updates, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
-				baseContent: oldText,
-				modifiedContent: newText,
+				workingMarkdown: oldText,
+				modifiedMarkdown: newText,
 			});
 
 			return {
@@ -1087,12 +1087,12 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 
 			const pageId = currentPageContent.pageId;
 
-			await ctx.runMutation(internal.ai_chat.upsert_ai_pending_edit, {
+			await ctx.runMutation(api.ai_chat.upsert_pages_pending_edit_updates, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
-				baseContent: currentPageContent.content,
-				modifiedContent: modifiedText,
+				workingMarkdown: currentPageContent.content,
+				modifiedMarkdown: modifiedText,
 			});
 
 			return {

@@ -6,10 +6,9 @@ import {
 } from "../shared/shared-utils.ts";
 import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, internalMutation, type ActionCtx } from "./_generated/server.js";
+import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
 import { paginationOptsValidator, type RouteSpec } from "convex/server";
-import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import {
@@ -30,6 +29,8 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
+import { v_result } from "../server/convex-utils.ts";
+import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
 	ai_chat_tool_create_list_pages,
@@ -42,7 +43,20 @@ import {
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
+import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
+import {
+	pages_db_get_yjs_content_and_sequence,
+	pages_yjs_doc_diff_updates_match,
+	pages_yjs_doc_apply_array_buffer_update,
+	pages_yjs_doc_compute_remaining_diff_update_from_yjs_doc,
+	pages_yjs_doc_create_from_array_buffer_update,
+	pages_yjs_doc_clone,
+	pages_yjs_doc_update_from_markdown,
+	pages_yjs_compute_diff_update_from_yjs_doc,
+	pages_u8_to_array_buffer,
+} from "../server/pages.ts";
+import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 export const threads_list = query({
 	args: {
@@ -472,21 +486,43 @@ export const thread_messages_add = mutation({
 	},
 });
 
-export const upsert_ai_pending_edit = internalMutation({
+function compute_yjs_diff_update_from_base(args: { baseYjsDoc: YDoc; markdown: string }) {
+	const targetYjsDoc = pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: pages_yjs_doc_clone({
+			yjsDoc: args.baseYjsDoc,
+		}),
+		markdown: args.markdown,
+	});
+
+	if (targetYjsDoc._nay) {
+		return targetYjsDoc;
+	}
+
+	const update = pages_yjs_compute_diff_update_from_yjs_doc({
+		yjsDoc: targetYjsDoc._yay,
+		yjsBeforeDoc: args.baseYjsDoc,
+	});
+
+	return Result({
+		_yay: update ? pages_u8_to_array_buffer(update) : new ArrayBuffer(0),
+	});
+}
+
+export const upsert_pages_pending_edit_updates = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
-		baseContent: v.string(),
-		modifiedContent: v.string(),
+		workingMarkdown: v.string(),
+		modifiedMarkdown: v.string(),
 	},
-	returns: v.null(),
+	returns: v_result({
+		_yay: v.null(),
+	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const now = Date.now();
-
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
+		const existingPendingEdit = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -496,40 +532,109 @@ export const upsert_ai_pending_edit = internalMutation({
 			)
 			.first();
 
-		if (!pendingEdits) {
-			await ctx.db.insert("ai_chat_pending_edits", {
+		let baseYjsDoc: YDoc;
+		let baseYjsSequence: number;
+		let baseYjsUpdate: ArrayBuffer;
+
+		if (existingPendingEdit) {
+			baseYjsSequence = existingPendingEdit.baseYjsSequence;
+			baseYjsUpdate = existingPendingEdit.baseYjsUpdate;
+			baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(baseYjsUpdate);
+		} else {
+			const yjsContent = await pages_db_get_yjs_content_and_sequence(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			});
+			if (!yjsContent) {
+				return Result({
+					_nay: {
+						message: "Failed to resolve page Yjs content while creating pending edits",
+					},
+				});
+			}
+
+			baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+				additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
+			});
+			baseYjsSequence = yjsContent.yjsSequence;
+			baseYjsUpdate = pages_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
+		}
+
+		const workingUpdateFromBase = compute_yjs_diff_update_from_base({
+			baseYjsDoc,
+			markdown: args.workingMarkdown,
+		});
+		if (workingUpdateFromBase._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compute working doc yjs diff update from base",
+					cause: workingUpdateFromBase._nay,
+				},
+			});
+		}
+
+		const modifiedUpdateFromBase = compute_yjs_diff_update_from_base({
+			baseYjsDoc,
+			markdown: args.modifiedMarkdown,
+		});
+		if (modifiedUpdateFromBase._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compute modified doc yjs diff update from base",
+					cause: modifiedUpdateFromBase._nay.cause,
+				},
+			});
+		}
+
+		const now = Date.now();
+
+		// If there's no diff with base we should delete the eventually existing pending edit.
+		if (args.workingMarkdown === args.modifiedMarkdown && modifiedUpdateFromBase._yay.byteLength === 0) {
+			if (existingPendingEdit) {
+				await ctx.db.delete("pages_pending_edits", existingPendingEdit._id);
+			}
+
+			return Result({ _yay: null });
+		} else if (!existingPendingEdit) {
+			await ctx.db.insert("pages_pending_edits", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				userId: user.id,
 				pageId: args.pageId,
-				baseContent: args.baseContent,
-				modifiedContent: args.modifiedContent,
+				baseYjsSequence,
+				baseYjsUpdate,
+				workingUpdateFromBase: workingUpdateFromBase._yay,
+				modifiedUpdateFromBase: modifiedUpdateFromBase._yay,
 				updatedAt: now,
 			});
 		} else {
-			await ctx.db.patch("ai_chat_pending_edits", pendingEdits._id, {
-				modifiedContent: args.modifiedContent,
+			await ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
+				workingUpdateFromBase: workingUpdateFromBase._yay,
+				modifiedUpdateFromBase: modifiedUpdateFromBase._yay,
 				updatedAt: now,
 			});
 		}
 
-		return null;
+		return Result({ _yay: null });
 	},
 });
 
-export const clear_ai_pending_edit = mutation({
+export const sync_pages_pending_edit_updates = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
-		expectedUpdatedAt: v.optional(v.number()),
+		workingMarkdown: v.string(),
+		modifiedMarkdown: v.string(),
 	},
-	returns: v.null(),
+	returns: v_result({
+		_yay: v.null(),
+	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
+		const existingPendingEdit = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -539,31 +644,98 @@ export const clear_ai_pending_edit = mutation({
 			)
 			.first();
 
-		if (!pendingEdits) {
-			return null;
+		const yjsContent = await pages_db_get_yjs_content_and_sequence(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			pageId: args.pageId,
+		});
+		if (!yjsContent) {
+			return Result({
+				_nay: {
+					message: "Failed to resolve page Yjs content while creating pending edits",
+				},
+			});
 		}
 
-		if (args.expectedUpdatedAt != null && pendingEdits.updatedAt !== args.expectedUpdatedAt) {
-			return null;
+		const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
+		});
+		const baseYjsSequence = yjsContent.yjsSequence;
+		const baseYjsUpdate = pages_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
+
+		const workingUpdateFromBase = compute_yjs_diff_update_from_base({
+			baseYjsDoc,
+			markdown: args.workingMarkdown,
+		});
+		if (workingUpdateFromBase._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compute working doc yjs diff update from base",
+					cause: workingUpdateFromBase._nay,
+				},
+			});
 		}
 
-		await ctx.db.delete("ai_chat_pending_edits", pendingEdits._id);
-		return null;
+		const modifiedUpdateFromBase = compute_yjs_diff_update_from_base({
+			baseYjsDoc,
+			markdown: args.modifiedMarkdown,
+		});
+		if (modifiedUpdateFromBase._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compute modified doc yjs diff update from base",
+					cause: modifiedUpdateFromBase._nay.cause,
+				},
+			});
+		}
+
+		const now = Date.now();
+
+		// If there's no diff with base we should delete the eventually existing pending edit.
+		if (args.workingMarkdown === args.modifiedMarkdown && modifiedUpdateFromBase._yay.byteLength === 0) {
+			if (existingPendingEdit) {
+				await ctx.db.delete("pages_pending_edits", existingPendingEdit._id);
+			}
+
+			return Result({ _yay: null });
+		} else if (!existingPendingEdit) {
+			await ctx.db.insert("pages_pending_edits", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: user.id,
+				pageId: args.pageId,
+				baseYjsSequence,
+				baseYjsUpdate,
+				workingUpdateFromBase: workingUpdateFromBase._yay,
+				modifiedUpdateFromBase: modifiedUpdateFromBase._yay,
+				updatedAt: now,
+			});
+		} else {
+			await ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
+				baseYjsSequence,
+				baseYjsUpdate,
+				workingUpdateFromBase: workingUpdateFromBase._yay,
+				modifiedUpdateFromBase: modifiedUpdateFromBase._yay,
+				updatedAt: now,
+			});
+		}
+
+		return Result({ _yay: null });
 	},
 });
 
-export const get_ai_pending_edit = query({
+export const get_pages_pending_edit = query({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
 	},
-	returns: v.union(doc(app_convex_schema, "ai_chat_pending_edits"), v.null()),
+	returns: v.union(doc(app_convex_schema, "pages_pending_edits"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
+		const pendingEdit = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -572,29 +744,175 @@ export const get_ai_pending_edit = query({
 					.eq("pageId", args.pageId),
 			)
 			.first();
-
-		return pendingEdits;
+		return pendingEdit;
 	},
 });
 
-export const list_ai_pending_edits = query({
+export const list_pages_pending_edits = query({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 	},
-	returns: v.array(doc(app_convex_schema, "ai_chat_pending_edits")),
+	returns: v.array(doc(app_convex_schema, "pages_pending_edits")),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
-			.withIndex("by_workspace_project_user", (q) =>
+		const pagesPendingEdits = await ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", user.id),
 			)
 			.order("asc")
 			.collect();
 
-		return pendingEdits;
+		return pagesPendingEdits;
+	},
+});
+
+export const save_pages_pending_edit = mutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			newSequence: v.union(v.number(), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const [pendingEdit, yjsContent] = await Promise.all([
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("userId", user.id)
+						.eq("pageId", args.pageId),
+				)
+				.first(),
+			pages_db_get_yjs_content_and_sequence(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			}),
+		]);
+
+		if (!pendingEdit) {
+			return Result({
+				_nay: {
+					message: "Pending edit not found",
+				},
+			});
+		}
+		if (!yjsContent) {
+			return Result({
+				_nay: {
+					message: "Page Yjs content not found",
+				},
+			});
+		}
+
+		const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.baseYjsUpdate);
+		const latestPageYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
+		});
+
+		const modifiedYjsDoc = pages_yjs_doc_clone({
+			yjsDoc: baseYjsDoc,
+		});
+		pages_yjs_doc_apply_array_buffer_update(modifiedYjsDoc, pendingEdit.modifiedUpdateFromBase);
+
+		const diffUpdateForLatestPageYjsDoc = pages_yjs_doc_compute_remaining_diff_update_from_yjs_doc({
+			diffUpdate: pendingEdit.workingUpdateFromBase,
+			yjsDoc: latestPageYjsDoc,
+		});
+
+		let newSequence: number | null = null;
+		const livePageYjsDocAfterSave = pages_yjs_doc_clone({
+			yjsDoc: latestPageYjsDoc,
+		});
+		if (diffUpdateForLatestPageYjsDoc) {
+			const result = await pages_db_yjs_push_update(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				update: pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
+				sessionId: `pages_pending_edit:${user.id}`,
+				userId: user.id,
+				userName: user.name,
+			});
+
+			newSequence = result.newSequence;
+			pages_yjs_doc_apply_array_buffer_update(
+				livePageYjsDocAfterSave,
+				pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
+			);
+		}
+
+		const allPendingEditsHaveBeenHandled = pages_yjs_doc_diff_updates_match({
+			baseYjsDoc,
+			diffUpdateAFromBase: pendingEdit.workingUpdateFromBase,
+			diffUpdateBFromBase: pendingEdit.modifiedUpdateFromBase,
+			diffUpdateBYjsDocFromBase: modifiedYjsDoc,
+		});
+
+		if (allPendingEditsHaveBeenHandled) {
+			await ctx.db.delete("pages_pending_edits", pendingEdit._id);
+			return Result({
+				_yay: {
+					newSequence,
+				},
+			});
+		}
+
+		const savedBaseYjsDoc = pages_yjs_doc_clone({
+			yjsDoc: baseYjsDoc,
+		});
+		pages_yjs_doc_apply_array_buffer_update(savedBaseYjsDoc, pendingEdit.workingUpdateFromBase);
+
+		const updatedModifiedUpdateFromSavedBase = pages_yjs_compute_diff_update_from_yjs_doc({
+			yjsDoc: modifiedYjsDoc,
+			yjsBeforeDoc: savedBaseYjsDoc,
+		});
+
+		if (!updatedModifiedUpdateFromSavedBase) {
+			await ctx.db.delete("pages_pending_edits", pendingEdit._id);
+			return Result({
+				_yay: {
+					newSequence,
+				},
+			});
+		}
+
+		const savedBaseMatchesLivePageAfterSave =
+			!pages_yjs_compute_diff_update_from_yjs_doc({
+				yjsDoc: livePageYjsDocAfterSave,
+				yjsBeforeDoc: savedBaseYjsDoc,
+			}) &&
+			!pages_yjs_compute_diff_update_from_yjs_doc({
+				yjsDoc: savedBaseYjsDoc,
+				yjsBeforeDoc: livePageYjsDocAfterSave,
+			});
+		const updatedBaseYjsSequence = savedBaseMatchesLivePageAfterSave
+			? (newSequence ?? yjsContent.yjsSequence)
+			: pendingEdit.baseYjsSequence;
+
+		await ctx.db.patch("pages_pending_edits", pendingEdit._id, {
+			baseYjsSequence: updatedBaseYjsSequence,
+			baseYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(savedBaseYjsDoc)),
+			workingUpdateFromBase: new ArrayBuffer(0),
+			modifiedUpdateFromBase: pages_u8_to_array_buffer(updatedModifiedUpdateFromSavedBase),
+			updatedAt: Date.now(),
+		});
+
+		return Result({
+			_yay: {
+				newSequence,
+			},
+		});
 	},
 });
 

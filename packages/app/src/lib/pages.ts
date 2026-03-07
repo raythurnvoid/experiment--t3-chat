@@ -52,7 +52,7 @@ export async function pages_fetch_page_yjs_state_and_markdown(args: {
 	projectId: string;
 	pageId: app_convex_Id<"pages">;
 }) {
-	const [snapshotDoc, updatesData, lastSequenceData] = await Promise.all([
+	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
 		app_convex.query(app_convex_api.ai_docs_temp.yjs_get_doc_last_snapshot, args),
 		app_convex
 			.query(app_convex_api.ai_docs_temp.yjs_get_incremental_updates, args)
@@ -60,18 +60,18 @@ export async function pages_fetch_page_yjs_state_and_markdown(args: {
 		app_convex.query(app_convex_api.ai_docs_temp.get_page_last_yjs_sequence, args),
 	]);
 
-	if (snapshotDoc == null) return null;
+	if (yjsSnapshotDoc == null) return null;
 
 	// By default the API returns updates in descending order; normalize to ascending and filter
 	// to only include updates that are after the snapshot.
-	const filteredIncrementalUpdates = updatesData.filter((u) => u.sequence > snapshotDoc.sequence).reverse();
+	const filteredIncrementalUpdates = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
 
-	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshotDoc.snapshot_update, {
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsSnapshotDoc.snapshot_update, {
 		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
 	});
 	const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
 
-	const yjsSequence = lastSequenceData?.last_sequence ?? snapshotDoc.sequence;
+	const yjsSequence = yjsLastSequenceDoc?.last_sequence ?? yjsSnapshotDoc.sequence;
 
 	return { markdown, yjsDoc, yjsSequence };
 }

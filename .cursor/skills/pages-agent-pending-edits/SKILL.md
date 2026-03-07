@@ -20,11 +20,11 @@ The goal is to keep AI writes explicit and user-reviewable before persistence.
 ## Core data flow
 
 1. `write_page` / `edit_page` in `packages/app/server/server-ai-tools.ts` produce proposed markdown.
-2. Server stores proposal via `internal.ai_chat.upsert_ai_pending_edit` (table: `ai_chat_pending_edits`).
-3. UI queries pending state through `ai_chat.get_ai_pending_edit`.
+2. Server stores proposal via `internal.ai_chat.upsert_pages_pending_edit_updates` (table: `pages_pending_edits`).
+3. UI queries pending state through `ai_chat.get_pages_pending_edit`.
 4. Rich/plain editor shows pending banner and review CTA.
 5. Diff editor compares current content vs pending proposal.
-6. Terminal actions clear pending state through `ai_chat.clear_ai_pending_edit`.
+6. Terminal actions clear pending state through `ai_chat.clear_pages_pending_edit`.
 
 ## State model and transitions
 

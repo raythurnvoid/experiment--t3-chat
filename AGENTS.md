@@ -452,15 +452,26 @@ The React Compiler currently has issues lowering `try { ... } catch { ... } fina
 
 ## Casing
 
-Use these naming rules with one practical exception for symbols that are tightly scoped to a specific component, hook, or utility.
+Prefer these naming rules in order. The main distinction is between root-level value symbols, root-level type-like symbols, and owner-scoped colocated symbols.
 
-### Root Level Module Symbols (default: snake_case, exported and non-exported)
+### Root-Level Value Symbols (default: snake_case)
 
-For all root-level symbols (both exported and non-exported), use `snake_case` by default.
+Use `snake_case` for root-level value symbols such as `const`, `let`, `function`, and non-class helper objects.
 
-Module namespacing prefixes (for example `pages_*`, `ai_chat_*`) are primarily for exported/public symbols where better cross-file autocomplete and discoverability matter most.
+- Exported/public values often use a module prefix for discoverability, for example `pages_*`, `ai_chat_*`, `app_*`, `storage_*`.
+- Non-exported helpers can use plain descriptive `snake_case` when a module prefix would add noise.
+- Keep well-established exceptions when they improve clarity or match external APIs: hooks use `useXxx`, short shared utilities may stay `cn` / `sx`, and wrappers over external APIs may preserve existing camelCase names.
 
-For non-exported root-level helpers, keep plain descriptive `snake_case` unless the file already follows a consistent module-prefixed style for private symbols.
+### Root-Level Type-Like Symbols (PascalCase suffix)
+
+Classes, interfaces, type aliases, and enums use PascalCase for the type-like part of the symbol.
+
+Use one of these two shapes:
+
+- Module/feature-scoped type-like symbols: `snake_case` namespace + PascalCase suffix
+- Shared/generic type-like symbols: plain PascalCase
+
+If you add a module/feature prefix to an exported/public type-like root-level symbol, keep the namespace prefix in `snake_case` and the type-like suffix in PascalCase (for example `ai_chat_Stream`, `pages_DocSnapshot`, `ai_chat_Result`).
 
 ```ts
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
@@ -477,6 +488,10 @@ export type ai_chat_MyType = {
 	projectId: string;
 };
 
+type PendingEditSyncResult = {
+	aborted: boolean;
+};
+
 export function ai_chat_my_function(projectId: string) {
 	const processedResult = processData(projectId);
 	return processedResult;
@@ -485,11 +500,17 @@ export function ai_chat_my_function(projectId: string) {
 export enum ai_chat_MyEnum {
 	PROJECT_ID = "app_project_local_dev",
 }
+
+class LatestSerializedRunner {}
 ```
 
 ### Root-Level Scoped Symbols (allowed: OwnerSymbol_Descriptor)
 
 When a root-level symbol exists only to support a specific owner symbol (component, hook, or utility), you may use `OwnerSymbol_Descriptor`.
+
+- Components and component-like owners use PascalCase, for example `PageEditorDiff_Props`.
+- Hooks keep the normal hook owner name, for example `useAiChatController_Props`.
+- This pattern is preferred for colocated helper types and companion utilities.
 
 This is the pattern used for colocated helper types and companion utilities, for example:
 
@@ -497,9 +518,10 @@ This is the pattern used for colocated helper types and companion utilities, for
 type AiChatThread_Props = { ... };
 type AiChatThread_ClassNames = "AiChatThread" | "AiChatThread-content";
 type useAutoScroll_Props = { ... };
+type LatestSerializedRunner_RunResult<T> = { ... };
 ```
 
-Use this pattern only for tightly related declarations. Keep shared/generic module APIs in `snake_case`.
+Use this pattern only for tightly related declarations. Keep shared/generic module APIs in the root-level patterns above.
 
 This owner-scoped pattern is allowed for private helpers but not required; prefer local file consistency and minimal renaming.
 For function-owned types, one-off shapes are often easier inline, while owner-linked names (for example `OwnerSymbol_Args` or `OwnerSymbol_Result`) can be helpful when the type is reused, exported, or notably improves readability.

@@ -8,4 +8,81 @@
  * Only imports from packages that work server-side.
  */
 
+import type { Id } from "../convex/_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
+import { should_never_happen } from "./server-utils.ts";
+
 export * from "../shared/pages.ts";
+
+export async function pages_db_get_yjs_content_and_sequence(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		pageId: Id<"pages">;
+	},
+) {
+	const page = await ctx.db.get("pages", args.pageId);
+	if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+		return null;
+	}
+
+	if (!page.yjsSnapshotId || !page.yjsLastSequenceId) {
+		console.error(
+			should_never_happen(
+				"[pages_db_get_yjs_content_and_sequence] Missing page.yjsSnapshotId or page.yjsLastSequenceId",
+				{
+					pageId: args.pageId,
+					yjsSnapshotId: page.yjsSnapshotId,
+					yjsLastSequenceId: page.yjsLastSequenceId,
+				},
+			),
+		);
+		return null;
+	}
+
+	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
+		ctx.db.get("pages_yjs_snapshots", page.yjsSnapshotId),
+		ctx.db
+			.query("pages_yjs_updates")
+			.withIndex("by_workspace_project_page_id_sequence", (q) =>
+				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+			)
+			.order("asc")
+			.collect(),
+
+		ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId),
+	]);
+
+	if (
+		!yjsSnapshotDoc ||
+		yjsSnapshotDoc.workspace_id !== args.workspaceId ||
+		yjsSnapshotDoc.project_id !== args.projectId ||
+		!yjsLastSequenceDoc ||
+		yjsLastSequenceDoc.workspace_id !== args.workspaceId ||
+		yjsLastSequenceDoc.project_id !== args.projectId
+	) {
+		console.error(
+			should_never_happen("[pages_db_get_yjs_content_and_sequence] Missing yjsSnapshotDoc or yjsLastSequenceDoc", {
+				pageId: args.pageId,
+				yjsSnapshotDoc: yjsSnapshotDoc,
+				yjsLastSequenceDoc: yjsLastSequenceDoc,
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+			}),
+		);
+
+		return null;
+	}
+
+	const incrementalYjsUpdatesDocs = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
+
+	return {
+		page,
+		yjsSnapshotDoc,
+		yjsLastSequenceDoc,
+		yjsUpdatesDocs,
+		incrementalYjsUpdatesDocs,
+		yjsSequence: yjsLastSequenceDoc.last_sequence,
+	};
+}

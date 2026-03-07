@@ -1457,8 +1457,8 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 			});
 		}
 
-		const overlay = await ctx.db
-			.query("ai_chat_pending_edits")
+		const pagesPendingOverlay = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -1467,7 +1467,27 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 					.eq("pageId", convexId),
 			)
 			.first();
-		if (overlay) return { content: overlay.modifiedContent, pageId: convexId };
+		if (pagesPendingOverlay) {
+			const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(pagesPendingOverlay.baseYjsUpdate, {
+				additionalIncrementalArrayBufferUpdates:
+					pagesPendingOverlay.modifiedUpdateFromBase.byteLength > 0
+						? [pagesPendingOverlay.modifiedUpdateFromBase]
+						: undefined,
+			});
+
+			const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
+			if (markdown._yay) {
+				return { content: markdown._yay, pageId: convexId };
+			}
+
+			console.error(
+				"[get_page_last_available_markdown_content_by_path] Failed to reconstruct markdown from pages_pending_edits",
+				{
+					nay: markdown._nay,
+					pageId: convexId,
+				},
+			);
+		}
 
 		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdownContentId);
 		if (!markdownContentDoc) return null;
@@ -1519,128 +1539,6 @@ export const get_plain_text = query({
 			.collect();
 
 		return plainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n\n");
-	},
-});
-
-/**
- * Returns the "best available" page content without doing any heavy reconstruction work.
- *
- * We keep multiple representations of a page:
- * - `pages_markdown_content` (fast to serve to editors/search)
- * - Yjs state (`pages_yjs_snapshots` + `pages_yjs_updates`) as the source-of-truth for collaborative editing
- *
- * The key is the monotonic Yjs `sequence`:
- * - `pages_yjs_docs_last_sequences.last_sequence` is the authoritative "latest" sequence for the page
- * - `pages_markdown_content.yjs_sequence` tells us which Yjs sequence the markdown was derived from
- * - `pages_yjs_snapshots.sequence` tells us which Yjs sequence a snapshot represents
- *
- * Resolution order (stop at the first consistent option):
- * - If markdown's `yjs_sequence` matches `last_sequence`, we can safely return markdown (cheap and already rendered).
- * - Otherwise, if the stored Yjs snapshot's `sequence` matches `last_sequence`, return the snapshot (caller can decode).
- * - Otherwise, return the snapshot plus all incremental Yjs updates so the caller can reconstruct the latest state.
- *
- * Any missing/unauthorized docs cause an early `null` return.
- */
-export const try_get_markdown_content_or_fallback_to_yjs_data = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
-	handler: async (ctx, args) => {
-		let result;
-		do {
-			const page = await ctx.db.get("pages", args.pageId).then((page) => {
-				if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) return null;
-				return page;
-			});
-
-			if (!page || !page.markdownContentId || !page.yjsLastSequenceId) {
-				throw should_never_happen("page.markdownContentId or page.yjsLastSequenceId is not set", {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					pageId: args.pageId,
-					markdownContentId: page?.markdownContentId,
-					yjsLastSequenceId: page?.yjsLastSequenceId,
-				});
-			}
-
-			const [lastYjsSequenceDoc, markdownContentDoc] = await Promise.all([
-				ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId).then((doc) => {
-					if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
-					return doc;
-				}),
-				ctx.db.get("pages_markdown_content", page.markdownContentId).then((doc) => {
-					if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
-					return doc;
-				}),
-			]);
-
-			if (!lastYjsSequenceDoc || !markdownContentDoc) {
-				throw should_never_happen("lastYjsSequenceDoc or markdownContentDoc is not valorized", {
-					pageId: args.pageId,
-					lastYjsSequenceDoc: lastYjsSequenceDoc,
-					markdownContentDoc: markdownContentDoc,
-				});
-			}
-
-			if (markdownContentDoc.yjs_sequence === lastYjsSequenceDoc.last_sequence) {
-				result = {
-					kind: "markdown_content" as const,
-					markdownContentDoc,
-				};
-				break;
-			}
-
-			if (!page.yjsSnapshotId) {
-				throw should_never_happen("page.yjsSnapshotId is not set", {
-					pageId: args.pageId,
-					yjsSnapshotId: page.yjsSnapshotId,
-				});
-			}
-
-			const yjsSnapshotDoc = await ctx.db.get("pages_yjs_snapshots", page.yjsSnapshotId).then((doc) => {
-				if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
-				return doc;
-			});
-
-			if (!yjsSnapshotDoc) {
-				throw should_never_happen("yjsSnapshotDoc is not valorized", {
-					pageId: args.pageId,
-					yjsSnapshotDoc: yjsSnapshotDoc,
-				});
-			}
-
-			if (yjsSnapshotDoc.sequence === lastYjsSequenceDoc.last_sequence) {
-				result = {
-					kind: "yjs_snapshot" as const,
-					yjsSnapshotDoc,
-				};
-				break;
-			}
-
-			const yjsUpdatesDocs = await ctx.db
-				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_id_sequence", (q) =>
-					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
-				)
-				.order("asc")
-				.collect();
-
-			if (yjsUpdatesDocs.length === 0) {
-				throw should_never_happen(
-					"yjsUpdatesDocs are empty even though the last sequence does not match the snapshot sequence",
-					{
-						pageId: args.pageId,
-						yjsUpdatesDocs: yjsUpdatesDocs,
-					},
-				);
-			}
-
-			result = {
-				kind: "yjs_snapshots_with_incremental_updates" as const,
-				yjsSnapshotDoc,
-				yjsUpdatesDocs,
-			};
-		} while (0);
-
-		return result;
 	},
 });
 
@@ -2368,6 +2266,64 @@ async function yjs_increment_or_create_last_sequence(
 	return lastSequenceData;
 }
 
+export async function pages_db_yjs_push_update(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		pageId: Id<"pages">;
+		update: ArrayBuffer;
+		sessionId: string;
+		userId: Id<"users">;
+		userName: string;
+	},
+) {
+	const now = Date.now();
+
+	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		pageId: args.pageId,
+	});
+
+	await ctx.db.insert("pages_yjs_updates", {
+		workspace_id: args.workspaceId,
+		project_id: args.projectId,
+		page_id: args.pageId,
+		sequence: newSequenceData.last_sequence,
+		update: args.update,
+		origin: {
+			type: "USER_EDIT",
+			session_id: args.sessionId,
+		},
+		created_by: args.userName,
+		created_at: now,
+	});
+
+	const snapshotScheduleDelayMs = newSequenceData.last_sequence > 0 && newSequenceData.last_sequence % 50 === 0 ? 0 : 30_000;
+
+	const schedules = await ctx.db
+		.query("pages_yjs_snapshot_schedules")
+		.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
+		.collect();
+
+	const scheduledId = await ctx.scheduler.runAfter(snapshotScheduleDelayMs, internal.ai_docs_temp.update_snapshots, {
+		userId: args.userId,
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		pageId: args.pageId,
+	});
+
+	await Promise.all([
+		schedules[0]
+			? ctx.db.patch("pages_yjs_snapshot_schedules", schedules[0]._id, { scheduled_function_id: scheduledId })
+			: ctx.db.insert("pages_yjs_snapshot_schedules", { page_id: args.pageId, scheduled_function_id: scheduledId }),
+		...schedules.slice(1).map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id)),
+	]);
+
+	return { newSequence: newSequenceData.last_sequence };
+}
+
 export const yjs_push_update = mutation({
 	args: {
 		workspaceId: v.string(),
@@ -2384,51 +2340,15 @@ export const yjs_push_update = mutation({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const now = Date.now();
-
-		const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		return pages_db_yjs_push_update(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			pageId: args.pageId,
-		});
-
-		await ctx.db.insert("pages_yjs_updates", {
-			workspace_id: args.workspaceId,
-			project_id: args.projectId,
-			page_id: args.pageId,
-			sequence: newSequenceData.last_sequence,
 			update: args.update,
-			origin: {
-				type: "USER_EDIT",
-				session_id: args.sessionId,
-			},
-			created_by: user.name,
-			created_at: now,
-		});
-
-		const snapshotScheduleDelayMs =
-			newSequenceData.last_sequence > 0 && newSequenceData.last_sequence % 50 === 0 ? 0 : 30_000;
-
-		const schedules = await ctx.db
-			.query("pages_yjs_snapshot_schedules")
-			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
-			.collect();
-
-		const scheduledId = await ctx.scheduler.runAfter(snapshotScheduleDelayMs, internal.ai_docs_temp.update_snapshots, {
+			sessionId: args.sessionId,
 			userId: user.id,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageId: args.pageId,
+			userName: user.name,
 		});
-
-		await Promise.all([
-			schedules[0]
-				? ctx.db.patch("pages_yjs_snapshot_schedules", schedules[0]._id, { scheduled_function_id: scheduledId })
-				: ctx.db.insert("pages_yjs_snapshot_schedules", { page_id: args.pageId, scheduled_function_id: scheduledId }),
-			...schedules.slice(1).map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id)),
-		]);
-
-		return { newSequence: newSequenceData.last_sequence };
 	},
 });
 

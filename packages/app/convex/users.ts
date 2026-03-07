@@ -222,7 +222,7 @@ export const resolve_user = internalMutation({
 		anonymousUserToken: v.optional(v.string()),
 		displayName: v.string(),
 	},
-	returns: v_result({ _yay: v.object({ userId: v.id("users") }), _nay: { includeName: false } }),
+	returns: v_result({ _yay: v.object({ userId: v.id("users") }) }),
 	handler: async (ctx, args) => {
 		let resultUserId: Id<"users"> | undefined;
 

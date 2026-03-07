@@ -137,54 +137,6 @@ export async function copy_to_clipboard(args: { text: string; html?: string }) {
 export type copy_to_clipboard_Result = Awaited<ReturnType<typeof copy_to_clipboard>>;
 
 /**
- * Create a deferred object with a status property.
- *
- * @example
- * ```ts
- * const deferred = create_deferred<string>();
- * deferred.status; // "pending"
- * ```
- */
-export function create_deferred<T>() {
-	const createDeferred = () => {
-		const deferred = Object.assign(Promise.withResolvers<T>(), {
-			status: "pending" as "pending" | "resolved" | "rejected",
-
-			value: undefined as T | undefined,
-			error: undefined as unknown,
-
-			/**
-			 * If the deferred is not pending, replace the promise and
-			 * set the status to pending.
-			 */
-			reset: () => {
-				if (deferred.status !== "pending") {
-					Object.assign(deferred, createDeferred());
-				}
-			},
-		});
-
-		deferred.promise = deferred.promise
-			.then((value) => {
-				deferred.status = "resolved";
-				deferred.value = value;
-				deferred.error = undefined;
-				return value;
-			})
-			.catch((error) => {
-				deferred.status = "rejected";
-				deferred.error = error;
-				deferred.value = undefined;
-				return error;
-			});
-
-		return deferred;
-	};
-
-	return createDeferred();
-}
-
-/**
  * At runtime tuples are just arrays, but for TS the type will be a tuple with well defined literal types.
  *
  * https://www.typescriptlang.org/docs/handbook/2/objects.html#tuple-types

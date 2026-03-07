@@ -58,33 +58,31 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
 
-	/**
-	 * Pending edits overlay used to stage AI-written content until user saves.
-	 * Keyed by user + page so all chat threads share a single pending edit per page.
-	 */
-	ai_chat_pending_edits: defineTable({
+	// #endregion AI
+
+	// #region Pages
+	pages_pending_edits: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
 		pageId: v.id("pages"),
-		baseContent: v.string(),
-		modifiedContent: v.string(),
+		baseYjsSequence: v.number(),
+		baseYjsUpdate: v.bytes(),
+		workingUpdateFromBase: v.bytes(),
+		modifiedUpdateFromBase: v.bytes(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"])
 		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks to remove a user's pending edits.
 	 * One task per user; canceled on heartbeat, executed if user remains offline.
 	 */
-	ai_chat_pending_edits_cleanup_tasks: defineTable({
+	pages_pending_edits_cleanup_tasks: defineTable({
 		userId: v.string(),
 		scheduledFunctionId: v.id("_scheduled_functions"),
 	}).index("by_userId", ["userId"]),
-	// #endregion AI
 
-	// #region Pages
 	pages: defineTable({
 		/** Workspace ID extracted from roomId */
 		workspaceId: v.string(),
