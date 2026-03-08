@@ -6,10 +6,9 @@ import {
 } from "../shared/shared-utils.ts";
 import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, internalMutation, type ActionCtx } from "./_generated/server.js";
+import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
 import { paginationOptsValidator, type RouteSpec } from "convex/server";
-import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import {
@@ -30,6 +29,8 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
+import { v_result } from "../server/convex-utils.ts";
+import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
 	ai_chat_tool_create_list_pages,
@@ -42,7 +43,20 @@ import {
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
+import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
+import {
+	pages_db_get_yjs_content_and_sequence,
+	pages_yjs_doc_apply_array_buffer_update,
+	pages_yjs_doc_create_from_array_buffer_update,
+	pages_yjs_doc_clone,
+	pages_yjs_doc_get_markdown,
+	pages_yjs_doc_update_from_markdown,
+	pages_yjs_compute_diff_update_from_yjs_doc,
+	pages_u8_to_array_buffer,
+	pages_u8_equals,
+} from "../server/pages.ts";
+import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 export const threads_list = query({
 	args: {
@@ -472,21 +486,126 @@ export const thread_messages_add = mutation({
 	},
 });
 
-export const upsert_ai_pending_edit = internalMutation({
+function pages_pending_edit_encode_yjs_state_update(args: { yjsDoc: YDoc }) {
+	return pages_u8_to_array_buffer(encodeStateAsUpdate(args.yjsDoc));
+}
+
+function pages_pending_edit_reconstruct_branch_docs(pendingEdit: app_convex_Doc<"pages_pending_edits">) {
+	return {
+		baseYjsSequence: pendingEdit.baseYjsSequence,
+		baseYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.baseYjsUpdate),
+		workingBranchYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.workingBranchYjsUpdate),
+		modifiedBranchYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.modifiedBranchYjsUpdate),
+	};
+}
+
+function pages_pending_edit_project_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
+	const currentMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.mut_yjsDoc,
+	});
+	if (currentMarkdown._nay) {
+		return currentMarkdown;
+	}
+
+	if (currentMarkdown._yay === args.markdown) {
+		return Result({ _yay: false });
+	}
+
+	return pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: args.mut_yjsDoc,
+		markdown: args.markdown,
+	});
+}
+
+function pages_pending_edit_docs_match_content(args: {
+	leftYjsDoc: YDoc;
+	rightYjsDoc: YDoc;
+}) {
+	const leftMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.leftYjsDoc,
+	});
+	if (leftMarkdown._nay) {
+		return leftMarkdown;
+	}
+
+	const rightMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.rightYjsDoc,
+	});
+	if (rightMarkdown._nay) {
+		return rightMarkdown;
+	}
+
+	return Result({
+		_yay: leftMarkdown._yay === rightMarkdown._yay,
+	});
+}
+
+function pages_pending_edit_branch_docs_have_changes(args: {
+	baseYjsDoc: YDoc;
+	workingBranchYjsDoc: YDoc;
+	modifiedBranchYjsDoc: YDoc;
+}) {
+	const workingMatchesBase = pages_pending_edit_docs_match_content({
+		leftYjsDoc: args.baseYjsDoc,
+		rightYjsDoc: args.workingBranchYjsDoc,
+	});
+	if (workingMatchesBase._nay) {
+		return workingMatchesBase;
+	}
+
+	const modifiedMatchesBase = pages_pending_edit_docs_match_content({
+		leftYjsDoc: args.baseYjsDoc,
+		rightYjsDoc: args.modifiedBranchYjsDoc,
+	});
+	if (modifiedMatchesBase._nay) {
+		return modifiedMatchesBase;
+	}
+
+	return Result({
+		_yay: !(workingMatchesBase._yay && modifiedMatchesBase._yay),
+	});
+}
+
+function pages_pending_edit_branch_docs_match_existing_row(args: {
+	existingPendingEdit: app_convex_Doc<"pages_pending_edits"> | null;
+	baseYjsSequence: number;
+	baseYjsUpdate: ArrayBuffer;
+	workingBranchYjsUpdate: ArrayBuffer;
+	modifiedBranchYjsUpdate: ArrayBuffer;
+}) {
+	if (!args.existingPendingEdit) {
+		return false;
+	}
+
+	return (
+		args.existingPendingEdit.baseYjsSequence === args.baseYjsSequence &&
+		pages_u8_equals(new Uint8Array(args.existingPendingEdit.baseYjsUpdate), new Uint8Array(args.baseYjsUpdate)) &&
+		pages_u8_equals(
+			new Uint8Array(args.existingPendingEdit.workingBranchYjsUpdate),
+			new Uint8Array(args.workingBranchYjsUpdate),
+		) &&
+		pages_u8_equals(
+			new Uint8Array(args.existingPendingEdit.modifiedBranchYjsUpdate),
+			new Uint8Array(args.modifiedBranchYjsUpdate),
+		)
+	);
+}
+
+export const upsert_pages_pending_edit_updates = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
-		baseContent: v.string(),
-		modifiedContent: v.string(),
+		workingMarkdown: v.string(),
+		modifiedMarkdown: v.string(),
 	},
-	returns: v.null(),
+	returns: v_result({
+		_yay: v.null(),
+	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const now = Date.now();
-
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
+		const existingPendingEdit = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -496,40 +615,300 @@ export const upsert_ai_pending_edit = internalMutation({
 			)
 			.first();
 
-		if (!pendingEdits) {
-			await ctx.db.insert("ai_chat_pending_edits", {
+		let baseYjsDoc: YDoc;
+		let workingBranchYjsDoc: YDoc;
+		let modifiedBranchYjsDoc: YDoc;
+		let baseYjsSequence: number;
+
+		if (existingPendingEdit) {
+			const reconstructedBranchDocs = pages_pending_edit_reconstruct_branch_docs(existingPendingEdit);
+			baseYjsSequence = reconstructedBranchDocs.baseYjsSequence;
+			baseYjsDoc = reconstructedBranchDocs.baseYjsDoc;
+			workingBranchYjsDoc = reconstructedBranchDocs.workingBranchYjsDoc;
+			modifiedBranchYjsDoc = reconstructedBranchDocs.modifiedBranchYjsDoc;
+		} else {
+			const yjsContent = await pages_db_get_yjs_content_and_sequence(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			});
+			if (!yjsContent) {
+				return Result({
+					_nay: {
+						message: "Failed to resolve page Yjs content while creating pending edits",
+					},
+				});
+			}
+
+			baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+				additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
+			});
+			baseYjsSequence = yjsContent.yjsSequence;
+			workingBranchYjsDoc = pages_yjs_doc_clone({
+				yjsDoc: baseYjsDoc,
+			});
+			modifiedBranchYjsDoc = pages_yjs_doc_clone({
+				yjsDoc: baseYjsDoc,
+			});
+		}
+
+		const workingBranchProjection = pages_pending_edit_project_markdown_to_branch({
+			mut_yjsDoc: workingBranchYjsDoc,
+			markdown: args.workingMarkdown,
+		});
+		if (workingBranchProjection._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to project working markdown into pending branch",
+					cause: workingBranchProjection._nay,
+				},
+			});
+		}
+
+		const modifiedBranchProjection = pages_pending_edit_project_markdown_to_branch({
+			mut_yjsDoc: modifiedBranchYjsDoc,
+			markdown: args.modifiedMarkdown,
+		});
+		if (modifiedBranchProjection._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to project modified markdown into pending branch",
+					cause: modifiedBranchProjection._nay.cause,
+				},
+			});
+		}
+
+		const branchDocsHaveChanges = pages_pending_edit_branch_docs_have_changes({
+			baseYjsDoc,
+			workingBranchYjsDoc,
+			modifiedBranchYjsDoc,
+		});
+		if (branchDocsHaveChanges._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compare pending edit branches with base",
+					cause: branchDocsHaveChanges._nay,
+				},
+			});
+		}
+
+		if (!branchDocsHaveChanges._yay) {
+			if (existingPendingEdit) {
+				await ctx.db.delete("pages_pending_edits", existingPendingEdit._id);
+			}
+
+			return Result({ _yay: null });
+		}
+
+		const baseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+			yjsDoc: baseYjsDoc,
+		});
+		const workingBranchYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+			yjsDoc: workingBranchYjsDoc,
+		});
+		const modifiedBranchYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+			yjsDoc: modifiedBranchYjsDoc,
+		});
+
+		if (
+			pages_pending_edit_branch_docs_match_existing_row({
+				existingPendingEdit,
+				baseYjsSequence,
+				baseYjsUpdate,
+				workingBranchYjsUpdate,
+				modifiedBranchYjsUpdate,
+			})
+		) {
+			return Result({ _yay: null });
+		}
+
+		const now = Date.now();
+
+		if (!existingPendingEdit) {
+			await ctx.db.insert("pages_pending_edits", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				userId: user.id,
 				pageId: args.pageId,
-				baseContent: args.baseContent,
-				modifiedContent: args.modifiedContent,
+				baseYjsSequence,
+				baseYjsUpdate,
+				workingBranchYjsUpdate,
+				modifiedBranchYjsUpdate,
 				updatedAt: now,
 			});
 		} else {
-			await ctx.db.patch("ai_chat_pending_edits", pendingEdits._id, {
-				modifiedContent: args.modifiedContent,
+			await ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
+				baseYjsSequence,
+				baseYjsUpdate,
+				workingBranchYjsUpdate,
+				modifiedBranchYjsUpdate,
 				updatedAt: now,
 			});
 		}
 
-		return null;
+		return Result({ _yay: null });
 	},
 });
 
-export const clear_ai_pending_edit = mutation({
+export const persist_pages_pending_edit_rebased_state = mutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
-		expectedUpdatedAt: v.optional(v.number()),
+		baseYjsSequence: v.number(),
+		baseYjsUpdate: v.bytes(),
+		workingBranchYjsUpdate: v.bytes(),
+		modifiedBranchYjsUpdate: v.bytes(),
 	},
-	returns: v.null(),
+	returns: v_result({
+		_yay: v.object({
+			pendingEdit: v.union(doc(app_convex_schema, "pages_pending_edits"), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const [existingPendingEdit, yjsContent] = await Promise.all([
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("userId", user.id)
+						.eq("pageId", args.pageId),
+				)
+				.first(),
+			pages_db_get_yjs_content_and_sequence(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			}),
+		]);
+		if (!yjsContent) {
+			return Result({
+				_nay: {
+					message: "Failed to resolve page Yjs content while persisting pending edits",
+				},
+			});
+		}
+
+		const latestBaseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
+		});
+		const latestBaseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+			yjsDoc: latestBaseYjsDoc,
+		});
+		if (
+			args.baseYjsSequence !== yjsContent.yjsSequence ||
+			!pages_u8_equals(new Uint8Array(args.baseYjsUpdate), new Uint8Array(latestBaseYjsUpdate))
+		) {
+			return Result({
+				_nay: {
+					message: "Pending edit base is stale and must be rebuilt from the latest live page state",
+				},
+			});
+		}
+
+		const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.baseYjsUpdate);
+		const workingBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.workingBranchYjsUpdate);
+		const modifiedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.modifiedBranchYjsUpdate);
+
+		const branchDocsHaveChanges = pages_pending_edit_branch_docs_have_changes({
+			baseYjsDoc,
+			workingBranchYjsDoc,
+			modifiedBranchYjsDoc,
+		});
+		if (branchDocsHaveChanges._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compare rebased pending edit branches with base",
+					cause: branchDocsHaveChanges._nay,
+				},
+			});
+		}
+
+		if (!branchDocsHaveChanges._yay) {
+			if (existingPendingEdit) {
+				await ctx.db.delete("pages_pending_edits", existingPendingEdit._id);
+			}
+
+			return Result({
+				_yay: {
+					pendingEdit: null,
+				},
+			});
+		}
+
+		if (
+			pages_pending_edit_branch_docs_match_existing_row({
+				existingPendingEdit,
+				baseYjsSequence: args.baseYjsSequence,
+				baseYjsUpdate: args.baseYjsUpdate,
+				workingBranchYjsUpdate: args.workingBranchYjsUpdate,
+				modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+			})
+		) {
+			return Result({
+				_yay: {
+					pendingEdit: existingPendingEdit,
+				},
+			});
+		}
+
+		const now = Date.now();
+		let pendingEditId = existingPendingEdit?._id ?? null;
+
+		if (!existingPendingEdit) {
+			pendingEditId = await ctx.db.insert("pages_pending_edits", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: user.id,
+				pageId: args.pageId,
+				baseYjsSequence: args.baseYjsSequence,
+				baseYjsUpdate: args.baseYjsUpdate,
+				workingBranchYjsUpdate: args.workingBranchYjsUpdate,
+				modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+				updatedAt: now,
+			});
+		} else {
+			await ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
+				baseYjsSequence: args.baseYjsSequence,
+				baseYjsUpdate: args.baseYjsUpdate,
+				workingBranchYjsUpdate: args.workingBranchYjsUpdate,
+				modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+				updatedAt: now,
+			});
+		}
+
+		const nextPendingEdit = pendingEditId ? await ctx.db.get("pages_pending_edits", pendingEditId) : null;
+		if (!nextPendingEdit) {
+			return Result({
+				_nay: {
+					message: "Failed to read persisted rebased pending edit row",
+				},
+			});
+		}
+
+		return Result({
+			_yay: {
+				pendingEdit: nextPendingEdit,
+			},
+		});
+	},
+});
+
+export const get_pages_pending_edit = query({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+	},
+	returns: v.union(doc(app_convex_schema, "pages_pending_edits"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
+		const pendingEdit = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -538,63 +917,164 @@ export const clear_ai_pending_edit = mutation({
 					.eq("pageId", args.pageId),
 			)
 			.first();
-
-		if (!pendingEdits) {
-			return null;
-		}
-
-		if (args.expectedUpdatedAt != null && pendingEdits.updatedAt !== args.expectedUpdatedAt) {
-			return null;
-		}
-
-		await ctx.db.delete("ai_chat_pending_edits", pendingEdits._id);
-		return null;
+		return pendingEdit;
 	},
 });
 
-export const get_ai_pending_edit = query({
+export const list_pages_pending_edits = query({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
 	},
-	returns: v.union(doc(app_convex_schema, "ai_chat_pending_edits"), v.null()),
+	returns: v.array(doc(app_convex_schema, "pages_pending_edits")),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
+		const pagesPendingEdits = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("userId", user.id)
-					.eq("pageId", args.pageId),
-			)
-			.first();
-
-		return pendingEdits;
-	},
-});
-
-export const list_ai_pending_edits = query({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-	},
-	returns: v.array(doc(app_convex_schema, "ai_chat_pending_edits")),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-
-		const pendingEdits = await ctx.db
-			.query("ai_chat_pending_edits")
-			.withIndex("by_workspace_project_user", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", user.id),
 			)
 			.order("asc")
 			.collect();
 
-		return pendingEdits;
+		return pagesPendingEdits;
+	},
+});
+
+export const save_pages_pending_edit = mutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			newSequence: v.union(v.number(), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const [pendingEdit, yjsContent] = await Promise.all([
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("userId", user.id)
+						.eq("pageId", args.pageId),
+				)
+				.first(),
+			pages_db_get_yjs_content_and_sequence(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+			}),
+		]);
+
+		if (!pendingEdit) {
+			return Result({
+				_nay: {
+					message: "Pending edit not found",
+				},
+			});
+		}
+		if (!yjsContent) {
+			return Result({
+				_nay: {
+					message: "Page Yjs content not found",
+				},
+			});
+		}
+
+		const reconstructedBranchDocs = pages_pending_edit_reconstruct_branch_docs(pendingEdit);
+		const baseYjsDoc = reconstructedBranchDocs.baseYjsDoc;
+		const workingBranchYjsDoc = reconstructedBranchDocs.workingBranchYjsDoc;
+		const modifiedBranchYjsDoc = reconstructedBranchDocs.modifiedBranchYjsDoc;
+		const latestPageYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
+		});
+
+		const remoteUpdateFromBase = pages_yjs_compute_diff_update_from_yjs_doc({
+			yjsDoc: latestPageYjsDoc,
+			yjsBeforeDoc: baseYjsDoc,
+		});
+		if (remoteUpdateFromBase) {
+			const remoteUpdateFromBaseArrayBuffer = pages_u8_to_array_buffer(remoteUpdateFromBase);
+			pages_yjs_doc_apply_array_buffer_update(workingBranchYjsDoc, remoteUpdateFromBaseArrayBuffer);
+			pages_yjs_doc_apply_array_buffer_update(modifiedBranchYjsDoc, remoteUpdateFromBaseArrayBuffer);
+		}
+
+		const diffUpdateForLatestPageYjsDoc = pages_yjs_compute_diff_update_from_yjs_doc({
+			yjsDoc: workingBranchYjsDoc,
+			yjsBeforeDoc: latestPageYjsDoc,
+		});
+
+		let newSequence: number | null = null;
+		const livePageYjsDocAfterSave = pages_yjs_doc_clone({
+			yjsDoc: latestPageYjsDoc,
+		});
+		if (diffUpdateForLatestPageYjsDoc) {
+			const result = await pages_db_yjs_push_update(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				pageId: args.pageId,
+				update: pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
+				sessionId: `pages_pending_edit:${user.id}`,
+				userId: user.id,
+				userName: user.name,
+			});
+
+			newSequence = result.newSequence;
+			pages_yjs_doc_apply_array_buffer_update(
+				livePageYjsDocAfterSave,
+				pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
+			);
+		}
+
+		const modifiedMatchesSavedBase = pages_pending_edit_docs_match_content({
+			leftYjsDoc: livePageYjsDocAfterSave,
+			rightYjsDoc: modifiedBranchYjsDoc,
+		});
+		if (modifiedMatchesSavedBase._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to compare modified pending branch with saved page content",
+					cause: modifiedMatchesSavedBase._nay,
+				},
+			});
+		}
+
+		if (modifiedMatchesSavedBase._yay) {
+			await ctx.db.delete("pages_pending_edits", pendingEdit._id);
+			return Result({
+				_yay: {
+					newSequence,
+				},
+			});
+		}
+
+		const nextBaseYjsSequence = newSequence ?? yjsContent.yjsSequence;
+		const nextBaseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+			yjsDoc: livePageYjsDocAfterSave,
+		});
+
+		await ctx.db.patch("pages_pending_edits", pendingEdit._id, {
+			baseYjsSequence: nextBaseYjsSequence,
+			baseYjsUpdate: nextBaseYjsUpdate,
+			workingBranchYjsUpdate: nextBaseYjsUpdate,
+			modifiedBranchYjsUpdate: pages_pending_edit_encode_yjs_state_update({
+				yjsDoc: modifiedBranchYjsDoc,
+			}),
+			updatedAt: Date.now(),
+		});
+
+		return Result({
+			_yay: {
+				newSequence,
+			},
+		});
 	},
 });
 

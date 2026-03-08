@@ -23,12 +23,12 @@ export const heartbeat = mutation({
 		// If the user reconnects before cleanup runs (for example after a quick refresh),
 		// cancel the scheduled pending-edits cleanup so they do not lose unsaved work.
 		const scheduled = await ctx.db
-			.query("ai_chat_pending_edits_cleanup_tasks")
+			.query("pages_pending_edits_cleanup_tasks")
 			.withIndex("by_userId", (q) => q.eq("userId", user.id))
 			.collect();
 		for (const task of scheduled) {
 			await ctx.scheduler.cancel(task.scheduledFunctionId);
-			await ctx.db.delete("ai_chat_pending_edits_cleanup_tasks", task._id);
+			await ctx.db.delete("pages_pending_edits_cleanup_tasks", task._id);
 		}
 
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
@@ -235,12 +235,12 @@ export const disconnect = mutation({
 		const effective = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const userId = effective.id;
 		const existing = await ctx.db
-			.query("ai_chat_pending_edits_cleanup_tasks")
+			.query("pages_pending_edits_cleanup_tasks")
 			.withIndex("by_userId", (q) => q.eq("userId", userId))
 			.collect();
 		for (const task of existing) {
 			await ctx.scheduler.cancel(task.scheduledFunctionId);
-			await ctx.db.delete("ai_chat_pending_edits_cleanup_tasks", task._id);
+			await ctx.db.delete("pages_pending_edits_cleanup_tasks", task._id);
 		}
 
 		console.info("disconnect", userId);
@@ -249,7 +249,7 @@ export const disconnect = mutation({
 			userId,
 		});
 
-		await ctx.db.insert("ai_chat_pending_edits_cleanup_tasks", {
+		await ctx.db.insert("pages_pending_edits_cleanup_tasks", {
 			userId: userId,
 			scheduledFunctionId: scheduledId,
 		});
@@ -268,11 +268,11 @@ export const remove_pending_edits_if_offline = internalMutation({
 
 		// Clear any scheduled record(s) for this user
 		const records = await ctx.db
-			.query("ai_chat_pending_edits_cleanup_tasks")
+			.query("pages_pending_edits_cleanup_tasks")
 			.withIndex("by_userId", (q) => q.eq("userId", userId))
 			.collect();
 		for (const rec of records) {
-			await ctx.db.delete("ai_chat_pending_edits_cleanup_tasks", rec._id);
+			await ctx.db.delete("pages_pending_edits_cleanup_tasks", rec._id);
 		}
 
 		console.info("remove_pending_edits_if_offline", { userId, isOnline });
@@ -280,8 +280,8 @@ export const remove_pending_edits_if_offline = internalMutation({
 		if (isOnline) return;
 
 		// User remained offline after the grace window, so clear pending edits.
-		const pending = await ctx.db
-			.query("ai_chat_pending_edits")
+		const pagesPending = await ctx.db
+			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
@@ -289,8 +289,8 @@ export const remove_pending_edits_if_offline = internalMutation({
 					.eq("userId", userId),
 			)
 			.collect();
-		for (const doc of pending) {
-			await ctx.db.delete("ai_chat_pending_edits", doc._id);
+		for (const doc of pagesPending) {
+			await ctx.db.delete("pages_pending_edits", doc._id);
 		}
 	},
 });

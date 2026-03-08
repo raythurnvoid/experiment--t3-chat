@@ -1,7 +1,12 @@
 import "../convex/setup.test.ts";
 import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
-import { ai_chat_tool_create_list_pages, ai_chat_tool_create_text_search_pages } from "./server-ai-tools.ts";
+import {
+	ai_chat_tool_create_list_pages,
+	ai_chat_tool_create_text_search_pages,
+	ai_chat_tool_create_write_page,
+	ai_chat_tool_create_edit_page,
+} from "./server-ai-tools.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
 import { pages_chunk_BITMASK_FLAGS } from "./pages-markdown-chunking-mastra.ts";
@@ -18,22 +23,26 @@ const server_ai_tools_test_user_identity_default = {
 const makeCtx = (
 	runQueryImpl: (ref: any, args: any) => Promise<any>,
 	args?: {
+		runMutationImpl?: (ref: any, args: any) => Promise<any>;
 		userIdentity?: server_ai_tools_test_user_identity;
 	},
 ): {
 	ctx: ActionCtx;
 	runQuery: ReturnType<typeof vi.fn>;
+	runMutation: ReturnType<typeof vi.fn>;
 	getUserIdentity: ReturnType<typeof vi.fn>;
 } => {
 	const runQuery = vi.fn(runQueryImpl);
+	const runMutation = vi.fn(args?.runMutationImpl ?? (async () => null));
 	const getUserIdentity = vi.fn(async () => args?.userIdentity ?? server_ai_tools_test_user_identity_default);
 	const ctx = {
 		runQuery,
+		runMutation,
 		auth: {
 			getUserIdentity,
 		},
 	} as unknown as ActionCtx;
-	return { ctx, runQuery, getUserIdentity };
+	return { ctx, runQuery, runMutation, getUserIdentity };
 };
 
 function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
@@ -159,4 +168,76 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 	expect(result.output).toContain("... more code block content below");
 	expect(result.output).toContain("/Docs/TableGuide (lines 10-12, chunk #1)");
 	expect(result.output).toContain("... more table content below");
+});
+
+test("write_page tool stores generalized pages pending edits", async () => {
+	const pageId = "p123";
+	const currentContent = {
+		pageId,
+		content: "# Base",
+	};
+
+	const { ctx, runMutation } = makeCtx(async () => currentContent);
+	const tool = ai_chat_tool_create_write_page(ctx);
+	const result = await tool.execute?.({ path: "/Docs/Plan", content: "# Updated" }, { toolCallId: "test", messages: [] });
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(runMutation).toHaveBeenCalledTimes(1);
+	const [, args] = runMutation.mock.calls[0]!;
+	expect(args).toEqual({
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		pageId,
+		workingMarkdown: "# Base",
+		modifiedMarkdown: "# Updated",
+	});
+
+	expect(result.metadata.pageId).toBe(pageId);
+	expect(result.metadata.exists).toBe(true);
+});
+
+test("edit_page tool stores generalized pages pending edits", async () => {
+	const pageId = "p456";
+	const currentContent = {
+		pageId,
+		content: "Hello world",
+	};
+
+	const { ctx, runMutation } = makeCtx(async () => currentContent);
+	const tool = ai_chat_tool_create_edit_page(ctx);
+	const result = await tool.execute?.(
+		{
+			path: "/Docs/Hello",
+			oldString: "world",
+			newString: "team",
+			replaceAll: false,
+		},
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(runMutation).toHaveBeenCalledTimes(1);
+	const [, args] = runMutation.mock.calls[0]!;
+	expect(args).toEqual({
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		pageId,
+		workingMarkdown: "Hello world",
+		modifiedMarkdown: "Hello team",
+	});
+
+	expect(result.metadata.pageId).toBe(pageId);
+	expect(result.metadata.matches).toBe(1);
 });

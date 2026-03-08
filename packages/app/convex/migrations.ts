@@ -15,7 +15,6 @@ const delete_all_archived_pages_returns_validator = v.object({
 	pages_yjs_snapshot_schedules: v.number(),
 	pages_snapshots: v.number(),
 	pages_snapshots_contents: v.number(),
-	ai_chat_pending_edits: v.number(),
 });
 
 /**
@@ -58,7 +57,6 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			pages_yjs_snapshot_schedules: 0,
 			pages_snapshots: 0,
 			pages_snapshots_contents: 0,
-			ai_chat_pending_edits: 0,
 		};
 	}
 
@@ -73,7 +71,6 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 		pages_yjs_snapshot_schedules: 0,
 		pages_snapshots: 0,
 		pages_snapshots_contents: 0,
-		ai_chat_pending_edits: 0,
 	};
 
 	for (const page of archivedPages) {
@@ -86,7 +83,6 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			pageYjsLastSequenceRows,
 			pageYjsSnapshotScheduleRows,
 			pageSnapshotRows,
-			pagePendingEditsRows,
 		] = await Promise.all([
 			page.markdownContentId ? ctx.db.get("pages_markdown_content", page.markdownContentId) : null,
 			ctx.db
@@ -127,13 +123,6 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 				.query("pages_snapshots")
 				.withIndex("by_page_id", (q) => q.eq("page_id", page._id))
 				.collect(),
-			ctx.db
-				.query("ai_chat_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
-					q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId),
-				)
-				.collect()
-				.then((rows) => rows.filter((row) => row.pageId === page._id)),
 		]);
 
 		const pageSnapshotContentRowsNested = await Promise.all(
@@ -158,7 +147,6 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			...pageYjsSnapshotScheduleRows.map((row) => ctx.db.delete("pages_yjs_snapshot_schedules", row._id)),
 			...snapshotLinkedContents.map((row) => ctx.db.delete("pages_snapshots_contents", row._id)),
 			...pageSnapshotRows.map((row) => ctx.db.delete("pages_snapshots", row._id)),
-			...pagePendingEditsRows.map((row) => ctx.db.delete("ai_chat_pending_edits", row._id)),
 		]);
 
 		await ctx.db.delete("pages", page._id);
@@ -173,7 +161,6 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 		counts.pages_yjs_snapshot_schedules += pageYjsSnapshotScheduleRows.length;
 		counts.pages_snapshots += pageSnapshotRows.length;
 		counts.pages_snapshots_contents += snapshotLinkedContents.length;
-		counts.ai_chat_pending_edits += pagePendingEditsRows.length;
 	}
 
 	return counts;

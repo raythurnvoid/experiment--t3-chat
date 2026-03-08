@@ -2,8 +2,11 @@ import type { JSONContent } from "@tiptap/core";
 import {
 	pages_tiptap_markdown_to_json,
 	pages_tiptap_empty_doc_json,
+	pages_yjs_compute_diff_update_from_yjs_doc,
+	pages_yjs_doc_clone,
 	pages_yjs_doc_create_from_array_buffer_update,
 	pages_yjs_doc_get_markdown,
+	pages_yjs_doc_update_from_markdown,
 } from "../../shared/pages.ts";
 import { TypedEventTarget } from "@remix-run/interaction";
 import { should_never_happen, XCustomEvent } from "./utils.ts";
@@ -11,6 +14,8 @@ import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } fr
 import { objects_equal_deep } from "./object.ts";
 import { editor as monaco_editor } from "monaco-editor";
 import { app_convex, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
+import { Result } from "./errors-as-values-utils.ts";
+import { applyUpdate, Doc as YDoc } from "yjs";
 
 export * from "../../shared/pages.ts";
 
@@ -47,12 +52,164 @@ export const pages_get_rich_text_initial_content = ((/* iife */) => {
 	};
 })();
 
+export function pages_yjs_rebase_branch_with_local_markdown(args: {
+	previousBaseYjsDoc: YDoc;
+	nextBaseYjsDoc: YDoc;
+	previousBranchYjsDoc: YDoc;
+	localMarkdown: string;
+}) {
+	const previousBaseMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.previousBaseYjsDoc,
+	});
+	if (previousBaseMarkdown._nay) {
+		return previousBaseMarkdown;
+	}
+
+	const previousBranchMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.previousBranchYjsDoc,
+	});
+	if (previousBranchMarkdown._nay) {
+		return previousBranchMarkdown;
+	}
+
+	const nextBaseMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.nextBaseYjsDoc,
+	});
+	if (nextBaseMarkdown._nay) {
+		return nextBaseMarkdown;
+	}
+
+	if (args.localMarkdown === nextBaseMarkdown._yay) {
+		return Result({
+			_yay: {
+				rebasedBranchYjsDoc: pages_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc }),
+				rebasedBranchMarkdown: nextBaseMarkdown._yay,
+			},
+		});
+	}
+
+	const rebasedStoredBranchYjsDoc =
+		previousBranchMarkdown._yay === previousBaseMarkdown._yay
+			? pages_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc })
+			: ((/* iife */) => {
+					const rebasedBranchYjsDoc = pages_yjs_doc_clone({ yjsDoc: args.previousBranchYjsDoc });
+					const remoteDiffUpdate = pages_yjs_compute_diff_update_from_yjs_doc({
+						yjsDoc: args.nextBaseYjsDoc,
+						yjsBeforeDoc: args.previousBaseYjsDoc,
+					});
+					if (remoteDiffUpdate) {
+						applyUpdate(rebasedBranchYjsDoc, remoteDiffUpdate);
+					}
+					return rebasedBranchYjsDoc;
+				})();
+
+	const rebasedStoredBranchMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: rebasedStoredBranchYjsDoc,
+	});
+	if (rebasedStoredBranchMarkdown._nay) {
+		return rebasedStoredBranchMarkdown;
+	}
+
+	if (args.localMarkdown === previousBranchMarkdown._yay) {
+		return Result({
+			_yay: {
+				rebasedBranchYjsDoc: rebasedStoredBranchYjsDoc,
+				rebasedBranchMarkdown: rebasedStoredBranchMarkdown._yay,
+			},
+		});
+	}
+
+	const rebasedLocalBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
+		previousRemoteYjsDoc: args.previousBranchYjsDoc,
+		nextRemoteYjsDoc: rebasedStoredBranchYjsDoc,
+		localMarkdown: args.localMarkdown,
+	});
+	if (rebasedLocalBranchResult._nay) {
+		return rebasedLocalBranchResult;
+	}
+
+	return Result({
+		_yay: {
+			rebasedBranchYjsDoc: rebasedLocalBranchResult._yay.mergedYjsDoc,
+			rebasedBranchMarkdown: rebasedLocalBranchResult._yay.mergedMarkdown,
+		},
+	});
+}
+
+export function pages_yjs_reconcile_branch_with_local_markdown(args: {
+	previousRemoteYjsDoc: YDoc;
+	nextRemoteYjsDoc: YDoc;
+	localMarkdown: string;
+}) {
+	const projectedLocalYjsDoc = pages_yjs_doc_clone({ yjsDoc: args.previousRemoteYjsDoc });
+	const projectedLocalBranchResult = pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: projectedLocalYjsDoc,
+		markdown: args.localMarkdown,
+	});
+	if (projectedLocalBranchResult._nay) {
+		return projectedLocalBranchResult;
+	}
+
+	const projectedLocalMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: projectedLocalYjsDoc,
+	});
+	if (projectedLocalMarkdown._nay) {
+		return projectedLocalMarkdown;
+	}
+
+	const nextRemoteMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: args.nextRemoteYjsDoc,
+	});
+	if (nextRemoteMarkdown._nay) {
+		return nextRemoteMarkdown;
+	}
+
+	if (projectedLocalMarkdown._yay === nextRemoteMarkdown._yay) {
+		return Result({
+			_yay: {
+				mergedYjsDoc: pages_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
+				mergedMarkdown: nextRemoteMarkdown._yay,
+			},
+		});
+	}
+
+	const localDiffUpdate = pages_yjs_compute_diff_update_from_yjs_doc({
+		yjsDoc: projectedLocalYjsDoc,
+		yjsBeforeDoc: args.previousRemoteYjsDoc,
+	});
+	if (!localDiffUpdate) {
+		return Result({
+			_yay: {
+				mergedYjsDoc: pages_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
+				mergedMarkdown: nextRemoteMarkdown._yay,
+			},
+		});
+	}
+
+	const mergedYjsDoc = pages_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc });
+	applyUpdate(mergedYjsDoc, localDiffUpdate);
+
+	const mergedMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: mergedYjsDoc,
+	});
+	if (mergedMarkdown._nay) {
+		return mergedMarkdown;
+	}
+
+	return Result({
+		_yay: {
+			mergedYjsDoc,
+			mergedMarkdown: mergedMarkdown._yay,
+		},
+	});
+}
+
 export async function pages_fetch_page_yjs_state_and_markdown(args: {
 	workspaceId: string;
 	projectId: string;
 	pageId: app_convex_Id<"pages">;
 }) {
-	const [snapshotDoc, updatesData, lastSequenceData] = await Promise.all([
+	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
 		app_convex.query(app_convex_api.ai_docs_temp.yjs_get_doc_last_snapshot, args),
 		app_convex
 			.query(app_convex_api.ai_docs_temp.yjs_get_incremental_updates, args)
@@ -60,18 +217,18 @@ export async function pages_fetch_page_yjs_state_and_markdown(args: {
 		app_convex.query(app_convex_api.ai_docs_temp.get_page_last_yjs_sequence, args),
 	]);
 
-	if (snapshotDoc == null) return null;
+	if (yjsSnapshotDoc == null) return null;
 
 	// By default the API returns updates in descending order; normalize to ascending and filter
 	// to only include updates that are after the snapshot.
-	const filteredIncrementalUpdates = updatesData.filter((u) => u.sequence > snapshotDoc.sequence).reverse();
+	const filteredIncrementalUpdates = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
 
-	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshotDoc.snapshot_update, {
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsSnapshotDoc.snapshot_update, {
 		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
 	});
 	const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
 
-	const yjsSequence = lastSequenceData?.last_sequence ?? snapshotDoc.sequence;
+	const yjsSequence = yjsLastSequenceDoc?.lastSequence ?? yjsSnapshotDoc.sequence;
 
 	return { markdown, yjsDoc, yjsSequence };
 }

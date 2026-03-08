@@ -3,9 +3,10 @@ import { createContext, use, useEffect, useRef, useState, type ReactNode } from 
 import { toast } from "sonner";
 import { Result } from "../lib/errors-as-values-utils.ts";
 import { type app_convex_Id } from "../lib/app-convex-client.ts";
+import { create_deferred } from "../lib/async.ts";
 import { app_fetch_auth_anonymous, app_fetch_auth_resolve_user } from "../lib/fetch.ts";
 import { storage_local } from "../lib/storage.ts";
-import { create_deferred, delay } from "../lib/utils.ts";
+import { delay } from "../lib/utils.ts";
 import { useAsyncEffect, useStateRef } from "../hooks/utils-hooks.ts";
 
 function jwt_read_payload_claim_string(jwt: string, key: string): string | null {

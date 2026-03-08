@@ -6,11 +6,17 @@ import { make } from "../src/lib/utils.ts";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { MutationCtx } from "./_generated/server";
+import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
+import presence_test from "@convex-dev/presence/test";
 
 // #region helpers
 
+const convex_test_modules = import.meta.glob("./**/*.ts");
+
 export function test_convex() {
-	return convexTest(schema, import.meta.glob("./**/*.ts"));
+	const t = convexTest(schema, convex_test_modules);
+	presence_test.register(t);
+	return t;
 }
 
 // #endregion
@@ -19,12 +25,12 @@ export function test_convex() {
 
 export const test_mocks_hardcoded = ((/* iife */) => {
 	const workspace_id = {
-		workspace_1: "workspace_1",
+		workspace_1: ai_chat_HARDCODED_ORG_ID,
 		workspace_2: "workspace_2",
 	} as const;
 
 	const project_id = {
-		project_1: "project_1",
+		project_1: ai_chat_HARDCODED_PROJECT_ID,
 		project_2: "project_2",
 	} as const;
 

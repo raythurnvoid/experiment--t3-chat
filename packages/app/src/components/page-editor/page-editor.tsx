@@ -2,10 +2,10 @@ import "./page-editor.css";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
-import React, { useState, useImperativeHandle, type Ref, useEffect, useRef, useEffectEvent } from "react";
+import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEvent, useRef } from "react";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
-import { PageEditorDiff, type PageEditorDiff_Ref } from "./page-editor-diff/page-editor-diff.tsx";
+import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { PageEditorSidebar } from "./page-editor-sidebar/page-editor-sidebar.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
@@ -513,9 +513,6 @@ type PageEditorRender_Props = {
 	editorMode: PageEditor_Mode;
 	presenceStore: pages_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
-	diffEditorRef: Ref<PageEditorDiff_Ref>;
-	modifiedInitialValue?: string;
-	pendingEditUpdatedAt?: number;
 	onDiffExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 };
@@ -526,9 +523,6 @@ function PageEditorRender(props: PageEditorRender_Props) {
 		editorMode,
 		presenceStore,
 		commentsPortalHost,
-		diffEditorRef,
-		modifiedInitialValue,
-		pendingEditUpdatedAt,
 		onDiffExit,
 		topStickyFloatingSlot,
 	} = props;
@@ -551,11 +545,8 @@ function PageEditorRender(props: PageEditorRender_Props) {
 	if (editorMode === "diff_editor") {
 		return (
 			<PageEditorDiff
-				ref={diffEditorRef}
 				pageId={pageId}
 				presenceStore={presenceStore}
-				modifiedInitialValue={modifiedInitialValue}
-				pendingEditUpdatedAt={pendingEditUpdatedAt}
 				onExit={onDiffExit}
 				commentsPortalHost={commentsPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
@@ -612,25 +603,16 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		onDiffExit,
 	} = props;
 
-	const pendingEditsResult = useQuery(app_convex_api.ai_chat.get_ai_pending_edit, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
-		pageId,
-	});
-	const allPendingEditsResult = useQuery(app_convex_api.ai_chat.list_ai_pending_edits, {
+	const allPendingEditsResult = useQuery(app_convex_api.ai_chat.list_pages_pending_edits, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});
 
-	const pendingEditsOrdered = ((/* iife */) => {
-		if (allPendingEditsResult && allPendingEditsResult.length > 0) {
-			return allPendingEditsResult.toReversed();
-		}
-		return pendingEditsResult ? [pendingEditsResult] : [];
-	})();
+	const pendingEditsOrdered = allPendingEditsResult ? allPendingEditsResult.toReversed() : [];
 	const hasAnyPendingEdits = pendingEditsOrdered.length > 0;
 	const hasPendingEdits = hasAnyPendingEdits;
 	const currentPendingEditIndex = pendingEditsOrdered.findIndex((pendingEdit) => pendingEdit.pageId === pageId);
+	const currentPendingEdit = pendingEditsOrdered[currentPendingEditIndex];
 	const hasCurrentPendingEdits = currentPendingEditIndex >= 0;
 	const activePendingEditIndex = hasCurrentPendingEdits ? currentPendingEditIndex : 0;
 	const canNavigatePendingEdits = pendingEditsOrdered.length > 1 || (pendingEditsOrdered.length === 1 && !hasCurrentPendingEdits);
@@ -638,7 +620,6 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		? `Review ${activePendingEditIndex + 1} of ${pendingEditsOrdered.length}`
 		: "Review pending edits";
 
-	const diffEditorRef = useRef<PageEditorDiff_Ref | null>(null);
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
 
 	const handleDiffExit = () => {
@@ -688,18 +669,10 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		handleNavigatePendingEdits("next");
 	};
 
-	useEffect(() => {
-		if (editorMode !== "diff_editor" || !pendingEditsResult) {
-			return;
-		}
-
-		diffEditorRef.current?.setModifiedContent(pendingEditsResult.modifiedContent ?? "");
-	}, [editorMode, pendingEditsResult?.modifiedContent]);
-
 	const topStickyFloatingSlot =
 		hasPendingEdits ? (
 			<PageEditorPendingEditsFloating
-				updatedAt={pendingEditsResult?.updatedAt}
+				updatedAt={currentPendingEdit?.updatedAt}
 				showReviewButton={hasCurrentPendingEdits && editorMode !== "diff_editor"}
 				reviewPagerLabel={reviewPagerLabel}
 				canNavigate={canNavigatePendingEdits}
@@ -761,9 +734,6 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 								editorMode={editorMode}
 								presenceStore={presenceStore}
 								commentsPortalHost={commentsPortalHost}
-								diffEditorRef={diffEditorRef}
-								modifiedInitialValue={pendingEditsResult?.modifiedContent ?? undefined}
-								pendingEditUpdatedAt={pendingEditsResult?.updatedAt ?? undefined}
 								topStickyFloatingSlot={topStickyFloatingSlot}
 								onDiffExit={handleDiffExit}
 							/>

@@ -10,7 +10,7 @@ import {
 	pages_monaco_create_editor_model,
 	pages_fetch_page_yjs_state_and_markdown,
 } from "@/lib/pages.ts";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
@@ -19,12 +19,12 @@ import { api } from "@/../convex/_generated/api.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { usePromiseValue } from "@/lib/async.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MySpinner } from "@/components/ui/my-spinner.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { RefreshCcw, Save } from "lucide-react";
-import { Await } from "@/components/await.tsx";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
@@ -185,7 +185,7 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
 	const isSaveDisabled = isSaving || isSyncing || dirtyCheckState !== "dirty";
-	const serverSequence = serverSequenceData?.last_sequence;
+	const serverSequence = serverSequenceData?.lastSequence;
 	const isSyncDisabled = isSyncing || isSaving || serverSequence == null || workingYjsDocSequence === serverSequence;
 
 	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
@@ -572,41 +572,37 @@ export type PageEditorPlainText_Props = {
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	const { pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
-	const pageContentData = pages_fetch_page_yjs_state_and_markdown({
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
-		pageId,
-	});
+	const pageContentData = usePromiseValue(
+		pages_fetch_page_yjs_state_and_markdown({
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			pageId,
+		}),
+	);
 
-	return (
-		<Suspense fallback={<>Loading</>}>
-			<Await promise={pageContentData}>
-				{(pageContentData) => {
-					if (pageContentData?.markdown._nay) {
-						console.error("[PageEditorPlainText] Error while fetching page content data", pageContentData.markdown._nay);
-					}
+	if (pageContentData?.markdown._nay) {
+		console.error("[PageEditorPlainText] Error while fetching page content data", pageContentData.markdown._nay);
+	}
 
-					return (
-						<PageEditorPlainText_Inner
-							key={pageId}
-							pageId={pageId}
-							initialData={
-								pageContentData?.markdown._yay
-									? {
-											markdown: pageContentData.markdown._yay,
-											mut_yjsDoc: pageContentData.yjsDoc,
-											yjsSequence: pageContentData.yjsSequence,
-										}
-									: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
-							}
-							presenceStore={presenceStore}
-							commentsPortalHost={commentsPortalHost}
-							topStickyFloatingSlot={topStickyFloatingSlot}
-						/>
-					);
-				}}
-			</Await>
-		</Suspense>
+	return pageContentData === undefined ? (
+		<>Loading</>
+	) : (
+		<PageEditorPlainText_Inner
+			key={pageId}
+			pageId={pageId}
+			initialData={
+				pageContentData?.markdown._yay
+					? {
+							markdown: pageContentData.markdown._yay,
+							mut_yjsDoc: pageContentData.yjsDoc,
+							yjsSequence: pageContentData.yjsSequence,
+						}
+					: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
+			}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			topStickyFloatingSlot={topStickyFloatingSlot}
+		/>
 	);
 }
 // #endregion root

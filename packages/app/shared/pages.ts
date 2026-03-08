@@ -10,7 +10,7 @@ import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
-import { Doc as YDoc, encodeStateAsUpdate, applyUpdate, encodeStateVector } from "yjs";
+import { Doc as YDoc, diffUpdate, encodeStateAsUpdate, applyUpdate, encodeStateVector } from "yjs";
 import { Editor, Extension, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
@@ -265,6 +265,14 @@ export function pages_yjs_create_empty_state_update() {
 	return encodeStateAsUpdate(new YDoc());
 }
 
+export function pages_yjs_doc_apply_array_buffer_update(mut_yjsDoc: YDoc, update: ArrayBuffer) {
+	if (update.byteLength === 0) {
+		return;
+	}
+
+	applyUpdate(mut_yjsDoc, new Uint8Array(update));
+}
+
 /**
  * Applies incremental Yjs updates to an existing Y.Doc.
  *
@@ -276,7 +284,7 @@ export function pages_yjs_doc_apply_incremental_array_buffer_updates(
 	incrementalUpdates: Array<ArrayBuffer>,
 ): void {
 	for (const incrementalUpdate of incrementalUpdates) {
-		applyUpdate(mut_yjsDoc, new Uint8Array(incrementalUpdate));
+		pages_yjs_doc_apply_array_buffer_update(mut_yjsDoc, incrementalUpdate);
 	}
 }
 
@@ -298,7 +306,7 @@ export function pages_yjs_doc_create_from_array_buffer_update(
 	args?: { additionalIncrementalArrayBufferUpdates?: Array<ArrayBuffer> },
 ): YDoc {
 	const yjsDoc = new YDoc();
-	applyUpdate(yjsDoc, new Uint8Array(update));
+	pages_yjs_doc_apply_array_buffer_update(yjsDoc, update);
 
 	if (args?.additionalIncrementalArrayBufferUpdates) {
 		pages_yjs_doc_apply_incremental_array_buffer_updates(yjsDoc, args.additionalIncrementalArrayBufferUpdates);
@@ -418,17 +426,104 @@ export function pages_yjs_doc_clone(args: { yjsDoc: YDoc }) {
 	return clonedDoc;
 }
 
+const pages_yjs_encoded_empty_diff_update = new Uint8Array([0, 0]);
+
+/**
+ * Returns whether a Yjs diff update encodes no content changes.
+ *
+ * Yjs may encode an empty diff as either an empty update (`byteLength === 0`)
+ * or the canonical 2-byte marker `[0, 0]`.
+ *
+ * @param diffUpdate - Diff update bytes produced by Yjs.
+ *
+ * @returns `true` when the update does not contain operations.
+ */
+export function pages_yjs_doc_is_diff_update_empty(diffUpdate: Uint8Array) {
+	return diffUpdate.byteLength === 0 || pages_u8_equals(diffUpdate, pages_yjs_encoded_empty_diff_update);
+}
+
+/**
+ * Computes the remaining portion of a diff update that is not already present in a target Y.Doc.
+ *
+ * This is useful when a diff update was produced from an older base state and you want to keep only
+ * the operations that the target Y.Doc still needs. Yjs performs this by filtering the diff update
+ * against the target doc's current state vector.
+ *
+ * @param args.diffUpdate - Diff update bytes to filter against the target doc state.
+ * @param args.yjsDoc - Target Y.Doc whose state vector is used to remove already-applied operations.
+ *
+ * @returns `null` when the target Y.Doc already contains the entire diff update; otherwise the
+ * remaining diff update bytes.
+ */
+export function pages_yjs_doc_compute_remaining_diff_update_from_yjs_doc(args: {
+	diffUpdate: ArrayBuffer;
+	yjsDoc: YDoc;
+}) {
+	if (args.diffUpdate.byteLength === 0) {
+		return null;
+	}
+
+	const remainingDiffUpdate = diffUpdate(new Uint8Array(args.diffUpdate), encodeStateVector(args.yjsDoc));
+	return pages_yjs_doc_is_diff_update_empty(remainingDiffUpdate) ? null : remainingDiffUpdate;
+}
+
 export function pages_yjs_compute_diff_update_from_state_vector(args: {
 	yjsDoc: YDoc;
 	yjsBeforeStateVector: Uint8Array;
 }) {
 	const diffUpdate = encodeStateAsUpdate(args.yjsDoc, args.yjsBeforeStateVector);
-	return diffUpdate.byteLength === 0 ? null : diffUpdate;
+	return pages_yjs_doc_is_diff_update_empty(diffUpdate) ? null : diffUpdate;
 }
 
 export function pages_yjs_compute_diff_update_from_yjs_doc(args: { yjsDoc: YDoc; yjsBeforeDoc: YDoc }) {
 	const yjsBeforeStateVector = encodeStateVector(args.yjsBeforeDoc);
 	return pages_yjs_compute_diff_update_from_state_vector({ yjsDoc: args.yjsDoc, yjsBeforeStateVector });
+}
+
+/**
+ * Compare two diff updates that were produced from the same base Y.Doc.
+ *
+ * Performs a fast byte-level check first, then falls back to applying updates to
+ * cloned docs and comparing their rich-text fragment JSON snapshots.
+ *
+ * @param args.baseYjsDoc - Base Y.Doc both diff updates are relative to
+ * @param args.diffUpdateAFromBase - First diff update to compare
+ * @param args.diffUpdateBFromBase - Second diff update to compare
+ * @param args.diffUpdateBYjsDocFromBase - Optional precomputed doc with diffUpdateBFromBase already applied
+ *
+ * @returns `true` when both updates produce the same rich-text content
+ */
+export function pages_yjs_doc_diff_updates_match(args: {
+	baseYjsDoc: YDoc;
+	diffUpdateAFromBase: ArrayBuffer;
+	diffUpdateBFromBase: ArrayBuffer;
+	diffUpdateBYjsDocFromBase?: YDoc;
+}) {
+	const isBytewiseMatch =
+		args.diffUpdateAFromBase.byteLength === args.diffUpdateBFromBase.byteLength &&
+		pages_u8_equals(new Uint8Array(args.diffUpdateAFromBase), new Uint8Array(args.diffUpdateBFromBase));
+
+	if (isBytewiseMatch) {
+		return true;
+	}
+
+	const diffUpdateAYjsDoc = pages_yjs_doc_clone({
+		yjsDoc: args.baseYjsDoc,
+	});
+	pages_yjs_doc_apply_array_buffer_update(diffUpdateAYjsDoc, args.diffUpdateAFromBase);
+
+	let diffUpdateBYjsDoc = args.diffUpdateBYjsDocFromBase;
+	if (!diffUpdateBYjsDoc) {
+		diffUpdateBYjsDoc = pages_yjs_doc_clone({
+			yjsDoc: args.baseYjsDoc,
+		});
+		pages_yjs_doc_apply_array_buffer_update(diffUpdateBYjsDoc, args.diffUpdateBFromBase);
+	}
+
+	return (
+		diffUpdateAYjsDoc.getXmlFragment(pages_YJS_DOC_KEYS.richText).toJSON() ===
+		diffUpdateBYjsDoc.getXmlFragment(pages_YJS_DOC_KEYS.richText).toJSON()
+	);
 }
 
 // #endregion yjs
