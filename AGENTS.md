@@ -204,6 +204,22 @@ Exceptions (add an explicit return type when it helps):
 
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
+## Comments that explain code
+
+When comments explain what code does (usually `//` comments, including consecutive multiline `//` comments), write them in imperative second-person language as if you are talking to the developer reading the code.
+
+- Prefer "Keep...", "Use...", "Reset...", "Return...", "Guard..." over descriptive narration like "Keeps...", "Uses...", "Resets...", "Returns...", "Guards...".
+- Apply this rule to comments that explain behavior or intent near the code.
+- Skip this rule for doc-style prose where imperative wording would be unnatural.
+
+```ts
+// ✅ Good
+// Keep one cleanup task per row and replace the older scheduled run whenever the row changes.
+
+// ❌ Bad
+// Keeps one cleanup task per row and replaces the older scheduled run whenever the row changes.
+```
+
 ## Global DOM ids: `AppElementId` + `satisfies`
 
 When selecting a DOM element by a global static id (non-dynamic id), the id must be declared in `AppElementId` and used with `satisfies AppElementId` at the call site.

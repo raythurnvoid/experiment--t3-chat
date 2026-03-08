@@ -4,6 +4,7 @@ import { test_convex, test_mocks_hardcoded } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
+	pages_db_reschedule_pending_edit_cleanup_for_user,
 	pages_FIRST_VERSION,
 	pages_ROOT_ID,
 	pages_u8_to_array_buffer,
@@ -252,6 +253,16 @@ function read_pending_row_markdown_state(args: {
 	};
 }
 
+async function list_pending_edit_cleanup_tasks(args: {
+	ctx: MutationCtx;
+	pendingEditId: Id<"pages_pending_edits">;
+}) {
+	return await args.ctx.db
+		.query("pages_pending_edits_cleanup_tasks")
+		.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+		.collect();
+}
+
 test("upsert_pages_pending_edit_updates replaces updates deterministically", async () => {
 	const t = test_convex();
 
@@ -369,6 +380,382 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 			.first(),
 	);
 	expect(pendingAfterDiscard).toBeNull();
+});
+
+test("pending edit cleanup task follows the latest pending row state", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-cleanup-task",
+			name: "pending-edits-cleanup-task",
+			markdown: "# Cleanup task base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup task first`;
+	const firstUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: firstMarkdown,
+	});
+	if (firstUpsertResult._nay) {
+		throw new Error(firstUpsertResult._nay.message);
+	}
+
+	const firstPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!firstPendingRow) {
+		throw new Error("Missing first pending row while testing cleanup task scheduling");
+	}
+
+	const firstCleanupTasks = await t.run((ctx) =>
+		list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: firstPendingRow._id,
+		}),
+	);
+	expect(firstCleanupTasks).toHaveLength(1);
+	expect(firstCleanupTasks[0]!.expectedUpdatedAt).toBe(firstPendingRow.updatedAt);
+
+	await new Promise((resolve) => setTimeout(resolve, 2));
+
+	const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup task second`;
+	const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: secondMarkdown,
+		modifiedMarkdown: secondMarkdown,
+	});
+	if (secondUpsertResult._nay) {
+		throw new Error(secondUpsertResult._nay.message);
+	}
+
+	const secondPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!secondPendingRow) {
+		throw new Error("Missing second pending row while testing cleanup task rescheduling");
+	}
+
+	const secondCleanupTasks = await t.run((ctx) =>
+		list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: secondPendingRow._id,
+		}),
+	);
+	expect(secondCleanupTasks).toHaveLength(1);
+	expect(secondCleanupTasks[0]!.expectedUpdatedAt).toBe(secondPendingRow.updatedAt);
+	expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
+
+	const discardResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: seeded.baseMarkdown,
+	});
+	if (discardResult._nay) {
+		throw new Error(discardResult._nay.message);
+	}
+
+	const cleanupTasksAfterDiscard = await t.run((ctx) =>
+		list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: secondPendingRow._id,
+		}),
+	);
+	expect(cleanupTasksAfterDiscard).toHaveLength(0);
+});
+
+test("pages_db_reschedule_pending_edit_cleanup_for_user refreshes existing cleanup tasks", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-reschedule-for-user",
+			name: "pending-edits-reschedule-for-user",
+			markdown: "# Reschedule base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const changedMarkdown = `${seeded.baseMarkdown}\n\nReschedule pending`;
+	const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: changedMarkdown,
+	});
+	if (upsertResult._nay) {
+		throw new Error(upsertResult._nay.message);
+	}
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!pendingRow) {
+		throw new Error("Missing pending row while testing user cleanup reschedule");
+	}
+
+	const firstCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!firstCleanupTask) {
+		throw new Error("Missing first cleanup task while testing user cleanup reschedule");
+	}
+
+	await t.run((ctx) =>
+		pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
+		}),
+	);
+
+	const secondCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!secondCleanupTask) {
+		throw new Error("Missing second cleanup task while testing user cleanup reschedule");
+	}
+
+	expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
+	expect(secondCleanupTask.scheduledFunctionId).not.toBe(firstCleanupTask.scheduledFunctionId);
+});
+
+test("presence.disconnect shortens cleanup after the last session disconnects", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-disconnect-last-session",
+			name: "pending-edits-disconnect-last-session",
+			markdown: "# Disconnect base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect pending`;
+	const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: changedMarkdown,
+	});
+	if (upsertResult._nay) {
+		throw new Error(upsertResult._nay.message);
+	}
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!pendingRow) {
+		throw new Error("Missing pending row while testing last-session disconnect cleanup");
+	}
+
+	const firstCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!firstCleanupTask) {
+		throw new Error("Missing first cleanup task while testing last-session disconnect cleanup");
+	}
+
+	const roomId = `pending-edits-room-${seeded.pageId}`;
+	const presenceHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
+		roomId,
+		userId: seeded.userId,
+		sessionId: "session-last",
+		interval: 1_000,
+	});
+
+	await asUser.mutation(api.presence.disconnect, {
+		sessionToken: presenceHeartbeatResult.sessionToken,
+	});
+
+	const sessionsAfterDisconnect = await asUser.query(api.presence.listSessions, {
+		roomToken: presenceHeartbeatResult.roomToken,
+	});
+	expect(sessionsAfterDisconnect).toHaveLength(0);
+
+	const secondCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!secondCleanupTask) {
+		throw new Error("Missing second cleanup task while testing last-session disconnect cleanup");
+	}
+
+	expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
+	expect(secondCleanupTask.scheduledFunctionId).not.toBe(firstCleanupTask.scheduledFunctionId);
+});
+
+test("presence.disconnect keeps cleanup unchanged while another session stays online", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-disconnect-multi-session",
+			name: "pending-edits-disconnect-multi-session",
+			markdown: "# Disconnect multi-session base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect multi-session pending`;
+	const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: changedMarkdown,
+	});
+	if (upsertResult._nay) {
+		throw new Error(upsertResult._nay.message);
+	}
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!pendingRow) {
+		throw new Error("Missing pending row while testing multi-session disconnect cleanup");
+	}
+
+	const firstCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!firstCleanupTask) {
+		throw new Error("Missing first cleanup task while testing multi-session disconnect cleanup");
+	}
+
+	const roomId = `pending-edits-room-${seeded.pageId}`;
+	const firstHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
+		roomId,
+		userId: seeded.userId,
+		sessionId: "session-first",
+		interval: 1_000,
+	});
+	await asUser.mutation(api.presence.heartbeat, {
+		roomId,
+		userId: seeded.userId,
+		sessionId: "session-second",
+		interval: 1_000,
+	});
+
+	await asUser.mutation(api.presence.disconnect, {
+		sessionToken: firstHeartbeatResult.sessionToken,
+	});
+
+	const sessionsAfterDisconnect = await asUser.query(api.presence.listSessions, {
+		roomToken: firstHeartbeatResult.roomToken,
+	});
+	expect(sessionsAfterDisconnect).toHaveLength(1);
+	expect(sessionsAfterDisconnect[0]!.sessionId).toBe("session-second");
+
+	const secondCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!secondCleanupTask) {
+		throw new Error("Missing second cleanup task while testing multi-session disconnect cleanup");
+	}
+
+	expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
+	expect(secondCleanupTask.scheduledFunctionId).toBe(firstCleanupTask.scheduledFunctionId);
 });
 
 test("save_pages_pending_edit supports partial save and keeps unresolved pending row", async () => {
@@ -824,55 +1211,164 @@ test("persist_pages_pending_edit_rebased_state rejects stale live bases", async 
 	);
 });
 
-test("presence cleanup removes pages_pending_edits rows for offline users", async () => {
+test("remove_pages_pending_edit_if_expired ignores stale scheduled runs", async () => {
 	const t = test_convex();
 
 	const seeded = await t.run(async (ctx) =>
 		seed_page_with_markdown({
 			ctx,
-			path: "/pending-edits-cleanup",
-			name: "pending-edits-cleanup",
-			markdown: "# Cleanup base",
+			path: "/pending-edits-cleanup-stale",
+			name: "pending-edits-cleanup-stale",
+			markdown: "# Cleanup stale base",
 		}),
 	);
-
-	await t.run(async (ctx) => {
-		const baseYjsDoc = new YDoc();
-		const baseYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
-			mut_yjsDoc: baseYjsDoc,
-			markdown: seeded.baseMarkdown,
-		});
-		if (baseYjsDocFromMarkdown._nay) {
-			throw new Error("Failed to build base Yjs doc while seeding cleanup pending edits");
-		}
-
-		const changedMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending`;
-		const workingYjsDoc = pages_yjs_doc_clone({
-			yjsDoc: baseYjsDoc,
-		});
-		const workingYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
-			mut_yjsDoc: workingYjsDoc,
-			markdown: changedMarkdown,
-		});
-		if (workingYjsDocFromMarkdown._nay) {
-			throw new Error("Failed to build working Yjs doc while seeding cleanup pending edits");
-		}
-
-		await ctx.db.insert("pages_pending_edits", {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
-			userId: seeded.userId,
-			pageId: seeded.pageId,
-			baseYjsSequence: 0,
-			baseYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-			workingBranchYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(workingYjsDoc)),
-			modifiedBranchYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(workingYjsDoc)),
-			updatedAt: Date.now(),
-		});
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
 	});
 
-	await t.mutation(internal.presence.remove_pending_edits_if_offline, {
-		userId: seeded.userId,
+	const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending first`;
+	const firstUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: firstMarkdown,
+	});
+	if (firstUpsertResult._nay) {
+		throw new Error(firstUpsertResult._nay.message);
+	}
+
+	const firstPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!firstPendingRow) {
+		throw new Error("Missing first pending row while testing stale cleanup");
+	}
+
+	const firstCleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: firstPendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!firstCleanupTask) {
+		throw new Error("Missing first cleanup task while testing stale cleanup");
+	}
+
+	await new Promise((resolve) => setTimeout(resolve, 2));
+
+	const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending second`;
+	const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: secondMarkdown,
+		modifiedMarkdown: secondMarkdown,
+	});
+	if (secondUpsertResult._nay) {
+		throw new Error(secondUpsertResult._nay.message);
+	}
+
+	await t.mutation(internal.ai_chat.remove_pages_pending_edit_if_expired, {
+		pendingEditId: firstPendingRow._id,
+		expectedUpdatedAt: firstCleanupTask.expectedUpdatedAt,
+	});
+
+	const pendingAfterStaleCleanup = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	expect(pendingAfterStaleCleanup).not.toBeNull();
+
+	const cleanupTasksAfterStaleCleanup = await t.run((ctx) =>
+		list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: firstPendingRow._id,
+		}),
+	);
+	expect(cleanupTasksAfterStaleCleanup).toHaveLength(1);
+	expect(cleanupTasksAfterStaleCleanup[0]!.expectedUpdatedAt).toBe(pendingAfterStaleCleanup!.updatedAt);
+});
+
+test("remove_pages_pending_edit_if_expired deletes matching pending edits", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-cleanup-expired",
+			name: "pending-edits-cleanup-expired",
+			markdown: "# Cleanup expired base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const changedMarkdown = `${seeded.baseMarkdown}\n\nCleanup expired`;
+	const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: seeded.baseMarkdown,
+		modifiedMarkdown: changedMarkdown,
+	});
+	if (upsertResult._nay) {
+		throw new Error(upsertResult._nay.message);
+	}
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!pendingRow) {
+		throw new Error("Missing pending row while testing expired cleanup");
+	}
+
+	const cleanupTask = await t.run(async (ctx) => {
+		const cleanupTasks = await list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		});
+		return cleanupTasks[0] ?? null;
+	});
+	if (!cleanupTask) {
+		throw new Error("Missing cleanup task while testing expired cleanup");
+	}
+
+	await t.mutation(internal.ai_chat.remove_pages_pending_edit_if_expired, {
+		pendingEditId: pendingRow._id,
+		expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
 	});
 
 	const pendingAfterCleanup = await t.run(async (ctx) =>
@@ -882,9 +1378,18 @@ test("presence cleanup removes pages_pending_edits rows for offline users", asyn
 				q
 					.eq("workspaceId", seeded.workspaceId)
 					.eq("projectId", seeded.projectId)
-					.eq("userId", seeded.userId),
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
 			)
-			.collect(),
+			.first(),
 	);
-	expect(pendingAfterCleanup).toHaveLength(0);
+	expect(pendingAfterCleanup).toBeNull();
+
+	const cleanupTasksAfterCleanup = await t.run((ctx) =>
+		list_pending_edit_cleanup_tasks({
+			ctx,
+			pendingEditId: pendingRow._id,
+		}),
+	);
+	expect(cleanupTasksAfterCleanup).toHaveLength(0);
 });

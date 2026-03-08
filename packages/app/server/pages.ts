@@ -8,6 +8,7 @@
  * Only imports from packages that work server-side.
  */
 
+import { internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import { should_never_happen } from "./server-utils.ts";
@@ -85,4 +86,91 @@ export async function pages_db_get_yjs_content_and_sequence(
 		incrementalYjsUpdatesDocs,
 		yjsSequence: yjsLastSequenceDoc.last_sequence,
 	};
+}
+
+export async function pages_db_cancel_pending_edit_cleanup_tasks(
+	ctx: MutationCtx,
+	args: {
+		pendingEditId: Id<"pages_pending_edits">;
+	},
+) {
+	const cleanupTasks = await ctx.db
+		.query("pages_pending_edits_cleanup_tasks")
+		.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+		.collect();
+
+	await Promise.all([
+		...cleanupTasks.map((cleanupTask) => ctx.scheduler.cancel(cleanupTask.scheduledFunctionId)),
+		...cleanupTasks.map((cleanupTask) => ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTask._id)),
+	]);
+}
+
+export async function pages_db_schedule_pending_edit_cleanup(
+	ctx: MutationCtx,
+	args: {
+		pendingEditId: Id<"pages_pending_edits">;
+		expectedUpdatedAt: number;
+		delayMs?: number;
+	},
+) {
+	// Refresh the pending edit lifetime on every write. Keep one cleanup task per row
+	// and replace the older scheduled run whenever the row changes.
+	const [existingCleanupTasks, scheduledFunctionId] = await Promise.all([
+		ctx.db
+			.query("pages_pending_edits_cleanup_tasks")
+			.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.collect(),
+		ctx.scheduler.runAfter(
+			args.delayMs ?? 4 * 60 * 60 * 1000,
+			internal.ai_chat.remove_pages_pending_edit_if_expired,
+			{
+				pendingEditId: args.pendingEditId,
+				expectedUpdatedAt: args.expectedUpdatedAt,
+			},
+		),
+	]);
+
+	await Promise.all([
+		existingCleanupTasks[0]
+			? ctx.db.patch("pages_pending_edits_cleanup_tasks", existingCleanupTasks[0]._id, {
+					scheduledFunctionId,
+					expectedUpdatedAt: args.expectedUpdatedAt,
+				})
+			: ctx.db.insert("pages_pending_edits_cleanup_tasks", {
+					pendingEditId: args.pendingEditId,
+					scheduledFunctionId,
+					expectedUpdatedAt: args.expectedUpdatedAt,
+				}),
+		...existingCleanupTasks.map((cleanupTask) => ctx.scheduler.cancel(cleanupTask.scheduledFunctionId)),
+		...existingCleanupTasks
+			.slice(1)
+			.map((cleanupTask) => ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTask._id)),
+	]);
+}
+
+export async function pages_db_reschedule_pending_edit_cleanup_for_user(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: string;
+		delayMs?: number;
+	},
+) {
+	const pendingEdits = await ctx.db
+		.query("pages_pending_edits")
+		.withIndex("by_workspace_project_user_page", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
+		)
+		.collect();
+
+	await Promise.all(
+		pendingEdits.map((pendingEdit) =>
+			pages_db_schedule_pending_edit_cleanup(ctx, {
+				pendingEditId: pendingEdit._id,
+				expectedUpdatedAt: pendingEdit.updatedAt,
+				delayMs: args.delayMs,
+			}),
+		),
+	);
 }

@@ -6,7 +6,13 @@ import {
 } from "../shared/shared-utils.ts";
 import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
+import {
+	query,
+	mutation,
+	httpAction,
+	internalMutation,
+	type ActionCtx,
+} from "./_generated/server.js";
 import { api } from "./_generated/api.js";
 import { paginationOptsValidator, type RouteSpec } from "convex/server";
 import { v } from "convex/values";
@@ -46,7 +52,9 @@ import type { RouterForConvexModules } from "./http.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import {
+	pages_db_cancel_pending_edit_cleanup_tasks,
 	pages_db_get_yjs_content_and_sequence,
+	pages_db_schedule_pending_edit_cleanup,
 	pages_yjs_doc_apply_array_buffer_update,
 	pages_yjs_doc_create_from_array_buffer_update,
 	pages_yjs_doc_clone,
@@ -517,10 +525,7 @@ function pages_pending_edit_project_markdown_to_branch(args: { mut_yjsDoc: YDoc;
 	});
 }
 
-function pages_pending_edit_docs_match_content(args: {
-	leftYjsDoc: YDoc;
-	rightYjsDoc: YDoc;
-}) {
+function pages_pending_edit_docs_match_content(args: { leftYjsDoc: YDoc; rightYjsDoc: YDoc }) {
 	const leftMarkdown = pages_yjs_doc_get_markdown({
 		yjsDoc: args.leftYjsDoc,
 	});
@@ -590,6 +595,45 @@ function pages_pending_edit_branch_docs_match_existing_row(args: {
 		)
 	);
 }
+
+export const remove_pages_pending_edit_if_expired = internalMutation({
+	args: {
+		pendingEditId: v.id("pages_pending_edits"),
+		expectedUpdatedAt: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		// Guard scheduled cleanup with `expectedUpdatedAt`: if the row changed after you
+		// created the task, treat this run as stale and do not delete the newer pending state.
+		const cleanupTasks = await ctx.db
+			.query("pages_pending_edits_cleanup_tasks")
+			.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.collect();
+
+		const matchingCleanupTasks = cleanupTasks.filter(
+			(cleanupTask) => cleanupTask.expectedUpdatedAt === args.expectedUpdatedAt,
+		);
+		await Promise.all(
+			matchingCleanupTasks.map((cleanupTask) => ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTask._id)),
+		);
+
+		const pendingEdit = await ctx.db.get("pages_pending_edits", args.pendingEditId);
+		if (!pendingEdit) {
+			return null;
+		}
+		if (pendingEdit.updatedAt !== args.expectedUpdatedAt) {
+			return null;
+		}
+
+		await Promise.all([
+			ctx.db.delete("pages_pending_edits", pendingEdit._id),
+			...cleanupTasks
+				.filter((cleanupTask) => cleanupTask.expectedUpdatedAt !== args.expectedUpdatedAt)
+				.map((cleanupTask) => ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTask._id)),
+		]);
+		return null;
+	},
+});
 
 export const upsert_pages_pending_edit_updates = mutation({
 	args: {
@@ -694,7 +738,12 @@ export const upsert_pages_pending_edit_updates = mutation({
 
 		if (!branchDocsHaveChanges._yay) {
 			if (existingPendingEdit) {
-				await ctx.db.delete("pages_pending_edits", existingPendingEdit._id);
+				await Promise.all([
+					pages_db_cancel_pending_edit_cleanup_tasks(ctx, {
+						pendingEditId: existingPendingEdit._id,
+					}),
+					ctx.db.delete("pages_pending_edits", existingPendingEdit._id),
+				]);
 			}
 
 			return Result({ _yay: null });
@@ -725,7 +774,7 @@ export const upsert_pages_pending_edit_updates = mutation({
 		const now = Date.now();
 
 		if (!existingPendingEdit) {
-			await ctx.db.insert("pages_pending_edits", {
+			const pendingEditId = await ctx.db.insert("pages_pending_edits", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				userId: user.id,
@@ -736,14 +785,25 @@ export const upsert_pages_pending_edit_updates = mutation({
 				modifiedBranchYjsUpdate,
 				updatedAt: now,
 			});
-		} else {
-			await ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
-				baseYjsSequence,
-				baseYjsUpdate,
-				workingBranchYjsUpdate,
-				modifiedBranchYjsUpdate,
-				updatedAt: now,
+			await pages_db_schedule_pending_edit_cleanup(ctx, {
+				pendingEditId,
+				expectedUpdatedAt: now,
 			});
+		} else {
+			await Promise.all([
+				ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
+					baseYjsSequence,
+					baseYjsUpdate,
+					workingBranchYjsUpdate,
+					modifiedBranchYjsUpdate,
+					updatedAt: now,
+				}),
+				// Reset the pending edit expiry so active pending work stays preserved.
+				pages_db_schedule_pending_edit_cleanup(ctx, {
+					pendingEditId: existingPendingEdit._id,
+					expectedUpdatedAt: now,
+				}),
+			]);
 		}
 
 		return Result({ _yay: null });
@@ -829,7 +889,12 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 
 		if (!branchDocsHaveChanges._yay) {
 			if (existingPendingEdit) {
-				await ctx.db.delete("pages_pending_edits", existingPendingEdit._id);
+				await Promise.all([
+					pages_db_cancel_pending_edit_cleanup_tasks(ctx, {
+						pendingEditId: existingPendingEdit._id,
+					}),
+					ctx.db.delete("pages_pending_edits", existingPendingEdit._id),
+				]);
 			}
 
 			return Result({
@@ -871,16 +936,35 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 				updatedAt: now,
 			});
 		} else {
-			await ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
-				baseYjsSequence: args.baseYjsSequence,
-				baseYjsUpdate: args.baseYjsUpdate,
-				workingBranchYjsUpdate: args.workingBranchYjsUpdate,
-				modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
-				updatedAt: now,
-			});
+			await Promise.all([
+				ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
+					baseYjsSequence: args.baseYjsSequence,
+					baseYjsUpdate: args.baseYjsUpdate,
+					workingBranchYjsUpdate: args.workingBranchYjsUpdate,
+					modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+					updatedAt: now,
+				}),
+				// Refresh the expiry window from this latest row version because rebasing
+				// changes the authoritative pending snapshot.
+				pages_db_schedule_pending_edit_cleanup(ctx, {
+					pendingEditId: existingPendingEdit._id,
+					expectedUpdatedAt: now,
+				}),
+			]);
 		}
+		const schedulePendingEditCleanupPromise =
+			pendingEditId && !existingPendingEdit
+				? // Reset the pending edit expiry on rebase.
+					pages_db_schedule_pending_edit_cleanup(ctx, {
+						pendingEditId,
+						expectedUpdatedAt: now,
+					})
+				: null;
 
-		const nextPendingEdit = pendingEditId ? await ctx.db.get("pages_pending_edits", pendingEditId) : null;
+		const [, nextPendingEdit] = await Promise.all([
+			schedulePendingEditCleanupPromise,
+			pendingEditId ? ctx.db.get("pages_pending_edits", pendingEditId) : Promise.resolve(null),
+		]);
 		if (!nextPendingEdit) {
 			return Result({
 				_nay: {
@@ -1047,7 +1131,13 @@ export const save_pages_pending_edit = mutation({
 		}
 
 		if (modifiedMatchesSavedBase._yay) {
-			await ctx.db.delete("pages_pending_edits", pendingEdit._id);
+			await Promise.all([
+				pages_db_cancel_pending_edit_cleanup_tasks(ctx, {
+					pendingEditId: pendingEdit._id,
+				}),
+				ctx.db.delete("pages_pending_edits", pendingEdit._id),
+			]);
+
 			return Result({
 				_yay: {
 					newSequence,
@@ -1059,16 +1149,24 @@ export const save_pages_pending_edit = mutation({
 		const nextBaseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
 			yjsDoc: livePageYjsDocAfterSave,
 		});
+		const now = Date.now();
 
-		await ctx.db.patch("pages_pending_edits", pendingEdit._id, {
-			baseYjsSequence: nextBaseYjsSequence,
-			baseYjsUpdate: nextBaseYjsUpdate,
-			workingBranchYjsUpdate: nextBaseYjsUpdate,
-			modifiedBranchYjsUpdate: pages_pending_edit_encode_yjs_state_update({
-				yjsDoc: modifiedBranchYjsDoc,
+		await Promise.all([
+			ctx.db.patch("pages_pending_edits", pendingEdit._id, {
+				baseYjsSequence: nextBaseYjsSequence,
+				baseYjsUpdate: nextBaseYjsUpdate,
+				workingBranchYjsUpdate: nextBaseYjsUpdate,
+				modifiedBranchYjsUpdate: pages_pending_edit_encode_yjs_state_update({
+					yjsDoc: modifiedBranchYjsDoc,
+				}),
+				updatedAt: now,
 			}),
-			updatedAt: Date.now(),
-		});
+			// Partial saves must keep the pending edit alive. Reset the expire of the pending edit doc.
+			pages_db_schedule_pending_edit_cleanup(ctx, {
+				pendingEditId: pendingEdit._id,
+				expectedUpdatedAt: now,
+			}),
+		]);
 
 		return Result({
 			_yay: {

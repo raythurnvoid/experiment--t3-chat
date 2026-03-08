@@ -1,7 +1,8 @@
-import { mutation, query, internalMutation } from "./_generated/server.js";
-import { components, internal } from "./_generated/api.js";
+import { mutation, query } from "./_generated/server.js";
+import { components } from "./_generated/api.js";
 import { v } from "convex/values";
 import { Presence } from "@convex-dev/presence";
+import { pages_db_reschedule_pending_edit_cleanup_for_user } from "../server/pages.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
@@ -20,17 +21,6 @@ export const heartbeat = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		// If the user reconnects before cleanup runs (for example after a quick refresh),
-		// cancel the scheduled pending-edits cleanup so they do not lose unsaved work.
-		const scheduled = await ctx.db
-			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_userId", (q) => q.eq("userId", user.id))
-			.collect();
-		for (const task of scheduled) {
-			await ctx.scheduler.cancel(task.scheduledFunctionId);
-			await ctx.db.delete("pages_pending_edits_cleanup_tasks", task._id);
-		}
-
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
 
 		if (result.isNewSession) {
@@ -40,6 +30,13 @@ export const heartbeat = mutation({
 					data: {
 						color: "#" + Math.floor(Math.random() * 16777215).toString(16),
 					},
+				}),
+				// Use reconnecting as a signal to restore any disconnect-driven short cleanup
+				// window back to the normal long-lived pending-edit TTL.
+				pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					userId: user.id,
 				}),
 			]);
 		}
@@ -227,70 +224,27 @@ export const disconnect = mutation({
 	args: { sessionToken: v.string() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Let presence handle the disconnect first
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const result = await presence.disconnect(ctx, args.sessionToken);
-
-		// Delete pending edits when a user disconnects so stale pending overlays do not linger forever.
-		// Keep a grace window so quick reconnects (for example page refresh) can cancel this cleanup.
-		const effective = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const userId = effective.id;
-		const existing = await ctx.db
-			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_userId", (q) => q.eq("userId", userId))
-			.collect();
-		for (const task of existing) {
-			await ctx.scheduler.cancel(task.scheduledFunctionId);
-			await ctx.db.delete("pages_pending_edits_cleanup_tasks", task._id);
-		}
-
-		console.info("disconnect", userId);
-
-		const scheduledId = await ctx.scheduler.runAfter(30_000, internal.presence.remove_pending_edits_if_offline, {
-			userId,
+		const onlineRooms = await ctx.runQuery(components.presence.public.listUser, {
+			userId: user.id,
+			onlineOnly: true,
+			limit: 1,
 		});
 
-		await ctx.db.insert("pages_pending_edits_cleanup_tasks", {
-			userId: userId,
-			scheduledFunctionId: scheduledId,
+		// Keep the long-lived fallback TTL in `ai_chat` because presence is optional, but
+		// only shorten cleanup when the user is now fully offline across presence sessions.
+		if (onlineRooms.length > 0) {
+			return result;
+		}
+
+		await pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+			workspaceId: ai_chat_HARDCODED_ORG_ID,
+			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			userId: user.id,
+			delayMs: 30_000,
 		});
 
 		return result;
-	},
-});
-
-export const remove_pending_edits_if_offline = internalMutation({
-	args: { userId: v.string() },
-	returns: v.null(),
-	handler: async (ctx, { userId }) => {
-		// Query presence: list rooms for this user, onlineOnly=true
-		const rooms = await presence.listUser(ctx, userId, true);
-		const isOnline = rooms.length > 0;
-
-		// Clear any scheduled record(s) for this user
-		const records = await ctx.db
-			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_userId", (q) => q.eq("userId", userId))
-			.collect();
-		for (const rec of records) {
-			await ctx.db.delete("pages_pending_edits_cleanup_tasks", rec._id);
-		}
-
-		console.info("remove_pending_edits_if_offline", { userId, isOnline });
-
-		if (isOnline) return;
-
-		// User remained offline after the grace window, so clear pending edits.
-		const pagesPending = await ctx.db
-			.query("pages_pending_edits")
-			.withIndex("by_workspace_project_user_page", (q) =>
-				q
-					.eq("workspaceId", ai_chat_HARDCODED_ORG_ID)
-					.eq("projectId", ai_chat_HARDCODED_PROJECT_ID)
-					.eq("userId", userId),
-			)
-			.collect();
-		for (const doc of pagesPending) {
-			await ctx.db.delete("pages_pending_edits", doc._id);
-		}
 	},
 });
