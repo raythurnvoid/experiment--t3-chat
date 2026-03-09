@@ -330,7 +330,7 @@ export const upsert_pages_pending_edit_updates = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
-		workingMarkdown: v.string(),
+		workingMarkdown: v.optional(v.string()),
 		modifiedMarkdown: v.string(),
 	},
 	returns: v_result({
@@ -356,75 +356,20 @@ export const upsert_pages_pending_edit_updates = mutation({
 			modifiedBranchYjsDoc,
 		} = branchDocsResult._yay;
 
-		const workingBranchProjection = pages_pending_edit_project_markdown_to_branch({
-			mut_yjsDoc: workingBranchYjsDoc,
-			markdown: args.workingMarkdown,
-		});
-		if (workingBranchProjection._nay) {
-			return Result({
-				_nay: {
-					message: "Failed to project working markdown into pending branch",
-					cause: workingBranchProjection._nay,
-				},
+		if (args.workingMarkdown !== undefined) {
+			const workingBranchProjection = pages_pending_edit_project_markdown_to_branch({
+				mut_yjsDoc: workingBranchYjsDoc,
+				markdown: args.workingMarkdown,
 			});
+			if (workingBranchProjection._nay) {
+				return Result({
+					_nay: {
+						message: "Failed to project working markdown into pending branch",
+						cause: workingBranchProjection._nay,
+					},
+				});
+			}
 		}
-
-		const modifiedBranchProjection = pages_pending_edit_project_markdown_to_branch({
-			mut_yjsDoc: modifiedBranchYjsDoc,
-			markdown: args.modifiedMarkdown,
-		});
-		if (modifiedBranchProjection._nay) {
-			return Result({
-				_nay: {
-					message: "Failed to project modified markdown into pending branch",
-					cause: modifiedBranchProjection._nay.cause,
-				},
-			});
-		}
-
-		return await pages_pending_edit_upsert_branch_docs(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			userId: user.id,
-			pageId: args.pageId,
-			existingPendingEdit,
-			baseYjsSequence,
-			baseYjsDoc,
-			workingBranchYjsDoc,
-			modifiedBranchYjsDoc,
-		});
-	},
-});
-
-export const upsert_pages_pending_edit_modified_branch_from_agent = mutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pageId: v.id("pages"),
-		modifiedMarkdown: v.string(),
-	},
-	returns: v_result({
-		_yay: v.null(),
-	}),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const branchDocsResult = await pages_pending_edit_resolve_branch_docs(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			userId: user.id,
-			pageId: args.pageId,
-		});
-		if (branchDocsResult._nay) {
-			return branchDocsResult;
-		}
-
-		const {
-			existingPendingEdit,
-			baseYjsSequence,
-			baseYjsDoc,
-			workingBranchYjsDoc,
-			modifiedBranchYjsDoc,
-		} = branchDocsResult._yay;
 
 		const modifiedBranchProjection = pages_pending_edit_project_markdown_to_branch({
 			mut_yjsDoc: modifiedBranchYjsDoc,

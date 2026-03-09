@@ -45,23 +45,24 @@ That separation is what enables:
 
 1. AI tools in `packages/app/server/server-ai-tools.ts` read page content through `internal.ai_docs_temp.get_page_last_available_markdown_content_by_path`.
 2. That read path overlays the current user's pending `modified` branch if one exists, so follow-up AI reads can see pending content instead of only committed markdown.
-3. `write_page` and `edit_page` normalize line endings and trailing newline shape, compute a preview diff, then call `api.ai_chat.upsert_pages_pending_edit_updates`.
-4. `upsert_pages_pending_edit_updates` in `packages/app/convex/ai_chat.ts` creates or updates a row in `pages_pending_edits` for `(workspaceId, projectId, userId, pageId)`.
-5. `PageEditor` in `packages/app/src/components/page-editor/page-editor.tsx` queries `list_pages_pending_edits` and shows a floating banner whenever the user has any pending edits, even on a different page.
-6. `Review changes` switches the `/pages` route to `view=diff_editor`.
-7. `PageEditorDiff` in `packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx` bootstraps from the pending row if present, otherwise from live page Yjs state.
-8. In the diff editor:
+3. `write_page` and `edit_page` normalize line endings and trailing newline shape, compute a preview diff, then call `api.pages_pending_edit.upsert_pages_pending_edit_updates`.
+4. Agent calls omit `workingMarkdown`, so the backend preserves the current `working` branch and updates only `modified`.
+5. `upsert_pages_pending_edit_updates` in `packages/app/convex/pages_pending_edit.ts` creates or updates a row in `pages_pending_edits` for `(workspaceId, projectId, userId, pageId)`.
+6. `PageEditor` in `packages/app/src/components/page-editor/page-editor.tsx` queries `list_pages_pending_edits` and shows a floating banner whenever the user has any pending edits, even on a different page.
+7. `Review changes` switches the `/pages` route to `view=diff_editor`.
+8. `PageEditorDiff` in `packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx` bootstraps from the pending row if present, otherwise from live page Yjs state.
+9. In the diff editor:
    - original side = `working` branch
    - modified side = `modified` branch
-9. Local Monaco edits debounce back into `upsert_pages_pending_edit_updates`, so the backend row stays close to the current review state.
-10. `Accept all` copies modified content into working content.
-11. `Discard all` copies working content into modified content.
-12. Those actions are editor-model operations first; the usual debounced upsert persists the new branch state and deletes the row if both branches now match the base.
-13. `Save` and `Accept all + save` flush pending upserts, then call `save_pages_pending_edit`.
-14. `save_pages_pending_edit` writes only the `working` diff into the live page Yjs stream through `pages_db_yjs_push_update`.
-15. If `modified` now matches the saved live page state, the row is deleted.
-16. If unresolved edits remain, the row stays alive, with `base` and `working` advanced to the saved live content and `modified` preserved as the unresolved branch.
-17. `Sync` rebases both branches on top of the latest live Yjs state and persists the rebased row with `persist_pages_pending_edit_rebased_state`.
+10. Local Monaco edits debounce back into `upsert_pages_pending_edit_updates`, so the backend row stays close to the current review state.
+11. `Accept all` copies modified content into working content.
+12. `Discard all` copies working content into modified content.
+13. Those actions are editor-model operations first; the usual debounced upsert persists the new branch state and deletes the row if both branches now match the base.
+14. `Save` and `Accept all + save` flush pending upserts, then call `save_pages_pending_edit`.
+15. `save_pages_pending_edit` writes only the `working` diff into the live page Yjs stream through `pages_db_yjs_push_update`.
+16. If `modified` now matches the saved live page state, the row is deleted.
+17. If unresolved edits remain, the row stays alive, with `base` and `working` advanced to the saved live content and `modified` preserved as the unresolved branch.
+18. `Sync` rebases both branches on top of the latest live Yjs state and persists the rebased row with `persist_pages_pending_edit_rebased_state`.
 
 # Data model
 
@@ -105,7 +106,7 @@ Main pending-edit mutations and queries:
 
 Important behavior:
 
-- `upsert_pages_pending_edit_updates` reconstructs existing Yjs branch docs or clones the live base, projects incoming markdown into working/modified docs, and deletes the row if both branches match the base.
+- `upsert_pages_pending_edit_updates` reconstructs existing Yjs branch docs or clones the live base, projects incoming markdown into `modified`, projects `working` only when `workingMarkdown` is provided, and deletes the row if both branches match the base.
 - `persist_pages_pending_edit_rebased_state` rejects stale live bases and only accepts rebased state built from the current live page snapshot.
 - `save_pages_pending_edit` applies remote drift from base into both branches before saving, persists only the `working` diff to the live page, and keeps the row alive on partial save.
 
@@ -163,6 +164,10 @@ Important nuances:
 - `Discard all` is not a dedicated backend clear mutation.
 - `Accept all` and `Discard all` mutate editor models first; the regular upsert path later persists or deletes the row.
 - Save and sync both flush pending debounced writes first to avoid races with older queued upserts.
+- `PageEditorDiff` has two distinct client phases: bootstrap on mount, then reconcile later `pendingEdit` updates into already-mounted Monaco models.
+- When the diff editor is already open and a newer remote pending row arrives, the reconcile path must not blindly preserve stale Monaco modified content.
+- The current intended behavior is: if there is no real local unsynced draft, adopt the incoming remote pending state directly; only use the merge/rebase path when preserving actual local draft intent.
+- If the diff editor is already mounted, treat Monaco model contents as local draft candidates, not automatically as authoritative local intent; provenance matters more than content equality.
 
 # `packages/app/src/lib/pages.ts`
 
@@ -170,8 +175,15 @@ Key client helpers:
 
 - `pages_fetch_page_yjs_state_and_markdown`
 - `pages_yjs_rebase_branch_with_local_markdown`
+- `pages_yjs_reconcile_branch_with_local_markdown`
 
 These helpers make local diff-editor state survive remote drift and reconcile cleanly with refreshed server state.
+
+Helper selection guidance:
+
+- Use `pages_yjs_rebase_branch_with_local_markdown` when the problem is base drift: previous base -> next base while preserving a branch's local markdown.
+- Use `pages_yjs_reconcile_branch_with_local_markdown` when the problem is previous remote branch -> next remote branch while preserving local editor intent.
+- In `PageEditorDiff`, newer pending rows arriving into an already-mounted diff editor are usually a branch-reconciliation problem, not a base-rebase problem.
 
 # Cleanup and expiry model
 
@@ -266,6 +278,7 @@ Do not rely on the older nonexistent hooks:
 - Pending row never clears because `modified` still differs from the saved live base after a partial save.
 - Sync fails with a stale-base error because the caller persisted a rebase built from an outdated live page state.
 - Follow-up AI tools appear inconsistent because they read overlayed pending content, not only committed markdown.
+- An already-open diff editor can fail to show a new agent proposal immediately if the client reconcile path preserves stale Monaco modified content over the newer remote pending row.
 - Cleanup deletes the wrong version unless `expectedUpdatedAt` protection remains intact.
 - Multi-session presence behavior becomes wrong if disconnect always shortens cleanup, even with another session still online.
 
@@ -275,16 +288,18 @@ When debugging, inspect these in order:
 
 1. Does `list_pages_pending_edits` or `get_pages_pending_edit` return the row you expect?
 2. Does the row's `base / working / modified` state explain the UI, or are you assuming a simpler single-markdown model?
-3. Did a save or sync path flush pending debounced upserts first?
-4. Is the row supposed to clear, or is this actually a partial-save case with unresolved `modified` content?
-5. Is the live page state newer than the pending row's base?
-6. Is cleanup being rescheduled correctly for the latest `updatedAt`?
-7. Is presence shortening cleanup only after the last session disconnects?
+3. If the page is already open in `diff_editor`, did the mounted Monaco models actually adopt the latest pending row, or did client-side reconcile preserve older local model content?
+4. Did a save or sync path flush pending debounced upserts first?
+5. Is the row supposed to clear, or is this actually a partial-save case with unresolved `modified` content?
+6. Is the live page state newer than the pending row's base?
+7. Is cleanup being rescheduled correctly for the latest `updatedAt`?
+8. Is presence shortening cleanup only after the last session disconnects?
 
 # Verification checklist
 
 - Trigger an AI proposal and confirm the floating pending banner appears.
 - Confirm `Review changes` enters diff mode for the current page.
+- With the page already open in diff mode, trigger a new AI proposal and confirm the mounted diff updates immediately without reload or remount.
 - Confirm previous/next navigation can move across the pending queue.
 - In diff mode, verify per-hunk accept/discard updates the correct side.
 - `Accept all` should stage everything without saving.

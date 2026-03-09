@@ -32,6 +32,7 @@ import {
 	pages_yjs_doc_get_markdown,
 	pages_fetch_page_yjs_state_and_markdown,
 	pages_u8_to_array_buffer,
+	pages_yjs_reconcile_branch_with_local_markdown,
 	pages_yjs_rebase_branch_with_local_markdown,
 } from "@/lib/pages.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
@@ -1206,10 +1207,9 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			return;
 		}
 
-		const mergedWorkingBranchResult = pages_yjs_rebase_branch_with_local_markdown({
-			previousBaseYjsDoc: previousRemoteEditorContentState.baselineYjsDoc,
-			nextBaseYjsDoc: editorContentState.baselineYjsDoc,
-			previousBranchYjsDoc: previousRemoteEditorContentState.workingYjsDoc,
+		const mergedWorkingBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
+			previousRemoteYjsDoc: previousRemoteEditorContentState.workingYjsDoc,
+			nextRemoteYjsDoc: editorContentState.workingYjsDoc,
 			localMarkdown: editorModels.original.getValue(),
 		});
 		if (mergedWorkingBranchResult._nay) {
@@ -1220,10 +1220,9 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			return;
 		}
 
-		const mergedModifiedBranchResult = pages_yjs_rebase_branch_with_local_markdown({
-			previousBaseYjsDoc: previousRemoteEditorContentState.baselineYjsDoc,
-			nextBaseYjsDoc: editorContentState.baselineYjsDoc,
-			previousBranchYjsDoc: previousRemoteEditorContentState.modifiedYjsDoc,
+		const mergedModifiedBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
+			previousRemoteYjsDoc: previousRemoteEditorContentState.modifiedYjsDoc,
+			nextRemoteYjsDoc: editorContentState.modifiedYjsDoc,
 			localMarkdown: editorModels.modified.getValue(),
 		});
 		if (mergedModifiedBranchResult._nay) {
@@ -1235,8 +1234,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		}
 
 		updateEditorValues({
-			workingMarkdown: mergedWorkingBranchResult._yay.rebasedBranchMarkdown,
-			modifiedMarkdown: mergedModifiedBranchResult._yay.rebasedBranchMarkdown,
+			workingMarkdown: mergedWorkingBranchResult._yay.mergedMarkdown,
+			modifiedMarkdown: mergedModifiedBranchResult._yay.mergedMarkdown,
 		});
 		lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 	}, [editorContentState, editorModels]);
@@ -1664,7 +1663,6 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 				setIsSyncing(false);
 				return;
 			}
-
 			if (!editor_content_states_match(remoteEditorContentState, nextRemoteEditorContentState._yay)) {
 				setRemoteEditorContentState(nextRemoteEditorContentState._yay);
 			}

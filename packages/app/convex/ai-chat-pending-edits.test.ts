@@ -402,7 +402,7 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 	expect(pendingAfterDiscard).toBeNull();
 });
 
-test("upsert_pages_pending_edit_modified_branch_from_agent keeps working at base for a new proposal", async () => {
+test("upsert_pages_pending_edit_updates keeps working at base when the agent omits workingMarkdown", async () => {
 	const t = test_convex();
 
 	const seeded = await t.run(async (ctx) =>
@@ -420,7 +420,7 @@ test("upsert_pages_pending_edit_modified_branch_from_agent keeps working at base
 	});
 
 	const agentMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
-	const agentUpsertResult = await asUser.mutation(api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent, {
+	const agentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
@@ -455,7 +455,7 @@ test("upsert_pages_pending_edit_modified_branch_from_agent keeps working at base
 	expect(pendingRowMarkdownState.modifiedMarkdown).toBe(agentMarkdown);
 });
 
-test("upsert_pages_pending_edit_modified_branch_from_agent preserves existing working changes", async () => {
+test("upsert_pages_pending_edit_updates preserves existing working changes when the agent omits workingMarkdown", async () => {
 	const t = test_convex();
 
 	const seeded = await t.run(async (ctx) =>
@@ -486,15 +486,12 @@ test("upsert_pages_pending_edit_modified_branch_from_agent preserves existing wo
 	}
 
 	const secondAgentMarkdown = normalize_pending_edit_markdown(`${firstAgentMarkdown}\n\nAgent follow up`);
-	const secondAgentUpsertResult = await asUser.mutation(
-		api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent,
-		{
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
-			pageId: seeded.pageId,
-			modifiedMarkdown: secondAgentMarkdown,
-		},
-	);
+	const secondAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		modifiedMarkdown: secondAgentMarkdown,
+	});
 	if (secondAgentUpsertResult._nay) {
 		throw new Error(secondAgentUpsertResult._nay.message);
 	}
@@ -524,7 +521,7 @@ test("upsert_pages_pending_edit_modified_branch_from_agent preserves existing wo
 	expect(pendingRowMarkdownState.modifiedMarkdown).toBe(secondAgentMarkdown);
 });
 
-test("upsert_pages_pending_edit_modified_branch_from_agent clears the row when agent changes collapse to base", async () => {
+test("upsert_pages_pending_edit_updates clears the row when agent changes collapse to base", async () => {
 	const t = test_convex();
 
 	const seeded = await t.run(async (ctx) =>
@@ -542,28 +539,22 @@ test("upsert_pages_pending_edit_modified_branch_from_agent clears the row when a
 	});
 
 	const agentMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
-	const firstAgentUpsertResult = await asUser.mutation(
-		api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent,
-		{
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
-			pageId: seeded.pageId,
-			modifiedMarkdown: agentMarkdown,
-		},
-	);
+	const firstAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		modifiedMarkdown: agentMarkdown,
+	});
 	if (firstAgentUpsertResult._nay) {
 		throw new Error(firstAgentUpsertResult._nay.message);
 	}
 
-	const discardAgentUpsertResult = await asUser.mutation(
-		api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent,
-		{
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
-			pageId: seeded.pageId,
-			modifiedMarkdown: seeded.baseMarkdown,
-		},
-	);
+	const discardAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		modifiedMarkdown: seeded.baseMarkdown,
+	});
 	if (discardAgentUpsertResult._nay) {
 		throw new Error(discardAgentUpsertResult._nay.message);
 	}
