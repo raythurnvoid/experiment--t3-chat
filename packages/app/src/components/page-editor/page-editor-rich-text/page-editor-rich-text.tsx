@@ -211,9 +211,15 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 	};
 
 	const shouldShow: NonNullable<EditorBubbleProps["shouldShow"]> = (params) => {
+		// If nothing is in focus we can close the bubble
+		if (document.activeElement === document.body) {
+			return false;
+		}
+
 		// Leverage the fact that shouldShow is called only when the selection
-		// changes in the editor so if the focus moves into an element that
-		// is "managed" and should not cause the bubble to close, we keep it open.
+		// changes in the editor (and when the bubble menui plugin is registered)
+		// so if the focus moves into an element that
+		// is "allowed" and should not cause the bubble to close, we keep it open.
 		// Here we keep it open if the focus goes into an hoisted element or inside
 		// the bubble itself.
 		// We should not check if the focus is in the editor otherwise we end-up
@@ -297,86 +303,99 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 
 	// On mount
 	useEffect(() => {
-		const rootElement = document.getElementById("root" satisfies AppElementId);
+		// Ensure the mount happens only once otherwise it might create unexpected issues with tiptap
+		const mountTask = () => {
+			const rootElement = document.getElementById("root" satisfies AppElementId);
 
-		// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
-		const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
-		const plugin = new Plugin({
-			props: {
-				handleKeyDown: (_view, event) => {
-					if (event.key !== "Escape") {
-						return false;
-					}
+			// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
+			const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
+			const plugin = new Plugin({
+				props: {
+					handleKeyDown: (_view, event) => {
+						if (event.key !== "Escape") {
+							return false;
+						}
 
-					setRendered(false);
-					editor.commands.focus();
+						setRendered(false);
+						editor.commands.focus();
 
-					return true;
+						return true;
+					},
 				},
-			},
-		});
-		editor.registerPlugin(plugin);
+			});
 
-		// Listen for selection updates and reapply the decoration highlight if the bubble menu is shown
-		const handleSelectionUpdate = () => {
-			if (
-				isShownRef.current &&
-				rendered &&
-				!editor.state.selection.empty &&
-				editor.state.selection.from !== editor.state.selection.to
-			) {
-				// TODO: This breaks the selection when double clicking and then dragging
-				editor.chain().clearDecorationHighlight().setDecorationHighlight().run();
-			}
-		};
-		editor.on("selectionUpdate", handleSelectionUpdate);
+			editor.registerPlugin(plugin);
 
-		// Global event listeners
-
-		const clearEventListeners = global_event_listen_all(
-			["keydown", "pointerdown"],
-			(event) => {
-				if (!isShownRef.current) {
-					return;
-				}
-
-				const targetIsInManagedAreas = check_element_is_in_allowed_areas(event.target as HTMLElement, {
-					allowedAreas: [bubbleSurfaceRef.current, editor.view.dom],
-					restrictionScope: rootElement,
-				});
-
-				const activeElementIsInManagedAreasOnPointerDown =
-					event instanceof PointerEvent
-						? check_element_is_in_allowed_areas(document.activeElement, {
-								allowedAreas: [bubbleSurfaceRef.current, editor.view.dom],
-								restrictionScope: rootElement,
-							})
-						: undefined;
-
-				const focusMovingOutOfManagedAreasOnPointerDown =
-					event instanceof PointerEvent
-						? activeElementIsInManagedAreasOnPointerDown === true && targetIsInManagedAreas === false
-						: undefined;
-
+			// Listen for selection updates and reapply the decoration highlight if the bubble menu is shown
+			const handleSelectionUpdate = () => {
 				if (
-					(event instanceof KeyboardEvent && event.key === "Escape" && targetIsInManagedAreas) ||
-					(event instanceof PointerEvent && focusMovingOutOfManagedAreasOnPointerDown === true)
+					isShownRef.current &&
+					rendered &&
+					!editor.state.selection.empty &&
+					editor.state.selection.from !== editor.state.selection.to
 				) {
-					setRendered(false);
-					PageEditorRichText.clearDecorationHighlightProperly(editor);
-
-					if (event instanceof KeyboardEvent) {
-						event.preventDefault();
-					}
+					// TODO: This breaks the selection when double clicking and then dragging
+					editor.chain().clearDecorationHighlight().setDecorationHighlight().run();
 				}
-			},
-			{ capture: true },
-		);
+			};
+			editor.on("selectionUpdate", handleSelectionUpdate);
+
+			// Global event listeners
+
+			const clearEventListeners = global_event_listen_all(
+				["keydown", "pointerdown"],
+				(event) => {
+					if (!isShownRef.current) {
+						return;
+					}
+
+					const targetIsInManagedAreas = check_element_is_in_allowed_areas(event.target as HTMLElement, {
+						allowedAreas: [bubbleSurfaceRef.current, editor.view.dom],
+						restrictionScope: rootElement,
+					});
+
+					const activeElementIsInManagedAreasOnPointerDown =
+						event instanceof PointerEvent
+							? check_element_is_in_allowed_areas(document.activeElement, {
+									allowedAreas: [bubbleSurfaceRef.current, editor.view.dom],
+									restrictionScope: rootElement,
+								})
+							: undefined;
+
+					const focusMovingOutOfManagedAreasOnPointerDown =
+						event instanceof PointerEvent
+							? activeElementIsInManagedAreasOnPointerDown === true && targetIsInManagedAreas === false
+							: undefined;
+
+					if (
+						(event instanceof KeyboardEvent && event.key === "Escape" && targetIsInManagedAreas) ||
+						(event instanceof PointerEvent && focusMovingOutOfManagedAreasOnPointerDown === true)
+					) {
+						setRendered(false);
+						PageEditorRichText.clearDecorationHighlightProperly(editor);
+
+						if (event instanceof KeyboardEvent) {
+							event.preventDefault();
+						}
+					}
+				},
+				{ capture: true },
+			);
+
+			return () => {
+				editor.unregisterPlugin(bubbleEscPluginKey);
+				editor.off("selectionUpdate", handleSelectionUpdate);
+				clearEventListeners();
+			};
+		};
+		let cleanup: ReturnType<typeof mountTask> | undefined = undefined;
+		const timeoutId = setTimeout(() => {
+			cleanup = mountTask();
+		});
 
 		return () => {
-			editor.unregisterPlugin(bubbleEscPluginKey);
-			editor.off("selectionUpdate", handleSelectionUpdate);
-			clearEventListeners();
+			clearTimeout(timeoutId);
+			cleanup?.();
 		};
 	}, []);
 
