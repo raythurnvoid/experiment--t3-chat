@@ -50,8 +50,15 @@ export default defineConfig({
 				],
 			},
 		}),
-		tailwindcss(),
+		tailwindcss({
+			optimize: false,
+		}),
 	],
+	build: {
+		target: "esnext",
+		cssTarget: "esnext",
+		cssMinify: false,
+	},
 	resolve: {
 		dedupe: ["react", "react-dom"],
 		alias: [
