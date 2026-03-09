@@ -170,7 +170,7 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 	expect(result.output).toContain("... more table content below");
 });
 
-test("write_page tool stores generalized pages pending edits", async () => {
+test("write_page tool stores pending modified branch updates from the agent", async () => {
 	const pageId = "p123";
 	const currentContent = {
 		pageId,
@@ -194,7 +194,6 @@ test("write_page tool stores generalized pages pending edits", async () => {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
-		workingMarkdown: "# Base",
 		modifiedMarkdown: "# Updated",
 	});
 
@@ -202,7 +201,7 @@ test("write_page tool stores generalized pages pending edits", async () => {
 	expect(result.metadata.exists).toBe(true);
 });
 
-test("edit_page tool stores generalized pages pending edits", async () => {
+test("edit_page tool stores pending modified branch updates from the agent", async () => {
 	const pageId = "p456";
 	const currentContent = {
 		pageId,
@@ -234,7 +233,6 @@ test("edit_page tool stores generalized pages pending edits", async () => {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
-		workingMarkdown: "Hello world",
 		modifiedMarkdown: "Hello team",
 	});
 

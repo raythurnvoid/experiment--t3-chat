@@ -999,11 +999,10 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 				pageId = created._yay.pageId;
 			}
 
-			await ctx.runMutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			await ctx.runMutation(api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
-				workingMarkdown: oldText,
 				modifiedMarkdown: newText,
 			});
 
@@ -1087,11 +1086,10 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 
 			const pageId = currentPageContent.pageId;
 
-			await ctx.runMutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			await ctx.runMutation(api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
-				workingMarkdown: currentPageContent.content,
 				modifiedMarkdown: modifiedText,
 			});
 

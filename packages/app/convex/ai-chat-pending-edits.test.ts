@@ -143,6 +143,26 @@ async function read_page_markdown_from_yjs(args: {
 	return markdown._yay;
 }
 
+function normalize_pending_edit_markdown(markdown: string) {
+	const yjsDoc = new YDoc();
+	const updateMarkdownResult = pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: yjsDoc,
+		markdown,
+	});
+	if (updateMarkdownResult._nay) {
+		throw new Error("Failed to normalize pending edit markdown");
+	}
+
+	const normalizedMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc,
+	});
+	if (normalizedMarkdown._nay) {
+		throw new Error("Failed to read normalized pending edit markdown");
+	}
+
+	return normalizedMarkdown._yay;
+}
+
 async function read_page_yjs_state(args: {
 	ctx: MutationCtx;
 	workspaceId: string;
@@ -380,6 +400,188 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 			.first(),
 	);
 	expect(pendingAfterDiscard).toBeNull();
+});
+
+test("upsert_pages_pending_edit_modified_branch_from_agent keeps working at base for a new proposal", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-agent-new-proposal",
+			name: "pending-edits-agent-new-proposal",
+			markdown: "# Base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const agentMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
+	const agentUpsertResult = await asUser.mutation(api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		modifiedMarkdown: agentMarkdown,
+	});
+	if (agentUpsertResult._nay) {
+		throw new Error(agentUpsertResult._nay.message);
+	}
+	expect(agentUpsertResult._yay).toBeNull();
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!pendingRow) {
+		throw new Error("Missing pending row after creating an agent proposal");
+	}
+
+	const pendingRowMarkdownState = read_pending_row_markdown_state({
+		pendingEdit: pendingRow,
+	});
+	expect(pendingRowMarkdownState.baseMarkdown).toBe(seeded.baseMarkdown);
+	expect(pendingRowMarkdownState.workingMarkdown).toBe(seeded.baseMarkdown);
+	expect(pendingRowMarkdownState.modifiedMarkdown).toBe(agentMarkdown);
+});
+
+test("upsert_pages_pending_edit_modified_branch_from_agent preserves existing working changes", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-agent-preserve-working",
+			name: "pending-edits-agent-preserve-working",
+			markdown: "# Base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const stagedMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nUser staged`);
+	const firstAgentMarkdown = normalize_pending_edit_markdown(`${stagedMarkdown}\n\nAgent proposal`);
+	const stagedPendingEditResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		workingMarkdown: stagedMarkdown,
+		modifiedMarkdown: firstAgentMarkdown,
+	});
+	if (stagedPendingEditResult._nay) {
+		throw new Error(stagedPendingEditResult._nay.message);
+	}
+
+	const secondAgentMarkdown = normalize_pending_edit_markdown(`${firstAgentMarkdown}\n\nAgent follow up`);
+	const secondAgentUpsertResult = await asUser.mutation(
+		api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+			modifiedMarkdown: secondAgentMarkdown,
+		},
+	);
+	if (secondAgentUpsertResult._nay) {
+		throw new Error(secondAgentUpsertResult._nay.message);
+	}
+	expect(secondAgentUpsertResult._yay).toBeNull();
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!pendingRow) {
+		throw new Error("Missing pending row after the follow-up agent proposal");
+	}
+
+	const pendingRowMarkdownState = read_pending_row_markdown_state({
+		pendingEdit: pendingRow,
+	});
+	expect(pendingRowMarkdownState.baseMarkdown).toBe(seeded.baseMarkdown);
+	expect(pendingRowMarkdownState.workingMarkdown).toBe(stagedMarkdown);
+	expect(pendingRowMarkdownState.modifiedMarkdown).toBe(secondAgentMarkdown);
+});
+
+test("upsert_pages_pending_edit_modified_branch_from_agent clears the row when agent changes collapse to base", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-agent-collapse-to-base",
+			name: "pending-edits-agent-collapse-to-base",
+			markdown: "# Base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const agentMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
+	const firstAgentUpsertResult = await asUser.mutation(
+		api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+			modifiedMarkdown: agentMarkdown,
+		},
+	);
+	if (firstAgentUpsertResult._nay) {
+		throw new Error(firstAgentUpsertResult._nay.message);
+	}
+
+	const discardAgentUpsertResult = await asUser.mutation(
+		api.pages_pending_edit.upsert_pages_pending_edit_modified_branch_from_agent,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+			modifiedMarkdown: seeded.baseMarkdown,
+		},
+	);
+	if (discardAgentUpsertResult._nay) {
+		throw new Error(discardAgentUpsertResult._nay.message);
+	}
+	expect(discardAgentUpsertResult._yay).toBeNull();
+
+	const pendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	expect(pendingRow).toBeNull();
 });
 
 test("pending edit cleanup task follows the latest pending row state", async () => {

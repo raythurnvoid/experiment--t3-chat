@@ -759,7 +759,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			return false;
 		}
 
-		const upsertResult = await convex.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		const upsertResult = await convex.mutation(api.pages_pending_edit.upsert_pages_pending_edit_updates, {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 			pageId,
@@ -1352,7 +1352,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 	const { pageId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot } = props;
 
 	const convex = useConvex();
-	const pendingEdit = useQuery(api.ai_chat.get_pages_pending_edit, {
+	const pendingEdit = useQuery(api.pages_pending_edit.get_pages_pending_edit, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
@@ -1411,7 +1411,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 				return;
 			}
 
-			const savePendingResult = await convex.mutation(api.ai_chat.save_pages_pending_edit, {
+			const savePendingResult = await convex.mutation(api.pages_pending_edit.save_pages_pending_edit, {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
@@ -1430,7 +1430,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 				// Fetch also the pending edits query to ensure we perform
 				// the state cleanups only after we are sure the data is available
 				// in the local convex cache.
-				convex.query(api.ai_chat.get_pages_pending_edit, {
+				convex.query(api.pages_pending_edit.get_pages_pending_edit, {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					pageId,
@@ -1517,19 +1517,22 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 				});
 			}
 
-			const persistRebasedStateResult = await convex.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				pageId,
-				baseYjsSequence: nextPageContentData.yjsSequence,
-				baseYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(nextPageContentData.yjsDoc)),
-				workingBranchYjsUpdate: pages_u8_to_array_buffer(
-					encodeStateAsUpdate(rebasedWorkingBranchResult._yay.rebasedBranchYjsDoc),
-				),
-				modifiedBranchYjsUpdate: pages_u8_to_array_buffer(
-					encodeStateAsUpdate(rebasedModifiedBranchResult._yay.rebasedBranchYjsDoc),
-				),
-			});
+			const persistRebasedStateResult = await convex.mutation(
+				api.pages_pending_edit.persist_pages_pending_edit_rebased_state,
+				{
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					pageId,
+					baseYjsSequence: nextPageContentData.yjsSequence,
+					baseYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(nextPageContentData.yjsDoc)),
+					workingBranchYjsUpdate: pages_u8_to_array_buffer(
+						encodeStateAsUpdate(rebasedWorkingBranchResult._yay.rebasedBranchYjsDoc),
+					),
+					modifiedBranchYjsUpdate: pages_u8_to_array_buffer(
+						encodeStateAsUpdate(rebasedModifiedBranchResult._yay.rebasedBranchYjsDoc),
+					),
+				},
+			);
 			if (persistRebasedStateResult._nay) {
 				return persistRebasedStateResult;
 			}
@@ -1537,7 +1540,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			// Fetch the pending edits query before publishing the refreshed page content so
 			// sync cleanup waits for the authoritative pending-edit cache state to converge.
 			await Promise.allSettled([
-				convex.query(api.ai_chat.get_pages_pending_edit, {
+				convex.query(api.pages_pending_edit.get_pages_pending_edit, {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					pageId,
