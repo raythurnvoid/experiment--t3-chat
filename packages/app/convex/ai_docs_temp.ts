@@ -1623,9 +1623,31 @@ export const text_search_pages = internalQuery({
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
 
+		// Convex text search returns word by word search results ordered by relevance,
+		// we want to return only 1 result per chunk and only the exact match of the
+		// query in input.
+		const exactMatches: typeof matches = [];
+		const seenMarkdownChunkIds = new Set<(typeof matches)[number]["markdownChunkId"]>();
+		for (const match of matches) {
+			if (seenMarkdownChunkIds.has(match.markdownChunkId)) {
+				continue;
+			}
+			seenMarkdownChunkIds.add(match.markdownChunkId);
+
+			if (!match.plainTextChunk.includes(args.query)) {
+				continue;
+			}
+
+			exactMatches.push(match);
+
+			if (exactMatches.length >= args.limit) {
+				break;
+			}
+		}
+
 		const items = (
 			await Promise.all(
-				matches.map(async (plainTextChunk) => {
+				exactMatches.map(async (plainTextChunk) => {
 					const [pageDoc, markdownChunkDoc] = await Promise.all([
 						ctx.db.get("pages", plainTextChunk.pageId),
 						ctx.db.get("pages_markdown_chunks", plainTextChunk.markdownChunkId),
