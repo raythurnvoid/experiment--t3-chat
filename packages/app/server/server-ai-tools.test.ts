@@ -3,6 +3,7 @@ import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
 import {
 	ai_chat_tool_create_list_pages,
+	ai_chat_tool_create_read_page,
 	ai_chat_tool_create_text_search_pages,
 	ai_chat_tool_create_write_page,
 	ai_chat_tool_create_edit_page,
@@ -170,14 +171,56 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 	expect(result.output).toContain("... more table content below");
 });
 
+test("read_page tool forwards pendingEditId and returns it in metadata", async () => {
+	const pendingEditId = "pending123";
+	const currentContent = {
+		pageId: "p123",
+		content: "# Base",
+		pendingEditId,
+	};
+
+	const { ctx, runQuery } = makeCtx(async () => currentContent);
+	const tool = ai_chat_tool_create_read_page(ctx);
+	const result = await tool.execute?.(
+		{ path: "/Docs/Plan", pendingEditId },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(runQuery).toHaveBeenCalledTimes(1);
+	const [, args] = runQuery.mock.calls[0]!;
+	expect(args).toEqual({
+		path: "/Docs/Plan",
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		userId: "user_1",
+		pendingEditId,
+	});
+
+	expect(result.metadata.pageId).toBe("p123");
+	expect(result.metadata.pendingEditId).toBe(pendingEditId);
+});
+
 test("write_page tool stores pending unstaged branch updates from the agent", async () => {
 	const pageId = "p123";
+	const pendingEditId = "pending123";
 	const currentContent = {
 		pageId,
 		content: "# Base",
+		pendingEditId,
 	};
 
-	const { ctx, runMutation } = makeCtx(async () => currentContent);
+	let runQueryCallCount = 0;
+	const { ctx, runQuery, runMutation } = makeCtx(async () => {
+		runQueryCallCount += 1;
+		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
+	});
 	const tool = ai_chat_tool_create_write_page(ctx);
 	const result = await tool.execute?.({ path: "/Docs/Plan", content: "# Updated" }, { toolCallId: "test", messages: [] });
 
@@ -188,27 +231,36 @@ test("write_page tool stores pending unstaged branch updates from the agent", as
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
+	expect(runQuery).toHaveBeenCalledTimes(2);
 	expect(runMutation).toHaveBeenCalledTimes(1);
 	const [, args] = runMutation.mock.calls[0]!;
 	expect(args).toEqual({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
+		pendingEditId,
 		unstagedMarkdown: "# Updated",
 	});
 
 	expect(result.metadata.pageId).toBe(pageId);
+	expect(result.metadata.pendingEditId).toBe(pendingEditId);
 	expect(result.metadata.exists).toBe(true);
 });
 
 test("edit_page tool stores pending unstaged branch updates from the agent", async () => {
 	const pageId = "p456";
+	const pendingEditId = "pending456";
 	const currentContent = {
 		pageId,
 		content: "Hello world",
+		pendingEditId,
 	};
 
-	const { ctx, runMutation } = makeCtx(async () => currentContent);
+	let runQueryCallCount = 0;
+	const { ctx, runQuery, runMutation } = makeCtx(async () => {
+		runQueryCallCount += 1;
+		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
+	});
 	const tool = ai_chat_tool_create_edit_page(ctx);
 	const result = await tool.execute?.(
 		{
@@ -227,15 +279,18 @@ test("edit_page tool stores pending unstaged branch updates from the agent", asy
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
+	expect(runQuery).toHaveBeenCalledTimes(2);
 	expect(runMutation).toHaveBeenCalledTimes(1);
 	const [, args] = runMutation.mock.calls[0]!;
 	expect(args).toEqual({
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
+		pendingEditId,
 		unstagedMarkdown: "Hello team",
 	});
 
 	expect(result.metadata.pageId).toBe(pageId);
+	expect(result.metadata.pendingEditId).toBe(pendingEditId);
 	expect(result.metadata.matches).toBe(1);
 });

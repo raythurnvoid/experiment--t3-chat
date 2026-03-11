@@ -421,6 +421,192 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 	expect(pendingAfterDiscard).toBeNull();
 });
 
+test("upsert_pages_pending_edit_updates accepts a matching pendingEditId hint", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-matching-id-hint",
+			name: "pending-edits-matching-id-hint",
+			markdown: "# Base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const firstMarkdown = `${seeded.baseMarkdown}\n\nFirst`;
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: firstMarkdown,
+	});
+
+	const firstPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!firstPendingRow) {
+		throw new Error("Missing pending row while testing matching pendingEditId hint");
+	}
+
+	const secondMarkdown = `${seeded.baseMarkdown}\n\nSecond`;
+	const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		pendingEditId: firstPendingRow._id,
+		stagedMarkdown: secondMarkdown,
+		unstagedMarkdown: secondMarkdown,
+	});
+	if (secondUpsertResult._nay) {
+		throw new Error(secondUpsertResult._nay.message);
+	}
+
+	const secondPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	expect(secondPendingRow).not.toBeNull();
+	expect(secondPendingRow!._id).toBe(firstPendingRow._id);
+
+	const secondPendingRowMarkdownState = read_pending_row_markdown_state({
+		pendingEdit: secondPendingRow!,
+	});
+	expect(secondPendingRowMarkdownState.stagedMarkdown).toBe(secondMarkdown);
+	expect(secondPendingRowMarkdownState.unstagedMarkdown).toBe(secondMarkdown);
+});
+
+test("upsert_pages_pending_edit_updates falls back from a stale pendingEditId to the current scoped row", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-stale-id-fallback",
+			name: "pending-edits-stale-id-fallback",
+			markdown: "# Base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: `${seeded.baseMarkdown}\n\nFirst`,
+	});
+
+	const stalePendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!stalePendingRow) {
+		throw new Error("Missing stale pending row while testing fallback");
+	}
+
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: seeded.baseMarkdown,
+	});
+
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: `${seeded.baseMarkdown}\n\nCurrent`,
+	});
+
+	const currentPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!currentPendingRow) {
+		throw new Error("Missing current pending row while testing stale fallback");
+	}
+	expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
+
+	const fallbackMarkdown = `${seeded.baseMarkdown}\n\nFallback`;
+	const fallbackUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		pendingEditId: stalePendingRow._id,
+		stagedMarkdown: fallbackMarkdown,
+		unstagedMarkdown: fallbackMarkdown,
+	});
+	if (fallbackUpsertResult._nay) {
+		throw new Error(fallbackUpsertResult._nay.message);
+	}
+
+	const pendingRowAfterFallback = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	expect(pendingRowAfterFallback).not.toBeNull();
+	expect(pendingRowAfterFallback!._id).toBe(currentPendingRow._id);
+
+	const pendingRowAfterFallbackMarkdownState = read_pending_row_markdown_state({
+		pendingEdit: pendingRowAfterFallback!,
+	});
+	expect(pendingRowAfterFallbackMarkdownState.stagedMarkdown).toBe(fallbackMarkdown);
+	expect(pendingRowAfterFallbackMarkdownState.unstagedMarkdown).toBe(fallbackMarkdown);
+});
+
 test("upsert_pages_pending_edit_updates keeps staged at base when the agent omits stagedMarkdown", async () => {
 	const t = test_convex();
 
@@ -1142,6 +1328,129 @@ test("save_pages_pending_edit clears pending row when all changes are resolved",
 	expect(savedMarkdownAfterFullSave).toContain("Fully resolved");
 });
 
+test("save_pages_pending_edit falls back from a stale pendingEditId to the current scoped row", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-save-stale-id",
+			name: "pending-edits-save-stale-id",
+			markdown: "# Save base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const staleMarkdown = `${seeded.baseMarkdown}\n\nStale row`;
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: staleMarkdown,
+		unstagedMarkdown: staleMarkdown,
+	});
+
+	const stalePendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!stalePendingRow) {
+		throw new Error("Missing stale pending row while testing save fallback");
+	}
+
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: seeded.baseMarkdown,
+	});
+
+	const currentMarkdown = `${seeded.baseMarkdown}\n\nCurrent row`;
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: currentMarkdown,
+		unstagedMarkdown: currentMarkdown,
+	});
+
+	const currentPendingRow = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	if (!currentPendingRow) {
+		throw new Error("Missing current pending row while testing save fallback");
+	}
+	expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
+
+	const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		pendingEditId: stalePendingRow._id,
+	});
+	if (saveResult._nay) {
+		throw new Error(saveResult._nay.message);
+	}
+	if (!saveResult._yay) {
+		throw new Error("Missing save result _yay while testing stale save fallback");
+	}
+	expect(saveResult._yay.newSequence).not.toBeNull();
+
+	const pendingAfterSave = await t.run(async (ctx) =>
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", seeded.workspaceId)
+					.eq("projectId", seeded.projectId)
+					.eq("userId", seeded.userId)
+					.eq("pageId", seeded.pageId),
+			)
+			.first(),
+	);
+	expect(pendingAfterSave).toBeNull();
+
+	const pendingEditLastSequenceSaved = await asUser.query(api.ai_chat.get_pages_pending_edit_last_sequence_saved, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+	});
+	expect(pendingEditLastSequenceSaved).not.toBeNull();
+	expect(pendingEditLastSequenceSaved!.lastSequenceSaved).toBe(saveResult._yay.newSequence);
+
+	const savedMarkdownAfterFallbackSave = await t.run(async (ctx) =>
+		read_page_markdown_from_yjs({
+			ctx,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+		}),
+	);
+	expect(savedMarkdownAfterFallbackSave).toContain("Current row");
+});
+
 test("save_pages_pending_edit keeps unresolved row based on saved pending base when remote drift exists", async () => {
 	const t = test_convex();
 
@@ -1433,6 +1742,157 @@ test("persist_pages_pending_edit_rebased_state stores the rebased row as the new
 	expect(pendingAfterPersistMarkdownState.stagedMarkdown).toBe(pendingAfterPersistMarkdownState.baseMarkdown);
 	expect(pendingAfterPersistMarkdownState.unstagedMarkdown).toContain("Remote drift");
 	expect(pendingAfterPersistMarkdownState.unstagedMarkdown).toContain("Unresolved only");
+});
+
+test("persist_pages_pending_edit_rebased_state ignores a mismatched pendingEditId from another page", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) => {
+		const pageA = await seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-persist-mismatch-a",
+			name: "pending-edits-persist-mismatch-a",
+			markdown: "# Page A",
+		});
+		const pageB = await seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-persist-mismatch-b",
+			name: "pending-edits-persist-mismatch-b",
+			markdown: "# Page B",
+		});
+
+		return {
+			workspaceId: pageA.workspaceId,
+			projectId: pageA.projectId,
+			userId: pageA.userId,
+			pageAId: pageA.pageId,
+			pageABaseMarkdown: pageA.baseMarkdown,
+			pageBId: pageB.pageId,
+			pageBBaseMarkdown: pageB.baseMarkdown,
+		};
+	});
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageAId,
+		stagedMarkdown: seeded.pageABaseMarkdown,
+		unstagedMarkdown: `${seeded.pageABaseMarkdown}\n\nPage A current`,
+	});
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageBId,
+		stagedMarkdown: seeded.pageBBaseMarkdown,
+		unstagedMarkdown: `${seeded.pageBBaseMarkdown}\n\nPage B current`,
+	});
+
+	const [pageAPendingRow, pageBPendingRow] = await t.run(async (ctx) =>
+		Promise.all([
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("pageId", seeded.pageAId),
+				)
+				.first(),
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("pageId", seeded.pageBId),
+				)
+				.first(),
+		]),
+	);
+	if (!pageAPendingRow || !pageBPendingRow) {
+		throw new Error("Missing pending rows while testing mismatched rebase pendingEditId");
+	}
+
+	const latestPageState = await t.run(async (ctx) =>
+		read_page_yjs_state({
+			ctx,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageAId,
+		}),
+	);
+	const latestBaseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(latestPageState.yjsUpdate);
+	const unstagedBranchYjsDoc = pages_yjs_doc_clone({
+		yjsDoc: latestBaseYjsDoc,
+	});
+	const unstagedBranchProjection = pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: unstagedBranchYjsDoc,
+		markdown: `${seeded.pageABaseMarkdown}\n\nPage A rebased`,
+	});
+	if (unstagedBranchProjection._nay) {
+		throw new Error("Failed to build rebased branch while testing mismatched pendingEditId");
+	}
+
+	const persistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageAId,
+		pendingEditId: pageBPendingRow._id,
+		baseYjsSequence: latestPageState.yjsSequence,
+		baseYjsUpdate: latestPageState.yjsUpdate,
+		stagedBranchYjsUpdate: latestPageState.yjsUpdate,
+		unstagedBranchYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(unstagedBranchYjsDoc)),
+	});
+	if (persistResult._nay) {
+		throw new Error(persistResult._nay.message);
+	}
+	expect(persistResult._yay.pendingEdit).not.toBeNull();
+	expect(persistResult._yay.pendingEdit!._id).toBe(pageAPendingRow._id);
+
+	const [pageAPendingRowAfterPersist, pageBPendingRowAfterPersist] = await t.run(async (ctx) =>
+		Promise.all([
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("pageId", seeded.pageAId),
+				)
+				.first(),
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("pageId", seeded.pageBId),
+				)
+				.first(),
+		]),
+	);
+	expect(pageAPendingRowAfterPersist).not.toBeNull();
+	expect(pageAPendingRowAfterPersist!._id).toBe(pageAPendingRow._id);
+	expect(pageBPendingRowAfterPersist).not.toBeNull();
+
+	const pageAPendingRowAfterPersistMarkdownState = read_pending_row_markdown_state({
+		pendingEdit: pageAPendingRowAfterPersist!,
+	});
+	expect(pageAPendingRowAfterPersistMarkdownState.unstagedMarkdown).toContain("Page A rebased");
+
+	const pageBPendingRowAfterPersistMarkdownState = read_pending_row_markdown_state({
+		pendingEdit: pageBPendingRowAfterPersist!,
+	});
+	expect(pageBPendingRowAfterPersistMarkdownState.unstagedMarkdown).toContain("Page B current");
 });
 
 test("persist_pages_pending_edit_rebased_state clears the pending row when the rebased branches match the live base", async () => {

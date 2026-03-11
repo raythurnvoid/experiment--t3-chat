@@ -3,6 +3,7 @@ import z from "zod";
 import dedent from "dedent";
 import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
+import type { Id } from "../convex/_generated/dataModel";
 import { api, internal } from "../convex/_generated/api.js";
 import {
 	decode_path_segment,
@@ -445,6 +446,10 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 			path: z
 				.string()
 				.describe('The absolute path to the page to read (must be absolute, starting with a slash "/", not relative)'),
+			pendingEditId: z
+				.string()
+				.optional()
+				.describe("Optional pending edit id returned by a prior page read or edit result"),
 			offset: z.number().int().gte(0).describe("The line number to start reading from (0-based)").optional(),
 			limit: z.number().int().gte(1).lte(2000).describe("The number of lines to read (defaults to 2000)").default(2000),
 		}),
@@ -452,12 +457,14 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 		execute: async (args) => {
 			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
+			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
 
 			const pageContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 				path: normalizedPath,
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				userId: user.id,
+				pendingEditId,
 			});
 
 			if (!pageContent) {
@@ -531,6 +538,7 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 				metadata: {
 					preview,
 					pageId: pageContent.pageId,
+					pendingEditId: pageContent.pendingEditId,
 				},
 			};
 		},
@@ -957,11 +965,16 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 					'Absolute path to the page to write. Must start with "/". Do NOT include a file extension (.md, .mdx, .txt) unless explicitly provided by the user.',
 				),
 			content: z.string().describe("The GitHub Flavored Markdown content to write to the page"),
+			pendingEditId: z
+				.string()
+				.optional()
+				.describe("Optional pending edit id returned by a prior page read or edit result"),
 		}),
 
 		execute: async (args) => {
 			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const path = server_path_normalize(args.path);
+			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
 			if (!path.startsWith("/") || path === "/") {
 				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
 			}
@@ -973,6 +986,7 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					userId: user.id,
+					pendingEditId,
 				},
 			);
 
@@ -1003,12 +1017,26 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
+				pendingEditId: currentPageContent?.pendingEditId ?? undefined,
 				unstagedMarkdown: newText,
+			});
+			const nextPendingEdit = await ctx.runQuery(api.pages_pending_edits.get_pages_pending_edit, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
+				pendingEditId: currentPageContent?.pendingEditId ?? undefined,
 			});
 
 			return {
 				output: exists ? "Page overwritten" : "New page created",
-				metadata: { pageId, exists, path, diff, modifiedContent: newText },
+				metadata: {
+					pageId,
+					pendingEditId: nextPendingEdit?._id ?? null,
+					exists,
+					path,
+					diff,
+					modifiedContent: newText,
+				},
 			};
 		},
 	});
@@ -1047,11 +1075,16 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			oldString: z.string().describe("The GitHub Flavored Markdown text to replace"),
 			newString: z.string().describe("The replacement GitHub Flavored Markdown text"),
 			replaceAll: z.boolean().optional().default(false),
+			pendingEditId: z
+				.string()
+				.optional()
+				.describe("Optional pending edit id returned by a prior page read or edit result"),
 		}),
 
 		execute: async (args) => {
 			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
+			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
@@ -1063,6 +1096,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					userId: user.id,
+					pendingEditId,
 				},
 			);
 			if (!currentPageContent) {
@@ -1090,13 +1124,21 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
+				pendingEditId: currentPageContent.pendingEditId ?? undefined,
 				unstagedMarkdown: modifiedText,
+			});
+			const nextPendingEdit = await ctx.runQuery(api.pages_pending_edits.get_pages_pending_edit, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
+				pendingEditId: currentPageContent.pendingEditId ?? undefined,
 			});
 
 			return {
 				title: normalizedPath,
 				metadata: {
 					pageId,
+					pendingEditId: nextPendingEdit?._id ?? null,
 					path: normalizedPath,
 					matches,
 					diff,

@@ -411,6 +411,7 @@ type PageEditorDiff_CssVars = {
 export type PageEditorDiff_Props = {
 	className?: string;
 	pageId: app_convex_Id<"pages">;
+	pendingEditId?: app_convex_Id<"pages_pending_edits">;
 	presenceStore: pages_PresenceStore;
 	threadId?: string;
 	commentsPortalHost: HTMLElement | null;
@@ -485,6 +486,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	const {
 		className,
 		pageId,
+		pendingEditId,
 		presenceStore,
 		commentsPortalHost,
 		hoistingContainer,
@@ -764,6 +766,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 			pageId,
+			pendingEditId,
 			stagedMarkdown: editorModelsRef.current.original.getValue(),
 			unstagedMarkdown: editorModelsRef.current.modified.getValue(),
 		});
@@ -1348,13 +1351,14 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 }
 
 export function PageEditorDiff(props: PageEditorDiff_Props) {
-	const { pageId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot } = props;
+	const { pageId, pendingEditId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot } = props;
 
 	const convex = useConvex();
 	const pendingEdit = useQuery(api.pages_pending_edits.get_pages_pending_edit, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
+		pendingEditId,
 	});
 	const pendingEditLastSequenceSaved = useQuery(api.pages_pending_edits.get_pages_pending_edit_last_sequence_saved, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
@@ -1375,6 +1379,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 	);
 	const [isSaving, setIsSaving] = useState(false);
 	const [isSyncing, setIsSyncing] = useState(false);
+	const currentPendingEditId = pendingEdit?._id ?? pendingEditId;
 
 	const isSyncDisabled =
 		isSyncing ||
@@ -1419,6 +1424,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
+				pendingEditId: currentPendingEditId,
 			});
 			if (savePendingResult._nay) {
 				toast.error(savePendingResult._nay.message ?? "Failed to save pending edits");
@@ -1438,6 +1444,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					pageId,
+					pendingEditId: currentPendingEditId,
 				}),
 			]);
 
@@ -1527,6 +1534,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					pageId,
+					pendingEditId: currentPendingEditId,
 					baseYjsSequence: nextPageContentData.yjsSequence,
 					baseYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(nextPageContentData.yjsDoc)),
 					stagedBranchYjsUpdate: pages_u8_to_array_buffer(
@@ -1548,6 +1556,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 					workspaceId: ai_chat_HARDCODED_ORG_ID,
 					projectId: ai_chat_HARDCODED_PROJECT_ID,
 					pageId,
+					pendingEditId: currentPendingEditId,
 				}),
 			]);
 
@@ -1740,6 +1749,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			{...props}
 			className={className}
 			pageId={pageId}
+			pendingEditId={currentPendingEditId}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			hoistingContainer={hoistingContainer}

@@ -1434,8 +1434,16 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		projectId: v.string(),
 		path: v.string(),
 		userId: v.string(),
+		pendingEditId: v.optional(v.id("pages_pending_edits")),
 	},
-	returns: v.union(v.object({ content: v.string(), pageId: v.id("pages") }), v.null()),
+	returns: v.union(
+		v.object({
+			content: v.string(),
+			pageId: v.id("pages"),
+			pendingEditId: v.union(v.id("pages_pending_edits"), v.null()),
+		}),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
 		const convexId = await resolve_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
@@ -1457,22 +1465,34 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 			});
 		}
 
-		const pagesPendingOverlay = await ctx.db
-			.query("pages_pending_edits")
-			.withIndex("by_workspace_project_user_page", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("userId", args.userId as string)
-					.eq("pageId", convexId),
-			)
-			.first();
-		if (pagesPendingOverlay) {
-			const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(pagesPendingOverlay.unstagedBranchYjsUpdate);
+		const pendingEditById = args.pendingEditId ? await ctx.db.get("pages_pending_edits", args.pendingEditId) : null;
+		const pendingEdit =
+			pendingEditById &&
+			pendingEditById.workspaceId === args.workspaceId &&
+			pendingEditById.projectId === args.projectId &&
+			pendingEditById.userId === args.userId &&
+			pendingEditById.pageId === convexId
+				? pendingEditById
+				: await ctx.db
+						.query("pages_pending_edits")
+						.withIndex("by_workspace_project_user_page", (q) =>
+							q
+								.eq("workspaceId", args.workspaceId)
+								.eq("projectId", args.projectId)
+								.eq("userId", args.userId as string)
+								.eq("pageId", convexId),
+						)
+						.first();
+		if (pendingEdit) {
+			const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.unstagedBranchYjsUpdate);
 
 			const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
 			if (markdown._yay) {
-				return { content: markdown._yay, pageId: convexId };
+				return {
+					content: markdown._yay,
+					pageId: convexId,
+					pendingEditId: pendingEdit._id,
+				};
 			}
 
 			console.error(
@@ -1487,7 +1507,11 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		const markdownContentDoc = await ctx.db.get("pages_markdown_content", page.markdownContentId);
 		if (!markdownContentDoc) return null;
 
-		return { content: markdownContentDoc.content, pageId: convexId };
+		return {
+			content: markdownContentDoc.content,
+			pageId: convexId,
+			pendingEditId: pendingEdit?._id ?? null,
+		};
 	},
 });
 

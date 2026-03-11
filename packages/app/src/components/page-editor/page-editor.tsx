@@ -510,6 +510,7 @@ function PageEditorPresenceSupplier(props: PageEditorPresenceSupplier_Props) {
 // #region page editor render
 type PageEditorRender_Props = {
 	pageId: app_convex_Id<"pages">;
+	pendingEditId?: app_convex_Id<"pages_pending_edits">;
 	editorMode: PageEditor_Mode;
 	presenceStore: pages_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
@@ -520,6 +521,7 @@ type PageEditorRender_Props = {
 function PageEditorRender(props: PageEditorRender_Props) {
 	const {
 		pageId,
+		pendingEditId,
 		editorMode,
 		presenceStore,
 		commentsPortalHost,
@@ -546,6 +548,7 @@ function PageEditorRender(props: PageEditorRender_Props) {
 		return (
 			<PageEditorDiff
 				pageId={pageId}
+				pendingEditId={pendingEditId}
 				presenceStore={presenceStore}
 				onExit={onDiffExit}
 				commentsPortalHost={commentsPortalHost}
@@ -731,6 +734,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 						>
 							<PageEditorRender
 								pageId={pageId}
+								pendingEditId={currentPendingEdit?._id}
 								editorMode={editorMode}
 								presenceStore={presenceStore}
 								commentsPortalHost={commentsPortalHost}
