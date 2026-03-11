@@ -457,7 +457,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				) : (
-					<MyIconButton type="submit" variant="default" tooltip="Send message" disabled={!canSend}>
+					<MyIconButton type="button" variant="default" tooltip="Send message" onClick={handleSend} disabled={!canSend}>
 						<ArrowUp className={"AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				)}
