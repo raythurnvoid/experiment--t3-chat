@@ -52,6 +52,7 @@ export {
 	upsert_pages_pending_edit_updates,
 	persist_pages_pending_edit_rebased_state,
 	get_pages_pending_edit,
+	get_pages_pending_edit_last_sequence_saved,
 	list_pages_pending_edits,
 	save_pages_pending_edit,
 } from "./pages_pending_edit.ts";

@@ -7,6 +7,7 @@ import { db_upsert_page_chunks } from "./ai_docs_temp.ts";
 const delete_all_archived_pages_returns_validator = v.object({
 	pages: v.number(),
 	pages_markdown_content: v.number(),
+	pages_pending_edits_last_sequence_saved: v.number(),
 	pagesMarkdownChunks: v.number(),
 	pagesPlainTextChunks: v.number(),
 	pages_yjs_snapshots: v.number(),
@@ -49,6 +50,7 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 		return {
 			pages: 0,
 			pages_markdown_content: 0,
+			pages_pending_edits_last_sequence_saved: 0,
 			pagesMarkdownChunks: 0,
 			pagesPlainTextChunks: 0,
 			pages_yjs_snapshots: 0,
@@ -63,6 +65,7 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 	const counts = {
 		pages: 0,
 		pages_markdown_content: 0,
+		pages_pending_edits_last_sequence_saved: 0,
 		pagesMarkdownChunks: 0,
 		pagesPlainTextChunks: 0,
 		pages_yjs_snapshots: 0,
@@ -76,6 +79,7 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 	for (const page of archivedPages) {
 		const [
 			pageMarkdownContentRow,
+			pagePendingEditLastSequenceSavedRows,
 			pageMarkdownChunkRows,
 			pagePlainTextChunkRows,
 			pageYjsSnapshotRows,
@@ -85,6 +89,12 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 			pageSnapshotRows,
 		] = await Promise.all([
 			page.markdownContentId ? ctx.db.get("pages_markdown_content", page.markdownContentId) : null,
+			ctx.db
+				.query("pages_pending_edits_last_sequence_saved")
+				.withIndex("by_workspace_project_page_user", (q) =>
+					q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId).eq("pageId", page._id),
+				)
+				.collect(),
 			ctx.db
 				.query("pages_markdown_chunks")
 				.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
@@ -139,6 +149,9 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 
 		await Promise.all([
 			...(pageMarkdownContentRow ? [ctx.db.delete("pages_markdown_content", pageMarkdownContentRow._id)] : []),
+			...pagePendingEditLastSequenceSavedRows.map((row) =>
+				ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id),
+			),
 			...pagePlainTextChunkRows.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)),
 			...pageMarkdownChunkRows.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)),
 			...pageYjsSnapshotRows.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)),
@@ -153,6 +166,7 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 
 		counts.pages += 1;
 		counts.pages_markdown_content += pageMarkdownContentRow ? 1 : 0;
+		counts.pages_pending_edits_last_sequence_saved += pagePendingEditLastSequenceSavedRows.length;
 		counts.pagesMarkdownChunks += pageMarkdownChunkRows.length;
 		counts.pagesPlainTextChunks += pagePlainTextChunkRows.length;
 		counts.pages_yjs_snapshots += pageYjsSnapshotRows.length;

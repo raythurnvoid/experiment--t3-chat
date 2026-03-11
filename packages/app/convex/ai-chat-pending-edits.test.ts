@@ -283,6 +283,25 @@ async function list_pending_edit_cleanup_tasks(args: {
 		.collect();
 }
 
+async function read_pending_edit_last_sequence_saved_row(args: {
+	ctx: MutationCtx;
+	workspaceId: string;
+	projectId: string;
+	userId: Id<"users">;
+	pageId: Id<"pages">;
+}) {
+	return await args.ctx.db
+		.query("pages_pending_edits_last_sequence_saved")
+		.withIndex("by_workspace_project_user_page", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("userId", args.userId)
+				.eq("pageId", args.pageId),
+		)
+		.first();
+}
+
 test("upsert_pages_pending_edit_updates replaces updates deterministically", async () => {
 	const t = test_convex();
 
@@ -991,6 +1010,18 @@ test("save_pages_pending_edit supports partial save and keeps unresolved pending
 	}
 	expect(saveResult._yay.newSequence).not.toBeNull();
 
+	const pendingEditLastSequenceSaved = await t.run(async (ctx) =>
+		read_pending_edit_last_sequence_saved_row({
+			ctx,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
+			pageId: seeded.pageId,
+		}),
+	);
+	expect(pendingEditLastSequenceSaved).not.toBeNull();
+	expect(pendingEditLastSequenceSaved!.lastSequenceSaved).toBe(saveResult._yay.newSequence);
+
 	const pendingAfterSave = await t.run(async (ctx) =>
 		ctx.db
 			.query("pages_pending_edits")
@@ -1043,6 +1074,16 @@ test("save_pages_pending_edit clears pending row when all changes are resolved",
 		name: "Test User",
 	});
 
+	const pendingEditLastSequenceSavedBeforeFirstSave = await asUser.query(
+		api.ai_chat.get_pages_pending_edit_last_sequence_saved,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+		},
+	);
+	expect(pendingEditLastSequenceSavedBeforeFirstSave).toBeNull();
+
 	const resolvedMarkdown = `${seeded.baseMarkdown}\n\nFully resolved`;
 	const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
 		workspaceId: seeded.workspaceId,
@@ -1067,6 +1108,14 @@ test("save_pages_pending_edit clears pending row when all changes are resolved",
 		throw new Error("Missing save result _yay while testing full save");
 	}
 	expect(saveResult._yay.newSequence).not.toBeNull();
+
+	const pendingEditLastSequenceSaved = await asUser.query(api.ai_chat.get_pages_pending_edit_last_sequence_saved, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+	});
+	expect(pendingEditLastSequenceSaved).not.toBeNull();
+	expect(pendingEditLastSequenceSaved!.lastSequenceSaved).toBe(saveResult._yay.newSequence);
 
 	const pendingAfterSave = await t.run(async (ctx) =>
 		ctx.db
@@ -1147,6 +1196,18 @@ test("save_pages_pending_edit keeps unresolved row based on saved pending base w
 	}
 	expect(saveResult._yay.newSequence).toBeNull();
 
+	const pendingEditLastSequenceSaved = await t.run(async (ctx) =>
+		read_pending_edit_last_sequence_saved_row({
+			ctx,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
+			pageId: seeded.pageId,
+		}),
+	);
+	expect(pendingEditLastSequenceSaved).not.toBeNull();
+	expect(pendingEditLastSequenceSaved!.lastSequenceSaved).toBe(1);
+
 	const pendingAfterSave = await t.run(async (ctx) =>
 		ctx.db
 			.query("pages_pending_edits")
@@ -1182,6 +1243,95 @@ test("save_pages_pending_edit keeps unresolved row based on saved pending base w
 	expect(savedMarkdownAfterNoStagedSave).toContain("# Save base");
 	expect(savedMarkdownAfterNoStagedSave).toContain("Remote drift");
 	expect(savedMarkdownAfterNoStagedSave).not.toContain("Unresolved only");
+});
+
+test("upsert_pages_pending_edit_updates and persist_pages_pending_edit_rebased_state do not write last saved sequence marker", async () => {
+	const t = test_convex();
+
+	const seeded = await t.run(async (ctx) =>
+		seed_page_with_markdown({
+			ctx,
+			path: "/pending-edits-save-marker-non-save-paths",
+			name: "pending-edits-save-marker-non-save-paths",
+			markdown: "# Save marker base",
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+
+	const pendingEditLastSequenceSavedBeforeChanges = await asUser.query(
+		api.ai_chat.get_pages_pending_edit_last_sequence_saved,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+		},
+	);
+	expect(pendingEditLastSequenceSavedBeforeChanges).toBeNull();
+
+	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
+	});
+
+	const pendingEditLastSequenceSavedAfterUpsert = await asUser.query(
+		api.ai_chat.get_pages_pending_edit_last_sequence_saved,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+		},
+	);
+	expect(pendingEditLastSequenceSavedAfterUpsert).toBeNull();
+
+	const latestPageState = await t.run(async (ctx) =>
+		read_page_yjs_state({
+			ctx,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+		}),
+	);
+	const latestBaseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(latestPageState.yjsUpdate);
+	const unstagedBranchYjsDoc = pages_yjs_doc_clone({
+		yjsDoc: latestBaseYjsDoc,
+	});
+	const unstagedBranchProjection = pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: unstagedBranchYjsDoc,
+		markdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
+	});
+	if (unstagedBranchProjection._nay) {
+		throw new Error("Failed to create unstaged branch while testing save marker non-save paths");
+	}
+
+	const persistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
+		workspaceId: seeded.workspaceId,
+		projectId: seeded.projectId,
+		pageId: seeded.pageId,
+		baseYjsSequence: latestPageState.yjsSequence,
+		baseYjsUpdate: latestPageState.yjsUpdate,
+		stagedBranchYjsUpdate: latestPageState.yjsUpdate,
+		unstagedBranchYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(unstagedBranchYjsDoc)),
+	});
+	if (persistResult._nay) {
+		throw new Error(persistResult._nay.message);
+	}
+
+	const pendingEditLastSequenceSavedAfterPersist = await asUser.query(
+		api.ai_chat.get_pages_pending_edit_last_sequence_saved,
+		{
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			pageId: seeded.pageId,
+		},
+	);
+	expect(pendingEditLastSequenceSavedAfterPersist).toBeNull();
 });
 
 test("persist_pages_pending_edit_rebased_state stores the rebased row as the new authoritative pending state", async () => {

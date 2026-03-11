@@ -73,6 +73,17 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	}).index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
 
+	pages_pending_edits_last_sequence_saved: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.string(),
+		pageId: v.id("pages"),
+		lastSequenceSaved: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
+		.index("by_workspace_project_page_user", ["workspaceId", "projectId", "pageId", "userId"]),
+
 	/**
 	 * Tracks scheduled cleanup tasks for each pending edit row.
 	 * The task is rescheduled whenever the row changes and becomes a no-op if the row

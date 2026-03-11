@@ -1356,6 +1356,11 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
 	});
+	const pendingEditLastSequenceSaved = useQuery(api.pages_pending_edit.get_pages_pending_edit_last_sequence_saved, {
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		pageId,
+	});
 	const serverSequenceData = useQuery(api.ai_docs_temp.get_page_last_yjs_sequence, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -1603,6 +1608,43 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			didCancel = true;
 		};
 	}, [pageId]);
+
+	// Refetch live page content only after a pending-edit save marker advances past the local page snapshot.
+	useEffect(() => {
+		if (
+			pendingEdit !== null ||
+			pendingEditLastSequenceSaved == null ||
+			pageContentData == null ||
+			pendingEditLastSequenceSaved.lastSequenceSaved <= pageContentData.yjsSequence
+		) {
+			return;
+		}
+
+		let didCancel = false;
+
+		Promise.try(async () => {
+			const nextPageContentData = await pages_fetch_page_yjs_state_and_markdown({
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
+			});
+			if (didCancel) return;
+
+			setPageContentData(nextPageContentData);
+		}).catch((error) => {
+			if (didCancel) return;
+
+			console.error("[PageEditorDiff.savedSequenceRefetch] Failed to refetch page content data", {
+				error,
+				pageId,
+				lastSequenceSaved: pendingEditLastSequenceSaved.lastSequenceSaved,
+			});
+		});
+
+		return () => {
+			didCancel = true;
+		};
+	}, [pageContentData, pageId, pendingEdit, pendingEditLastSequenceSaved]);
 
 	// Bootstrap the remote editor content state once `pageContentData` and `pendingEdit` are ready
 	useLayoutEffect(() => {

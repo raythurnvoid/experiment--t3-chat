@@ -35,6 +35,46 @@ function pages_pending_edit_reconstruct_branch_docs(pendingEdit: app_convex_Doc<
 	};
 }
 
+async function pages_pending_edit_upsert_last_sequence_saved(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: string;
+		pageId: app_convex_Doc<"pages_pending_edits_last_sequence_saved">["pageId"];
+		lastSequenceSaved: number;
+		updatedAt: number;
+	},
+) {
+	const existingRow = await ctx.db
+		.query("pages_pending_edits_last_sequence_saved")
+		.withIndex("by_workspace_project_user_page", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("userId", args.userId)
+				.eq("pageId", args.pageId),
+		)
+		.first();
+
+	if (!existingRow) {
+		await ctx.db.insert("pages_pending_edits_last_sequence_saved", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: args.userId,
+			pageId: args.pageId,
+			lastSequenceSaved: args.lastSequenceSaved,
+			updatedAt: args.updatedAt,
+		});
+		return;
+	}
+
+	await ctx.db.patch("pages_pending_edits_last_sequence_saved", existingRow._id, {
+		lastSequenceSaved: args.lastSequenceSaved,
+		updatedAt: args.updatedAt,
+	});
+}
+
 function pages_pending_edit_project_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
 	const currentMarkdown = pages_yjs_doc_get_markdown({
 		yjsDoc: args.mut_yjsDoc,
@@ -348,13 +388,8 @@ export const upsert_pages_pending_edit_updates = mutation({
 			return branchDocsResult;
 		}
 
-		const {
-			existingPendingEdit,
-			baseYjsSequence,
-			baseYjsDoc,
-			stagedBranchYjsDoc,
-			unstagedBranchYjsDoc,
-		} = branchDocsResult._yay;
+		const { existingPendingEdit, baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc, unstagedBranchYjsDoc } =
+			branchDocsResult._yay;
 
 		if (args.stagedMarkdown !== undefined) {
 			const stagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
@@ -613,6 +648,29 @@ export const list_pages_pending_edits = query({
 	},
 });
 
+export const get_pages_pending_edit_last_sequence_saved = query({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pageId: v.id("pages"),
+	},
+	returns: v.union(doc(app_convex_schema, "pages_pending_edits_last_sequence_saved"), v.null()),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		return await ctx.db
+			.query("pages_pending_edits_last_sequence_saved")
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("userId", user.id)
+					.eq("pageId", args.pageId),
+			)
+			.first();
+	},
+});
+
 export const save_pages_pending_edit = mutation({
 	args: {
 		workspaceId: v.string(),
@@ -718,8 +776,19 @@ export const save_pages_pending_edit = mutation({
 			});
 		}
 
+		const now = Date.now();
+		const nextBaseYjsSequence = newSequence ?? yjsContent.yjsSequence;
+
 		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([
+				pages_pending_edit_upsert_last_sequence_saved(ctx, {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					userId: user.id,
+					pageId: args.pageId,
+					lastSequenceSaved: nextBaseYjsSequence,
+					updatedAt: now,
+				}),
 				pages_db_cancel_pending_edit_cleanup_tasks(ctx, {
 					pendingEditId: pendingEdit._id,
 				}),
@@ -733,11 +802,9 @@ export const save_pages_pending_edit = mutation({
 			});
 		}
 
-		const nextBaseYjsSequence = newSequence ?? yjsContent.yjsSequence;
 		const nextBaseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
 			yjsDoc: livePageYjsDocAfterSave,
 		});
-		const now = Date.now();
 
 		await Promise.all([
 			ctx.db.patch("pages_pending_edits", pendingEdit._id, {
@@ -753,6 +820,14 @@ export const save_pages_pending_edit = mutation({
 			pages_db_schedule_pending_edit_cleanup(ctx, {
 				pendingEditId: pendingEdit._id,
 				expectedUpdatedAt: now,
+			}),
+			pages_pending_edit_upsert_last_sequence_saved(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: user.id,
+				pageId: args.pageId,
+				lastSequenceSaved: nextBaseYjsSequence,
+				updatedAt: now,
 			}),
 		]);
 
