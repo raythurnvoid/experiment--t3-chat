@@ -1003,7 +1003,7 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
-				modifiedMarkdown: newText,
+				unstagedMarkdown: newText,
 			});
 
 			return {
@@ -1090,7 +1090,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
 				pageId,
-				modifiedMarkdown: modifiedText,
+				unstagedMarkdown: modifiedText,
 			});
 
 			return {

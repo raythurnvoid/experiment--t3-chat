@@ -395,10 +395,10 @@ export function PageEditorDiffWidgetAcceptDiscard(props: PageEditorDiffWidgetAcc
 type RemoteEditorContentState = {
 	baselineYjsDoc: YDoc;
 	baselineMarkdown: string;
-	workingYjsDoc: YDoc;
-	workingMarkdown: string;
-	modifiedYjsDoc: YDoc;
-	modifiedMarkdown: string;
+	stagedYjsDoc: YDoc;
+	stagedMarkdown: string;
+	unstagedYjsDoc: YDoc;
+	unstagedMarkdown: string;
 	yjsSequence: number;
 };
 
@@ -425,39 +425,39 @@ type PageEditorDiff_Inner_Props = PageEditorDiff_Props & {
 	isSyncing: boolean;
 	isSyncDisabled: boolean;
 	onSave: (args: { flushPendingEditUpsertIfNeeded: () => Promise<boolean> }) => void;
-	onClickSync: (editorValues: { workingMarkdown: string; modifiedMarkdown: string }) => void;
+	onClickSync: (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => void;
 };
 
 function editor_content_states_match(left: RemoteEditorContentState, right: RemoteEditorContentState) {
 	return (
 		left.baselineMarkdown === right.baselineMarkdown &&
-		left.workingMarkdown === right.workingMarkdown &&
-		left.modifiedMarkdown === right.modifiedMarkdown &&
+		left.stagedMarkdown === right.stagedMarkdown &&
+		left.unstagedMarkdown === right.unstagedMarkdown &&
 		left.yjsSequence === right.yjsSequence
 	);
 }
 
 function create_editor_content_state_from_pending_edit(pendingEdit: app_convex_Doc<"pages_pending_edits">) {
 	const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.baseYjsUpdate);
-	const workingYjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.workingBranchYjsUpdate);
-	const modifiedYjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.modifiedBranchYjsUpdate);
+	const stagedYjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.stagedBranchYjsUpdate);
+	const unstagedYjsDoc = pages_yjs_doc_create_from_array_buffer_update(pendingEdit.unstagedBranchYjsUpdate);
 
 	const baseMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: baseYjsDoc });
-	const workingMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: workingYjsDoc });
-	const modifiedMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: modifiedYjsDoc });
+	const stagedMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: stagedYjsDoc });
+	const unstagedMarkdown = pages_yjs_doc_get_markdown({ yjsDoc: unstagedYjsDoc });
 
 	if (baseMarkdown._nay) return baseMarkdown;
-	else if (workingMarkdown._nay) return workingMarkdown;
-	else if (modifiedMarkdown._nay) return modifiedMarkdown;
+	else if (stagedMarkdown._nay) return stagedMarkdown;
+	else if (unstagedMarkdown._nay) return unstagedMarkdown;
 
 	return Result({
 		_yay: {
 			baselineYjsDoc: baseYjsDoc,
 			baselineMarkdown: baseMarkdown._yay,
-			workingYjsDoc,
-			workingMarkdown: workingMarkdown._yay,
-			modifiedYjsDoc,
-			modifiedMarkdown: modifiedMarkdown._yay,
+			stagedYjsDoc,
+			stagedMarkdown: stagedMarkdown._yay,
+			unstagedYjsDoc,
+			unstagedMarkdown: unstagedMarkdown._yay,
 			yjsSequence: pendingEdit.baseYjsSequence,
 		} satisfies RemoteEditorContentState,
 	});
@@ -473,10 +473,10 @@ function create_editor_content_state_from_page_content_data(
 	return {
 		baselineYjsDoc: pageContentData.yjsDoc,
 		baselineMarkdown: pageContentData.markdown._yay,
-		workingYjsDoc: pages_yjs_doc_clone({ yjsDoc: pageContentData.yjsDoc }),
-		workingMarkdown: pageContentData.markdown._yay,
-		modifiedYjsDoc: pages_yjs_doc_clone({ yjsDoc: pageContentData.yjsDoc }),
-		modifiedMarkdown: pageContentData.markdown._yay,
+		stagedYjsDoc: pages_yjs_doc_clone({ yjsDoc: pageContentData.yjsDoc }),
+		stagedMarkdown: pageContentData.markdown._yay,
+		unstagedYjsDoc: pages_yjs_doc_clone({ yjsDoc: pageContentData.yjsDoc }),
+		unstagedMarkdown: pageContentData.markdown._yay,
 		yjsSequence: pageContentData.yjsSequence,
 	} satisfies RemoteEditorContentState;
 }
@@ -510,8 +510,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 
 	// Keep the initial diff inputs stable after mount because the React wrapper still watches these props.
 	// Remote updates are applied through our owned Monaco models, so changing the props would reset the diff.
-	const [initialOriginalMarkdown] = useState(editorContentState.workingMarkdown);
-	const [initialModifiedMarkdown] = useState(editorContentState.modifiedMarkdown);
+	const [initialOriginalMarkdown] = useState(editorContentState.stagedMarkdown);
+	const [initialUnstagedMarkdown] = useState(editorContentState.unstagedMarkdown);
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
 	const commentThreadIdsKeyRef = useRef<string>("");
@@ -528,15 +528,15 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		modified: monaco_editor.ITextModel;
 	} | null>(null);
 
-	// `isDirty` compares working content to the baseline.
-	// `hasUnstagedChanges` compares working content to the
-	// modified diff buffer so save and accept/discard actions can enable independently
+	// `isDirty` compares staged content to the baseline.
+	// `hasUnstagedChanges` compares staged content to the
+	// unstaged diff buffer so save and accept/discard actions can enable independently
 	// without depending on server state.
 	const [isDirty, setIsDirty] = useState(() => {
-		return editorContentState.workingMarkdown !== editorContentState.baselineMarkdown;
+		return editorContentState.stagedMarkdown !== editorContentState.baselineMarkdown;
 	});
 	const [hasUnstagedChanges, setHasUnstagedChanges] = useState(() => {
-		return editorContentState.workingMarkdown !== editorContentState.modifiedMarkdown;
+		return editorContentState.stagedMarkdown !== editorContentState.unstagedMarkdown;
 	});
 
 	const isSaveDisabled = isSaving || isSyncing || !isDirty;
@@ -690,9 +690,9 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		return resultParts.join("");
 	};
 
-	const pushChangeToWorkingEditor = (newMarkdown: string) => {
+	const pushChangeToStagedEditor = (newMarkdown: string) => {
 		if (!editorModelsRef.current) {
-			const error = should_never_happen("[PageEditorDiff.pushChangeToWorkingEditor] Missing `editorModels`", {
+			const error = should_never_happen("[PageEditorDiff.pushChangeToStagedEditor] Missing `editorModels`", {
 				editor: editorRef.current,
 				editorModels: editorModelsRef.current,
 			});
@@ -700,7 +700,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			throw error;
 		}
 
-		// Apply edits at the model level so working/staged content can be updated even when
+		// Apply edits at the model level so staged content can be updated even when
 		// `originalEditable` is false (original editor is read-only).
 		editorModelsRef.current.original.pushStackElement();
 		editorModelsRef.current.original.applyEdits([
@@ -737,22 +737,22 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		modifiedEditor.pushUndoStop();
 	};
 
-	const updateEditorValues = (editorValues: { workingMarkdown: string; modifiedMarkdown: string }) => {
+	const updateEditorValues = (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => {
 		if (editorModelsRef.current && editorRef.current) {
-			if (editorModelsRef.current.original.getValue() !== editorValues.workingMarkdown) {
+			if (editorModelsRef.current.original.getValue() !== editorValues.stagedMarkdown) {
 				ignoredProgrammaticModelChangesRef.current += 1;
-				pushChangeToWorkingEditor(editorValues.workingMarkdown);
+				pushChangeToStagedEditor(editorValues.stagedMarkdown);
 			}
 
-			if (editorModelsRef.current.modified.getValue() !== editorValues.modifiedMarkdown) {
+			if (editorModelsRef.current.modified.getValue() !== editorValues.unstagedMarkdown) {
 				ignoredProgrammaticModelChangesRef.current += 1;
-				pushChangeToUnstagedEditor(editorValues.modifiedMarkdown);
+				pushChangeToUnstagedEditor(editorValues.unstagedMarkdown);
 			}
 		}
 
-		setIsDirty(editorValues.workingMarkdown !== editorContentState.baselineMarkdown);
-		setHasUnstagedChanges(editorValues.workingMarkdown !== editorValues.modifiedMarkdown);
-		updateThreadIds(editorValues.workingMarkdown);
+		setIsDirty(editorValues.stagedMarkdown !== editorContentState.baselineMarkdown);
+		setHasUnstagedChanges(editorValues.stagedMarkdown !== editorValues.unstagedMarkdown);
+		updateThreadIds(editorValues.stagedMarkdown);
 	};
 
 	const upsertPendingEdit = async () => {
@@ -764,8 +764,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			workspaceId: ai_chat_HARDCODED_ORG_ID,
 			projectId: ai_chat_HARDCODED_PROJECT_ID,
 			pageId,
-			workingMarkdown: editorModelsRef.current.original.getValue(),
-			modifiedMarkdown: editorModelsRef.current.modified.getValue(),
+			stagedMarkdown: editorModelsRef.current.original.getValue(),
+			unstagedMarkdown: editorModelsRef.current.modified.getValue(),
 		});
 		if (upsertResult._nay) {
 			console.error("[PageEditorDiff.upsertPendingEditNow] Failed to sync pending edits", {
@@ -857,7 +857,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		}
 
 		const result = editorModelsRef.current.modified.getValue();
-		pushChangeToWorkingEditor(result);
+		pushChangeToStagedEditor(result);
 		editorRef.current.focus();
 	};
 
@@ -873,8 +873,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 
 		// `isDirty` state can be stale here so we need to check from real raw values
 		// when this function is called with "Accept All and save"
-		const currentWorkingMarkdown = editorModelsRef.current.original.getValue();
-		const isDirtyNow = currentWorkingMarkdown !== editorContentState.baselineMarkdown;
+		const currentStagedMarkdown = editorModelsRef.current.original.getValue();
+		const isDirtyNow = currentStagedMarkdown !== editorContentState.baselineMarkdown;
 
 		if (isSaving || isSyncing || !isDirtyNow) return;
 
@@ -882,7 +882,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	};
 
 	const getCurrentMarkdown = () => {
-		return editorModelsRef.current?.original.getValue() ?? editorContentState.workingMarkdown;
+		return editorModelsRef.current?.original.getValue() ?? editorContentState.stagedMarkdown;
 	};
 
 	const handleApplySnapshotMarkdown = () => {
@@ -911,8 +911,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			}
 
 			updateEditorValues({
-				workingMarkdown: remoteData.markdown._yay,
-				modifiedMarkdown: remoteData.markdown._yay,
+				stagedMarkdown: remoteData.markdown._yay,
+				unstagedMarkdown: remoteData.markdown._yay,
 			});
 		})()
 			.catch((err) => {
@@ -972,8 +972,8 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			}
 
 			onClickSync({
-				workingMarkdown: editorModelsRef.current.original.getValue(),
-				modifiedMarkdown: editorModelsRef.current.modified.getValue(),
+				stagedMarkdown: editorModelsRef.current.original.getValue(),
+				unstagedMarkdown: editorModelsRef.current.modified.getValue(),
 			});
 		}).catch((error) => {
 			console.error("[PageEditorDiff.handleClickSync] Error while preparing sync", {
@@ -1004,7 +1004,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		}
 
 		const newEditorContent = applyDiffs([diffToApply]);
-		pushChangeToWorkingEditor(newEditorContent);
+		pushChangeToStagedEditor(newEditorContent);
 		editorRef.current.focus();
 	};
 
@@ -1049,7 +1049,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		const prevModels = [editor.getModel()?.original, editor.getModel()?.modified];
 		const nextModels = {
 			original: pages_monaco_create_editor_model(initialOriginalMarkdown),
-			modified: pages_monaco_create_editor_model(initialModifiedMarkdown),
+			modified: pages_monaco_create_editor_model(initialUnstagedMarkdown),
 		};
 		setEditorModels(nextModels);
 		editor.setModel(nextModels);
@@ -1067,15 +1067,15 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 					return;
 				}
 
-				const nextWorkingMarkdown = editorModelsRef.current?.original.getValue();
-				if (nextWorkingMarkdown != null) {
-					updateThreadIds(nextWorkingMarkdown);
+				const nextStagedMarkdown = editorModelsRef.current?.original.getValue();
+				if (nextStagedMarkdown != null) {
+					updateThreadIds(nextStagedMarkdown);
 				}
 
 				if (editorModelsRef.current) {
-					const workingMarkdown = editorModelsRef.current.original.getValue();
-					setIsDirty(workingMarkdown !== editorContentState.baselineMarkdown);
-					setHasUnstagedChanges(workingMarkdown !== editorModelsRef.current.modified.getValue());
+					const stagedMarkdown = editorModelsRef.current.original.getValue();
+					setIsDirty(stagedMarkdown !== editorContentState.baselineMarkdown);
+					setHasUnstagedChanges(stagedMarkdown !== editorModelsRef.current.modified.getValue());
 				}
 
 				scheduleUpsertPendingEdit();
@@ -1087,10 +1087,10 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 				}
 
 				if (editorModelsRef.current) {
-					const workingMarkdown = editorModelsRef.current.original.getValue();
+					const stagedMarkdown = editorModelsRef.current.original.getValue();
 					// Editing the modified/unstaged side should not affect whether the
-					// staged working branch differs from the baseline.
-					setHasUnstagedChanges(workingMarkdown !== editorModelsRef.current.modified.getValue());
+					// staged branch differs from the baseline.
+					setHasUnstagedChanges(stagedMarkdown !== editorModelsRef.current.modified.getValue());
 				}
 
 				scheduleUpsertPendingEdit();
@@ -1207,35 +1207,35 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			return;
 		}
 
-		const mergedWorkingBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
-			previousRemoteYjsDoc: previousRemoteEditorContentState.workingYjsDoc,
-			nextRemoteYjsDoc: editorContentState.workingYjsDoc,
+		const mergedStagedBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
+			previousRemoteYjsDoc: previousRemoteEditorContentState.stagedYjsDoc,
+			nextRemoteYjsDoc: editorContentState.stagedYjsDoc,
 			localMarkdown: editorModels.original.getValue(),
 		});
-		if (mergedWorkingBranchResult._nay) {
-			console.error("[PageEditorDiff.reconcileRemoteEditorContentState] Failed to reconcile working branch", {
-				nay: mergedWorkingBranchResult._nay,
+		if (mergedStagedBranchResult._nay) {
+			console.error("[PageEditorDiff.reconcileRemoteEditorContentState] Failed to reconcile staged branch", {
+				nay: mergedStagedBranchResult._nay,
 				pageId,
 			});
 			return;
 		}
 
-		const mergedModifiedBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
-			previousRemoteYjsDoc: previousRemoteEditorContentState.modifiedYjsDoc,
-			nextRemoteYjsDoc: editorContentState.modifiedYjsDoc,
+		const mergedUnstagedBranchResult = pages_yjs_reconcile_branch_with_local_markdown({
+			previousRemoteYjsDoc: previousRemoteEditorContentState.unstagedYjsDoc,
+			nextRemoteYjsDoc: editorContentState.unstagedYjsDoc,
 			localMarkdown: editorModels.modified.getValue(),
 		});
-		if (mergedModifiedBranchResult._nay) {
-			console.error("[PageEditorDiff.reconcileRemoteEditorContentState] Failed to reconcile modified branch", {
-				nay: mergedModifiedBranchResult._nay,
+		if (mergedUnstagedBranchResult._nay) {
+			console.error("[PageEditorDiff.reconcileRemoteEditorContentState] Failed to reconcile unstaged branch", {
+				nay: mergedUnstagedBranchResult._nay,
 				pageId,
 			});
 			return;
 		}
 
 		updateEditorValues({
-			workingMarkdown: mergedWorkingBranchResult._yay.mergedMarkdown,
-			modifiedMarkdown: mergedModifiedBranchResult._yay.mergedMarkdown,
+			stagedMarkdown: mergedStagedBranchResult._yay.mergedMarkdown,
+			unstagedMarkdown: mergedUnstagedBranchResult._yay.mergedMarkdown,
 		});
 		lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 	}, [editorContentState, editorModels]);
@@ -1304,7 +1304,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 						theme={app_monaco_THEME_NAME_DARK}
 						onMount={handleOnMount}
 						original={initialOriginalMarkdown}
-						modified={initialModifiedMarkdown}
+						modified={initialUnstagedMarkdown}
 						originalLanguage="markdown"
 						modifiedLanguage="markdown"
 						// We own our own models, so we need to keep them alive even after the editor is disposed,
@@ -1486,32 +1486,32 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 				});
 			}
 
-			const rebasedWorkingBranchResult = pages_yjs_rebase_branch_with_local_markdown({
+			const rebasedStagedBranchResult = pages_yjs_rebase_branch_with_local_markdown({
 				previousBaseYjsDoc: remoteEditorContentState.baselineYjsDoc,
 				nextBaseYjsDoc: nextPageContentData.yjsDoc,
-				previousBranchYjsDoc: remoteEditorContentState.workingYjsDoc,
-				localMarkdown: editorValues.workingMarkdown,
+				previousBranchYjsDoc: remoteEditorContentState.stagedYjsDoc,
+				localMarkdown: editorValues.stagedMarkdown,
 			});
-			if (rebasedWorkingBranchResult._nay) {
+			if (rebasedStagedBranchResult._nay) {
 				return Result({
 					_nay: {
-						message: "Failed to rebase working branch while syncing",
-						cause: rebasedWorkingBranchResult._nay,
+						message: "Failed to rebase staged branch while syncing",
+						cause: rebasedStagedBranchResult._nay,
 					},
 				});
 			}
 
-			const rebasedModifiedBranchResult = pages_yjs_rebase_branch_with_local_markdown({
+			const rebasedUnstagedBranchResult = pages_yjs_rebase_branch_with_local_markdown({
 				previousBaseYjsDoc: remoteEditorContentState.baselineYjsDoc,
 				nextBaseYjsDoc: nextPageContentData.yjsDoc,
-				previousBranchYjsDoc: remoteEditorContentState.modifiedYjsDoc,
-				localMarkdown: editorValues.modifiedMarkdown,
+				previousBranchYjsDoc: remoteEditorContentState.unstagedYjsDoc,
+				localMarkdown: editorValues.unstagedMarkdown,
 			});
-			if (rebasedModifiedBranchResult._nay) {
+			if (rebasedUnstagedBranchResult._nay) {
 				return Result({
 					_nay: {
-						message: "Failed to rebase modified branch while syncing",
-						cause: rebasedModifiedBranchResult._nay,
+						message: "Failed to rebase unstaged branch while syncing",
+						cause: rebasedUnstagedBranchResult._nay,
 					},
 				});
 			}
@@ -1524,11 +1524,11 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 					pageId,
 					baseYjsSequence: nextPageContentData.yjsSequence,
 					baseYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(nextPageContentData.yjsDoc)),
-					workingBranchYjsUpdate: pages_u8_to_array_buffer(
-						encodeStateAsUpdate(rebasedWorkingBranchResult._yay.rebasedBranchYjsDoc),
+					stagedBranchYjsUpdate: pages_u8_to_array_buffer(
+						encodeStateAsUpdate(rebasedStagedBranchResult._yay.rebasedBranchYjsDoc),
 					),
-					modifiedBranchYjsUpdate: pages_u8_to_array_buffer(
-						encodeStateAsUpdate(rebasedModifiedBranchResult._yay.rebasedBranchYjsDoc),
+					unstagedBranchYjsUpdate: pages_u8_to_array_buffer(
+						encodeStateAsUpdate(rebasedUnstagedBranchResult._yay.rebasedBranchYjsDoc),
 					),
 				},
 			);
@@ -1637,10 +1637,10 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			return {
 				baselineYjsDoc: emptyYjsDoc,
 				baselineMarkdown: "",
-				workingYjsDoc: pages_yjs_doc_clone({ yjsDoc: emptyYjsDoc }),
-				workingMarkdown: "",
-				modifiedYjsDoc: pages_yjs_doc_clone({ yjsDoc: emptyYjsDoc }),
-				modifiedMarkdown: "",
+				stagedYjsDoc: pages_yjs_doc_clone({ yjsDoc: emptyYjsDoc }),
+				stagedMarkdown: "",
+				unstagedYjsDoc: pages_yjs_doc_clone({ yjsDoc: emptyYjsDoc }),
+				unstagedMarkdown: "",
 				yjsSequence: 0,
 			} satisfies RemoteEditorContentState;
 		});

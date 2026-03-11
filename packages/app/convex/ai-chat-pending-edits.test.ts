@@ -244,32 +244,32 @@ async function build_page_diff_update_from_snapshot(args: {
 function read_pending_row_markdown_state(args: {
 	pendingEdit: {
 		baseYjsUpdate: ArrayBuffer;
-		workingBranchYjsUpdate: ArrayBuffer;
-		modifiedBranchYjsUpdate: ArrayBuffer;
+		stagedBranchYjsUpdate: ArrayBuffer;
+		unstagedBranchYjsUpdate: ArrayBuffer;
 	};
 }) {
 	const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.pendingEdit.baseYjsUpdate);
-	const workingBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.pendingEdit.workingBranchYjsUpdate);
-	const modifiedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.pendingEdit.modifiedBranchYjsUpdate);
+	const stagedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.pendingEdit.stagedBranchYjsUpdate);
+	const unstagedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.pendingEdit.unstagedBranchYjsUpdate);
 
 	const baseMarkdown = pages_yjs_doc_get_markdown({
 		yjsDoc: baseYjsDoc,
 	});
-	const workingMarkdown = pages_yjs_doc_get_markdown({
-		yjsDoc: workingBranchYjsDoc,
+	const stagedMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: stagedBranchYjsDoc,
 	});
-	const modifiedMarkdown = pages_yjs_doc_get_markdown({
-		yjsDoc: modifiedBranchYjsDoc,
+	const unstagedMarkdown = pages_yjs_doc_get_markdown({
+		yjsDoc: unstagedBranchYjsDoc,
 	});
 
-	if (baseMarkdown._nay || workingMarkdown._nay || modifiedMarkdown._nay) {
+	if (baseMarkdown._nay || stagedMarkdown._nay || unstagedMarkdown._nay) {
 		throw new Error("Failed to reconstruct pending row markdown");
 	}
 
 	return {
 		baseMarkdown: baseMarkdown._yay,
-		workingMarkdown: workingMarkdown._yay,
-		modifiedMarkdown: modifiedMarkdown._yay,
+		stagedMarkdown: stagedMarkdown._yay,
+		unstagedMarkdown: unstagedMarkdown._yay,
 	};
 }
 
@@ -306,8 +306,8 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (unresolved._nay) {
 		throw new Error(unresolved._nay.message);
@@ -318,8 +318,8 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: changedMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: changedMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (ready._nay) {
 		throw new Error(ready._nay.message);
@@ -344,8 +344,8 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: changedMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: changedMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (readyAgain._nay) {
 		throw new Error(readyAgain._nay.message);
@@ -371,16 +371,16 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 	const secondPendingRowMarkdownState = read_pending_row_markdown_state({
 		pendingEdit: secondPendingRow!,
 	});
-	expect(secondPendingRowMarkdownState.workingMarkdown).toContain("Changed once");
-	expect(secondPendingRowMarkdownState.modifiedMarkdown).toContain("Changed once");
-	expect(secondPendingRowMarkdownState.workingMarkdown).toBe(secondPendingRowMarkdownState.modifiedMarkdown);
+	expect(secondPendingRowMarkdownState.stagedMarkdown).toContain("Changed once");
+	expect(secondPendingRowMarkdownState.unstagedMarkdown).toContain("Changed once");
+	expect(secondPendingRowMarkdownState.stagedMarkdown).toBe(secondPendingRowMarkdownState.unstagedMarkdown);
 
 	const discarded = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: seeded.baseMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: seeded.baseMarkdown,
 	});
 	if (discarded._nay) {
 		throw new Error(discarded._nay.message);
@@ -402,7 +402,7 @@ test("upsert_pages_pending_edit_updates replaces updates deterministically", asy
 	expect(pendingAfterDiscard).toBeNull();
 });
 
-test("upsert_pages_pending_edit_updates keeps working at base when the agent omits workingMarkdown", async () => {
+test("upsert_pages_pending_edit_updates keeps staged at base when the agent omits stagedMarkdown", async () => {
 	const t = test_convex();
 
 	const seeded = await t.run(async (ctx) =>
@@ -424,7 +424,7 @@ test("upsert_pages_pending_edit_updates keeps working at base when the agent omi
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		modifiedMarkdown: agentMarkdown,
+		unstagedMarkdown: agentMarkdown,
 	});
 	if (agentUpsertResult._nay) {
 		throw new Error(agentUpsertResult._nay.message);
@@ -451,18 +451,18 @@ test("upsert_pages_pending_edit_updates keeps working at base when the agent omi
 		pendingEdit: pendingRow,
 	});
 	expect(pendingRowMarkdownState.baseMarkdown).toBe(seeded.baseMarkdown);
-	expect(pendingRowMarkdownState.workingMarkdown).toBe(seeded.baseMarkdown);
-	expect(pendingRowMarkdownState.modifiedMarkdown).toBe(agentMarkdown);
+	expect(pendingRowMarkdownState.stagedMarkdown).toBe(seeded.baseMarkdown);
+	expect(pendingRowMarkdownState.unstagedMarkdown).toBe(agentMarkdown);
 });
 
-test("upsert_pages_pending_edit_updates preserves existing working changes when the agent omits workingMarkdown", async () => {
+test("upsert_pages_pending_edit_updates preserves existing staged changes when the agent omits stagedMarkdown", async () => {
 	const t = test_convex();
 
 	const seeded = await t.run(async (ctx) =>
 		seed_page_with_markdown({
 			ctx,
-			path: "/pending-edits-agent-preserve-working",
-			name: "pending-edits-agent-preserve-working",
+			path: "/pending-edits-agent-preserve-staged",
+			name: "pending-edits-agent-preserve-staged",
 			markdown: "# Base",
 		}),
 	);
@@ -478,8 +478,8 @@ test("upsert_pages_pending_edit_updates preserves existing working changes when 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: stagedMarkdown,
-		modifiedMarkdown: firstAgentMarkdown,
+		stagedMarkdown: stagedMarkdown,
+		unstagedMarkdown: firstAgentMarkdown,
 	});
 	if (stagedPendingEditResult._nay) {
 		throw new Error(stagedPendingEditResult._nay.message);
@@ -490,7 +490,7 @@ test("upsert_pages_pending_edit_updates preserves existing working changes when 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		modifiedMarkdown: secondAgentMarkdown,
+		unstagedMarkdown: secondAgentMarkdown,
 	});
 	if (secondAgentUpsertResult._nay) {
 		throw new Error(secondAgentUpsertResult._nay.message);
@@ -517,8 +517,8 @@ test("upsert_pages_pending_edit_updates preserves existing working changes when 
 		pendingEdit: pendingRow,
 	});
 	expect(pendingRowMarkdownState.baseMarkdown).toBe(seeded.baseMarkdown);
-	expect(pendingRowMarkdownState.workingMarkdown).toBe(stagedMarkdown);
-	expect(pendingRowMarkdownState.modifiedMarkdown).toBe(secondAgentMarkdown);
+	expect(pendingRowMarkdownState.stagedMarkdown).toBe(stagedMarkdown);
+	expect(pendingRowMarkdownState.unstagedMarkdown).toBe(secondAgentMarkdown);
 });
 
 test("upsert_pages_pending_edit_updates clears the row when agent changes collapse to base", async () => {
@@ -543,7 +543,7 @@ test("upsert_pages_pending_edit_updates clears the row when agent changes collap
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		modifiedMarkdown: agentMarkdown,
+		unstagedMarkdown: agentMarkdown,
 	});
 	if (firstAgentUpsertResult._nay) {
 		throw new Error(firstAgentUpsertResult._nay.message);
@@ -553,7 +553,7 @@ test("upsert_pages_pending_edit_updates clears the row when agent changes collap
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		modifiedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: seeded.baseMarkdown,
 	});
 	if (discardAgentUpsertResult._nay) {
 		throw new Error(discardAgentUpsertResult._nay.message);
@@ -597,8 +597,8 @@ test("pending edit cleanup task follows the latest pending row state", async () 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: firstMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: firstMarkdown,
 	});
 	if (firstUpsertResult._nay) {
 		throw new Error(firstUpsertResult._nay.message);
@@ -636,8 +636,8 @@ test("pending edit cleanup task follows the latest pending row state", async () 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: secondMarkdown,
-		modifiedMarkdown: secondMarkdown,
+		stagedMarkdown: secondMarkdown,
+		unstagedMarkdown: secondMarkdown,
 	});
 	if (secondUpsertResult._nay) {
 		throw new Error(secondUpsertResult._nay.message);
@@ -673,8 +673,8 @@ test("pending edit cleanup task follows the latest pending row state", async () 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: seeded.baseMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: seeded.baseMarkdown,
 	});
 	if (discardResult._nay) {
 		throw new Error(discardResult._nay.message);
@@ -711,8 +711,8 @@ test("pages_db_reschedule_pending_edit_cleanup_for_user refreshes existing clean
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (upsertResult._nay) {
 		throw new Error(upsertResult._nay.message);
@@ -790,8 +790,8 @@ test("presence.disconnect shortens cleanup after the last session disconnects", 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (upsertResult._nay) {
 		throw new Error(upsertResult._nay.message);
@@ -878,8 +878,8 @@ test("presence.disconnect keeps cleanup unchanged while another session stays on
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (upsertResult._nay) {
 		throw new Error(upsertResult._nay.message);
@@ -968,14 +968,14 @@ test("save_pages_pending_edit supports partial save and keeps unresolved pending
 		name: "Test User",
 	});
 
-	const workingMarkdown = `${seeded.baseMarkdown}\n\nAccepted chunk`;
-	const modifiedMarkdown = `${workingMarkdown}\n\nUnresolved chunk`;
+	const stagedMarkdown = `${seeded.baseMarkdown}\n\nAccepted chunk`;
+	const unstagedMarkdown = `${stagedMarkdown}\n\nUnresolved chunk`;
 	await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown,
-		modifiedMarkdown,
+		stagedMarkdown,
+		unstagedMarkdown,
 	});
 
 	const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
@@ -1010,9 +1010,9 @@ test("save_pages_pending_edit supports partial save and keeps unresolved pending
 	});
 	expect(pendingAfterSaveMarkdownState.baseMarkdown).toContain("Accepted chunk");
 	expect(pendingAfterSaveMarkdownState.baseMarkdown).not.toContain("Unresolved chunk");
-	expect(pendingAfterSaveMarkdownState.workingMarkdown).toBe(pendingAfterSaveMarkdownState.baseMarkdown);
-	expect(pendingAfterSaveMarkdownState.modifiedMarkdown).toContain("Accepted chunk");
-	expect(pendingAfterSaveMarkdownState.modifiedMarkdown).toContain("Unresolved chunk");
+	expect(pendingAfterSaveMarkdownState.stagedMarkdown).toBe(pendingAfterSaveMarkdownState.baseMarkdown);
+	expect(pendingAfterSaveMarkdownState.unstagedMarkdown).toContain("Accepted chunk");
+	expect(pendingAfterSaveMarkdownState.unstagedMarkdown).toContain("Unresolved chunk");
 
 	const savedMarkdownAfterPartialSave = await t.run(async (ctx) =>
 		read_page_markdown_from_yjs({
@@ -1048,8 +1048,8 @@ test("save_pages_pending_edit clears pending row when all changes are resolved",
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: resolvedMarkdown,
-		modifiedMarkdown: resolvedMarkdown,
+		stagedMarkdown: resolvedMarkdown,
+		unstagedMarkdown: resolvedMarkdown,
 	});
 	if (upsertResult._nay) {
 		throw new Error(upsertResult._nay.message);
@@ -1099,8 +1099,8 @@ test("save_pages_pending_edit keeps unresolved row based on saved pending base w
 	const seeded = await t.run(async (ctx) =>
 		seed_page_with_markdown({
 			ctx,
-			path: "/pending-edits-save-no-working",
-			name: "pending-edits-save-no-working",
+			path: "/pending-edits-save-no-staged",
+			name: "pending-edits-save-no-staged",
 			markdown: "# Save base",
 		}),
 	);
@@ -1114,8 +1114,8 @@ test("save_pages_pending_edit keeps unresolved row based on saved pending base w
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
 	});
 
 	const remoteDiff = await t.run(async (ctx) =>
@@ -1167,11 +1167,11 @@ test("save_pages_pending_edit keeps unresolved row based on saved pending base w
 	});
 	expect(pendingAfterSaveMarkdownState.baseMarkdown).toContain("# Save base");
 	expect(pendingAfterSaveMarkdownState.baseMarkdown).toContain("Remote drift");
-	expect(pendingAfterSaveMarkdownState.workingMarkdown).toBe(pendingAfterSaveMarkdownState.baseMarkdown);
-	expect(pendingAfterSaveMarkdownState.modifiedMarkdown).toContain("Unresolved only");
-	expect(pendingAfterSaveMarkdownState.modifiedMarkdown).toContain("Remote drift");
+	expect(pendingAfterSaveMarkdownState.stagedMarkdown).toBe(pendingAfterSaveMarkdownState.baseMarkdown);
+	expect(pendingAfterSaveMarkdownState.unstagedMarkdown).toContain("Unresolved only");
+	expect(pendingAfterSaveMarkdownState.unstagedMarkdown).toContain("Remote drift");
 
-	const savedMarkdownAfterNoWorkingSave = await t.run(async (ctx) =>
+	const savedMarkdownAfterNoStagedSave = await t.run(async (ctx) =>
 		read_page_markdown_from_yjs({
 			ctx,
 			workspaceId: seeded.workspaceId,
@@ -1179,9 +1179,9 @@ test("save_pages_pending_edit keeps unresolved row based on saved pending base w
 			pageId: seeded.pageId,
 		}),
 	);
-	expect(savedMarkdownAfterNoWorkingSave).toContain("# Save base");
-	expect(savedMarkdownAfterNoWorkingSave).toContain("Remote drift");
-	expect(savedMarkdownAfterNoWorkingSave).not.toContain("Unresolved only");
+	expect(savedMarkdownAfterNoStagedSave).toContain("# Save base");
+	expect(savedMarkdownAfterNoStagedSave).toContain("Remote drift");
+	expect(savedMarkdownAfterNoStagedSave).not.toContain("Unresolved only");
 });
 
 test("persist_pages_pending_edit_rebased_state stores the rebased row as the new authoritative pending state", async () => {
@@ -1205,8 +1205,8 @@ test("persist_pages_pending_edit_rebased_state stores the rebased row as the new
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
 	});
 
 	const remoteMarkdown = `${seeded.baseMarkdown}\n\nRemote drift`;
@@ -1236,15 +1236,15 @@ test("persist_pages_pending_edit_rebased_state stores the rebased row as the new
 	);
 	const latestBaseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(latestPageState.yjsUpdate);
 
-	const modifiedBranchYjsDoc = pages_yjs_doc_clone({
+	const unstagedBranchYjsDoc = pages_yjs_doc_clone({
 		yjsDoc: latestBaseYjsDoc,
 	});
-	const modifiedBranchProjection = pages_yjs_doc_update_from_markdown({
-		mut_yjsDoc: modifiedBranchYjsDoc,
+	const unstagedBranchProjection = pages_yjs_doc_update_from_markdown({
+		mut_yjsDoc: unstagedBranchYjsDoc,
 		markdown: `${remoteMarkdown}\n\nUnresolved only`,
 	});
-	if (modifiedBranchProjection._nay) {
-		throw new Error("Failed to create modified rebased branch while testing pending edit persistence");
+	if (unstagedBranchProjection._nay) {
+		throw new Error("Failed to create unstaged rebased branch while testing pending edit persistence");
 	}
 
 	const persistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
@@ -1253,8 +1253,8 @@ test("persist_pages_pending_edit_rebased_state stores the rebased row as the new
 		pageId: seeded.pageId,
 		baseYjsSequence: latestPageState.yjsSequence,
 		baseYjsUpdate: latestPageState.yjsUpdate,
-		workingBranchYjsUpdate: latestPageState.yjsUpdate,
-		modifiedBranchYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(modifiedBranchYjsDoc)),
+		stagedBranchYjsUpdate: latestPageState.yjsUpdate,
+		unstagedBranchYjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(unstagedBranchYjsDoc)),
 	});
 	if (persistResult._nay) {
 		throw new Error(persistResult._nay.message);
@@ -1280,9 +1280,9 @@ test("persist_pages_pending_edit_rebased_state stores the rebased row as the new
 		pendingEdit: pendingAfterPersist!,
 	});
 	expect(pendingAfterPersistMarkdownState.baseMarkdown).toContain("Remote drift");
-	expect(pendingAfterPersistMarkdownState.workingMarkdown).toBe(pendingAfterPersistMarkdownState.baseMarkdown);
-	expect(pendingAfterPersistMarkdownState.modifiedMarkdown).toContain("Remote drift");
-	expect(pendingAfterPersistMarkdownState.modifiedMarkdown).toContain("Unresolved only");
+	expect(pendingAfterPersistMarkdownState.stagedMarkdown).toBe(pendingAfterPersistMarkdownState.baseMarkdown);
+	expect(pendingAfterPersistMarkdownState.unstagedMarkdown).toContain("Remote drift");
+	expect(pendingAfterPersistMarkdownState.unstagedMarkdown).toContain("Unresolved only");
 });
 
 test("persist_pages_pending_edit_rebased_state clears the pending row when the rebased branches match the live base", async () => {
@@ -1306,8 +1306,8 @@ test("persist_pages_pending_edit_rebased_state clears the pending row when the r
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
 	});
 
 	const latestPageState = await t.run(async (ctx) =>
@@ -1325,8 +1325,8 @@ test("persist_pages_pending_edit_rebased_state clears the pending row when the r
 		pageId: seeded.pageId,
 		baseYjsSequence: latestPageState.yjsSequence,
 		baseYjsUpdate: latestPageState.yjsUpdate,
-		workingBranchYjsUpdate: latestPageState.yjsUpdate,
-		modifiedBranchYjsUpdate: latestPageState.yjsUpdate,
+		stagedBranchYjsUpdate: latestPageState.yjsUpdate,
+		unstagedBranchYjsUpdate: latestPageState.yjsUpdate,
 	});
 	if (clearResult._nay) {
 		throw new Error(clearResult._nay.message);
@@ -1396,8 +1396,8 @@ test("persist_pages_pending_edit_rebased_state rejects stale live bases", async 
 		pageId: seeded.pageId,
 		baseYjsSequence: stalePageState.yjsSequence,
 		baseYjsUpdate: stalePageState.yjsUpdate,
-		workingBranchYjsUpdate: stalePageState.yjsUpdate,
-		modifiedBranchYjsUpdate: stalePageState.yjsUpdate,
+		stagedBranchYjsUpdate: stalePageState.yjsUpdate,
+		unstagedBranchYjsUpdate: stalePageState.yjsUpdate,
 	});
 	expect(stalePersistResult._nay?.message).toBe(
 		"Pending edit base is stale and must be rebuilt from the latest live page state",
@@ -1426,8 +1426,8 @@ test("remove_pages_pending_edit_if_expired ignores stale scheduled runs", async 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: firstMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: firstMarkdown,
 	});
 	if (firstUpsertResult._nay) {
 		throw new Error(firstUpsertResult._nay.message);
@@ -1467,8 +1467,8 @@ test("remove_pages_pending_edit_if_expired ignores stale scheduled runs", async 
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: secondMarkdown,
-		modifiedMarkdown: secondMarkdown,
+		stagedMarkdown: secondMarkdown,
+		unstagedMarkdown: secondMarkdown,
 	});
 	if (secondUpsertResult._nay) {
 		throw new Error(secondUpsertResult._nay.message);
@@ -1525,8 +1525,8 @@ test("remove_pages_pending_edit_if_expired deletes matching pending edits", asyn
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		pageId: seeded.pageId,
-		workingMarkdown: seeded.baseMarkdown,
-		modifiedMarkdown: changedMarkdown,
+		stagedMarkdown: seeded.baseMarkdown,
+		unstagedMarkdown: changedMarkdown,
 	});
 	if (upsertResult._nay) {
 		throw new Error(upsertResult._nay.message);

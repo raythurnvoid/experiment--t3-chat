@@ -1468,7 +1468,7 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 			)
 			.first();
 		if (pagesPendingOverlay) {
-			const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(pagesPendingOverlay.modifiedBranchYjsUpdate);
+			const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(pagesPendingOverlay.unstagedBranchYjsUpdate);
 
 			const markdown = pages_yjs_doc_get_markdown({ yjsDoc });
 			if (markdown._yay) {

@@ -170,7 +170,7 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 	expect(result.output).toContain("... more table content below");
 });
 
-test("write_page tool stores pending modified branch updates from the agent", async () => {
+test("write_page tool stores pending unstaged branch updates from the agent", async () => {
 	const pageId = "p123";
 	const currentContent = {
 		pageId,
@@ -194,14 +194,14 @@ test("write_page tool stores pending modified branch updates from the agent", as
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
-		modifiedMarkdown: "# Updated",
+		unstagedMarkdown: "# Updated",
 	});
 
 	expect(result.metadata.pageId).toBe(pageId);
 	expect(result.metadata.exists).toBe(true);
 });
 
-test("edit_page tool stores pending modified branch updates from the agent", async () => {
+test("edit_page tool stores pending unstaged branch updates from the agent", async () => {
 	const pageId = "p456";
 	const currentContent = {
 		pageId,
@@ -233,7 +233,7 @@ test("edit_page tool stores pending modified branch updates from the agent", asy
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
-		modifiedMarkdown: "Hello team",
+		unstagedMarkdown: "Hello team",
 	});
 
 	expect(result.metadata.pageId).toBe(pageId);

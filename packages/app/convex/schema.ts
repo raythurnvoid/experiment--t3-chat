@@ -68,8 +68,8 @@ const app_convex_schema = defineSchema({
 		pageId: v.id("pages"),
 		baseYjsSequence: v.number(),
 		baseYjsUpdate: v.bytes(),
-		workingBranchYjsUpdate: v.bytes(),
-		modifiedBranchYjsUpdate: v.bytes(),
+		stagedBranchYjsUpdate: v.bytes(),
+		unstagedBranchYjsUpdate: v.bytes(),
 		updatedAt: v.number(),
 	}).index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
 

@@ -355,12 +355,12 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 		(async (/* iife */) => {
 			const baselineYjsDoc = baselineYjsDocRef.current;
 
-			const workingMarkdown = editorModel.getValue();
+			const localMarkdown = editorModel.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDoc });
 
 			const workingYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
-				markdown: workingMarkdown,
+				markdown: localMarkdown,
 			});
 			if (workingYjsDocFromMarkdown._nay) {
 				console.error("[PageEditorPlainText.handleClickSave] Error while rebuilding Y.Doc from markdown", {
@@ -396,8 +396,8 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 				}
 			}
 
-			updateDirtyBaseline(workingMarkdown);
-			updateThreadIds(workingMarkdown);
+			updateDirtyBaseline(localMarkdown);
+			updateThreadIds(localMarkdown);
 		})()
 			.catch((err) => {
 				console.error("[PageEditorPlainText.handleClickSave] Save failed", err);
@@ -430,11 +430,11 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const workingMarkdown = model.getValue();
+			const localMarkdown = model.getValue();
 			const workingYjsDoc = pages_yjs_doc_clone({ yjsDoc: baselineYjsDocRef.current });
 			const workingYjsDocFromMarkdown = pages_yjs_doc_update_from_markdown({
 				mut_yjsDoc: workingYjsDoc,
-				markdown: workingMarkdown,
+				markdown: localMarkdown,
 			});
 			if (workingYjsDocFromMarkdown._nay) {
 				console.error("[PageEditorPlainText.handleClickSync] Error while rebuilding Y.Doc from markdown", {

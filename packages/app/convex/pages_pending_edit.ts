@@ -30,8 +30,8 @@ function pages_pending_edit_reconstruct_branch_docs(pendingEdit: app_convex_Doc<
 	return {
 		baseYjsSequence: pendingEdit.baseYjsSequence,
 		baseYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.baseYjsUpdate),
-		workingBranchYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.workingBranchYjsUpdate),
-		modifiedBranchYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.modifiedBranchYjsUpdate),
+		stagedBranchYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.stagedBranchYjsUpdate),
+		unstagedBranchYjsDoc: pages_yjs_doc_create_from_array_buffer_update(pendingEdit.unstagedBranchYjsUpdate),
 	};
 }
 
@@ -75,27 +75,27 @@ function pages_pending_edit_docs_match_content(args: { leftYjsDoc: YDoc; rightYj
 
 function pages_pending_edit_branch_docs_have_changes(args: {
 	baseYjsDoc: YDoc;
-	workingBranchYjsDoc: YDoc;
-	modifiedBranchYjsDoc: YDoc;
+	stagedBranchYjsDoc: YDoc;
+	unstagedBranchYjsDoc: YDoc;
 }) {
-	const workingMatchesBase = pages_pending_edit_docs_match_content({
+	const stagedMatchesBase = pages_pending_edit_docs_match_content({
 		leftYjsDoc: args.baseYjsDoc,
-		rightYjsDoc: args.workingBranchYjsDoc,
+		rightYjsDoc: args.stagedBranchYjsDoc,
 	});
-	if (workingMatchesBase._nay) {
-		return workingMatchesBase;
+	if (stagedMatchesBase._nay) {
+		return stagedMatchesBase;
 	}
 
-	const modifiedMatchesBase = pages_pending_edit_docs_match_content({
+	const unstagedMatchesBase = pages_pending_edit_docs_match_content({
 		leftYjsDoc: args.baseYjsDoc,
-		rightYjsDoc: args.modifiedBranchYjsDoc,
+		rightYjsDoc: args.unstagedBranchYjsDoc,
 	});
-	if (modifiedMatchesBase._nay) {
-		return modifiedMatchesBase;
+	if (unstagedMatchesBase._nay) {
+		return unstagedMatchesBase;
 	}
 
 	return Result({
-		_yay: !(workingMatchesBase._yay && modifiedMatchesBase._yay),
+		_yay: !(stagedMatchesBase._yay && unstagedMatchesBase._yay),
 	});
 }
 
@@ -103,8 +103,8 @@ function pages_pending_edit_branch_docs_match_existing_row(args: {
 	existingPendingEdit: app_convex_Doc<"pages_pending_edits"> | null;
 	baseYjsSequence: number;
 	baseYjsUpdate: ArrayBuffer;
-	workingBranchYjsUpdate: ArrayBuffer;
-	modifiedBranchYjsUpdate: ArrayBuffer;
+	stagedBranchYjsUpdate: ArrayBuffer;
+	unstagedBranchYjsUpdate: ArrayBuffer;
 }) {
 	if (!args.existingPendingEdit) {
 		return false;
@@ -114,12 +114,12 @@ function pages_pending_edit_branch_docs_match_existing_row(args: {
 		args.existingPendingEdit.baseYjsSequence === args.baseYjsSequence &&
 		pages_u8_equals(new Uint8Array(args.existingPendingEdit.baseYjsUpdate), new Uint8Array(args.baseYjsUpdate)) &&
 		pages_u8_equals(
-			new Uint8Array(args.existingPendingEdit.workingBranchYjsUpdate),
-			new Uint8Array(args.workingBranchYjsUpdate),
+			new Uint8Array(args.existingPendingEdit.stagedBranchYjsUpdate),
+			new Uint8Array(args.stagedBranchYjsUpdate),
 		) &&
 		pages_u8_equals(
-			new Uint8Array(args.existingPendingEdit.modifiedBranchYjsUpdate),
-			new Uint8Array(args.modifiedBranchYjsUpdate),
+			new Uint8Array(args.existingPendingEdit.unstagedBranchYjsUpdate),
+			new Uint8Array(args.unstagedBranchYjsUpdate),
 		)
 	);
 }
@@ -175,10 +175,10 @@ async function pages_pending_edit_resolve_branch_docs(
 			existingPendingEdit: null,
 			baseYjsSequence: yjsContent.yjsSequence,
 			baseYjsDoc,
-			workingBranchYjsDoc: pages_yjs_doc_clone({
+			stagedBranchYjsDoc: pages_yjs_doc_clone({
 				yjsDoc: baseYjsDoc,
 			}),
-			modifiedBranchYjsDoc: pages_yjs_doc_clone({
+			unstagedBranchYjsDoc: pages_yjs_doc_clone({
 				yjsDoc: baseYjsDoc,
 			}),
 		},
@@ -195,14 +195,14 @@ async function pages_pending_edit_upsert_branch_docs(
 		existingPendingEdit: app_convex_Doc<"pages_pending_edits"> | null;
 		baseYjsSequence: number;
 		baseYjsDoc: YDoc;
-		workingBranchYjsDoc: YDoc;
-		modifiedBranchYjsDoc: YDoc;
+		stagedBranchYjsDoc: YDoc;
+		unstagedBranchYjsDoc: YDoc;
 	},
 ) {
 	const branchDocsHaveChanges = pages_pending_edit_branch_docs_have_changes({
 		baseYjsDoc: args.baseYjsDoc,
-		workingBranchYjsDoc: args.workingBranchYjsDoc,
-		modifiedBranchYjsDoc: args.modifiedBranchYjsDoc,
+		stagedBranchYjsDoc: args.stagedBranchYjsDoc,
+		unstagedBranchYjsDoc: args.unstagedBranchYjsDoc,
 	});
 	if (branchDocsHaveChanges._nay) {
 		return Result({
@@ -229,11 +229,11 @@ async function pages_pending_edit_upsert_branch_docs(
 	const baseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
 		yjsDoc: args.baseYjsDoc,
 	});
-	const workingBranchYjsUpdate = pages_pending_edit_encode_yjs_state_update({
-		yjsDoc: args.workingBranchYjsDoc,
+	const stagedBranchYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+		yjsDoc: args.stagedBranchYjsDoc,
 	});
-	const modifiedBranchYjsUpdate = pages_pending_edit_encode_yjs_state_update({
-		yjsDoc: args.modifiedBranchYjsDoc,
+	const unstagedBranchYjsUpdate = pages_pending_edit_encode_yjs_state_update({
+		yjsDoc: args.unstagedBranchYjsDoc,
 	});
 
 	if (
@@ -241,8 +241,8 @@ async function pages_pending_edit_upsert_branch_docs(
 			existingPendingEdit: args.existingPendingEdit,
 			baseYjsSequence: args.baseYjsSequence,
 			baseYjsUpdate,
-			workingBranchYjsUpdate,
-			modifiedBranchYjsUpdate,
+			stagedBranchYjsUpdate,
+			unstagedBranchYjsUpdate,
 		})
 	) {
 		return Result({ _yay: null });
@@ -258,8 +258,8 @@ async function pages_pending_edit_upsert_branch_docs(
 			pageId: args.pageId,
 			baseYjsSequence: args.baseYjsSequence,
 			baseYjsUpdate,
-			workingBranchYjsUpdate,
-			modifiedBranchYjsUpdate,
+			stagedBranchYjsUpdate,
+			unstagedBranchYjsUpdate,
 			updatedAt: now,
 		});
 		await pages_db_schedule_pending_edit_cleanup(ctx, {
@@ -271,8 +271,8 @@ async function pages_pending_edit_upsert_branch_docs(
 			ctx.db.patch("pages_pending_edits", args.existingPendingEdit._id, {
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate,
-				workingBranchYjsUpdate,
-				modifiedBranchYjsUpdate,
+				stagedBranchYjsUpdate,
+				unstagedBranchYjsUpdate,
 				updatedAt: now,
 			}),
 			// Reset the pending edit expiry so active pending work stays preserved.
@@ -330,8 +330,8 @@ export const upsert_pages_pending_edit_updates = mutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		pageId: v.id("pages"),
-		workingMarkdown: v.optional(v.string()),
-		modifiedMarkdown: v.string(),
+		stagedMarkdown: v.optional(v.string()),
+		unstagedMarkdown: v.string(),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -352,34 +352,34 @@ export const upsert_pages_pending_edit_updates = mutation({
 			existingPendingEdit,
 			baseYjsSequence,
 			baseYjsDoc,
-			workingBranchYjsDoc,
-			modifiedBranchYjsDoc,
+			stagedBranchYjsDoc,
+			unstagedBranchYjsDoc,
 		} = branchDocsResult._yay;
 
-		if (args.workingMarkdown !== undefined) {
-			const workingBranchProjection = pages_pending_edit_project_markdown_to_branch({
-				mut_yjsDoc: workingBranchYjsDoc,
-				markdown: args.workingMarkdown,
+		if (args.stagedMarkdown !== undefined) {
+			const stagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
+				mut_yjsDoc: stagedBranchYjsDoc,
+				markdown: args.stagedMarkdown,
 			});
-			if (workingBranchProjection._nay) {
+			if (stagedBranchProjection._nay) {
 				return Result({
 					_nay: {
-						message: "Failed to project working markdown into pending branch",
-						cause: workingBranchProjection._nay,
+						message: "Failed to project staged markdown into pending branch",
+						cause: stagedBranchProjection._nay,
 					},
 				});
 			}
 		}
 
-		const modifiedBranchProjection = pages_pending_edit_project_markdown_to_branch({
-			mut_yjsDoc: modifiedBranchYjsDoc,
-			markdown: args.modifiedMarkdown,
+		const unstagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
+			mut_yjsDoc: unstagedBranchYjsDoc,
+			markdown: args.unstagedMarkdown,
 		});
-		if (modifiedBranchProjection._nay) {
+		if (unstagedBranchProjection._nay) {
 			return Result({
 				_nay: {
-					message: "Failed to project modified markdown into pending branch",
-					cause: modifiedBranchProjection._nay.cause,
+					message: "Failed to project unstaged markdown into pending branch",
+					cause: unstagedBranchProjection._nay.cause,
 				},
 			});
 		}
@@ -392,8 +392,8 @@ export const upsert_pages_pending_edit_updates = mutation({
 			existingPendingEdit,
 			baseYjsSequence,
 			baseYjsDoc,
-			workingBranchYjsDoc,
-			modifiedBranchYjsDoc,
+			stagedBranchYjsDoc,
+			unstagedBranchYjsDoc,
 		});
 	},
 });
@@ -405,8 +405,8 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 		pageId: v.id("pages"),
 		baseYjsSequence: v.number(),
 		baseYjsUpdate: v.bytes(),
-		workingBranchYjsUpdate: v.bytes(),
-		modifiedBranchYjsUpdate: v.bytes(),
+		stagedBranchYjsUpdate: v.bytes(),
+		unstagedBranchYjsUpdate: v.bytes(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -458,13 +458,13 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 		}
 
 		const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.baseYjsUpdate);
-		const workingBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.workingBranchYjsUpdate);
-		const modifiedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.modifiedBranchYjsUpdate);
+		const stagedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.stagedBranchYjsUpdate);
+		const unstagedBranchYjsDoc = pages_yjs_doc_create_from_array_buffer_update(args.unstagedBranchYjsUpdate);
 
 		const branchDocsHaveChanges = pages_pending_edit_branch_docs_have_changes({
 			baseYjsDoc,
-			workingBranchYjsDoc,
-			modifiedBranchYjsDoc,
+			stagedBranchYjsDoc,
+			unstagedBranchYjsDoc,
 		});
 		if (branchDocsHaveChanges._nay) {
 			return Result({
@@ -497,8 +497,8 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 				existingPendingEdit,
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate: args.baseYjsUpdate,
-				workingBranchYjsUpdate: args.workingBranchYjsUpdate,
-				modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+				stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
+				unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
 			})
 		) {
 			return Result({
@@ -519,8 +519,8 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 				pageId: args.pageId,
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate: args.baseYjsUpdate,
-				workingBranchYjsUpdate: args.workingBranchYjsUpdate,
-				modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+				stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
+				unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
 				updatedAt: now,
 			});
 		} else {
@@ -528,8 +528,8 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 				ctx.db.patch("pages_pending_edits", existingPendingEdit._id, {
 					baseYjsSequence: args.baseYjsSequence,
 					baseYjsUpdate: args.baseYjsUpdate,
-					workingBranchYjsUpdate: args.workingBranchYjsUpdate,
-					modifiedBranchYjsUpdate: args.modifiedBranchYjsUpdate,
+					stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
+					unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
 					updatedAt: now,
 				}),
 				// Refresh the expiry window from this latest row version because rebasing
@@ -662,8 +662,8 @@ export const save_pages_pending_edit = mutation({
 
 		const reconstructedBranchDocs = pages_pending_edit_reconstruct_branch_docs(pendingEdit);
 		const baseYjsDoc = reconstructedBranchDocs.baseYjsDoc;
-		const workingBranchYjsDoc = reconstructedBranchDocs.workingBranchYjsDoc;
-		const modifiedBranchYjsDoc = reconstructedBranchDocs.modifiedBranchYjsDoc;
+		const stagedBranchYjsDoc = reconstructedBranchDocs.stagedBranchYjsDoc;
+		const unstagedBranchYjsDoc = reconstructedBranchDocs.unstagedBranchYjsDoc;
 		const latestPageYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
 			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
 		});
@@ -674,12 +674,12 @@ export const save_pages_pending_edit = mutation({
 		});
 		if (remoteUpdateFromBase) {
 			const remoteUpdateFromBaseArrayBuffer = pages_u8_to_array_buffer(remoteUpdateFromBase);
-			pages_yjs_doc_apply_array_buffer_update(workingBranchYjsDoc, remoteUpdateFromBaseArrayBuffer);
-			pages_yjs_doc_apply_array_buffer_update(modifiedBranchYjsDoc, remoteUpdateFromBaseArrayBuffer);
+			pages_yjs_doc_apply_array_buffer_update(stagedBranchYjsDoc, remoteUpdateFromBaseArrayBuffer);
+			pages_yjs_doc_apply_array_buffer_update(unstagedBranchYjsDoc, remoteUpdateFromBaseArrayBuffer);
 		}
 
 		const diffUpdateForLatestPageYjsDoc = pages_yjs_compute_diff_update_from_yjs_doc({
-			yjsDoc: workingBranchYjsDoc,
+			yjsDoc: stagedBranchYjsDoc,
 			yjsBeforeDoc: latestPageYjsDoc,
 		});
 
@@ -705,20 +705,20 @@ export const save_pages_pending_edit = mutation({
 			);
 		}
 
-		const modifiedMatchesSavedBase = pages_pending_edit_docs_match_content({
+		const unstagedMatchesSavedBase = pages_pending_edit_docs_match_content({
 			leftYjsDoc: livePageYjsDocAfterSave,
-			rightYjsDoc: modifiedBranchYjsDoc,
+			rightYjsDoc: unstagedBranchYjsDoc,
 		});
-		if (modifiedMatchesSavedBase._nay) {
+		if (unstagedMatchesSavedBase._nay) {
 			return Result({
 				_nay: {
-					message: "Failed to compare modified pending branch with saved page content",
-					cause: modifiedMatchesSavedBase._nay,
+					message: "Failed to compare unstaged pending branch with saved page content",
+					cause: unstagedMatchesSavedBase._nay,
 				},
 			});
 		}
 
-		if (modifiedMatchesSavedBase._yay) {
+		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([
 				pages_db_cancel_pending_edit_cleanup_tasks(ctx, {
 					pendingEditId: pendingEdit._id,
@@ -743,9 +743,9 @@ export const save_pages_pending_edit = mutation({
 			ctx.db.patch("pages_pending_edits", pendingEdit._id, {
 				baseYjsSequence: nextBaseYjsSequence,
 				baseYjsUpdate: nextBaseYjsUpdate,
-				workingBranchYjsUpdate: nextBaseYjsUpdate,
-				modifiedBranchYjsUpdate: pages_pending_edit_encode_yjs_state_update({
-					yjsDoc: modifiedBranchYjsDoc,
+				stagedBranchYjsUpdate: nextBaseYjsUpdate,
+				unstagedBranchYjsUpdate: pages_pending_edit_encode_yjs_state_update({
+					yjsDoc: unstagedBranchYjsDoc,
 				}),
 				updatedAt: now,
 			}),

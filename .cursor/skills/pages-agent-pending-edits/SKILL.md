@@ -18,7 +18,7 @@ Use this when investigating or changing any part of the `/pages` pending-edits l
 
 These two commits define the current architecture:
 
-- `fadb7e41` - refactors pending edits from a simple markdown overlay into a Yjs-backed branch model with base, working, and modified branches.
+- `fadb7e41` - refactors pending edits from a simple markdown overlay into a Yjs-backed branch model with base, staged, and unstaged branches.
 - `ac866684` - adds row-scoped expiry, stale-task protection, and presence-driven TTL shortening/restoration.
 
 If current behavior seems confusing, read those commits first.
@@ -30,8 +30,8 @@ This is not a "one pending markdown blob" system anymore.
 Each pending edit row is a per-user, per-page Yjs snapshot that tracks three states:
 
 - `base`: the live page state the pending edit was built from.
-- `working`: the accepted/staged branch that save will persist.
-- `modified`: the unresolved/proposed branch shown on the modified side of the diff editor.
+- `staged`: the branch that save will persist.
+- `unstaged`: the unresolved/proposed branch shown on the modified side of the diff editor.
 
 That separation is what enables:
 
@@ -44,24 +44,24 @@ That separation is what enables:
 # End-to-end flow
 
 1. AI tools in `packages/app/server/server-ai-tools.ts` read page content through `internal.ai_docs_temp.get_page_last_available_markdown_content_by_path`.
-2. That read path overlays the current user's pending `modified` branch if one exists, so follow-up AI reads can see pending content instead of only committed markdown.
+2. That read path overlays the current user's pending `unstaged` branch if one exists, so follow-up AI reads can see pending content instead of only committed markdown.
 3. `write_page` and `edit_page` normalize line endings and trailing newline shape, compute a preview diff, then call `api.pages_pending_edit.upsert_pages_pending_edit_updates`.
-4. Agent calls omit `workingMarkdown`, so the backend preserves the current `working` branch and updates only `modified`.
+4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
 5. `upsert_pages_pending_edit_updates` in `packages/app/convex/pages_pending_edit.ts` creates or updates a row in `pages_pending_edits` for `(workspaceId, projectId, userId, pageId)`.
 6. `PageEditor` in `packages/app/src/components/page-editor/page-editor.tsx` queries `list_pages_pending_edits` and shows a floating banner whenever the user has any pending edits, even on a different page.
 7. `Review changes` switches the `/pages` route to `view=diff_editor`.
 8. `PageEditorDiff` in `packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx` bootstraps from the pending row if present, otherwise from live page Yjs state.
 9. In the diff editor:
-   - original side = `working` branch
-   - modified side = `modified` branch
+   - original side = `staged` branch
+   - modified side = `unstaged` branch
 10. Local Monaco edits debounce back into `upsert_pages_pending_edit_updates`, so the backend row stays close to the current review state.
-11. `Accept all` copies modified content into working content.
-12. `Discard all` copies working content into modified content.
+11. `Accept all` copies unstaged content into staged content.
+12. `Discard all` copies staged content into unstaged content.
 13. Those actions are editor-model operations first; the usual debounced upsert persists the new branch state and deletes the row if both branches now match the base.
 14. `Save` and `Accept all + save` flush pending upserts, then call `save_pages_pending_edit`.
-15. `save_pages_pending_edit` writes only the `working` diff into the live page Yjs stream through `pages_db_yjs_push_update`.
-16. If `modified` now matches the saved live page state, the row is deleted.
-17. If unresolved edits remain, the row stays alive, with `base` and `working` advanced to the saved live content and `modified` preserved as the unresolved branch.
+15. `save_pages_pending_edit` writes only the `staged` diff into the live page Yjs stream through `pages_db_yjs_push_update`.
+16. If `unstaged` now matches the saved live page state, the row is deleted.
+17. If unresolved edits remain, the row stays alive, with `base` and `staged` advanced to the saved live content and `unstaged` preserved as the unresolved branch.
 18. `Sync` rebases both branches on top of the latest live Yjs state and persists the rebased row with `persist_pages_pending_edit_rebased_state`.
 
 # Data model
@@ -75,8 +75,8 @@ Main table in `packages/app/convex/schema.ts`:
   - `pageId`
   - `baseYjsSequence`
   - `baseYjsUpdate`
-  - `workingBranchYjsUpdate`
-  - `modifiedBranchYjsUpdate`
+  - `stagedBranchYjsUpdate`
+  - `unstagedBranchYjsUpdate`
   - `updatedAt`
 
 Cleanup table:
@@ -106,9 +106,9 @@ Main pending-edit mutations and queries:
 
 Important behavior:
 
-- `upsert_pages_pending_edit_updates` reconstructs existing Yjs branch docs or clones the live base, projects incoming markdown into `modified`, projects `working` only when `workingMarkdown` is provided, and deletes the row if both branches match the base.
+- `upsert_pages_pending_edit_updates` reconstructs existing Yjs branch docs or clones the live base, projects incoming markdown into `unstaged`, projects `staged` only when `stagedMarkdown` is provided, and deletes the row if both branches match the base.
 - `persist_pages_pending_edit_rebased_state` rejects stale live bases and only accepts rebased state built from the current live page snapshot.
-- `save_pages_pending_edit` applies remote drift from base into both branches before saving, persists only the `working` diff to the live page, and keeps the row alive on partial save.
+- `save_pages_pending_edit` applies remote drift from base into both branches before saving, persists only the `staged` diff to the live page, and keeps the row alive on partial save.
 
 # `packages/app/server/pages.ts`
 
@@ -125,7 +125,7 @@ These helpers make cleanup row-scoped and keep one scheduled cleanup task per pe
 
 Two important roles:
 
-- `get_page_last_available_markdown_content_by_path` overlays the current user's pending `modified` branch onto reads.
+- `get_page_last_available_markdown_content_by_path` overlays the current user's pending `unstaged` branch onto reads.
 - `pages_db_yjs_push_update` writes accepted changes back into the live Yjs page stream.
 
 The overlay is easy to miss, but it is crucial: AI tools can chain from pending content before anything is committed.
@@ -262,7 +262,7 @@ Do not rely on the older nonexistent hooks:
 # Architectural invariants
 
 - Pending edits are per-user rows keyed by `(workspaceId, projectId, userId, pageId)`.
-- A pending row exists only while either `working` or `modified` differs from `base`.
+- A pending row exists only while either `staged` or `unstaged` differs from `base`.
 - `Review changes` must switch into diff mode.
 - `Accept all` does not save by itself.
 - `Discard all` does not call a special clear mutation.
@@ -270,12 +270,12 @@ Do not rely on the older nonexistent hooks:
 - `Sync` must rebase on top of the latest live page state before persisting.
 - Stale rebases must be rejected.
 - Active edits must keep refreshing their expiry window.
-- AI reads must continue to see the current user's pending `modified` branch overlay.
+- AI reads must continue to see the current user's pending `unstaged` branch overlay.
 
 # Common failure modes
 
 - Banner reappears because a debounced upsert lands after a save/sync path that did not flush first.
-- Pending row never clears because `modified` still differs from the saved live base after a partial save.
+- Pending row never clears because `unstaged` still differs from the saved live base after a partial save.
 - Sync fails with a stale-base error because the caller persisted a rebase built from an outdated live page state.
 - Follow-up AI tools appear inconsistent because they read overlayed pending content, not only committed markdown.
 - An already-open diff editor can fail to show a new agent proposal immediately if the client reconcile path preserves stale Monaco modified content over the newer remote pending row.
@@ -287,10 +287,10 @@ Do not rely on the older nonexistent hooks:
 When debugging, inspect these in order:
 
 1. Does `list_pages_pending_edits` or `get_pages_pending_edit` return the row you expect?
-2. Does the row's `base / working / modified` state explain the UI, or are you assuming a simpler single-markdown model?
+2. Does the row's `base / staged / unstaged` state explain the UI, or are you assuming a simpler single-markdown model?
 3. If the page is already open in `diff_editor`, did the mounted Monaco models actually adopt the latest pending row, or did client-side reconcile preserve older local model content?
 4. Did a save or sync path flush pending debounced upserts first?
-5. Is the row supposed to clear, or is this actually a partial-save case with unresolved `modified` content?
+5. Is the row supposed to clear, or is this actually a partial-save case with unresolved `unstaged` content?
 6. Is the live page state newer than the pending row's base?
 7. Is cleanup being rescheduled correctly for the latest `updatedAt`?
 8. Is presence shortening cleanup only after the last session disconnects?
@@ -303,8 +303,8 @@ When debugging, inspect these in order:
 - Confirm previous/next navigation can move across the pending queue.
 - In diff mode, verify per-hunk accept/discard updates the correct side.
 - `Accept all` should stage everything without saving.
-- `Discard all` should revert modified content back to working content.
-- `Save` should persist only the working branch and keep the row if unresolved modified content remains.
+- `Discard all` should revert unstaged content back to staged content.
+- `Save` should persist only the staged branch and keep the row if unresolved unstaged content remains.
 - `Accept all + save` should clear the row when no unresolved changes remain.
 - `Sync` should preserve local intent while rebasing on newer live page state.
 - Refresh after save/discard and confirm the row stays cleared unless a newer proposal exists.
