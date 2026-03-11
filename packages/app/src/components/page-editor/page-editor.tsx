@@ -603,7 +603,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 		onDiffExit,
 	} = props;
 
-	const allPendingEditsResult = useQuery(app_convex_api.pages_pending_edit.list_pages_pending_edits, {
+	const allPendingEditsResult = useQuery(app_convex_api.pages_pending_edits.list_pages_pending_edits, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 	});

@@ -55,7 +55,7 @@ export {
 	get_pages_pending_edit_last_sequence_saved,
 	list_pages_pending_edits,
 	save_pages_pending_edit,
-} from "./pages_pending_edit.ts";
+} from "./pages_pending_edits.ts";
 
 export const threads_list = query({
 	args: {

@@ -41,13 +41,18 @@ That separation is what enables:
 - sync/rebase against newer live page state;
 - safe deletion only when both branches collapse back to the live base.
 
+There is also a separate save marker:
+
+- `pages_pending_edits_last_sequence_saved` stores the last live page Yjs sequence produced by `save_pages_pending_edit` for `(workspaceId, projectId, userId, pageId)`.
+- This marker exists so an already-open diff editor in another tab can distinguish "the pending row disappeared because of a real save" from "the pending row disappeared because local edits collapsed back to base without saving".
+
 # End-to-end flow
 
 1. AI tools in `packages/app/server/server-ai-tools.ts` read page content through `internal.ai_docs_temp.get_page_last_available_markdown_content_by_path`.
 2. That read path overlays the current user's pending `unstaged` branch if one exists, so follow-up AI reads can see pending content instead of only committed markdown.
-3. `write_page` and `edit_page` normalize line endings and trailing newline shape, compute a preview diff, then call `api.pages_pending_edit.upsert_pages_pending_edit_updates`.
+3. `write_page` and `edit_page` normalize line endings and trailing newline shape, compute a preview diff, then call `api.pages_pending_edits.upsert_pages_pending_edit_updates`.
 4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
-5. `upsert_pages_pending_edit_updates` in `packages/app/convex/pages_pending_edit.ts` creates or updates a row in `pages_pending_edits` for `(workspaceId, projectId, userId, pageId)`.
+5. `upsert_pages_pending_edit_updates` in `packages/app/convex/pages_pending_edits.ts` creates or updates a row in `pages_pending_edits` for `(workspaceId, projectId, userId, pageId)`.
 6. `PageEditor` in `packages/app/src/components/page-editor/page-editor.tsx` queries `list_pages_pending_edits` and shows a floating banner whenever the user has any pending edits, even on a different page.
 7. `Review changes` switches the `/pages` route to `view=diff_editor`.
 8. `PageEditorDiff` in `packages/app/src/components/page-editor/page-editor-diff/page-editor-diff.tsx` bootstraps from the pending row if present, otherwise from live page Yjs state.
@@ -60,9 +65,10 @@ That separation is what enables:
 13. Those actions are editor-model operations first; the usual debounced upsert persists the new branch state and deletes the row if both branches now match the base.
 14. `Save` and `Accept all + save` flush pending upserts, then call `save_pages_pending_edit`.
 15. `save_pages_pending_edit` writes only the `staged` diff into the live page Yjs stream through `pages_db_yjs_push_update`.
-16. If `unstaged` now matches the saved live page state, the row is deleted.
-17. If unresolved edits remain, the row stays alive, with `base` and `staged` advanced to the saved live content and `unstaged` preserved as the unresolved branch.
-18. `Sync` rebases both branches on top of the latest live Yjs state and persists the rebased row with `persist_pages_pending_edit_rebased_state`.
+16. `save_pages_pending_edit` also upserts `pages_pending_edits_last_sequence_saved` with the resolved saved base sequence, even when the live page already matched the staged branch and no new Yjs update packet was inserted.
+17. If `unstaged` now matches the saved live page state, the row is deleted.
+18. If unresolved edits remain, the row stays alive, with `base` and `staged` advanced to the saved live content and `unstaged` preserved as the unresolved branch.
+19. `Sync` rebases both branches on top of the latest live Yjs state and persists the rebased row with `persist_pages_pending_edit_rebased_state`.
 
 # Data model
 
@@ -79,6 +85,16 @@ Main table in `packages/app/convex/schema.ts`:
   - `unstagedBranchYjsUpdate`
   - `updatedAt`
 
+Saved-sequence marker table:
+
+- `pages_pending_edits_last_sequence_saved`
+  - `workspaceId`
+  - `projectId`
+  - `userId`
+  - `pageId`
+  - `lastSequenceSaved`
+  - `updatedAt`
+
 Cleanup table:
 
 - `pages_pending_edits_cleanup_tasks`
@@ -90,6 +106,8 @@ Important consequence:
 
 - The authoritative identity is per user, not global per page.
 - Two users can each have independent pending edits on the same page.
+- The save marker is also per user, not global per page.
+- The save marker is additive: old pages may legitimately have no row until that user performs the first pending-edit save after rollout.
 
 # Backend responsibilities
 
@@ -100,6 +118,7 @@ Main pending-edit mutations and queries:
 - `upsert_pages_pending_edit_updates`
 - `persist_pages_pending_edit_rebased_state`
 - `get_pages_pending_edit`
+- `get_pages_pending_edit_last_sequence_saved`
 - `list_pages_pending_edits`
 - `save_pages_pending_edit`
 - `remove_pages_pending_edit_if_expired`
@@ -108,7 +127,8 @@ Important behavior:
 
 - `upsert_pages_pending_edit_updates` reconstructs existing Yjs branch docs or clones the live base, projects incoming markdown into `unstaged`, projects `staged` only when `stagedMarkdown` is provided, and deletes the row if both branches match the base.
 - `persist_pages_pending_edit_rebased_state` rejects stale live bases and only accepts rebased state built from the current live page snapshot.
-- `save_pages_pending_edit` applies remote drift from base into both branches before saving, persists only the `staged` diff to the live page, and keeps the row alive on partial save.
+- `save_pages_pending_edit` applies remote drift from base into both branches before saving, persists only the `staged` diff to the live page, writes the saved-sequence marker, and keeps the row alive on partial save.
+- `upsert_pages_pending_edit_updates` and `persist_pages_pending_edit_rebased_state` do not touch the saved-sequence marker.
 
 # `packages/app/server/pages.ts`
 
@@ -165,6 +185,9 @@ Important nuances:
 - `Accept all` and `Discard all` mutate editor models first; the regular upsert path later persists or deletes the row.
 - Save and sync both flush pending debounced writes first to avoid races with older queued upserts.
 - `PageEditorDiff` has two distinct client phases: bootstrap on mount, then reconcile later `pendingEdit` updates into already-mounted Monaco models.
+- `PageEditorDiff` also reads `get_pages_pending_edit_last_sequence_saved`, but it must not treat that marker like a generic live-update subscription.
+- The current intended behavior is: when there is no active pending row and `lastSequenceSaved` advances past the tab's in-memory `pageContentData.yjsSequence`, refetch the live page content once.
+- Do not trigger that refetch from `get_page_last_yjs_sequence` alone, because unrelated live edits should still require explicit `Sync`.
 - When the diff editor is already open and a newer remote pending row arrives, the reconcile path must not blindly preserve stale Monaco modified content.
 - The current intended behavior is: if there is no real local unsynced draft, adopt the incoming remote pending state directly; only use the merge/rebase path when preserving actual local draft intent.
 - If the diff editor is already mounted, treat Monaco model contents as local draft candidates, not automatically as authoritative local intent; provenance matters more than content equality.
@@ -205,7 +228,7 @@ Race protection:
 
 # Test coverage
 
-The main backend coverage lives in `packages/app/convex/ai-chat-pending-edits.test.ts`.
+The main backend coverage lives in `packages/app/convex/pages_pending_edits.test.ts`.
 
 Important covered behaviors:
 
@@ -218,6 +241,9 @@ Important covered behaviors:
 - partial save preserves unresolved row;
 - full save clears row;
 - save while live page drift exists;
+- save marker row is written on full save;
+- save marker row is written on partial save;
+- save marker row is not written by non-save pending/rebase paths;
 - rebased-state persistence;
 - rebased-state deletion when no diff remains;
 - stale-base rejection;
@@ -276,6 +302,7 @@ Do not rely on the older nonexistent hooks:
 
 - Banner reappears because a debounced upsert lands after a save/sync path that did not flush first.
 - Pending row never clears because `unstaged` still differs from the saved live base after a partial save.
+- An already-open diff editor in another tab can stay stale if it relies only on pending-row deletion and never checks the saved-sequence marker against its local page sequence.
 - Sync fails with a stale-base error because the caller persisted a rebase built from an outdated live page state.
 - Follow-up AI tools appear inconsistent because they read overlayed pending content, not only committed markdown.
 - An already-open diff editor can fail to show a new agent proposal immediately if the client reconcile path preserves stale Monaco modified content over the newer remote pending row.
@@ -287,13 +314,14 @@ Do not rely on the older nonexistent hooks:
 When debugging, inspect these in order:
 
 1. Does `list_pages_pending_edits` or `get_pages_pending_edit` return the row you expect?
-2. Does the row's `base / staged / unstaged` state explain the UI, or are you assuming a simpler single-markdown model?
-3. If the page is already open in `diff_editor`, did the mounted Monaco models actually adopt the latest pending row, or did client-side reconcile preserve older local model content?
-4. Did a save or sync path flush pending debounced upserts first?
-5. Is the row supposed to clear, or is this actually a partial-save case with unresolved `unstaged` content?
-6. Is the live page state newer than the pending row's base?
-7. Is cleanup being rescheduled correctly for the latest `updatedAt`?
-8. Is presence shortening cleanup only after the last session disconnects?
+2. What does `get_pages_pending_edit_last_sequence_saved` return for this user/page, and is `lastSequenceSaved` newer than the tab's local `pageContentData.yjsSequence`?
+3. Does the row's `base / staged / unstaged` state explain the UI, or are you assuming a simpler single-markdown model?
+4. If the page is already open in `diff_editor`, did the mounted Monaco models actually adopt the latest pending row, or did client-side reconcile preserve older local model content?
+5. Did a save or sync path flush pending debounced upserts first?
+6. Is the row supposed to clear, or is this actually a partial-save case with unresolved `unstaged` content?
+7. Is the live page state newer than the pending row's base?
+8. Is cleanup being rescheduled correctly for the latest `updatedAt`?
+9. Is presence shortening cleanup only after the last session disconnects?
 
 # Verification checklist
 
@@ -306,5 +334,7 @@ When debugging, inspect these in order:
 - `Discard all` should revert unstaged content back to staged content.
 - `Save` should persist only the staged branch and keep the row if unresolved unstaged content remains.
 - `Accept all + save` should clear the row when no unresolved changes remain.
+- With two tabs open in diff mode, save from one tab and confirm the other tab refetches only because `lastSequenceSaved` advanced past its local page sequence.
+- Collapse a pending row back to base without saving and confirm the other tab does not perform that same refetch.
 - `Sync` should preserve local intent while rebasing on newer live page state.
 - Refresh after save/discard and confirm the row stays cleared unless a newer proposal exists.

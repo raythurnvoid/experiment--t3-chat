@@ -15,7 +15,7 @@ Primary:
 
 Related:
 
-- `../../../packages/app/convex/pages_pending_edit.ts`
+- `../../../packages/app/convex/pages_pending_edits.ts`
 - `../../../packages/app/server/pages-markdown-chunking-mastra.ts`
 - `../../../references-submodules/opencode/packages/opencode/src/tool/edit.ts`
 
@@ -220,7 +220,7 @@ Reads:
 
 Writes:
 
-- `write_page` and `edit_page` call `api.pages_pending_edit.upsert_pages_pending_edit_updates`.
+- `write_page` and `edit_page` call `api.pages_pending_edits.upsert_pages_pending_edit_updates`.
 - They update the current user's pending `modified` branch.
 - The client is expected to open a diff/review UI before the live page changes.
 

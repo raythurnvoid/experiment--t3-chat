@@ -122,7 +122,7 @@ export async function pages_db_schedule_pending_edit_cleanup(
 			.collect(),
 		ctx.scheduler.runAfter(
 			args.delayMs ?? 4 * 60 * 60 * 1000,
-			internal.pages_pending_edit.remove_pages_pending_edit_if_expired,
+			internal.pages_pending_edits.remove_pages_pending_edit_if_expired,
 			{
 				pendingEditId: args.pendingEditId,
 				expectedUpdatedAt: args.expectedUpdatedAt,
