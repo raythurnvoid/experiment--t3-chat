@@ -345,9 +345,13 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			// The messages we send are the ones we want to persist.
 			const messagesToAppend = options.trigger === "regenerate-message" ? [] : options.messages.slice(-1);
 
-			// The `parentId` is the id of the persisted message to which we want to append the new message.
+			// Keep submit-message requests anchored to the persisted parent chosen during `sendUserText`.
+			// After `stop`, `options.messages.at(-2)?.id` can still be the optimistic assistant id,
+			// which creates a bogus sibling branch or a reconstruction failure.
 			const parentId =
-				options.trigger === "regenerate-message" ? options.messages.at(-1)?.id : (options.messages.at(-2)?.id ?? null);
+				options.trigger === "regenerate-message"
+					? options.messages.at(-1)?.id
+					: (messagesToAppend.at(-1)?.metadata?.convexParentId ?? null);
 
 			const metadata = options.requestMetadata as ChatRequestMetadata;
 
@@ -736,13 +740,23 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 		const targetMessage = options?.messageId ? activeBranchMessages?.mapById.get(options.messageId) : null;
 		const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
+		const latestMessage = activeBranchMessages.list.at(-1);
 
-		chat.messages =
+		// Prevent the UI from breaking by hiding unnecessary optimistic messages
+		// that can be created as the user stop and adds a new message to the chat
+		// 1 or more times
+		const shouldDropOptimisticAssistant = Boolean(
+			!targetMessage && latestMessage?.role === "assistant" && !latestMessage.metadata?.convexId,
+		);
+		const nextChatMessages =
 			targetMessageIndex !== undefined && targetMessageIndex >= 0
 				? activeBranchMessages.list.slice(0, targetMessageIndex)
-				: activeBranchMessages.list;
+				: shouldDropOptimisticAssistant
+					? activeBranchMessages.list.slice(0, -1)
+					: activeBranchMessages.list;
 
-		const latestMessage = activeBranchMessages.list.at(-1);
+		chat.messages = nextChatMessages;
+
 		const parentMessageIds = targetMessage
 			? {
 					convexParentId: targetMessage.metadata?.convexParentId ?? null,
