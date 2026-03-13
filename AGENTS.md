@@ -476,6 +476,7 @@ Use `snake_case` for root-level value symbols such as `const`, `let`, `function`
 
 - Exported/public values often use a module prefix for discoverability, for example `pages_*`, `ai_chat_*`, `app_*`, `storage_*`.
 - Non-exported helpers can use plain descriptive `snake_case` when a module prefix would add noise.
+- Do not add a module prefix to a private helper just because it lives in that module. If a helper is not exported and is only local glue, prefer plain `snake_case` such as `strip_provider_metadata_from_message_parts`, not `ai_chat_strip_provider_metadata_from_message_parts`.
 - Keep well-established exceptions when they improve clarity or match external APIs: hooks use `useXxx`, short shared utilities may stay `cn` / `sx`, and wrappers over external APIs may preserve existing camelCase names.
 
 ### Root-Level Type-Like Symbols (PascalCase suffix)

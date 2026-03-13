@@ -414,10 +414,10 @@
 		width: 100%;
 	}
 
-	.AiChatMessageAgent-stream-interrupted-message {
+	.AiChatMessageAgent-error {
 		padding-inline: 24px;
 
-		color: var(--color-fg-05);
+		color: var(--color-red-10);
 	}
 
 	.AiChatMessageAgent-actions {

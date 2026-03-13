@@ -74,6 +74,7 @@ export type ai_chat_AiSdk5UiDataPart = DataUIPart<ai_chat_AiSdk5UiDataParts>;
 
 export type ai_chat_AiSdk5UiMessage = UIMessage<
 	Record<string, unknown> & {
+		status?: "aborted" | "errored" | undefined;
 		convexId?: string | undefined;
 		convexParentId?: string | null | undefined;
 		parentClientGeneratedId: string | null;

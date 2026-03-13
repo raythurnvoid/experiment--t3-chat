@@ -1,5 +1,5 @@
 import { Chat, useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls, type ChatOnFinishCallback } from "ai";
 import { useEffect, useMemo } from "react";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { create } from "zustand";
@@ -25,6 +25,7 @@ type ThreadChatArgs = {
 	chatId: string | null;
 	initialMessages?: ai_chat_AiSdk5UiMessage[] | undefined;
 	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>;
+	onFinish?: (options: ThreadChatOnFinish) => void;
 };
 
 type ThreadSession = {
@@ -49,6 +50,10 @@ type ThreadStore = {
 
 type ChatRequestMetadata = {
 	isOptimistic: boolean;
+};
+
+type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessage>>[0] & {
+	chatId: string;
 };
 
 const useAiChatStore = ((/* iife */) => {
@@ -113,21 +118,40 @@ function create_optimistic_thread(): ai_chat_Thread {
 	};
 }
 
-/**
- * Returns a message parent id.
- *
- * `null` means the message is a root message (no parent).
- */
-export function ai_chat_get_parent_id(parentId?: string | null) {
-	return parentId ?? null;
-}
-
 export function ai_chat_is_optimistic_thread(thread?: ai_chat_Thread | null) {
 	const clientGeneratedId = thread?.clientGeneratedId;
 	if (!clientGeneratedId) {
 		return false;
 	}
 	return thread._id === clientGeneratedId;
+}
+
+function strip_provider_metadata_from_message_parts(message: ai_chat_AiSdk5UiMessage) {
+	return {
+		...message,
+		parts: message.parts?.map((part) => {
+			if (!("providerMetadata" in part)) {
+				return part;
+			}
+
+			const { providerMetadata: _providerMetadata, ...partWithoutProviderMetadata } = part;
+			return partWithoutProviderMetadata;
+		}) as ai_chat_AiSdk5UiMessage["parts"],
+	} satisfies ai_chat_AiSdk5UiMessage;
+}
+
+function message_has_visible_parts(message: ai_chat_AiSdk5UiMessage) {
+	return message.parts.some((part) => {
+		if (part.type.startsWith("data-") || part.type === "step-start") {
+			return false;
+		}
+
+		if ("text" in part) {
+			return part.text.trim().length > 0;
+		}
+
+		return true;
+	});
 }
 
 const thread_session_create = (args?: {
@@ -144,11 +168,7 @@ const thread_session_create = (args?: {
 	} satisfies ThreadSession;
 };
 
-function create_chat_instance(args: {
-	chatId: string | null;
-	initialMessages?: ai_chat_AiSdk5UiMessage[] | undefined;
-	prepareSendMessagesRequest: NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>;
-}) {
+function create_chat_instance(args: ThreadChatArgs) {
 	const chat = new Chat<ai_chat_AiSdk5UiMessage>({
 		id: args.chatId ?? generate_id("ai_thread"),
 		generateId: get_id_generator("ai_message"),
@@ -204,6 +224,9 @@ function create_chat_instance(args: {
 				}
 			}
 		},
+		onFinish: (options) => {
+			args.onFinish?.({ ...options, chatId: chat.id });
+		},
 	});
 
 	return chat;
@@ -224,13 +247,16 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	);
 
 	const threads = usePaginatedQuery(app_convex_api.ai_chat.threads_list, { archived: false }, { initialNumItems: 100 });
+
 	const archivedThreads = usePaginatedQuery(
 		app_convex_api.ai_chat.threads_list,
 		includeArchived ? { archived: true } : "skip",
 		{ initialNumItems: 100 },
 	);
+
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
+	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
 
 	const persistedThreadMessages = useQuery(
 		app_convex_api.ai_chat.thread_messages_list,
@@ -303,6 +329,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				role: dbMessageContent.role,
 				parts: dbMessageContent.parts,
 				metadata: {
+					...(dbMessageContent.metadata ?? {}),
 					convexId: message._id,
 					convexParentId: message.parentId,
 					parentClientGeneratedId: dbMessageContent.metadata?.parentClientGeneratedId ?? null,
@@ -311,7 +338,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 			result.mapById.set(message._id, uiMessage);
 
-			const parentIdOrRoot = ai_chat_get_parent_id(message.parentId);
+			const parentIdOrRoot = message.parentId ?? null;
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
 				result.childrenByParentId.get(parentIdOrRoot)?.push(uiMessage);
 			} else {
@@ -382,9 +409,51 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		);
 	});
 
+	const handleChatFinish = useLiveRef<(options: ThreadChatOnFinish) => void>((options) => {
+		if (!options.isAbort) {
+			return;
+		}
+
+		if (options.message.role !== "assistant") {
+			return;
+		}
+
+		if (options.message.metadata?.convexId || !message_has_visible_parts(options.message)) {
+			return;
+		}
+
+		const session = useAiChatStore.actions.getSession(options.chatId);
+		const threadId =
+			session?.optimisticThread && options.chatId === session.optimisticThread._id
+				? null
+				: (options.chatId as app_convex_Id<"ai_chat_threads">);
+
+		if (!threadId) {
+			return;
+		}
+
+		addThreadMessages({
+			threadId,
+			parentId: options.message.metadata?.convexParentId ?? null,
+			messages: [
+				{
+					clientGeneratedMessageId: options.message.id,
+					content: strip_provider_metadata_from_message_parts(options.message),
+				},
+			],
+		}).catch((error) => {
+			console.error("[useAiChatController.handleChatFinish] Failed to persist aborted assistant message", {
+				error,
+				threadId,
+				messageId: options.message.id,
+			});
+		});
+	});
+
 	const unselectedChatInstance = create_chat_instance({
 		chatId: null,
 		prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
+		onFinish: (options) => handleChatFinish.current(options),
 	});
 
 	const activeChatInstance = ((/* iife */) => {
@@ -402,6 +471,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			const createdChat = create_chat_instance({
 				chatId: selectedThreadId,
 				prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
+				onFinish: (options) => handleChatFinish.current(options),
 			});
 
 			useAiChatStore.actions.setSession(selectedThreadId, (prev) => {
@@ -460,7 +530,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				// AI SDK chat object, therefore it displays still as a pending message.
 				if (!parentId) parentId = message.metadata?.parentClientGeneratedId;
 
-				return ai_chat_get_parent_id(parentId);
+				return parentId ?? null;
 			})();
 
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
@@ -561,6 +631,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		const optimisticChat = create_chat_instance({
 			chatId: optimisticThread._id,
 			prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
+			onFinish: (options) => handleChatFinish.current(options),
 		});
 		useAiChatStore.actions.setSession(optimisticThread._id, () => {
 			return thread_session_create({ optimisticThread: optimisticThread, chat: optimisticChat });
@@ -608,6 +679,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			const threadChat = create_chat_instance({
 				chatId: threadId,
 				prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
+				onFinish: (options) => handleChatFinish.current(options),
 			});
 			useAiChatStore.actions.setSession(threadId, (prev) => {
 				const base = prev ?? thread_session_create();
@@ -828,6 +900,15 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		});
 	};
 
+	const stop = () => {
+		chat.stop().catch((error) => {
+			console.error("[useAiChatController.stop] Failed to stop chat", {
+				error,
+				chatId: activeChatInstance.id,
+			});
+		});
+	};
+
 	const isRunning = chat.status === "submitted" || chat.status === "streaming";
 
 	const status = ((/* iife */) => {
@@ -887,8 +968,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		streamingTitleByThreadId,
 
 		status,
-		error: chat.error,
 		isRunning,
+		error: chat.error,
 		activeBranchMessages,
 		messagesChildrenByParentId,
 
@@ -902,10 +983,9 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		setComposerValue,
 		sendUserText,
 		regenerate,
-		stop: chat.stop,
+		stop,
 		resumeStream: chat.resumeStream,
 		addToolOutput: chat.addToolOutput,
-		clearError: chat.clearError,
 		setMessages: chat.setMessages,
 	};
 };

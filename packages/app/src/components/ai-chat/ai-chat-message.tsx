@@ -27,7 +27,6 @@ import { ai_chat_get_message_text, type ai_chat_AiSdk5UiMessage, type ai_chat_Ai
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
-import { ai_chat_get_parent_id } from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
@@ -1199,7 +1198,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 	} = props;
 
 	const branchMetadata = ((/* iife */) => {
-		const siblings = messagesChildrenByParentId.get(ai_chat_get_parent_id(message.metadata?.convexParentId)) ?? [];
+		const siblings = messagesChildrenByParentId.get(message.metadata?.convexParentId ?? null) ?? [];
 		const currentIndex = siblings.indexOf(message);
 
 		return {
@@ -1222,7 +1221,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 			return;
 		}
 
-		const parentId = ai_chat_get_parent_id(message.metadata?.convexParentId);
+		const parentId = message.metadata?.convexParentId ?? null;
 
 		onEditStart({ messageId: message.id, parentId });
 	};
@@ -1240,7 +1239,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 		if (isRunning) {
 			return;
 		}
-		if (!branchMetadata || !selectedThreadId) {
+		if (!selectedThreadId) {
 			return;
 		}
 
@@ -1361,7 +1360,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 type AiChatMessageAgent_ClassNames =
 	| "AiChatMessageAgent"
 	| "AiChatMessageAgent-bubble"
-	| "AiChatMessageAgent-stream-interrupted-message"
+	| "AiChatMessageAgent-error"
 	| "AiChatMessageAgent-actions"
 	| "AiChatMessageAgent-action-button"
 	| "AiChatMessageAgent-action-icon"
@@ -1406,7 +1405,7 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 	} = props;
 
 	const branchMetadata = ((/* iife */) => {
-		const siblings = messagesChildrenByParentId.get(ai_chat_get_parent_id(message.metadata?.convexParentId)) ?? [];
+		const siblings = messagesChildrenByParentId.get(message.metadata?.convexParentId ?? null) ?? [];
 		const currentIndex = siblings.indexOf(message);
 
 		return {
@@ -1418,6 +1417,7 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 
 	// TODO: Allow copying tool data even when there is no message text.
 	const text = ai_chat_get_message_text(message);
+	const streamErrorText = message.metadata?.status === "errored" ? "An error occurred during the generation" : null;
 
 	const handleReload = () => {
 		if (!selectedThreadId) {
@@ -1437,7 +1437,7 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 		if (isRunning) {
 			return;
 		}
-		if (!branchMetadata || !selectedThreadId) {
+		if (!selectedThreadId) {
 			return;
 		}
 
@@ -1466,8 +1466,8 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 		handleBranchSwitch("next");
 	};
 
-	const showBranchControls = Boolean(branchMetadata && branchMetadata.variantCount > 1);
-	const branchLabel = branchMetadata ? `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}` : "";
+	const showBranchControls = branchMetadata.variantCount > 1;
+	const branchLabel = `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}`;
 
 	return (
 		<AiChatMessageContainer
@@ -1484,6 +1484,9 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
 				/>
+				{streamErrorText && (
+					<div className={"AiChatMessageAgent-error" satisfies AiChatMessageAgent_ClassNames}>{streamErrorText}</div>
+				)}
 				<div className={"AiChatMessageAgent-actions" satisfies AiChatMessageAgent_ClassNames} hidden={isEditing}>
 					<CopyIconButton
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}

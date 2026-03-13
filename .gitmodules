@@ -76,3 +76,6 @@
 [submodule "packages/app/vendor/mastra"]
 	path = packages/app/vendor/mastra
 	url = https://github.com/raythurnvoid/mastra.git
+[submodule "references-submodules/agent"]
+	path = references-submodules/agent
+	url = https://github.com/get-convex/agent.git

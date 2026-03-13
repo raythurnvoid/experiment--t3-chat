@@ -12,7 +12,7 @@ import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor 
 import { cn } from "@/lib/utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
-import { ai_chat_get_parent_id, useAiChatController, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import { useAiChatController, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import {
 	AiChatComposer,
 	type AiChatComposer_ClassNames,
@@ -163,7 +163,7 @@ function AiChatSkeleton() {
 // #endregion skeleton
 
 // #region message list
-type AiChatMessagesList_ClassNames = "AiChatMessageList";
+type AiChatMessagesList_ClassNames = "AiChatMessageList" | "AiChatMessageList-error";
 
 type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
@@ -175,6 +175,7 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	messagesChildrenByParentId: ReturnType<typeof useAiChatController>["messagesChildrenByParentId"];
 	isRunning: boolean;
 	status: AiChatController["status"];
+	error: AiChatController["error"];
 	editingMessageId: string | null;
 	onToolOutput: AiChatMessage_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessage_Props["onToolResumeStream"];
@@ -198,6 +199,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 		messagesChildrenByParentId,
 		isRunning,
 		status,
+		error,
 		editingMessageId,
 		onToolOutput,
 		onToolResumeStream,
@@ -222,6 +224,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 	// we cannot rely on `messageCount === 0` because we might have optimistic message,
 	// stored that might prevent the skeleton from being shown.
 	const shouldShowSkeleton = status === "loading" && !isRunning;
+	const streamErrorText = error ? "An error occurred during the generation" : null;
 
 	const handleSuggestionClick = (action: string) => {
 		onClickSuggestion(action);
@@ -264,6 +267,9 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 						onSelectBranchAnchor={onSelectBranchAnchor}
 					/>
 				))
+			)}
+			{streamErrorText && (
+				<div className={"AiChatMessageList-error" satisfies AiChatMessagesList_ClassNames}>{streamErrorText}</div>
 			)}
 		</div>
 	);
@@ -603,7 +609,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 						event.preventDefault();
 						handleEditStart({
 							messageId: focusedMessage.id,
-							parentId: ai_chat_get_parent_id(focusedMessage.metadata?.convexParentId),
+							parentId: focusedMessage.metadata?.convexParentId ?? null,
 						});
 						break;
 					}
@@ -687,6 +693,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 					messagesChildrenByParentId={controller.messagesChildrenByParentId}
 					isRunning={controller.isRunning}
 					status={controller.status}
+					error={controller.error}
 					editingMessageId={editingMessageId}
 					onEditStart={handleEditStart}
 					onEditCancel={handleEditCancel}

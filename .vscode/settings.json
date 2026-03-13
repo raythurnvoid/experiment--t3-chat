@@ -22,7 +22,7 @@
 	"files.associations": {
 		"*.css": "tailwindcss",
 	},
-	"terminal.integrated.cwd": "packages/app",
+	"terminal.integrated.cwd": "${workspaceFolder}/packages/app",
 	"typescript.tsdk": "node_modules/typescript/lib",
 	"typescript.enablePromptUseWorkspaceTsdk": true,
 	"typescript.preferences.importModuleSpecifier": "relative",

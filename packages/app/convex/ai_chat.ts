@@ -4,14 +4,9 @@ import {
 	omit_properties,
 	should_never_happen,
 } from "../shared/shared-utils.ts";
-import { type ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
+import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
-import {
-	query,
-	mutation,
-	httpAction,
-	type ActionCtx,
-} from "./_generated/server.js";
+import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
 import { paginationOptsValidator, type RouteSpec } from "convex/server";
 import { v } from "convex/values";
@@ -146,6 +141,13 @@ export const thread_create = mutation({
 	},
 });
 
+/**
+ * Branch a thread by creating a new thread with the same source thread as parent.
+ *
+ * @param args.threadId - The ID of the source thread to branch from.
+ * @param args.messageId - The ID of the message to start the new thread from.
+ * 													Must be a convex generated ID of a persisted message.
+ */
 export const thread_branch = mutation({
 	args: {
 		threadId: v.string(),
@@ -431,6 +433,8 @@ export const thread_messages_list = query({
 
 /**
  * Mutation to add one or more messages to a thread.
+ *
+ * It won't check for duplicates.
  */
 export const thread_messages_add = mutation({
 	args: {
@@ -455,7 +459,6 @@ export const thread_messages_add = mutation({
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
 		const ids: Array<app_convex_Id<"ai_chat_threads_messages_aisdk_5">> = [];
-
 		let nextParentId = parentId;
 		for (const message of args.messages) {
 			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
@@ -586,7 +589,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								let createdThreadId = null;
 
 								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
-								let uiMessages: ai_chat_AiSdk5UiMessage[] = [];
+								const uiMessages: ai_chat_AiSdk5UiMessage[] = [];
 
 								if (body.threadId) {
 									const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
@@ -687,13 +690,13 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											}
 										}
 
-										uiMessages = reconstructedMessages.reverse().map(
-											(msg) =>
-												({
-													...(msg.content as any),
-													id: msg._id,
-												}) as ai_chat_AiSdk5UiMessage,
-										);
+										for (let i = reconstructedMessages.length - 1; i >= 0; i--) {
+											const msg = reconstructedMessages[i];
+											uiMessages.push({
+												...(msg.content as any),
+												id: msg._id,
+											});
+										}
 									} while (0);
 								}
 
@@ -711,23 +714,22 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										messages: requestMessagesToAdd,
 									});
 
-									uiMessages.push(
-										...requestMessages.map((requestMessage, index) => {
-											const persistedMessageId = persistedRequestMessages.ids[index];
-											if (!persistedMessageId) {
-												throw should_never_happen("Failed to map request message to persisted message ID", {
-													threadId,
-													requestMessageId: requestMessage.id,
-													index,
-												});
-											}
+									for (let i = 0; i < requestMessages.length; i++) {
+										const requestMessage = requestMessages[i];
+										const persistedMessageId = persistedRequestMessages.ids[i];
+										if (!persistedMessageId) {
+											throw should_never_happen("Failed to map request message to persisted message ID", {
+												threadId,
+												requestMessageId: requestMessage.id,
+												index: i,
+											});
+										}
 
-											return {
-												...requestMessage,
-												id: persistedMessageId,
-											};
-										}),
-									);
+										uiMessages.push({
+											...requestMessage,
+											id: persistedMessageId,
+										} satisfies ai_chat_AiSdk5UiMessage);
+									}
 
 									resolvedParentId = persistedRequestMessages.ids.at(-1) ?? resolvedParentId;
 									resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
@@ -753,7 +755,11 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									edit_page: ai_chat_tool_create_edit_page(ctx),
 								} as const;
 
-								const modelMessages = convertToModelMessages(uiMessages);
+								const modelMessages = convertToModelMessages(uiMessages, {
+									ignoreIncompleteToolCalls: true,
+								});
+
+								let didStreamError = false;
 
 								const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
 									generateId: get_id_generator("ai_message"),
@@ -793,9 +799,17 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											toolChoice: "auto",
 											stopWhen: stepCountIs(5),
 											tools,
+											onAbort: async () => {
+												console.info("[ai_chat_http_routes./api/chat] streamText.onAbort", {
+													threadId,
+													parentId: resolvedParentId,
+													requestSignalAborted: request.signal.aborted,
+												});
+											},
 										});
 
-										writer.merge(result1.toUIMessageStream());
+										const ui_message_stream = result1.toUIMessageStream<ai_chat_AiSdk5UiMessage>();
+										writer.merge(ui_message_stream);
 
 										if (request.signal.aborted) {
 											return;
@@ -810,6 +824,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										const thread = await ctx.runQuery(api.ai_chat.thread_get, { threadId });
 										const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
 
+										// Generate a title for the new thread
 										if (thread && !existingTitle) {
 											try {
 												if (request.signal.aborted) {
@@ -862,24 +877,49 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										}
 									},
 									onError: (error: unknown) => {
+										didStreamError = true;
 										console.error("AI chat stream error:", error);
 										return error instanceof Error ? error.message : String(error);
 									},
 									onFinish: async (result) => {
 										try {
-											if (request.signal.aborted || !result.responseMessage) {
+											if (!result.responseMessage) {
 												return;
 											}
 
+											if (result.isAborted) {
+												console.info("[ai_chat_http_routes./api/chat] createUIMessageStream.onFinish aborted", {
+													threadId,
+													parentId: resolvedParentId,
+													isAborted: result.isAborted,
+													didStreamError,
+													hasResponseMessage: Boolean(result.responseMessage),
+												});
+												return;
+											}
+
+											const responseMessage = {
+												...result.responseMessage,
+												...(result.isAborted || didStreamError
+													? {
+															metadata: {
+																...(result.responseMessage.metadata ?? {}),
+																status: result.isAborted ? ("aborted" as const) : ("errored" as const),
+																parentClientGeneratedId:
+																	result.responseMessage.metadata?.parentClientGeneratedId ?? null,
+															},
+														}
+													: {}),
+											} satisfies ai_chat_AiSdk5UiMessage;
+
 											const messagesToAdd = [
 												{
-													clientGeneratedMessageId: result.responseMessage.id,
-													content: result.responseMessage,
+													clientGeneratedMessageId: responseMessage.id,
+													content: responseMessage,
 												},
 											];
 
-											// Persist the assistant response below the last persisted request message.
-											// This keeps user edits durable even when generation was previously stopped.
+											// Persist completed assistant responses below the last persisted request message.
 											await ctx.runMutation(api.ai_chat.thread_messages_add, {
 												threadId: threadId as app_convex_Id<"ai_chat_threads">,
 												parentId: resolvedParentId,

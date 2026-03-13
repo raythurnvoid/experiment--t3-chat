@@ -1,4 +1,8 @@
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
+
+export function delay(timeout: number) {
+	return new Promise((resolve) => setTimeout(resolve, timeout));
+}
 
 /**
  * Create a deferred object with a status property.
@@ -108,6 +112,21 @@ export function usePromiseValue<T>(promise: Promise<T>) {
 	}
 
 	return undefined;
+}
+
+/**
+ * Returns a promise that resolves after a given timeout.
+ *
+ * A new promise is returned each time the `key` or `timeout` changes.
+ *
+ * @example
+ * ```ts
+ * const delayed = useDelay({ timeout: 1000, key: someQuery });
+ * ```
+ */
+export function useDelay(key: any, timeout = 100) {
+	const timeoutPromise = useMemo(() => delay(timeout), [timeout, key]);
+	return usePromiseValue(timeoutPromise);
 }
 
 /**
