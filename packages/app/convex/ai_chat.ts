@@ -29,6 +29,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
+import { v_result } from "../server/convex-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
 	ai_chat_tool_create_list_pages,
@@ -42,6 +43,7 @@ import {
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
+
 export {
 	remove_pages_pending_edit_if_expired,
 	upsert_pages_pending_edit_updates,
@@ -51,6 +53,27 @@ export {
 	list_pages_pending_edits,
 	save_pages_pending_edit,
 } from "./pages_pending_edits.ts";
+
+const ai_chat_MAIN_MODEL_IDS = ["gpt-5-nano", "gpt-4.1-mini", "gpt-4.1-nano"] as const;
+type ai_chat_MainModelId = (typeof ai_chat_MAIN_MODEL_IDS)[number];
+
+const ai_chat_DEFAULT_MAIN_MODEL_ID = "gpt-5-nano" as const satisfies ai_chat_MainModelId;
+const ai_chat_TITLE_MODEL_ID = "gpt-4.1-nano" as const;
+
+const ai_chat_SYSTEM_PROMPT = [
+	"You are the app chat agent for the user's workspace.",
+	"Respond directly when you can answer confidently without tools.",
+	"When the request depends on existing page content or paths, read or search before you write or edit.",
+	"`write_page` and `edit_page` create pending review changes for the user; they do not silently publish live content.",
+	"If a read, search, or path lookup is uncertain, say so and use the tools to clarify instead of inventing content or paths.",
+	"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
+].join("\n");
+
+const ai_chat_TITLE_SYSTEM_PROMPT = [
+	"Generate a concise, descriptive title (max 6 words) for this conversation.",
+	"The title should capture the main topic or purpose.",
+	"Respond with ONLY the title, no quotes or extra text.",
+].join("\n");
 
 export const threads_list = query({
 	args: {
@@ -346,6 +369,7 @@ export const thread_update = mutation({
 		isArchived: v.optional(v.boolean()),
 		starred: v.optional(v.boolean()),
 	},
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
 		if (!threadId) {
@@ -379,6 +403,8 @@ export const thread_update = mutation({
 					: {},
 			),
 		);
+
+		return Result({ _yay: null });
 	},
 });
 
@@ -504,6 +530,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 							 * The messages to append to the thread.
 							 */
 							messages: z.array(z.any()),
+							/**
+							 * Optional server-allowlisted model.
+							 */
+							model: z.enum(ai_chat_MAIN_MODEL_IDS).optional(),
 							trigger: z.enum(["submit-message", "regenerate-message"]),
 							/**
 							 * The id of the message to which the new message should be appended.
@@ -551,12 +581,34 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
+								const tools = {
+									invalid_tool_call: tool({
+										description: "Internal recovery tool for malformed tool calls. Do not call this intentionally.",
+										inputSchema: z.object({
+											tool: z.string().describe("The invalid tool name emitted by the model"),
+											error: z.string().describe("The validation or repair error"),
+										}),
+										execute: async ({ tool, error }) => ({
+											tool,
+											error,
+											message: `Tool call could not be repaired: ${tool}. Use one of the available tools or answer without tools.`,
+										}),
+									}),
+									read_page: ai_chat_tool_create_read_page(ctx),
+									list_pages: ai_chat_tool_create_list_pages(ctx),
+									glob_pages: ai_chat_tool_create_glob_pages(ctx),
+									grep_pages: ai_chat_tool_create_grep_pages(ctx),
+									text_search_pages: ai_chat_tool_create_text_search_pages(ctx),
+									write_page: ai_chat_tool_create_write_page(ctx),
+									edit_page: ai_chat_tool_create_edit_page(ctx),
+								};
+
 								// Validate the messages if they are present
 								if (requestParseResult._yay.messages.length > 0) {
 									try {
-										await validateUIMessages({
+										await validateUIMessages<ai_chat_AiSdk5UiMessage>({
 											messages: requestParseResult._yay.messages,
-											tools: undefined,
+											tools: tools,
 										});
 									} catch (error) {
 										if (error instanceof TypeValidationError) {
@@ -584,6 +636,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								const now = Date.now();
 
 								const body = requestParseResult._yay;
+								const selectedModelId = body.model ?? ai_chat_DEFAULT_MAIN_MODEL_ID;
 
 								let threadId = null;
 								let createdThreadId = null;
@@ -735,26 +788,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
 								}
 
-								const tools = {
-									weather: tool({
-										description: "Get the weather in a location (in Celsius)",
-										inputSchema: z.object({
-											location: z.string().describe("The location to get the weather for"),
-										}),
-										execute: async ({ location }) => ({
-											location,
-											temperature: "200°",
-										}),
-									}),
-									read_page: ai_chat_tool_create_read_page(ctx),
-									list_pages: ai_chat_tool_create_list_pages(ctx),
-									glob_pages: ai_chat_tool_create_glob_pages(ctx),
-									grep_pages: ai_chat_tool_create_grep_pages(ctx),
-									text_search_pages: ai_chat_tool_create_text_search_pages(ctx),
-									write_page: ai_chat_tool_create_write_page(ctx),
-									edit_page: ai_chat_tool_create_edit_page(ctx),
-								} as const;
-
 								const modelMessages = convertToModelMessages(uiMessages, {
 									ignoreIncompleteToolCalls: true,
 								});
@@ -785,16 +818,44 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										});
 
+										const providerOptions =
+											selectedModelId === "gpt-5-nano"
+												? {
+														openai: {
+															reasoningEffort: "low" as const,
+														},
+													}
+												: undefined;
+										const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter(
+											(toolName): toolName is Exclude<keyof typeof tools, "invalid_tool_call"> =>
+												toolName !== "invalid_tool_call",
+										);
+
 										const result1 = streamText({
-											model: openai("gpt-5-nano"),
-											system: `Either respond directly to the user or use the tools at your disposal.`,
+											model: openai(selectedModelId),
+											system: ai_chat_SYSTEM_PROMPT,
 											messages: modelMessages,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,
-											providerOptions: {
-												openai: {
-													reasoningEffort: "low",
-												},
+											...(providerOptions ? { providerOptions } : {}),
+											activeTools,
+											experimental_repairToolCall: async (failed) => {
+												const lowerToolName = failed.toolCall.toolName.toLowerCase();
+												if (lowerToolName !== failed.toolCall.toolName && lowerToolName in tools) {
+													return {
+														...failed.toolCall,
+														toolName: lowerToolName,
+													};
+												}
+
+												return {
+													...failed.toolCall,
+													toolName: "invalid_tool_call",
+													input: JSON.stringify({
+														tool: failed.toolCall.toolName,
+														error: failed.error instanceof Error ? failed.error.message : String(failed.error),
+													}),
+												};
 											},
 											toolChoice: "auto",
 											stopWhen: stepCountIs(5),
@@ -833,11 +894,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 												const titleMessages = [...modelMessages, ...response1.messages];
 												const titleResult = streamText({
-													model: openai("gpt-4.1-nano"),
-													system:
-														"Generate a concise, descriptive title (max 6 words) for this conversation.\n" +
-														"The title should capture the main topic or purpose.\n" +
-														"Respond with ONLY the title, no quotes or extra text.",
+													model: openai(ai_chat_TITLE_MODEL_ID),
+													system: ai_chat_TITLE_SYSTEM_PROMPT,
 													messages: titleMessages,
 													stopWhen: stepCountIs(1),
 													temperature: 0.3,
@@ -866,10 +924,16 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 														transient: true,
 													});
 
-													await ctx.runMutation(api.ai_chat.thread_update, {
+													const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
 														threadId: thread._id,
 														title: trimmedTitle,
 													});
+													if (threadUpdateResult._nay) {
+														console.error("[ai_chat_http_routes./api/chat] Failed to persist generated title", {
+															threadId: thread._id,
+															result: threadUpdateResult,
+														});
+													}
 												}
 											} catch (error: unknown) {
 												console.error("Title generation error:", error);
@@ -1038,10 +1102,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 								// Generate title using AI with streaming
 								const result = streamText({
-									model: openai("gpt-4.1-nano"),
-									system: `Generate a concise, descriptive title (max 6 words) for this conversation.
-										The title should capture the main topic or purpose.
-										Respond with ONLY the title, no quotes or extra text.`,
+									model: openai(ai_chat_TITLE_MODEL_ID),
+									system: ai_chat_TITLE_SYSTEM_PROMPT,
 									messages: [
 										{
 											role: "user",
@@ -1066,10 +1128,22 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										controller.enqueue(chunk);
 									},
 									flush: async () => {
-										await ctx.runMutation(api.ai_chat.thread_update, {
+										const trimmedTitle = title.trim();
+										if (!trimmedTitle) {
+											return;
+										}
+
+										const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
 											threadId: thread_id,
-											title,
+											title: trimmedTitle,
 										});
+
+										if (threadUpdateResult._nay) {
+											console.error("[ai_chat_http_routes./api/v1/runs/stream] Failed to persist generated title", {
+												threadId: thread_id,
+												result: threadUpdateResult,
+											});
+										}
 									},
 								});
 

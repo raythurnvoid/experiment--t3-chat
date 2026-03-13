@@ -112,8 +112,9 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 	const modes: AiChatComposer_Mode[] = ["Agent", "Ask", "Plan"];
 	const [mode, setMode] = useState<AiChatComposer_Mode>("Agent");
 
-	const models: AiChatComposer_Model[] = ["GPT 5.2", "Opus 4.5", "Gemini Pro 3"];
-	const [model, setModel] = useState<AiChatComposer_Model>("GPT 5.2");
+	// Keep this local until you wire request-scoped model selection through `AiChat` and `prepareSendMessagesRequest`.
+	const models: AiChatComposer_Model[] = ["gpt-5-nano", "gpt-4.1-mini", "gpt-4.1-nano"];
+	const [model, setModel] = useState<AiChatComposer_Model>("gpt-5-nano");
 	const [modelFilter, setModelFilter] = useState("");
 	const modelFilterValue = modelFilter.trim().toLowerCase();
 	const filteredModels = modelFilterValue
@@ -468,4 +469,4 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 
 type AiChatComposer_Mode = "Agent" | "Ask" | "Plan";
 
-type AiChatComposer_Model = "GPT 5.2" | "Opus 4.5" | "Gemini Pro 3";
+type AiChatComposer_Model = "gpt-5-nano" | "gpt-4.1-mini" | "gpt-4.1-nano";

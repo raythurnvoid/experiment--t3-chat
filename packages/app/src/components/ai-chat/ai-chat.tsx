@@ -405,6 +405,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 			return;
 		}
 
+		// TODO: Lift request-scoped model selection through this boundary when the FE is ready to send it.
 		if (selectedThreadId) {
 			controller.sendUserText(selectedThreadId, value);
 		} else {

@@ -385,6 +385,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			const requestBody = {
 				...options.body,
 
+				// TODO: Forward a request-scoped `model` here once the composer lifts model state into the controller.
 				threadId: metadata.isOptimistic ? undefined : options.id,
 				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
 
