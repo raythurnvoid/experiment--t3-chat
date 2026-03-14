@@ -20,7 +20,17 @@
 	}
 
 	.PageEditor-panels-group {
-		flex: 1;
+		/*
+		flex 1 0 auto needed to take the whole available space
+		but at the same time let the element grow if the content
+		is bigger than the available space. Necessary to  make descendant
+		sticky elements work correctly.
+		*/
+		flex: 1 0 auto;
+	}
+
+	.PageEditor-sidebar {
+		container-type: size;
 	}
 	/* #endregion root */
 

@@ -36,11 +36,18 @@
 
 	.PageEditorSidebar-tabs-panels {
 		flex: 1;
-		min-height: 0;
+		/* TODO: check if needed min-height: 0; */
+
+		/*
+		Allow the descendants to be sized based on this,
+		necessary for the anchored comments to take the whole
+		height as the editor content grows in size.
+		*/
+		container-type: size;
 	}
 
 	.PageEditorSidebar-panel {
-		min-height: 100%;
+		/* TODO: check if needed min-height: 100%; */
 
 		display: flex;
 		flex-direction: column;
@@ -55,9 +62,10 @@
 
 	.PageEditorSidebar-comments-host {
 		flex: 1;
-		min-height: 0;
 		display: flex;
 		flex-direction: column;
+
+		/* TODO: check if needed min-height: 0; */
 	}
 	/* #endregion root */
 
