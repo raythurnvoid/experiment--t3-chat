@@ -122,7 +122,10 @@ function* ai_chat_tool_edit_page_replacer_line_trimmed(
 			let matchStartIndex = 0;
 			for (let k = 0; k < i; k++) matchStartIndex += originalLines[k].length + 1;
 			let matchEndIndex = matchStartIndex;
-			for (let k = 0; k < searchLines.length; k++) matchEndIndex += originalLines[i + k].length + 1;
+			for (let k = 0; k < searchLines.length; k++) {
+				matchEndIndex += originalLines[i + k].length;
+				if (k < searchLines.length - 1) matchEndIndex += 1;
+			}
 			yield content.substring(matchStartIndex, matchEndIndex);
 		}
 	}
@@ -372,56 +375,147 @@ function* ai_chat_tool_edit_page_replacer_escape_normalized(
 	}
 }
 
-function replace_once_or_all(
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (TrimmedBoundaryReplacer)
+ *
+ * This replacer trims only the outer boundary of the target text before matching,
+ * making it resilient when the copied block includes extra leading or trailing blank space.
+ *
+ * Order: 7
+ * Pros:
+ * - Helps when the copied block differs only at the boundaries
+ * Cons:
+ * - Higher collision risk than earlier matchers
+ */
+function* ai_chat_tool_edit_page_replacer_trimmed_boundary(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
+	const trimmedFind = find.trim();
+
+	if (trimmedFind === find) return;
+
+	if (content.includes(trimmedFind)) yield trimmedFind;
+
+	const lines = content.split("\n");
+	const findLines = find.split("\n");
+
+	for (let i = 0; i <= lines.length - findLines.length; i++) {
+		const block = lines.slice(i, i + findLines.length).join("\n");
+		if (block.trim() === trimmedFind) yield block;
+	}
+}
+
+/**
+ * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (ContextAwareReplacer)
+ *
+ * This replacer uses the first and last lines as anchors and accepts a candidate block
+ * when the middle lines still resemble the requested block closely enough.
+ *
+ * Order: 8
+ * Pros:
+ * - Helps when the middle of a block drifted slightly
+ * Cons:
+ * - Heuristic; riskier than the earlier exact-ish fallbacks
+ */
+function* ai_chat_tool_edit_page_replacer_context_aware(
+	content: string,
+	find: string,
+): Generator<string, void, unknown> {
+	const findLines = find.split("\n");
+	if (findLines.length < 3) return;
+	if (findLines[findLines.length - 1] === "") findLines.pop();
+
+	const contentLines = content.split("\n");
+	const firstLine = findLines[0].trim();
+	const lastLine = findLines[findLines.length - 1].trim();
+
+	for (let i = 0; i < contentLines.length; i++) {
+		if (contentLines[i].trim() !== firstLine) continue;
+
+		for (let j = i + 2; j < contentLines.length; j++) {
+			if (contentLines[j].trim() !== lastLine) continue;
+
+			const blockLines = contentLines.slice(i, j + 1);
+			if (blockLines.length !== findLines.length) break;
+
+			let matchingLines = 0;
+			let totalNonEmptyLines = 0;
+
+			for (let k = 1; k < blockLines.length - 1; k++) {
+				const blockLine = blockLines[k].trim();
+				const findLine = findLines[k].trim();
+
+				if (blockLine.length > 0 || findLine.length > 0) {
+					totalNonEmptyLines++;
+					if (blockLine === findLine) matchingLines++;
+				}
+			}
+
+			if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
+				yield blockLines.join("\n");
+				break;
+			}
+
+			break;
+		}
+	}
+}
+
+export function replace_once_or_all(
 	content: string,
 	oldString: string,
 	newString: string,
 	opts?: { replaceAll?: boolean; mode?: "auto" | "exact" },
-): { content: string; matches: number } {
+): { content: string; matches: number; matcher: string } {
 	if (oldString.length === 0) throw new Error("oldString must not be empty");
 	if (oldString === newString) throw new Error("oldString and newString must be different");
 
 	const replaceAll = !!opts?.replaceAll;
-	const activePipeline: Replacer[] = [
-		ai_chat_tool_edit_page_replacer_simple,
-		ai_chat_tool_edit_page_replacer_line_trimmed,
-		ai_chat_tool_edit_page_replacer_block_anchor,
-		ai_chat_tool_edit_page_replacer_whitespace_normalized,
-		ai_chat_tool_edit_page_replacer_indentation_flexible,
-		ai_chat_tool_edit_page_replacer_escape_normalized,
-		// Optional (disabled) replacers:
-		// - ai_chat_tool_edit_page_replacer_trimmed_boundary
-		//   Source: OpenCode TrimmedBoundaryReplacer (references-submodules/opencode/packages/opencode/src/tool/edit.ts)
-		//   Pros: tolerant when only outer whitespace differs
-		//   Cons: high collision risk; enable only as last fallback
-		// - ai_chat_tool_edit_page_replacer_context_aware
-		//   Source: OpenCode ContextAwareReplacer
-		//   Pros: first/last anchors + middle-line equality ratio
-		//   Cons: heuristic, slower; keep last if enabled
-		// - ai_chat_tool_edit_page_replacer_multi_occurrence
-		//   Source: OpenCode MultiOccurrenceReplacer
-		//   Pros: enumerate all exact hits for custom global replace flows
-		//   Cons: redundant with replaceAll; usually unnecessary here
-	];
+	let foundMatch = false;
+	const activePipeline =
+		opts?.mode === "exact"
+			? ([["simple", ai_chat_tool_edit_page_replacer_simple]] as const)
+			: ([
+					["simple", ai_chat_tool_edit_page_replacer_simple],
+					["line_trimmed", ai_chat_tool_edit_page_replacer_line_trimmed],
+					["block_anchor", ai_chat_tool_edit_page_replacer_block_anchor],
+					["whitespace_normalized", ai_chat_tool_edit_page_replacer_whitespace_normalized],
+					["indentation_flexible", ai_chat_tool_edit_page_replacer_indentation_flexible],
+					["escape_normalized", ai_chat_tool_edit_page_replacer_escape_normalized],
+					["trimmed_boundary", ai_chat_tool_edit_page_replacer_trimmed_boundary],
+					["context_aware", ai_chat_tool_edit_page_replacer_context_aware],
+					// Keep MultiOccurrence disabled.
+					// `replaceAll` already handles the safe exact global-replace case.
+				] as const satisfies ReadonlyArray<readonly [string, Replacer]>);
 
-	for (const replacer of activePipeline) {
+	for (const [matcher, replacer] of activePipeline) {
 		for (const search of replacer(content, oldString)) {
 			const firstIndex = content.indexOf(search);
 			if (firstIndex === -1) continue;
+			foundMatch = true;
 			if (replaceAll) {
 				const occurrences = search.length === 0 ? 0 : content.split(search).length - 1;
 				if (occurrences === 0) continue;
-				return { content: content.split(search).join(newString), matches: occurrences };
+				return {
+					content: content.split(search).join(newString),
+					matches: occurrences,
+					matcher,
+				};
 			} else {
 				const lastIndex = content.lastIndexOf(search);
 				if (firstIndex !== lastIndex) continue;
 				const updated = content.substring(0, firstIndex) + newString + content.substring(firstIndex + search.length);
-				return { content: updated, matches: 1 };
+				return { content: updated, matches: 1, matcher };
 			}
 		}
 	}
 
-	throw new Error("oldString not found in content or was found multiple times");
+	if (!foundMatch) {
+		throw new Error("oldString not found in content. It must match exactly, including whitespace, indentation, and line endings.");
+	}
+
+	throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.");
 }
 
 /**
@@ -1106,7 +1200,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			const oldString = normalize_lf_newlines(args.oldString);
 			const newString = normalize_lf_newlines(args.newString);
 
-			const { content: modifiedTextRaw, matches } = replace_once_or_all(
+			const { content: modifiedTextRaw, matches, matcher } = replace_once_or_all(
 				currentPageContent.content,
 				oldString,
 				newString,
@@ -1141,6 +1235,7 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 					pendingEditId: nextPendingEdit?._id ?? null,
 					path: normalizedPath,
 					matches,
+					matcher,
 					diff,
 					modifiedContent: modifiedText,
 				},

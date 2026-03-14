@@ -7,6 +7,7 @@ import {
 	ai_chat_tool_create_text_search_pages,
 	ai_chat_tool_create_write_page,
 	ai_chat_tool_create_edit_page,
+	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
@@ -182,7 +183,7 @@ test("read_page tool forwards pendingEditId and returns it in metadata", async (
 	const { ctx, runQuery } = makeCtx(async () => currentContent);
 	const tool = ai_chat_tool_create_read_page(ctx);
 	const result = await tool.execute?.(
-		{ path: "/Docs/Plan", pendingEditId },
+		{ path: "/Docs/Plan", pendingEditId, limit: 2000 },
 		{ toolCallId: "test", messages: [] },
 	);
 
@@ -203,6 +204,10 @@ test("read_page tool forwards pendingEditId and returns it in metadata", async (
 		pendingEditId,
 	});
 
+	if (!result.metadata) {
+		throw new Error("`result.metadata` is undefined");
+	}
+
 	expect(result.metadata.pageId).toBe("p123");
 	expect(result.metadata.pendingEditId).toBe(pendingEditId);
 });
@@ -222,7 +227,10 @@ test("write_page tool stores pending unstaged branch updates from the agent", as
 		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
 	});
 	const tool = ai_chat_tool_create_write_page(ctx);
-	const result = await tool.execute?.({ path: "/Docs/Plan", content: "# Updated" }, { toolCallId: "test", messages: [] });
+	const result = await tool.execute?.(
+		{ path: "/Docs/Plan", content: "# Updated" },
+		{ toolCallId: "test", messages: [] },
+	);
 
 	if (!result) {
 		throw new Error("`result` is undefined");
@@ -293,4 +301,128 @@ test("edit_page tool stores pending unstaged branch updates from the agent", asy
 	expect(result.metadata.pageId).toBe(pageId);
 	expect(result.metadata.pendingEditId).toBe(pendingEditId);
 	expect(result.metadata.matches).toBe(1);
+	expect(result.metadata.matcher).toBe("simple");
+});
+
+test("replace_once_or_all: line-trimmed matching preserves the following newline", () => {
+	const result = replace_once_or_all("before\n  alpha  \n  beta  \nafter", "alpha\nbeta", "gamma\ndelta");
+
+	expect(result).toEqual({
+		content: "before\ngamma\ndelta\nafter",
+		matches: 1,
+		matcher: "line_trimmed",
+	});
+});
+
+test("replace_once_or_all: trimmed-boundary matching tolerates outer blank lines", () => {
+	const result = replace_once_or_all("before\nalpha\nbeta\nafter", "\nalpha\nbeta\n", "gamma");
+
+	expect(result).toEqual({
+		content: "before\ngamma\nafter",
+		matches: 1,
+		matcher: "trimmed_boundary",
+	});
+});
+
+test("replace_once_or_all: whitespace-normalized matching handles inline spacing differences", () => {
+	const result = replace_once_or_all("before\nHello    brave   world\nafter", "Hello brave world", "Hi team");
+
+	expect(result).toEqual({
+		content: "before\nHi team\nafter",
+		matches: 1,
+		matcher: "whitespace_normalized",
+	});
+});
+
+test("replace_once_or_all: indentation differences are still replaceable", () => {
+	const result = replace_once_or_all(
+		"before\n\t\tconst value = 1;\n\t\treturn value;\nafter",
+		"const value = 1;\n\treturn value;",
+		"const nextValue = 2;\n\treturn nextValue;",
+	);
+
+	expect(result.content).toBe("before\nconst nextValue = 2;\n\treturn nextValue;\nafter");
+	expect(result.matches).toBe(1);
+	expect(result.matcher).toBe("line_trimmed");
+});
+
+test("replace_once_or_all: escape-normalized matching handles escaped multiline strings", () => {
+	const result = replace_once_or_all('"hello\\nworld"', '"hello\nworld"', '"hi there"');
+
+	expect(result).toEqual({
+		content: '"hi there"',
+		matches: 1,
+		matcher: "escape_normalized",
+	});
+});
+
+test("replace_once_or_all: replaceAll uses the shared fallback pipeline", () => {
+	const result = replace_once_or_all(
+		"start\n  alpha  \n  beta  \nmid\n  alpha  \n  beta  \nend",
+		"alpha\nbeta",
+		"gamma\ndelta",
+		{ replaceAll: true },
+	);
+
+	expect(result).toEqual({
+		content: "start\ngamma\ndelta\nmid\ngamma\ndelta\nend",
+		matches: 2,
+		matcher: "line_trimmed",
+	});
+});
+
+test("replace_once_or_all: throws a not-found error when there is no match", () => {
+	expect(() => replace_once_or_all("alpha\nbeta", "missing", "gamma")).toThrow(
+		"oldString not found in content. It must match exactly, including whitespace, indentation, and line endings.",
+	);
+});
+
+test("replace_once_or_all: throws an ambiguity error when the match is not unique", () => {
+	expect(() => replace_once_or_all("alpha\nalpha", "alpha", "gamma")).toThrow(
+		"Found multiple matches for oldString. Provide more surrounding context to make the match unique.",
+	);
+});
+
+test("edit_page tool preserves the baseline trailing newline shape", async () => {
+	const pageId = "p789";
+	const pendingEditId = "pending789";
+	const currentContent = {
+		pageId,
+		content: "Hello world\n",
+		pendingEditId,
+	};
+
+	let runQueryCallCount = 0;
+	const { ctx, runMutation } = makeCtx(async () => {
+		runQueryCallCount += 1;
+		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
+	});
+	const tool = ai_chat_tool_create_edit_page(ctx);
+	const result = await tool.execute?.(
+		{
+			path: "/Docs/Newline",
+			oldString: "world",
+			newString: "team",
+			replaceAll: false,
+		},
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	const [, args] = runMutation.mock.calls[0]!;
+	expect(args).toEqual({
+		workspaceId: ai_chat_HARDCODED_ORG_ID,
+		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		pageId,
+		pendingEditId,
+		unstagedMarkdown: "Hello team\n",
+	});
+
+	expect(result.metadata.matcher).toBe("simple");
 });
