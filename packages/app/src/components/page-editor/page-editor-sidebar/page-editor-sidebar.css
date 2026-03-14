@@ -51,6 +51,7 @@
 
 		display: flex;
 		flex-direction: column;
+		height: 100%;
 	}
 
 	.PageEditorSidebar-panel-empty {
@@ -75,11 +76,11 @@
 		flex-direction: column;
 
 		width: 100%;
-		/* 44px is the size of the sidebar toolbar */
-		height: calc(100cqh - 44px);
+		/* 92px is the size of `PageEditorSidebar-toolbar`  and `PageEditorHeader` */
+		height: calc(100dvh - 92px);
 
 		position: sticky;
-		/* 44px is the size of the sidebar toolbar */
+		/* 44px is the size of `PageEditorSidebar-toolbar` */
 		top: 44px;
 
 		contain: strict;

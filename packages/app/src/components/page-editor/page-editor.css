@@ -16,7 +16,7 @@
 		overflow-y: auto;
 
 		contain: strict;
-		container-type: size;
+		container: PageEditor-editor-area / size;
 	}
 
 	.PageEditor-panels-group {
@@ -29,8 +29,18 @@
 		flex: 1 0 auto;
 	}
 
+	.PageEditor-content-panel {
+		> .MyPanelInfiniteBackground::before {
+			background-color: var(--RoutePages-background);
+		}
+	}
+
 	.PageEditor-sidebar {
 		container-type: size;
+
+		> .MyPanelInfiniteBackground::before {
+			background-color: var(--RoutePages-background);
+		}
 	}
 	/* #endregion root */
 

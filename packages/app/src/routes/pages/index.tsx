@@ -58,7 +58,7 @@ function RoutePagesContent(props: RoutePagesContent_Props) {
 }
 
 type RoutePages_ClassNames =
-	| "RoutePages-content-area"
+	| "RoutePages"
 	| "RoutePages-panels-group"
 	| "RoutePages-sidebar-panel"
 	| "RoutePages-main-panel"
@@ -131,12 +131,14 @@ function RoutePages() {
 		}
 	});
 
-	const handlePrimaryAction = useFn<React.ComponentProps<typeof PagesSidebar>["onPrimaryAction"]>((itemId, itemType) => {
-		// Only navigate if it's not already selected
-		if (searchPageId !== itemId) {
-			navigateToPage(itemId);
-		}
-	});
+	const handlePrimaryAction = useFn<React.ComponentProps<typeof PagesSidebar>["onPrimaryAction"]>(
+		(itemId, itemType) => {
+			// Only navigate if it's not already selected
+			if (searchPageId !== itemId) {
+				navigateToPage(itemId);
+			}
+		},
+	);
 
 	const handleCloseSidebar = useFn<React.ComponentProps<typeof PagesSidebar>["onClose"]>(() => {
 		setPagesSidebarState("closed");
@@ -150,13 +152,15 @@ function RoutePages() {
 		panelLayoutRef.current = layout;
 	});
 
-	const handlePanelDragging = useFn<NonNullable<React.ComponentProps<typeof MyPanelResizeHandle>["onDragging"]>>((isDragging) => {
-		if (isDragging) {
-			return;
-		}
+	const handlePanelDragging = useFn<NonNullable<React.ComponentProps<typeof MyPanelResizeHandle>["onDragging"]>>(
+		(isDragging) => {
+			if (isDragging) {
+				return;
+			}
 
-		useAppLocalStorageState.setState({ main_panel_layout: panelLayoutRef.current });
-	});
+			useAppLocalStorageState.setState({ main_panel_layout: panelLayoutRef.current });
+		},
+	);
 
 	// If URL has no page id, restore last-open; otherwise default to homepage.
 	useEffect(() => {
@@ -192,7 +196,7 @@ function RoutePages() {
 	}, [homePageId, resolvedPage, searchPageId]);
 
 	return (
-		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
+		<div className={"RoutePages" satisfies RoutePages_ClassNames}>
 			<MyPanelGroup
 				className={"RoutePages-panels-group" satisfies RoutePages_ClassNames}
 				direction="horizontal"
