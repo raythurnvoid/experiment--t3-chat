@@ -19,7 +19,7 @@ import {
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
+import { useAppLocalStorageState } from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 

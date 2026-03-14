@@ -1,6 +1,6 @@
 import "./index.css";
 
-import React, { Suspense } from "react";
+import React, { Suspense, useRef } from "react";
 import type { PageEditor_Props } from "../../components/page-editor/page-editor.tsx";
 import { PagesSidebar } from "./-components/pages-sidebar.tsx";
 import { useState, useEffect } from "react";
@@ -14,8 +14,9 @@ import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_editor_view_values, type pages_EditorView } from "@/lib/pages.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
 import { useStableQuery } from "../../hooks/convex-hooks.ts";
-import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
+import { useAppLocalStorageState } from "@/lib/storage.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 
 const PageEditor = React.lazy(() =>
@@ -80,6 +81,8 @@ function RoutePages() {
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
 	const [pagesSidebarState, setPagesSidebarState] = useState<RoutePages_SidebarState>("expanded");
+	const savedPanelLayout = useAppLocalStorageState((state) => state.main_panel_layout);
+	const panelLayoutRef = useRef(savedPanelLayout ?? [24, 76]);
 
 	const lastOpenPageId = useAppLocalStorageState((state) => state.pages_last_open);
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
@@ -99,7 +102,7 @@ function RoutePages() {
 	const resolvedPageId = resolvedPage?._id ?? null;
 
 	// Navigation function to update URL with selected page
-	const navigateToPage = (pageId?: string) => {
+	const navigateToPage = useFn((pageId?: string) => {
 		const view = effectiveView === "rich_text_editor" ? undefined : effectiveView;
 
 		navigate({
@@ -108,9 +111,9 @@ function RoutePages() {
 		}).catch((error) => {
 			console.error("[PagesRoute.navigateToPage] Error navigating to page", { error, pageId, view });
 		});
-	};
+	});
 
-	const navigateToView = (nextView: pages_EditorView) => {
+	const navigateToView = useFn<RoutePagesContent_Props["onEditorModeChange"]>((nextView) => {
 		const pageId = searchPageId ?? homePageId;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
 		navigate({
@@ -119,29 +122,41 @@ function RoutePages() {
 		}).catch((error) => {
 			console.error("[PagesRoute.navigateToView] Error navigating to view", { error, pageId, view });
 		});
-	};
+	});
 
-	const handleArchive = (itemId: string) => {
+	const handleArchive = useFn<React.ComponentProps<typeof PagesSidebar>["onArchive"]>((itemId) => {
 		// When a page is archived, clear selection if it was the selected one
 		if (searchPageId === itemId) {
 			navigateToPage();
 		}
-	};
+	});
 
-	const handlePrimaryAction = (itemId: string, itemType: string) => {
+	const handlePrimaryAction = useFn<React.ComponentProps<typeof PagesSidebar>["onPrimaryAction"]>((itemId, itemType) => {
 		// Only navigate if it's not already selected
 		if (searchPageId !== itemId) {
 			navigateToPage(itemId);
 		}
-	};
+	});
 
-	const handleCloseSidebar = () => {
+	const handleCloseSidebar = useFn<React.ComponentProps<typeof PagesSidebar>["onClose"]>(() => {
 		setPagesSidebarState("closed");
-	};
+	});
 
-	const handleOpenSidebar = () => {
+	const handleOpenSidebar = useFn(() => {
 		setPagesSidebarState("expanded");
-	};
+	});
+
+	const handlePanelLayout = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayout"]>>((layout) => {
+		panelLayoutRef.current = layout;
+	});
+
+	const handlePanelDragging = useFn<NonNullable<React.ComponentProps<typeof MyPanelResizeHandle>["onDragging"]>>((isDragging) => {
+		if (isDragging) {
+			return;
+		}
+
+		useAppLocalStorageState.setState({ main_panel_layout: panelLayoutRef.current });
+	});
 
 	// If URL has no page id, restore last-open; otherwise default to homepage.
 	useEffect(() => {
@@ -178,9 +193,13 @@ function RoutePages() {
 
 	return (
 		<div className={"RoutePages-content-area" satisfies RoutePages_ClassNames}>
-			<MyPanelGroup direction="horizontal" className={"RoutePages-panels-group" satisfies RoutePages_ClassNames}>
+			<MyPanelGroup
+				className={"RoutePages-panels-group" satisfies RoutePages_ClassNames}
+				direction="horizontal"
+				onLayout={handlePanelLayout}
+			>
 				<MyPanel
-					defaultSize={24}
+					defaultSize={savedPanelLayout?.[0] ?? 24}
 					className={"RoutePages-sidebar-panel" satisfies RoutePages_ClassNames}
 					isOpen={pagesSidebarState === "expanded"}
 					closeBehavior="unmount"
@@ -193,9 +212,13 @@ function RoutePages() {
 						onPrimaryAction={handlePrimaryAction}
 					/>
 				</MyPanel>
-				<MyPanelResizeHandle isOpen={pagesSidebarState === "expanded"} closeBehavior="unmount" />
+				<MyPanelResizeHandle
+					isOpen={pagesSidebarState === "expanded"}
+					closeBehavior="unmount"
+					onDragging={handlePanelDragging}
+				/>
 				<MyPanel
-					defaultSize={pagesSidebarState === "closed" ? 100 : 76}
+					defaultSize={pagesSidebarState === "closed" ? 100 : (savedPanelLayout?.[1] ?? 76)}
 					minSize={40}
 					className={"RoutePages-main-panel" satisfies RoutePages_ClassNames}
 				>

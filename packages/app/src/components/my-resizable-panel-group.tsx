@@ -11,12 +11,14 @@ export type MyPanelResizeHandle_Orientation = "vertical" | "horizontal";
 // #region panel group
 export type MyPanelGroup_ClassNames = "MyPanelGroup";
 
-export type MyPanelGroup_Props = ComponentPropsWithRef<typeof PanelGroup>;
+export type MyPanelGroup_Props = Omit<ComponentPropsWithRef<typeof PanelGroup>, "autoSaveId" | "storage">;
 
 export const MyPanelGroup = memo(function MyPanelGroup(props: MyPanelGroup_Props) {
 	const { className, ...rest } = props;
 
-	return <PanelGroup className={cn("MyPanelGroup" satisfies MyPanelGroup_ClassNames, className)} {...rest} />;
+	return (
+		<PanelGroup className={cn("MyPanelGroup" satisfies MyPanelGroup_ClassNames, className)} {...rest} />
+	);
 });
 // #endregion panel group
 

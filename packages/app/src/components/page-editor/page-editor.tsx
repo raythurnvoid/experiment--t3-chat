@@ -34,8 +34,16 @@ import {
 } from "../../hooks/presence-hooks.ts";
 import { CatchBoundary, useNavigate } from "@tanstack/react-router";
 import { PageEditorError } from "./page-editor-error.tsx";
-import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "../my-resizable-panel-group.tsx";
+import {
+	MyPanel,
+	MyPanelGroup,
+	type MyPanelGroup_Props,
+	MyPanelResizeHandle,
+	type MyPanelResizeHandle_Props,
+} from "../my-resizable-panel-group.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
 
 function get_breadcrumb_path(
 	treeItemsList: pages_TreeItem[] | undefined,
@@ -98,6 +106,10 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 	const { pageId, editorMode, onlineUsers, onEditorModeChange } = props;
 
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
+
+	const handleEditorModeChange = useFn((mode: string) => {
+		onEditorModeChange(mode as PageEditorHeader_Props["editorMode"]);
+	});
 
 	// Query tree items to build breadcrumb path
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
@@ -183,10 +195,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 			{/* Right: Presence indicator and switches */}
 			<div className={cn("PageEditorHeader-switch-group" satisfies PageEditorHeader_ClassNames)}>
 				<PageEditorPresence users={onlineUsers} />
-				<MyButtonGroup
-					value={editorMode}
-					onValueChange={(mode) => onEditorModeChange(mode as PageEditorHeader_Props["editorMode"])}
-				>
+				<MyButtonGroup value={editorMode} onValueChange={handleEditorModeChange}>
 					<MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>
 					<MyButtonGroupItem value="plain_text_editor">Markdown</MyButtonGroupItem>
 					<MyButtonGroupItem value="diff_editor">Diff</MyButtonGroupItem>
@@ -217,11 +226,12 @@ type PageEditorPendingEditsFloating_Props = {
 };
 
 function PageEditorPendingEditsFloating(props: PageEditorPendingEditsFloating_Props) {
-	const { showReviewButton, reviewPagerLabel, canNavigate, onReviewChanges, onNavigatePrevious, onNavigateNext } = props;
+	const { showReviewButton, reviewPagerLabel, canNavigate, onReviewChanges, onNavigatePrevious, onNavigateNext } =
+		props;
 
-	const handleClickReviewChanges = () => {
+	const handleClickReviewChanges = useFn(() => {
 		onReviewChanges();
-	};
+	});
 
 	return (
 		<div
@@ -246,7 +256,11 @@ function PageEditorPendingEditsFloating(props: PageEditorPendingEditsFloating_Pr
 					Review changes
 				</MyButton>
 			)}
-			<div className={cn("PageEditorPendingEditsFloating-review-pager" satisfies PageEditorPendingEditsFloating_ClassNames)}>
+			<div
+				className={cn(
+					"PageEditorPendingEditsFloating-review-pager" satisfies PageEditorPendingEditsFloating_ClassNames,
+				)}
+			>
 				<MyIconButton
 					variant="ghost-highlightable"
 					tooltip="Previous pending edit"
@@ -462,8 +476,9 @@ function PageEditorPresenceSupplier_Disabled(props: PageEditorPresenceSupplier_P
 		const localSessionId = crypto.randomUUID();
 		const localUserId = userId ?? "presence-disabled-user";
 
-		type PageEditorPresenceSupplier_Disabled_PresenceStoreData =
-			ConstructorParameters<typeof pages_PresenceStore>[0]["data"];
+		type PageEditorPresenceSupplier_Disabled_PresenceStoreData = ConstructorParameters<
+			typeof pages_PresenceStore
+		>[0]["data"];
 
 		return new pages_PresenceStore({
 			data: {
@@ -519,15 +534,8 @@ type PageEditorRender_Props = {
 };
 
 function PageEditorRender(props: PageEditorRender_Props) {
-	const {
-		pageId,
-		pendingEditId,
-		editorMode,
-		presenceStore,
-		commentsPortalHost,
-		onDiffExit,
-		topStickyFloatingSlot,
-	} = props;
+	const { pageId, pendingEditId, editorMode, presenceStore, commentsPortalHost, onDiffExit, topStickyFloatingSlot } =
+		props;
 
 	if (!presenceStore) {
 		return <PageEditorSkeleton />;
@@ -618,19 +626,22 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	const currentPendingEdit = pendingEditsOrdered[currentPendingEditIndex];
 	const hasCurrentPendingEdits = currentPendingEditIndex >= 0;
 	const activePendingEditIndex = hasCurrentPendingEdits ? currentPendingEditIndex : 0;
-	const canNavigatePendingEdits = pendingEditsOrdered.length > 1 || (pendingEditsOrdered.length === 1 && !hasCurrentPendingEdits);
+	const canNavigatePendingEdits =
+		pendingEditsOrdered.length > 1 || (pendingEditsOrdered.length === 1 && !hasCurrentPendingEdits);
 	const reviewPagerLabel = hasCurrentPendingEdits
 		? `Review ${activePendingEditIndex + 1} of ${pendingEditsOrdered.length}`
 		: "Review pending edits";
 
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
+	const savedPanelLayout = useAppLocalStorageState((state) => state.page_editor_panel_layout);
+	const panelLayoutRef = useRef(savedPanelLayout ?? [75, 25]);
 
-	const handleDiffExit = () => {
+	const handleDiffExit = useFn(() => {
 		onEditorModeChange("rich_text_editor");
 		onDiffExit?.();
-	};
+	});
 
-	const handleNavigatePendingEdits = (direction: "prev" | "next") => {
+	const handleNavigatePendingEdits = useFn((direction: "prev" | "next") => {
 		if (!onNavigatePendingEdits) {
 			return;
 		}
@@ -662,28 +673,45 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 			pageId: nextPendingEdit.pageId,
 			forceDiffEditor: !hasCurrentPendingEdits,
 		});
-	};
+	});
 
-	const handleNavigatePendingEditsPrevious = () => {
+	const handleNavigatePendingEditsPrevious = useFn(() => {
 		handleNavigatePendingEdits("prev");
-	};
+	});
 
-	const handleNavigatePendingEditsNext = () => {
+	const handleNavigatePendingEditsNext = useFn(() => {
 		handleNavigatePendingEdits("next");
-	};
+	});
 
-	const topStickyFloatingSlot =
-		hasPendingEdits ? (
-			<PageEditorPendingEditsFloating
-				updatedAt={currentPendingEdit?.updatedAt}
-				showReviewButton={hasCurrentPendingEdits && editorMode !== "diff_editor"}
-				reviewPagerLabel={reviewPagerLabel}
-				canNavigate={canNavigatePendingEdits}
-				onReviewChanges={onReviewPendingEdits ?? (() => {})}
-				onNavigatePrevious={handleNavigatePendingEditsPrevious}
-				onNavigateNext={handleNavigatePendingEditsNext}
-			/>
-		) : null;
+	const handlePanelLayout = useFn<NonNullable<MyPanelGroup_Props["onLayout"]>>((layout) => {
+		panelLayoutRef.current = layout;
+	});
+
+	const handlePanelDragging = useFn<NonNullable<MyPanelResizeHandle_Props["onDragging"]>>((isDragging) => {
+		if (isDragging) {
+			return;
+		}
+
+		useAppLocalStorageState.setState({ page_editor_panel_layout: panelLayoutRef.current });
+	});
+
+	const handleCatchBoundaryError = useFn((err: Error) => {
+		console.error("[PageEditor_Inner]", err);
+	});
+
+	const getCatchBoundaryResetKey = useFn(() => 0);
+
+	const topStickyFloatingSlot = hasPendingEdits ? (
+		<PageEditorPendingEditsFloating
+			updatedAt={currentPendingEdit?.updatedAt}
+			showReviewButton={hasCurrentPendingEdits && editorMode !== "diff_editor"}
+			reviewPagerLabel={reviewPagerLabel}
+			canNavigate={canNavigatePendingEdits}
+			onReviewChanges={onReviewPendingEdits ?? (() => {})}
+			onNavigatePrevious={handleNavigatePendingEditsPrevious}
+			onNavigateNext={handleNavigatePendingEditsNext}
+		/>
+	) : null;
 
 	const headerSlot = (
 		<PageEditorHeader
@@ -714,6 +742,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 				<MyPanelGroup
 					direction="horizontal"
 					className={cn("PageEditor-panels-group" satisfies PageEditor_ClassNames)}
+					onLayout={handlePanelLayout}
 					style={{
 						height: "max-content",
 						/** required for sticky descendants to work */
@@ -721,16 +750,14 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 					}}
 				>
 					<MyPanel
-						defaultSize={75}
+						defaultSize={savedPanelLayout?.[0] ?? 75}
 						className={cn("PageEditor-content-panel" satisfies PageEditor_ClassNames)}
 						style={leftPanelStyle}
 					>
 						<CatchBoundary
-							getResetKey={() => 0}
+							getResetKey={getCatchBoundaryResetKey}
 							errorComponent={PageEditorError}
-							onCatch={(err) => {
-								console.error("[PageEditor_Inner]", err);
-							}}
+							onCatch={handleCatchBoundaryError}
 						>
 							<PageEditorRender
 								pageId={pageId}
@@ -743,11 +770,11 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 							/>
 						</CatchBoundary>
 					</MyPanel>
-					<MyPanelResizeHandle />
+					<MyPanelResizeHandle onDragging={handlePanelDragging} />
 					<MyPanel
 						className={"PageEditor-sidebar" satisfies PageEditor_ClassNames}
 						collapsible={false}
-						defaultSize={25}
+						defaultSize={savedPanelLayout?.[1] ?? 25}
 						style={{
 							overflow: "initial",
 						}}
@@ -785,11 +812,11 @@ export function PageEditor(props: PageEditor_Props) {
 		[editorMode],
 	);
 
-	const handleReviewPendingEdits = () => {
+	const handleReviewPendingEdits = useFn(() => {
 		onEditorModeChange("diff_editor");
-	};
+	});
 
-	const handleNavigatePendingEdits: NonNullable<PageEditor_Inner_Props["onNavigatePendingEdits"]> = (args) => {
+	const handleNavigatePendingEdits = useFn<NonNullable<PageEditor_Inner_Props["onNavigatePendingEdits"]>>((args) => {
 		const nextView = args.forceDiffEditor ? "diff_editor" : editorMode;
 		const nextSearch = {
 			pageId: args.pageId,
@@ -802,7 +829,7 @@ export function PageEditor(props: PageEditor_Props) {
 		}).catch((error) => {
 			console.error("[PageEditor_Inner.handleNavigatePendingEdits] Error navigating to pending edits", { error });
 		});
-	};
+	});
 
 	return pageId ? (
 		<PageEditorPresenceSupplier userId={authenticated.userId} pageId={pageId}>

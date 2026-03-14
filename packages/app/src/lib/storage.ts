@@ -1,3 +1,7 @@
+import { create } from "zustand";
+
+import type { AppElementId } from "@/lib/dom-utils.ts";
+
 /**
  * All keys used for `localStorage` values.
  *
@@ -7,7 +11,6 @@
 export type storage_local_Key =
 	| "app::auth::anonymous_token"
 	| "app::auth::anonymous_token_user_id"
-	| "app::presence::enabled"
 	| `app_state::${string}`;
 
 /**
@@ -163,3 +166,203 @@ export function storage_session() {
 		},
 	};
 }
+
+// #region app local storage state
+type app_local_storage_state_State = {
+	pages_last_open: string | null;
+	ai_chat_last_open: string | null;
+	pages_last_tab: AppElementId | null;
+	presence_enabled: boolean;
+	page_editor_panel_layout: number[] | null;
+	main_panel_layout: number[] | null;
+};
+
+const app_local_storage_state_KEYS = {
+	pages_last_open: "app_state::pages_last_open",
+	ai_chat_last_open: "app_state::ai_chat_last_open",
+	pages_last_tab: "app_state::pages_last_tab",
+	presence_enabled: "app_state::presence::enabled",
+	page_editor_panel_layout: "app_state::resizable_panel::page_editor_panel",
+	main_panel_layout: "app_state::resizable_panel::main_panel",
+} as const satisfies Record<string, storage_local_Key>;
+
+export const useAppLocalStorageState = ((/* iife */) => {
+	const storage = storage_local();
+
+	const parsePagesLastTab = (value: string | null): AppElementId | null => {
+		if (!value) {
+			return null;
+		}
+
+		switch (value) {
+			case "app_page_editor_sidebar_tabs_comments":
+			case "app_page_editor_sidebar_tabs_agent":
+				return value;
+			default:
+				return null;
+		}
+	};
+
+	const parsePresenceEnabled = (value: string | null) => {
+		return value !== "0";
+	};
+
+	const parseResizablePanelSize = (value: string | null): app_local_storage_state_State["page_editor_panel_layout"] => {
+		try {
+			return JSON.parse(value ?? "null") as app_local_storage_state_State["page_editor_panel_layout"];
+		} catch {
+			return null;
+		}
+	};
+
+	const initialState = {
+		pages_last_open: storage.getItem(app_local_storage_state_KEYS.pages_last_open),
+		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
+		pages_last_tab: parsePagesLastTab(storage.getItem(app_local_storage_state_KEYS.pages_last_tab)),
+		presence_enabled: parsePresenceEnabled(storage.getItem(app_local_storage_state_KEYS.presence_enabled)),
+		page_editor_panel_layout: parseResizablePanelSize(
+			storage.getItem(app_local_storage_state_KEYS.page_editor_panel_layout),
+		),
+		main_panel_layout: parseResizablePanelSize(storage.getItem(app_local_storage_state_KEYS.main_panel_layout)),
+	} satisfies app_local_storage_state_State;
+
+	const store = create<app_local_storage_state_State>(() => initialState);
+
+	let suppressWrite = false;
+
+	const writeValue = (key: storage_local_Key, value: string | null) => {
+		if (value === null) {
+			storage.removeItem(key);
+			return;
+		}
+
+		storage.setItem(key, value);
+	};
+
+	/**
+	 * Apply storage-originated state changes without writing them back to storage again
+	 * via the storage subscription causing infinite loops.
+	 */
+	const setStateWithoutTriggeringWriteback = (nextState: Partial<app_local_storage_state_State>) => {
+		suppressWrite = true;
+		store.setState(nextState);
+		suppressWrite = false;
+	};
+
+	store.subscribe((state, prev) => {
+		// When the write is performed internally
+		// via the cross tab synchronization mechanism,
+		// we need to suppress the writeback to avoid infinite loops.
+		if (suppressWrite) {
+			return;
+		}
+
+		if (state.pages_last_open !== prev.pages_last_open) {
+			writeValue(app_local_storage_state_KEYS.pages_last_open, state.pages_last_open);
+		}
+
+		if (state.ai_chat_last_open !== prev.ai_chat_last_open) {
+			writeValue(app_local_storage_state_KEYS.ai_chat_last_open, state.ai_chat_last_open);
+		}
+
+		if (state.pages_last_tab !== prev.pages_last_tab) {
+			writeValue(app_local_storage_state_KEYS.pages_last_tab, state.pages_last_tab);
+		}
+
+		if (state.presence_enabled !== prev.presence_enabled) {
+			writeValue(app_local_storage_state_KEYS.presence_enabled, state.presence_enabled ? "1" : "0");
+		}
+
+		if (state.page_editor_panel_layout !== prev.page_editor_panel_layout) {
+			writeValue(
+				app_local_storage_state_KEYS.page_editor_panel_layout,
+				state.page_editor_panel_layout ? JSON.stringify(state.page_editor_panel_layout) : null,
+			);
+		}
+
+		if (state.main_panel_layout !== prev.main_panel_layout) {
+			writeValue(
+				app_local_storage_state_KEYS.main_panel_layout,
+				state.main_panel_layout ? JSON.stringify(state.main_panel_layout) : null,
+			);
+		}
+	});
+
+	// Ensure cross tab synchronization.
+	if (typeof window !== "undefined") {
+		storage_local_subscribe_to_storage_events((event) => {
+			if (!event.key) {
+				return;
+			}
+
+			switch (event.key) {
+				case app_local_storage_state_KEYS.pages_last_open: {
+					const nextValue = event.newValue ?? null;
+					const current = store.getState().pages_last_open;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ pages_last_open: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.ai_chat_last_open: {
+					const nextValue = event.newValue ?? null;
+					const current = store.getState().ai_chat_last_open;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ ai_chat_last_open: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.pages_last_tab: {
+					const nextValue = parsePagesLastTab(event.newValue);
+					const current = store.getState().pages_last_tab;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ pages_last_tab: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.presence_enabled: {
+					const nextValue = parsePresenceEnabled(event.newValue);
+					const current = store.getState().presence_enabled;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ presence_enabled: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.page_editor_panel_layout: {
+					const nextValue = parseResizablePanelSize(event.newValue);
+					const current = store.getState().page_editor_panel_layout;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ page_editor_panel_layout: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.main_panel_layout: {
+					const nextValue = parseResizablePanelSize(event.newValue);
+					const current = store.getState().main_panel_layout;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ main_panel_layout: nextValue });
+					return;
+				}
+				default: {
+					return;
+				}
+			}
+		});
+	}
+
+	return store;
+})();
+// #endregion app local storage state

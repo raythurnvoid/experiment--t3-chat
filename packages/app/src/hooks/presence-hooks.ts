@@ -2,7 +2,7 @@ import { useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { usePresence as usePresenceBase } from "@convex-dev/presence/react";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { useAppLocalStorageState } from "@/lib/app-local-storage-state.ts";
+import { useAppLocalStorageState } from "@/lib/storage.ts";
 
 export function app_presence_get_enabled() {
 	return useAppLocalStorageState.getState().presence_enabled;
