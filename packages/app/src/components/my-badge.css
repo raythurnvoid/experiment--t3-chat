@@ -12,6 +12,7 @@
 		padding: 2px 8px;
 		border-radius: 6px;
 		border: 1px solid transparent;
+		outline-offset: -2px;
 
 		font-size: 0.75rem;
 		font-weight: 500;
@@ -26,11 +27,11 @@
 			box-shadow 0.15s ease;
 
 		&:focus-visible {
-			border-color: var(--color-fg-12);
+			outline-color: var(--color-fg-12);
 		}
 
 		&[aria-invalid="true"] {
-			border-color: var(--color-red-06);
+			outline-color: var(--color-red-06);
 		}
 
 		& svg {

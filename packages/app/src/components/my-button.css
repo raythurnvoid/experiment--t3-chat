@@ -14,19 +14,19 @@
 		padding: 6px 10px;
 		border-radius: 6px;
 		border: 2px solid transparent;
+		outline-offset: -2px;
 
 		font-size: 0.875rem;
 		font-weight: 500;
 
 		transition: background-color 0.1s linear;
-		outline: none;
 
 		&:is(:disabled, .MyButton-state-disabled) {
 			cursor: default;
 		}
 
 		&:focus-visible {
-			border-color: var(--color-fg-12);
+			outline-color: var(--color-fg-12);
 		}
 
 		&[aria-busy="true"] {

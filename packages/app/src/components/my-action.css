@@ -7,6 +7,7 @@
 		width: 100%;
 
 		border: 2px solid transparent;
+		outline-offset: -2px;
 		border-radius: inherit;
 
 		background: transparent;
@@ -14,7 +15,6 @@
 		font: inherit;
 		text-align: inherit;
 
-		outline: none;
 		cursor: pointer;
 
 		contain: content;
@@ -25,7 +25,7 @@
 		}
 
 		&:focus-visible {
-			border-color: var(--color-fg-12);
+			outline-color: var(--color-fg-12);
 		}
 
 		&:hover,

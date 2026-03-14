@@ -6,7 +6,7 @@
 
 	/* Focus ring for combobox input - matches MyInput focus behavior */
 	.MyComboboxInput:has(.MyInputControl:focus-visible) .MyInputBox {
-		border-color: var(--color-fg-12);
+		outline-color: var(--color-fg-12);
 	}
 
 	/* Invalid state ring - matches MyInput invalid behavior */
@@ -60,6 +60,10 @@
 
 	.MyComboboxPopoverContent {
 		padding: 4px;
+	}
+
+	.MyComboboxInputBox {
+		outline-offset: -1px;
 	}
 
 	.MyComboboxItem {

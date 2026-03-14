@@ -133,7 +133,7 @@
 		border-radius: inherit;
 
 		&:focus-visible {
-			border-color: var(--color-fg-12);
+			outline-color: var(--color-fg-12);
 		}
 
 		.AiChatMessageUser-edit-button-box {
@@ -260,7 +260,7 @@
 
 			&:focus-visible {
 				color: var(--color-fg-09);
-				border-color: var(--color-fg-12);
+				outline-color: var(--color-fg-12);
 			}
 
 			&:active {
@@ -329,7 +329,7 @@
 		border-radius: 6px;
 
 		&:has(.AiChatMessagePartToolTextAreaSection-textarea:focus-visible) {
-			border-color: var(--color-fg-12);
+			outline-color: var(--color-fg-12);
 		}
 	}
 

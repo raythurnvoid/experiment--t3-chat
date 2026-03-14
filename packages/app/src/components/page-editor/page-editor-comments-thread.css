@@ -125,7 +125,7 @@
 		margin: -1px;
 
 		&:focus-visible {
-			border-color: var(--color-fg-12);
+			outline-color: var(--color-fg-12);
 		}
 	}
 

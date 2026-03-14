@@ -45,10 +45,11 @@
 		background: var(--color-base-1-05);
 
 		border: 2px solid var(--color-fg-01);
+		outline-offset: -2px;
 		border-radius: 6px;
 
-		&:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) {
-			border-color: var(--color-fg-12);
+		.MyInput:has(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible) & {
+			outline-color: var(--color-fg-12);
 		}
 
 		.MyInput-variant-surface & {
@@ -60,7 +61,7 @@
 		}
 
 		.MyInput:has([aria-invalid="true"], :user-invalid) & {
-			border-color: var(--color-red-06);
+			outline-color: var(--color-red-06);
 			box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.2);
 		}
 	}

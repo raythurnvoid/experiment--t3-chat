@@ -24,7 +24,7 @@
 	}
 
 	.MyButtonGroupItem:has(.MyButtonGroupItem-input:focus-visible) .MyButtonGroupItem-button {
-		border-color: var(--color-fg-12);
+		outline-color: var(--color-fg-12);
 	}
 
 	.MyButtonGroupItem:has(.MyButtonGroupItem-input:disabled) .MyButtonGroupItem-button {

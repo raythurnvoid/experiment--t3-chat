@@ -13,6 +13,10 @@
 @custom-variant dark (&:is(.dark *));
 
 @layer normalize {
+	* {
+		outline: 2px solid transparent;
+	}
+
 	body {
 		margin: 0;
 		min-width: 320px;
@@ -47,7 +51,6 @@
 		font: unset;
 		background: none;
 		cursor: pointer;
-		outline: none;
 		text-align: unset;
 		user-select: none;
 	}
@@ -65,7 +68,7 @@
 	}
 
 	*:focus-visible {
-		outline: var(--color-fg-12) solid 2px;
+		outline-color: var(--color-fg-12);
 		border-radius: 4px;
 	}
 }
@@ -378,10 +381,6 @@
 
 /* App Styles */
 @layer base {
-	* {
-		border-color: var(--color-fg-02);
-	}
-
 	html {
 		max-height: 100dvh;
 		max-width: 100dvw;
