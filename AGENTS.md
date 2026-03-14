@@ -741,6 +741,14 @@ Use `useEffect` (or other effect hooks) only for real side effects such as:
 
 When you need a stable callback that can read the latest values without causing re-subscribe churn, prefer patterns like `useEffectEvent` or a "live ref" helper (as used in this codebase).
 
+### Error boundaries
+
+For React subtree error boundaries in app UI, prefer TanStack Router's `CatchBoundary` over ad hoc class-based error boundary components.
+
+- Match the existing pattern from `packages/app/src/components/page-editor/page-editor.tsx`: pass `errorComponent`, `onCatch`, and `getResetKey`.
+- Use `getResetKey` to recover when the owning identity changes (for example route params, selected thread, or branch anchor).
+- Keep the fallback UI local to the feature surface and style it like that surface instead of showing a generic app-level error.
+
 ## Review checklist
 
 When reviewing or proposing changes, you must question any newly introduced:
@@ -1208,8 +1216,7 @@ color: hsl(var(--foreground));
 	}
 
 	&:focus-visible {
-		outline: none;
-		border-color: var(--color-fg-12);
+		outline-color: var(--color-fg-12);
 	}
 
 	&:hover {

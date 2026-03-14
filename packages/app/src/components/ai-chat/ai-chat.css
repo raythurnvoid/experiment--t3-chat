@@ -280,6 +280,31 @@
 	}
 	/* #endregion welcome */
 
+	/* #region thread error */
+	.AiChatThreadError {
+		display: flex;
+		flex-direction: column;
+		align-items: start;
+		gap: 8px;
+
+		padding: 8px 0px;
+	}
+
+	.AiChatThreadError-bubble {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		width: 100%;
+	}
+
+	.AiChatThreadError-error {
+		padding-inline: 24px;
+
+		color: var(--color-red-10);
+	}
+	/* #endregion thread error */
+
 	/* #region message list */
 	.AiChatMessageList {
 		display: flex;

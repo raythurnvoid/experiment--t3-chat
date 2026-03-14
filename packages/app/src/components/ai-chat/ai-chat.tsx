@@ -2,6 +2,7 @@ import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
 import { useState, useEffect, useRef, useDeferredValue } from "react";
+import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { ArrowDown, Menu, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -161,6 +162,28 @@ function AiChatSkeleton() {
 	);
 }
 // #endregion skeleton
+
+// #region thread error
+type AiChatThreadError_ClassNames = "AiChatThreadError" | "AiChatThreadError-bubble" | "AiChatThreadError-error";
+
+type AiChatThreadError_Props = ErrorComponentProps & {
+	message?: string;
+};
+
+function AiChatThreadError(props: AiChatThreadError_Props) {
+	const { message = "This chat cannot continue because it is in an invalid state." } = props;
+
+	return (
+		<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
+			<div className={"AiChatThreadError" satisfies AiChatThreadError_ClassNames}>
+				<div className={"AiChatThreadError-bubble" satisfies AiChatThreadError_ClassNames}>
+					<div className={"AiChatThreadError-error" satisfies AiChatThreadError_ClassNames}>{message}</div>
+				</div>
+			</div>
+		</div>
+	);
+}
+// #endregion thread error
 
 // #region message list
 type AiChatMessagesList_ClassNames = "AiChatMessageList" | "AiChatMessageList-error";
@@ -674,6 +697,18 @@ export function AiChatThread(props: AiChatThread_Props) {
 		}
 	};
 
+	const handleCatchBoundaryError = (error: Error) => {
+		console.error("[AiChatThread.handleCatchBoundaryError] Chat render failed", {
+			error,
+			selectedThreadId,
+			anchorId: controller.activeBranchMessages.anchorId ?? null,
+		});
+	};
+
+	const getCatchBoundaryResetKey = () => {
+		return `${selectedThreadId ?? "new"}:${controller.activeBranchMessages.anchorId ?? "root"}`;
+	};
+
 	return (
 		<div
 			className={cn(
@@ -686,44 +721,50 @@ export function AiChatThread(props: AiChatThread_Props) {
 				: {}) satisfies Partial<AiChatThread_CustomAttributes>)}
 			onKeyDown={handleKeyDown}
 		>
-			<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
-				<AiChatMessagesList
-					ref={setMessagesListEl}
-					selectedThreadId={selectedThreadId}
-					activeBranchMessages={controller.activeBranchMessages}
-					messagesChildrenByParentId={controller.messagesChildrenByParentId}
-					isRunning={controller.isRunning}
-					status={controller.status}
-					error={controller.error}
-					editingMessageId={editingMessageId}
-					onEditStart={handleEditStart}
-					onEditCancel={handleEditCancel}
-					onEditSubmit={handleEditSubmit}
-					onToolOutput={controller.addToolOutput}
-					onToolResumeStream={controller.resumeStream}
-					onToolStop={controller.stop}
-					onClickSuggestion={handleClickSuggestion}
-					onMessageRegenerate={handleMessageRegenerate}
-					onMessageBranchChat={handleMessageBranchChat}
-					onSelectBranchAnchor={controller.selectBranchAnchor}
-				/>
-			</div>
-			<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
-				<MyIconButton variant="outline" tooltip="Scroll to bottom" onClick={handleScrollToBottom} hidden={isAtBottom}>
-					<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
-				</MyIconButton>
-			</div>
-			<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
-				<AiChatComposer
-					key={selectedThreadId ?? "new"}
-					canCancel={controller.isRunning}
-					isRunning={controller.isRunning}
-					initialValue={initialComposerValue}
-					onValueChange={handleComposerValueChange}
-					onSubmit={handleComposerSubmit}
-					onCancel={handleComposerCancel}
-				/>
-			</div>
+			<CatchBoundary
+				getResetKey={getCatchBoundaryResetKey}
+				errorComponent={AiChatThreadError}
+				onCatch={handleCatchBoundaryError}
+			>
+				<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
+					<AiChatMessagesList
+						ref={setMessagesListEl}
+						selectedThreadId={selectedThreadId}
+						activeBranchMessages={controller.activeBranchMessages}
+						messagesChildrenByParentId={controller.messagesChildrenByParentId}
+						isRunning={controller.isRunning}
+						status={controller.status}
+						error={controller.error}
+						editingMessageId={editingMessageId}
+						onEditStart={handleEditStart}
+						onEditCancel={handleEditCancel}
+						onEditSubmit={handleEditSubmit}
+						onToolOutput={controller.addToolOutput}
+						onToolResumeStream={controller.resumeStream}
+						onToolStop={controller.stop}
+						onClickSuggestion={handleClickSuggestion}
+						onMessageRegenerate={handleMessageRegenerate}
+						onMessageBranchChat={handleMessageBranchChat}
+						onSelectBranchAnchor={controller.selectBranchAnchor}
+					/>
+				</div>
+				<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
+					<MyIconButton variant="outline" tooltip="Scroll to bottom" onClick={handleScrollToBottom} hidden={isAtBottom}>
+						<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
+					</MyIconButton>
+				</div>
+				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
+					<AiChatComposer
+						key={selectedThreadId ?? "new"}
+						canCancel={controller.isRunning}
+						isRunning={controller.isRunning}
+						initialValue={initialComposerValue}
+						onValueChange={handleComposerValueChange}
+						onSubmit={handleComposerSubmit}
+						onCancel={handleComposerCancel}
+					/>
+				</div>
+			</CatchBoundary>
 		</div>
 	);
 }

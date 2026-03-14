@@ -13,7 +13,6 @@ import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import {
 	streamText,
-	tool,
 	smoothStream,
 	createUIMessageStream,
 	createUIMessageStreamResponse,
@@ -582,18 +581,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								const tools = {
-									invalid_tool_call: tool({
-										description: "Internal recovery tool for malformed tool calls. Do not call this intentionally.",
-										inputSchema: z.object({
-											tool: z.string().describe("The invalid tool name emitted by the model"),
-											error: z.string().describe("The validation or repair error"),
-										}),
-										execute: async ({ tool, error }) => ({
-											tool,
-											error,
-											message: `Tool call could not be repaired: ${tool}. Use one of the available tools or answer without tools.`,
-										}),
-									}),
 									read_page: ai_chat_tool_create_read_page(ctx),
 									list_pages: ai_chat_tool_create_list_pages(ctx),
 									glob_pages: ai_chat_tool_create_glob_pages(ctx),
@@ -826,10 +813,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 														},
 													}
 												: undefined;
-										const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter(
-											(toolName): toolName is Exclude<keyof typeof tools, "invalid_tool_call"> =>
-												toolName !== "invalid_tool_call",
-										);
+										const activeTools = Object.keys(tools) as Array<keyof typeof tools>;
 
 										const result1 = streamText({
 											model: openai(selectedModelId),
@@ -850,15 +834,15 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 												return {
 													...failed.toolCall,
-													toolName: "invalid_tool_call",
 													input: JSON.stringify({
 														tool: failed.toolCall.toolName,
-														error: failed.error instanceof Error ? failed.error.message : String(failed.error),
+														error: failed.error.message,
 													}),
+													toolName: "invalid",
 												};
 											},
 											toolChoice: "auto",
-											stopWhen: stepCountIs(5),
+											stopWhen: stepCountIs(10),
 											tools,
 											onAbort: async () => {
 												console.info("[ai_chat_http_routes./api/chat] streamText.onAbort", {
