@@ -1,6 +1,14 @@
 import "./ai-chat-message.css";
 
-import { useDeferredValue, type ComponentPropsWithRef, type ReactNode, type Ref } from "react";
+import {
+	useDeferredValue,
+	useEffect,
+	useRef,
+	useState,
+	type ComponentPropsWithRef,
+	type ReactNode,
+	type Ref,
+} from "react";
 import {
 	ArrowUpRight,
 	ChevronLeft,
@@ -110,32 +118,33 @@ function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
 }
 // #endregion tool status
 
-// #region tool disclosure
-type AiChatMessagePartToolDisclosure_ClassNames = "AiChatMessagePartToolDisclosure";
+// #region part disclosure
+type AiChatMessagePartDisclosure_ClassNames = "AiChatMessagePartDisclosure";
 
-type AiChatMessagePartToolDisclosure_Props = React.ComponentProps<"details"> & {
+type AiChatMessagePartDisclosure_Props = React.ComponentProps<"details"> & {
 	className?: string | undefined;
 };
 
-function AiChatMessagePartToolDisclosure(props: AiChatMessagePartToolDisclosure_Props) {
+function AiChatMessagePartDisclosure(props: AiChatMessagePartDisclosure_Props) {
 	const { className, ...rest } = props;
 
 	return (
 		<details
-			className={cn("AiChatMessagePartToolDisclosure" satisfies AiChatMessagePartToolDisclosure_ClassNames, className)}
+			className={cn("AiChatMessagePartDisclosure" satisfies AiChatMessagePartDisclosure_ClassNames, className)}
 			{...rest}
 		/>
 	);
 }
-// #endregion tool disclosure
+// #endregion part disclosure
 
-// #region tool disclosure button
-type AiChatMessagePartToolDisclosureButton_ClassNames =
-	| "AiChatMessagePartToolDisclosureButton"
-	| "AiChatMessagePartToolDisclosureButton-content"
-	| "AiChatMessagePartToolDisclosureButton-label";
+// #region part disclosure button
+type AiChatMessagePartDisclosureButton_ClassNames =
+	| "AiChatMessagePartDisclosureButton"
+	| "AiChatMessagePartDisclosureButton-content"
+	| "AiChatMessagePartDisclosureButton-label"
+	| "AiChatMessagePartDisclosureButton-label-text";
 
-type AiChatMessagePartToolDisclosureButton_Props = {
+type AiChatMessagePartDisclosureButton_Props = {
 	className?: string | undefined;
 	title: string;
 	text?: string;
@@ -143,10 +152,11 @@ type AiChatMessagePartToolDisclosureButton_Props = {
 	isChatRunning: boolean;
 };
 
-function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDisclosureButton_Props) {
+function AiChatMessagePartDisclosureButton(props: AiChatMessagePartDisclosureButton_Props) {
 	const { className, title, text, state, isChatRunning } = props;
 
 	const isLoading = isChatRunning && (state === "input-streaming" || state === "input-available");
+	const labelText = `${title}${text ? ":" : ""}`;
 
 	const handleClick: ComponentPropsWithRef<"summary">["onClick"] = (e) => {
 		if (isLoading) {
@@ -157,7 +167,7 @@ function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDiscl
 	return (
 		<summary
 			className={cn(
-				"AiChatMessagePartToolDisclosureButton" satisfies AiChatMessagePartToolDisclosureButton_ClassNames,
+				"AiChatMessagePartDisclosureButton" satisfies AiChatMessagePartDisclosureButton_ClassNames,
 				className,
 			)}
 			aria-busy={isLoading}
@@ -165,13 +175,16 @@ function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDiscl
 			onClick={handleClick}
 		>
 			<div
-				className={
-					"AiChatMessagePartToolDisclosureButton-content" satisfies AiChatMessagePartToolDisclosureButton_ClassNames
-				}
+				className={"AiChatMessagePartDisclosureButton-content" satisfies AiChatMessagePartDisclosureButton_ClassNames}
 			>
-				<b>
-					{title}
-					{text && `:`}
+				<b className={"AiChatMessagePartDisclosureButton-label" satisfies AiChatMessagePartDisclosureButton_ClassNames}>
+					<span
+						className={
+							"AiChatMessagePartDisclosureButton-label-text" satisfies AiChatMessagePartDisclosureButton_ClassNames
+						}
+					>
+						{labelText}
+					</span>
 				</b>
 				<span> {text}</span>
 				<AiChatMessagePartToolStatus state={state} isChatRunning={isChatRunning} />
@@ -179,7 +192,7 @@ function AiChatMessagePartToolDisclosureButton(props: AiChatMessagePartToolDiscl
 		</summary>
 	);
 }
-// #endregion tool disclosure button
+// #endregion part disclosure button
 
 // #region tool body
 type AiChatMessagePartToolBody_ClassNames = "AiChatMessagePartToolBody";
@@ -276,10 +289,10 @@ function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Prop
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolReadPage" satisfies AiChatMessagePartToolReadPage_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton
+			<AiChatMessagePartDisclosureButton
 				title="Read page"
 				text={args?.path ? path_name_of(args.path) : "/ (Home)"}
 				state={toolState}
@@ -305,7 +318,7 @@ function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Prop
 					<AiChatMessagePartToolTextAreaSection label="Content" code={result.output} maxHeight="16lh" />
 				)}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool read_page
@@ -328,10 +341,10 @@ function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Pr
 	const text = args?.path ? path_name_of(args.path) || "/ (Home) " : undefined;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolListPages" satisfies AiChatMessagePartToolListPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton
+			<AiChatMessagePartDisclosureButton
 				title="List pages"
 				text={text}
 				state={toolState}
@@ -344,7 +357,7 @@ function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Pr
 					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
 				)}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool list_pages
@@ -367,10 +380,10 @@ function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Pr
 	const text = result?.metadata?.count ? `${result.metadata.count} results` : args?.pattern ? args.pattern : undefined;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolGlobPages" satisfies AiChatMessagePartToolGlobPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton
+			<AiChatMessagePartDisclosureButton
 				title="Glob pages"
 				text={text}
 				state={toolState}
@@ -383,7 +396,7 @@ function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Pr
 					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
 				)}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool glob_pages
@@ -410,10 +423,10 @@ function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Pr
 			: undefined;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolGrepPages" satisfies AiChatMessagePartToolGrepPages_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton
+			<AiChatMessagePartDisclosureButton
 				title="Grep pages"
 				text={text}
 				state={toolState}
@@ -426,7 +439,7 @@ function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Pr
 					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
 				)}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool grep_pages
@@ -449,13 +462,13 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 	const text = result?.metadata?.matches ? `${result.metadata.matches} results` : args?.query ? args.query : undefined;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn(
 				"AiChatMessagePartToolTextSearchPages" satisfies AiChatMessagePartToolTextSearchPages_ClassNames,
 				className,
 			)}
 		>
-			<AiChatMessagePartToolDisclosureButton
+			<AiChatMessagePartDisclosureButton
 				title={"Search pages"}
 				text={text}
 				state={toolState}
@@ -468,7 +481,7 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
 				)}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool text_search_pages
@@ -626,10 +639,10 @@ function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Prop
 	const resultCode = result?.metadata?.diff ?? result?.output;
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolEditPage" satisfies AiChatMessagePartToolEditPage_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton
+			<AiChatMessagePartDisclosureButton
 				title="Edit page"
 				text={text}
 				state={toolState}
@@ -653,7 +666,7 @@ function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Prop
 				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
 				{resultCode && <AiChatMessagePartToolTextAreaSection label="Result" code={resultCode} maxHeight="16lh" />}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool edit_page
@@ -677,14 +690,10 @@ function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props)
 		output === undefined ? undefined : typeof output === "string" ? output : json_strigify_ensured(output);
 
 	return (
-		<AiChatMessagePartToolDisclosure
+		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolUnknown" satisfies AiChatMessagePartToolUnknown_ClassNames, className)}
 		>
-			<AiChatMessagePartToolDisclosureButton
-				title={`tool-${toolName}`}
-				state={part.state}
-				isChatRunning={isChatRunning}
-			/>
+			<AiChatMessagePartDisclosureButton title={`tool-${toolName}`} state={part.state} isChatRunning={isChatRunning} />
 			<AiChatMessagePartToolBody>
 				<div className={"AiChatMessagePartToolUnknown-meta" satisfies AiChatMessagePartToolUnknown_ClassNames}>
 					<AiChatMessagePartToolChip>type: {part.type}</AiChatMessagePartToolChip>
@@ -697,7 +706,7 @@ function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props)
 					<AiChatMessagePartToolTextAreaSection label="Result" code={outputCode} maxHeight="16lh" />
 				)}
 			</AiChatMessagePartToolBody>
-		</AiChatMessagePartToolDisclosure>
+		</AiChatMessagePartDisclosure>
 	);
 }
 // #endregion tool unknown
@@ -748,18 +757,90 @@ function AiChatMessagePartMarkdownUser(props: AiChatMessagePartMarkdownUser_Prop
 }
 // #endregion markdown user
 
-// #region part reasoning
-type AiChatMessagePartReasoning_ClassNames = "AiChatMessagePartReasoning";
+// #region part thinking
+type AiChatMessagePartThinking_ClassNames =
+	| "AiChatMessagePartThinking"
+	| "AiChatMessagePartThinking-streaming"
+	| "AiChatMessagePartThinking-text-only"
+	| "AiChatMessagePartThinking-text-only-content"
+	| "AiChatMessagePartThinking-body"
+	| "AiChatMessagePartThinking-body-placeholder";
 
-type AiChatMessagePartReasoning_Props = {
+type AiChatMessagePartThinking_Props = {
+	className?: string | undefined;
 	text: string;
+	isStreaming: boolean;
+	defaultOpen?: boolean | undefined;
 };
 
-function AiChatMessagePartReasoning(props: AiChatMessagePartReasoning_Props) {
-	const { text } = props;
-	return <p className={"AiChatMessagePartReasoning" satisfies AiChatMessagePartReasoning_ClassNames}>{text}</p>;
+function AiChatMessagePartThinking(props: AiChatMessagePartThinking_Props) {
+	const { className, text, isStreaming, defaultOpen } = props;
+
+	const deferredText = useDeferredValue(text);
+	const [isOpen, setIsOpen] = useState(defaultOpen ?? isStreaming);
+	const wasStreamingRef = useRef(isStreaming);
+	const textTrimmed = deferredText.trim();
+
+	useEffect(() => {
+		if (isStreaming && !wasStreamingRef.current) {
+			setIsOpen(true);
+		}
+
+		wasStreamingRef.current = isStreaming;
+	}, [isStreaming]);
+
+	const handleToggle: ComponentPropsWithRef<"details">["onToggle"] = (event) => {
+		setIsOpen(event.currentTarget.open);
+	};
+
+	const hasText = textTrimmed.length > 0;
+
+	return hasText ? (
+		<AiChatMessagePartDisclosure
+			className={cn(
+				"AiChatMessagePartThinking" satisfies AiChatMessagePartThinking_ClassNames,
+				isStreaming && ("AiChatMessagePartThinking-streaming" satisfies AiChatMessagePartThinking_ClassNames),
+				className,
+			)}
+			open={isOpen}
+			onToggle={handleToggle}
+		>
+			<AiChatMessagePartDisclosureButton
+				title="Thinking"
+				state={isStreaming ? "input-streaming" : "output-available"}
+				isChatRunning={isStreaming}
+			/>
+			<AiChatMessagePartToolBody
+				className={"AiChatMessagePartThinking-body" satisfies AiChatMessagePartThinking_ClassNames}
+			>
+				<AiChatMarkdown markdown={deferredText} />
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	) : (
+		<div
+			className={cn(
+				"AiChatMessagePartThinking" satisfies AiChatMessagePartThinking_ClassNames,
+				isStreaming && ("AiChatMessagePartThinking-streaming" satisfies AiChatMessagePartThinking_ClassNames),
+				className,
+			)}
+		>
+			<div
+				className={"AiChatMessagePartThinking-text-only" satisfies AiChatMessagePartThinking_ClassNames}
+				aria-busy={isStreaming}
+				aria-disabled="true"
+			>
+				<div className={"AiChatMessagePartThinking-text-only-content" satisfies AiChatMessagePartThinking_ClassNames}>
+					<b>{isStreaming ? "Thinking" : "Thought"}</b>
+					<span
+						aria-hidden
+						className={"AiChatMessagePartThinking-body-placeholder" satisfies AiChatMessagePartThinking_ClassNames}
+					/>
+				</div>
+			</div>
+		</div>
+	);
 }
-// #endregion part reasoning
+// #endregion part thinking
 
 // #region part image
 type AiChatMessagePartImage_ClassNames = "AiChatMessagePartImage";
@@ -993,7 +1074,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 	}
 
 	if (isReasoningUIPart(part)) {
-		return <AiChatMessagePartReasoning text={part.text} />;
+		return <AiChatMessagePartThinking text={part.text} isStreaming={isChatRunning} defaultOpen={isChatRunning} />;
 	}
 
 	if (isDataUIPart(part)) {
@@ -1054,6 +1135,17 @@ function AiChatMessageContainer(props: AiChatMessageContainer_Props) {
 // #endregion container
 
 // #region content
+type AiChatMessageContent_DisplayItem =
+	| {
+			type: "part";
+			part: ai_chat_AiSdk5UiMessage["parts"][number];
+	  }
+	| {
+			type: "thinking";
+			text: string;
+			isStreaming: boolean;
+	  };
+
 type AiChatMessageContent_ClassNames = "AiChatMessageContent";
 
 type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
@@ -1067,6 +1159,49 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	onToolStop: AiChatMessagePart_Props["onToolStop"];
 	children?: ReactNode;
 };
+
+function ai_chat_message_content_get_display_items(
+	message: ai_chat_AiSdk5UiMessage,
+	parts: ai_chat_AiSdk5UiMessage["parts"],
+	isChatRunning: boolean,
+) {
+	if (message.role !== "assistant") {
+		return parts.map((part) => ({ type: "part", part }) satisfies AiChatMessageContent_DisplayItem);
+	}
+
+	const displayItems: AiChatMessageContent_DisplayItem[] = [];
+
+	for (let index = 0; index < parts.length; index++) {
+		const part = parts[index];
+		if (!isReasoningUIPart(part)) {
+			displayItems.push({ type: "part", part } satisfies AiChatMessageContent_DisplayItem);
+			continue;
+		}
+
+		const reasoningTexts = [part.text];
+		let endIndex = index;
+
+		while (endIndex + 1 < parts.length) {
+			const nextPart = parts[endIndex + 1];
+			if (!isReasoningUIPart(nextPart)) {
+				break;
+			}
+
+			endIndex += 1;
+			reasoningTexts.push(nextPart.text);
+		}
+
+		displayItems.push({
+			type: "thinking",
+			text: reasoningTexts.join("\n\n"),
+			isStreaming: isChatRunning && endIndex === parts.length - 1,
+		} satisfies AiChatMessageContent_DisplayItem);
+
+		index = endIndex;
+	}
+
+	return displayItems;
+}
 
 function AiChatMessageContent(props: AiChatMessageContent_Props) {
 	const {
@@ -1085,9 +1220,13 @@ function AiChatMessageContent(props: AiChatMessageContent_Props) {
 	const deferredAssistantParts = useDeferredValue(message.parts);
 
 	const parts = message.role === "assistant" ? deferredAssistantParts : message.parts;
-	const displayParts = children
+	const displayItems = children
 		? []
-		: parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start");
+		: ai_chat_message_content_get_display_items(
+				message,
+				parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start"),
+				isChatRunning,
+			);
 
 	return (
 		<div
@@ -1097,21 +1236,33 @@ function AiChatMessageContent(props: AiChatMessageContent_Props) {
 			{...rest}
 		>
 			{children ??
-				displayParts.map((part, index) => (
-					<AiChatMessagePart
-						// index is better in this case because the parts follow a static order
-						// and this will prevent them from being unmounted when the message is
-						// persisted after stream
-						key={index}
-						role={message.role}
-						part={part}
-						message={message}
-						isChatRunning={isChatRunning}
-						onToolOutput={onToolOutput}
-						onToolResumeStream={onToolResumeStream}
-						onToolStop={onToolStop}
-					/>
-				))}
+				displayItems.map((item, index) => {
+					// Keep index keys so persisted assistant messages do not remount while
+					// their streamed parts settle into the final stored structure.
+					if (item.type === "thinking") {
+						return (
+							<AiChatMessagePartThinking
+								key={index}
+								text={item.text}
+								isStreaming={item.isStreaming}
+								defaultOpen={item.isStreaming}
+							/>
+						);
+					}
+
+					return (
+						<AiChatMessagePart
+							key={index}
+							role={message.role}
+							part={item.part}
+							message={message}
+							isChatRunning={isChatRunning}
+							onToolOutput={onToolOutput}
+							onToolResumeStream={onToolResumeStream}
+							onToolStop={onToolStop}
+						/>
+					);
+				})}
 		</div>
 	);
 }

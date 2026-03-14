@@ -222,20 +222,17 @@
 	}
 	/* #endregion tool status */
 
-	/* #region tool disclosure */
-	.AiChatMessagePartToolDisclosure {
+	/* #region part disclosure */
+	.AiChatMessagePartDisclosure {
 		padding: 0 16px;
 		width: 100%;
 	}
-	/* #endregion tool disclosure */
+	/* #endregion part disclosure */
 
-	/* #region tool disclosure button */
-	.AiChatMessagePartToolDisclosureButton {
-		list-style: revert;
-
+	/* #region part disclosure button */
+	.AiChatMessagePartDisclosureButton,
+	.AiChatMessagePartThinking-text-only {
 		width: 100%;
-
-		cursor: pointer;
 
 		font-size: 0.875rem;
 
@@ -246,6 +243,14 @@
 
 		outline: none;
 		border: 2px solid transparent;
+	}
+
+	.AiChatMessagePartDisclosureButton {
+		list-style: revert;
+
+		width: 100%;
+
+		cursor: pointer;
 
 		&:not([aria-disabled="true"]) {
 			&:hover {
@@ -269,7 +274,8 @@
 		}
 	}
 
-	.AiChatMessagePartToolDisclosureButton-content {
+	.AiChatMessagePartDisclosureButton-content,
+	.AiChatMessagePartThinking-text-only-content {
 		display: inline-flex;
 		align-items: center;
 		justify-content: space-between;
@@ -279,7 +285,20 @@
 			font-weight: 500;
 		}
 	}
-	/* #endregion tool disclosure button */
+
+	.AiChatMessagePartDisclosureButton-label,
+	.AiChatMessagePartThinking-text-only-content > b {
+		position: relative;
+
+		display: inline-grid;
+		align-items: center;
+	}
+
+	.AiChatMessagePartDisclosureButton-label-text {
+		grid-column: 1;
+		grid-row: 1;
+	}
+	/* #endregion part disclosure button */
 
 	/* #region tool body */
 	.AiChatMessagePartToolBody {
@@ -430,6 +449,80 @@
 		padding: 0 24px;
 	}
 	/* #endregion markdown agent */
+
+	/* #region part thinking */
+	.AiChatMessagePartThinking {
+		width: 100%;
+	}
+
+	.AiChatMessagePartThinking-streaming {
+		.AiChatMessagePartDisclosureButton-label-text,
+		.AiChatMessagePartThinking-text-only-content > b {
+			color: transparent;
+			background: linear-gradient(
+				110deg,
+				var(--color-fg-04) 0%,
+				var(--color-fg-04) 20%,
+				var(--color-fg-07) 40%,
+				var(--color-fg-07) 50%,
+				var(--color-fg-07) 50%,
+				var(--color-fg-04) 70%,
+				var(--color-fg-04) 100%
+			);
+			background-size: 200% 100%;
+			background-clip: text;
+			will-change: background-position;
+
+			animation: AiChatMessagePartDisclosureButton_label_shimmer 1s ease infinite;
+		}
+	}
+
+	.AiChatMessagePartThinking-body {
+		margin: 0 0 0 16px;
+		padding: 8px 16px 16px 16px;
+		border-radius: 6px;
+
+		background: var(--color-base-alt-1-03);
+		color: var(--color-fg-07);
+
+		max-height: 16lh;
+		overflow: auto;
+
+		& > .AiChatMarkdown {
+			color: inherit;
+
+			p:first-child {
+				margin-top: 0;
+			}
+
+			p:last-child {
+				margin-bottom: 0;
+			}
+		}
+
+		.AiChatMessagePartThinking[open] > & {
+			margin-top: 4px;
+		}
+	}
+
+	.AiChatMessagePartThinking-body-placeholder {
+		display: none;
+	}
+
+	.AiChatMessagePartThinking-text-only {
+		padding-inline: 24px;
+	}
+
+	@keyframes AiChatMessagePartDisclosureButton_label_shimmer {
+		from {
+			background-position: 150% 0%;
+		}
+
+		to {
+			background-position: -50% 0%;
+		}
+	}
+	/* #endregion part thinking */
 
 	/* #region part */
 	.AiChatMessagePart {
