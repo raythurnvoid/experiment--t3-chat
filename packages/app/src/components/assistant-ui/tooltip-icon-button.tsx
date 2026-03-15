@@ -9,11 +9,11 @@ import { cn } from "@/lib/utils.ts";
 
 export type TooltipIconButtonProps = ComponentPropsWithRef<typeof Button> & {
 	tooltip: string;
-	side?: "top" | "bottom" | "left" | "right";
+	tooltipSide?: "top" | "bottom" | "left" | "right";
 };
 
 export const TooltipIconButton = forwardRef<HTMLButtonElement, TooltipIconButtonProps>(
-	({ children, tooltip, side = "bottom", className, ...rest }, ref) => {
+	({ children, tooltip, tooltipSide = "bottom", className, ...rest }, ref) => {
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
@@ -28,7 +28,7 @@ export const TooltipIconButton = forwardRef<HTMLButtonElement, TooltipIconButton
 						<span className="aui-sr-only sr-only">{tooltip}</span>
 					</Button>
 				</TooltipTrigger>
-				<TooltipContent side={side}>{tooltip}</TooltipContent>
+				<TooltipContent side={tooltipSide}>{tooltip}</TooltipContent>
 			</Tooltip>
 		);
 	},

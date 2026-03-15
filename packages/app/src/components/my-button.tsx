@@ -1,8 +1,10 @@
 import "./my-button.css";
 import { memo, type ComponentPropsWithRef, type Ref } from "react";
+import type * as Ariakit from "@ariakit/react";
 
 import { cn } from "@/lib/utils.ts";
 import { MyIcon } from "@/components/my-icon.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 
 export type MyButton_ClassNames =
 	| "MyButton"
@@ -43,12 +45,27 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	 * @default false
 	 */
 	"aria-busy"?: boolean;
+
+	tooltip?: string;
+	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipSide?: "top" | "bottom" | "left" | "right";
 };
 
 export const MyButton = memo(function MyButton(props: MyButton_Props) {
-	const { ref, id, className, type = "button", variant = "default", children, ...rest } = props;
+	const {
+		ref,
+		id,
+		className,
+		type = "button",
+		variant = "default",
+		tooltip,
+		tooltipTimeout,
+		tooltipSide = "bottom",
+		children,
+		...rest
+	} = props;
 
-	return (
+	const buttonElement = (
 		<button
 			ref={ref}
 			id={id}
@@ -68,10 +85,25 @@ export const MyButton = memo(function MyButton(props: MyButton_Props) {
 				variant === "link" && ("MyButton-variant-link" satisfies MyButton_ClassNames),
 				className,
 			)}
+			aria-label={tooltip}
 			{...rest}
 		>
 			{children}
+			{tooltip && <span className={cn("sr-only")}>{tooltip}</span>}
 		</button>
+	);
+
+	if (!tooltip) {
+		return buttonElement;
+	}
+
+	return (
+		<MyTooltip timeout={tooltipTimeout} placement={tooltipSide}>
+			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
+			<MyTooltipContent unmountOnHide>
+				<>{tooltip}</>
+			</MyTooltipContent>
+		</MyTooltip>
 	);
 });
 

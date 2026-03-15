@@ -4,11 +4,11 @@ import { cn } from "@/lib/utils.ts";
 
 export type IconButton_Props = React.ComponentProps<typeof Button> & {
 	tooltip?: string;
-	side?: "top" | "bottom" | "left" | "right";
+	tooltipSide?: "top" | "bottom" | "left" | "right";
 	ref?: React.RefObject<HTMLButtonElement>;
 };
 
-export function IconButton({ children, tooltip, side = "bottom", className, ref, ...props }: IconButton_Props) {
+export function IconButton({ children, tooltip, tooltipSide = "bottom", className, ref, ...props }: IconButton_Props) {
 	const buttonElement = (
 		<Button ref={ref} className={cn("IconButton", className)} {...props}>
 			{children}
@@ -25,7 +25,7 @@ export function IconButton({ children, tooltip, side = "bottom", className, ref,
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>{buttonElement}</TooltipTrigger>
-			<TooltipContent side={side}>{tooltip}</TooltipContent>
+			<TooltipContent side={tooltipSide}>{tooltip}</TooltipContent>
 		</Tooltip>
 	);
 }

@@ -14,11 +14,11 @@ export type MyIconButton_Props = ComponentPropsWithRef<typeof MyButton> & {
 	ref?: Ref<HTMLButtonElement>;
 	tooltip?: string;
 	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
-	side?: "top" | "bottom" | "left" | "right";
+	tooltipSide?: "top" | "bottom" | "left" | "right";
 };
 
 export const MyIconButton = memo(function MyIconButton(props: MyIconButton_Props) {
-	const { ref, id, className, tooltip, tooltipTimeout, side = "bottom", children, ...rest } = props;
+	const { ref, id, className, tooltip, tooltipTimeout, tooltipSide = "bottom", children, ...rest } = props;
 	const buttonElement = (
 		<MyButton
 			ref={ref}
@@ -37,7 +37,7 @@ export const MyIconButton = memo(function MyIconButton(props: MyIconButton_Props
 	}
 
 	return (
-		<MyTooltip timeout={tooltipTimeout} placement={side}>
+		<MyTooltip timeout={tooltipTimeout} placement={tooltipSide}>
 			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
 			<MyTooltipContent unmountOnHide>
 				<>{tooltip}</>

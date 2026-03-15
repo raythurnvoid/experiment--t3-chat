@@ -181,7 +181,7 @@ const PagesSidebarTreeItemSecondaryAction = memo(function PagesSidebarTreeItemSe
 				className,
 			)}
 			tooltip={tooltip}
-			side="bottom"
+			tooltipSide="bottom"
 			tabIndex={isActive ? 0 : -1}
 			onClick={handleClick}
 			disabled={disabled}
@@ -352,7 +352,7 @@ const PagesSidebarTreeItemArrow = memo(function PagesSidebarTreeItemArrow(props:
 			<MyIconButton
 				className={"PagesSidebarTreeItemArrow-icon-button" satisfies PagesSidebarTreeItemArrow_ClassNames}
 				tooltip={isExpanded ? "Collapse page" : "Expand page"}
-				side="bottom"
+				tooltipSide="bottom"
 				variant="ghost-highlightable"
 				tabIndex={isTabbable ? 0 : -1}
 				onClick={onClick}
