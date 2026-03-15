@@ -18,7 +18,7 @@ import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
 export type RootLayout_ClassNames = "RootLayout";
 
-function LayoutInner() {
+function RootLayoutInner() {
 	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
 	const pagesHomeId = useAppGlobalStore((state) => state.pages_home_id);
 	const canEnsureHomePageRef = useRef(true);
@@ -78,19 +78,21 @@ function LayoutInner() {
 	);
 }
 
-function Layout() {
+function RootLayout() {
 	const auth = AppAuthProvider.useAuth();
 	const convexAuth = useConvexAuth();
 
 	return convexAuth.isLoading || !auth.isLoaded ? (
 		<div>Auth Loading...</div>
 	) : convexAuth.isAuthenticated && auth.isLoaded ? (
-		<LayoutInner />
+		<RootLayoutInner />
 	) : (
 		<div>Unauthenticated</div>
 	);
 }
 
-export const Route = createRootRoute({
-	component: Layout,
+const Route = createRootRoute({
+	component: RootLayout,
 });
+
+export { Route };

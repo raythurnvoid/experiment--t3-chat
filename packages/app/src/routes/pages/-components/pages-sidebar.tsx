@@ -47,6 +47,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { MyPrimaryAction } from "@/components/my-action.tsx";
 import {
 	MyMenu,
@@ -1135,25 +1136,30 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 				<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
 					<MyIconButton
 						className={"PagesSidebarHeader-hamburger-button" satisfies PagesSidebarHeader_ClassNames}
-						variant="ghost"
+						variant="ghost-highlightable"
 						tooltip="Main Menu"
 						onClick={onToggleSidebar}
 					>
 						<Menu />
 					</MyIconButton>
 
-					<MyLink
-						className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
-						variant="button-tertiary"
-						to="/pages"
-						search={{ pageId: homePageId, view }}
-					>
-						Pages
-					</MyLink>
+					<MyTooltip>
+						<MyTooltipTrigger>
+							<MyLink
+								className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
+								variant="button-tertiary"
+								to="/pages"
+								search={{ pageId: homePageId, view }}
+							>
+								Pages
+							</MyLink>
+						</MyTooltipTrigger>
+						<MyTooltipContent>Open Home</MyTooltipContent>
+					</MyTooltip>
 				</div>
 
 				<MyIconButton
-					variant="ghost"
+					variant="ghost-highlightable"
 					onClick={onClose}
 					tooltip="Close"
 					className={cn("PagesSidebarHeader-close-button" satisfies PagesSidebarHeader_ClassNames)}
