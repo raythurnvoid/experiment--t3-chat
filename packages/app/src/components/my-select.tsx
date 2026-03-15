@@ -1,6 +1,7 @@
 import "./my-select.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
@@ -178,7 +179,9 @@ export type MySelectPopover_ClassNames = "MySelectPopover";
 export type MySelectPopover_Props = Ariakit.SelectPopoverProps;
 
 export const MySelectPopover = memo(function MySelectPopover(props: MySelectPopover_Props) {
-	const { className, portal = true, sameWidth = false, gutter = 4, children, ...rest } = props;
+	const { className, portal = true, portalElement, sameWidth = false, gutter = 4, children, ...rest } = props;
+
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
 	return (
 		<Ariakit.SelectPopover
@@ -186,6 +189,7 @@ export const MySelectPopover = memo(function MySelectPopover(props: MySelectPopo
 			gutter={gutter}
 			sameWidth={sameWidth}
 			portal={portal}
+			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			{...rest}
 		>
 			{children}

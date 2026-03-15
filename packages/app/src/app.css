@@ -401,6 +401,17 @@
 		isolation: isolate;
 	}
 
+	#app_hoisting_container,
+	#app_tiptap_hoisting_container,
+	#app_monaco_hoisting_container {
+		/*
+		`z-index` required by `react-resizable-panels` that
+		calculates stacking in js using the `z-index` of elements.
+		*/
+		z-index: 10;
+		isolation: isolate;
+	}
+
 	.app-font-monospace {
 		font-family: monospace;
 	}

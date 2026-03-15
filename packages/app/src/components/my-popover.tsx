@@ -1,6 +1,7 @@
 import "./my-popover.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 
@@ -42,12 +43,15 @@ export type MyPopoverContent_Props = {
 } & Omit<Ariakit.PopoverProps, "children" | "className">;
 
 export const MyPopoverContent = memo(function MyPopoverContent(props: MyPopoverContent_Props) {
-	const { className, portal = true, gutter = 4, children, ...rest } = props;
+	const { className, portal = true, portalElement, gutter = 4, children, ...rest } = props;
+
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
 	return (
 		<Ariakit.Popover
 			className={cn("MyPopoverContent" satisfies MyPopoverContent_ClassNames, className)}
 			portal={portal}
+			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			gutter={gutter}
 			{...rest}
 		>

@@ -2,6 +2,7 @@ import "./my-combobox.css";
 import "./my-input.css";
 import { memo, type ComponentPropsWithRef, type PointerEvent, type ReactNode } from "react";
 import * as Ariakit from "@ariakit/react";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import type {
@@ -199,7 +200,9 @@ export type MyComboboxPopover_ClassNames = "MyComboboxPopover";
 export type MyComboboxPopover_Props = Ariakit.ComboboxPopoverProps;
 
 export const MyComboboxPopover = memo(function MyComboboxPopover(props: MyComboboxPopover_Props) {
-	const { className, portal = true, sameWidth = false, gutter = 4, children, ...rest } = props;
+	const { className, portal = true, portalElement, sameWidth = false, gutter = 4, children, ...rest } = props;
+
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
 	return (
 		<Ariakit.ComboboxPopover
@@ -207,6 +210,7 @@ export const MyComboboxPopover = memo(function MyComboboxPopover(props: MyCombob
 			gutter={gutter}
 			sameWidth={sameWidth}
 			portal={portal}
+			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			{...rest}
 		>
 			{children}
@@ -221,7 +225,9 @@ export type MyComboboxPopoverScrollableArea_Props = {
 	className?: string;
 };
 
-export const MyComboboxPopoverScrollableArea = memo(function MyComboboxPopoverScrollableArea(props: MyComboboxPopoverScrollableArea_Props) {
+export const MyComboboxPopoverScrollableArea = memo(function MyComboboxPopoverScrollableArea(
+	props: MyComboboxPopoverScrollableArea_Props,
+) {
 	const { className, children, ...rest } = props;
 
 	return (

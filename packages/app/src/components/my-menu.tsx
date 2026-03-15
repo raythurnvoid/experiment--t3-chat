@@ -1,6 +1,7 @@
 import "./my-menu.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import { ChevronRight } from "lucide-react";
@@ -228,7 +229,9 @@ export type MyMenuPopover_ClassNames = "MyMenuPopover";
 export type MyMenuPopover_Props = Ariakit.MenuProps;
 
 export const MyMenuPopover = memo(function MyMenuPopover(props: MyMenuPopover_Props) {
-	const { ref, id, className, portal = true, children, ...rest } = props;
+	const { ref, id, className, portal = true, portalElement, children, ...rest } = props;
+
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
 	return (
 		<Ariakit.Menu
@@ -236,6 +239,7 @@ export const MyMenuPopover = memo(function MyMenuPopover(props: MyMenuPopover_Pr
 			id={id}
 			className={cn("MyMenuPopover" satisfies MyMenuPopover_ClassNames, className)}
 			portal={portal}
+			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			unmountOnHide={true}
 			{...rest}
 		>

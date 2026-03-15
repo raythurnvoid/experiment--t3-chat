@@ -1,6 +1,7 @@
 import "./my-modal.css";
 import * as Ariakit from "@ariakit/react";
 import { memo, type ComponentPropsWithRef } from "react";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import { MyIconButton } from "./my-icon-button.tsx";
 import { X } from "lucide-react";
@@ -56,12 +57,15 @@ export type MyModalPopover_ClassNames = "MyModalPopover";
 export type MyModalPopover_Props = Omit<Ariakit.DialogProps, "modal" | "portal">;
 
 export const MyModalPopover = memo(function MyModalPopover(props: MyModalPopover_Props) {
-	const { className, children, backdrop, ...rest } = props;
+	const { className, children, backdrop, portalElement, ...rest } = props;
+
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
 	return (
 		<Ariakit.Dialog
 			className={cn("MyModalPopover" satisfies MyModalPopover_ClassNames, className)}
 			portal={true}
+			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			modal={true}
 			backdrop={backdrop ?? <MyModalBackdrop />}
 			{...rest}
