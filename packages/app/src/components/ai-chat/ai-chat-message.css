@@ -389,7 +389,7 @@
 		justify-content: start;
 	}
 	.AiChatMessagePartToolWritePage-header-title {
-		overflow: hidden;
+		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}

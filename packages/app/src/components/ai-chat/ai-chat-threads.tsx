@@ -2,7 +2,17 @@ import "./ai-chat-threads.css";
 
 import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
 import { useEffect, useState } from "react";
-import { ArchiveIcon, ArchiveRestoreIcon, EllipsisVertical, GitBranch, Plus, Search, Star, X } from "lucide-react";
+import {
+	ArchiveIcon,
+	ArchiveRestoreIcon,
+	EllipsisVertical,
+	GitBranch,
+	Plus,
+	Search,
+	Star,
+	Trash2,
+	X,
+} from "lucide-react";
 
 import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
@@ -188,10 +198,10 @@ type AiChatThreadsListItem_Props = {
 	searchQuery: string;
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
-	onSelectThread: (threadId: string) => void;
-	onToggleFavouriteThread: (threadId: app_convex_Id<"ai_chat_threads">, starred: boolean) => void;
-	onBranchThread: (threadId: string) => void;
-	onArchiveThread: (threadId: string, isArchived: boolean) => void;
+	onSelect: (threadId: string) => void;
+	onToggleFavourite: (threadId: app_convex_Id<"ai_chat_threads">, starred: boolean) => void;
+	onBranch: (threadId: string) => void;
+	onArchive: (threadId: string, isArchived: boolean) => void;
 };
 
 function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
@@ -200,10 +210,10 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 		searchQuery,
 		streamingTitleByThreadId,
 		selectedThreadId,
-		onSelectThread,
-		onToggleFavouriteThread,
-		onBranchThread,
-		onArchiveThread,
+		onSelect,
+		onToggleFavourite,
+		onBranch,
+		onArchive,
 	} = props;
 
 	const streamingTitle = streamingTitleByThreadId[thread._id];
@@ -213,20 +223,20 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 	const matchesSearch = !searchQuery || threadTitle.toLowerCase().includes(searchQuery.toLowerCase());
 
 	const handleSelect = () => {
-		onSelectThread(thread._id);
+		onSelect(thread._id);
 	};
 
 	const handleStarToggle = () => {
 		const isStarred = thread.starred === true;
-		onToggleFavouriteThread(thread._id, !isStarred);
+		onToggleFavourite(thread._id, !isStarred);
 	};
 
 	const handleBranch = () => {
-		onBranchThread(thread._id);
+		onBranch(thread._id);
 	};
 
 	const handleArchiveToggle = () => {
-		onArchiveThread(thread._id, !isArchived);
+		onArchive(thread._id, !isArchived);
 	};
 
 	const isStarred = thread.starred === true;
@@ -305,19 +315,26 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 type AiChatThreadsOptimisticListItem_Props = {
 	thread: app_convex_Doc<"ai_chat_threads">;
 	searchQuery: string;
+	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
-	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
+	onSelect: AiChatThreadsListItem_Props["onSelect"];
+	onRemove: (threadId: string) => void;
 };
 
 function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_Props) {
-	const { thread, searchQuery, selectedThreadId, onSelectThread } = props;
+	const { thread, searchQuery, streamingTitleByThreadId, selectedThreadId, onSelect, onRemove } = props;
 
+	const streamingTitle = streamingTitleByThreadId[thread._id];
 	const isActive = selectedThreadId === thread._id;
-	const threadTitle = thread.title || "New Chat";
+	const threadTitle = streamingTitle ?? (thread.title || "New Chat");
 	const matchesSearch = !searchQuery || threadTitle.toLowerCase().includes(searchQuery.toLowerCase());
 
 	const handleSelect = () => {
-		onSelectThread(thread._id);
+		onSelect(thread._id);
+	};
+
+	const handleRemove = () => {
+		onRemove(thread._id);
 	};
 
 	return (
@@ -339,6 +356,33 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 					{threadTitle}
 				</span>
 			</MyPrimaryAction>
+			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyIconButton
+							className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
+							variant="ghost-highlightable"
+							tooltip="More actions"
+						>
+							<MyIconButtonIcon>
+								<EllipsisVertical />
+							</MyIconButtonIcon>
+						</MyIconButton>
+					</MyMenuTrigger>
+					<MyMenuPopover>
+						<MyMenuPopoverContent>
+							<MyMenuItem variant="destructive" onClick={handleRemove}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<Trash2 />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Remove</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuPopoverContent>
+					</MyMenuPopover>
+				</MyMenu>
+			</div>
 		</MyInteractiveListItem>
 	);
 }
@@ -358,10 +402,11 @@ type AiChatThreadsList_Props = ComponentPropsWithRef<"section"> & {
 		| null;
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
-	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
-	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavouriteThread"];
-	onBranchThread: AiChatThreadsListItem_Props["onBranchThread"];
-	onArchiveThread: AiChatThreadsListItem_Props["onArchiveThread"];
+	onSelectThread: AiChatThreadsListItem_Props["onSelect"];
+	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavourite"];
+	onBranchThread: AiChatThreadsListItem_Props["onBranch"];
+	onArchiveThread: AiChatThreadsListItem_Props["onArchive"];
+	onRemoveOptimisticThread: AiChatThreadsOptimisticListItem_Props["onRemove"];
 };
 
 function AiChatThreadsList(props: AiChatThreadsList_Props) {
@@ -377,6 +422,7 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 		onToggleFavouriteThread,
 		onBranchThread,
 		onArchiveThread,
+		onRemoveOptimisticThread,
 		...rest
 	} = props;
 
@@ -434,8 +480,10 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 								key={thread.clientGeneratedId ?? thread._id}
 								thread={thread}
 								searchQuery={searchQuery}
+								streamingTitleByThreadId={streamingTitleByThreadId}
 								selectedThreadId={selectedThreadId}
-								onSelectThread={onSelectThread}
+								onSelect={onSelectThread}
+								onRemove={onRemoveOptimisticThread}
 							/>
 						);
 					}
@@ -447,10 +495,10 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 							searchQuery={searchQuery}
 							streamingTitleByThreadId={streamingTitleByThreadId}
 							selectedThreadId={selectedThreadId}
-							onSelectThread={onSelectThread}
-							onToggleFavouriteThread={onToggleFavouriteThread}
-							onBranchThread={onBranchThread}
-							onArchiveThread={onArchiveThread}
+							onSelect={onSelectThread}
+							onToggleFavourite={onToggleFavouriteThread}
+							onBranch={onBranchThread}
+							onArchive={onArchiveThread}
 						/>
 					);
 				})}
@@ -478,10 +526,11 @@ export type AiChatThreads_Props = MySidebar_Props & {
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
 	onClose?: () => void;
-	onSelectThread: AiChatThreadsListItem_Props["onSelectThread"];
-	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavouriteThread"];
-	onBranchThread: AiChatThreadsListItem_Props["onBranchThread"];
-	onArchiveThread: AiChatThreadsListItem_Props["onArchiveThread"];
+	onSelectThread: AiChatThreadsListItem_Props["onSelect"];
+	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavourite"];
+	onBranchThread: AiChatThreadsListItem_Props["onBranch"];
+	onArchiveThread: AiChatThreadsListItem_Props["onArchive"];
+	onRemoveOptimisticThread: (threadId: string) => void;
 	onNewChat: AiChatThreadsHeader_Props["onNewChat"];
 };
 
@@ -499,6 +548,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 		onToggleFavouriteThread,
 		onBranchThread,
 		onArchiveThread,
+		onRemoveOptimisticThread,
 		onNewChat,
 		...rest
 	} = props;
@@ -548,6 +598,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 						onToggleFavouriteThread={onToggleFavouriteThread}
 						onBranchThread={onBranchThread}
 						onArchiveThread={onArchiveThread}
+						onRemoveOptimisticThread={onRemoveOptimisticThread}
 					/>
 				</MySidebarContent>
 			</div>

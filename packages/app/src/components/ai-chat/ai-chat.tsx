@@ -805,6 +805,7 @@ export function AiChat(props: AiChat_Props) {
 				onToggleFavouriteThread={controller.setThreadStarred}
 				onBranchThread={controller.branchChat}
 				onArchiveThread={controller.archiveThread}
+				onRemoveOptimisticThread={controller.removeOptimisticThread}
 				onNewChat={controller.startNewChat}
 			/>
 

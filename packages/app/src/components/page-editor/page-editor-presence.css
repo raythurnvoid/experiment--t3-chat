@@ -80,6 +80,6 @@
 		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		overflow: hidden;
+		contain: content;
 	}
 }

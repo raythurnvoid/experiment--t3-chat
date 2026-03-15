@@ -117,6 +117,7 @@ All vendored and reference submodule paths are listed below in this single secti
     - [packages/react/](packages/app/vendor/headless-tree/packages/react)
 
 - [packages/app/vendor/novel/](packages/app/vendor/novel) - Novel rich text editor submodule
+
   - Documentation folders:
     - [README.md](packages/app/vendor/novel/README.md)
   - Examples folders:
@@ -1471,7 +1472,7 @@ Use this pattern for list rows where:
 	grid-column: 1;
 	min-width: 0;
 
-	overflow: hidden;
+	contain: content;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }

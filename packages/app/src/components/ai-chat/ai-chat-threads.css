@@ -17,7 +17,7 @@
 
 	.AiChatThreadsSidebar-content {
 		padding: 0;
-		overflow: hidden;
+		contain: content;
 	}
 
 	.AiChatThreads {
@@ -140,6 +140,7 @@
 	.AiChatThreadsListItem {
 		display: grid;
 		grid-template-columns: 1fr auto;
+		grid-template-rows: auto;
 		align-items: center;
 
 		padding: 0;
@@ -161,11 +162,13 @@
 		min-width: 0;
 
 		height: 36px;
-		padding: 0 12px;
 
 		border-radius: 8px;
 
 		font-size: 0.875rem;
+
+		/* for the subgrid to work paint and layout container cannot be used */
+		contain: size style;
 	}
 
 	.AiChatThreadsListItem-title {
@@ -173,9 +176,11 @@
 
 		min-width: 0;
 
-		overflow: hidden;
+		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+
+		padding: 0 0 0 12px;
 	}
 
 	.AiChatThreadsListItem-actions {

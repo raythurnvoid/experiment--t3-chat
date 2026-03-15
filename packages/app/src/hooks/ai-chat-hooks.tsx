@@ -746,6 +746,18 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		});
 	};
 
+	const removeOptimisticThread = (threadId: string) => {
+		const session = useAiChatStore.actions.getSession(threadId);
+		if (!session?.optimisticThread) {
+			return;
+		}
+		const storeSelectedThreadId = useAiChatStore.getState().selectedThreadId;
+		if (storeSelectedThreadId === threadId) {
+			useAiChatStore.setState(() => ({ selectedThreadId: null }));
+		}
+		useAiChatStore.actions.deleteSession(threadId);
+	};
+
 	const regenerate = (threadId: string, messageId: string) => {
 		const session = useAiChatStore.getState().threadById.get(threadId);
 		const chat = session?.chat;
@@ -980,6 +992,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		selectBranchAnchor,
 		setThreadStarred,
 		archiveThread,
+		removeOptimisticThread,
 
 		setComposerValue,
 		sendUserText,
