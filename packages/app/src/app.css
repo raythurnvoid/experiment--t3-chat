@@ -625,6 +625,12 @@
 
 	/* #endregion rich text styles */
 
+	/* #region monaco */
+	.monaco-editor .margin-view-overlays .current-line {
+		background-color: var(--vscode-editor-lineHighlightBackground);
+	}
+	/* #endregion monaco */
+
 	@keyframes logo-spin {
 		from {
 			transform: rotate(0deg);

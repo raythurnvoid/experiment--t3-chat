@@ -4,18 +4,25 @@
 		display: flex;
 		height: 100%;
 		flex-direction: column;
-		background: var(--color-base-1-02);
 	}
 
 	.PageEditorSkeleton-header {
-		height: 60px;
-
 		display: flex;
+		height: 48px;
 		align-items: center;
 		justify-content: space-between;
+		gap: 12px;
 
-		border-bottom: 1px solid var(--color-base-1-04);
-		padding-inline: 24px;
+		border-bottom: 1px solid var(--color-fg-02);
+
+		padding: 4px 16px;
+	}
+
+	.PageEditorSkeleton-header-start,
+	.PageEditorSkeleton-header-end {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.PageEditorSkeleton-toolbar {
@@ -25,8 +32,9 @@
 		align-items: center;
 		gap: 8px;
 
-		border-bottom: 1px solid var(--color-base-1-04);
-		padding-inline: 24px;
+		border-bottom: 1px solid var(--color-fg-02);
+
+		padding: 4px 18px;
 	}
 
 	.PageEditorSkeleton-content {
@@ -41,6 +49,33 @@
 		width: 100%;
 	}
 
+	.PageEditorSkeleton-header-item {
+		height: 30px;
+
+		.PageEditorSkeleton-header-start &:nth-child(1) {
+			width: 28px;
+		}
+
+		.PageEditorSkeleton-header-start &:nth-child(2) {
+			width: 88px;
+		}
+
+		.PageEditorSkeleton-header-start &:nth-child(3) {
+			width: 132px;
+		}
+
+		.PageEditorSkeleton-header-end &:nth-child(1) {
+			width: 84px;
+		}
+
+		.PageEditorSkeleton-header-end &:nth-child(2),
+		.PageEditorSkeleton-header-end &:nth-child(3),
+		.PageEditorSkeleton-header-end &:nth-child(4) {
+			width: 72px;
+		}
+	}
+
+	.PageEditorSkeleton-header-item,
 	.PageEditorSkeleton-skeleton {
 		border-radius: 4px;
 		background: var(--color-base-1-05);
@@ -48,18 +83,6 @@
 
 		@media (prefers-color-scheme: dark) {
 			background: var(--color-base-1-05);
-		}
-
-		.PageEditorSkeleton-header & {
-			height: 24px;
-
-			&:nth-child(1) {
-				width: 400px;
-			}
-
-			&:nth-child(2) {
-				width: 200px;
-			}
 		}
 
 		.PageEditorSkeleton-toolbar & {

@@ -30,6 +30,7 @@ import { toast } from "sonner";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
+import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text-skeleton.tsx";
 
 // #region toolbar
 export type PageEditorPlainTextToolbar_ClassNames =
@@ -547,8 +548,10 @@ function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
 							options={{
 								overflowWidgetsDomNode: hoistingContainer,
 								fixedOverflowWidgets: true,
+								fontSize: 16,
 								wordWrap: "on",
 								scrollBeyondLastLine: false,
+								padding: { top: 64, bottom: 64 },
 								model: initialEditorModel,
 							}}
 							onMount={handleOnMount}
@@ -585,7 +588,7 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	}
 
 	return pageContentData === undefined ? (
-		<>Loading</>
+		<PageEditorPlainTextSkeleton />
 	) : (
 		<PageEditorPlainText_Inner
 			key={pageId}

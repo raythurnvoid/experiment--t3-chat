@@ -1,9 +1,10 @@
 import "./page-editor.css";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
-import { PageEditorSkeleton } from "./page-editor-skeleton.tsx";
+import { PageEditorDiffSkeleton } from "./page-editor-diff/page-editor-diff-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEvent, useRef } from "react";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
+import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text/page-editor-plain-text-skeleton.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
 import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { PageEditorSidebar } from "./page-editor-sidebar/page-editor-sidebar.tsx";
@@ -25,6 +26,7 @@ import { MyIconButton } from "../my-icon-button.tsx";
 import { MyLink } from "../my-link.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
+import { PageEditorRichTextSkeleton } from "./page-editor-rich-text/page-editor-rich-text-skeleton.tsx";
 import {
 	usePresence,
 	usePresenceEnabled,
@@ -538,7 +540,15 @@ function PageEditorRender(props: PageEditorRender_Props) {
 		props;
 
 	if (!presenceStore) {
-		return <PageEditorSkeleton />;
+		if (editorMode === "diff_editor") {
+			return <PageEditorDiffSkeleton />;
+		}
+
+		if (editorMode === "plain_text_editor") {
+			return <PageEditorPlainTextSkeleton />;
+		}
+
+		return <PageEditorRichTextSkeleton />;
 	}
 
 	if (editorMode === "rich_text_editor") {

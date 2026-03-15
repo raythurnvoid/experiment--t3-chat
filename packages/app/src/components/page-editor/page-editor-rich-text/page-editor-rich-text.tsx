@@ -37,7 +37,6 @@ import {
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
-import { PageEditorSkeleton } from "../page-editor-skeleton.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_get_rich_text_initial_content, pages_PresenceStore, pages_YJS_DOC_KEYS } from "@/lib/pages.ts";
@@ -52,6 +51,7 @@ import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { global_event_listen_all } from "../../../lib/global-event.tsx";
+import { PageEditorRichTextSkeleton } from "./page-editor-rich-text-skeleton.tsx";
 
 type SyncStatus = YjsSyncStatus;
 
@@ -659,7 +659,7 @@ function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
 					<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />,
 					commentsPortalHost,
 				)}
-			{!isEditorReady && <PageEditorSkeleton />}
+			{!isEditorReady && <PageEditorRichTextSkeleton />}
 		</>
 	);
 }
@@ -720,7 +720,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 					{...rest}
 				/>
 			) : (
-				<PageEditorSkeleton />
+				<PageEditorRichTextSkeleton />
 			)}
 		</EditorRoot>
 	);

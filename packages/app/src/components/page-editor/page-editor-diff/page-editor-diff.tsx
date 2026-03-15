@@ -40,6 +40,7 @@ import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
 import { Result } from "../../../lib/errors-as-values-utils.ts";
+import { PageEditorDiffSkeleton } from "./page-editor-diff-skeleton.tsx";
 
 // #region toolbar
 export type PageEditorDiffToolbar_ClassNames =
@@ -200,7 +201,6 @@ function PageEditorDiffTopStickyFloatingContainer(props: PageEditorDiffTopSticky
 // #region PageEditorDiffWidgetAcceptDiscard
 export type PageEditorDiffWidgetAcceptDiscard_ClassNames =
 	| "PageEditorDiffWidgetAcceptDiscard"
-	| "PageEditorDiffWidgetAcceptDiscard-moanco-widget-container"
 	| "PageEditorDiffWidgetAcceptDiscard-monaco-decoration"
 	| "PageEditorDiffWidgetAcceptDiscard-accept-button"
 	| "PageEditorDiffWidgetAcceptDiscard-discard-button"
@@ -233,9 +233,7 @@ class PageEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContent
 		this.id = `PageEditorDiffWidgetAcceptDiscard-${this.args.index}`;
 
 		this.node = document.createElement("div");
-		this.node.classList.add(
-			"PageEditorDiffWidgetAcceptDiscard-moanco-widget-container" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames,
-		);
+		this.node.classList.add("PageEditorDiffWidgetAcceptDiscard" satisfies PageEditorDiffWidgetAcceptDiscard_ClassNames);
 
 		this.decorations = this.args.editor.createDecorationsCollection([this.createDecoration(this.args.lineNumber)]);
 
@@ -287,7 +285,7 @@ class PageEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContent
 			return;
 		}
 
-		this.node.style.transform = `translate3d(95px, 91px, 0)`;
+		this.node.style.transform = `translate3d(102px, 91px, 0)`;
 		this.node.style.display = "flex";
 		this.node.style.left = `anchor(left)`;
 		this.node.style.setProperty("position-anchor", this.args.anchorName);
@@ -1346,8 +1344,10 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 							renderMarginRevertIcon: false,
 							renderGutterMenu: false,
 							fixedOverflowWidgets: true,
+							fontSize: 16,
 							wordWrap: "on",
 							scrollBeyondLastLine: false,
+							padding: { top: 64, bottom: 64 },
 
 							lineNumbers: "on",
 							renderLineHighlight: "all",
@@ -1760,11 +1760,15 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 		setIsSyncing(false);
 	}, [pageContentData, pageId, pendingEdit, remoteEditorContentState]);
 
-	return hoistingContainer == null ||
+	// Keep this hardcoded while debugging the diff editor loading state.
+	const forceLoading = false;
+
+	return forceLoading ||
+		hoistingContainer == null ||
 		pendingEdit === undefined ||
 		pageContentData === undefined ||
 		remoteEditorContentState === undefined ? (
-		<>Loading</>
+		<PageEditorDiffSkeleton />
 	) : (
 		<PageEditorDiff_Inner
 			key={pageId}
