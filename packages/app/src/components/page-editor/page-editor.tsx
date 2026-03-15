@@ -26,7 +26,6 @@ import { MyButton } from "../my-button.tsx";
 import { MyIcon } from "../my-icon.tsx";
 import { MyIconButton } from "../my-icon-button.tsx";
 import { MyLink } from "../my-link.tsx";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
 import { PageEditorRichTextSkeleton } from "./page-editor-rich-text/page-editor-rich-text-skeleton.tsx";
 import {
@@ -141,29 +140,23 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 				<ol className={cn("PageEditorHeader-breadcrumb" satisfies PageEditorHeader_ClassNames)}>
 					{pageId && treeItemsList && breadcrumbPath.length > 0 ? (
 						<>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<MyLink
-										className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
-										to="/pages"
-										search={{ pageId: homePageId, view: editorMode }}
-										variant="button-tertiary"
-									>
-										<li
-											className={cn(
-												"PageEditorHeader-breadcrumb-home-underline-hack" satisfies PageEditorHeader_ClassNames,
-											)}
-											inert
-										>
-											&nbsp;&nbsp;&nbsp;&nbsp;
-										</li>
-										<Home size={16} />
-									</MyLink>
-								</TooltipTrigger>
-								<TooltipContent>
-									<p>Home</p>
-								</TooltipContent>
-							</Tooltip>
+							<MyLink
+								className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
+								to="/pages"
+								search={{ pageId: homePageId, view: editorMode }}
+								variant="button-ghost-highlightable"
+								tooltip="Home"
+							>
+								<li
+									className={cn(
+										"PageEditorHeader-breadcrumb-home-underline-hack" satisfies PageEditorHeader_ClassNames,
+									)}
+									inert
+								>
+									&nbsp;&nbsp;&nbsp;&nbsp;
+								</li>
+								<Home size={16} />
+							</MyLink>
 							<span>/</span>
 							{breadcrumbPath.map((item, index) => {
 								const isCurrentPage = index === breadcrumbPath.length - 1;
