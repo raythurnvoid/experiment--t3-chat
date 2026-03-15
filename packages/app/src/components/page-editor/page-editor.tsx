@@ -18,7 +18,8 @@ import {
 	pages_PresenceStore,
 	type pages_EditorView,
 } from "@/lib/pages.ts";
-import { ChevronLeft, ChevronRight, Home, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, Home, Menu, PanelLeft, Sparkles } from "lucide-react";
+import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
 import { MyButton } from "../my-button.tsx";
 import { MyIcon } from "../my-icon.tsx";
@@ -80,6 +81,8 @@ function get_breadcrumb_path(
 // #region header
 type PageEditorHeader_ClassNames =
 	| "PageEditorHeader"
+	| "PageEditorHeader-start"
+	| "PageEditorHeader-start-controls"
 	| "PageEditorHeader-breadcrumb"
 	| "PageEditorHeader-breadcrumb-home"
 	| "PageEditorHeader-breadcrumb-home-underline-hack"
@@ -108,6 +111,8 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 	const { pageId, editorMode, onlineUsers, onEditorModeChange } = props;
 
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
+	const pagesSidebarOpen = useAppLocalStorageState((state) => state.pages_sidebar_open);
+	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as PageEditorHeader_Props["editorMode"]);
@@ -124,75 +129,94 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 
 	return (
 		<div className={cn("PageEditorHeader" satisfies PageEditorHeader_ClassNames)}>
-			{/* Left: Breadcrumb path */}
-			<ol className={cn("PageEditorHeader-breadcrumb" satisfies PageEditorHeader_ClassNames)}>
-				{pageId && treeItemsList && breadcrumbPath.length > 0 ? (
-					<>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<MyLink
-									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
-									to="/pages"
-									search={{ pageId: homePageId, view: editorMode }}
-									variant="button-tertiary"
-								>
-									<li
-										className={cn(
-											"PageEditorHeader-breadcrumb-home-underline-hack" satisfies PageEditorHeader_ClassNames,
-										)}
-										inert
+			<div className={cn("PageEditorHeader-start" satisfies PageEditorHeader_ClassNames)}>
+				{!pagesSidebarOpen && (
+					<div className={cn("PageEditorHeader-start-controls" satisfies PageEditorHeader_ClassNames)}>
+						<MyIconButton variant="ghost-highlightable" tooltip="Open app sidebar" onClick={toggleSidebar}>
+							<Menu />
+						</MyIconButton>
+						<MyIconButton
+							variant="ghost-highlightable"
+							tooltip="Open pages sidebar"
+							onClick={() => useAppLocalStorageState.setState({ pages_sidebar_open: true })}
+						>
+							<PanelLeft />
+						</MyIconButton>
+					</div>
+				)}
+
+				{/* Left: Breadcrumb path */}
+				<ol className={cn("PageEditorHeader-breadcrumb" satisfies PageEditorHeader_ClassNames)}>
+					{pageId && treeItemsList && breadcrumbPath.length > 0 ? (
+						<>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<MyLink
+										className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
+										to="/pages"
+										search={{ pageId: homePageId, view: editorMode }}
+										variant="button-tertiary"
 									>
-										&nbsp;&nbsp;&nbsp;&nbsp;
-									</li>
-									<Home size={16} />
-								</MyLink>
-							</TooltipTrigger>
-							<TooltipContent>
-								<p>Home</p>
-							</TooltipContent>
-						</Tooltip>
-						<span>/</span>
-						{breadcrumbPath.map((item, index) => {
-							const isCurrentPage = index === breadcrumbPath.length - 1;
-							const breadcrumbItem = (
-								<React.Fragment key={item.index}>
-									{isCurrentPage ? (
 										<li
 											className={cn(
-												"PageEditorHeader-breadcrumb-segment-current" satisfies PageEditorHeader_ClassNames,
+												"PageEditorHeader-breadcrumb-home-underline-hack" satisfies PageEditorHeader_ClassNames,
 											)}
+											inert
 										>
-											{item.title}
+											&nbsp;&nbsp;&nbsp;&nbsp;
 										</li>
-									) : (
-										<li>
-											<MyLink
-												className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
-												to="/pages"
-												search={{ pageId: item.index, view: editorMode }}
-												variant="button-tertiary"
+										<Home size={16} />
+									</MyLink>
+								</TooltipTrigger>
+								<TooltipContent>
+									<p>Home</p>
+								</TooltipContent>
+							</Tooltip>
+							<span>/</span>
+							{breadcrumbPath.map((item, index) => {
+								const isCurrentPage = index === breadcrumbPath.length - 1;
+								const breadcrumbItem = (
+									<React.Fragment key={item.index}>
+										{isCurrentPage ? (
+											<li
+												className={cn(
+													"PageEditorHeader-breadcrumb-segment-current" satisfies PageEditorHeader_ClassNames,
+												)}
 											>
 												{item.title}
-											</MyLink>
-										</li>
-									)}
-									{index < breadcrumbPath.length - 1 && (
-										<span className={cn("PageEditorHeader-breadcrumb-separator" satisfies PageEditorHeader_ClassNames)}>
-											/
-										</span>
-									)}
-								</React.Fragment>
-							);
-							return breadcrumbItem;
-						})}
-					</>
-				) : (
-					<li className={cn("PageEditorHeader-breadcrumb-segment-current" satisfies PageEditorHeader_ClassNames)}>
-						<Home size={16} />
-						<span>Home</span>
-					</li>
-				)}
-			</ol>
+											</li>
+										) : (
+											<li>
+												<MyLink
+													className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
+													to="/pages"
+													search={{ pageId: item.index, view: editorMode }}
+													variant="button-tertiary"
+												>
+													{item.title}
+												</MyLink>
+											</li>
+										)}
+										{index < breadcrumbPath.length - 1 && (
+											<span
+												className={cn("PageEditorHeader-breadcrumb-separator" satisfies PageEditorHeader_ClassNames)}
+											>
+												/
+											</span>
+										)}
+									</React.Fragment>
+								);
+								return breadcrumbItem;
+							})}
+						</>
+					) : (
+						<li className={cn("PageEditorHeader-breadcrumb-segment-current" satisfies PageEditorHeader_ClassNames)}>
+							<Home size={16} />
+							<span>Home</span>
+						</li>
+					)}
+				</ol>
+			</div>
 
 			{/* Right: Presence indicator and switches */}
 			<div className={cn("PageEditorHeader-switch-group" satisfies PageEditorHeader_ClassNames)}>

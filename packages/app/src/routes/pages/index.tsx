@@ -4,12 +4,9 @@ import React, { Suspense, useRef } from "react";
 import type { PageEditor_Props } from "../../components/page-editor/page-editor.tsx";
 import { PagesSidebar } from "./-components/pages-sidebar.tsx";
 import { useEffect } from "react";
-import { Button } from "../../components/ui/button.tsx";
 import { PageEditorSkeleton } from "../../components/page-editor/page-editor-skeleton.tsx";
-import { PanelLeft, Menu } from "lucide-react";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
-import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_editor_view_values, type pages_EditorView } from "@/lib/pages.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
@@ -64,9 +61,6 @@ type RoutePages_ClassNames =
 	| "RoutePages-main-panel"
 	| "RoutePages-main-content"
 	| "RoutePages-editor-panel"
-	| "RoutePages-editor-panel-controls"
-	| "RoutePages-editor-panel-hamburger-button"
-	| "RoutePages-editor-panel-expand-button"
 	| "RoutePages-editor-content"
 	| "RoutePages-loading-text"
 	| "RoutePages-editor-wrapper";
@@ -76,7 +70,6 @@ type RoutePages_SidebarState = "closed" | "expanded";
 function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
-	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
@@ -143,10 +136,6 @@ function RoutePages() {
 
 	const handleCloseSidebar = useFn<React.ComponentProps<typeof PagesSidebar>["onClose"]>(() => {
 		useAppLocalStorageState.setState({ pages_sidebar_open: false });
-	});
-
-	const handleOpenSidebar = useFn(() => {
-		useAppLocalStorageState.setState({ pages_sidebar_open: true });
 	});
 
 	const handlePanelLayout = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayout"]>>((layout) => {
@@ -230,29 +219,6 @@ function RoutePages() {
 					{resolvedPageId ? (
 						<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
 							<div className={"RoutePages-editor-panel" satisfies RoutePages_ClassNames}>
-								{pagesSidebarState === "closed" && (
-									<div className={"RoutePages-editor-panel-controls" satisfies RoutePages_ClassNames}>
-										{/* Hamburger Menu - mobile only */}
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={toggleSidebar}
-											className={"RoutePages-editor-panel-hamburger-button" satisfies RoutePages_ClassNames}
-										>
-											<Menu className="h-4 w-4" />
-										</Button>
-
-										{/* Open Pages Sidebar button */}
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={handleOpenSidebar}
-											className={"RoutePages-editor-panel-expand-button" satisfies RoutePages_ClassNames}
-										>
-											<PanelLeft className="h-4 w-4" />
-										</Button>
-									</div>
-								)}
 								<div className={"RoutePages-editor-content" satisfies RoutePages_ClassNames}>
 									<RoutePagesContent
 										pageId={resolvedPageId}

@@ -63,6 +63,19 @@
 		gap: 8px;
 	}
 
+	.PageEditorHeader-start {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.PageEditorHeader-start-controls {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
 	.PageEditorHeader-breadcrumb {
 		display: flex;
 		align-items: center;

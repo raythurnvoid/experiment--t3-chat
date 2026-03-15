@@ -28,32 +28,6 @@
 		contain: strict;
 		height: 100%;
 
-		.RoutePages-editor-panel-controls {
-			position: absolute;
-			top: 1rem;
-			left: 1rem;
-			z-index: 1;
-			display: flex;
-			align-items: center;
-			gap: 0.5rem;
-
-			.RoutePages-editor-panel-hamburger-button {
-				height: 2rem;
-				width: 2rem;
-				padding: 0;
-
-				@media (min-width: 1024px) {
-					display: none;
-				}
-			}
-
-			.RoutePages-editor-panel-expand-button {
-				height: 2rem;
-				width: 2rem;
-				padding: 0;
-			}
-		}
-
 		.RoutePages-editor-content {
 			height: 100%;
 		}
