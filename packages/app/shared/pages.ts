@@ -60,6 +60,13 @@ export function pages_validate_name(name: string) {
 	return Result({ _yay: null });
 }
 
+const TRAILING_SPACES_OR_TABS_REGEX = /[ \t]+$/;
+const TRAILING_WHITESPACE_ONLY_LINE_REGEX = /\n([ \t]+)$/;
+const TRAILING_NEWLINES_REGEX = /\n+$/;
+const STRUCTURAL_HTML_WHITESPACE_REGEX = />\n[ \t]*</g;
+const TRAILING_HARD_BREAKS_REGEX = /(?:\\\n)+$/;
+const HARD_BREAK_REGEX = /\\\n/g;
+
 /**
  * Shared marked instance configured for pages.
  *
@@ -109,23 +116,46 @@ const pages_marked = ((/* iife */) => {
 				},
 			],
 			renderer: {
+				heading(token) {
+					const headingToken = token as {
+						raw?: string;
+						depth?: number;
+						text?: string;
+						tokens?: unknown[];
+					};
+					const raw = headingToken.raw ?? "";
+					const trailingSpaces = raw.match(TRAILING_SPACES_OR_TABS_REGEX)?.[0];
+
+					if (!trailingSpaces) {
+						return false;
+					}
+
+					const depth = headingToken.depth ?? 1;
+					const bodyHtml =
+						headingToken.tokens && headingToken.tokens.length > 0
+							? this.parser.parseInline(headingToken.tokens as Parameters<typeof this.parser.parseInline>[0])
+							: (headingToken.text ?? "");
+
+					return `<h${depth}>${bodyHtml}${trailingSpaces}</h${depth}>`;
+				},
+
 				// Handle trailing `\\\n` in paragraphs that are not converted to `<br>` by default
 				paragraph(token) {
 					const paragraphToken = token as {
 						raw?: string;
 					};
 					const raw = paragraphToken.raw ?? "";
-					const trailingHardBreaks = raw.match(/(?:\\\n)+$/)?.[0];
+					const trailingHardBreaks = raw.match(TRAILING_HARD_BREAKS_REGEX)?.[0];
 
 					if (!trailingHardBreaks) {
 						return false;
 					}
 
-					const hardBreakCount = (trailingHardBreaks.match(/\\\n/g) ?? []).length;
+					const hardBreakCount = (trailingHardBreaks.match(HARD_BREAK_REGEX) ?? []).length;
 					const bodyRaw = raw.slice(0, raw.length - trailingHardBreaks.length);
 					const bodyHtml = instance.parseInline(bodyRaw, { async: false });
 
-					return `<p>${bodyHtml}${"<br>".repeat(hardBreakCount)}</p>\n`;
+					return `<p>${bodyHtml}${"<br>".repeat(hardBreakCount)}</p>`;
 				},
 			},
 		});
@@ -161,11 +191,18 @@ function tiptap_markdown_to_html(args: { markdown: string; extensions?: Extensio
 		});
 	}
 
+	const trailingWhitespaceOnlyLine = markdown.match(TRAILING_WHITESPACE_ONLY_LINE_REGEX)?.[1];
+	if (trailingWhitespaceOnlyLine) {
+		return Result({
+			_yay: html + `<p>${trailingWhitespaceOnlyLine}</p>`,
+		});
+	}
+
 	// Preserve trailing empty lines at EOF (Markdown usually ignores them).
 	// - every 2 `\n` => 1 empty paragraph
 	// - odd counts round up
-	const trailing = /\n+$/.exec(markdown)?.[0] ?? "";
-	const newlineCount = trailing.length > 0 ? trailing.split("\n").length - 1 : 0;
+	const trailingNewlines = markdown.match(TRAILING_NEWLINES_REGEX)?.[0] ?? "";
+	const newlineCount = trailingNewlines.length;
 	if (newlineCount === 0) return Result({ _yay: html });
 
 	const paragraphCount = Math.max(1, Math.ceil(newlineCount / 2));
@@ -200,10 +237,14 @@ export const pages_parse_markdown_to_html = ((/* iife */) => {
 
 export function pages_tiptap_html_to_json(args: { html: string; extensions?: Extensions }) {
 	const extensions = args.extensions ?? get_tiptap_shared_extensions_list();
+	const parseOptions = {
+		preserveWhitespace: "full" as const,
+	};
+	const normalizedHtml = args.html.replace(STRUCTURAL_HTML_WHITESPACE_REGEX, "><").trimEnd();
 
 	const json = is_browser()
-		? tiptap_generateJSON_browser(args.html, extensions)
-		: tiptap_generateJSON_server(args.html, extensions);
+		? tiptap_generateJSON_browser(normalizedHtml, extensions, parseOptions)
+		: tiptap_generateJSON_server(normalizedHtml, extensions, parseOptions);
 
 	return json;
 }

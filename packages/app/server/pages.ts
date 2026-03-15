@@ -15,6 +15,32 @@ import { should_never_happen } from "./server-utils.ts";
 
 export * from "../shared/pages.ts";
 
+async function pages_db_cancel_scheduled_function_if_present(
+	ctx: MutationCtx,
+	scheduledFunctionId: Id<"_scheduled_functions">,
+) {
+	await ctx.scheduler.cancel(scheduledFunctionId).catch((error) => {
+		if (error instanceof Error && error.message.includes("non-existent document")) {
+			return;
+		}
+
+		throw error;
+	});
+}
+
+async function pages_db_delete_pending_edit_cleanup_task_if_present(
+	ctx: MutationCtx,
+	cleanupTaskId: Id<"pages_pending_edits_cleanup_tasks">,
+) {
+	await ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTaskId).catch((error) => {
+		if (error instanceof Error && error.message.includes("non-existent doc")) {
+			return;
+		}
+
+		throw error;
+	});
+}
+
 export async function pages_db_get_yjs_content_and_sequence(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -100,8 +126,12 @@ export async function pages_db_cancel_pending_edit_cleanup_tasks(
 		.collect();
 
 	await Promise.all([
-		...cleanupTasks.map((cleanupTask) => ctx.scheduler.cancel(cleanupTask.scheduledFunctionId)),
-		...cleanupTasks.map((cleanupTask) => ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTask._id)),
+		...cleanupTasks.map((cleanupTask) =>
+			pages_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId),
+		),
+		...cleanupTasks.map((cleanupTask) =>
+			pages_db_delete_pending_edit_cleanup_task_if_present(ctx, cleanupTask._id),
+		),
 	]);
 }
 
@@ -131,20 +161,17 @@ export async function pages_db_schedule_pending_edit_cleanup(
 	]);
 
 	await Promise.all([
-		existingCleanupTasks[0]
-			? ctx.db.patch("pages_pending_edits_cleanup_tasks", existingCleanupTasks[0]._id, {
-					scheduledFunctionId,
-					expectedUpdatedAt: args.expectedUpdatedAt,
-				})
-			: ctx.db.insert("pages_pending_edits_cleanup_tasks", {
-					pendingEditId: args.pendingEditId,
-					scheduledFunctionId,
-					expectedUpdatedAt: args.expectedUpdatedAt,
-				}),
-		...existingCleanupTasks.map((cleanupTask) => ctx.scheduler.cancel(cleanupTask.scheduledFunctionId)),
-		...existingCleanupTasks
-			.slice(1)
-			.map((cleanupTask) => ctx.db.delete("pages_pending_edits_cleanup_tasks", cleanupTask._id)),
+		ctx.db.insert("pages_pending_edits_cleanup_tasks", {
+			pendingEditId: args.pendingEditId,
+			scheduledFunctionId,
+			expectedUpdatedAt: args.expectedUpdatedAt,
+		}),
+		...existingCleanupTasks.map((cleanupTask) =>
+			pages_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId),
+		),
+		...existingCleanupTasks.map((cleanupTask) =>
+			pages_db_delete_pending_edit_cleanup_task_if_present(ctx, cleanupTask._id),
+		),
 	]);
 }
 
