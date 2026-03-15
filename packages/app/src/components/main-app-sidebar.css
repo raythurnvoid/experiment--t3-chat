@@ -5,11 +5,44 @@
 
 		flex: 1;
 		min-height: 0;
+
+		&.MainAppSidebar-state-collapsed {
+			> .MainAppSidebar-sidebar {
+				width: 47px;
+
+				> .MySidebar-inner {
+					width: 47px;
+
+					> .MySidebar-inner .MainAppSidebarItem-title {
+						display: none;
+					}
+
+					> .MainAppSidebar-logo-section {
+						display: none;
+					}
+
+					> .MySidebarSection {
+						display: none;
+					}
+
+					> .MainAppSidebar-footer {
+						.MainAppSidebarMenuButtonLabel {
+							overflow: hidden;
+							width: 0;
+							opacity: 0;
+						}
+
+						.MainAppSidebarUserProfileButton-info {
+							display: none;
+						}
+					}
+				}
+			}
+		}
 	}
 
 	.MainAppSidebar-sidebar {
 		--my-sidebar-width: 256px;
-		--my-sidebar-width-collapsed: 47px;
 
 		height: auto;
 
@@ -31,14 +64,80 @@
 		gap: 8px;
 	}
 
-	.MainAppSidebar-header-spacer {
-		flex: 1;
+	/* #region presence section */
+	.MainAppSidebarPresenceSection {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
-	.MainAppSidebar-presence {
+	.MainAppSidebarPresenceSection-row {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: center;
+	}
+
+	.MainAppSidebarPresenceSection-primary-trigger {
+		display: grid;
+		grid-template-columns: subgrid;
+
+		grid-column: 1 / -1;
+		grid-row: 1;
+
+		min-width: 0;
+
+		/* for the subgrid to work paint and layout container cannot be used */
+		contain: size style;
+	}
+
+	.MainAppSidebarPresenceSection-primary-trigger-content {
+		grid-column: 1;
+
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		min-width: 0;
+	}
+
+	.MainAppSidebarPresenceSection-actions {
+		grid-column: 2;
+		grid-row: 1;
+
 		display: flex;
 		align-items: center;
 	}
+
+	.MainAppSidebarPresenceSection-tooltip-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		max-height: 240px;
+		min-width: 180px;
+		width: 200px;
+
+		overflow: auto;
+
+		padding: 8px;
+	}
+
+	.MainAppSidebarPresenceSection-tooltip-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.MainAppSidebarPresenceSection-tooltip-item span {
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+
+		min-width: 0;
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion presence section */
 
 	.MainAppSidebar-logo-section {
 		padding: 0 8px 8px;
@@ -55,40 +154,18 @@
 		padding: 0 24px;
 	}
 
-	.MainAppSidebar-content {
-		padding: 0;
-	}
-
-	.MainAppSidebar-group {
-		padding: 0;
-	}
-
-	.MainAppSidebar-menu {
-		padding: 0 8px;
-	}
-
-	.MainAppSidebar-nav-button {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.MainAppSidebar-nav-link {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-	}
-
-	.MainAppSidebar-nav-icon {
-		width: 16px;
-		height: 16px;
-	}
-
 	.MainAppSidebar-footer {
 		padding: 8px;
 		gap: 8px;
 	}
+
+	.MainAppSidebar-footer-menu {
+		flex: none;
+		overflow: visible;
+		padding: 0;
+		gap: 0.25rem;
+	}
+
 	/* #endregion root */
 
 	/* #region menu button label */

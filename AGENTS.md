@@ -1081,7 +1081,6 @@ export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 
 ```css
 .Button {
-	box-sizing: border-box;
 	position: relative;
 
 	display: inline-flex;
@@ -1277,7 +1276,6 @@ Prefer `contain: content` for container components (e.g., sidebars) instead of `
 ```css
 @layer components {
 	.Card {
-		box-sizing: border-box;
 		position: relative;
 
 		display: flex;

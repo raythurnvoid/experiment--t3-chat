@@ -191,7 +191,6 @@
 
 	/* #region comments sidebar */
 	.PageEditorPlainTextCommentsSidebar {
-		box-sizing: border-box;
 		height: 100%;
 
 		display: flex;
@@ -268,8 +267,6 @@
 		border-radius: 4px;
 
 		cursor: pointer;
-		box-sizing: border-box;
-
 		background: var(--color-base-alt-1-04);
 		color: var(--color-fg-11);
 

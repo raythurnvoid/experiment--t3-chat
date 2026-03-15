@@ -1,7 +1,5 @@
 @layer components {
 	.PageEditorError {
-		box-sizing: border-box;
-
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -13,8 +11,6 @@
 	}
 
 	.PageEditorError-content {
-		box-sizing: border-box;
-
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;

@@ -3,7 +3,6 @@
 @layer components {
 	/* #region root */
 	.PagesSidebar {
-		box-sizing: border-box;
 		position: relative;
 
 		height: 100%;
@@ -292,7 +291,6 @@
 	}
 
 	.PagesSidebarTreeItemTrack-guide {
-		box-sizing: border-box;
 		width: 12px;
 		height: 100%;
 		border-left: 2px solid color-mix(in oklch, var(--color-fg-07) 45%, transparent);

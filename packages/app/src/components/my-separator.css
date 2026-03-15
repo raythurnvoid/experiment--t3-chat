@@ -1,6 +1,5 @@
 @layer common_components {
 	.MySeparator {
-		box-sizing: border-box;
 		flex-shrink: 0;
 
 		background: var(--color-fg-03);

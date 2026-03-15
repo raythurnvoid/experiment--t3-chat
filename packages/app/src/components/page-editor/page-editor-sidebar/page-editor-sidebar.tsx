@@ -1,6 +1,7 @@
 import "./page-editor-sidebar.css";
 import { memo, useEffect, useRef, useState, type MouseEvent, type Ref } from "react";
-import { ArchiveIcon, ArchiveRestoreIcon, Clock, Plus, Star } from "lucide-react";
+import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
+import { ArchiveIcon, ArchiveRestoreIcon, Clock, GripVertical, Plus, Star } from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -19,9 +20,13 @@ import {
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { useAppLocalStorageState, type page_editor_sidebar_open_tab_Entry } from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
+
+const PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS = "app_page_editor_sidebar_tabs_comments" satisfies AppElementId;
+const PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT = "app_page_editor_sidebar_tabs_agent" satisfies AppElementId;
+const PAGE_EDITOR_SIDEBAR_AGENT_TABS_DROPPABLE_ID = "page_editor_sidebar_agent_tabs";
 
 // #region agent
 type PageEditorSidebarAgentThreadPickerItem_ClassNames =
@@ -224,25 +229,24 @@ type PageEditorSidebarAgentThreadPicker_ClassNames =
 
 type PageEditorSidebarAgentThreadPicker_Props = {
 	controller: AiChatController;
+	/** Called before selectThread when user picks a thread (e.g. to add to open tabs and set selected tab). */
+	onBeforeSelectThread?: (threadId: string) => void;
 };
 
 const PageEditorSidebarAgentThreadPicker = memo(function PageEditorSidebarAgentThreadPicker(
 	props: PageEditorSidebarAgentThreadPicker_Props,
 ) {
-	const { controller } = props;
+	const { controller, onBeforeSelectThread } = props;
 
 	const threads = controller.currentThreadsWithOptimistic.unarchived.results;
-
-	const handleSelectThread = useFn((threadId: string) => {
-		controller.selectThread(threadId);
-	});
 
 	const handleSelectValue = useFn<MySearchSelect_Props["setValue"]>((value) => {
 		if (!value) {
 			return;
 		}
 
-		handleSelectThread(value);
+		onBeforeSelectThread?.(value);
+		controller.selectThread(value);
 	});
 
 	const handleStarredChange = useFn((args: { threadId: string; starred: boolean }) => {
@@ -291,16 +295,26 @@ type PageEditorSidebarAgent_ClassNames =
 	| "PageEditorSidebarAgent-header-actions"
 	| "PageEditorSidebarAgent-chat-area";
 
-const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent() {
+type PageEditorSidebarAgent_Props = {
+	/** When set, sync controller to this thread (e.g. when this panel is the selected chat tab). */
+	selectedThreadIdFromTab?: string | null;
+};
+
+const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props: PageEditorSidebarAgent_Props) {
+	const { selectedThreadIdFromTab } = props;
 	const controller = useAiChatController({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
+	const openTabs = useAppLocalStorageState((s) => s.page_editor_sidebar_open_tabs);
 
-	const handleNewChat = () => {
-		controller.startNewChat();
-	};
+	// Sync controller to the tab’s thread when this panel is shown for that tab
+	useEffect(() => {
+		if (selectedThreadIdFromTab) {
+			controller.selectThread(selectedThreadIdFromTab);
+		}
+	}, [selectedThreadIdFromTab, controller]);
 
-	// Start a new chat if no chat is selected on mount
+	// Start a new chat if no chat is selected on mount (single “Agent” tab mode)
 	useEffect(() => {
 		if (!hasAutoStartedRef.current && !controller.selectedThreadId) {
 			hasAutoStartedRef.current = true;
@@ -308,11 +322,62 @@ const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent() {
 		}
 	}, []);
 
+	// When controller has a selected thread not in open tabs, add it and set selected tab
+	useEffect(() => {
+		const threadId = controller.selectedThreadId;
+		if (!threadId) {
+			return;
+		}
+		const inOpenTabs = openTabs.some((t) => t.id === threadId);
+		if (inOpenTabs) {
+			return;
+		}
+		const title = controller.streamingTitleByThreadId[threadId] ?? "New chat";
+		useAppLocalStorageState.setState((prev) => ({
+			page_editor_sidebar_open_tabs: [...prev.page_editor_sidebar_open_tabs, { id: threadId, title }],
+			pages_last_tab: threadId,
+		}));
+	}, [controller.selectedThreadId, controller.streamingTitleByThreadId, openTabs]);
+
+	// Keep open tab titles in sync with streaming titles
+	useEffect(() => {
+		let changed = false;
+		const next = openTabs.map((tab) => {
+			const streamed = controller.streamingTitleByThreadId[tab.id];
+			if (streamed != null && streamed !== tab.title) {
+				changed = true;
+				return { ...tab, title: streamed };
+			}
+			return tab;
+		});
+		if (changed) {
+			useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: next });
+		}
+	}, [openTabs, controller.streamingTitleByThreadId]);
+
+	const handleBeforeSelectThread = useFn((threadId: string) => {
+		const inOpenTabs = openTabs.some((t) => t.id === threadId);
+		const title = controller.streamingTitleByThreadId[threadId] ?? "New chat";
+		useAppLocalStorageState.setState((prev) => {
+			if (inOpenTabs) {
+				return { pages_last_tab: threadId };
+			}
+			return {
+				page_editor_sidebar_open_tabs: [...prev.page_editor_sidebar_open_tabs, { id: threadId, title }],
+				pages_last_tab: threadId,
+			};
+		});
+	});
+
+	const handleNewChat = () => {
+		controller.startNewChat();
+	};
+
 	return (
 		<div className={cn("PageEditorSidebarAgent" satisfies PageEditorSidebarAgent_ClassNames)}>
 			<div className={cn("PageEditorSidebarAgent-header" satisfies PageEditorSidebarAgent_ClassNames)}>
 				<div className={cn("PageEditorSidebarAgent-header-actions" satisfies PageEditorSidebarAgent_ClassNames)}>
-					<PageEditorSidebarAgentThreadPicker controller={controller} />
+					<PageEditorSidebarAgentThreadPicker controller={controller} onBeforeSelectThread={handleBeforeSelectThread} />
 					<MyIconButton variant="ghost-highlightable" tooltip="New chat" onClick={handleNewChat}>
 						<MyIcon>
 							<Plus />
@@ -337,6 +402,10 @@ export type PageEditorSidebar_ClassNames =
 	| "PageEditorSidebar-toolbar"
 	| "PageEditorSidebar-toolbar-scrollable-area"
 	| "PageEditorSidebar-tabs-list"
+	| "PageEditorSidebar-tabs-list-draggable"
+	| "PageEditorSidebar-tab-chat"
+	| "PageEditorSidebar-tab-chat-handle"
+	| "PageEditorSidebar-tab-chat-title"
 	| "PageEditorSidebar-tabs-panels"
 	| "PageEditorSidebar-panel"
 	| "PageEditorSidebar-panel-empty"
@@ -346,21 +415,44 @@ export type PageEditorSidebar_Props = {
 	commentsContainerRef: Ref<HTMLDivElement>;
 };
 
+function reorder_open_tabs(
+	list: page_editor_sidebar_open_tab_Entry[],
+	sourceIndex: number,
+	destinationIndex: number,
+): page_editor_sidebar_open_tab_Entry[] {
+	const result = [...list];
+	const [removed] = result.splice(sourceIndex, 1);
+	result.splice(destinationIndex, 0, removed);
+	return result;
+}
+
 export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEditorSidebar_Props) {
 	const { commentsContainerRef } = props;
 
-	const pagesLastTab =
-		useAppLocalStorageState((state) => state.pages_last_tab) ??
-		("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
-	const selectedTabId = pagesLastTab ?? ("app_page_editor_sidebar_tabs_comments" satisfies AppElementId);
+	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab);
+	const openTabs = useAppLocalStorageState((state) => state.page_editor_sidebar_open_tabs);
 
-	const handleTabChange = (nextSelectedId: string | null | undefined) => {
-		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
+	// Normalize: legacy "Agent" tab id when we have open chats -> select first chat tab
+	const selectedTabIdRaw = pagesLastTab ?? PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS;
+	const selectedTabId =
+		selectedTabIdRaw === PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT && openTabs.length > 0 ? openTabs[0].id : selectedTabIdRaw;
+
+	const handleTabChange = useFn((nextSelectedId: string | null | undefined) => {
+		if (!nextSelectedId || nextSelectedId === selectedTabId) {
 			return;
 		}
+		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId });
+	});
 
-		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
-	};
+	const handleDragEnd = useFn((result: DropResult) => {
+		if (result.destination == null || result.destination.index === result.source.index) {
+			return;
+		}
+		const next = reorder_open_tabs(openTabs, result.source.index, result.destination.index);
+		useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: next });
+	});
+
+	const hasChatTabs = openTabs.length > 0;
 
 	return (
 		<>
@@ -371,27 +463,87 @@ export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEdit
 							className={cn("PageEditorSidebar-tabs-list" satisfies PageEditorSidebar_ClassNames)}
 							aria-label="Sidebar tabs"
 						>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}>Comments</MyTabsTab>
-							<MyTabsTab id={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}>Agent</MyTabsTab>
+							<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab>
+							{hasChatTabs ? (
+								<DragDropContext onDragEnd={handleDragEnd}>
+									<Droppable droppableId={PAGE_EDITOR_SIDEBAR_AGENT_TABS_DROPPABLE_ID} direction="horizontal">
+										{(droppableProvided) => (
+											<div
+												ref={droppableProvided.innerRef}
+												{...droppableProvided.droppableProps}
+												className={cn("PageEditorSidebar-tabs-list-draggable" satisfies PageEditorSidebar_ClassNames)}
+											>
+												{openTabs.map((entry, index) => (
+													<Draggable key={entry.id} draggableId={entry.id} index={index}>
+														{(draggableProvided) => (
+															<div
+																ref={draggableProvided.innerRef}
+																{...draggableProvided.draggableProps}
+																className={cn("PageEditorSidebar-tab-chat" satisfies PageEditorSidebar_ClassNames)}
+															>
+																<MyTabsTab id={entry.id}>
+																	<span
+																		{...draggableProvided.dragHandleProps}
+																		className={cn(
+																			"PageEditorSidebar-tab-chat-handle" satisfies PageEditorSidebar_ClassNames,
+																		)}
+																		aria-hidden
+																	>
+																		<MyIcon>
+																			<GripVertical />
+																		</MyIcon>
+																	</span>
+																	<span
+																		className={cn(
+																			"PageEditorSidebar-tab-chat-title" satisfies PageEditorSidebar_ClassNames,
+																		)}
+																	>
+																		{entry.title}
+																	</span>
+																</MyTabsTab>
+															</div>
+														)}
+													</Draggable>
+												))}
+												{droppableProvided.placeholder}
+											</div>
+										)}
+									</Droppable>
+								</DragDropContext>
+							) : (
+								<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
+							)}
 						</MyTabsList>
 					</div>
 				</div>
 				<MyTabsPanels className={cn("PageEditorSidebar-tabs-panels" satisfies PageEditorSidebar_ClassNames)}>
 					<MyTabsPanel
 						className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_comments" satisfies AppElementId}
+						tabId={PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}
 					>
 						<div
 							ref={commentsContainerRef}
 							className={cn("PageEditorSidebar-comments-host" satisfies PageEditorSidebar_ClassNames)}
 						></div>
 					</MyTabsPanel>
-					<MyTabsPanel
-						className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
-						tabId={"app_page_editor_sidebar_tabs_agent" satisfies AppElementId}
-					>
-						<PageEditorSidebarAgent />
-					</MyTabsPanel>
+					{hasChatTabs ? (
+						openTabs.map((entry) => (
+							<MyTabsPanel
+								key={entry.id}
+								className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
+								tabId={entry.id}
+							>
+								<PageEditorSidebarAgent selectedThreadIdFromTab={entry.id} />
+							</MyTabsPanel>
+						))
+					) : (
+						<MyTabsPanel
+							className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
+							tabId={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}
+						>
+							<PageEditorSidebarAgent />
+						</MyTabsPanel>
+					)}
 				</MyTabsPanels>
 			</MyTabs>
 		</>

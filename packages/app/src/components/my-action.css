@@ -1,8 +1,7 @@
 @layer common_components {
 	/* #region primary action */
-	.MyPrimaryAction {
-		box-sizing: border-box;
-
+	.MyPrimaryAction,
+	.MyPrimaryActionLink {
 		display: block;
 		width: 100%;
 
@@ -39,6 +38,11 @@
 			color: var(--color-fg-12);
 		}
 	}
-
 	/* #endregion primary action */
+
+	/* #region primary action link */
+	.MyPrimaryActionLink {
+		text-decoration: none;
+	}
+	/* #endregion primary action link */
 }

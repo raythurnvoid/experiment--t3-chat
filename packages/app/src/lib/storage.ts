@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
-import type { AppElementId } from "@/lib/dom-utils.ts";
+/** One open agent tab in the page editor sidebar (thread id + display title). */
+export type page_editor_sidebar_open_tab_Entry = { id: string; title: string };
 
 /**
  * All keys used for `localStorage` values.
@@ -168,11 +169,17 @@ export function storage_session() {
 }
 
 // #region app local storage state
+/** Selected tab id: comments element id or thread id for a chat tab. */
+export type page_editor_sidebar_selected_tab_id = string | null;
+
 type app_local_storage_state_State = {
 	pages_last_open: string | null;
-	pages_last_tab: AppElementId | null;
+	/** Page editor sidebar selected tab: comments id or thread id. */
+	pages_last_tab: page_editor_sidebar_selected_tab_id;
+	page_editor_sidebar_open_tabs: page_editor_sidebar_open_tab_Entry[];
 	ai_chat_last_open: string | null;
 	main_app_sidebar_open: boolean;
+	main_app_sidebar_collapsed: boolean;
 	pages_sidebar_open: boolean;
 	presence_enabled: boolean;
 	page_editor_panel_layout: number[] | null;
@@ -182,8 +189,10 @@ type app_local_storage_state_State = {
 const app_local_storage_state_KEYS = {
 	pages_last_open: "app_state::pages_last_open",
 	pages_last_tab: "app_state::pages_last_tab",
+	page_editor_sidebar_open_tabs: "app_state::page_editor_sidebar_open_tabs",
 	ai_chat_last_open: "app_state::ai_chat_last_open",
 	main_app_sidebar_open: "app_state::sidebar::main_app_open",
+	main_app_sidebar_collapsed: "app_state::sidebar::main_app_collapsed",
 	pages_sidebar_open: "app_state::sidebar::pages_open",
 	presence_enabled: "app_state::presence::enabled",
 	page_editor_panel_layout: "app_state::resizable_panel::page_editor_panel",
@@ -193,17 +202,33 @@ const app_local_storage_state_KEYS = {
 export const useAppLocalStorageState = ((/* iife */) => {
 	const storage = storage_local();
 
-	const parsePagesLastTab = (value: string | null): AppElementId | null => {
-		if (!value) {
+	const parsePagesLastTab = (value: string | null): page_editor_sidebar_selected_tab_id => {
+		if (!value || value.trim() === "") {
 			return null;
 		}
+		return value;
+	};
 
-		switch (value) {
-			case "app_page_editor_sidebar_tabs_comments":
-			case "app_page_editor_sidebar_tabs_agent":
-				return value;
-			default:
-				return null;
+	const parsePageEditorSidebarOpenTabs = (
+		value: string | null,
+	): app_local_storage_state_State["page_editor_sidebar_open_tabs"] => {
+		if (!value) {
+			return [];
+		}
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			if (!Array.isArray(parsed)) {
+				return [];
+			}
+			return parsed.filter(
+				(item): item is page_editor_sidebar_open_tab_Entry =>
+					typeof item === "object" &&
+					item !== null &&
+					typeof (item as page_editor_sidebar_open_tab_Entry).id === "string" &&
+					typeof (item as page_editor_sidebar_open_tab_Entry).title === "string",
+			);
+		} catch {
+			return [];
 		}
 	};
 
@@ -226,8 +251,12 @@ export const useAppLocalStorageState = ((/* iife */) => {
 	const initialState = {
 		pages_last_open: storage.getItem(app_local_storage_state_KEYS.pages_last_open),
 		pages_last_tab: parsePagesLastTab(storage.getItem(app_local_storage_state_KEYS.pages_last_tab)),
+		page_editor_sidebar_open_tabs: parsePageEditorSidebarOpenTabs(
+			storage.getItem(app_local_storage_state_KEYS.page_editor_sidebar_open_tabs),
+		),
 		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
 		main_app_sidebar_open: parseSidebarOpen(storage.getItem(app_local_storage_state_KEYS.main_app_sidebar_open)),
+		main_app_sidebar_collapsed: storage.getItem(app_local_storage_state_KEYS.main_app_sidebar_collapsed) === "1",
 		pages_sidebar_open: parseSidebarOpen(storage.getItem(app_local_storage_state_KEYS.pages_sidebar_open)),
 		presence_enabled: parsePresenceEnabled(storage.getItem(app_local_storage_state_KEYS.presence_enabled)),
 		page_editor_panel_layout: parseResizablePanelSize(
@@ -275,12 +304,23 @@ export const useAppLocalStorageState = ((/* iife */) => {
 			writeValue(app_local_storage_state_KEYS.pages_last_tab, state.pages_last_tab);
 		}
 
+		if (state.page_editor_sidebar_open_tabs !== prev.page_editor_sidebar_open_tabs) {
+			writeValue(
+				app_local_storage_state_KEYS.page_editor_sidebar_open_tabs,
+				JSON.stringify(state.page_editor_sidebar_open_tabs),
+			);
+		}
+
 		if (state.ai_chat_last_open !== prev.ai_chat_last_open) {
 			writeValue(app_local_storage_state_KEYS.ai_chat_last_open, state.ai_chat_last_open);
 		}
 
 		if (state.main_app_sidebar_open !== prev.main_app_sidebar_open) {
 			writeValue(app_local_storage_state_KEYS.main_app_sidebar_open, state.main_app_sidebar_open ? "1" : "0");
+		}
+
+		if (state.main_app_sidebar_collapsed !== prev.main_app_sidebar_collapsed) {
+			writeValue(app_local_storage_state_KEYS.main_app_sidebar_collapsed, state.main_app_sidebar_collapsed ? "1" : "0");
 		}
 
 		if (state.pages_sidebar_open !== prev.pages_sidebar_open) {
@@ -334,6 +374,16 @@ export const useAppLocalStorageState = ((/* iife */) => {
 					setStateWithoutTriggeringWriteback({ pages_last_tab: nextValue });
 					return;
 				}
+				case app_local_storage_state_KEYS.page_editor_sidebar_open_tabs: {
+					const nextValue = parsePageEditorSidebarOpenTabs(event.newValue);
+					const current = store.getState().page_editor_sidebar_open_tabs;
+					if (current === nextValue || (current.length === nextValue.length && current.every((e, i) => e.id === nextValue[i].id && e.title === nextValue[i].title))) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ page_editor_sidebar_open_tabs: nextValue });
+					return;
+				}
 				case app_local_storage_state_KEYS.ai_chat_last_open: {
 					const nextValue = event.newValue ?? null;
 					const current = store.getState().ai_chat_last_open;
@@ -352,6 +402,16 @@ export const useAppLocalStorageState = ((/* iife */) => {
 					}
 
 					setStateWithoutTriggeringWriteback({ main_app_sidebar_open: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.main_app_sidebar_collapsed: {
+					const nextValue = event.newValue === "1";
+					const current = store.getState().main_app_sidebar_collapsed;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ main_app_sidebar_collapsed: nextValue });
 					return;
 				}
 				case app_local_storage_state_KEYS.pages_sidebar_open: {

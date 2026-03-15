@@ -1,7 +1,6 @@
 @layer common_components {
 	/* #region root */
 	.MyTabs {
-		box-sizing: border-box;
 		position: relative;
 
 		display: flex;
@@ -12,7 +11,6 @@
 
 	/* #region list */
 	.MyTabsList {
-		box-sizing: border-box;
 		position: relative;
 
 		display: flex;
@@ -22,7 +20,6 @@
 
 	/* #region tab */
 	.MyTabsTab {
-		box-sizing: border-box;
 		position: relative;
 
 		display: inline-flex;

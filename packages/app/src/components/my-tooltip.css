@@ -1,6 +1,5 @@
 @layer common_components {
 	.MyTooltipContent {
-		box-sizing: border-box;
 		position: relative;
 		pointer-events: none;
 
@@ -24,8 +23,6 @@
 	}
 
 	.MyTooltipArrow {
-		box-sizing: border-box;
-
 		width: 10px;
 		height: 10px;
 

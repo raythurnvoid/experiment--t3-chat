@@ -1,30 +1,40 @@
 import "./main-app-sidebar.css";
+import "@/components/my-action.css";
 
 import * as React from "react";
+import { memo } from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
-import { FileText, Home, MessageSquare, Monitor, Moon, Sun } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { FileText, Home, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { dark } from "@clerk/themes";
 
-import { cn } from "@/lib/utils.ts";
+import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
+import { app_presence_set_enabled, usePresence, usePresenceEnabled, usePresenceList } from "@/hooks/presence-hooks.ts";
 import { useThemeContext } from "@/components/theme-provider.tsx";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { Logo } from "@/components/logo.tsx";
-import { OnlinePresenceIndicator } from "@/components/online-presence-indicator.tsx";
+import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
-import { MyIcon } from "@/components/my-icon.tsx";
+import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import {
 	MySidebar,
-	MySidebarContent,
 	MySidebarFooter,
-	MySidebarGroup,
-	MySidebarGroupContent,
 	MySidebarHeader,
 	MySidebarInset,
-	MySidebarMenu,
-	MySidebarMenuButton,
-	MySidebarMenuItem,
+	MySidebarList,
+	MySidebarListItem,
+	MySidebarListItemIcon,
+	MySidebarPrimaryAction,
+	MySidebarScrollableArea,
+	MySidebarSection,
+	MySidebarListItemPrimaryAction,
+	MySidebarListItemPrimaryActionLink,
+	MySidebarListItemTitle,
 	type MySidebar_Props,
 } from "@/components/my-sidebar.tsx";
 
@@ -63,21 +73,23 @@ function ThemeToggleMenuItem() {
 	};
 
 	return (
-		<MySidebarMenuItem
+		<MySidebarListItem
 			className={"MainAppSidebarThemeToggleMenuItem" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 		>
-			<MySidebarMenuButton
+			<MySidebarListItemPrimaryAction
 				onClick={cycle_theme}
 				className={"MainAppSidebarThemeToggleMenuItem-button" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 			>
-				<MyIcon
+				<MySidebarListItemIcon
 					className={"MainAppSidebarThemeToggleMenuItem-icon" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 				>
 					{get_theme_icon()}
-				</MyIcon>
-				<MainAppSidebarMenuButtonLabel>Theme</MainAppSidebarMenuButtonLabel>
-			</MySidebarMenuButton>
-		</MySidebarMenuItem>
+				</MySidebarListItemIcon>
+				<MySidebarListItemTitle>
+					<MainAppSidebarMenuButtonLabel>Theme</MainAppSidebarMenuButtonLabel>
+				</MySidebarListItemTitle>
+			</MySidebarListItemPrimaryAction>
+		</MySidebarListItem>
 	);
 }
 // #endregion theme toggle item
@@ -284,24 +296,151 @@ function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
 }
 // #endregion inset
 
+// #region nav item
+type MainAppSidebarItem_ClassNames = "MainAppSidebarItem" | "MainAppSidebarItem-trigger" | "MainAppSidebarItem-title";
+
+type MainAppSidebarItem_Props = {
+	to: string;
+	label: string;
+	icon: LucideIcon;
+};
+
+const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSidebarItem_Props) {
+	const { to, label, icon: Icon } = props;
+	const pathname = useRouterState({ select: (s) => s.location.pathname });
+	const isActive = to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
+
+	return (
+		<MySidebarListItem className={"MainAppSidebarItem" satisfies MainAppSidebarItem_ClassNames}>
+			<MySidebarListItemPrimaryActionLink
+				to={to}
+				className={"MainAppSidebarItem-trigger" satisfies MainAppSidebarItem_ClassNames}
+				data-selected={isActive ? "true" : undefined}
+			>
+				<MySidebarListItemIcon>
+					<Icon />
+				</MySidebarListItemIcon>
+				<MySidebarListItemTitle className={"MainAppSidebarItem-title" satisfies MainAppSidebarItem_ClassNames}>
+					{label}
+				</MySidebarListItemTitle>
+			</MySidebarListItemPrimaryActionLink>
+		</MySidebarListItem>
+	);
+});
+// #endregion nav item
+
+// #region presence section
+type MainAppSidebarPresenceSection_ClassNames =
+	| "MainAppSidebarPresenceSection"
+	| "MainAppSidebarPresenceSection-row"
+	| "MainAppSidebarPresenceSection-primary-trigger"
+	| "MainAppSidebarPresenceSection-primary-trigger-content"
+	| "MainAppSidebarPresenceSection-online-label"
+	| "MainAppSidebarPresenceSection-actions"
+	| "MainAppSidebarPresenceSection-disable"
+	| "MainAppSidebarPresenceSection-tooltip-list"
+	| "MainAppSidebarPresenceSection-tooltip-item";
+
+function MainAppSidebarPresenceSection() {
+	const authenticated = AppAuthProvider.useAuthenticated();
+	const presenceEnabled = usePresenceEnabled();
+	const presence = usePresence({
+		roomId: app_presence_GLOBAL_ROOM_ID,
+		userId: authenticated.userId,
+		disconnectOnDocumentHidden: false,
+	});
+	const presenceList = usePresenceList({
+		roomToken: presence.roomToken,
+		userId: authenticated.userId,
+	});
+
+	const onlineUsers = (presenceList?.users ?? []).filter((user) => user.online !== false);
+	const onlineCount = onlineUsers.length;
+
+	const handleEnable = () => {
+		app_presence_set_enabled(true);
+	};
+	const handleDisable = () => {
+		app_presence_set_enabled(false);
+	};
+
+	if (!presenceEnabled) {
+		return (
+			<MySidebarPrimaryAction
+				onClick={handleEnable}
+				className={"MainAppSidebarPresenceSection" satisfies MainAppSidebarPresenceSection_ClassNames}
+			>
+				<MySidebarListItemIcon>
+					<Users aria-hidden size={16} />
+				</MySidebarListItemIcon>
+				<MySidebarListItemTitle>Enable presence</MySidebarListItemTitle>
+			</MySidebarPrimaryAction>
+		);
+	}
+
+	return (
+		<div className={"MainAppSidebarPresenceSection-row" satisfies MainAppSidebarPresenceSection_ClassNames}>
+			<MyTooltip timeout={0} placement="right-start">
+				<MyTooltipTrigger>
+					<MySidebarPrimaryAction
+						className={cn("MainAppSidebarPresenceSection-primary-trigger" satisfies MainAppSidebarPresenceSection_ClassNames)}
+					>
+						<div className={cn("MainAppSidebarPresenceSection-primary-trigger-content" satisfies MainAppSidebarPresenceSection_ClassNames)}>
+							<MySidebarListItemIcon>
+								<Users aria-hidden size={16} />
+							</MySidebarListItemIcon>
+							<MySidebarListItemTitle
+								className={cn("MainAppSidebarPresenceSection-online-label" satisfies MainAppSidebarPresenceSection_ClassNames)}
+							>
+								{onlineCount} Online
+							</MySidebarListItemTitle>
+						</div>
+					</MySidebarPrimaryAction>
+				</MyTooltipTrigger>
+				<MyTooltipContent gutter={4}>
+					<MyTooltipArrow />
+					<div className={cn("MainAppSidebarPresenceSection-tooltip-list" satisfies MainAppSidebarPresenceSection_ClassNames)}>
+						{onlineUsers.map((user) => (
+							<div
+								key={user.userId}
+								className={cn("MainAppSidebarPresenceSection-tooltip-item" satisfies MainAppSidebarPresenceSection_ClassNames)}
+							>
+								<MyAvatar size="24px">
+									<MyAvatarImage src={user.anagraphic.avatarUrl} alt={user.anagraphic.displayName} />
+									<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
+								</MyAvatar>
+								<span>{user.anagraphic.displayName}</span>
+							</div>
+						))}
+					</div>
+				</MyTooltipContent>
+			</MyTooltip>
+			<div className={cn("MainAppSidebarPresenceSection-actions" satisfies MainAppSidebarPresenceSection_ClassNames)}>
+				<MyButton
+					variant="ghost-highlightable"
+					className={cn("MainAppSidebarPresenceSection-disable" satisfies MainAppSidebarPresenceSection_ClassNames)}
+					onClick={handleDisable}
+				>
+					Disable
+				</MyButton>
+			</div>
+		</div>
+	);
+}
+// #endregion presence section
+
 // #region root
 type MainAppSidebar_ClassNames =
 	| "MainAppSidebar"
+	| "MainAppSidebar-state-collapsed"
 	| "MainAppSidebar-sidebar"
 	| "MainAppSidebar-header"
 	| "MainAppSidebar-header-row"
-	| "MainAppSidebar-header-spacer"
-	| "MainAppSidebar-presence"
+	| "MainAppSidebar-header-width-toggle"
 	| "MainAppSidebar-logo-section"
 	| "MainAppSidebar-logo-link"
 	| "MainAppSidebar-logo"
-	| "MainAppSidebar-content"
-	| "MainAppSidebar-group"
-	| "MainAppSidebar-group-content"
-	| "MainAppSidebar-menu"
-	| "MainAppSidebar-nav-button"
-	| "MainAppSidebar-nav-link"
-	| "MainAppSidebar-nav-icon"
+	| "MainAppSidebar-nav-list"
 	| "MainAppSidebar-footer"
 	| "MainAppSidebar-footer-menu";
 
@@ -316,8 +455,15 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
+	const mainAppSidebarCollapsed = useAppLocalStorageState((state) => state.main_app_sidebar_collapsed);
 
-	const sidebarState: MySidebar_Props["state"] = isOpen ? "expanded" : "closed";
+	const sidebarState: MySidebar_Props["state"] = !isOpen ? "closed" : "expanded";
+
+	const toggleSidebarWidth = () => {
+		useAppLocalStorageState.setState((state) => ({
+			main_app_sidebar_collapsed: !state.main_app_sidebar_collapsed,
+		}));
+	};
 
 	const toggleSidebar = () => {
 		useAppLocalStorageState.setState((state) => ({
@@ -344,7 +490,16 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 	}, [toggleSidebar]);
 
 	return (
-		<div ref={ref} id={id} className={cn("MainAppSidebar" satisfies MainAppSidebar_ClassNames, className)} {...rest}>
+		<div
+			ref={ref}
+			id={id}
+			className={cn(
+				"MainAppSidebar" satisfies MainAppSidebar_ClassNames,
+				mainAppSidebarCollapsed && ("MainAppSidebar-state-collapsed" satisfies MainAppSidebar_ClassNames),
+				className,
+			)}
+			{...rest}
+		>
 			<MySidebar
 				state={sidebarState}
 				aria-hidden={sidebarState === "closed" ? true : undefined}
@@ -353,10 +508,14 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 			>
 				<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
 					<div className={"MainAppSidebar-header-row" satisfies MainAppSidebar_ClassNames}>
-						<div className={"MainAppSidebar-header-spacer" satisfies MainAppSidebar_ClassNames} />
-						<div className={"MainAppSidebar-presence" satisfies MainAppSidebar_ClassNames}>
-							<OnlinePresenceIndicator />
-						</div>
+						<MyIconButton
+							className={cn("MainAppSidebar-header-width-toggle" satisfies MainAppSidebar_ClassNames)}
+							variant="ghost-highlightable"
+							tooltip={mainAppSidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
+							onClick={toggleSidebarWidth}
+						>
+							{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+						</MyIconButton>
 					</div>
 				</MySidebarHeader>
 
@@ -366,60 +525,25 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 					</Link>
 				</div>
 
-				<MySidebarContent className={"MainAppSidebar-content" satisfies MainAppSidebar_ClassNames}>
-					<MySidebarGroup className={"MainAppSidebar-group" satisfies MainAppSidebar_ClassNames}>
-						<MySidebarGroupContent className={"MainAppSidebar-group-content" satisfies MainAppSidebar_ClassNames}>
-							<MySidebarMenu className={"MainAppSidebar-menu" satisfies MainAppSidebar_ClassNames}>
-								<MySidebarMenuItem>
-									<MySidebarMenuButton
-										asChild
-										className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
-									>
-										<Link to="/" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
-											<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
-												<Home />
-											</MyIcon>
-											<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
-										</Link>
-									</MySidebarMenuButton>
-								</MySidebarMenuItem>
+				<MySidebarSection aria-label="Presence">
+					<MainAppSidebarPresenceSection />
+				</MySidebarSection>
 
-								<MySidebarMenuItem>
-									<MySidebarMenuButton
-										asChild
-										className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
-									>
-										<Link to="/chat" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
-											<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
-												<MessageSquare />
-											</MyIcon>
-											<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
-										</Link>
-									</MySidebarMenuButton>
-								</MySidebarMenuItem>
-
-								<MySidebarMenuItem>
-									<MySidebarMenuButton
-										asChild
-										className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
-									>
-										<Link to="/pages" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
-											<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
-												<FileText />
-											</MyIcon>
-											<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
-										</Link>
-									</MySidebarMenuButton>
-								</MySidebarMenuItem>
-							</MySidebarMenu>
-						</MySidebarGroupContent>
-					</MySidebarGroup>
-				</MySidebarContent>
+				<MySidebarScrollableArea>
+					<MySidebarList
+						className={"MainAppSidebar-nav-list" satisfies MainAppSidebar_ClassNames}
+						aria-label="Main navigation"
+					>
+						<MainAppSidebarItem to="/" label="Home" icon={Home} />
+						<MainAppSidebarItem to="/chat" label="Chat" icon={MessageSquare} />
+						<MainAppSidebarItem to="/pages" label="Docs" icon={FileText} />
+					</MySidebarList>
+				</MySidebarScrollableArea>
 
 				<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
-					<MySidebarMenu className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
+					<MySidebarList className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
 						<ThemeToggleMenuItem />
-					</MySidebarMenu>
+					</MySidebarList>
 					<ProfileSection />
 				</MySidebarFooter>
 			</MySidebar>

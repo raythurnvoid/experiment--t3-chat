@@ -1,6 +1,5 @@
 @layer common_components {
 	.MyButton {
-		box-sizing: border-box;
 		position: relative;
 
 		display: inline-flex;

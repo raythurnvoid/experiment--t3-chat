@@ -15,14 +15,7 @@
 		padding: 0;
 	}
 
-	.AiChatThreadsSidebar-content {
-		padding: 0;
-		contain: content;
-	}
-
 	.AiChatThreads {
-		box-sizing: border-box;
-
 		display: flex;
 		flex-direction: column;
 
@@ -106,7 +99,7 @@
 	}
 	/* #endregion new button */
 
-	/* #region list */
+	/* #region results */
 	.AiChatThreadsResults {
 		flex: 1;
 
@@ -115,26 +108,7 @@
 
 		min-height: 0;
 	}
-
-	.AiChatThreadsList {
-		flex: 1;
-
-		display: flex;
-		flex-direction: column;
-
-		min-height: 0;
-		contain: size;
-
-		margin: 0;
-
-		gap: 4px;
-		padding: 8px;
-
-		list-style: none;
-
-		overflow-y: auto;
-	}
-	/* #endregion list */
+	/* #endregion results */
 
 	/* #region list item */
 	.AiChatThreadsListItem {
@@ -142,8 +116,6 @@
 		grid-template-columns: 1fr auto;
 		grid-template-rows: auto;
 		align-items: center;
-
-		padding: 0;
 	}
 
 	.AiChatThreadsListItem-state-hidden {
@@ -159,28 +131,12 @@
 		grid-column: 1 / -1;
 		grid-row: 1;
 
-		min-width: 0;
-
-		height: 36px;
-
-		border-radius: 8px;
-
-		font-size: 0.875rem;
-
 		/* for the subgrid to work paint and layout container cannot be used */
 		contain: size style;
 	}
 
 	.AiChatThreadsListItem-title {
 		grid-column: 1;
-
-		min-width: 0;
-
-		contain: content;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-
-		padding: 0 0 0 12px;
 	}
 
 	.AiChatThreadsListItem-actions {

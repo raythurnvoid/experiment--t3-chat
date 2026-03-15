@@ -1,6 +1,5 @@
 @layer common_components {
 	.MyPopoverContent {
-		box-sizing: border-box;
 		position: relative;
 
 		max-height: 300px;

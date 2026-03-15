@@ -14,9 +14,7 @@ import {
 	X,
 } from "lucide-react";
 
-import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
-import { MyInteractiveList, MyInteractiveListItem } from "@/components/my-interactive-list.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -31,7 +29,16 @@ import {
 	MyMenuPopoverContent,
 	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
-import { MySidebar, MySidebarContent, MySidebarHeader, type MySidebar_Props } from "@/components/my-sidebar.tsx";
+import {
+	MySidebar,
+	MySidebarHeader,
+	MySidebarList,
+	MySidebarListItem,
+	MySidebarListItemPrimaryAction,
+	MySidebarListItemTitle,
+	MySidebarScrollableArea,
+	type MySidebar_Props,
+} from "@/components/my-sidebar.tsx";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -244,13 +251,13 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 	const archiveLabel = isArchived ? "Unarchive" : "Archive";
 
 	return (
-		<MyInteractiveListItem
+		<MySidebarListItem
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
 			)}
 		>
-			<MyPrimaryAction
+			<MySidebarListItemPrimaryAction
 				className={cn(
 					"AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
@@ -258,10 +265,12 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 				selected={isActive}
 				onClick={handleSelect}
 			>
-				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
+				<MySidebarListItemTitle
+					className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}
+				>
 					{threadTitle}
-				</span>
-			</MyPrimaryAction>
+				</MySidebarListItemTitle>
+			</MySidebarListItemPrimaryAction>
 			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
 				<MyIconButton
 					className={cn("AiChatThreadsListItem-action" satisfies AiChatThreadsListItem_ClassNames)}
@@ -306,7 +315,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 					</MyMenuPopover>
 				</MyMenu>
 			</div>
-		</MyInteractiveListItem>
+		</MySidebarListItem>
 	);
 }
 // #endregion list item
@@ -338,13 +347,13 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 	};
 
 	return (
-		<MyInteractiveListItem
+		<MySidebarListItem
 			className={cn(
 				"AiChatThreadsListItem" satisfies AiChatThreadsListItem_ClassNames,
 				!matchesSearch && ("AiChatThreadsListItem-state-hidden" satisfies AiChatThreadsListItem_ClassNames),
 			)}
 		>
-			<MyPrimaryAction
+			<MySidebarListItemPrimaryAction
 				className={cn(
 					"AiChatThreadsListItem-trigger" satisfies AiChatThreadsListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
@@ -352,10 +361,12 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 				selected={isActive}
 				onClick={handleSelect}
 			>
-				<span className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}>
+				<MySidebarListItemTitle
+					className={cn("AiChatThreadsListItem-title" satisfies AiChatThreadsListItem_ClassNames)}
+				>
 					{threadTitle}
-				</span>
-			</MyPrimaryAction>
+				</MySidebarListItemTitle>
+			</MySidebarListItemPrimaryAction>
 			<div className={cn("AiChatThreadsListItem-actions" satisfies AiChatThreadsListItem_ClassNames)}>
 				<MyMenu>
 					<MyMenuTrigger>
@@ -383,15 +394,18 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 					</MyMenuPopover>
 				</MyMenu>
 			</div>
-		</MyInteractiveListItem>
+		</MySidebarListItem>
 	);
 }
 // #endregion optimistic list item
 
-// #region list
-type AiChatThreadsList_ClassNames = "AiChatThreadsResults" | "AiChatThreadsList" | "AiChatThreadsList-sentinel";
+// #region results
+type AiChatThreadsResults_ClassNames =
+	| "AiChatThreadsResults"
+	| "AiChatThreadsResults-list"
+	| "AiChatThreadsResults-sentinel";
 
-type AiChatThreadsList_Props = ComponentPropsWithRef<"section"> & {
+type AiChatThreadsResults_Props = ComponentPropsWithRef<"section"> & {
 	ref?: Ref<HTMLElement>;
 	id?: string;
 	className?: string;
@@ -409,7 +423,7 @@ type AiChatThreadsList_Props = ComponentPropsWithRef<"section"> & {
 	onRemoveOptimisticThread: AiChatThreadsOptimisticListItem_Props["onRemove"];
 };
 
-function AiChatThreadsList(props: AiChatThreadsList_Props) {
+function AiChatThreadsResults(props: AiChatThreadsResults_Props) {
 	const {
 		ref,
 		id,
@@ -461,15 +475,15 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 		<section
 			ref={ref}
 			id={id}
-			className={cn("AiChatThreadsResults" satisfies AiChatThreadsList_ClassNames, className)}
+			className={cn("AiChatThreadsResults" satisfies AiChatThreadsResults_ClassNames, className)}
 			aria-label="Search results"
 			{...rest}
 		>
-			<MyInteractiveList
+			<MySidebarList
 				ref={setScrollRoot}
 				id={ai_chat_threads_RESULTS_LIST_ID}
 				className={cn(
-					"AiChatThreadsList" satisfies AiChatThreadsList_ClassNames,
+					"AiChatThreadsResults-list" satisfies AiChatThreadsResults_ClassNames,
 					"MyFocus-container" satisfies MyFocus_ClassNames,
 				)}
 			>
@@ -504,22 +518,21 @@ function AiChatThreadsList(props: AiChatThreadsList_Props) {
 				})}
 
 				{paginatedThreads ? (
-					<li aria-hidden="true" className={cn("AiChatThreadsList-sentinel" satisfies AiChatThreadsList_ClassNames)}>
+					<li
+						aria-hidden="true"
+						className={cn("AiChatThreadsResults-sentinel" satisfies AiChatThreadsResults_ClassNames)}
+					>
 						<InfiniteScrollSentinel root={scrollRoot} rootMargin="400px 0px" onIntersection={handleIntersection} />
 					</li>
 				) : null}
-			</MyInteractiveList>
+			</MySidebarList>
 		</section>
 	);
 }
-// #endregion list
+// #endregion results
 
 // #region root
-export type AiChatThreads_ClassNames =
-	| "AiChatThreads"
-	| "AiChatThreadsSidebar"
-	| "AiChatThreadsSidebar-header"
-	| "AiChatThreadsSidebar-content";
+export type AiChatThreads_ClassNames = "AiChatThreads" | "AiChatThreadsSidebar" | "AiChatThreadsSidebar-header";
 
 export type AiChatThreads_Props = MySidebar_Props & {
 	paginatedThreads: AiChatController["currentThreadsWithOptimistic"];
@@ -588,8 +601,8 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 						onNewChat={handleNewChat}
 					/>
 				</MySidebarHeader>
-				<MySidebarContent className={cn("AiChatThreadsSidebar-content" satisfies AiChatThreads_ClassNames)}>
-					<AiChatThreadsList
+				<MySidebarScrollableArea>
+					<AiChatThreadsResults
 						searchQuery={searchQuery}
 						paginatedThreads={showArchived ? paginatedThreads.archived : paginatedThreads.unarchived}
 						streamingTitleByThreadId={streamingTitleByThreadId}
@@ -600,7 +613,7 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 						onArchiveThread={onArchiveThread}
 						onRemoveOptimisticThread={onRemoveOptimisticThread}
 					/>
-				</MySidebarContent>
+				</MySidebarScrollableArea>
 			</div>
 		</MySidebar>
 	);

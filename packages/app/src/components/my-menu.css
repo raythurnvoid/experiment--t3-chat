@@ -1,7 +1,6 @@
 @layer common_components {
 	/* #region popover */
 	.MyMenuPopover {
-		box-sizing: border-box;
 		position: relative;
 
 		min-width: 200px;
@@ -39,7 +38,6 @@
 
 	/* #region item */
 	.MyMenuItem {
-		box-sizing: border-box;
 		position: relative;
 
 		display: flex;

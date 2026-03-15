@@ -1,5 +1,6 @@
 import "./my-action.css";
 
+import { Link } from "@tanstack/react-router";
 import { memo, type ComponentPropsWithRef } from "react";
 import type * as Ariakit from "@ariakit/react";
 
@@ -56,3 +57,28 @@ export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAct
 	);
 });
 // #endregion primary action
+
+// #region primary action link
+type MyPrimaryActionLink_ClassNames = "MyPrimaryActionLink";
+
+export type MyPrimaryActionLink_Props = ComponentPropsWithRef<typeof Link>;
+
+export const MyPrimaryActionLink = memo(function MyPrimaryActionLink(props: MyPrimaryActionLink_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<Link
+			ref={ref}
+			id={id}
+			className={cn(
+				"MyPrimaryAction" satisfies MyPrimaryAction_ClassNames,
+				"MyPrimaryActionLink" satisfies MyPrimaryActionLink_ClassNames,
+				className,
+			)}
+			{...rest}
+		>
+			{children}
+		</Link>
+	);
+});
+// #endregion primary action link

@@ -2,266 +2,211 @@ import "./my-sidebar.css";
 
 import { Slot } from "@radix-ui/react-slot";
 import { PanelLeftIcon } from "lucide-react";
-import { memo, useEffect, useState, type CSSProperties, type ComponentPropsWithRef } from "react";
+import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
 
 import { Separator } from "@/components/ui/separator.tsx";
-import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.tsx";
+import { MyPrimaryAction, MyPrimaryActionLink } from "@/components/my-action.tsx";
+import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
 
 type MySidebar_CssVars = {
 	"--my-sidebar-width": string;
-	"--my-sidebar-width-collapsed": string;
 };
 
 const MySidebar_CssVars_DEFAULTS: Partial<MySidebar_CssVars> = {
 	"--my-sidebar-width": "320px",
-	"--my-sidebar-width-collapsed": "47px",
 };
 
-type TooltipLikeProps = string | ComponentPropsWithRef<typeof TooltipContent>;
+// #region list item
+type MySidebarListItem_ClassNames = "MySidebarListItem";
 
-// #region menu sub button
-type MySidebarMenuSubButton_ClassNames = "MySidebarMenuSubButton";
+export type MySidebarListItem_Props = ComponentPropsWithRef<"li">;
 
-export type MySidebarMenuSubButton_Props = ComponentPropsWithRef<"a"> & {
-	asChild?: boolean;
-	size?: "sm" | "md";
-	isActive?: boolean;
-};
-
-export const MySidebarMenuSubButton = memo(function MySidebarMenuSubButton(props: MySidebarMenuSubButton_Props) {
-	const { ref, id, className, asChild = false, size = "md", isActive = false, children, ...rest } = props;
-	const Comp = asChild ? Slot : "a";
-
-	return (
-		<Comp
-			ref={ref}
-			id={id}
-			data-size={size}
-			data-active={isActive}
-			className={cn("MySidebarMenuSubButton" satisfies MySidebarMenuSubButton_ClassNames, className)}
-			{...rest}
-		>
-			{children}
-		</Comp>
-	);
-});
-// #endregion menu sub button
-
-// #region menu sub item
-type MySidebarMenuSubItem_ClassNames = "MySidebarMenuSubItem";
-
-export type MySidebarMenuSubItem_Props = ComponentPropsWithRef<"li">;
-
-export const MySidebarMenuSubItem = memo(function MySidebarMenuSubItem(props: MySidebarMenuSubItem_Props) {
+export const MySidebarListItem = memo(function MySidebarListItem(props: MySidebarListItem_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
 		<li
 			ref={ref}
 			id={id}
-			className={cn("MySidebarMenuSubItem" satisfies MySidebarMenuSubItem_ClassNames, className)}
+			className={cn("MySidebarListItem" satisfies MySidebarListItem_ClassNames, className)}
 			{...rest}
 		>
 			{children}
 		</li>
 	);
 });
-// #endregion menu sub item
+// #endregion list item
 
-// #region menu sub
-type MySidebarMenuSub_ClassNames = "MySidebarMenuSub";
+// #region list item title
+type MySidebarListItemTitle_ClassNames = "MySidebarListItemTitle";
 
-export type MySidebarMenuSub_Props = ComponentPropsWithRef<"ul">;
+export type MySidebarListItemTitle_Props = ComponentPropsWithRef<"span">;
 
-export const MySidebarMenuSub = memo(function MySidebarMenuSub(props: MySidebarMenuSub_Props) {
+export const MySidebarListItemTitle = memo(function MySidebarListItemTitle(props: MySidebarListItemTitle_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<ul ref={ref} id={id} className={cn("MySidebarMenuSub" satisfies MySidebarMenuSub_ClassNames, className)} {...rest}>
-			{children}
-		</ul>
-	);
-});
-// #endregion menu sub
-
-// #region menu skeleton
-type MySidebarMenuSkeleton_ClassNames =
-	| "MySidebarMenuSkeleton"
-	| "MySidebarMenuSkeleton-icon"
-	| "MySidebarMenuSkeleton-text";
-
-export type MySidebarMenuSkeleton_Props = ComponentPropsWithRef<"div"> & {
-	showIcon?: boolean;
-};
-
-export const MySidebarMenuSkeleton = memo(function MySidebarMenuSkeleton(props: MySidebarMenuSkeleton_Props) {
-	const { ref, id, className, showIcon = false, ...rest } = props;
-	const width = "60%";
-
-	return (
-		<div
+		<span
 			ref={ref}
 			id={id}
-			className={cn("MySidebarMenuSkeleton" satisfies MySidebarMenuSkeleton_ClassNames, className)}
+			className={cn("MySidebarListItemTitle" satisfies MySidebarListItemTitle_ClassNames, className)}
 			{...rest}
 		>
-			{showIcon ? <Skeleton className={cn("MySidebarMenuSkeleton-icon" satisfies MySidebarMenuSkeleton_ClassNames)} /> : null}
-			<Skeleton
-				className={cn("MySidebarMenuSkeleton-text" satisfies MySidebarMenuSkeleton_ClassNames)}
-				style={{ "--skeleton-width": width } as CSSProperties}
-			/>
-		</div>
+			{children}
+		</span>
 	);
 });
-// #endregion menu skeleton
+// #endregion list item title
 
-// #region menu badge
-type MySidebarMenuBadge_ClassNames = "MySidebarMenuBadge";
+// #region list item icon
+type MySidebarListItemIcon_ClassNames = "MySidebarListItemIcon";
 
-export type MySidebarMenuBadge_Props = ComponentPropsWithRef<"div">;
+export type MySidebarListItemIcon_Props = ComponentPropsWithRef<typeof MyIcon>;
 
-export const MySidebarMenuBadge = memo(function MySidebarMenuBadge(props: MySidebarMenuBadge_Props) {
+export const MySidebarListItemIcon = memo(function MySidebarListItemIcon(props: MySidebarListItemIcon_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn("MySidebarMenuBadge" satisfies MySidebarMenuBadge_ClassNames, className)} {...rest}>
-			{children}
-		</div>
-	);
-});
-// #endregion menu badge
-
-// #region menu action
-type MySidebarMenuAction_ClassNames = "MySidebarMenuAction" | "MySidebarMenuAction-show-on-hover";
-
-export type MySidebarMenuAction_Props = ComponentPropsWithRef<"button"> & {
-	asChild?: boolean;
-	showOnHover?: boolean;
-};
-
-export const MySidebarMenuAction = memo(function MySidebarMenuAction(props: MySidebarMenuAction_Props) {
-	const { ref, id, className, asChild = false, showOnHover = false, children, ...rest } = props;
-	const Comp = asChild ? Slot : "button";
-
-	return (
-		<Comp
+		<MyIcon
 			ref={ref}
 			id={id}
-			type={asChild ? undefined : "button"}
+			className={cn("MySidebarListItemIcon" satisfies MySidebarListItemIcon_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</MyIcon>
+	);
+});
+// #endregion list item icon
+
+// #region list item primary action
+type MySidebarListItemPrimaryAction_ClassNames = "MySidebarListItemPrimaryAction";
+
+export type MySidebarListItemPrimaryAction_Props = ComponentPropsWithRef<typeof MyPrimaryAction>;
+
+export const MySidebarListItemPrimaryAction = memo(function MySidebarListItemPrimaryAction(
+	props: MySidebarListItemPrimaryAction_Props,
+) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<MyPrimaryAction
+			ref={ref}
+			id={id}
+			className={cn("MySidebarListItemPrimaryAction" satisfies MySidebarListItemPrimaryAction_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</MyPrimaryAction>
+	);
+});
+// #endregion list item primary action
+
+// #region list item primary action link
+type MySidebarListItemPrimaryActionLink_ClassNames = "MySidebarListItemPrimaryActionLink";
+
+export type MySidebarListItemPrimaryActionLink_Props = ComponentPropsWithRef<typeof MyPrimaryActionLink>;
+
+export const MySidebarListItemPrimaryActionLink = memo(function MySidebarListItemPrimaryActionLink(
+	props: MySidebarListItemPrimaryActionLink_Props,
+) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<MyPrimaryActionLink
+			ref={ref}
+			id={id}
 			className={cn(
-				"MySidebarMenuAction" satisfies MySidebarMenuAction_ClassNames,
-				showOnHover && ("MySidebarMenuAction-show-on-hover" satisfies MySidebarMenuAction_ClassNames),
+				"MySidebarListItemPrimaryActionLink" satisfies MySidebarListItemPrimaryActionLink_ClassNames,
 				className,
 			)}
 			{...rest}
 		>
 			{children}
-		</Comp>
+		</MyPrimaryActionLink>
 	);
 });
-// #endregion menu action
+// #endregion list item primary action link
 
-// #region menu button
-type MySidebarMenuButton_ClassNames =
-	| "MySidebarMenuButton"
-	| "MySidebarMenuButton-variant-outline"
-	| "MySidebarMenuButton-size-sm"
-	| "MySidebarMenuButton-size-lg";
+// #region list
+type MySidebarList_ClassNames = "MySidebarList";
 
-export type MySidebarMenuButton_Props = ComponentPropsWithRef<"button"> & {
-	asChild?: boolean;
-	isActive?: boolean;
-	variant?: "default" | "outline";
-	size?: "default" | "sm" | "lg";
-	tooltip?: TooltipLikeProps;
-};
+export type MySidebarList_Props = ComponentPropsWithRef<"ul">;
 
-export const MySidebarMenuButton = memo(function MySidebarMenuButton(props: MySidebarMenuButton_Props) {
-	const {
-		ref,
-		id,
-		className,
-		children,
-		asChild = false,
-		isActive = false,
-		variant = "default",
-		size = "default",
-		tooltip,
-		...rest
-	} = props;
-	const Comp = asChild ? Slot : "button";
-
-	const buttonClasses = cn(
-		"MySidebarMenuButton" satisfies MySidebarMenuButton_ClassNames,
-		variant === "outline" && ("MySidebarMenuButton-variant-outline" satisfies MySidebarMenuButton_ClassNames),
-		size === "sm" && ("MySidebarMenuButton-size-sm" satisfies MySidebarMenuButton_ClassNames),
-		size === "lg" && ("MySidebarMenuButton-size-lg" satisfies MySidebarMenuButton_ClassNames),
-		className,
-	);
-
-	const button = (
-		<Comp
-			ref={ref}
-			id={id}
-			data-active={isActive}
-			data-variant={variant}
-			data-size={size}
-			className={buttonClasses}
-			{...rest}
-		>
-			{children}
-		</Comp>
-	);
-
-	if (!tooltip) {
-		return button;
-	}
-
-	const tooltipProps: ComponentPropsWithRef<typeof TooltipContent> =
-		typeof tooltip === "string" ? { children: tooltip } : tooltip;
-
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>{button}</TooltipTrigger>
-			<TooltipContent align="center" side="right" {...tooltipProps} />
-		</Tooltip>
-	);
-});
-// #endregion menu button
-
-// #region menu item
-type MySidebarMenuItem_ClassNames = "MySidebarMenuItem";
-
-export type MySidebarMenuItem_Props = ComponentPropsWithRef<"li">;
-
-export const MySidebarMenuItem = memo(function MySidebarMenuItem(props: MySidebarMenuItem_Props) {
+export const MySidebarList = memo(function MySidebarList(props: MySidebarList_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<li ref={ref} id={id} className={cn("MySidebarMenuItem" satisfies MySidebarMenuItem_ClassNames, className)} {...rest}>
-			{children}
-		</li>
-	);
-});
-// #endregion menu item
-
-// #region menu
-type MySidebarMenu_ClassNames = "MySidebarMenu";
-
-export type MySidebarMenu_Props = ComponentPropsWithRef<"ul">;
-
-export const MySidebarMenu = memo(function MySidebarMenu(props: MySidebarMenu_Props) {
-	const { ref, id, className, children, ...rest } = props;
-
-	return (
-		<ul ref={ref} id={id} className={cn("MySidebarMenu" satisfies MySidebarMenu_ClassNames, className)} {...rest}>
+		<ul ref={ref} id={id} className={cn("MySidebarList" satisfies MySidebarList_ClassNames, className)} {...rest}>
 			{children}
 		</ul>
 	);
 });
-// #endregion menu
+// #endregion list
+
+// #region section
+type MySidebarSection_ClassNames = "MySidebarSection";
+
+export type MySidebarSection_Props = ComponentPropsWithRef<"div">;
+
+export const MySidebarSection = memo(function MySidebarSection(props: MySidebarSection_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<section
+			ref={ref}
+			id={id}
+			className={cn("MySidebarSection" satisfies MySidebarSection_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</section>
+	);
+});
+// #endregion section
+
+// #region primary action
+type MySidebarPrimaryAction_ClassNames = "MySidebarPrimaryAction";
+
+export type MySidebarPrimaryAction_Props = ComponentPropsWithRef<typeof MyPrimaryAction>;
+
+export const MySidebarPrimaryAction = memo(function MySidebarPrimaryAction(props: MySidebarPrimaryAction_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<MyPrimaryAction
+			ref={ref}
+			id={id}
+			className={cn("MySidebarPrimaryAction" satisfies MySidebarPrimaryAction_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</MyPrimaryAction>
+	);
+});
+// #endregion primary action
+
+// #region scrollable area
+type MySidebarScrollableArea_ClassNames = "MySidebarScrollableArea";
+
+export type MySidebarScrollableArea_Props = ComponentPropsWithRef<"div">;
+
+export const MySidebarScrollableArea = memo(function MySidebarScrollableArea(props: MySidebarScrollableArea_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<div
+			ref={ref}
+			id={id}
+			className={cn("MySidebarScrollableArea" satisfies MySidebarScrollableArea_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</div>
+	);
+});
+// #endregion scrollable area
 
 // #region group content
 type MySidebarGroupContent_ClassNames = "MySidebarGroupContent";
@@ -368,22 +313,6 @@ export const MySidebarSeparator = memo(function MySidebarSeparator(props: MySide
 });
 // #endregion separator
 
-// #region content
-type MySidebarContent_ClassNames = "MySidebarContent";
-
-export type MySidebarContent_Props = ComponentPropsWithRef<"div">;
-
-export const MySidebarContent = memo(function MySidebarContent(props: MySidebarContent_Props) {
-	const { ref, id, className, children, ...rest } = props;
-
-	return (
-		<div ref={ref} id={id} className={cn("MySidebarContent" satisfies MySidebarContent_ClassNames, className)} {...rest}>
-			{children}
-		</div>
-	);
-});
-// #endregion content
-
 // #region footer
 type MySidebarFooter_ClassNames = "MySidebarFooter";
 
@@ -480,13 +409,12 @@ export const MySidebarInset = memo(function MySidebarInset(props: MySidebarInset
 type MySidebar_ClassNames =
 	| "MySidebar"
 	| "MySidebar-state-expanded"
-	| "MySidebar-state-collapsed"
 	| "MySidebar-state-closed"
 	| "MySidebar-mounted"
 	| "MySidebar-inner";
 
 export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
-	state: "closed" | "collapsed" | "expanded";
+	state: "closed" | "expanded";
 };
 
 export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
@@ -500,9 +428,7 @@ export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
 	const stateClassName =
 		state === "expanded"
 			? ("MySidebar-state-expanded" satisfies MySidebar_ClassNames)
-			: state === "collapsed"
-				? ("MySidebar-state-collapsed" satisfies MySidebar_ClassNames)
-				: ("MySidebar-state-closed" satisfies MySidebar_ClassNames);
+			: ("MySidebar-state-closed" satisfies MySidebar_ClassNames);
 
 	return (
 		<aside
