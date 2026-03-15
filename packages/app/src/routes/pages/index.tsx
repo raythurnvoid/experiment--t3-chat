@@ -3,7 +3,7 @@ import "./index.css";
 import React, { Suspense, useRef } from "react";
 import type { PageEditor_Props } from "../../components/page-editor/page-editor.tsx";
 import { PagesSidebar } from "./-components/pages-sidebar.tsx";
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { PageEditorSkeleton } from "../../components/page-editor/page-editor-skeleton.tsx";
 import { PanelLeft, Menu } from "lucide-react";
@@ -80,9 +80,10 @@ function RoutePages() {
 
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
-	const [pagesSidebarState, setPagesSidebarState] = useState<RoutePages_SidebarState>("expanded");
+	const pagesSidebarOpen = useAppLocalStorageState((state) => state.pages_sidebar_open);
 	const savedPanelLayout = useAppLocalStorageState((state) => state.main_panel_layout);
 	const panelLayoutRef = useRef(savedPanelLayout ?? [24, 76]);
+	const pagesSidebarState: RoutePages_SidebarState = pagesSidebarOpen ? "expanded" : "closed";
 
 	const lastOpenPageId = useAppLocalStorageState((state) => state.pages_last_open);
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
@@ -141,11 +142,11 @@ function RoutePages() {
 	);
 
 	const handleCloseSidebar = useFn<React.ComponentProps<typeof PagesSidebar>["onClose"]>(() => {
-		setPagesSidebarState("closed");
+		useAppLocalStorageState.setState({ pages_sidebar_open: false });
 	});
 
 	const handleOpenSidebar = useFn(() => {
-		setPagesSidebarState("expanded");
+		useAppLocalStorageState.setState({ pages_sidebar_open: true });
 	});
 
 	const handlePanelLayout = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayout"]>>((layout) => {
@@ -205,7 +206,7 @@ function RoutePages() {
 				<MyPanel
 					defaultSize={savedPanelLayout?.[0] ?? 24}
 					className={"RoutePages-sidebar-panel" satisfies RoutePages_ClassNames}
-					isOpen={pagesSidebarState === "expanded"}
+					isOpen={pagesSidebarOpen}
 					closeBehavior="unmount"
 				>
 					<PagesSidebar
@@ -217,7 +218,7 @@ function RoutePages() {
 					/>
 				</MyPanel>
 				<MyPanelResizeHandle
-					isOpen={pagesSidebarState === "expanded"}
+					isOpen={pagesSidebarOpen}
 					closeBehavior="unmount"
 					onDragging={handlePanelDragging}
 				/>

@@ -170,8 +170,10 @@ export function storage_session() {
 // #region app local storage state
 type app_local_storage_state_State = {
 	pages_last_open: string | null;
-	ai_chat_last_open: string | null;
 	pages_last_tab: AppElementId | null;
+	ai_chat_last_open: string | null;
+	main_app_sidebar_open: boolean;
+	pages_sidebar_open: boolean;
 	presence_enabled: boolean;
 	page_editor_panel_layout: number[] | null;
 	main_panel_layout: number[] | null;
@@ -179,8 +181,10 @@ type app_local_storage_state_State = {
 
 const app_local_storage_state_KEYS = {
 	pages_last_open: "app_state::pages_last_open",
-	ai_chat_last_open: "app_state::ai_chat_last_open",
 	pages_last_tab: "app_state::pages_last_tab",
+	ai_chat_last_open: "app_state::ai_chat_last_open",
+	main_app_sidebar_open: "app_state::sidebar::main_app_open",
+	pages_sidebar_open: "app_state::sidebar::pages_open",
 	presence_enabled: "app_state::presence::enabled",
 	page_editor_panel_layout: "app_state::resizable_panel::page_editor_panel",
 	main_panel_layout: "app_state::resizable_panel::main_panel",
@@ -207,6 +211,10 @@ export const useAppLocalStorageState = ((/* iife */) => {
 		return value !== "0";
 	};
 
+	const parseSidebarOpen = (value: string | null) => {
+		return value !== "0";
+	};
+
 	const parseResizablePanelSize = (value: string | null): app_local_storage_state_State["page_editor_panel_layout"] => {
 		try {
 			return JSON.parse(value ?? "null") as app_local_storage_state_State["page_editor_panel_layout"];
@@ -217,8 +225,10 @@ export const useAppLocalStorageState = ((/* iife */) => {
 
 	const initialState = {
 		pages_last_open: storage.getItem(app_local_storage_state_KEYS.pages_last_open),
-		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
 		pages_last_tab: parsePagesLastTab(storage.getItem(app_local_storage_state_KEYS.pages_last_tab)),
+		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
+		main_app_sidebar_open: parseSidebarOpen(storage.getItem(app_local_storage_state_KEYS.main_app_sidebar_open)),
+		pages_sidebar_open: parseSidebarOpen(storage.getItem(app_local_storage_state_KEYS.pages_sidebar_open)),
 		presence_enabled: parsePresenceEnabled(storage.getItem(app_local_storage_state_KEYS.presence_enabled)),
 		page_editor_panel_layout: parseResizablePanelSize(
 			storage.getItem(app_local_storage_state_KEYS.page_editor_panel_layout),
@@ -261,12 +271,20 @@ export const useAppLocalStorageState = ((/* iife */) => {
 			writeValue(app_local_storage_state_KEYS.pages_last_open, state.pages_last_open);
 		}
 
+		if (state.pages_last_tab !== prev.pages_last_tab) {
+			writeValue(app_local_storage_state_KEYS.pages_last_tab, state.pages_last_tab);
+		}
+
 		if (state.ai_chat_last_open !== prev.ai_chat_last_open) {
 			writeValue(app_local_storage_state_KEYS.ai_chat_last_open, state.ai_chat_last_open);
 		}
 
-		if (state.pages_last_tab !== prev.pages_last_tab) {
-			writeValue(app_local_storage_state_KEYS.pages_last_tab, state.pages_last_tab);
+		if (state.main_app_sidebar_open !== prev.main_app_sidebar_open) {
+			writeValue(app_local_storage_state_KEYS.main_app_sidebar_open, state.main_app_sidebar_open ? "1" : "0");
+		}
+
+		if (state.pages_sidebar_open !== prev.pages_sidebar_open) {
+			writeValue(app_local_storage_state_KEYS.pages_sidebar_open, state.pages_sidebar_open ? "1" : "0");
 		}
 
 		if (state.presence_enabled !== prev.presence_enabled) {
@@ -306,6 +324,16 @@ export const useAppLocalStorageState = ((/* iife */) => {
 					setStateWithoutTriggeringWriteback({ pages_last_open: nextValue });
 					return;
 				}
+				case app_local_storage_state_KEYS.pages_last_tab: {
+					const nextValue = parsePagesLastTab(event.newValue);
+					const current = store.getState().pages_last_tab;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ pages_last_tab: nextValue });
+					return;
+				}
 				case app_local_storage_state_KEYS.ai_chat_last_open: {
 					const nextValue = event.newValue ?? null;
 					const current = store.getState().ai_chat_last_open;
@@ -316,14 +344,24 @@ export const useAppLocalStorageState = ((/* iife */) => {
 					setStateWithoutTriggeringWriteback({ ai_chat_last_open: nextValue });
 					return;
 				}
-				case app_local_storage_state_KEYS.pages_last_tab: {
-					const nextValue = parsePagesLastTab(event.newValue);
-					const current = store.getState().pages_last_tab;
+				case app_local_storage_state_KEYS.main_app_sidebar_open: {
+					const nextValue = parseSidebarOpen(event.newValue);
+					const current = store.getState().main_app_sidebar_open;
 					if (current === nextValue) {
 						return;
 					}
 
-					setStateWithoutTriggeringWriteback({ pages_last_tab: nextValue });
+					setStateWithoutTriggeringWriteback({ main_app_sidebar_open: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.pages_sidebar_open: {
+					const nextValue = parseSidebarOpen(event.newValue);
+					const current = store.getState().pages_sidebar_open;
+					if (current === nextValue) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ pages_sidebar_open: nextValue });
 					return;
 				}
 				case app_local_storage_state_KEYS.presence_enabled: {

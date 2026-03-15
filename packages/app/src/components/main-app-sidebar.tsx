@@ -9,6 +9,7 @@ import { dark } from "@clerk/themes";
 
 import { cn } from "@/lib/utils.ts";
 import { useIsMobile } from "@/hooks/use-mobile.ts";
+import { useAppLocalStorageState } from "@/lib/storage.ts";
 import { useThemeContext } from "@/components/theme-provider.tsx";
 import { Logo } from "@/components/logo.tsx";
 import { OnlinePresenceIndicator } from "@/components/online-presence-indicator.tsx";
@@ -29,41 +30,7 @@ import {
 	type MySidebar_Props,
 } from "@/components/my-sidebar.tsx";
 
-const main_app_sidebar_COOKIE_NAME = "sidebar_state";
-const main_app_sidebar_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 const main_app_sidebar_KEYBOARD_SHORTCUT = "b";
-const main_app_sidebar_DEFAULT_OPEN = true;
-
-const main_app_sidebar_read_cookie_value = (cookieName: string) => {
-	if (typeof document === "undefined") {
-		return null;
-	}
-
-	const cookieValue = document.cookie
-		.split(";")
-		.map((cookie) => cookie.trim())
-		.find((cookie) => cookie.startsWith(`${cookieName}=`));
-
-	if (!cookieValue) {
-		return null;
-	}
-
-	return cookieValue.slice(cookieName.length + 1);
-};
-
-const main_app_sidebar_get_initial_open = () => {
-	const cookieValue = main_app_sidebar_read_cookie_value(main_app_sidebar_COOKIE_NAME);
-
-	if (cookieValue === "true") {
-		return true;
-	}
-
-	if (cookieValue === "false") {
-		return false;
-	}
-
-	return main_app_sidebar_DEFAULT_OPEN;
-};
 
 // #region context
 type MainAppSidebar_Context = {
@@ -363,23 +330,15 @@ export const MainAppSidebar = ((/* iife */) => {
 		const { ref, id, className, children, ...rest } = props;
 
 		const isMobile = useIsMobile();
-		const [isOpen, setIsOpen] = React.useState(() => {
-			return main_app_sidebar_get_initial_open();
-		});
+		const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
 
 		const sidebarState: MySidebar_Props["state"] = isOpen ? "expanded" : "closed";
 
 		const toggleSidebar = () => {
-			setIsOpen((value) => !value);
+			useAppLocalStorageState.setState((state) => ({
+				main_app_sidebar_open: !state.main_app_sidebar_open,
+			}));
 		};
-
-		React.useEffect(() => {
-			if (typeof document === "undefined") {
-				return;
-			}
-
-			document.cookie = `${main_app_sidebar_COOKIE_NAME}=${isOpen}; path=/; max-age=${main_app_sidebar_COOKIE_MAX_AGE_SECONDS}`;
-		}, [isOpen]);
 
 		React.useEffect(() => {
 			const handleKeyDown = (event: KeyboardEvent) => {
