@@ -542,6 +542,13 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 		return editorContentState.stagedMarkdown !== editorContentState.unstagedMarkdown;
 	});
 
+	/**
+	 * We can allow updated to the remote `pendingEdit` to write in the editor
+	 * only if there's no other local edit being sent to the server, otherwise
+	 * we might end-up in situations where the user edits are reverted by the sync.
+	 */
+	const pendingEditSyncStatusRef = useRef<"idle" | "debouncing" | "mutation_in_flight">("idle");
+
 	const isSaveDisabled = isSaving || isSyncing || !isDirty;
 	const isAcceptAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
 	const isAcceptAllAndSaveDisabled = isSaving || isSyncing || !hasUnstagedChanges;
@@ -763,23 +770,36 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			return false;
 		}
 
-		const upsertResult = await convex.mutation(api.pages_pending_edits.upsert_pages_pending_edit_updates, {
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			pageId,
-			pendingEditId,
-			stagedMarkdown: editorModelsRef.current.original.getValue(),
-			unstagedMarkdown: editorModelsRef.current.modified.getValue(),
-		});
-		if (upsertResult._nay) {
-			console.error("[PageEditorDiff.upsertPendingEditNow] Failed to sync pending edits", {
-				nay: upsertResult._nay,
-				pageId,
-			});
-			return false;
-		}
+		const stagedMarkdown = editorModelsRef.current.original.getValue();
+		const unstagedMarkdown = editorModelsRef.current.modified.getValue();
 
-		return true;
+		pendingEditSyncStatusRef.current = "mutation_in_flight";
+
+		return convex
+			.mutation(api.pages_pending_edits.upsert_pages_pending_edit_updates, {
+				workspaceId: ai_chat_HARDCODED_ORG_ID,
+				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				pageId,
+				pendingEditId,
+				stagedMarkdown,
+				unstagedMarkdown,
+			})
+			.then((upsertResult) => {
+				if (upsertResult._nay) {
+					console.error("[PageEditorDiff.upsertPendingEditNow] Failed to sync pending edits", {
+						nay: upsertResult._nay,
+						pageId,
+					});
+					return false;
+				}
+
+				return true;
+			})
+			.finally(() => {
+				if (pendingEditSyncStatusRef.current === "mutation_in_flight") {
+					pendingEditSyncStatusRef.current = "idle";
+				}
+			});
 	};
 
 	const scheduleUpsertPendingEdit = () => {
@@ -787,6 +807,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 			window.clearTimeout(pendingEditSyncTimeoutRef.current);
 		}
 
+		pendingEditSyncStatusRef.current = "debouncing";
 		pendingEditSyncTimeoutRef.current = setTimeout(() => {
 			pendingEditSyncTimeoutRef.current = null;
 			pendingEditSyncRunner
@@ -1202,7 +1223,7 @@ function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
 	// Needs to be a layout effect to ensure the `isDirty` state calculated
 	// when the editor model value changes is updated before paint.
 	useLayoutEffect(() => {
-		if (!editorModels) {
+		if (!editorModels || pendingEditSyncStatusRef.current !== "idle") {
 			return;
 		}
 
