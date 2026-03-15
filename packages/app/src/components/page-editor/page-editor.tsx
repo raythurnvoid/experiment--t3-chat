@@ -18,8 +18,9 @@ import {
 	pages_PresenceStore,
 	type pages_EditorView,
 } from "@/lib/pages.ts";
-import { ChevronLeft, ChevronRight, Home, Menu, PanelLeft, Sparkles } from "lucide-react";
-import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
+import { ChevronLeft, ChevronRight, Home, Sparkles } from "lucide-react";
+import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
+import { PagesSidebarToggle } from "@/components/pages-sidebar-toggle.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
 import { MyButton } from "../my-button.tsx";
 import { MyIcon } from "../my-icon.tsx";
@@ -82,7 +83,7 @@ function get_breadcrumb_path(
 type PageEditorHeader_ClassNames =
 	| "PageEditorHeader"
 	| "PageEditorHeader-start"
-	| "PageEditorHeader-start-controls"
+	| "PageEditorHeader-sidebars-actions"
 	| "PageEditorHeader-breadcrumb"
 	| "PageEditorHeader-breadcrumb-home"
 	| "PageEditorHeader-breadcrumb-home-underline-hack"
@@ -112,7 +113,6 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
 	const pagesSidebarOpen = useAppLocalStorageState((state) => state.pages_sidebar_open);
-	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as PageEditorHeader_Props["editorMode"]);
@@ -131,17 +131,9 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 		<div className={cn("PageEditorHeader" satisfies PageEditorHeader_ClassNames)}>
 			<div className={cn("PageEditorHeader-start" satisfies PageEditorHeader_ClassNames)}>
 				{!pagesSidebarOpen && (
-					<div className={cn("PageEditorHeader-start-controls" satisfies PageEditorHeader_ClassNames)}>
-						<MyIconButton variant="ghost-highlightable" tooltip="Open app sidebar" onClick={toggleSidebar}>
-							<Menu />
-						</MyIconButton>
-						<MyIconButton
-							variant="ghost-highlightable"
-							tooltip="Open pages sidebar"
-							onClick={() => useAppLocalStorageState.setState({ pages_sidebar_open: true })}
-						>
-							<PanelLeft />
-						</MyIconButton>
+					<div className={cn("PageEditorHeader-sidebars-actions" satisfies PageEditorHeader_ClassNames)}>
+						<MainAppSidebarToggle variant="ghost-highlightable" tooltip="Open app sidebar" />
+						<PagesSidebarToggle variant="ghost-highlightable" tooltip="Open pages sidebar" />
 					</div>
 				)}
 

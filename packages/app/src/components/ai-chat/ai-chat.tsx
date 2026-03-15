@@ -3,12 +3,12 @@ import "./ai-chat.css";
 import type { ComponentPropsWithRef, Ref } from "react";
 import { useState, useEffect, useRef, useDeferredValue } from "react";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
-import { ArrowDown, Menu, PanelLeft } from "lucide-react";
+import { ArrowDown, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
+import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
-import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
@@ -792,7 +792,6 @@ export function AiChat(props: AiChat_Props) {
 	const controller = useAiChatController();
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
-	const { toggleSidebar } = MainAppSidebar.useSidebar();
 
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
@@ -814,14 +813,11 @@ export function AiChat(props: AiChat_Props) {
 				<div className={"AiChat-thread-panel" satisfies AiChat_ClassNames}>
 					{!aiChatSidebarOpen && (
 						<div className={"AiChat-thread-controls" satisfies AiChat_ClassNames}>
-							<MyIconButton
+							<MainAppSidebarToggle
 								variant="outline"
 								tooltip="Open app sidebar"
-								onClick={toggleSidebar}
 								className={"AiChat-thread-control-button" satisfies AiChat_ClassNames}
-							>
-								<Menu className={"AiChat-thread-control-icon" satisfies AiChat_ClassNames} />
-							</MyIconButton>
+							/>
 
 							<MyIconButton
 								variant="outline"

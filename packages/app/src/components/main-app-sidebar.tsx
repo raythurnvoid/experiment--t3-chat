@@ -2,20 +2,18 @@ import "./main-app-sidebar.css";
 
 import * as React from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
-import { FileText, Home, MessageSquare, Monitor, Moon, PanelLeft, Sun } from "lucide-react";
+import { FileText, Home, MessageSquare, Monitor, Moon, Sun } from "lucide-react";
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link } from "@tanstack/react-router";
 import { dark } from "@clerk/themes";
 
 import { cn } from "@/lib/utils.ts";
-import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { useAppLocalStorageState } from "@/lib/storage.ts";
 import { useThemeContext } from "@/components/theme-provider.tsx";
 import { Logo } from "@/components/logo.tsx";
 import { OnlinePresenceIndicator } from "@/components/online-presence-indicator.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MySidebar,
 	MySidebarContent,
@@ -31,15 +29,6 @@ import {
 } from "@/components/my-sidebar.tsx";
 
 const main_app_sidebar_KEYBOARD_SHORTCUT = "b";
-
-// #region context
-type MainAppSidebar_Context = {
-	toggleSidebar: () => void;
-	isMobile: boolean;
-};
-
-const MainSidebarContext = React.createContext<MainAppSidebar_Context | null>(null);
-// #endregion context
 
 // #region theme toggle item
 type MainAppSidebarThemeToggleMenuItem_ClassNames =
@@ -302,8 +291,6 @@ type MainAppSidebar_ClassNames =
 	| "MainAppSidebar-header"
 	| "MainAppSidebar-header-row"
 	| "MainAppSidebar-header-spacer"
-	| "MainAppSidebar-trigger"
-	| "MainAppSidebar-trigger-icon"
 	| "MainAppSidebar-presence"
 	| "MainAppSidebar-logo-section"
 	| "MainAppSidebar-logo-link"
@@ -325,149 +312,119 @@ type MainAppSidebar_Props = ComponentPropsWithRef<"div"> & {
 	children?: React.ReactNode;
 };
 
-export const MainAppSidebar = ((/* iife */) => {
-	function MainAppSidebar(props: MainAppSidebar_Props) {
-		const { ref, id, className, children, ...rest } = props;
+export function MainAppSidebar(props: MainAppSidebar_Props) {
+	const { ref, id, className, children, ...rest } = props;
 
-		const isMobile = useIsMobile();
-		const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
+	const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
 
-		const sidebarState: MySidebar_Props["state"] = isOpen ? "expanded" : "closed";
+	const sidebarState: MySidebar_Props["state"] = isOpen ? "expanded" : "closed";
 
-		const toggleSidebar = () => {
-			useAppLocalStorageState.setState((state) => ({
-				main_app_sidebar_open: !state.main_app_sidebar_open,
-			}));
+	const toggleSidebar = () => {
+		useAppLocalStorageState.setState((state) => ({
+			main_app_sidebar_open: !state.main_app_sidebar_open,
+		}));
+	};
+
+	React.useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.key.toLowerCase() !== main_app_sidebar_KEYBOARD_SHORTCUT) {
+				return;
+			}
+
+			if (!event.metaKey && !event.ctrlKey) {
+				return;
+			}
+
+			event.preventDefault();
+			toggleSidebar();
 		};
 
-		React.useEffect(() => {
-			const handleKeyDown = (event: KeyboardEvent) => {
-				if (event.key.toLowerCase() !== main_app_sidebar_KEYBOARD_SHORTCUT) {
-					return;
-				}
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, [toggleSidebar]);
 
-				if (!event.metaKey && !event.ctrlKey) {
-					return;
-				}
-
-				event.preventDefault();
-				toggleSidebar();
-			};
-
-			window.addEventListener("keydown", handleKeyDown);
-			return () => window.removeEventListener("keydown", handleKeyDown);
-		}, [toggleSidebar]);
-
-		return (
-			<MainSidebarContext.Provider value={{ toggleSidebar, isMobile }}>
-				<div
-					ref={ref}
-					id={id}
-					className={cn("MainAppSidebar" satisfies MainAppSidebar_ClassNames, className)}
-					{...rest}
-				>
-					<MySidebar
-						state={sidebarState}
-						aria-hidden={sidebarState === "closed" ? true : undefined}
-						inert={sidebarState === "closed" ? true : undefined}
-						className={"MainAppSidebar-sidebar" satisfies MainAppSidebar_ClassNames}
-					>
-						<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
-							<div className={"MainAppSidebar-header-row" satisfies MainAppSidebar_ClassNames}>
-								<MyIconButton
-									variant="ghost"
-									tooltip="Toggle sidebar"
-									onClick={toggleSidebar}
-									className={"MainAppSidebar-trigger" satisfies MainAppSidebar_ClassNames}
-								>
-									<MyIconButtonIcon className={"MainAppSidebar-trigger-icon" satisfies MainAppSidebar_ClassNames}>
-										<PanelLeft />
-									</MyIconButtonIcon>
-								</MyIconButton>
-								<div className={"MainAppSidebar-header-spacer" satisfies MainAppSidebar_ClassNames} />
-								<div className={"MainAppSidebar-presence" satisfies MainAppSidebar_ClassNames}>
-									<OnlinePresenceIndicator />
-								</div>
-							</div>
-						</MySidebarHeader>
-
-						<div className={"MainAppSidebar-logo-section" satisfies MainAppSidebar_ClassNames}>
-							<Link to="/" className={"MainAppSidebar-logo-link" satisfies MainAppSidebar_ClassNames}>
-								<Logo className={"MainAppSidebar-logo" satisfies MainAppSidebar_ClassNames} />
-							</Link>
+	return (
+		<div ref={ref} id={id} className={cn("MainAppSidebar" satisfies MainAppSidebar_ClassNames, className)} {...rest}>
+			<MySidebar
+				state={sidebarState}
+				aria-hidden={sidebarState === "closed" ? true : undefined}
+				inert={sidebarState === "closed" ? true : undefined}
+				className={"MainAppSidebar-sidebar" satisfies MainAppSidebar_ClassNames}
+			>
+				<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
+					<div className={"MainAppSidebar-header-row" satisfies MainAppSidebar_ClassNames}>
+						<div className={"MainAppSidebar-header-spacer" satisfies MainAppSidebar_ClassNames} />
+						<div className={"MainAppSidebar-presence" satisfies MainAppSidebar_ClassNames}>
+							<OnlinePresenceIndicator />
 						</div>
+					</div>
+				</MySidebarHeader>
 
-						<MySidebarContent className={"MainAppSidebar-content" satisfies MainAppSidebar_ClassNames}>
-							<MySidebarGroup className={"MainAppSidebar-group" satisfies MainAppSidebar_ClassNames}>
-								<MySidebarGroupContent className={"MainAppSidebar-group-content" satisfies MainAppSidebar_ClassNames}>
-									<MySidebarMenu className={"MainAppSidebar-menu" satisfies MainAppSidebar_ClassNames}>
-										<MySidebarMenuItem>
-											<MySidebarMenuButton
-												asChild
-												className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
-											>
-												<Link to="/" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
-													<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
-														<Home />
-													</MyIcon>
-													<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
-												</Link>
-											</MySidebarMenuButton>
-										</MySidebarMenuItem>
-
-										<MySidebarMenuItem>
-											<MySidebarMenuButton
-												asChild
-												className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
-											>
-												<Link to="/chat" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
-													<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
-														<MessageSquare />
-													</MyIcon>
-													<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
-												</Link>
-											</MySidebarMenuButton>
-										</MySidebarMenuItem>
-
-										<MySidebarMenuItem>
-											<MySidebarMenuButton
-												asChild
-												className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
-											>
-												<Link to="/pages" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
-													<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
-														<FileText />
-													</MyIcon>
-													<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
-												</Link>
-											</MySidebarMenuButton>
-										</MySidebarMenuItem>
-									</MySidebarMenu>
-								</MySidebarGroupContent>
-							</MySidebarGroup>
-						</MySidebarContent>
-
-						<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
-							<MySidebarMenu className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
-								<ThemeToggleMenuItem />
-							</MySidebarMenu>
-							<ProfileSection />
-						</MySidebarFooter>
-					</MySidebar>
-					<MainAppSidebarInset>{children}</MainAppSidebarInset>
+				<div className={"MainAppSidebar-logo-section" satisfies MainAppSidebar_ClassNames}>
+					<Link to="/" className={"MainAppSidebar-logo-link" satisfies MainAppSidebar_ClassNames}>
+						<Logo className={"MainAppSidebar-logo" satisfies MainAppSidebar_ClassNames} />
+					</Link>
 				</div>
-			</MainSidebarContext.Provider>
-		);
-	}
 
-	return Object.assign(MainAppSidebar, {
-		useSidebar() {
-			const context = React.use(MainSidebarContext);
-			if (!context) {
-				throw new Error(`${MainAppSidebar.name}.useSidebar must be used within ${MainAppSidebar.name}}`);
-			}
-			return context;
-		},
-	});
-})();
+				<MySidebarContent className={"MainAppSidebar-content" satisfies MainAppSidebar_ClassNames}>
+					<MySidebarGroup className={"MainAppSidebar-group" satisfies MainAppSidebar_ClassNames}>
+						<MySidebarGroupContent className={"MainAppSidebar-group-content" satisfies MainAppSidebar_ClassNames}>
+							<MySidebarMenu className={"MainAppSidebar-menu" satisfies MainAppSidebar_ClassNames}>
+								<MySidebarMenuItem>
+									<MySidebarMenuButton
+										asChild
+										className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
+									>
+										<Link to="/" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
+											<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
+												<Home />
+											</MyIcon>
+											<MainAppSidebarMenuButtonLabel>Home</MainAppSidebarMenuButtonLabel>
+										</Link>
+									</MySidebarMenuButton>
+								</MySidebarMenuItem>
+
+								<MySidebarMenuItem>
+									<MySidebarMenuButton
+										asChild
+										className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
+									>
+										<Link to="/chat" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
+											<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
+												<MessageSquare />
+											</MyIcon>
+											<MainAppSidebarMenuButtonLabel>Chat</MainAppSidebarMenuButtonLabel>
+										</Link>
+									</MySidebarMenuButton>
+								</MySidebarMenuItem>
+
+								<MySidebarMenuItem>
+									<MySidebarMenuButton
+										asChild
+										className={"MainAppSidebar-nav-button" satisfies MainAppSidebar_ClassNames}
+									>
+										<Link to="/pages" className={"MainAppSidebar-nav-link" satisfies MainAppSidebar_ClassNames}>
+											<MyIcon className={"MainAppSidebar-nav-icon" satisfies MainAppSidebar_ClassNames}>
+												<FileText />
+											</MyIcon>
+											<MainAppSidebarMenuButtonLabel>Docs</MainAppSidebarMenuButtonLabel>
+										</Link>
+									</MySidebarMenuButton>
+								</MySidebarMenuItem>
+							</MySidebarMenu>
+						</MySidebarGroupContent>
+					</MySidebarGroup>
+				</MySidebarContent>
+
+				<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
+					<MySidebarMenu className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
+						<ThemeToggleMenuItem />
+					</MySidebarMenu>
+					<ProfileSection />
+				</MySidebarFooter>
+			</MySidebar>
+			<MainAppSidebarInset>{children}</MainAppSidebarInset>
+		</div>
+	);
+}
 // #endregion root

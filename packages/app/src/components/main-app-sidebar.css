@@ -35,17 +35,6 @@
 		flex: 1;
 	}
 
-	.MainAppSidebar-trigger {
-		width: 32px;
-		height: 32px;
-		padding: 0;
-	}
-
-	.MainAppSidebar-trigger-icon {
-		width: 16px;
-		height: 16px;
-	}
-
 	.MainAppSidebar-presence {
 		display: flex;
 		align-items: center;

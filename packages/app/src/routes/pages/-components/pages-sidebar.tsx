@@ -17,7 +17,6 @@ import {
 	EllipsisVertical,
 	Edit2,
 	FileText,
-	Menu,
 	Plus,
 	Search,
 	X,
@@ -41,7 +40,7 @@ import {
 import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
-import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
+import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
@@ -1097,7 +1096,6 @@ type PagesSidebarHeader_Props = {
 	canCollapseAll: boolean;
 	treeItemsList: FunctionReturnType<typeof app_convex_api.ai_docs_temp.get_tree_items_list> | undefined;
 	showArchived: boolean;
-	onToggleSidebar: () => void;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
 	onExpandTopPagesClick: () => void;
@@ -1117,7 +1115,6 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 		canCollapseAll,
 		treeItemsList,
 		showArchived,
-		onToggleSidebar,
 		onClose,
 		onSearchQueryChange,
 		onExpandTopPagesClick,
@@ -1134,14 +1131,11 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 		<div className={"PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames}>
 			<div className={cn("PagesSidebarHeader-top-section" satisfies PagesSidebarHeader_ClassNames)}>
 				<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
-					<MyIconButton
+					<MainAppSidebarToggle
 						className={"PagesSidebarHeader-hamburger-button" satisfies PagesSidebarHeader_ClassNames}
 						variant="ghost-highlightable"
 						tooltip="Main Menu"
-						onClick={onToggleSidebar}
-					>
-						<Menu />
-					</MyIconButton>
+					/>
 
 					<MyTooltip>
 						<MyTooltipTrigger>
@@ -1268,7 +1262,6 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	const navigate = useNavigate();
 	const convex = useConvex();
-	const mainAppSidebar = MainAppSidebar.useSidebar();
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
 
 	const [searchQuery, setSearchQuery] = useState("");
@@ -1983,7 +1976,6 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				canCollapseAll={canCollapseAll}
 				treeItemsList={treeItemsList}
 				showArchived={showArchived}
-				onToggleSidebar={mainAppSidebar.toggleSidebar}
 				onClose={onClose}
 				onSearchQueryChange={setSearchQuery}
 				onExpandTopPagesClick={handleExpandTopPagesClick}
