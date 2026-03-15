@@ -555,6 +555,7 @@ function PageEditorRender(props: PageEditorRender_Props) {
 	if (editorMode === "diff_editor") {
 		return (
 			<PageEditorDiff
+				key={pageId}
 				pageId={pageId}
 				pendingEditId={pendingEditId}
 				presenceStore={presenceStore}

@@ -24,6 +24,7 @@ import { CheckCheck, RefreshCcw, Save, SaveAll, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { useStateRef } from "@/hooks/utils-hooks.ts";
+import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import {
 	pages_monaco_create_editor_model,
 	pages_headless_tiptap_editor_create,
@@ -1354,7 +1355,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 	const { pageId, pendingEditId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot } = props;
 
 	const convex = useConvex();
-	const pendingEdit = useQuery(api.pages_pending_edits.get_pages_pending_edit, {
+	const pendingEdit = useStableQuery(api.pages_pending_edits.get_pages_pending_edit, {
 		workspaceId: ai_chat_HARDCODED_ORG_ID,
 		projectId: ai_chat_HARDCODED_PROJECT_ID,
 		pageId,
