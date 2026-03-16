@@ -66,15 +66,10 @@
 
 	/* #region presence section */
 	.MainAppSidebarPresenceSection {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.MainAppSidebarPresenceSection-row {
 		display: grid;
 		grid-template-columns: 1fr auto;
 		align-items: center;
+		gap: 8px;
 	}
 
 	.MainAppSidebarPresenceSection-primary-trigger {
@@ -108,27 +103,27 @@
 		align-items: center;
 	}
 
-	.MainAppSidebarPresenceSection-tooltip-list {
+	.MainAppSidebarPresenceSection-hovercard {
+		max-width: 600px;
+	}
+	/* #endregion presence section */
+
+	/* #region presence users */
+	.MainAppSidebarPresenceUsers-list {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 
-		max-height: 240px;
-		min-width: 180px;
-		width: 200px;
-
-		overflow: auto;
-
-		padding: 8px;
+		overflow: hidden auto;
 	}
 
-	.MainAppSidebarPresenceSection-tooltip-item {
+	.MainAppSidebarPresenceUsers-item {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 	}
 
-	.MainAppSidebarPresenceSection-tooltip-item span {
+	.MainAppSidebarPresenceUsers-item-label {
 		font-size: 0.875rem;
 		line-height: 1.25rem;
 
@@ -137,7 +132,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* #endregion presence section */
+	/* #endregion presence users */
 
 	.MainAppSidebar-logo-section {
 		padding: 0 8px 8px;
@@ -322,14 +317,4 @@
 		color: var(--sidebar-foreground);
 	}
 	/* #endregion user profile button */
-
-	/* #region inset */
-	.MainAppSidebarInset {
-		display: flex;
-		flex-direction: column;
-		flex: 1;
-
-		min-height: 0;
-	}
-	/* #endregion inset */
 }

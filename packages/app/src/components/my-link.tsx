@@ -1,13 +1,14 @@
 import { memo } from "react";
 import type * as Ariakit from "@ariakit/react";
 import { Link, type LinkProps } from "@tanstack/react-router";
+import type { ExtractStrict } from "type-fest";
 
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 
 import { MyLinkSurface, type MyLinkSurface_Props } from "./my-link-surface.tsx";
 
 export type MyLink_Props = LinkProps &
-	Omit<MyLinkSurface_Props, "children" | "ref"> & {
+	Omit<MyLinkSurface_Props, ExtractStrict<keyof MyLinkSurface_Props, "children" | "ref">> & {
 		tooltip?: string;
 		tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
 		tooltipSide?: "top" | "bottom" | "left" | "right";

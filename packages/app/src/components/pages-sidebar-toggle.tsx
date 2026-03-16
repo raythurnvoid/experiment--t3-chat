@@ -1,10 +1,11 @@
 import { memo, type Ref } from "react";
 import { PanelLeft } from "lucide-react";
+import type { ExtractStrict } from "type-fest";
 
 import { MyIconButton, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { useAppLocalStorageState } from "@/lib/storage.ts";
 
-export type PagesSidebarToggle_Props = Omit<MyIconButton_Props, "children" | "onClick"> & {
+export type PagesSidebarToggle_Props = Omit<MyIconButton_Props, ExtractStrict<keyof MyIconButton_Props, "children" | "onClick">> & {
 	ref?: Ref<HTMLButtonElement>;
 	tooltip?: string;
 };

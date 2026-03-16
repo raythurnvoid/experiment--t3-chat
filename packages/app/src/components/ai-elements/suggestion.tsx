@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { ComponentProps } from "react";
+import type { ExtractStrict } from "type-fest";
 
 export type SuggestionsProps = ComponentProps<typeof ScrollArea>;
 
@@ -14,7 +15,10 @@ export const Suggestions = ({ className, children, ...props }: SuggestionsProps)
 	</ScrollArea>
 );
 
-export type SuggestionProps = Omit<ComponentProps<typeof Button>, "onClick"> & {
+export type SuggestionProps = Omit<
+	ComponentProps<typeof Button>,
+	ExtractStrict<keyof ComponentProps<typeof Button>, "onClick">
+> & {
 	suggestion: string;
 	onClick?: (suggestion: string) => void;
 };

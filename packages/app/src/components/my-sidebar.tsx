@@ -6,6 +6,7 @@ import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
 
 import { Separator } from "@/components/ui/separator.tsx";
 import { MyPrimaryAction, MyPrimaryActionLink } from "@/components/my-action.tsx";
+import { MyHovercardAction } from "@/components/my-hovercard.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -186,6 +187,26 @@ export const MySidebarPrimaryAction = memo(function MySidebarPrimaryAction(props
 	);
 });
 // #endregion primary action
+
+// #region hovercard action
+type MySidebarHovercardAction_ClassNames = "MySidebarHovercardAction";
+
+export type MySidebarHovercardAction_Props = ComponentPropsWithRef<"div">;
+
+export const MySidebarHovercardAction = memo(function MySidebarHovercardAction(props: MySidebarHovercardAction_Props) {
+	const { ref: _ref, id, className, children, ...rest } = props;
+
+	return (
+		<MyHovercardAction
+			id={id}
+			className={cn("MySidebarHovercardAction" satisfies MySidebarHovercardAction_ClassNames, className)}
+			{...(rest as any)}
+		>
+			{children}
+		</MyHovercardAction>
+	);
+});
+// #endregion hovercard action
 
 // #region scrollable area
 type MySidebarScrollableArea_ClassNames = "MySidebarScrollableArea";

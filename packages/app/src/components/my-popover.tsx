@@ -40,7 +40,7 @@ export type MyPopoverContent_ClassNames = "MyPopoverContent";
 export type MyPopoverContent_Props = {
 	children?: React.ReactNode;
 	className?: string;
-} & Omit<Ariakit.PopoverProps, "children" | "className">;
+} & Omit<Ariakit.PopoverProps, ExtractStrict<keyof Ariakit.PopoverProps, "children" | "className">>;
 
 export const MyPopoverContent = memo(function MyPopoverContent(props: MyPopoverContent_Props) {
 	const { className, portal = true, portalElement, gutter = 4, children, ...rest } = props;
@@ -65,7 +65,7 @@ export type MyPopoverClose_ClassNames = "MyPopoverClose";
 export type MyPopoverClose_Props = {
 	children?: React.ReactNode;
 	className?: string;
-} & Omit<Ariakit.PopoverDismissProps, "children" | "className">;
+} & Omit<Ariakit.PopoverDismissProps, ExtractStrict<keyof Ariakit.PopoverDismissProps, "children" | "className">>;
 
 export const MyPopoverClose = memo(function MyPopoverClose(props: MyPopoverClose_Props) {
 	const { className, children, ...rest } = props;

@@ -1,10 +1,14 @@
 import { useEffect, useRef } from "react";
+import type { ExtractStrict } from "type-fest";
 
 import { cn } from "@/lib/utils.ts";
 
 type InfiniteScrollSentinel_ClassNames = "InfiniteScrollSentinel";
 
-export type InfiniteScrollSentinel_Props = Omit<React.HTMLAttributes<HTMLDivElement>, "onChange"> & {
+export type InfiniteScrollSentinel_Props = Omit<
+	React.HTMLAttributes<HTMLDivElement>,
+	ExtractStrict<keyof React.HTMLAttributes<HTMLDivElement>, "onChange">
+> & {
 	root?: Element | null;
 	rootMargin?: `${number}px ${number}px ${number}px ${number}px` | `${number}px ${number}px` | `${number}px`;
 	threshold?: number | number[];

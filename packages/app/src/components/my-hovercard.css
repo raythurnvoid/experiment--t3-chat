@@ -1,0 +1,74 @@
+@layer common_components {
+	/* #region action */
+	.MyHovercardAction {
+		display: contents;
+	}
+
+	.MyHovercardAction-anchor {
+		cursor: default;
+
+		border: 2px solid transparent;
+		outline-offset: -2px;
+		border-radius: inherit;
+
+		transition:
+			background 0.15s ease,
+			color 0.15s ease;
+	}
+
+	.MyHovercardAction-anchor:focus-visible {
+		outline-color: var(--color-fg-12);
+	}
+
+	.MyHovercardAction-anchor:hover,
+	.MyHovercardAction-anchor:focus-visible {
+		background: var(--color-base-1-06);
+		color: var(--color-fg-11);
+	}
+
+	/* When the disclosure has focus, show focus styles on the anchor */
+	.MyHovercardAction:focus-within .MyHovercardAction-anchor {
+		outline-color: var(--color-fg-12);
+		background: var(--color-base-1-06);
+		color: var(--color-fg-11);
+	}
+	/* #endregion action */
+
+	/* #region content */
+	.MyHoverCardContent {
+		position: relative;
+
+		min-width: 36px;
+		max-width: 360px;
+
+		border-radius: 6px;
+		border: 1px solid var(--color-base-1-10);
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-11);
+
+		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+
+		padding: 6px 8px;
+
+		font-size: 0.75rem;
+		line-height: 1.25;
+
+		contain: content;
+		z-index: 50;
+	}
+	/* #endregion content */
+
+	/* #region arrow */
+	.MyHoverCardArrow {
+		width: 10px;
+		height: 10px;
+
+		border-radius: 2px;
+
+		background: var(--color-base-1-04);
+
+		transform: rotate(45deg);
+	}
+	/* #endregion arrow */
+}

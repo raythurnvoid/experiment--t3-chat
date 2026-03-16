@@ -20,11 +20,12 @@ import { Logo } from "@/components/logo.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import { MyHoverCard, MyHoverCardArrow, MyHoverCardContent } from "@/components/my-hovercard.tsx";
 import {
 	MySidebar,
 	MySidebarFooter,
 	MySidebarHeader,
+	MySidebarHovercardAction,
 	MySidebarInset,
 	MySidebarList,
 	MySidebarListItem,
@@ -296,7 +297,7 @@ function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
 }
 // #endregion inset
 
-// #region nav item
+// #region item
 type MainAppSidebarItem_ClassNames = "MainAppSidebarItem" | "MainAppSidebarItem-trigger" | "MainAppSidebarItem-title";
 
 type MainAppSidebarItem_Props = {
@@ -327,19 +328,60 @@ const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSideba
 		</MySidebarListItem>
 	);
 });
-// #endregion nav item
+// #endregion item
+
+// #region presence users
+type MainAppSidebarPresenceUsers_ClassNames =
+	| "MainAppSidebarPresenceUsers-list"
+	| "MainAppSidebarPresenceUsers-item"
+	| "MainAppSidebarPresenceUsers-item-label";
+
+type MainAppSidebarPresenceUsers_User = {
+	userId: string;
+	anagraphic: { avatarUrl?: string; displayName: string };
+};
+
+type MainAppSidebarPresenceUsers_Props = {
+	users: MainAppSidebarPresenceUsers_User[];
+};
+
+const MainAppSidebarPresenceUsers = memo(function MainAppSidebarPresenceUsers(
+	props: MainAppSidebarPresenceUsers_Props,
+) {
+	const { users } = props;
+
+	return (
+		<div className={cn("MainAppSidebarPresenceUsers-list" satisfies MainAppSidebarPresenceUsers_ClassNames)}>
+			{users.map((user) => (
+				<div
+					key={user.userId}
+					className={cn("MainAppSidebarPresenceUsers-item" satisfies MainAppSidebarPresenceUsers_ClassNames)}
+				>
+					<MyAvatar size="24px">
+						<MyAvatarImage src={user.anagraphic.avatarUrl} alt={user.anagraphic.displayName} />
+						<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
+					</MyAvatar>
+					<span
+						className={cn("MainAppSidebarPresenceUsers-item-label" satisfies MainAppSidebarPresenceUsers_ClassNames)}
+					>
+						{user.anagraphic.displayName}
+					</span>
+				</div>
+			))}
+		</div>
+	);
+});
+// #endregion presence users
 
 // #region presence section
 type MainAppSidebarPresenceSection_ClassNames =
 	| "MainAppSidebarPresenceSection"
-	| "MainAppSidebarPresenceSection-row"
 	| "MainAppSidebarPresenceSection-primary-trigger"
 	| "MainAppSidebarPresenceSection-primary-trigger-content"
 	| "MainAppSidebarPresenceSection-online-label"
 	| "MainAppSidebarPresenceSection-actions"
 	| "MainAppSidebarPresenceSection-disable"
-	| "MainAppSidebarPresenceSection-tooltip-list"
-	| "MainAppSidebarPresenceSection-tooltip-item";
+	| "MainAppSidebarPresenceSection-hovercard";
 
 function MainAppSidebarPresenceSection() {
 	const authenticated = AppAuthProvider.useAuthenticated();
@@ -379,51 +421,48 @@ function MainAppSidebarPresenceSection() {
 	}
 
 	return (
-		<div className={"MainAppSidebarPresenceSection-row" satisfies MainAppSidebarPresenceSection_ClassNames}>
-			<MyTooltip timeout={0} placement="right-start">
-				<MyTooltipTrigger>
-					<MySidebarPrimaryAction
-						className={cn("MainAppSidebarPresenceSection-primary-trigger" satisfies MainAppSidebarPresenceSection_ClassNames)}
-					>
-						<div className={cn("MainAppSidebarPresenceSection-primary-trigger-content" satisfies MainAppSidebarPresenceSection_ClassNames)}>
-							<MySidebarListItemIcon>
-								<Users aria-hidden size={16} />
-							</MySidebarListItemIcon>
-							<MySidebarListItemTitle
-								className={cn("MainAppSidebarPresenceSection-online-label" satisfies MainAppSidebarPresenceSection_ClassNames)}
-							>
-								{onlineCount} Online
-							</MySidebarListItemTitle>
-						</div>
-					</MySidebarPrimaryAction>
-				</MyTooltipTrigger>
-				<MyTooltipContent gutter={4}>
-					<MyTooltipArrow />
-					<div className={cn("MainAppSidebarPresenceSection-tooltip-list" satisfies MainAppSidebarPresenceSection_ClassNames)}>
-						{onlineUsers.map((user) => (
-							<div
-								key={user.userId}
-								className={cn("MainAppSidebarPresenceSection-tooltip-item" satisfies MainAppSidebarPresenceSection_ClassNames)}
-							>
-								<MyAvatar size="24px">
-									<MyAvatarImage src={user.anagraphic.avatarUrl} alt={user.anagraphic.displayName} />
-									<MyAvatarFallback>{compute_fallback_user_name(user.userId)}</MyAvatarFallback>
-								</MyAvatar>
-								<span>{user.anagraphic.displayName}</span>
-							</div>
-						))}
-					</div>
-				</MyTooltipContent>
-			</MyTooltip>
-			<div className={cn("MainAppSidebarPresenceSection-actions" satisfies MainAppSidebarPresenceSection_ClassNames)}>
-				<MyButton
-					variant="ghost-highlightable"
-					className={cn("MainAppSidebarPresenceSection-disable" satisfies MainAppSidebarPresenceSection_ClassNames)}
-					onClick={handleDisable}
+		<div className={"MainAppSidebarPresenceSection" satisfies MainAppSidebarPresenceSection_ClassNames}>
+			<MyHoverCard showTimeout={0} placement="right-start">
+				<MySidebarHovercardAction
+					className={cn(
+						"MainAppSidebarPresenceSection-primary-trigger" satisfies MainAppSidebarPresenceSection_ClassNames,
+					)}
+					aria-label={`Show details about ${onlineCount} online users`}
 				>
-					Disable
-				</MyButton>
-			</div>
+					<div
+						className={cn(
+							"MainAppSidebarPresenceSection-primary-trigger-content" satisfies MainAppSidebarPresenceSection_ClassNames,
+						)}
+					>
+						<MySidebarListItemIcon>
+							<Users aria-hidden size={16} />
+						</MySidebarListItemIcon>
+						<MySidebarListItemTitle
+							className={cn(
+								"MainAppSidebarPresenceSection-online-label" satisfies MainAppSidebarPresenceSection_ClassNames,
+							)}
+						>
+							{onlineCount} Online
+						</MySidebarListItemTitle>
+					</div>
+				</MySidebarHovercardAction>
+				<MyHoverCardContent
+					gutter={4}
+					className={cn("MainAppSidebarPresenceSection-hovercard" satisfies MainAppSidebarPresenceSection_ClassNames)}
+				>
+					<MyHoverCardArrow />
+					<MainAppSidebarPresenceUsers users={onlineUsers} />
+				</MyHoverCardContent>
+				<div className={cn("MainAppSidebarPresenceSection-actions" satisfies MainAppSidebarPresenceSection_ClassNames)}>
+					<MyButton
+						variant="ghost-highlightable"
+						className={cn("MainAppSidebarPresenceSection-disable" satisfies MainAppSidebarPresenceSection_ClassNames)}
+						onClick={handleDisable}
+					>
+						Disable
+					</MyButton>
+				</div>
+			</MyHoverCard>
 		</div>
 	);
 }

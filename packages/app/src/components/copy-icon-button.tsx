@@ -1,5 +1,6 @@
 import type { Ref } from "react";
 import { Check, Copy } from "lucide-react";
+import type { ExtractStrict } from "type-fest";
 
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { useAutoRevertingState } from "@/hooks/utils-hooks.ts";
@@ -7,7 +8,10 @@ import { cn, copy_to_clipboard, type copy_to_clipboard_Result } from "@/lib/util
 
 export type CopyIconButton_ClassNames = "CopyIconButton" | "CopyIconButton-icon";
 
-export type CopyIconButton_Props = Omit<MyIconButton_Props, "children" | "tooltip" | "onClick" | "disabled" | "ref"> & {
+export type CopyIconButton_Props = Omit<
+	MyIconButton_Props,
+	ExtractStrict<keyof MyIconButton_Props, "children" | "tooltip" | "onClick" | "disabled" | "ref">
+> & {
 	ref?: Ref<HTMLButtonElement>;
 	text?: string | undefined;
 	tooltipCopy: string;

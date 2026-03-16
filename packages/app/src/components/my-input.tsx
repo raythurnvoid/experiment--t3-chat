@@ -1,6 +1,7 @@
 import "./my-input.css";
 import type { ComponentPropsWithRef } from "react";
 import { createContext, memo, use, useId } from "react";
+import type { ExtractStrict } from "type-fest";
 
 import { cn, type XCustomEventLike } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
@@ -25,7 +26,10 @@ const MyInputContext = createContext<MyInputContext | null>(null);
 // #region label
 type MyInputLabel_ClassNames = "MyInputLabel";
 
-export type MyInputLabel_Props = Omit<ComponentPropsWithRef<"label">, "id">;
+export type MyInputLabel_Props = Omit<
+	ComponentPropsWithRef<"label">,
+	ExtractStrict<keyof ComponentPropsWithRef<"label">, "id">
+>;
 
 export const MyInputLabel = memo(function MyInputLabel(props: MyInputLabel_Props) {
 	const { ref, className, children, ...rest } = props;
@@ -52,7 +56,10 @@ export const MyInputLabel = memo(function MyInputLabel(props: MyInputLabel_Props
 // #region helper text
 type MyInputHelperText_ClassNames = "MyInputHelperText";
 
-export type MyInputHelperText_Props = Omit<ComponentPropsWithRef<"div">, "id">;
+export type MyInputHelperText_Props = Omit<
+	ComponentPropsWithRef<"div">,
+	ExtractStrict<keyof ComponentPropsWithRef<"div">, "id">
+>;
 
 export const MyInputHelperText = memo(function MyInputHelperText(props: MyInputHelperText_Props) {
 	const { ref, className, children, ...rest } = props;
@@ -178,7 +185,10 @@ export const MyInputArea = memo(function MyInputArea(props: MyInputArea_Props) {
 // #region control
 export type MyInputControl_ClassNames = "MyInputControl";
 
-export type MyInputControl_Props = Omit<ComponentPropsWithRef<"input">, "size" | "id">;
+export type MyInputControl_Props = Omit<
+	ComponentPropsWithRef<"input">,
+	ExtractStrict<keyof ComponentPropsWithRef<"input">, "size" | "id">
+>;
 
 export const MyInputControl = memo(function MyInputControl(props: MyInputControl_Props) {
 	const { ref, className, ...rest } = props;
@@ -202,7 +212,10 @@ export const MyInputControl = memo(function MyInputControl(props: MyInputControl
 // #region textarea control
 export type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 
-export type MyInputTextAreaControl_Props = Omit<ComponentPropsWithRef<"textarea">, "size" | "id">;
+export type MyInputTextAreaControl_Props = Omit<
+	ComponentPropsWithRef<"textarea">,
+	ExtractStrict<keyof ComponentPropsWithRef<"textarea">, "size" | "id">
+>;
 
 export const MyInputTextAreaControl = memo(function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
 	const { ref, className, ...rest } = props;

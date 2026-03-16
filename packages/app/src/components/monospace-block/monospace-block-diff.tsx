@@ -1,6 +1,8 @@
 import "./monospace-block-diff.css";
 
 import { useState, type ComponentPropsWithRef, type CSSProperties, type Ref } from "react";
+import type { ExtractStrict } from "type-fest";
+
 import { cn, forward_ref } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
@@ -21,7 +23,10 @@ const DiffMonospaceBlock_CssVars_DEFAULTS: DiffMonospaceBlock_CssVars = {
 	"--DiffMonospaceBlock-max-height": "16lh",
 } as const;
 
-export type DiffMonospaceBlock_Props = Omit<ComponentPropsWithRef<"pre">, "children"> & {
+export type DiffMonospaceBlock_Props = Omit<
+	ComponentPropsWithRef<"pre">,
+	ExtractStrict<keyof ComponentPropsWithRef<"pre">, "children">
+> & {
 	ref?: Ref<HTMLPreElement>;
 	id?: string;
 	className?: string;

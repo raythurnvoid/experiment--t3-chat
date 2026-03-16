@@ -54,7 +54,10 @@ export const MyModalBackdrop = memo(function MyModalBackdrop(props: MyModalBackd
 
 export type MyModalPopover_ClassNames = "MyModalPopover";
 
-export type MyModalPopover_Props = Omit<Ariakit.DialogProps, "modal" | "portal">;
+export type MyModalPopover_Props = Omit<
+	Ariakit.DialogProps,
+	ExtractStrict<keyof Ariakit.DialogProps, "modal" | "portal">
+>;
 
 export const MyModalPopover = memo(function MyModalPopover(props: MyModalPopover_Props) {
 	const { className, children, backdrop, portalElement, ...rest } = props;

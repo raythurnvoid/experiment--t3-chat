@@ -300,7 +300,7 @@ export type MyComboboxGroup_Props = {
 	className?: string;
 	separator?: boolean;
 	heading?: ReactNode;
-} & Omit<Ariakit.ComboboxGroupProps, "children" | "className">;
+} & Omit<Ariakit.ComboboxGroupProps, ExtractStrict<keyof Ariakit.ComboboxGroupProps, "children" | "className">>;
 
 export const MyComboboxGroup = memo(function MyComboboxGroup(props: MyComboboxGroup_Props) {
 	const { className, children, separator = false, heading, ...rest } = props;
@@ -325,7 +325,7 @@ export type MyComboboxGroupHeading_ClassNames = "MyComboboxGroupHeading";
 export type MyComboboxGroupHeading_Props = {
 	children?: ReactNode;
 	className?: string;
-} & Omit<Ariakit.ComboboxGroupLabelProps, "children" | "className">;
+} & Omit<Ariakit.ComboboxGroupLabelProps, ExtractStrict<keyof Ariakit.ComboboxGroupLabelProps, "children" | "className">>;
 
 export const MyComboboxGroupHeading = memo(function MyComboboxGroupHeading(props: MyComboboxGroupHeading_Props) {
 	const { className, children, ...rest } = props;

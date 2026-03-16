@@ -1428,6 +1428,14 @@ import { cn, sx } from "@/lib/utils.ts";
 />
 ```
 
+### Tailwind utility class whitelist
+
+In general, do **not** use Tailwind for styling; use vanilla CSS in component-owned `.css` files. A small set of Tailwind utility classes is allowed when they provide standard accessibility or layout behavior that would otherwise require custom CSS with no benefit:
+
+- **`sr-only`** — Visually hide content while keeping it available to screen readers (e.g. for disclosure buttons, skip links, or accessible labels). Prefer this over custom “visually hidden” rules when the intent is screen-reader-only content.
+
+Add new entries to this whitelist only when a Tailwind utility clearly solves a cross-cutting need (e.g. accessibility) without pulling in broader Tailwind usage. Do not use other Tailwind classes (e.g. spacing, colors, typography) unless they are added here.
+
 ## List rows: primary action + secondary actions (overlay grid + subgrid)
 
 Use this pattern for list rows where:

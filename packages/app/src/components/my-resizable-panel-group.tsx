@@ -2,6 +2,7 @@ import "./my-resizable-panel-group.css";
 
 import { memo, type ComponentPropsWithRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import type { ExtractStrict } from "type-fest";
 
 import { cn } from "@/lib/utils.ts";
 
@@ -11,7 +12,10 @@ export type MyPanelResizeHandle_Orientation = "vertical" | "horizontal";
 // #region panel group
 export type MyPanelGroup_ClassNames = "MyPanelGroup";
 
-export type MyPanelGroup_Props = Omit<ComponentPropsWithRef<typeof PanelGroup>, "autoSaveId" | "storage">;
+export type MyPanelGroup_Props = Omit<
+	ComponentPropsWithRef<typeof PanelGroup>,
+	ExtractStrict<keyof ComponentPropsWithRef<typeof PanelGroup>, "autoSaveId" | "storage">
+>;
 
 export const MyPanelGroup = memo(function MyPanelGroup(props: MyPanelGroup_Props) {
 	const { className, ...rest } = props;

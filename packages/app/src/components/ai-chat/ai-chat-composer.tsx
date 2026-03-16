@@ -2,6 +2,7 @@ import "./ai-chat-composer.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
 import { useEffect, useRef, useState } from "react";
+import type { ExtractStrict } from "type-fest";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import Document from "@tiptap/extension-document";
 import { HardBreak } from "@tiptap/extension-hard-break";
@@ -65,7 +66,10 @@ const AiChatComposer_HardBreakMarkdown = HardBreak.extend({
 	renderMarkdown: () => "\n",
 });
 
-export type AiChatComposer_Props = Omit<ComponentPropsWithRef<"form">, "onSubmit"> & {
+export type AiChatComposer_Props = Omit<
+	ComponentPropsWithRef<"form">,
+	ExtractStrict<keyof ComponentPropsWithRef<"form">, "onSubmit">
+> & {
 	ref?: Ref<HTMLFormElement>;
 	id?: string;
 	className?: string;
