@@ -2,7 +2,7 @@ import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
 import { memo, useState, useEffect, useRef, useDeferredValue } from "react";
-import { useFn } from "@/hooks/utils-hooks.ts";
+import { useFn, useThrottle } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { ArrowDown, PanelLeft } from "lucide-react";
 
@@ -242,9 +242,10 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		...rest
 	} = props;
 
-	// TODO: Not sure if while the chat is not running we should use the non deferred values??
 	const deferredActiveBranchMessagesList = useDeferredValue(activeBranchMessages.list);
+	const throttledMessagesList = useThrottle(deferredActiveBranchMessagesList, 100);
 	const deferredMessagesChildrenByParentId = useDeferredValue(messagesChildrenByParentId);
+	const throttledMessagesChildrenByParentId = useThrottle(deferredMessagesChildrenByParentId, 100);
 
 	const messageCount = activeBranchMessages.list.length;
 
@@ -273,7 +274,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 			) : messageCount === 0 ? (
 				<AiChatWelcome onClickSuggestion={handleSuggestionClick} />
 			) : (
-				deferredActiveBranchMessagesList.map((message, index) => (
+				throttledMessagesList.map((message, index) => (
 					<AiChatMessage
 						// index is better in this case because the messages follow a static order
 						// and this will prevent them from being unmounted when the message is
@@ -283,7 +284,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 						selectedThreadId={selectedThreadId}
 						isRunning={isRunning}
 						isEditing={editingMessageId === message.id}
-						messagesChildrenByParentId={deferredMessagesChildrenByParentId}
+						messagesChildrenByParentId={throttledMessagesChildrenByParentId}
 						onToolOutput={onToolOutput}
 						onToolResumeStream={onToolResumeStream}
 						onToolStop={onToolStop}

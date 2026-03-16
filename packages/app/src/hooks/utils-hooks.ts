@@ -180,6 +180,63 @@ export function useDebounce<T>(value: T, timeoutMs?: number) {
 }
 
 /**
+ * Returns a throttled version of a value.
+ *
+ * @param value - The input value to throttle.
+ * @param throttleMs - Optional throttle timeout in milliseconds.
+ */
+export function useThrottle<T>(value: T, throttleMs = 0) {
+	const [throttledValue, setThrottledValue] = useState(value);
+	const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const lastUpdateTimestampRef = useRef<number | undefined>(undefined);
+	const latestValueRef = useRef(value);
+
+	useEffect(() => {
+		latestValueRef.current = value;
+
+		if (lastUpdateTimestampRef.current === undefined) {
+			lastUpdateTimestampRef.current = Date.now();
+			return;
+		}
+
+		if (timeoutIdRef.current !== undefined) {
+			clearTimeout(timeoutIdRef.current);
+			timeoutIdRef.current = undefined;
+		}
+
+		if (throttleMs <= 0) {
+			lastUpdateTimestampRef.current = Date.now();
+			setThrottledValue(value);
+			return;
+		}
+
+		const elapsedMs = Date.now() - lastUpdateTimestampRef.current;
+		if (elapsedMs >= throttleMs) {
+			lastUpdateTimestampRef.current = Date.now();
+			setThrottledValue(value);
+			return;
+		}
+
+		const timeoutId = setTimeout(() => {
+			timeoutIdRef.current = undefined;
+			lastUpdateTimestampRef.current = Date.now();
+			setThrottledValue(latestValueRef.current);
+		}, throttleMs - elapsedMs);
+
+		timeoutIdRef.current = timeoutId;
+
+		return () => {
+			clearTimeout(timeoutId);
+			if (timeoutIdRef.current === timeoutId) {
+				timeoutIdRef.current = undefined;
+			}
+		};
+	}, [value, throttleMs]);
+
+	return throttledValue;
+}
+
+/**
  * Hook that provides a ref containing a promise that resolves after each render.
  * The promise is created on each render and resolved via useEffect.
  *
