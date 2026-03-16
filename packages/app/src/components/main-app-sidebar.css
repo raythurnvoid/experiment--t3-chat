@@ -118,6 +118,35 @@
 		padding: 8px;
 	}
 
+	.MainAppSidebar-logo-section {
+		padding: 0 8px 8px;
+	}
+
+	.MainAppSidebar-logo-link {
+		display: contents;
+	}
+
+	.MainAppSidebar-logo {
+		display: flex;
+		align-items: center;
+
+		padding: 0 24px;
+	}
+
+	.MainAppSidebar-footer {
+		padding: 8px;
+		gap: 8px;
+	}
+
+	.MainAppSidebar-footer-menu {
+		flex: none;
+		overflow: visible;
+		padding: 0;
+		gap: 0.25rem;
+	}
+
+	/* #endregion root */
+
 	/* #region presence control */
 	.MainAppSidebarPresenceControl {
 		display: grid;
@@ -197,35 +226,6 @@
 		white-space: nowrap;
 	}
 	/* #endregion presence users */
-
-	.MainAppSidebar-logo-section {
-		padding: 0 8px 8px;
-	}
-
-	.MainAppSidebar-logo-link {
-		display: contents;
-	}
-
-	.MainAppSidebar-logo {
-		display: flex;
-		align-items: center;
-
-		padding: 0 24px;
-	}
-
-	.MainAppSidebar-footer {
-		padding: 8px;
-		gap: 8px;
-	}
-
-	.MainAppSidebar-footer-menu {
-		flex: none;
-		overflow: visible;
-		padding: 0;
-		gap: 0.25rem;
-	}
-
-	/* #endregion root */
 
 	/* #region menu button label */
 	.MainAppSidebarMenuButtonLabel {

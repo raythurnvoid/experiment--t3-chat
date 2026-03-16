@@ -636,7 +636,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 							to="/chat"
 							label="Chat"
 							icon={MessageSquare}
-							tooltip={mainAppSidebarCollapsed ? "Chat" : undefined}
+							tooltip={mainAppSidebarCollapsed ? "AI Chat" : undefined}
 						/>
 						<MainAppSidebarItem
 							to="/pages"

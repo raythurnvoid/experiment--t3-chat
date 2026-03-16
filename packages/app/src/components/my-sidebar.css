@@ -44,14 +44,34 @@
 	/* #endregion root */
 
 	/* #region header */
-	.MySidebarHeader,
+	.MySidebarHeader {
+		display: flex;
+		flex-direction: row;
+		gap: 8px;
+		padding: 8px;
+	}
+	/* #endregion header */
+
+	/* #region title */
+	.MySidebarTitle {
+		display: inline-flex;
+		align-items: center;
+
+		height: 36px;
+
+		font-size: 1.125rem;
+		font-weight: 600;
+	}
+	/* #endregion title */
+
+	/* #region footer */
 	.MySidebarFooter {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 		padding: 8px;
 	}
-	/* #endregion header */
+	/* #endregion footer */
 
 	/* #region separator */
 	.MySidebarSeparator {

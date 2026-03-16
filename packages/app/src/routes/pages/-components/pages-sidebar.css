@@ -35,8 +35,8 @@
 	}
 	/* #endregion root */
 
-	/* #region header */
-	.PagesSidebarHeader {
+	/* #region top section */
+	.PagesSidebarTopSection {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -49,7 +49,7 @@
 		contain: strict;
 	}
 
-	.PagesSidebarHeader-actions {
+	.PagesSidebarTopSection-actions {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -58,27 +58,44 @@
 		height: 36px;
 	}
 
-	.PagesSidebarHeader-actions-group {
+	.PagesSidebarTopSection-actions-group {
 		display: flex;
 		gap: 4px;
 	}
 
-	.PagesSidebarHeader-actions-icon-button {
+	.PagesSidebarTopSection-actions-icon-button {
 		width: 36px;
 		height: 36px;
 	}
 
-	.PagesSidebarHeader-action-new-page {
+	.PagesSidebarTopSection-action-new-page {
 		flex: 1;
 		justify-content: center;
 		gap: 8px;
 	}
 
-	.PagesSidebarHeader-title {
-		font-size: 1.125rem;
-		font-weight: 600;
+	.PagesSidebarTopSection-multi-selection-counter {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+		flex: 1;
+	}
 
-		padding: 4px;
+	.PagesSidebarTopSection-multi-selection-counter-label {
+		font-weight: 500;
+		font-size: 14px;
+	}
+	/* #endregion top section */
+
+	/* #region header */
+	.PagesSidebarHeader {
+		padding: 0;
+
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
 	}
 
 	.PagesSidebarHeader-close-button {
@@ -91,30 +108,10 @@
 		width: 32px;
 	}
 
-	.PagesSidebarHeader-top-section {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
 	.PagesSidebarHeader-top-section-left {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-	}
-
-	.PagesSidebarHeader-multi-selection-counter {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		justify-content: end;
-		gap: 8px;
-		flex: 1;
-	}
-
-	.PagesSidebarHeader-multi-selection-counter-label {
-		font-weight: 500;
-		font-size: 14px;
 	}
 	/* #endregion header */
 

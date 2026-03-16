@@ -1,7 +1,9 @@
 import "./ai-chat-threads.css";
 
 import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
+
+import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	ArchiveIcon,
 	ArchiveRestoreIcon,
@@ -38,6 +40,7 @@ import {
 	MySidebarListItemPrimaryAction,
 	MySidebarListItemTitle,
 	MySidebarScrollableArea,
+	MySidebarTitle,
 	type MySidebar_Props,
 } from "@/components/my-sidebar.tsx";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
@@ -50,14 +53,55 @@ const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
 // #region header
 type AiChatThreadsHeader_ClassNames =
 	| "AiChatThreadsHeader"
-	| "AiChatThreadsHeader-top-section"
 	| "AiChatThreadsHeader-top-section-left"
 	| "AiChatThreadsHeader-hamburger-button"
-	| "AiChatThreadsHeader-row"
+	| "AiChatThreadsHeader-title"
 	| "AiChatThreadsHeader-close-button"
 	| "AiChatThreadsHeader-close-icon";
 
 type AiChatThreadsHeader_Props = {
+	onClose?: () => void;
+};
+
+const AiChatThreadsHeader = memo(function AiChatThreadsHeader(props: AiChatThreadsHeader_Props) {
+	const { onClose } = props;
+	const handleCloseClick = useFn(() => {
+		onClose?.();
+	});
+
+	return (
+		<MySidebarHeader className={cn("AiChatThreadsHeader" satisfies AiChatThreadsHeader_ClassNames)}>
+			<div className={cn("AiChatThreadsHeader-top-section-left" satisfies AiChatThreadsHeader_ClassNames)}>
+				<MainAppSidebarToggle
+					className={cn("AiChatThreadsHeader-hamburger-button" satisfies AiChatThreadsHeader_ClassNames)}
+					variant="ghost-highlightable"
+					tooltip="Main Menu"
+				/>
+				<MySidebarTitle className={cn("AiChatThreadsHeader-title" satisfies AiChatThreadsHeader_ClassNames)}>
+					AI Chat
+				</MySidebarTitle>
+			</div>
+			{onClose ? (
+				<MyIconButton
+					className={cn("AiChatThreadsHeader-close-button" satisfies AiChatThreadsHeader_ClassNames)}
+					variant="ghost-highlightable"
+					onClick={handleCloseClick}
+					tooltip="Close"
+				>
+					<MyIcon className={cn("AiChatThreadsHeader-close-icon" satisfies AiChatThreadsHeader_ClassNames)}>
+						<X />
+					</MyIcon>
+				</MyIconButton>
+			) : null}
+		</MySidebarHeader>
+	);
+});
+// #endregion header
+
+// #region top section
+type AiChatThreadsTopSection_ClassNames = "AiChatThreadsTopSection";
+
+type AiChatThreadsTopSection_Props = {
 	searchQuery: string;
 	showArchived: boolean;
 	onClose?: () => void;
@@ -66,57 +110,29 @@ type AiChatThreadsHeader_Props = {
 	onNewChat: AiChatThreadsNewButton_Props["onClick"];
 };
 
-function AiChatThreadsHeader(props: AiChatThreadsHeader_Props) {
+const AiChatThreadsTopSection = memo(function AiChatThreadsTopSection(props: AiChatThreadsTopSection_Props) {
 	const { onClose, searchQuery, showArchived, onSearchChange, onShowArchivedChange, onNewChat } = props;
-	const handleCloseClick = () => {
-		onClose?.();
-	};
 
 	return (
-		<div className={cn("AiChatThreadsHeader" satisfies AiChatThreadsHeader_ClassNames)}>
-			<div className={cn("AiChatThreadsHeader-top-section" satisfies AiChatThreadsHeader_ClassNames)}>
-				<div className={cn("AiChatThreadsHeader-top-section-left" satisfies AiChatThreadsHeader_ClassNames)}>
-					<MainAppSidebarToggle
-						className={cn("AiChatThreadsHeader-hamburger-button" satisfies AiChatThreadsHeader_ClassNames)}
-						variant="ghost-highlightable"
-						tooltip="Main Menu"
-					/>
-				</div>
-				{onClose ? (
-					<MyIconButton
-						className={cn("AiChatThreadsHeader-close-button" satisfies AiChatThreadsHeader_ClassNames)}
-						variant="ghost-highlightable"
-						onClick={handleCloseClick}
-						tooltip="Close"
-					>
-						<MyIcon className={cn("AiChatThreadsHeader-close-icon" satisfies AiChatThreadsHeader_ClassNames)}>
-							<X />
-						</MyIcon>
-					</MyIconButton>
-				) : null}
-			</div>
+		<div className={cn("AiChatThreadsTopSection" satisfies AiChatThreadsTopSection_ClassNames)}>
+			<AiChatThreadsHeader onClose={onClose} />
 			<AiChatThreadsSearch searchQuery={searchQuery} onSearchChange={onSearchChange} />
 			<AiChatThreadsArchivedToggle checked={showArchived} onCheckedChange={onShowArchivedChange} />
 			<AiChatThreadsNewButton onClick={onNewChat} />
 		</div>
 	);
-}
-// #endregion header
+});
+// #endregion top section
 
 // #region search
-type AiChatThreadsSearch_ClassNames =
-	| "AiChatThreadsSearch"
-	| "AiChatThreadsSearch-label"
-	| "AiChatThreadsSearch-field"
-	| "AiChatThreadsSearch-icon"
-	| "AiChatThreadsSearch-input";
+type AiChatThreadsSearch_ClassNames = "AiChatThreadsSearch";
 
 type AiChatThreadsSearch_Props = {
 	searchQuery: string;
 	onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
 };
 
-function AiChatThreadsSearch(props: AiChatThreadsSearch_Props) {
+const AiChatThreadsSearch = memo(function AiChatThreadsSearch(props: AiChatThreadsSearch_Props) {
 	const { searchQuery, onSearchChange } = props;
 
 	return (
@@ -141,7 +157,7 @@ function AiChatThreadsSearch(props: AiChatThreadsSearch_Props) {
 			</MyInputArea>
 		</MyInput>
 	);
-}
+});
 // #endregion search
 
 // #region archived toggle
@@ -155,7 +171,9 @@ type AiChatThreadsArchivedToggle_Props = {
 	onCheckedChange: (event: ChangeEvent<HTMLInputElement>) => void;
 };
 
-function AiChatThreadsArchivedToggle(props: AiChatThreadsArchivedToggle_Props) {
+const AiChatThreadsArchivedToggle = memo(function AiChatThreadsArchivedToggle(
+	props: AiChatThreadsArchivedToggle_Props,
+) {
 	const { checked, onCheckedChange } = props;
 
 	return (
@@ -171,7 +189,7 @@ function AiChatThreadsArchivedToggle(props: AiChatThreadsArchivedToggle_Props) {
 			</span>
 		</label>
 	);
-}
+});
 // #endregion archived toggle
 
 // #region new button
@@ -184,7 +202,7 @@ type AiChatThreadsNewButton_Props = {
 	onClick: () => void;
 };
 
-function AiChatThreadsNewButton(props: AiChatThreadsNewButton_Props) {
+const AiChatThreadsNewButton = memo(function AiChatThreadsNewButton(props: AiChatThreadsNewButton_Props) {
 	const { onClick } = props;
 
 	return (
@@ -199,7 +217,7 @@ function AiChatThreadsNewButton(props: AiChatThreadsNewButton_Props) {
 			<span className={cn("AiChatThreadsNewButton-label" satisfies AiChatThreadsNewButton_ClassNames)}>New Chat</span>
 		</MyButton>
 	);
-}
+});
 // #endregion new button
 
 // #region list item
@@ -222,7 +240,7 @@ type AiChatThreadsListItem_Props = {
 	onArchive: (threadId: string, isArchived: boolean) => void;
 };
 
-function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
+const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 	const {
 		thread,
 		searchQuery,
@@ -240,22 +258,22 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 	const isArchived = thread.archived === true;
 	const matchesSearch = !searchQuery || threadTitle.toLowerCase().includes(searchQuery.toLowerCase());
 
-	const handleSelect = () => {
+	const handleSelect = useFn(() => {
 		onSelect(thread._id);
-	};
+	});
 
-	const handleStarToggle = () => {
+	const handleStarToggle = useFn(() => {
 		const isStarred = thread.starred === true;
 		onToggleFavourite(thread._id, !isStarred);
-	};
+	});
 
-	const handleBranch = () => {
+	const handleBranch = useFn(() => {
 		onBranch(thread._id);
-	};
+	});
 
-	const handleArchiveToggle = () => {
+	const handleArchiveToggle = useFn(() => {
 		onArchive(thread._id, !isArchived);
-	};
+	});
 
 	const isStarred = thread.starred === true;
 	const starButtonLabel = isStarred ? "Remove from favorites" : "Add to favorites";
@@ -328,7 +346,7 @@ function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
 			</div>
 		</MySidebarListItem>
 	);
-}
+});
 // #endregion list item
 
 // #region optimistic list item
@@ -341,7 +359,9 @@ type AiChatThreadsOptimisticListItem_Props = {
 	onRemove: (threadId: string) => void;
 };
 
-function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_Props) {
+const AiChatThreadsOptimisticListItem = memo(function AiChatThreadsOptimisticListItem(
+	props: AiChatThreadsOptimisticListItem_Props,
+) {
 	const { thread, searchQuery, streamingTitleByThreadId, selectedThreadId, onSelect, onRemove } = props;
 
 	const streamingTitle = streamingTitleByThreadId[thread._id];
@@ -349,13 +369,13 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 	const threadTitle = streamingTitle ?? (thread.title || "New Chat");
 	const matchesSearch = !searchQuery || threadTitle.toLowerCase().includes(searchQuery.toLowerCase());
 
-	const handleSelect = () => {
+	const handleSelect = useFn(() => {
 		onSelect(thread._id);
-	};
+	});
 
-	const handleRemove = () => {
+	const handleRemove = useFn(() => {
 		onRemove(thread._id);
-	};
+	});
 
 	return (
 		<MySidebarListItem
@@ -407,7 +427,7 @@ function AiChatThreadsOptimisticListItem(props: AiChatThreadsOptimisticListItem_
 			</div>
 		</MySidebarListItem>
 	);
-}
+});
 // #endregion optimistic list item
 
 // #region results
@@ -434,7 +454,7 @@ type AiChatThreadsResults_Props = ComponentPropsWithRef<"section"> & {
 	onRemoveOptimisticThread: AiChatThreadsOptimisticListItem_Props["onRemove"];
 };
 
-function AiChatThreadsResults(props: AiChatThreadsResults_Props) {
+const AiChatThreadsResults = memo(function AiChatThreadsResults(props: AiChatThreadsResults_Props) {
 	const {
 		ref,
 		id,
@@ -458,7 +478,7 @@ function AiChatThreadsResults(props: AiChatThreadsResults_Props) {
 
 	const canLoadMore = paginatedThreads?.status === "CanLoadMore";
 
-	const handleIntersection = (args: { entry: IntersectionObserverEntry; observer: IntersectionObserver }) => {
+	const handleIntersection = useFn((args: { entry: IntersectionObserverEntry; observer: IntersectionObserver }) => {
 		const { entry } = args;
 		if (!entry.isIntersecting) {
 			return;
@@ -467,7 +487,7 @@ function AiChatThreadsResults(props: AiChatThreadsResults_Props) {
 			return;
 		}
 		paginatedThreads.loadMore(100);
-	};
+	});
 
 	useEffect(() => {
 		if (!scrollRoot) {
@@ -539,11 +559,11 @@ function AiChatThreadsResults(props: AiChatThreadsResults_Props) {
 			</MySidebarList>
 		</section>
 	);
-}
+});
 // #endregion results
 
 // #region root
-export type AiChatThreads_ClassNames = "AiChatThreads" | "AiChatThreadsSidebar" | "AiChatThreadsSidebar-header";
+export type AiChatThreads_ClassNames = "AiChatThreads";
 
 export type AiChatThreads_Props = MySidebar_Props & {
 	paginatedThreads: AiChatController["currentThreadsWithOptimistic"];
@@ -555,10 +575,10 @@ export type AiChatThreads_Props = MySidebar_Props & {
 	onBranchThread: AiChatThreadsListItem_Props["onBranch"];
 	onArchiveThread: AiChatThreadsListItem_Props["onArchive"];
 	onRemoveOptimisticThread: (threadId: string) => void;
-	onNewChat: AiChatThreadsHeader_Props["onNewChat"];
+	onNewChat: AiChatThreadsTopSection_Props["onNewChat"];
 };
 
-export function AiChatThreads(props: AiChatThreads_Props) {
+export const AiChatThreads = memo(function AiChatThreads(props: AiChatThreads_Props) {
 	const {
 		ref,
 		id,
@@ -579,17 +599,17 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
 
-	const handleSearchChange: AiChatThreadsHeader_Props["onSearchChange"] = (event) => {
+	const handleSearchChange = useFn<AiChatThreadsTopSection_Props["onSearchChange"]>((event) => {
 		setSearchQuery(event.target.value);
-	};
+	});
 
-	const handleArchivedChange: AiChatThreadsHeader_Props["onShowArchivedChange"] = (event) => {
+	const handleArchivedChange = useFn<AiChatThreadsTopSection_Props["onShowArchivedChange"]>((event) => {
 		setShowArchived(event.target.checked);
-	};
+	});
 
-	const handleNewChat: AiChatThreadsHeader_Props["onNewChat"] = () => {
+	const handleNewChat = useFn<AiChatThreadsTopSection_Props["onNewChat"]>(() => {
 		onNewChat();
-	};
+	});
 
 	return (
 		<MySidebar
@@ -598,35 +618,31 @@ export function AiChatThreads(props: AiChatThreads_Props) {
 			state={state}
 			aria-hidden={state === "closed" ? true : undefined}
 			inert={state === "closed" ? true : undefined}
-			className={cn("AiChatThreadsSidebar" satisfies AiChatThreads_ClassNames, className)}
+			className={cn("AiChatThreads" satisfies AiChatThreads_ClassNames, className)}
 			{...rest}
 		>
-			<div className={cn("AiChatThreads" satisfies AiChatThreads_ClassNames)}>
-				<MySidebarHeader className={cn("AiChatThreadsSidebar-header" satisfies AiChatThreads_ClassNames)}>
-					<AiChatThreadsHeader
-						onClose={onClose}
-						searchQuery={searchQuery}
-						onSearchChange={handleSearchChange}
-						showArchived={showArchived}
-						onShowArchivedChange={handleArchivedChange}
-						onNewChat={handleNewChat}
-					/>
-				</MySidebarHeader>
-				<MySidebarScrollableArea>
-					<AiChatThreadsResults
-						searchQuery={searchQuery}
-						paginatedThreads={showArchived ? paginatedThreads.archived : paginatedThreads.unarchived}
-						streamingTitleByThreadId={streamingTitleByThreadId}
-						selectedThreadId={selectedThreadId}
-						onSelectThread={onSelectThread}
-						onToggleFavouriteThread={onToggleFavouriteThread}
-						onBranchThread={onBranchThread}
-						onArchiveThread={onArchiveThread}
-						onRemoveOptimisticThread={onRemoveOptimisticThread}
-					/>
-				</MySidebarScrollableArea>
-			</div>
+			<AiChatThreadsTopSection
+				searchQuery={searchQuery}
+				showArchived={showArchived}
+				onClose={onClose}
+				onSearchChange={handleSearchChange}
+				onShowArchivedChange={handleArchivedChange}
+				onNewChat={handleNewChat}
+			/>
+			<MySidebarScrollableArea>
+				<AiChatThreadsResults
+					searchQuery={searchQuery}
+					paginatedThreads={showArchived ? paginatedThreads.archived : paginatedThreads.unarchived}
+					streamingTitleByThreadId={streamingTitleByThreadId}
+					selectedThreadId={selectedThreadId}
+					onSelectThread={onSelectThread}
+					onToggleFavouriteThread={onToggleFavouriteThread}
+					onBranchThread={onBranchThread}
+					onArchiveThread={onArchiveThread}
+					onRemoveOptimisticThread={onRemoveOptimisticThread}
+				/>
+			</MySidebarScrollableArea>
 		</MySidebar>
 	);
-}
+});
 // #endregion root

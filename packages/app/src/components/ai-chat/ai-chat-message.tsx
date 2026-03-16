@@ -1,6 +1,7 @@
 import "./ai-chat-message.css";
 
 import {
+	memo,
 	useDeferredValue,
 	useEffect,
 	useRef,
@@ -9,6 +10,7 @@ import {
 	type ReactNode,
 	type Ref,
 } from "react";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	ArrowUpRight,
 	ChevronLeft,
@@ -52,7 +54,7 @@ type AiChatMessagePartToolChip_Props = {
 	children?: ReactNode;
 };
 
-function AiChatMessagePartToolChip(props: AiChatMessagePartToolChip_Props) {
+const AiChatMessagePartToolChip = memo(function AiChatMessagePartToolChip(props: AiChatMessagePartToolChip_Props) {
 	const { className, children } = props;
 
 	return (
@@ -60,7 +62,7 @@ function AiChatMessagePartToolChip(props: AiChatMessagePartToolChip_Props) {
 			{children}
 		</span>
 	);
-}
+});
 // #endregion tool chip
 
 // #region tool status
@@ -78,7 +80,7 @@ type AiChatMessagePartToolStatus_Props = {
 	isChatRunning: boolean;
 };
 
-function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
+const AiChatMessagePartToolStatus = memo(function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
 	const { state, isChatRunning } = props;
 
 	const isLoading = state === "input-streaming" || state === "input-available";
@@ -115,7 +117,7 @@ function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
 			) : null}
 		</span>
 	);
-}
+});
 // #endregion tool status
 
 // #region part disclosure
@@ -125,7 +127,7 @@ type AiChatMessagePartDisclosure_Props = React.ComponentProps<"details"> & {
 	className?: string | undefined;
 };
 
-function AiChatMessagePartDisclosure(props: AiChatMessagePartDisclosure_Props) {
+const AiChatMessagePartDisclosure = memo(function AiChatMessagePartDisclosure(props: AiChatMessagePartDisclosure_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -134,7 +136,7 @@ function AiChatMessagePartDisclosure(props: AiChatMessagePartDisclosure_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion part disclosure
 
 // #region part disclosure button
@@ -152,17 +154,19 @@ type AiChatMessagePartDisclosureButton_Props = {
 	isChatRunning: boolean;
 };
 
-function AiChatMessagePartDisclosureButton(props: AiChatMessagePartDisclosureButton_Props) {
+const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclosureButton(
+	props: AiChatMessagePartDisclosureButton_Props,
+) {
 	const { className, title, text, state, isChatRunning } = props;
 
 	const isLoading = isChatRunning && (state === "input-streaming" || state === "input-available");
 	const labelText = `${title}${text ? ":" : ""}`;
 
-	const handleClick: ComponentPropsWithRef<"summary">["onClick"] = (e) => {
+	const handleClick = useFn<ComponentPropsWithRef<"summary">["onClick"]>((e) => {
 		if (isLoading) {
 			e.preventDefault();
 		}
-	};
+	});
 
 	return (
 		<summary
@@ -191,7 +195,7 @@ function AiChatMessagePartDisclosureButton(props: AiChatMessagePartDisclosureBut
 			</div>
 		</summary>
 	);
-}
+});
 // #endregion part disclosure button
 
 // #region tool body
@@ -201,7 +205,7 @@ type AiChatMessagePartToolBody_Props = React.ComponentProps<"div"> & {
 	className?: string | undefined;
 };
 
-function AiChatMessagePartToolBody(props: AiChatMessagePartToolBody_Props) {
+const AiChatMessagePartToolBody = memo(function AiChatMessagePartToolBody(props: AiChatMessagePartToolBody_Props) {
 	const { className, ...rest } = props;
 
 	return (
@@ -210,7 +214,7 @@ function AiChatMessagePartToolBody(props: AiChatMessagePartToolBody_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion tool body
 
 // #region tool textarea section
@@ -236,7 +240,9 @@ type AiChatMessagePartToolTextAreaSection_Props = {
 	state?: "error" | undefined;
 };
 
-function AiChatMessagePartToolTextAreaSection(props: AiChatMessagePartToolTextAreaSection_Props) {
+const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartToolTextAreaSection(
+	props: AiChatMessagePartToolTextAreaSection_Props,
+) {
 	const { className, label, code, maxHeight, state } = props;
 
 	return (
@@ -270,7 +276,7 @@ function AiChatMessagePartToolTextAreaSection(props: AiChatMessagePartToolTextAr
 			/>
 		</section>
 	);
-}
+});
 // #endregion tool textarea section
 
 // #region tool read_page
@@ -285,7 +291,9 @@ type AiChatMessagePartToolReadPage_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Props) {
+const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPage(
+	props: AiChatMessagePartToolReadPage_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	return (
@@ -320,7 +328,7 @@ function AiChatMessagePartToolReadPage(props: AiChatMessagePartToolReadPage_Prop
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool read_page
 
 // #region tool list_pages
@@ -335,7 +343,9 @@ type AiChatMessagePartToolListPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Props) {
+const AiChatMessagePartToolListPages = memo(function AiChatMessagePartToolListPages(
+	props: AiChatMessagePartToolListPages_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const text = args?.path ? path_name_of(args.path) || "/ (Home) " : undefined;
@@ -359,7 +369,7 @@ function AiChatMessagePartToolListPages(props: AiChatMessagePartToolListPages_Pr
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool list_pages
 
 // #region tool glob_pages
@@ -374,7 +384,9 @@ type AiChatMessagePartToolGlobPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Props) {
+const AiChatMessagePartToolGlobPages = memo(function AiChatMessagePartToolGlobPages(
+	props: AiChatMessagePartToolGlobPages_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const text = result?.metadata?.count ? `${result.metadata.count} results` : args?.pattern ? args.pattern : undefined;
@@ -398,7 +410,7 @@ function AiChatMessagePartToolGlobPages(props: AiChatMessagePartToolGlobPages_Pr
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool glob_pages
 
 // #region tool grep_pages
@@ -413,7 +425,9 @@ type AiChatMessagePartToolGrepPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Props) {
+const AiChatMessagePartToolGrepPages = memo(function AiChatMessagePartToolGrepPages(
+	props: AiChatMessagePartToolGrepPages_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const text = result?.metadata?.matches
@@ -441,7 +455,7 @@ function AiChatMessagePartToolGrepPages(props: AiChatMessagePartToolGrepPages_Pr
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool grep_pages
 
 // #region tool text_search_pages
@@ -456,7 +470,9 @@ type AiChatMessagePartToolTextSearchPages_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSearchPages_Props) {
+const AiChatMessagePartToolTextSearchPages = memo(function AiChatMessagePartToolTextSearchPages(
+	props: AiChatMessagePartToolTextSearchPages_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const text = result?.metadata?.matches ? `${result.metadata.matches} results` : args?.query ? args.query : undefined;
@@ -483,7 +499,7 @@ function AiChatMessagePartToolTextSearchPages(props: AiChatMessagePartToolTextSe
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool text_search_pages
 
 // #region tool write_page
@@ -505,7 +521,9 @@ type AiChatMessagePartToolWritePage_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Props) {
+const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWritePage(
+	props: AiChatMessagePartToolWritePage_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const deferredContent = useDeferredValue(args?.content);
@@ -612,7 +630,7 @@ function AiChatMessagePartToolWritePage(props: AiChatMessagePartToolWritePage_Pr
 			)}
 		</div>
 	);
-}
+});
 // #endregion tool write_page
 
 // #region tool edit_page
@@ -627,7 +645,9 @@ type AiChatMessagePartToolEditPage_Props = {
 	errorText?: string | undefined;
 };
 
-function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Props) {
+const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPage(
+	props: AiChatMessagePartToolEditPage_Props,
+) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
 	const text = result?.metadata.path
@@ -668,7 +688,7 @@ function AiChatMessagePartToolEditPage(props: AiChatMessagePartToolEditPage_Prop
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool edit_page
 
 // #region tool unknown
@@ -680,7 +700,9 @@ type AiChatMessagePartToolUnknown_Props = {
 	isChatRunning: boolean;
 };
 
-function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props) {
+const AiChatMessagePartToolUnknown = memo(function AiChatMessagePartToolUnknown(
+	props: AiChatMessagePartToolUnknown_Props,
+) {
 	const { className, part, isChatRunning } = props;
 
 	const toolName = part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length);
@@ -708,7 +730,7 @@ function AiChatMessagePartToolUnknown(props: AiChatMessagePartToolUnknown_Props)
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
-}
+});
 // #endregion tool unknown
 
 // #region markdown assistant
@@ -716,7 +738,9 @@ type AiChatMessagePartMarkdownAssistant_ClassNames = "AiChatMessagePartMarkdownA
 
 type AiChatMessagePartMarkdownAssistant_Props = AiChatMarkdown_Props;
 
-function AiChatMessagePartMarkdownAgent(props: AiChatMessagePartMarkdownAssistant_Props) {
+const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAgent(
+	props: AiChatMessagePartMarkdownAssistant_Props,
+) {
 	const { className, markdown, ...rest } = props;
 
 	const deferredMarkdown = useDeferredValue(markdown);
@@ -731,7 +755,7 @@ function AiChatMessagePartMarkdownAgent(props: AiChatMessagePartMarkdownAssistan
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion markdown assistant
 
 // #region markdown user
@@ -741,7 +765,9 @@ type AiChatMessagePartMarkdownUser_Props = {
 	markdown: string;
 };
 
-function AiChatMessagePartMarkdownUser(props: AiChatMessagePartMarkdownUser_Props) {
+const AiChatMessagePartMarkdownUser = memo(function AiChatMessagePartMarkdownUser(
+	props: AiChatMessagePartMarkdownUser_Props,
+) {
 	const { markdown, ...rest } = props;
 
 	const deferredMarkdown = useDeferredValue(markdown);
@@ -754,7 +780,7 @@ function AiChatMessagePartMarkdownUser(props: AiChatMessagePartMarkdownUser_Prop
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion markdown user
 
 // #region part thinking
@@ -773,7 +799,7 @@ type AiChatMessagePartThinking_Props = {
 	defaultOpen?: boolean | undefined;
 };
 
-function AiChatMessagePartThinking(props: AiChatMessagePartThinking_Props) {
+const AiChatMessagePartThinking = memo(function AiChatMessagePartThinking(props: AiChatMessagePartThinking_Props) {
 	const { className, text, isStreaming, defaultOpen } = props;
 
 	const deferredText = useDeferredValue(text);
@@ -789,9 +815,9 @@ function AiChatMessagePartThinking(props: AiChatMessagePartThinking_Props) {
 		wasStreamingRef.current = isStreaming;
 	}, [isStreaming]);
 
-	const handleToggle: ComponentPropsWithRef<"details">["onToggle"] = (event) => {
+	const handleToggle = useFn<ComponentPropsWithRef<"details">["onToggle"]>((event) => {
 		setIsOpen(event.currentTarget.open);
-	};
+	});
 
 	const hasText = textTrimmed.length > 0;
 
@@ -839,7 +865,7 @@ function AiChatMessagePartThinking(props: AiChatMessagePartThinking_Props) {
 			</div>
 		</div>
 	);
-}
+});
 // #endregion part thinking
 
 // #region part image
@@ -850,7 +876,7 @@ type AiChatMessagePartImage_Props = {
 	filename: string | undefined;
 };
 
-function AiChatMessagePartImage(props: AiChatMessagePartImage_Props) {
+const AiChatMessagePartImage = memo(function AiChatMessagePartImage(props: AiChatMessagePartImage_Props) {
 	const { url, filename } = props;
 	return (
 		<img
@@ -859,7 +885,7 @@ function AiChatMessagePartImage(props: AiChatMessagePartImage_Props) {
 			alt={filename ?? "Image attachment"}
 		/>
 	);
-}
+});
 // #endregion part image
 
 // #region part file
@@ -869,14 +895,14 @@ type AiChatMessagePartFile_Props = {
 	filename: string | undefined;
 };
 
-function AiChatMessagePartFile(props: AiChatMessagePartFile_Props) {
+const AiChatMessagePartFile = memo(function AiChatMessagePartFile(props: AiChatMessagePartFile_Props) {
 	const { filename } = props;
 	return (
 		<span className={"AiChatMessagePartFile" satisfies AiChatMessagePartFile_ClassNames}>
 			{filename ?? "File attachment"}
 		</span>
 	);
-}
+});
 // #endregion part file
 
 // #region part source url
@@ -887,7 +913,7 @@ type AiChatMessagePartSourceUrl_Props = {
 	title: string | undefined;
 };
 
-function AiChatMessagePartSourceUrl(props: AiChatMessagePartSourceUrl_Props) {
+const AiChatMessagePartSourceUrl = memo(function AiChatMessagePartSourceUrl(props: AiChatMessagePartSourceUrl_Props) {
 	const { url, title } = props;
 	return (
 		<a
@@ -899,7 +925,7 @@ function AiChatMessagePartSourceUrl(props: AiChatMessagePartSourceUrl_Props) {
 			{title ?? url}
 		</a>
 	);
-}
+});
 // #endregion part source url
 
 // #region part source document
@@ -912,7 +938,9 @@ type AiChatMessagePartSourceDocument_Props = {
 	mediaType: string;
 };
 
-function AiChatMessagePartSourceDocument(props: AiChatMessagePartSourceDocument_Props) {
+const AiChatMessagePartSourceDocument = memo(function AiChatMessagePartSourceDocument(
+	props: AiChatMessagePartSourceDocument_Props,
+) {
 	const { title: titleProp, filename, sourceId, mediaType } = props;
 	const title = titleProp || filename || sourceId;
 	return (
@@ -923,7 +951,7 @@ function AiChatMessagePartSourceDocument(props: AiChatMessagePartSourceDocument_
 			{title}
 		</span>
 	);
-}
+});
 // #endregion part source document
 
 // #region part
@@ -946,7 +974,7 @@ type AiChatMessagePart_Props = {
 	onToolStop: AiChatController["stop"];
 };
 
-function AiChatMessagePart(props: AiChatMessagePart_Props) {
+const AiChatMessagePart = memo(function AiChatMessagePart(props: AiChatMessagePart_Props) {
 	const { role, part } = props;
 
 	const partClass = ((/* iife */) => {
@@ -972,9 +1000,9 @@ function AiChatMessagePart(props: AiChatMessagePart_Props) {
 			<AiChatMessagePartInner {...props} />
 		</div>
 	);
-}
+});
 
-function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
+const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 	const { role, part, isChatRunning } = props;
 
 	if (isToolOrDynamicToolUIPart(part)) {
@@ -1105,7 +1133,7 @@ function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
 	}
 
 	return null;
-}
+});
 // #endregion part
 
 // #region container
@@ -1118,7 +1146,7 @@ type AiChatMessageContainer_Props = ComponentPropsWithRef<"div"> & {
 	children: ReactNode;
 };
 
-function AiChatMessageContainer(props: AiChatMessageContainer_Props) {
+const AiChatMessageContainer = memo(function AiChatMessageContainer(props: AiChatMessageContainer_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -1131,7 +1159,7 @@ function AiChatMessageContainer(props: AiChatMessageContainer_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion container
 
 // #region content
@@ -1203,7 +1231,7 @@ function ai_chat_message_content_get_display_items(
 	return displayItems;
 }
 
-function AiChatMessageContent(props: AiChatMessageContent_Props) {
+const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMessageContent_Props) {
 	const {
 		ref,
 		id,
@@ -1265,7 +1293,7 @@ function AiChatMessageContent(props: AiChatMessageContent_Props) {
 				})}
 		</div>
 	);
-}
+});
 // #endregion content
 
 // #region bubble
@@ -1278,7 +1306,7 @@ type AiChatMessageBubble_Props = ComponentPropsWithRef<"div"> & {
 
 type AiChatMessageBubble_ClassNames = "AiChatMessageBubble";
 
-function AiChatMessageBubble(props: AiChatMessageBubble_Props) {
+const AiChatMessageBubble = memo(function AiChatMessageBubble(props: AiChatMessageBubble_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -1291,7 +1319,7 @@ function AiChatMessageBubble(props: AiChatMessageBubble_Props) {
 			{children}
 		</div>
 	);
-}
+});
 // #endregion bubble
 
 // #region user message
@@ -1328,7 +1356,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
 
-function AiChatMessageUser(props: AiChatMessageUser_Props) {
+const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUser_Props) {
 	const {
 		ref,
 		id,
@@ -1367,7 +1395,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 	const branchLabel = branchMetadata ? `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}` : "";
 	const showEditButton = !isEditing && Boolean(selectedThreadId) && canEdit;
 
-	const handleStartEdit = () => {
+	const handleStartEdit = useFn(() => {
 		if (!selectedThreadId || !canEdit) {
 			return;
 		}
@@ -1375,16 +1403,16 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 		const parentId = message.metadata?.convexParentId ?? null;
 
 		onEditStart({ messageId: message.id, parentId });
-	};
+	});
 
-	const handleEditCancel = () => {
+	const handleEditCancel = useFn(() => {
 		onEditCancel();
-	};
+	});
 
-	const handleEditSubmit: AiChatComposer_Props["onSubmit"] = (value) => {
+	const handleEditSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value) => {
 		onEditSubmit({ value });
-	};
-	const handleEditValueChange: AiChatComposer_Props["onValueChange"] = () => {};
+	});
+	const handleEditValueChange = useFn<AiChatComposer_Props["onValueChange"]>(() => {});
 
 	const handleBranchSwitch = (direction: "prev" | "next") => {
 		if (isRunning) {
@@ -1411,13 +1439,13 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 		onSelectBranchAnchor(selectedThreadId, nextAnchorId);
 	};
 
-	const handleBranchPrev = () => {
+	const handleBranchPrev = useFn(() => {
 		handleBranchSwitch("prev");
-	};
+	});
 
-	const handleBranchNext = () => {
+	const handleBranchNext = useFn(() => {
 		handleBranchSwitch("next");
-	};
+	});
 
 	return (
 		<AiChatMessageContainer
@@ -1504,7 +1532,7 @@ function AiChatMessageUser(props: AiChatMessageUser_Props) {
 			</AiChatMessageBubble>
 		</AiChatMessageContainer>
 	);
-}
+});
 // #endregion user message
 
 // #region agent message
@@ -1536,7 +1564,7 @@ type AiChatMessageAgent_Props = ComponentPropsWithRef<"div"> & {
 	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
 
-function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
+const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 	const {
 		ref,
 		id,
@@ -1570,19 +1598,19 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 	const text = ai_chat_get_message_text(message);
 	const streamErrorText = message.metadata?.status === "errored" ? "An error occurred during the generation" : null;
 
-	const handleReload = () => {
+	const handleReload = useFn(() => {
 		if (!selectedThreadId) {
 			return;
 		}
 		onMessageRegenerate({ threadId: selectedThreadId, messageId: message.id });
-	};
+	});
 
-	const handleBranchChat = () => {
+	const handleBranchChat = useFn(() => {
 		if (!selectedThreadId || isRunning) {
 			return;
 		}
 		onMessageBranchChat({ threadId: selectedThreadId, messageId: message.id });
-	};
+	});
 
 	const handleBranchSwitch = (direction: "prev" | "next") => {
 		if (isRunning) {
@@ -1609,13 +1637,13 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 		onSelectBranchAnchor(selectedThreadId, nextAnchorId);
 	};
 
-	const handleBranchPrev = () => {
+	const handleBranchPrev = useFn(() => {
 		handleBranchSwitch("prev");
-	};
+	});
 
-	const handleBranchNext = () => {
+	const handleBranchNext = useFn(() => {
 		handleBranchSwitch("next");
-	};
+	});
 
 	const showBranchControls = branchMetadata.variantCount > 1;
 	const branchLabel = `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}`;
@@ -1692,7 +1720,7 @@ function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
 			</AiChatMessageBubble>
 		</AiChatMessageContainer>
 	);
-}
+});
 // #endregion agent message
 
 // #region system message
@@ -1713,7 +1741,7 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
 };
 
-function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
+const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 	const { ref, id, className, message, isRunning, onToolOutput, onToolResumeStream, onToolStop, ...rest } = props;
 
 	return (
@@ -1734,7 +1762,7 @@ function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
 			</AiChatMessageBubble>
 		</AiChatMessageContainer>
 	);
-}
+});
 // #endregion system message
 
 // #region message
@@ -1772,7 +1800,7 @@ export type AiChatMessage_CustomAttributes = {
 	"data-ai-chat-message-role": ai_chat_AiSdk5UiMessage["role"];
 };
 
-export function AiChatMessage(props: AiChatMessage_Props) {
+export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Props) {
 	const {
 		ref,
 		id,
@@ -1867,5 +1895,5 @@ export function AiChatMessage(props: AiChatMessage_Props) {
 			{...rest}
 		/>
 	);
-}
+});
 // #endregion message

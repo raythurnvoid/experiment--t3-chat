@@ -740,8 +740,6 @@ Use `useEffect` (or other effect hooks) only for real side effects such as:
 - Imperative DOM APIs
 - Bridging to non-React code
 
-When you need a stable callback that can read the latest values without causing re-subscribe churn, prefer patterns like `useEffectEvent` or a "live ref" helper (as used in this codebase).
-
 ### Error boundaries
 
 For React subtree error boundaries in app UI, prefer TanStack Router's `CatchBoundary` over ad hoc class-based error boundary components.
@@ -1690,33 +1688,20 @@ export function MyWidget(props: MyWidget_Props) {
 }
 ```
 
-## React effect event patterns (useEffectEvent)
+## Stable prop callbacks with `useFn`
 
-Use `useEffectEvent` when you need a stable callback that can read the latest state/props without forcing effects, subscriptions, or observers to re-run on every render.
+Use `useFn` from `packages/app/src/hooks/utils-hooks.ts` when you need a stable callback identity outside an effect, especially for callbacks passed to memoized children or non-React APIs that benefit from receiving the same function reference across renders.
 
-## Use it for freshness without deps/ref churn
-
-- Use `useEffectEvent` for handlers passed into observers/subscriptions/timers where you do not want to re-subscribe on every render.
-- Do not add extra ref containers purely for freshness; the event callback reads the latest values.
-- Still use `useRef` for imperative handles (DOM nodes, timers, observers).
+- Use `useFn` for event handlers you pass down as props when the child or consumer benefits from a stable callback identity.
+- Prefer `useFn` over `useCallback` for this repo's "latest value + stable identity" callback pattern.
+- Keep using plain inline closures when you do not need a stable callback contract.
 
 ```tsx
-import { useEffect, useEffectEvent } from "react";
+const handleClick = useFn(() => {
+	doSomethingWithLatestValue(value);
+});
 
-export function Example(props: { value: string }) {
-	const { value } = props;
-
-	const logLatest = useEffectEvent(() => {
-		console.log("latest value:", value);
-	});
-
-	useEffect(() => {
-		const id = setInterval(() => logLatest(), 1000);
-		return () => clearInterval(id);
-	}, [logLatest]);
-
-	return null;
-}
+return <MyIconButton onClick={handleClick} />;
 ```
 
 ## Component attached exports (Fast Refresh / HMR-friendly)

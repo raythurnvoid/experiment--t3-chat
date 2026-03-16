@@ -334,34 +334,39 @@ export const MySidebarSeparator = memo(function MySidebarSeparator(props: MySide
 });
 // #endregion separator
 
-// #region footer
-type MySidebarFooter_ClassNames = "MySidebarFooter";
+// #region title
+type MySidebarTitle_ClassNames = "MySidebarTitle";
 
-export type MySidebarFooter_Props = ComponentPropsWithRef<"div">;
+export type MySidebarTitle_Props = ComponentPropsWithRef<"span">;
 
-export const MySidebarFooter = memo(function MySidebarFooter(props: MySidebarFooter_Props) {
+export const MySidebarTitle = memo(function MySidebarTitle(props: MySidebarTitle_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn("MySidebarFooter" satisfies MySidebarFooter_ClassNames, className)} {...rest}>
+		<span ref={ref} id={id} className={cn("MySidebarTitle" satisfies MySidebarTitle_ClassNames, className)} {...rest}>
 			{children}
-		</div>
+		</span>
 	);
 });
-// #endregion footer
+// #endregion title
 
 // #region header
 type MySidebarHeader_ClassNames = "MySidebarHeader";
 
-export type MySidebarHeader_Props = ComponentPropsWithRef<"div">;
+export type MySidebarHeader_Props = ComponentPropsWithRef<"header">;
 
 export const MySidebarHeader = memo(function MySidebarHeader(props: MySidebarHeader_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn("MySidebarHeader" satisfies MySidebarHeader_ClassNames, className)} {...rest}>
+		<header
+			ref={ref}
+			id={id}
+			className={cn("MySidebarHeader" satisfies MySidebarHeader_ClassNames, className)}
+			{...rest}
+		>
 			{children}
-		</div>
+		</header>
 	);
 });
 // #endregion header
@@ -409,6 +414,22 @@ export const MySidebarRail = memo(function MySidebarRail(props: MySidebarRail_Pr
 	);
 });
 // #endregion rail
+
+// #region footer
+type MySidebarFooter_ClassNames = "MySidebarFooter";
+
+export type MySidebarFooter_Props = ComponentPropsWithRef<"div">;
+
+export const MySidebarFooter = memo(function MySidebarFooter(props: MySidebarFooter_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<div ref={ref} id={id} className={cn("MySidebarFooter" satisfies MySidebarFooter_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+});
+// #endregion footer
 
 // #region inset
 type MySidebarInset_ClassNames = "MySidebarInset";

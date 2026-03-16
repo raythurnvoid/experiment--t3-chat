@@ -46,6 +46,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import { MySidebarHeader, MySidebarTitle } from "@/components/my-sidebar.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { MyPrimaryAction } from "@/components/my-action.tsx";
 import {
@@ -1074,20 +1075,71 @@ const PagesSidebarSearch = memo(function PagesSidebarSearch(props: PagesSidebarS
 // #region header
 type PagesSidebarHeader_ClassNames =
 	| "PagesSidebarHeader"
-	| "PagesSidebarHeader-top-section"
 	| "PagesSidebarHeader-top-section-left"
 	| "PagesSidebarHeader-hamburger-button"
 	| "PagesSidebarHeader-title"
-	| "PagesSidebarHeader-close-button"
-	| "PagesSidebarHeader-actions"
-	| "PagesSidebarHeader-actions-group"
-	| "PagesSidebarHeader-actions-icon-button"
-	| "PagesSidebarHeader-action-new-page"
-	| "PagesSidebarHeader-archive-toggle"
-	| "PagesSidebarHeader-multi-selection-counter"
-	| "PagesSidebarHeader-multi-selection-counter-label";
+	| "PagesSidebarHeader-close-button";
 
 type PagesSidebarHeader_Props = {
+	homePageId: string | undefined;
+	view: pages_EditorView;
+	onClose: () => void;
+};
+
+const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
+	const { homePageId, view, onClose } = props;
+
+	return (
+		<MySidebarHeader className={cn("PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames)}>
+			<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
+				<MainAppSidebarToggle
+					className={"PagesSidebarHeader-hamburger-button" satisfies PagesSidebarHeader_ClassNames}
+					variant="ghost-highlightable"
+					tooltip="Main Menu"
+				/>
+
+				<MyTooltip>
+					<MyTooltipTrigger>
+						<MyLink
+							className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
+							variant="button-tertiary"
+							to="/pages"
+							search={{ pageId: homePageId, view }}
+						>
+							<MySidebarTitle>Pages</MySidebarTitle>
+						</MyLink>
+					</MyTooltipTrigger>
+					<MyTooltipContent>Open Home</MyTooltipContent>
+				</MyTooltip>
+			</div>
+
+			<MyIconButton
+				variant="ghost-highlightable"
+				onClick={onClose}
+				tooltip="Close"
+				className={cn("PagesSidebarHeader-close-button" satisfies PagesSidebarHeader_ClassNames)}
+			>
+				<MyIconButtonIcon>
+					<X />
+				</MyIconButtonIcon>
+			</MyIconButton>
+		</MySidebarHeader>
+	);
+});
+// #endregion header
+
+// #region top section
+type PagesSidebarTopSection_ClassNames =
+	| "PagesSidebarTopSection"
+	| "PagesSidebarTopSection-actions"
+	| "PagesSidebarTopSection-actions-group"
+	| "PagesSidebarTopSection-actions-icon-button"
+	| "PagesSidebarTopSection-action-new-page"
+	| "PagesSidebarTopSection-archive-toggle"
+	| "PagesSidebarTopSection-multi-selection-counter"
+	| "PagesSidebarTopSection-multi-selection-counter-label";
+
+type PagesSidebarTopSection_Props = {
 	homePageId: string | undefined;
 	view: pages_EditorView;
 	selectedPageIdsCount: number;
@@ -1105,7 +1157,7 @@ type PagesSidebarHeader_Props = {
 	onArchiveToggleClick: () => void;
 };
 
-const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
+const PagesSidebarTopSection = memo(function PagesSidebarTopSection(props: PagesSidebarTopSection_Props) {
 	const {
 		homePageId,
 		view,
@@ -1128,55 +1180,22 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 		treeItemsList?.filter((item) => item.type === "page" && item.archiveOperationId !== undefined).length ?? 0;
 
 	return (
-		<div className={"PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames}>
-			<div className={cn("PagesSidebarHeader-top-section" satisfies PagesSidebarHeader_ClassNames)}>
-				<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
-					<MainAppSidebarToggle
-						className={"PagesSidebarHeader-hamburger-button" satisfies PagesSidebarHeader_ClassNames}
-						variant="ghost-highlightable"
-						tooltip="Main Menu"
-					/>
-
-					<MyTooltip>
-						<MyTooltipTrigger>
-							<MyLink
-								className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
-								variant="button-tertiary"
-								to="/pages"
-								search={{ pageId: homePageId, view }}
-							>
-								Pages
-							</MyLink>
-						</MyTooltipTrigger>
-						<MyTooltipContent>Open Home</MyTooltipContent>
-					</MyTooltip>
-				</div>
-
-				<MyIconButton
-					variant="ghost-highlightable"
-					onClick={onClose}
-					tooltip="Close"
-					className={cn("PagesSidebarHeader-close-button" satisfies PagesSidebarHeader_ClassNames)}
-				>
-					<MyIconButtonIcon>
-						<X />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</div>
+		<div className={cn("PagesSidebarTopSection" satisfies PagesSidebarTopSection_ClassNames)}>
+			<PagesSidebarHeader homePageId={homePageId} view={view} onClose={onClose} />
 
 			<PagesSidebarSearch onSearchQueryChange={onSearchQueryChange} />
 
-			<div className={cn("PagesSidebarHeader-actions" satisfies PagesSidebarHeader_ClassNames)}>
+			<div className={cn("PagesSidebarTopSection-actions" satisfies PagesSidebarTopSection_ClassNames)}>
 				{selectedPageIdsCount > 1 ? (
-					<div className={cn("PagesSidebarHeader-multi-selection-counter" satisfies PagesSidebarHeader_ClassNames)}>
+					<div className={cn("PagesSidebarTopSection-multi-selection-counter" satisfies PagesSidebarTopSection_ClassNames)}>
 						<span
-							className={cn("PagesSidebarHeader-multi-selection-counter-label" satisfies PagesSidebarHeader_ClassNames)}
+							className={cn("PagesSidebarTopSection-multi-selection-counter-label" satisfies PagesSidebarTopSection_ClassNames)}
 						>
 							{selectedPageIdsCount} items selected
 						</span>
-						<div className={cn("PagesSidebarHeader-actions-group" satisfies PagesSidebarHeader_ClassNames)}>
+						<div className={cn("PagesSidebarTopSection-actions-group" satisfies PagesSidebarTopSection_ClassNames)}>
 							<MyIconButton
-								className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+								className={cn("PagesSidebarTopSection-actions-icon-button" satisfies PagesSidebarTopSection_ClassNames)}
 								variant="secondary"
 								tooltip="Clear"
 								onClick={onClearSelectionClick}
@@ -1190,7 +1209,7 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 					</div>
 				) : (
 					<MyButton
-						className={cn("PagesSidebarHeader-action-new-page" satisfies PagesSidebarHeader_ClassNames)}
+						className={cn("PagesSidebarTopSection-action-new-page" satisfies PagesSidebarTopSection_ClassNames)}
 						variant="secondary"
 						onClick={onCreateRootPageClick}
 						disabled={isBusy}
@@ -1203,10 +1222,10 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 				)}
 			</div>
 
-			<div className={cn("PagesSidebarHeader-actions" satisfies PagesSidebarHeader_ClassNames)}>
-				<div className={cn("PagesSidebarHeader-actions-group" satisfies PagesSidebarHeader_ClassNames)}>
+			<div className={cn("PagesSidebarTopSection-actions" satisfies PagesSidebarTopSection_ClassNames)}>
+				<div className={cn("PagesSidebarTopSection-actions-group" satisfies PagesSidebarTopSection_ClassNames)}>
 					<MyIconButton
-						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+						className={cn("PagesSidebarTopSection-actions-icon-button" satisfies PagesSidebarTopSection_ClassNames)}
 						variant="ghost-highlightable"
 						tooltip="Expand root pages"
 						onClick={onExpandTopPagesClick}
@@ -1218,7 +1237,7 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 					</MyIconButton>
 
 					<MyIconButton
-						className={cn("PagesSidebarHeader-actions-icon-button" satisfies PagesSidebarHeader_ClassNames)}
+						className={cn("PagesSidebarTopSection-actions-icon-button" satisfies PagesSidebarTopSection_ClassNames)}
 						variant="ghost-highlightable"
 						tooltip="Collapse all"
 						onClick={onCollapseAllClick}
@@ -1232,7 +1251,7 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 
 				{archivedCount ? (
 					<MyButton
-						className={cn("PagesSidebarHeader-archive-toggle" satisfies PagesSidebarHeader_ClassNames)}
+						className={cn("PagesSidebarTopSection-archive-toggle" satisfies PagesSidebarTopSection_ClassNames)}
 						variant="ghost"
 						onClick={onArchiveToggleClick}
 						disabled={isBusy}
@@ -1244,7 +1263,7 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 		</div>
 	);
 });
-// #endregion header
+// #endregion top section
 
 // #region root
 type PagesSidebar_ClassNames = "PagesSidebar" | "PagesSidebar-content";
@@ -1967,7 +1986,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	return (
 		<aside className={"PagesSidebar" satisfies PagesSidebar_ClassNames}>
-			<PagesSidebarHeader
+			<PagesSidebarTopSection
 				homePageId={homePageId}
 				view={view}
 				selectedPageIdsCount={selectedPageIds.size}
@@ -1984,6 +2003,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				onCreateRootPageClick={handleCreateRootPageClick}
 				onArchiveToggleClick={handleArchiveToggleClick}
 			/>
+
 
 			<div className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 				<PagesSidebarTree

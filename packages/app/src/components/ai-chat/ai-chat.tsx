@@ -1,7 +1,8 @@
 import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
-import { useState, useEffect, useRef, useDeferredValue } from "react";
+import { memo, useState, useEffect, useRef, useDeferredValue } from "react";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { ArrowDown, PanelLeft } from "lucide-react";
 
@@ -41,8 +42,12 @@ type AiChatWelcome_Props = {
 	onClickSuggestion: (action: string) => void;
 };
 
-function AiChatWelcome(props: AiChatWelcome_Props) {
+const AiChatWelcome = memo(function AiChatWelcome(props: AiChatWelcome_Props) {
 	const { onClickSuggestion } = props;
+
+	const handleClick = useFn<AiChatWelcome_Props["onClickSuggestion"]>((action) => {
+		onClickSuggestion(action);
+	});
 
 	// TODO: the suggestions should be based on recent users activity
 
@@ -77,7 +82,7 @@ function AiChatWelcome(props: AiChatWelcome_Props) {
 						key={suggestion.action}
 						variant="secondary-subtle"
 						className={"AiChatWelcome-suggestion" satisfies AiChatWelcome_ClassNames}
-						onClick={() => onClickSuggestion(suggestion.action)}
+						onClick={() => handleClick(suggestion.action)}
 					>
 						<span className={"AiChatWelcome-suggestion-title" satisfies AiChatWelcome_ClassNames}>
 							{suggestion.title}
@@ -90,7 +95,7 @@ function AiChatWelcome(props: AiChatWelcome_Props) {
 			</div>
 		</div>
 	);
-}
+});
 // #endregion welcome
 
 // #region skeleton
@@ -106,7 +111,7 @@ type AiChatSkeleton_ClassNames =
 	| "AiChatSkeleton-line-medium"
 	| "AiChatSkeleton-line-long";
 
-function AiChatSkeleton() {
+const AiChatSkeleton = memo(function AiChatSkeleton() {
 	return (
 		<div className={"AiChatSkeleton" satisfies AiChatSkeleton_ClassNames}>
 			{/* User message skeleton */}
@@ -160,7 +165,7 @@ function AiChatSkeleton() {
 			</div>
 		</div>
 	);
-}
+});
 // #endregion skeleton
 
 // #region thread error
@@ -170,7 +175,7 @@ type AiChatThreadError_Props = ErrorComponentProps & {
 	message?: string;
 };
 
-function AiChatThreadError(props: AiChatThreadError_Props) {
+const AiChatThreadError = memo(function AiChatThreadError(props: AiChatThreadError_Props) {
 	const { message = "This chat cannot continue because it is in an invalid state." } = props;
 
 	return (
@@ -182,7 +187,7 @@ function AiChatThreadError(props: AiChatThreadError_Props) {
 			</div>
 		</div>
 	);
-}
+});
 // #endregion thread error
 
 // #region message list
@@ -212,7 +217,7 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
 
-function AiChatMessagesList(props: AiChatMessagesList_Props) {
+const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessagesList_Props) {
 	const {
 		ref,
 		id,
@@ -249,9 +254,9 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 	const shouldShowSkeleton = status === "loading" && !isRunning;
 	const streamErrorText = error ? "An error occurred during the generation" : null;
 
-	const handleSuggestionClick = (action: string) => {
+	const handleSuggestionClick = useFn<AiChatMessagesList_Props["onClickSuggestion"]>((action) => {
 		onClickSuggestion(action);
-	};
+	});
 
 	return (
 		<div
@@ -296,7 +301,7 @@ function AiChatMessagesList(props: AiChatMessagesList_Props) {
 			)}
 		</div>
 	);
-}
+});
 // #endregion message list
 
 // #region auto scroll hook
@@ -397,7 +402,7 @@ export type AiChatThread_CustomAttributes = {
 	"data-thread-id": string;
 };
 
-export function AiChatThread(props: AiChatThread_Props) {
+export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props) {
 	const { variant = "default", controller, scrollableContainer } = props;
 
 	const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -412,18 +417,18 @@ export function AiChatThread(props: AiChatThread_Props) {
 		controller,
 	});
 
-	const handleScrollToBottom = () => {
+	const handleScrollToBottom = useFn(() => {
 		scrollToBottom("smooth");
-	};
+	});
 
-	const handleComposerValueChange: AiChatComposer_Props["onValueChange"] = (value) => {
+	const handleComposerValueChange = useFn<AiChatComposer_Props["onValueChange"]>((value) => {
 		if (!selectedThreadId) {
 			return;
 		}
 		controller.setComposerValue(selectedThreadId, value);
-	};
+	});
 
-	const handleComposerSubmit: AiChatComposer_Props["onSubmit"] = (value) => {
+	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value) => {
 		if (!value.trim()) {
 			return;
 		}
@@ -434,13 +439,13 @@ export function AiChatThread(props: AiChatThread_Props) {
 		} else {
 			controller.startNewChat(value);
 		}
-	};
+	});
 
-	const handleComposerCancel: AiChatComposer_Props["onCancel"] = () => {
+	const handleComposerCancel = useFn<AiChatComposer_Props["onCancel"]>(() => {
 		controller.stop();
-	};
+	});
 
-	const handleClickSuggestion: AiChatMessagesList_Props["onClickSuggestion"] = (action) => {
+	const handleClickSuggestion = useFn<AiChatMessagesList_Props["onClickSuggestion"]>((action) => {
 		if (!action.trim()) {
 			return;
 		}
@@ -450,25 +455,25 @@ export function AiChatThread(props: AiChatThread_Props) {
 		} else {
 			controller.startNewChat(action);
 		}
-	};
+	});
 
-	const handleMessageRegenerate: AiChatMessagesList_Props["onMessageRegenerate"] = (args) => {
+	const handleMessageRegenerate = useFn<AiChatMessagesList_Props["onMessageRegenerate"]>((args) => {
 		if (!selectedThreadId || args.threadId !== selectedThreadId) {
 			return;
 		}
 
 		controller.regenerate(args.threadId, args.messageId);
-	};
+	});
 
-	const handleMessageBranchChat: AiChatMessagesList_Props["onMessageBranchChat"] = (args) => {
+	const handleMessageBranchChat = useFn<AiChatMessagesList_Props["onMessageBranchChat"]>((args) => {
 		if (!selectedThreadId || args.threadId !== selectedThreadId) {
 			return;
 		}
 
 		controller.branchChat(args.threadId, args.messageId);
-	};
+	});
 
-	const handleEditStart: AiChatMessagesList_Props["onEditStart"] = (args) => {
+	const handleEditStart = useFn<AiChatMessagesList_Props["onEditStart"]>((args) => {
 		if (!selectedThreadId) {
 			return;
 		}
@@ -477,13 +482,13 @@ export function AiChatThread(props: AiChatThread_Props) {
 		}
 		controller.selectBranchAnchor(selectedThreadId, args.parentId);
 		setEditingMessageId(args.messageId);
-	};
+	});
 
-	const handleEditCancel: AiChatMessagesList_Props["onEditCancel"] = () => {
+	const handleEditCancel = useFn<AiChatMessagesList_Props["onEditCancel"]>(() => {
 		setEditingMessageId(null);
-	};
+	});
 
-	const handleEditSubmit: AiChatMessagesList_Props["onEditSubmit"] = (args) => {
+	const handleEditSubmit = useFn<AiChatMessagesList_Props["onEditSubmit"]>((args) => {
 		if (!selectedThreadId) {
 			return;
 		}
@@ -498,9 +503,9 @@ export function AiChatThread(props: AiChatThread_Props) {
 
 		controller.sendUserText(selectedThreadId, value, { messageId: editingId });
 		setEditingMessageId(null);
-	};
+	});
 
-	const handleKeyDown: ComponentPropsWithRef<"div">["onKeyDown"] = (event) => {
+	const handleKeyDown = useFn<ComponentPropsWithRef<"div">["onKeyDown"]>((event) => {
 		const activeElement = document.activeElement;
 
 		if ((event.defaultPrevented && event.key !== "Escape") || !messagesListEl || !activeElement) {
@@ -695,15 +700,15 @@ export function AiChatThread(props: AiChatThread_Props) {
 				}
 			}
 		}
-	};
+	});
 
-	const handleCatchBoundaryError = (error: Error) => {
+	const handleCatchBoundaryError = useFn((error: Error) => {
 		console.error("[AiChatThread.handleCatchBoundaryError] Chat render failed", {
 			error,
 			selectedThreadId,
 			anchorId: controller.activeBranchMessages.anchorId ?? null,
 		});
-	};
+	});
 
 	const getCatchBoundaryResetKey = () => {
 		return `${selectedThreadId ?? "new"}:${controller.activeBranchMessages.anchorId ?? "root"}`;
@@ -767,7 +772,7 @@ export function AiChatThread(props: AiChatThread_Props) {
 			</CatchBoundary>
 		</div>
 	);
-}
+});
 // #endregion thread
 
 // #region root
@@ -786,12 +791,20 @@ type AiChat_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
 };
 
-export function AiChat(props: AiChat_Props) {
+export const AiChat = memo(function AiChat(props: AiChat_Props) {
 	const { ref, id, className, ...rest } = props;
 
 	const controller = useAiChatController();
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
+
+	const handleCloseSidebar = useFn(() => {
+		setAiChatSidebarOpen(false);
+	});
+
+	const handleOpenSidebar = useFn(() => {
+		setAiChatSidebarOpen(true);
+	});
 
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
@@ -800,7 +813,7 @@ export function AiChat(props: AiChat_Props) {
 				paginatedThreads={controller.currentThreadsWithOptimistic}
 				streamingTitleByThreadId={controller.streamingTitleByThreadId}
 				selectedThreadId={controller.selectedThreadId}
-				onClose={() => setAiChatSidebarOpen(false)}
+				onClose={handleCloseSidebar}
 				onSelectThread={controller.selectThread}
 				onToggleFavouriteThread={controller.setThreadStarred}
 				onBranchThread={controller.branchChat}
@@ -823,7 +836,7 @@ export function AiChat(props: AiChat_Props) {
 							<MyIconButton
 								variant="ghost-highlightable"
 								tooltip="Open chat threads"
-								onClick={() => setAiChatSidebarOpen(true)}
+								onClick={handleOpenSidebar}
 								className={"AiChat-thread-control-button" satisfies AiChat_ClassNames}
 							>
 								<PanelLeft className={"AiChat-thread-control-icon" satisfies AiChat_ClassNames} />
@@ -837,6 +850,6 @@ export function AiChat(props: AiChat_Props) {
 			</div>
 		</div>
 	);
-}
+});
 
 // #endregion root

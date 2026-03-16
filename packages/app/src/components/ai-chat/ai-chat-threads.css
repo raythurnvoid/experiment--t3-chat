@@ -1,41 +1,38 @@
 @layer components {
 	/* #region root */
-	.AiChatThreadsSidebar {
+	.AiChatThreads {
 		color: var(--color-fg-08);
 
-		transition: opacity 200ms ease;
-	}
-
-	.AiChatThreadsSidebar.MySidebar-state-closed {
-		opacity: 0;
-		pointer-events: none;
-	}
-
-	.AiChatThreadsSidebar-header {
-		padding: 0;
-	}
-
-	.AiChatThreads {
 		display: flex;
 		flex-direction: column;
 
 		height: 100%;
-		width: 100%;
+
+		transition: opacity 200ms ease;
+	}
+
+	.AiChatThreads.MySidebar-state-closed {
+		opacity: 0;
+		pointer-events: none;
 	}
 	/* #endregion root */
 
-	/* #region header */
-	.AiChatThreadsHeader {
+	/* #region top section */
+	.AiChatThreadsTopSection {
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
+		gap: 8px;
 
-		padding: 16px;
+		padding: 8px 16px;
 
 		border-bottom: 1px solid var(--color-fg-02);
 	}
+	/* #endregion top section */
 
-	.AiChatThreadsHeader-top-section {
+	/* #region header */
+	.AiChatThreadsHeader {
+		padding: 0;
+
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -47,14 +44,13 @@
 		gap: 8px;
 	}
 
+	.AiChatThreadsHeader-title {
+		padding: 6px 14px;
+	}
+
 	.AiChatThreadsHeader-hamburger-button {
 		height: 32px;
 		width: 32px;
-	}
-
-	.AiChatThreadsHeader-row {
-		display: flex;
-		justify-content: end;
 	}
 
 	.AiChatThreadsHeader-close-button {
