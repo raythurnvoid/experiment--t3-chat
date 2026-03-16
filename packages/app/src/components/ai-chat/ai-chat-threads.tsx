@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import { InfiniteScrollSentinel } from "@/components/infinite-scroll-sentinel.tsx";
+import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -49,6 +50,9 @@ const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
 // #region header
 type AiChatThreadsHeader_ClassNames =
 	| "AiChatThreadsHeader"
+	| "AiChatThreadsHeader-top-section"
+	| "AiChatThreadsHeader-top-section-left"
+	| "AiChatThreadsHeader-hamburger-button"
 	| "AiChatThreadsHeader-row"
 	| "AiChatThreadsHeader-close-button"
 	| "AiChatThreadsHeader-close-icon";
@@ -70,8 +74,15 @@ function AiChatThreadsHeader(props: AiChatThreadsHeader_Props) {
 
 	return (
 		<div className={cn("AiChatThreadsHeader" satisfies AiChatThreadsHeader_ClassNames)}>
-			{onClose ? (
-				<div className={cn("AiChatThreadsHeader-row" satisfies AiChatThreadsHeader_ClassNames)}>
+			<div className={cn("AiChatThreadsHeader-top-section" satisfies AiChatThreadsHeader_ClassNames)}>
+				<div className={cn("AiChatThreadsHeader-top-section-left" satisfies AiChatThreadsHeader_ClassNames)}>
+					<MainAppSidebarToggle
+						className={cn("AiChatThreadsHeader-hamburger-button" satisfies AiChatThreadsHeader_ClassNames)}
+						variant="ghost-highlightable"
+						tooltip="Main Menu"
+					/>
+				</div>
+				{onClose ? (
 					<MyIconButton
 						className={cn("AiChatThreadsHeader-close-button" satisfies AiChatThreadsHeader_ClassNames)}
 						variant="ghost-highlightable"
@@ -82,8 +93,8 @@ function AiChatThreadsHeader(props: AiChatThreadsHeader_Props) {
 							<X />
 						</MyIcon>
 					</MyIconButton>
-				</div>
-			) : null}
+				) : null}
+			</div>
 			<AiChatThreadsSearch searchQuery={searchQuery} onSearchChange={onSearchChange} />
 			<AiChatThreadsArchivedToggle checked={showArchived} onCheckedChange={onShowArchivedChange} />
 			<AiChatThreadsNewButton onClick={onNewChat} />

@@ -303,10 +303,11 @@ type MainAppSidebarItem_Props = {
 	to: string;
 	label: string;
 	icon: LucideIcon;
+	tooltip?: string;
 };
 
 const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSidebarItem_Props) {
-	const { to, label, icon: Icon } = props;
+	const { to, label, icon: Icon, tooltip } = props;
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
 	const isActive = to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
 
@@ -316,6 +317,8 @@ const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSideba
 				to={to}
 				className={"MainAppSidebarItem-trigger" satisfies MainAppSidebarItem_ClassNames}
 				data-selected={isActive ? "true" : undefined}
+				tooltip={tooltip}
+				tooltipPlacement={tooltip ? "right" : undefined}
 			>
 				<MySidebarListItemIcon>
 					<Icon />
@@ -372,17 +375,25 @@ const MainAppSidebarPresenceUsers = memo(function MainAppSidebarPresenceUsers(
 });
 // #endregion presence users
 
-// #region presence section
-type MainAppSidebarPresenceSection_ClassNames =
-	| "MainAppSidebarPresenceSection"
-	| "MainAppSidebarPresenceSection-primary-trigger"
-	| "MainAppSidebarPresenceSection-primary-trigger-content"
-	| "MainAppSidebarPresenceSection-online-label"
-	| "MainAppSidebarPresenceSection-actions"
-	| "MainAppSidebarPresenceSection-disable"
-	| "MainAppSidebarPresenceSection-hovercard";
+// #region presence control
+type MainAppSidebarPresenceControl_ClassNames =
+	| "MainAppSidebarPresenceControl"
+	| "MainAppSidebarPresenceControl-primary-trigger"
+	| "MainAppSidebarPresenceControl-primary-trigger-content"
+	| "MainAppSidebarPresenceControl-online-label"
+	| "MainAppSidebarPresenceControl-actions"
+	| "MainAppSidebarPresenceControl-actions-online-count"
+	| "MainAppSidebarPresenceControl-disable"
+	| "MainAppSidebarPresenceControl-hovercard";
 
-const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSection() {
+type MainAppSidebarPresenceControl_Props = {
+	sidebarCollapsed?: boolean;
+};
+
+const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceControl(
+	props: MainAppSidebarPresenceControl_Props,
+) {
+	const { sidebarCollapsed = false } = props;
 	const authenticated = AppAuthProvider.useAuthenticated();
 	const presenceEnabled = usePresenceEnabled();
 	const presence = usePresence({
@@ -409,7 +420,9 @@ const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSectio
 		return (
 			<MySidebarPrimaryAction
 				onClick={handleEnable}
-				className={"MainAppSidebarPresenceSection" satisfies MainAppSidebarPresenceSection_ClassNames}
+				className={"MainAppSidebarPresenceControl" satisfies MainAppSidebarPresenceControl_ClassNames}
+				tooltip={sidebarCollapsed ? "Enable presence" : undefined}
+				tooltipPlacement={sidebarCollapsed ? "right" : undefined}
 			>
 				<MySidebarListItemIcon>
 					<Users aria-hidden size={16} />
@@ -419,18 +432,28 @@ const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSectio
 		);
 	}
 
+	const disableButton = (
+		<MyButton
+			variant="ghost-highlightable"
+			className={cn("MainAppSidebarPresenceControl-disable" satisfies MainAppSidebarPresenceControl_ClassNames)}
+			onClick={handleDisable}
+		>
+			Disable
+		</MyButton>
+	);
+
 	return (
-		<div className={"MainAppSidebarPresenceSection" satisfies MainAppSidebarPresenceSection_ClassNames}>
+		<div className={"MainAppSidebarPresenceControl" satisfies MainAppSidebarPresenceControl_ClassNames}>
 			<MyHoverCard showTimeout={0} placement="right-start">
 				<MySidebarHovercardAction
 					className={cn(
-						"MainAppSidebarPresenceSection-primary-trigger" satisfies MainAppSidebarPresenceSection_ClassNames,
+						"MainAppSidebarPresenceControl-primary-trigger" satisfies MainAppSidebarPresenceControl_ClassNames,
 					)}
 					aria-label={`Show details about ${onlineCount} online users`}
 				>
 					<div
 						className={cn(
-							"MainAppSidebarPresenceSection-primary-trigger-content" satisfies MainAppSidebarPresenceSection_ClassNames,
+							"MainAppSidebarPresenceControl-primary-trigger-content" satisfies MainAppSidebarPresenceControl_ClassNames,
 						)}
 					>
 						<MySidebarListItemIcon>
@@ -438,7 +461,7 @@ const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSectio
 						</MySidebarListItemIcon>
 						<MySidebarListItemTitle
 							className={cn(
-								"MainAppSidebarPresenceSection-online-label" satisfies MainAppSidebarPresenceSection_ClassNames,
+								"MainAppSidebarPresenceControl-online-label" satisfies MainAppSidebarPresenceControl_ClassNames,
 							)}
 						>
 							{onlineCount} Online
@@ -447,22 +470,52 @@ const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSectio
 				</MySidebarHovercardAction>
 				<MyHoverCardContent
 					gutter={4}
-					className={cn("MainAppSidebarPresenceSection-hovercard" satisfies MainAppSidebarPresenceSection_ClassNames)}
+					aria-label="Presence: online users and options"
+					className={cn("MainAppSidebarPresenceControl-hovercard" satisfies MainAppSidebarPresenceControl_ClassNames)}
 				>
 					<MyHoverCardArrow />
+					<div
+						hidden={!sidebarCollapsed}
+						className={cn("MainAppSidebarPresenceControl-actions" satisfies MainAppSidebarPresenceControl_ClassNames)}
+					>
+						<span className={cn("MainAppSidebarPresenceControl-actions-online-count" satisfies MainAppSidebarPresenceControl_ClassNames)}>
+							{onlineCount} Online
+						</span>
+						{disableButton}
+					</div>
 					<MainAppSidebarPresenceUsers users={onlineUsers} />
 				</MyHoverCardContent>
-				<div className={cn("MainAppSidebarPresenceSection-actions" satisfies MainAppSidebarPresenceSection_ClassNames)}>
-					<MyButton
-						variant="ghost-highlightable"
-						className={cn("MainAppSidebarPresenceSection-disable" satisfies MainAppSidebarPresenceSection_ClassNames)}
-						onClick={handleDisable}
-					>
-						Disable
-					</MyButton>
+				<div
+					hidden={sidebarCollapsed}
+					className={cn("MainAppSidebarPresenceControl-actions" satisfies MainAppSidebarPresenceControl_ClassNames)}
+				>
+					{disableButton}
 				</div>
 			</MyHoverCard>
 		</div>
+	);
+});
+// #endregion presence control
+
+// #region presence section
+type MainAppSidebarPresenceSection_ClassNames = "MainAppSidebarPresenceSection";
+
+type MainAppSidebarPresenceSection_Props = {
+	sidebarCollapsed?: boolean;
+};
+
+const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSection(
+	props: MainAppSidebarPresenceSection_Props,
+) {
+	const { sidebarCollapsed = false } = props;
+
+	return (
+		<MySidebarSection
+			aria-label="Presence"
+			className={"MainAppSidebarPresenceSection" satisfies MainAppSidebarPresenceSection_ClassNames}
+		>
+			<MainAppSidebarPresenceControl sidebarCollapsed={sidebarCollapsed} />
+		</MySidebarSection>
 	);
 });
 // #endregion presence section
@@ -478,6 +531,7 @@ type MainAppSidebar_ClassNames =
 	| "MainAppSidebar-logo-link"
 	| "MainAppSidebar-logo"
 	| "MainAppSidebar-nav-list"
+	| "MainAppSidebarPresenceSection"
 	| "MainAppSidebar-footer"
 	| "MainAppSidebar-footer-menu";
 
@@ -560,18 +614,31 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 					</Link>
 				</div>
 
-				<MySidebarSection aria-label="Presence">
-					<MainAppSidebarPresenceSection />
-				</MySidebarSection>
+				<MainAppSidebarPresenceSection sidebarCollapsed={mainAppSidebarCollapsed} />
 
 				<MySidebarScrollableArea>
 					<MySidebarList
 						className={"MainAppSidebar-nav-list" satisfies MainAppSidebar_ClassNames}
 						aria-label="Main navigation"
 					>
-						<MainAppSidebarItem to="/" label="Home" icon={Home} />
-						<MainAppSidebarItem to="/chat" label="Chat" icon={MessageSquare} />
-						<MainAppSidebarItem to="/pages" label="Docs" icon={FileText} />
+						<MainAppSidebarItem
+							to="/"
+							label="Home"
+							icon={Home}
+							tooltip={mainAppSidebarCollapsed ? "Home" : undefined}
+						/>
+						<MainAppSidebarItem
+							to="/chat"
+							label="Chat"
+							icon={MessageSquare}
+							tooltip={mainAppSidebarCollapsed ? "Chat" : undefined}
+						/>
+						<MainAppSidebarItem
+							to="/pages"
+							label="Docs"
+							icon={FileText}
+							tooltip={mainAppSidebarCollapsed ? "Docs" : undefined}
+						/>
 					</MySidebarList>
 				</MySidebarScrollableArea>
 

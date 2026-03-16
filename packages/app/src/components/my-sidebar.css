@@ -32,21 +32,11 @@
 		}
 	}
 
-	.MySidebar-inner {
-		display: flex;
-		flex-direction: column;
-		height: 100%;
-		width: var(--my-sidebar-width);
-		transition: none;
-
-		transition: width 0s 0.2s ease-in-out;
-	}
-
-	.MySidebar-state-closed .MySidebar-inner {
+	.MySidebar-state-closed {
 		width: 0;
 	}
 
-	.MySidebar-state-expanded .MySidebar-inner {
+	.MySidebar-state-expanded {
 		width: var(--my-sidebar-width);
 
 		transition: none;

@@ -35,6 +35,23 @@
 		border-bottom: 1px solid var(--color-fg-02);
 	}
 
+	.AiChatThreadsHeader-top-section {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.AiChatThreadsHeader-top-section-left {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.AiChatThreadsHeader-hamburger-button {
+		height: 32px;
+		width: 32px;
+	}
+
 	.AiChatThreadsHeader-row {
 		display: flex;
 		justify-content: end;

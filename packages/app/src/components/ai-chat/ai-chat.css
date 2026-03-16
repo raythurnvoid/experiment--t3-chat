@@ -35,13 +35,7 @@
 		z-index: 2;
 
 		display: flex;
-		gap: 8px;
-	}
-
-	.AiChat-thread-control-button {
-		width: 32px;
-		height: 32px;
-		padding: 0;
+		align-items: center;
 	}
 
 	.AiChat-thread-control-icon {

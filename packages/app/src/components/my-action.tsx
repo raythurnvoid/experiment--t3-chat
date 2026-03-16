@@ -1,7 +1,7 @@
 import "./my-action.css";
 
 import { Link } from "@tanstack/react-router";
-import { memo, type ComponentPropsWithRef } from "react";
+import { memo, type ComponentPropsWithRef, type ReactNode } from "react";
 import type * as Ariakit from "@ariakit/react";
 
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
@@ -15,6 +15,7 @@ export type MyPrimaryAction_Props = ComponentPropsWithRef<"button"> & {
 	tooltip?: string;
 	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
 	tooltipDisabled?: boolean;
+	tooltipPlacement?: Ariakit.TooltipProviderProps["placement"];
 };
 
 export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAction_Props) {
@@ -26,6 +27,7 @@ export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAct
 		tooltip,
 		tooltipTimeout,
 		tooltipDisabled = false,
+		tooltipPlacement = "bottom",
 		children,
 		...rest
 	} = props;
@@ -50,7 +52,7 @@ export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAct
 	}
 
 	return (
-		<MyTooltip timeout={tooltipTimeout} placement="bottom" open={tooltipDisabled ? false : undefined}>
+		<MyTooltip timeout={tooltipTimeout} placement={tooltipPlacement} open={tooltipDisabled ? false : undefined}>
 			<MyTooltipTrigger>{buttonElement}</MyTooltipTrigger>
 			<MyTooltipContent unmountOnHide>{tooltip}</MyTooltipContent>
 		</MyTooltip>
@@ -61,12 +63,18 @@ export const MyPrimaryAction = memo(function MyPrimaryAction(props: MyPrimaryAct
 // #region primary action link
 type MyPrimaryActionLink_ClassNames = "MyPrimaryActionLink";
 
-export type MyPrimaryActionLink_Props = ComponentPropsWithRef<typeof Link>;
+export type MyPrimaryActionLink_Props = Omit<ComponentPropsWithRef<typeof Link>, "children"> & {
+	children?: ReactNode;
+	tooltip?: string;
+	tooltipTimeout?: Ariakit.TooltipProviderProps["timeout"];
+	tooltipDisabled?: boolean;
+	tooltipPlacement?: Ariakit.TooltipProviderProps["placement"];
+};
 
 export const MyPrimaryActionLink = memo(function MyPrimaryActionLink(props: MyPrimaryActionLink_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className, tooltip, tooltipTimeout, tooltipDisabled = false, tooltipPlacement = "bottom", children, ...rest } = props;
 
-	return (
+	const linkElement = (
 		<Link
 			ref={ref}
 			id={id}
@@ -75,10 +83,23 @@ export const MyPrimaryActionLink = memo(function MyPrimaryActionLink(props: MyPr
 				"MyPrimaryActionLink" satisfies MyPrimaryActionLink_ClassNames,
 				className,
 			)}
+			aria-label={tooltip}
 			{...rest}
 		>
 			{children}
+			{tooltip && <span className={cn("sr-only")}>{tooltip}</span>}
 		</Link>
+	);
+
+	if (!tooltip) {
+		return linkElement;
+	}
+
+	return (
+		<MyTooltip timeout={tooltipTimeout} placement={tooltipPlacement} open={tooltipDisabled ? false : undefined}>
+			<MyTooltipTrigger>{linkElement}</MyTooltipTrigger>
+			<MyTooltipContent unmountOnHide>{tooltip}</MyTooltipContent>
+		</MyTooltip>
 	);
 });
 // #endregion primary action link

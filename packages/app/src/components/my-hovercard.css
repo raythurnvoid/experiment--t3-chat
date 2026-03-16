@@ -1,10 +1,7 @@
 @layer common_components {
 	/* #region action */
-	.MyHovercardAction {
-		display: contents;
-	}
 
-	.MyHovercardAction-anchor {
+	.MyHovercardAction {
 		cursor: default;
 
 		border: 2px solid transparent;
@@ -16,18 +13,18 @@
 			color 0.15s ease;
 	}
 
-	.MyHovercardAction-anchor:focus-visible {
+	.MyHovercardAction:focus-visible {
 		outline-color: var(--color-fg-12);
 	}
 
-	.MyHovercardAction-anchor:hover,
-	.MyHovercardAction-anchor:focus-visible {
+	.MyHovercardAction:hover,
+	.MyHovercardAction:has(+ .MyHovercardAction-disclosure:focus-visible) {
 		background: var(--color-base-1-06);
 		color: var(--color-fg-11);
 	}
 
 	/* When the disclosure has focus, show focus styles on the anchor */
-	.MyHovercardAction:focus-within .MyHovercardAction-anchor {
+	.MyHovercardAction:has(+ .MyHovercardAction-disclosure:focus-within) {
 		outline-color: var(--color-fg-12);
 		background: var(--color-base-1-06);
 		color: var(--color-fg-11);

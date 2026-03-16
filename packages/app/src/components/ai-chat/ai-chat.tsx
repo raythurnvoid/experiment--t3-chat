@@ -815,13 +815,13 @@ export function AiChat(props: AiChat_Props) {
 					{!aiChatSidebarOpen && (
 						<div className={"AiChat-thread-controls" satisfies AiChat_ClassNames}>
 							<MainAppSidebarToggle
-								variant="outline"
+								variant="ghost-highlightable"
 								tooltip="Open app sidebar"
 								className={"AiChat-thread-control-button" satisfies AiChat_ClassNames}
 							/>
 
 							<MyIconButton
-								variant="outline"
+								variant="ghost-highlightable"
 								tooltip="Open chat threads"
 								onClick={() => setAiChatSidebarOpen(true)}
 								className={"AiChat-thread-control-button" satisfies AiChat_ClassNames}

@@ -427,12 +427,7 @@ export const MySidebarInset = memo(function MySidebarInset(props: MySidebarInset
 // #endregion inset
 
 // #region root
-type MySidebar_ClassNames =
-	| "MySidebar"
-	| "MySidebar-state-expanded"
-	| "MySidebar-state-closed"
-	| "MySidebar-mounted"
-	| "MySidebar-inner";
+type MySidebar_ClassNames = "MySidebar" | "MySidebar-state-expanded" | "MySidebar-state-closed" | "MySidebar-mounted";
 
 export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
 	state: "closed" | "expanded";
@@ -467,7 +462,7 @@ export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
 			}}
 			{...rest}
 		>
-			<div className={cn("MySidebar-inner" satisfies MySidebar_ClassNames)}>{children}</div>
+			{children}
 		</aside>
 	);
 });

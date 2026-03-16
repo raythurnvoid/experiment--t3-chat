@@ -1034,9 +1034,10 @@ export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 
 #### Modern CSS Nesting
 
-- Use the `&` syntax for nesting selectors within a component.
-- Keep all component states nested under the base component selector to maintain low specificity.
-- For nested selectors, use simple pseudo-classes like `&:hover` and `&:focus-visible`.
+- Prefer nesting by default for component-owned selectors. If a selector starts with the current component class, write it inside that component's base block unless there is a clear reason not to.
+- Use the `&` syntax for pseudo-classes, child selectors, modifiers/states, and contextual overrides that belong to the same component.
+- Keep component states and owned slots nested under the base component selector to maintain low specificity and make selector ownership obvious.
+- Flatten selectors only when you are intentionally expressing cross-component relationships, shared/global rules, or a selector that does not have one clear component owner.
 
 ```css
 /* ✅ Good - using modern CSS nesting with low specificity */
@@ -1056,6 +1057,10 @@ export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 		pointer-events: none;
 		flex-shrink: 0;
 	}
+
+	&.Button-variant-outline {
+		border-color: var(--color-base-1-05);
+	}
 }
 
 /* ❌ Bad - separate selectors increase complexity */
@@ -1065,6 +1070,14 @@ export function MyComboboxInputArea(props: MyComboboxInputArea_Props) {
 
 .Button:hover {
 	/* Hover styles - separate selector */
+}
+
+.Button svg {
+	/* Child styles - separate selector */
+}
+
+.Button.Button-variant-outline {
+	/* Variant styles - separate selector */
 }
 ```
 

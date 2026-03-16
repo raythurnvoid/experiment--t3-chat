@@ -43,10 +43,10 @@ export const MyHovercardAction = memo(function MyHovercardAction(props: MyHoverc
 	});
 
 	return (
-		<div className={"MyHovercardAction" satisfies MyHovercardAction_ClassNames}>
+		<>
 			<Ariakit.HovercardAnchor
 				id={id}
-				className={cn("MyHovercardAction-anchor" satisfies MyHovercardAction_ClassNames, className)}
+				className={cn("MyHovercardAction" satisfies MyHovercardAction_ClassNames, className)}
 				aria-label={ariaLabel}
 				onFocus={handleFocus}
 				render={(anchorProps) => <div {...anchorProps}>{children}</div>}
@@ -57,7 +57,7 @@ export const MyHovercardAction = memo(function MyHovercardAction(props: MyHoverc
 				className={cn("MyHovercardAction-disclosure" satisfies MyHovercardAction_ClassNames, "sr-only")}
 				aria-label={ariaLabel}
 			/>
-		</div>
+		</>
 	);
 });
 // #endregion action
