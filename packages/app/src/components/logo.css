@@ -1,0 +1,28 @@
+@layer common_components {
+	.Logo {
+		display: flex;
+		align-items: center;
+		justify-content: start;
+
+		height: 23px;
+		min-width: 73px;
+
+		font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+		font-size: 1.125rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+
+		color: var(--color-accent-06);
+
+		transition: color 0.15s ease;
+	}
+
+	.Logo:hover {
+		color: var(--color-accent-07);
+	}
+
+	.Logo-text {
+		font: inherit;
+		color: inherit;
+	}
+}

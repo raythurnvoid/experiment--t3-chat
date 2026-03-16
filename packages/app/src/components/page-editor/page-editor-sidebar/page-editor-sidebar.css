@@ -34,61 +34,6 @@
 		min-width: 0;
 	}
 
-	.PageEditorSidebar-tabs-list-draggable {
-		display: flex;
-		flex-direction: row;
-		align-items: center;
-		gap: 4px;
-
-		min-width: 0;
-	}
-
-	.PageEditorSidebar-tab-chat {
-		display: inline-flex;
-		align-items: stretch;
-		min-width: 0;
-	}
-
-	.PageEditorSidebar-tab-chat .MyTabsTab {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-
-		min-width: 0;
-		padding: 8px 8px 8px 4px;
-	}
-
-	.PageEditorSidebar-tab-chat-handle {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-
-		padding: 2px;
-		margin-right: 2px;
-
-		color: var(--color-fg-05);
-		cursor: grab;
-
-		flex-shrink: 0;
-	}
-
-	.PageEditorSidebar-tab-chat-handle:active {
-		cursor: grabbing;
-	}
-
-	.PageEditorSidebar-tab-chat-handle .MyIcon {
-		width: 14px;
-		height: 14px;
-	}
-
-	.PageEditorSidebar-tab-chat-title {
-		min-width: 0;
-
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
 	.PageEditorSidebar-tabs-panels {
 		flex: 1;
 		/* TODO: check if needed min-height: 0; */
@@ -142,19 +87,102 @@
 	}
 
 	.PageEditorSidebarAgent-header {
-		display: flex;
-		align-items: center;
-		justify-content: end;
-
 		padding: 4px 8px;
 
 		border-bottom: 1px solid var(--color-base-1-06);
+	}
+
+	.PageEditorSidebarAgent-header-main {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		min-width: 0;
+	}
+
+	.PageEditorSidebarAgent-header-tabs {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.PageEditorSidebarAgent-header-tabs .MyTabsList {
+		min-width: 0;
+	}
+
+	.PageEditorSidebarAgent-header-tabs-draggable {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		min-width: 0;
+	}
+
+	.PageEditorSidebarAgent-header-tab {
+		display: inline-flex;
+		align-items: stretch;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.PageEditorSidebarAgent-header-tab .MyTabsTab {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+
+		min-width: 0;
+		padding: 8px 8px 8px 4px;
+	}
+
+	.PageEditorSidebarAgent-header-tab-handle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		padding: 2px;
+		margin-right: 2px;
+
+		color: var(--color-fg-05);
+		cursor: grab;
+
+		flex-shrink: 0;
+	}
+
+	.PageEditorSidebarAgent-header-tab-handle:active {
+		cursor: grabbing;
+	}
+
+	.PageEditorSidebarAgent-header-tab-handle .MyIcon {
+		width: 14px;
+		height: 14px;
+	}
+
+	.PageEditorSidebarAgent-header-tab-title {
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.PageEditorSidebarAgent-header-tab-close.MyIconButton.MyButton {
+		width: 28px;
+		height: 28px;
+		padding: 4px;
+		align-self: center;
+	}
+
+	.PageEditorSidebarAgent-header-tab-close .MyIconButtonIcon {
+		width: 14px;
+		height: 14px;
 	}
 
 	.PageEditorSidebarAgent-header-actions {
 		display: flex;
 		align-items: center;
 		gap: 4px;
+
+		flex-shrink: 0;
 	}
 
 	.PageEditorSidebarAgent-chat-area {

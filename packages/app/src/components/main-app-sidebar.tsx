@@ -640,9 +640,9 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						/>
 						<MainAppSidebarItem
 							to="/pages"
-							label="Docs"
+							label="Pages"
 							icon={FileText}
-							tooltip={mainAppSidebarCollapsed ? "Docs" : undefined}
+							tooltip={mainAppSidebarCollapsed ? "Pages" : undefined}
 						/>
 					</MySidebarList>
 				</MySidebarScrollableArea>

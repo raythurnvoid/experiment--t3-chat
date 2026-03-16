@@ -1,7 +1,8 @@
 import "./page-editor-sidebar.css";
 import { memo, useEffect, useRef, useState, type MouseEvent, type Ref } from "react";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
-import { ArchiveIcon, ArchiveRestoreIcon, Clock, GripVertical, Plus, Star } from "lucide-react";
+import { ArchiveIcon, ArchiveRestoreIcon, Clock, GripVertical, Plus, Star, X } from "lucide-react";
+import { create } from "zustand";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -20,13 +21,116 @@ import {
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useAppLocalStorageState, type page_editor_sidebar_open_tab_Entry } from "@/lib/storage.ts";
+import {
+	storage_local,
+	storage_local_subscribe_to_storage_events,
+	type storage_local_Key,
+	useAppLocalStorageState,
+} from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 
 const PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS = "app_page_editor_sidebar_tabs_comments" satisfies AppElementId;
 const PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT = "app_page_editor_sidebar_tabs_agent" satisfies AppElementId;
 const PAGE_EDITOR_SIDEBAR_AGENT_TABS_DROPPABLE_ID = "page_editor_sidebar_agent_tabs";
+const PAGE_EDITOR_SIDEBAR_AGENT_TAB_ID_NEW = "__page_editor_sidebar_agent_new_chat__";
+const PAGE_EDITOR_SIDEBAR_OPEN_TABS_STORAGE_KEY =
+	"app_state::page_editor_sidebar_open_tabs" satisfies storage_local_Key;
+
+type page_editor_sidebar_open_tab_Entry = { id: string; title: string };
+
+type page_editor_sidebar_open_tabs_state_State = {
+	openTabs: page_editor_sidebar_open_tab_Entry[];
+};
+
+const usePageEditorSidebarOpenTabsState = ((/* iife */) => {
+	const storage = storage_local();
+
+	const parseOpenTabs = (value: string | null): page_editor_sidebar_open_tabs_state_State["openTabs"] => {
+		if (!value) {
+			return [];
+		}
+
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			if (!Array.isArray(parsed)) {
+				return [];
+			}
+
+			return parsed.filter(
+				(item): item is page_editor_sidebar_open_tab_Entry =>
+					typeof item === "object" &&
+					item !== null &&
+					typeof (item as page_editor_sidebar_open_tab_Entry).id === "string" &&
+					typeof (item as page_editor_sidebar_open_tab_Entry).title === "string",
+			);
+		} catch {
+			return [];
+		}
+	};
+
+	const store = create<page_editor_sidebar_open_tabs_state_State>(() => ({
+		openTabs: parseOpenTabs(storage.getItem(PAGE_EDITOR_SIDEBAR_OPEN_TABS_STORAGE_KEY)),
+	}));
+
+	let suppressWrite = false;
+
+	const setStateWithoutTriggeringWriteback = (nextState: Partial<page_editor_sidebar_open_tabs_state_State>) => {
+		suppressWrite = true;
+		store.setState(nextState);
+		suppressWrite = false;
+	};
+
+	store.subscribe((state, prev) => {
+		if (suppressWrite || state.openTabs === prev.openTabs) {
+			return;
+		}
+
+		storage.setItem(PAGE_EDITOR_SIDEBAR_OPEN_TABS_STORAGE_KEY, JSON.stringify(state.openTabs));
+	});
+
+	if (typeof window !== "undefined") {
+		storage_local_subscribe_to_storage_events((event) => {
+			if (event.key !== PAGE_EDITOR_SIDEBAR_OPEN_TABS_STORAGE_KEY) {
+				return;
+			}
+
+			const nextValue = parseOpenTabs(event.newValue);
+			const current = store.getState().openTabs;
+			if (
+				current === nextValue ||
+				(current.length === nextValue.length &&
+					current.every((entry, index) => entry.id === nextValue[index]?.id && entry.title === nextValue[index]?.title))
+			) {
+				return;
+			}
+
+			setStateWithoutTriggeringWriteback({ openTabs: nextValue });
+		});
+	}
+
+	return store;
+})();
+
+function get_tab_title(args: {
+	threadId: string;
+	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
+	streamingTitleByThreadId: AiChatController["streamingTitleByThreadId"];
+	fallbackTitle?: string;
+}) {
+	const { threadId, currentThreads, streamingTitleByThreadId, fallbackTitle = "New chat" } = args;
+	const streamedTitle = streamingTitleByThreadId[threadId];
+	if (streamedTitle) {
+		return streamedTitle;
+	}
+
+	const thread = currentThreads.find((currentThread) => currentThread._id === threadId);
+	if (thread?.title) {
+		return thread.title;
+	}
+
+	return fallbackTitle;
+}
 
 // #region agent
 type PageEditorSidebarAgentThreadPickerItem_ClassNames =
@@ -292,81 +396,224 @@ const PageEditorSidebarAgentThreadPicker = memo(function PageEditorSidebarAgentT
 type PageEditorSidebarAgent_ClassNames =
 	| "PageEditorSidebarAgent"
 	| "PageEditorSidebarAgent-header"
+	| "PageEditorSidebarAgent-header-main"
+	| "PageEditorSidebarAgent-header-tabs"
+	| "PageEditorSidebarAgent-header-tabs-draggable"
+	| "PageEditorSidebarAgent-header-tab"
+	| "PageEditorSidebarAgent-header-tab-handle"
+	| "PageEditorSidebarAgent-header-tab-title"
+	| "PageEditorSidebarAgent-header-tab-close"
 	| "PageEditorSidebarAgent-header-actions"
 	| "PageEditorSidebarAgent-chat-area";
 
-type PageEditorSidebarAgent_Props = {
-	/** When set, sync controller to this thread (e.g. when this panel is the selected chat tab). */
-	selectedThreadIdFromTab?: string | null;
-};
-
-const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props: PageEditorSidebarAgent_Props) {
-	const { selectedThreadIdFromTab } = props;
+const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent() {
 	const controller = useAiChatController({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
-	const openTabs = useAppLocalStorageState((s) => s.page_editor_sidebar_open_tabs);
+	const rootSelectedTab = useAppLocalStorageState((state) => state.pages_last_tab);
+	const openTabs = usePageEditorSidebarOpenTabsState((state) => state.openTabs);
+	const selectedAgentTab = useAppLocalStorageState((state) => state.page_editor_sidebar_agent_selected_tab);
+	const currentThreads = controller.currentThreadsWithOptimistic.unarchived.results;
 
-	// Sync controller to the tab’s thread when this panel is shown for that tab
-	useEffect(() => {
-		if (selectedThreadIdFromTab) {
-			controller.selectThread(selectedThreadIdFromTab);
-		}
-	}, [selectedThreadIdFromTab, controller]);
+	const selectedChatTabId =
+		openTabs.find((tab) => tab.id === selectedAgentTab)?.id ??
+		(controller.selectedThreadId && openTabs.find((tab) => tab.id === controller.selectedThreadId)?.id) ??
+		controller.selectedThreadId ??
+		openTabs.at(-1)?.id ??
+		PAGE_EDITOR_SIDEBAR_AGENT_TAB_ID_NEW;
 
-	// Start a new chat if no chat is selected on mount (single “Agent” tab mode)
+	// Start a new chat only when the Agent root tab is actually active.
 	useEffect(() => {
-		if (!hasAutoStartedRef.current && !controller.selectedThreadId) {
+		if (
+			rootSelectedTab === PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT &&
+			!hasAutoStartedRef.current &&
+			!controller.selectedThreadId
+		) {
 			hasAutoStartedRef.current = true;
 			controller.startNewChat();
 		}
-	}, []);
+	}, [rootSelectedTab, controller.selectedThreadId, controller]);
 
-	// When controller has a selected thread not in open tabs, add it and set selected tab
+	// Replace optimistic open-tab ids with their persisted thread ids once the thread is upgraded.
+	useEffect(() => {
+		let changed = false;
+		const nextOpenTabs: page_editor_sidebar_open_tab_Entry[] = [];
+		const seenIds = new Set<string>();
+
+		for (const openTab of openTabs) {
+			const persistedThread = currentThreads.find((thread) => {
+				return !ai_chat_is_optimistic_thread(thread) && thread.clientGeneratedId === openTab.id;
+			});
+
+			const nextOpenTab =
+				persistedThread == null
+					? openTab
+					: {
+							id: persistedThread._id,
+							title: get_tab_title({
+								threadId: persistedThread._id,
+								currentThreads,
+								streamingTitleByThreadId: controller.streamingTitleByThreadId,
+								fallbackTitle: openTab.title,
+							}),
+						};
+
+			if (nextOpenTab.id !== openTab.id || nextOpenTab.title !== openTab.title) {
+				changed = true;
+			}
+
+			if (seenIds.has(nextOpenTab.id)) {
+				changed = true;
+				continue;
+			}
+
+			seenIds.add(nextOpenTab.id);
+			nextOpenTabs.push(nextOpenTab);
+		}
+
+		if (changed) {
+			usePageEditorSidebarOpenTabsState.setState({ openTabs: nextOpenTabs });
+		}
+
+		if (!selectedAgentTab) {
+			return;
+		}
+
+		const persistedSelectedThread = currentThreads.find((thread) => {
+			return !ai_chat_is_optimistic_thread(thread) && thread.clientGeneratedId === selectedAgentTab;
+		});
+
+		if (persistedSelectedThread && persistedSelectedThread._id !== selectedAgentTab) {
+			useAppLocalStorageState.setState({
+				page_editor_sidebar_agent_selected_tab: persistedSelectedThread._id,
+			});
+		}
+	}, [openTabs, selectedAgentTab, currentThreads, controller.streamingTitleByThreadId]);
+
+	// Keep the stored opened chat tabs in sync with controller selection.
 	useEffect(() => {
 		const threadId = controller.selectedThreadId;
 		if (!threadId) {
 			return;
 		}
+
 		const inOpenTabs = openTabs.some((t) => t.id === threadId);
-		if (inOpenTabs) {
+		if (!inOpenTabs) {
+			const upgradedOptimisticOpenTab = currentThreads.find((thread) => {
+				return !ai_chat_is_optimistic_thread(thread) && thread._id === threadId;
+			})?.clientGeneratedId;
+
+			if (upgradedOptimisticOpenTab) {
+				const upgradedOpenTabIndex = openTabs.findIndex((tab) => tab.id === upgradedOptimisticOpenTab);
+				if (upgradedOpenTabIndex >= 0) {
+					const title = get_tab_title({
+						threadId,
+						currentThreads,
+						streamingTitleByThreadId: controller.streamingTitleByThreadId,
+					});
+					const nextOpenTabs = [...openTabs];
+					nextOpenTabs[upgradedOpenTabIndex] = { id: threadId, title };
+					usePageEditorSidebarOpenTabsState.setState({ openTabs: nextOpenTabs });
+					useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+					return;
+				}
+			}
+
+			const title = get_tab_title({
+				threadId,
+				currentThreads,
+				streamingTitleByThreadId: controller.streamingTitleByThreadId,
+			});
+			usePageEditorSidebarOpenTabsState.setState((prev) => ({
+				openTabs: [...prev.openTabs, { id: threadId, title }],
+			}));
+			useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
 			return;
 		}
-		const title = controller.streamingTitleByThreadId[threadId] ?? "New chat";
-		useAppLocalStorageState.setState((prev) => ({
-			page_editor_sidebar_open_tabs: [...prev.page_editor_sidebar_open_tabs, { id: threadId, title }],
-			pages_last_tab: threadId,
-		}));
-	}, [controller.selectedThreadId, controller.streamingTitleByThreadId, openTabs]);
+
+		if (selectedAgentTab !== threadId) {
+			useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+		}
+	}, [controller.selectedThreadId, controller.streamingTitleByThreadId, openTabs, selectedAgentTab, currentThreads]);
 
 	// Keep open tab titles in sync with streaming titles
 	useEffect(() => {
 		let changed = false;
 		const next = openTabs.map((tab) => {
-			const streamed = controller.streamingTitleByThreadId[tab.id];
-			if (streamed != null && streamed !== tab.title) {
+			const nextTitle = get_tab_title({
+				threadId: tab.id,
+				currentThreads,
+				streamingTitleByThreadId: controller.streamingTitleByThreadId,
+				fallbackTitle: tab.title,
+			});
+			if (nextTitle !== tab.title) {
 				changed = true;
-				return { ...tab, title: streamed };
+				return { ...tab, title: nextTitle };
 			}
 			return tab;
 		});
 		if (changed) {
-			useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: next });
+			usePageEditorSidebarOpenTabsState.setState({ openTabs: next });
 		}
-	}, [openTabs, controller.streamingTitleByThreadId]);
+	}, [openTabs, currentThreads, controller.streamingTitleByThreadId]);
 
 	const handleBeforeSelectThread = useFn((threadId: string) => {
 		const inOpenTabs = openTabs.some((t) => t.id === threadId);
-		const title = controller.streamingTitleByThreadId[threadId] ?? "New chat";
-		useAppLocalStorageState.setState((prev) => {
-			if (inOpenTabs) {
-				return { pages_last_tab: threadId };
-			}
-			return {
-				page_editor_sidebar_open_tabs: [...prev.page_editor_sidebar_open_tabs, { id: threadId, title }],
-				pages_last_tab: threadId,
-			};
+		const title = get_tab_title({
+			threadId,
+			currentThreads,
+			streamingTitleByThreadId: controller.streamingTitleByThreadId,
 		});
+		useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+		if (!inOpenTabs) {
+			usePageEditorSidebarOpenTabsState.setState((prev) => ({
+				openTabs: [...prev.openTabs, { id: threadId, title }],
+			}));
+		}
+	});
+
+	const handleChatTabChange = useFn((nextSelectedId: string | null | undefined) => {
+		if (!nextSelectedId || nextSelectedId === selectedChatTabId) {
+			return;
+		}
+
+		useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: nextSelectedId });
+		if (nextSelectedId !== PAGE_EDITOR_SIDEBAR_AGENT_TAB_ID_NEW) {
+			controller.selectThread(nextSelectedId);
+		}
+	});
+
+	const handleDragEnd = useFn((result: DropResult) => {
+		if (result.destination == null || result.destination.index === result.source.index) {
+			return;
+		}
+
+		const next = reorder_open_tabs(openTabs, result.source.index, result.destination.index);
+		usePageEditorSidebarOpenTabsState.setState({ openTabs: next });
+	});
+
+	const handleCloseTab = useFn((threadId: string) => {
+		if (openTabs.length <= 1) {
+			return;
+		}
+
+		const closedTabIndex = openTabs.findIndex((tab) => tab.id === threadId);
+		if (closedTabIndex < 0) {
+			return;
+		}
+
+		const nextOpenTabs = openTabs.filter((tab) => tab.id !== threadId);
+		const shouldSwitchTab = selectedChatTabId === threadId || controller.selectedThreadId === threadId;
+
+		if (shouldSwitchTab) {
+			const fallbackTab = nextOpenTabs[closedTabIndex - 1] ?? nextOpenTabs[closedTabIndex] ?? nextOpenTabs[0];
+			if (fallbackTab) {
+				useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: fallbackTab.id });
+				controller.selectThread(fallbackTab.id);
+			}
+		}
+
+		usePageEditorSidebarOpenTabsState.setState({ openTabs: nextOpenTabs });
 	});
 
 	const handleNewChat = () => {
@@ -375,22 +622,109 @@ const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props: PageE
 
 	return (
 		<div className={cn("PageEditorSidebarAgent" satisfies PageEditorSidebarAgent_ClassNames)}>
-			<div className={cn("PageEditorSidebarAgent-header" satisfies PageEditorSidebarAgent_ClassNames)}>
-				<div className={cn("PageEditorSidebarAgent-header-actions" satisfies PageEditorSidebarAgent_ClassNames)}>
-					<PageEditorSidebarAgentThreadPicker controller={controller} onBeforeSelectThread={handleBeforeSelectThread} />
-					<MyIconButton variant="ghost-highlightable" tooltip="New chat" onClick={handleNewChat}>
-						<MyIcon>
-							<Plus />
-						</MyIcon>
-					</MyIconButton>
+			<MyTabs selectedId={selectedChatTabId} setSelectedId={handleChatTabChange}>
+				<div className={cn("PageEditorSidebarAgent-header" satisfies PageEditorSidebarAgent_ClassNames)}>
+					<div className={cn("PageEditorSidebarAgent-header-main" satisfies PageEditorSidebarAgent_ClassNames)}>
+						<div className={cn("PageEditorSidebarAgent-header-tabs" satisfies PageEditorSidebarAgent_ClassNames)}>
+							<MyTabsList aria-label="Open chats">
+								{openTabs.length > 0 ? (
+									<DragDropContext onDragEnd={handleDragEnd}>
+										<Droppable droppableId={PAGE_EDITOR_SIDEBAR_AGENT_TABS_DROPPABLE_ID} direction="horizontal">
+											{(droppableProvided) => (
+												<div
+													ref={droppableProvided.innerRef}
+													{...droppableProvided.droppableProps}
+													className={cn(
+														"PageEditorSidebarAgent-header-tabs-draggable" satisfies PageEditorSidebarAgent_ClassNames,
+													)}
+												>
+													{openTabs.map((entry, index) => (
+														<Draggable key={entry.id} draggableId={entry.id} index={index}>
+															{(draggableProvided) => (
+																<div
+																	ref={draggableProvided.innerRef}
+																	{...draggableProvided.draggableProps}
+																	className={cn(
+																		"PageEditorSidebarAgent-header-tab" satisfies PageEditorSidebarAgent_ClassNames,
+																	)}
+																>
+																	<MyTabsTab id={entry.id}>
+																		<span
+																			{...draggableProvided.dragHandleProps}
+																			className={cn(
+																				"PageEditorSidebarAgent-header-tab-handle" satisfies PageEditorSidebarAgent_ClassNames,
+																			)}
+																			aria-hidden
+																		>
+																			<MyIcon>
+																				<GripVertical />
+																			</MyIcon>
+																		</span>
+																		<span
+																			className={cn(
+																				"PageEditorSidebarAgent-header-tab-title" satisfies PageEditorSidebarAgent_ClassNames,
+																			)}
+																		>
+																			{entry.title}
+																		</span>
+																	</MyTabsTab>
+																	<MyIconButton
+																		className={cn(
+																			"PageEditorSidebarAgent-header-tab-close" satisfies PageEditorSidebarAgent_ClassNames,
+																		)}
+																		variant="ghost-highlightable"
+																		tooltip={openTabs.length <= 1 ? "Keep at least one tab open" : "Close tab"}
+																		disabled={openTabs.length <= 1}
+																		onClick={() => handleCloseTab(entry.id)}
+																	>
+																		<MyIconButtonIcon>
+																			<X />
+																		</MyIconButtonIcon>
+																	</MyIconButton>
+																</div>
+															)}
+														</Draggable>
+													))}
+													{droppableProvided.placeholder}
+												</div>
+											)}
+										</Droppable>
+									</DragDropContext>
+								) : (
+									<MyTabsTab id={selectedChatTabId}>
+										{selectedChatTabId === PAGE_EDITOR_SIDEBAR_AGENT_TAB_ID_NEW
+											? "New chat"
+											: get_tab_title({
+													threadId: selectedChatTabId,
+													currentThreads,
+													streamingTitleByThreadId: controller.streamingTitleByThreadId,
+												})}
+									</MyTabsTab>
+								)}
+							</MyTabsList>
+						</div>
+						<div className={cn("PageEditorSidebarAgent-header-actions" satisfies PageEditorSidebarAgent_ClassNames)}>
+							<PageEditorSidebarAgentThreadPicker
+								controller={controller}
+								onBeforeSelectThread={handleBeforeSelectThread}
+							/>
+							<MyIconButton variant="ghost-highlightable" tooltip="New chat" onClick={handleNewChat}>
+								<MyIcon>
+									<Plus />
+								</MyIcon>
+							</MyIconButton>
+						</div>
+					</div>
 				</div>
-			</div>
-			<div
-				ref={setScrollableContainer}
-				className={cn("PageEditorSidebarAgent-chat-area" satisfies PageEditorSidebarAgent_ClassNames)}
-			>
-				<AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />
-			</div>
+				<MyTabsPanels
+					ref={setScrollableContainer}
+					className={cn("PageEditorSidebarAgent-chat-area" satisfies PageEditorSidebarAgent_ClassNames)}
+				>
+					<MyTabsPanel key={selectedChatTabId} tabId={selectedChatTabId}>
+						<AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />
+					</MyTabsPanel>
+				</MyTabsPanels>
+			</MyTabs>
 		</div>
 	);
 });
@@ -402,10 +736,6 @@ export type PageEditorSidebar_ClassNames =
 	| "PageEditorSidebar-toolbar"
 	| "PageEditorSidebar-toolbar-scrollable-area"
 	| "PageEditorSidebar-tabs-list"
-	| "PageEditorSidebar-tabs-list-draggable"
-	| "PageEditorSidebar-tab-chat"
-	| "PageEditorSidebar-tab-chat-handle"
-	| "PageEditorSidebar-tab-chat-title"
 	| "PageEditorSidebar-tabs-panels"
 	| "PageEditorSidebar-panel"
 	| "PageEditorSidebar-panel-empty"
@@ -429,34 +759,19 @@ function reorder_open_tabs(
 export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEditorSidebar_Props) {
 	const { commentsContainerRef } = props;
 
-	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab);
-	const openTabs = useAppLocalStorageState((state) => state.page_editor_sidebar_open_tabs);
+	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab) ?? PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS;
 
-	// Normalize: legacy "Agent" tab id when we have open chats -> select first chat tab
-	const selectedTabIdRaw = pagesLastTab ?? PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS;
-	const selectedTabId =
-		selectedTabIdRaw === PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT && openTabs.length > 0 ? openTabs[0].id : selectedTabIdRaw;
-
-	const handleTabChange = useFn((nextSelectedId: string | null | undefined) => {
-		if (!nextSelectedId || nextSelectedId === selectedTabId) {
+	const handleTabChange = (nextSelectedId: string | null | undefined) => {
+		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
 			return;
 		}
-		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId });
-	});
 
-	const handleDragEnd = useFn((result: DropResult) => {
-		if (result.destination == null || result.destination.index === result.source.index) {
-			return;
-		}
-		const next = reorder_open_tabs(openTabs, result.source.index, result.destination.index);
-		useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: next });
-	});
-
-	const hasChatTabs = openTabs.length > 0;
+		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
+	};
 
 	return (
 		<>
-			<MyTabs selectedId={selectedTabId} setSelectedId={handleTabChange}>
+			<MyTabs selectedId={pagesLastTab} setSelectedId={handleTabChange}>
 				<div className={cn("PageEditorSidebar-toolbar" satisfies PageEditorSidebar_ClassNames)}>
 					<div className={cn("PageEditorSidebar-toolbar-scrollable-area" satisfies PageEditorSidebar_ClassNames)}>
 						<MyTabsList
@@ -464,55 +779,7 @@ export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEdit
 							aria-label="Sidebar tabs"
 						>
 							<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab>
-							{hasChatTabs ? (
-								<DragDropContext onDragEnd={handleDragEnd}>
-									<Droppable droppableId={PAGE_EDITOR_SIDEBAR_AGENT_TABS_DROPPABLE_ID} direction="horizontal">
-										{(droppableProvided) => (
-											<div
-												ref={droppableProvided.innerRef}
-												{...droppableProvided.droppableProps}
-												className={cn("PageEditorSidebar-tabs-list-draggable" satisfies PageEditorSidebar_ClassNames)}
-											>
-												{openTabs.map((entry, index) => (
-													<Draggable key={entry.id} draggableId={entry.id} index={index}>
-														{(draggableProvided) => (
-															<div
-																ref={draggableProvided.innerRef}
-																{...draggableProvided.draggableProps}
-																className={cn("PageEditorSidebar-tab-chat" satisfies PageEditorSidebar_ClassNames)}
-															>
-																<MyTabsTab id={entry.id}>
-																	<span
-																		{...draggableProvided.dragHandleProps}
-																		className={cn(
-																			"PageEditorSidebar-tab-chat-handle" satisfies PageEditorSidebar_ClassNames,
-																		)}
-																		aria-hidden
-																	>
-																		<MyIcon>
-																			<GripVertical />
-																		</MyIcon>
-																	</span>
-																	<span
-																		className={cn(
-																			"PageEditorSidebar-tab-chat-title" satisfies PageEditorSidebar_ClassNames,
-																		)}
-																	>
-																		{entry.title}
-																	</span>
-																</MyTabsTab>
-															</div>
-														)}
-													</Draggable>
-												))}
-												{droppableProvided.placeholder}
-											</div>
-										)}
-									</Droppable>
-								</DragDropContext>
-							) : (
-								<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
-							)}
+							<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
 						</MyTabsList>
 					</div>
 				</div>
@@ -526,24 +793,12 @@ export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEdit
 							className={cn("PageEditorSidebar-comments-host" satisfies PageEditorSidebar_ClassNames)}
 						></div>
 					</MyTabsPanel>
-					{hasChatTabs ? (
-						openTabs.map((entry) => (
-							<MyTabsPanel
-								key={entry.id}
-								className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
-								tabId={entry.id}
-							>
-								<PageEditorSidebarAgent selectedThreadIdFromTab={entry.id} />
-							</MyTabsPanel>
-						))
-					) : (
-						<MyTabsPanel
-							className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
-							tabId={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}
-						>
-							<PageEditorSidebarAgent />
-						</MyTabsPanel>
-					)}
+					<MyTabsPanel
+						className={cn("PageEditorSidebar-panel" satisfies PageEditorSidebar_ClassNames)}
+						tabId={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}
+					>
+						<PageEditorSidebarAgent />
+					</MyTabsPanel>
 				</MyTabsPanels>
 			</MyTabs>
 		</>

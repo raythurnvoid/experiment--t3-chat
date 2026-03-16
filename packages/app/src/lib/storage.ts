@@ -1,7 +1,8 @@
 import { create } from "zustand";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 
-/** One open agent tab in the page editor sidebar (thread id + display title). */
-export type page_editor_sidebar_open_tab_Entry = { id: string; title: string };
+/** Selected opened-chat tab id inside the page editor agent sidebar. */
+export type page_editor_sidebar_agent_selected_tab_id = string | null;
 
 /**
  * All keys used for `localStorage` values.
@@ -169,14 +170,11 @@ export function storage_session() {
 }
 
 // #region app local storage state
-/** Selected tab id: comments element id or thread id for a chat tab. */
-export type page_editor_sidebar_selected_tab_id = string | null;
-
 type app_local_storage_state_State = {
 	pages_last_open: string | null;
-	/** Page editor sidebar selected tab: comments id or thread id. */
-	pages_last_tab: page_editor_sidebar_selected_tab_id;
-	page_editor_sidebar_open_tabs: page_editor_sidebar_open_tab_Entry[];
+	/** Fixed page editor sidebar tab: Comments or Agent. */
+	pages_last_tab: AppElementId | null;
+	page_editor_sidebar_agent_selected_tab: page_editor_sidebar_agent_selected_tab_id;
 	ai_chat_last_open: string | null;
 	main_app_sidebar_open: boolean;
 	main_app_sidebar_collapsed: boolean;
@@ -189,7 +187,7 @@ type app_local_storage_state_State = {
 const app_local_storage_state_KEYS = {
 	pages_last_open: "app_state::pages_last_open",
 	pages_last_tab: "app_state::pages_last_tab",
-	page_editor_sidebar_open_tabs: "app_state::page_editor_sidebar_open_tabs",
+	page_editor_sidebar_agent_selected_tab: "app_state::page_editor_sidebar_agent_selected_tab",
 	ai_chat_last_open: "app_state::ai_chat_last_open",
 	main_app_sidebar_open: "app_state::sidebar::main_app_open",
 	main_app_sidebar_collapsed: "app_state::sidebar::main_app_collapsed",
@@ -202,34 +200,28 @@ const app_local_storage_state_KEYS = {
 export const useAppLocalStorageState = ((/* iife */) => {
 	const storage = storage_local();
 
-	const parsePagesLastTab = (value: string | null): page_editor_sidebar_selected_tab_id => {
+	const parsePagesLastTab = (value: string | null): AppElementId | null => {
+		if (!value) {
+			return null;
+		}
+
+		switch (value) {
+			case "app_page_editor_sidebar_tabs_comments":
+			case "app_page_editor_sidebar_tabs_agent":
+				return value;
+			default:
+				return null;
+		}
+	};
+
+	const parsePageEditorSidebarAgentSelectedTab = (
+		value: string | null,
+	): app_local_storage_state_State["page_editor_sidebar_agent_selected_tab"] => {
 		if (!value || value.trim() === "") {
 			return null;
 		}
-		return value;
-	};
 
-	const parsePageEditorSidebarOpenTabs = (
-		value: string | null,
-	): app_local_storage_state_State["page_editor_sidebar_open_tabs"] => {
-		if (!value) {
-			return [];
-		}
-		try {
-			const parsed = JSON.parse(value) as unknown;
-			if (!Array.isArray(parsed)) {
-				return [];
-			}
-			return parsed.filter(
-				(item): item is page_editor_sidebar_open_tab_Entry =>
-					typeof item === "object" &&
-					item !== null &&
-					typeof (item as page_editor_sidebar_open_tab_Entry).id === "string" &&
-					typeof (item as page_editor_sidebar_open_tab_Entry).title === "string",
-			);
-		} catch {
-			return [];
-		}
+		return value;
 	};
 
 	const parsePresenceEnabled = (value: string | null) => {
@@ -248,11 +240,13 @@ export const useAppLocalStorageState = ((/* iife */) => {
 		}
 	};
 
+	const rawPagesLastTab = storage.getItem(app_local_storage_state_KEYS.pages_last_tab);
 	const initialState = {
 		pages_last_open: storage.getItem(app_local_storage_state_KEYS.pages_last_open),
-		pages_last_tab: parsePagesLastTab(storage.getItem(app_local_storage_state_KEYS.pages_last_tab)),
-		page_editor_sidebar_open_tabs: parsePageEditorSidebarOpenTabs(
-			storage.getItem(app_local_storage_state_KEYS.page_editor_sidebar_open_tabs),
+		pages_last_tab: parsePagesLastTab(rawPagesLastTab),
+		page_editor_sidebar_agent_selected_tab: parsePageEditorSidebarAgentSelectedTab(
+			storage.getItem(app_local_storage_state_KEYS.page_editor_sidebar_agent_selected_tab) ??
+				(parsePagesLastTab(rawPagesLastTab) ? null : rawPagesLastTab),
 		),
 		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
 		main_app_sidebar_open: parseSidebarOpen(storage.getItem(app_local_storage_state_KEYS.main_app_sidebar_open)),
@@ -304,10 +298,10 @@ export const useAppLocalStorageState = ((/* iife */) => {
 			writeValue(app_local_storage_state_KEYS.pages_last_tab, state.pages_last_tab);
 		}
 
-		if (state.page_editor_sidebar_open_tabs !== prev.page_editor_sidebar_open_tabs) {
+		if (state.page_editor_sidebar_agent_selected_tab !== prev.page_editor_sidebar_agent_selected_tab) {
 			writeValue(
-				app_local_storage_state_KEYS.page_editor_sidebar_open_tabs,
-				JSON.stringify(state.page_editor_sidebar_open_tabs),
+				app_local_storage_state_KEYS.page_editor_sidebar_agent_selected_tab,
+				state.page_editor_sidebar_agent_selected_tab,
 			);
 		}
 
@@ -374,14 +368,14 @@ export const useAppLocalStorageState = ((/* iife */) => {
 					setStateWithoutTriggeringWriteback({ pages_last_tab: nextValue });
 					return;
 				}
-				case app_local_storage_state_KEYS.page_editor_sidebar_open_tabs: {
-					const nextValue = parsePageEditorSidebarOpenTabs(event.newValue);
-					const current = store.getState().page_editor_sidebar_open_tabs;
-					if (current === nextValue || (current.length === nextValue.length && current.every((e, i) => e.id === nextValue[i].id && e.title === nextValue[i].title))) {
+				case app_local_storage_state_KEYS.page_editor_sidebar_agent_selected_tab: {
+					const nextValue = parsePageEditorSidebarAgentSelectedTab(event.newValue);
+					const current = store.getState().page_editor_sidebar_agent_selected_tab;
+					if (current === nextValue) {
 						return;
 					}
 
-					setStateWithoutTriggeringWriteback({ page_editor_sidebar_open_tabs: nextValue });
+					setStateWithoutTriggeringWriteback({ page_editor_sidebar_agent_selected_tab: nextValue });
 					return;
 				}
 				case app_local_storage_state_KEYS.ai_chat_last_open: {
