@@ -55,13 +55,9 @@
 	}
 
 	.MainAppSidebar-header {
-		padding: 8px;
-	}
-
-	.MainAppSidebar-header-row {
 		display: flex;
-		align-items: center;
 		gap: 8px;
+		padding: 8px;
 	}
 
 	/* #region presence section */

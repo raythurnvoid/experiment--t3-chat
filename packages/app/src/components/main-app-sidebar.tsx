@@ -1,8 +1,7 @@
 import "./main-app-sidebar.css";
 import "@/components/my-action.css";
 
-import * as React from "react";
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { FileText, Home, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
@@ -11,6 +10,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { dark } from "@clerk/themes";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { useAppLocalStorageState } from "@/lib/storage.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
 import { app_presence_set_enabled, usePresence, usePresenceEnabled, usePresenceList } from "@/hooks/presence-hooks.ts";
@@ -47,7 +47,7 @@ type MainAppSidebarThemeToggleMenuItem_ClassNames =
 	| "MainAppSidebarThemeToggleMenuItem-button"
 	| "MainAppSidebarThemeToggleMenuItem-icon";
 
-function ThemeToggleMenuItem() {
+const ThemeToggleMenuItem = memo(function ThemeToggleMenuItem() {
 	const { mode, resolved_theme, set_mode } = useThemeContext();
 
 	const get_theme_icon = () => {
@@ -57,7 +57,7 @@ function ThemeToggleMenuItem() {
 		return resolved_theme === "dark" ? <Moon /> : <Sun />;
 	};
 
-	const cycle_theme = () => {
+	const handleCycleTheme = useFn(() => {
 		switch (mode) {
 			case "light":
 				set_mode("dark");
@@ -71,14 +71,14 @@ function ThemeToggleMenuItem() {
 			default:
 				set_mode("system");
 		}
-	};
+	});
 
 	return (
 		<MySidebarListItem
 			className={"MainAppSidebarThemeToggleMenuItem" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 		>
 			<MySidebarListItemPrimaryAction
-				onClick={cycle_theme}
+				onClick={handleCycleTheme}
 				className={"MainAppSidebarThemeToggleMenuItem-button" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 			>
 				<MySidebarListItemIcon
@@ -92,7 +92,7 @@ function ThemeToggleMenuItem() {
 			</MySidebarListItemPrimaryAction>
 		</MySidebarListItem>
 	);
-}
+});
 // #endregion theme toggle item
 
 // #region menu button label
@@ -105,7 +105,9 @@ type MainAppSidebarMenuButtonLabel_Props = ComponentPropsWithRef<"span"> & {
 	children?: React.ReactNode;
 };
 
-function MainAppSidebarMenuButtonLabel(props: MainAppSidebarMenuButtonLabel_Props) {
+const MainAppSidebarMenuButtonLabel = memo(function MainAppSidebarMenuButtonLabel(
+	props: MainAppSidebarMenuButtonLabel_Props,
+) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -118,7 +120,7 @@ function MainAppSidebarMenuButtonLabel(props: MainAppSidebarMenuButtonLabel_Prop
 			{children}
 		</span>
 	);
-}
+});
 // #endregion menu button label
 
 // #region user profile button
@@ -138,17 +140,17 @@ type MainAppSidebarUserProfileButton_ClassNames =
 	| "MainAppSidebarClerkPopoverActionButtonText"
 	| "MainAppSidebarClerkPopoverFooter";
 
-function UserProfileButton() {
+const UserProfileButton = memo(function UserProfileButton() {
 	const { user } = useUser();
-	const userButtonRef = React.useRef<HTMLDivElement>(null);
+	const userButtonRef = useRef<HTMLDivElement>(null);
 
 	const theme = useThemeContext();
 
-	if (!user) {
-		return null;
-	}
-
 	const displayName = ((/* iife */) => {
+		if (!user) {
+			return "User";
+		}
+
 		const firstName = user.firstName ? user.firstName : "";
 		const lastName = user.lastName ? user.lastName : "";
 		const fullName = `${firstName} ${lastName}`.trim();
@@ -164,27 +166,19 @@ function UserProfileButton() {
 		return "User";
 	})();
 
-	const emailAddress = user.primaryEmailAddress?.emailAddress ? user.primaryEmailAddress.emailAddress : "";
+	const emailAddress = user?.primaryEmailAddress?.emailAddress ? user.primaryEmailAddress.emailAddress : "";
 
-	const handleCustomButtonClick = () => {
+	const handleCustomButtonClick = useFn(() => {
 		// Trigger the hidden UserButton
 		const userButton = userButtonRef.current?.querySelector("button");
 		if (userButton) {
 			userButton.click();
 		}
-	};
+	});
 
-	const clerkAvatarBoxClassName = "MainAppSidebarClerkAvatarBox" satisfies MainAppSidebarUserProfileButton_ClassNames;
-	const clerkPopoverCardClassName =
-		"MainAppSidebarClerkPopoverCard" satisfies MainAppSidebarUserProfileButton_ClassNames;
-	const clerkPopoverMainClassName =
-		"MainAppSidebarClerkPopoverMain" satisfies MainAppSidebarUserProfileButton_ClassNames;
-	const clerkPopoverActionButtonClassName =
-		"MainAppSidebarClerkPopoverActionButton" satisfies MainAppSidebarUserProfileButton_ClassNames;
-	const clerkPopoverActionButtonTextClassName =
-		"MainAppSidebarClerkPopoverActionButtonText" satisfies MainAppSidebarUserProfileButton_ClassNames;
-	const clerkPopoverFooterClassName =
-		"MainAppSidebarClerkPopoverFooter" satisfies MainAppSidebarUserProfileButton_ClassNames;
+	if (!user) {
+		return null;
+	}
 
 	return (
 		<div className={"MainAppSidebarUserProfileButton" satisfies MainAppSidebarUserProfileButton_ClassNames}>
@@ -226,12 +220,17 @@ function UserProfileButton() {
 					appearance={{
 						baseTheme: theme.resolved_theme === "dark" ? dark : (undefined as any),
 						elements: {
-							userButtonAvatarBox: clerkAvatarBoxClassName,
-							userButtonPopoverCard: clerkPopoverCardClassName,
-							userButtonPopoverMain: clerkPopoverMainClassName,
-							userButtonPopoverActionButton: clerkPopoverActionButtonClassName,
-							userButtonPopoverActionButtonText: clerkPopoverActionButtonTextClassName,
-							userButtonPopoverFooter: clerkPopoverFooterClassName,
+							userButtonAvatarBox: "MainAppSidebarClerkAvatarBox" satisfies MainAppSidebarUserProfileButton_ClassNames,
+							userButtonPopoverCard:
+								"MainAppSidebarClerkPopoverCard" satisfies MainAppSidebarUserProfileButton_ClassNames,
+							userButtonPopoverMain:
+								"MainAppSidebarClerkPopoverMain" satisfies MainAppSidebarUserProfileButton_ClassNames,
+							userButtonPopoverActionButton:
+								"MainAppSidebarClerkPopoverActionButton" satisfies MainAppSidebarUserProfileButton_ClassNames,
+							userButtonPopoverActionButtonText:
+								"MainAppSidebarClerkPopoverActionButtonText" satisfies MainAppSidebarUserProfileButton_ClassNames,
+							userButtonPopoverFooter:
+								"MainAppSidebarClerkPopoverFooter" satisfies MainAppSidebarUserProfileButton_ClassNames,
 						},
 					}}
 					userProfileMode="modal"
@@ -239,7 +238,7 @@ function UserProfileButton() {
 			</div>
 		</div>
 	);
-}
+});
 // #endregion user profile button
 
 // #region profile section
@@ -248,7 +247,7 @@ type MainAppSidebarProfileSection_ClassNames =
 	| "MainAppSidebarProfileSection-signin-button"
 	| "MainAppSidebarProfileSection-user";
 
-function ProfileSection() {
+const ProfileSection = memo(function ProfileSection() {
 	return (
 		<div className={"MainAppSidebarProfileSection" satisfies MainAppSidebarProfileSection_ClassNames}>
 			<SignedOut>
@@ -268,7 +267,7 @@ function ProfileSection() {
 			</SignedIn>
 		</div>
 	);
-}
+});
 // #endregion profile section
 
 // #region inset
@@ -281,7 +280,7 @@ type MainAppSidebarInset_Props = ComponentPropsWithRef<typeof MySidebarInset> & 
 	children?: React.ReactNode;
 };
 
-function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
+const MainAppSidebarInset = memo(function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	return (
@@ -294,7 +293,7 @@ function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
 			{children}
 		</MySidebarInset>
 	);
-}
+});
 // #endregion inset
 
 // #region item
@@ -383,7 +382,7 @@ type MainAppSidebarPresenceSection_ClassNames =
 	| "MainAppSidebarPresenceSection-disable"
 	| "MainAppSidebarPresenceSection-hovercard";
 
-function MainAppSidebarPresenceSection() {
+const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSection() {
 	const authenticated = AppAuthProvider.useAuthenticated();
 	const presenceEnabled = usePresenceEnabled();
 	const presence = usePresence({
@@ -399,12 +398,12 @@ function MainAppSidebarPresenceSection() {
 	const onlineUsers = (presenceList?.users ?? []).filter((user) => user.online !== false);
 	const onlineCount = onlineUsers.length;
 
-	const handleEnable = () => {
+	const handleEnable = useFn(() => {
 		app_presence_set_enabled(true);
-	};
-	const handleDisable = () => {
+	});
+	const handleDisable = useFn(() => {
 		app_presence_set_enabled(false);
-	};
+	});
 
 	if (!presenceEnabled) {
 		return (
@@ -465,7 +464,7 @@ function MainAppSidebarPresenceSection() {
 			</MyHoverCard>
 		</div>
 	);
-}
+});
 // #endregion presence section
 
 // #region root
@@ -474,7 +473,6 @@ type MainAppSidebar_ClassNames =
 	| "MainAppSidebar-state-collapsed"
 	| "MainAppSidebar-sidebar"
 	| "MainAppSidebar-header"
-	| "MainAppSidebar-header-row"
 	| "MainAppSidebar-header-width-toggle"
 	| "MainAppSidebar-logo-section"
 	| "MainAppSidebar-logo-link"
@@ -490,7 +488,7 @@ type MainAppSidebar_Props = ComponentPropsWithRef<"div"> & {
 	children?: React.ReactNode;
 };
 
-export function MainAppSidebar(props: MainAppSidebar_Props) {
+export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className, children, ...rest } = props;
 
 	const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
@@ -498,19 +496,19 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 
 	const sidebarState: MySidebar_Props["state"] = !isOpen ? "closed" : "expanded";
 
-	const toggleSidebarWidth = () => {
-		useAppLocalStorageState.setState((state) => ({
-			main_app_sidebar_collapsed: !state.main_app_sidebar_collapsed,
-		}));
-	};
-
-	const toggleSidebar = () => {
+	const toggleSidebar = useFn(() => {
 		useAppLocalStorageState.setState((state) => ({
 			main_app_sidebar_open: !state.main_app_sidebar_open,
 		}));
-	};
+	});
 
-	React.useEffect(() => {
+	const handleSidebarWidthToggleClick = useFn(() => {
+		useAppLocalStorageState.setState((state) => ({
+			main_app_sidebar_collapsed: !state.main_app_sidebar_collapsed,
+		}));
+	});
+
+	useEffect(() => {
 		const handleKeyDown = (event: KeyboardEvent) => {
 			if (event.key.toLowerCase() !== main_app_sidebar_KEYBOARD_SHORTCUT) {
 				return;
@@ -546,16 +544,14 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 				className={"MainAppSidebar-sidebar" satisfies MainAppSidebar_ClassNames}
 			>
 				<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
-					<div className={"MainAppSidebar-header-row" satisfies MainAppSidebar_ClassNames}>
-						<MyIconButton
-							className={cn("MainAppSidebar-header-width-toggle" satisfies MainAppSidebar_ClassNames)}
-							variant="ghost-highlightable"
-							tooltip={mainAppSidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
-							onClick={toggleSidebarWidth}
-						>
-							{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
-						</MyIconButton>
-					</div>
+					<MyIconButton
+						className={cn("MainAppSidebar-header-width-toggle" satisfies MainAppSidebar_ClassNames)}
+						variant="ghost-highlightable"
+						tooltip={mainAppSidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
+						onClick={handleSidebarWidthToggleClick}
+					>
+						{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+					</MyIconButton>
 				</MySidebarHeader>
 
 				<div className={"MainAppSidebar-logo-section" satisfies MainAppSidebar_ClassNames}>
@@ -589,5 +585,5 @@ export function MainAppSidebar(props: MainAppSidebar_Props) {
 			<MainAppSidebarInset>{children}</MainAppSidebarInset>
 		</div>
 	);
-}
+});
 // #endregion root
