@@ -19,7 +19,7 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { Logo } from "@/components/logo.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
-import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyHoverCard, MyHoverCardArrow, MyHoverCardContent } from "@/components/my-hovercard.tsx";
 import {
 	MySidebar,
@@ -387,13 +387,14 @@ type MainAppSidebarPresenceControl_ClassNames =
 	| "MainAppSidebarPresenceControl-hovercard";
 
 type MainAppSidebarPresenceControl_Props = {
-	sidebarCollapsed?: boolean;
+	sidebarCollapsed: boolean;
 };
 
 const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceControl(
 	props: MainAppSidebarPresenceControl_Props,
 ) {
-	const { sidebarCollapsed = false } = props;
+	const { sidebarCollapsed } = props;
+
 	const authenticated = AppAuthProvider.useAuthenticated();
 	const presenceEnabled = usePresenceEnabled();
 	const presence = usePresence({
@@ -425,7 +426,7 @@ const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceContro
 				tooltipPlacement={sidebarCollapsed ? "right" : undefined}
 			>
 				<MySidebarListItemIcon>
-					<Users aria-hidden size={16} />
+					<Users />
 				</MySidebarListItemIcon>
 				<MySidebarListItemTitle>Enable presence</MySidebarListItemTitle>
 			</MySidebarPrimaryAction>
@@ -457,7 +458,7 @@ const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceContro
 						)}
 					>
 						<MySidebarListItemIcon>
-							<Users aria-hidden size={16} />
+							<Users />
 						</MySidebarListItemIcon>
 						<MySidebarListItemTitle
 							className={cn(
@@ -478,7 +479,11 @@ const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceContro
 						hidden={!sidebarCollapsed}
 						className={cn("MainAppSidebarPresenceControl-actions" satisfies MainAppSidebarPresenceControl_ClassNames)}
 					>
-						<span className={cn("MainAppSidebarPresenceControl-actions-online-count" satisfies MainAppSidebarPresenceControl_ClassNames)}>
+						<span
+							className={cn(
+								"MainAppSidebarPresenceControl-actions-online-count" satisfies MainAppSidebarPresenceControl_ClassNames,
+							)}
+						>
 							{onlineCount} Online
 						</span>
 						{disableButton}
@@ -501,13 +506,13 @@ const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceContro
 type MainAppSidebarPresenceSection_ClassNames = "MainAppSidebarPresenceSection";
 
 type MainAppSidebarPresenceSection_Props = {
-	sidebarCollapsed?: boolean;
+	sidebarCollapsed: boolean;
 };
 
 const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSection(
 	props: MainAppSidebarPresenceSection_Props,
 ) {
-	const { sidebarCollapsed = false } = props;
+	const { sidebarCollapsed } = props;
 
 	return (
 		<MySidebarSection
@@ -604,7 +609,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						tooltip={mainAppSidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
 						onClick={handleSidebarWidthToggleClick}
 					>
-						{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+						<MyIconButtonIcon>{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}</MyIconButtonIcon>
 					</MyIconButton>
 				</MySidebarHeader>
 

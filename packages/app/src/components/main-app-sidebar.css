@@ -25,6 +25,10 @@
 						> .MainAppSidebarItem-title {
 							display: none;
 						}
+
+						> .MySidebarListItemIcon {
+							font-size: 24px;
+						}
 					}
 				}
 
@@ -59,6 +63,11 @@
 
 					> .MySidebarListItemTitle {
 						display: none;
+					}
+
+					> .MySidebarListItemIcon,
+					.MainAppSidebarPresenceControl-primary-trigger-content > .MySidebarListItemIcon {
+						font-size: 24px;
 					}
 
 					.MainAppSidebarPresenceControl-primary-trigger {
