@@ -19,6 +19,48 @@ export const MyTabsTab = memo(function MyTabsTab(props: MyTabsTab_Props) {
 });
 // #endregion tab
 
+// #region tab-surface
+export type MyTabsTabSurface_ClassNames = "MyTabsTabSurface";
+
+export type MyTabsTabSurface_Props = ComponentPropsWithRef<"div"> & {
+	ref?: Ref<HTMLDivElement>;
+	id?: string;
+	className?: string;
+	children?: ReactNode;
+};
+
+export const MyTabsTabSurface = memo(function MyTabsTabSurface(props: MyTabsTabSurface_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<div ref={ref} id={id} className={cn("MyTabsTabSurface" satisfies MyTabsTabSurface_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+});
+// #endregion tab-surface
+
+// #region tab-primary-action
+export type MyTabsTabPrimaryAction_ClassNames = "MyTabsTabPrimaryAction";
+
+export type MyTabsTabPrimaryAction_Props = Ariakit.TabProps;
+
+export const MyTabsTabPrimaryAction = memo(function MyTabsTabPrimaryAction(props: MyTabsTabPrimaryAction_Props) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<Ariakit.Tab
+			ref={ref}
+			id={id}
+			className={cn("MyTabsTabPrimaryAction" satisfies MyTabsTabPrimaryAction_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.Tab>
+	);
+});
+// #endregion tab-primary-action
+
 // #region panel
 export type MyTabsPanel_ClassNames = "MyTabsPanel";
 

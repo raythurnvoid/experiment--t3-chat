@@ -73,6 +73,87 @@
 	}
 	/* #endregion tab */
 
+	/* #region tab-surface */
+	.MyTabsTabSurface {
+		position: relative;
+
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+
+		height: 36px;
+		padding: 8px 10px;
+		border-radius: 6px;
+		border: 2px solid transparent;
+		outline: 2px solid transparent;
+		outline-offset: -2px;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1;
+
+		background: transparent;
+		color: var(--color-fg-06);
+
+		user-select: none;
+
+		transition:
+			background-color 0.15s ease,
+			color 0.15s ease;
+
+		&:has(.MyTabsTabPrimaryAction:hover) {
+			background: var(--color-base-alt-1-07);
+			color: var(--color-fg-08);
+		}
+
+		&:has(.MyTabsTabPrimaryAction:focus-visible),
+		&:has(.MyTabsTabPrimaryAction[data-focus-visible]) {
+			outline-color: var(--color-fg-12);
+		}
+
+		&:has(.MyTabsTabPrimaryAction:active),
+		&:has(.MyTabsTabPrimaryAction[aria-selected="true"]) {
+			background: var(--color-base-alt-1-07);
+			color: var(--color-fg-10);
+		}
+
+		&:has(.MyTabsTabPrimaryAction[aria-selected="true"]) {
+			cursor: default;
+		}
+
+		&:has(.MyTabsTabPrimaryAction[aria-disabled="true"]) {
+			cursor: default;
+		}
+	}
+	/* #endregion tab-surface */
+
+	/* #region tab-primary-action */
+	.MyTabsTabPrimaryAction {
+		flex: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+
+		min-width: 0;
+		height: 100%;
+		padding: 0;
+		border: none;
+		outline: none;
+		outline-offset: 0;
+
+		font-size: inherit;
+		font-weight: inherit;
+		line-height: inherit;
+
+		background: transparent;
+		color: inherit;
+
+		cursor: pointer;
+		user-select: none;
+	}
+	/* #endregion tab-primary-action */
+
 	/* #region panel */
 	.MyTabsPanel {
 		outline: none;
