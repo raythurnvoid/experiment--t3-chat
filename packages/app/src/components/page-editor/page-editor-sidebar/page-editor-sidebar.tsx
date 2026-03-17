@@ -13,7 +13,6 @@ const PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT = "app_page_editor_sidebar_tabs_agent" sa
 export type PageEditorSidebar_ClassNames =
 	| "PageEditorSidebar"
 	| "PageEditorSidebar-toolbar"
-	| "PageEditorSidebar-toolbar-scrollable-area"
 	| "PageEditorSidebar-tabs-list"
 	| "PageEditorSidebar-tabs-panels"
 	| "PageEditorSidebar-panel"
@@ -41,15 +40,13 @@ export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEdit
 		<>
 			<MyTabs selectedId={pagesLastTab} setSelectedId={handleTabChange}>
 				<div className={cn("PageEditorSidebar-toolbar" satisfies PageEditorSidebar_ClassNames)}>
-					<div className={cn("PageEditorSidebar-toolbar-scrollable-area" satisfies PageEditorSidebar_ClassNames)}>
-						<MyTabsList
-							className={cn("PageEditorSidebar-tabs-list" satisfies PageEditorSidebar_ClassNames)}
-							aria-label="Sidebar tabs"
-						>
-							<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab>
-							<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
-						</MyTabsList>
-					</div>
+					<MyTabsList
+						className={cn("PageEditorSidebar-tabs-list" satisfies PageEditorSidebar_ClassNames)}
+						aria-label="Sidebar tabs"
+					>
+						<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab>
+						<MyTabsTab id={PAGE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
+					</MyTabsList>
 				</div>
 				<MyTabsPanels className={cn("PageEditorSidebar-tabs-panels" satisfies PageEditorSidebar_ClassNames)}>
 					<MyTabsPanel

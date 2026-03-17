@@ -6,20 +6,18 @@
 	}
 
 	.PageEditorSidebar-toolbar {
-		height: 44px;
+		min-height: 44px;
+		max-height: calc(44px + var(--app-scrollbar-w));
+
 		background: var(--color-base-1-04);
 		border-bottom: 1px solid var(--color-fg-02);
 
-		contain: size layout style;
+		contain: content;
+		overflow: auto hidden;
 
 		position: sticky;
 		top: 0;
 		z-index: 1;
-	}
-
-	.PageEditorSidebar-toolbar-scrollable-area {
-		min-height: 44px;
-		max-height: calc(44px + var(--app-scrollbar-w));
 
 		display: flex;
 		flex-direction: row;
@@ -27,11 +25,6 @@
 		gap: 4px;
 
 		padding: 4px 16px;
-
-		overflow: auto hidden;
-		contain: content;
-
-		min-width: 0;
 	}
 
 	.PageEditorSidebar-tabs-panels {

@@ -37,6 +37,12 @@ The Convex backend handles:
   - [canvas/](packages/app/src/components/canvas) - Canvas/document editing components
   - [ui/](packages/app/src/components/ui) - Shared UI components
 
+## Runtime Boundaries
+
+- Treat `packages/app/src/` modules as browser-only SPA code unless a file is explicitly designed otherwise.
+- Do not add defensive `typeof document` / `typeof window` guards in frontend-only modules just to handle hypothetical SSR.
+- Treat `packages/app/shared/` as the default isomorphic boundary; keep shared modules portable across browser and server runtimes.
+
 ## Key Technologies
 
 - Convex - Real-time backend, HTTP actions, persistence
@@ -471,25 +477,34 @@ The React Compiler currently has issues lowering `try { ... } catch { ... } fina
 
 Prefer these naming rules in order. The main distinction is between root-level value symbols, root-level type-like symbols, and owner-scoped colocated symbols.
 
-### Root-Level Value Symbols (default: snake_case)
+### Root-Level Value Symbols (default: snake_case, scope-first)
 
-Use `snake_case` for root-level value symbols such as `const`, `let`, `function`, and non-class helper objects.
+Use `snake_case` for root-level value symbols such as `const`, `let`, `function`, and non-class helper objects. Choose names by symbol visibility, not by folder path.
 
-- Exported/public values often use a module prefix for discoverability, for example `pages_*`, `ai_chat_*`, `app_*`, `storage_*`.
-- Non-exported helpers can use plain descriptive `snake_case` when a module prefix would add noise.
-- Do not add a module prefix to a private helper just because it lives in that module. If a helper is not exported and is only local glue, prefer plain `snake_case` such as `strip_provider_metadata_from_message_parts`, not `ai_chat_strip_provider_metadata_from_message_parts`.
+- File-local/private symbols should usually omit the module/feature prefix when the file context already makes ownership obvious.
+- Exported/public values may use a module prefix for import-site discoverability, for example `pages_*`, `ai_chat_*`, `app_*`, `storage_*`.
+- Match the file's established constant casing, but keep the semantic name short. Do not repeat the full feature path in private constants, ids, storage keys, or local glue helpers just because the symbol lives in that feature file.
+- Prefer plain descriptive names such as `strip_provider_metadata_from_message_parts` over `ai_chat_strip_provider_metadata_from_message_parts`.
 - Keep well-established exceptions when they improve clarity or match external APIs: hooks use `useXxx`, short shared utilities may stay `cn` / `sx`, and wrappers over external APIs may preserve existing camelCase names.
 
-### Root-Level Type-Like Symbols (PascalCase suffix)
+```ts
+// bad
+const PAGE_EDITOR_SIDEBAR_AGENT_TABS_DROPPABLE_ID = "...";
+
+// good
+const DROPPABLE_ID = "...";
+```
+
+### Root-Level Type-Like Symbols (PascalCase suffix, scope-first)
 
 Classes, interfaces, type aliases, and enums use PascalCase for the type-like part of the symbol.
 
 Use one of these two shapes:
 
-- Module/feature-scoped type-like symbols: `snake_case` namespace + PascalCase suffix
-- Shared/generic type-like symbols: plain PascalCase
+- File-local/private type-like symbols: plain PascalCase
+- Exported/public or cross-module type-like symbols: optional `snake_case` namespace + PascalCase suffix when it improves import-site discoverability
 
-If you add a module/feature prefix to an exported/public type-like root-level symbol, keep the namespace prefix in `snake_case` and the type-like suffix in PascalCase (for example `ai_chat_Stream`, `pages_DocSnapshot`, `ai_chat_Result`).
+Do not add a module/feature prefix to a private type just because it lives in that feature file. Prefer `OpenTabRecord` over `page_editor_sidebar_open_tab_Entry` when the file context already provides the namespace. If you add a prefix to an exported/public type-like root-level symbol, keep the namespace prefix in `snake_case` and the type-like suffix in PascalCase (for example `ai_chat_Stream`, `pages_DocSnapshot`, `ai_chat_Result`).
 
 ```ts
 export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
@@ -504,6 +519,11 @@ export interface ai_chat_MyInterface {
 
 export type ai_chat_MyType = {
 	projectId: string;
+};
+
+type OpenTabRecord = {
+	id: string;
+	title: string;
 };
 
 type PendingEditSyncResult = {
@@ -528,7 +548,8 @@ When a root-level symbol exists only to support a specific owner symbol (compone
 
 - Components and component-like owners use PascalCase, for example `PageEditorDiff_Props`.
 - Hooks keep the normal hook owner name, for example `useAiChatController_Props`.
-- This pattern is preferred for colocated helper types and companion utilities.
+- Use this pattern when the owner relationship materially improves clarity, not as a default substitute for every private type or helper.
+- Prefer plain PascalCase for small file-local data shapes when owner linkage would add noise.
 
 This is the pattern used for colocated helper types and companion utilities, for example:
 
@@ -541,7 +562,7 @@ type LatestSerializedRunner_RunResult<T> = { ... };
 
 Use this pattern only for tightly related declarations. Keep shared/generic module APIs in the root-level patterns above.
 
-This owner-scoped pattern is allowed for private helpers but not required; prefer local file consistency and minimal renaming.
+This owner-scoped pattern is allowed for private helpers but not required; prefer local file consistency and minimal naming over mechanical namespace repetition.
 For function-owned types, one-off shapes are often easier inline, while owner-linked names (for example `OwnerSymbol_Args` or `OwnerSymbol_Result`) can be helpful when the type is reused, exported, or notably improves readability.
 
 ### Function-local variables and helpers (camelCase)

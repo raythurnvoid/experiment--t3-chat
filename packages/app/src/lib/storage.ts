@@ -1,8 +1,9 @@
 import { create } from "zustand";
+import { z } from "zod";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { objects_equal_deep } from "@/lib/object.ts";
 
 /** Selected opened-chat tab id inside the page editor agent sidebar. */
-export type page_editor_sidebar_agent_selected_tab_id = string | null;
 
 /**
  * All keys used for `localStorage` values.
@@ -170,11 +171,12 @@ export function storage_session() {
 }
 
 // #region app local storage state
-type app_local_storage_state_State = {
+export type app_local_storage_state_State = {
 	pages_last_open: string | null;
 	/** Fixed page editor sidebar tab: Comments or Agent. */
 	pages_last_tab: AppElementId | null;
-	page_editor_sidebar_agent_selected_tab: page_editor_sidebar_agent_selected_tab_id;
+	page_editor_sidebar_agent_selected_tab: string | null;
+	page_editor_sidebar_open_tabs: Array<{ id: string; title: string }>;
 	ai_chat_last_open: string | null;
 	main_app_sidebar_open: boolean;
 	main_app_sidebar_collapsed: boolean;
@@ -188,6 +190,7 @@ const app_local_storage_state_KEYS = {
 	pages_last_open: "app_state::pages_last_open",
 	pages_last_tab: "app_state::pages_last_tab",
 	page_editor_sidebar_agent_selected_tab: "app_state::page_editor_sidebar_agent_selected_tab",
+	page_editor_sidebar_open_tabs: "app_state::page_editor_sidebar_open_tabs",
 	ai_chat_last_open: "app_state::ai_chat_last_open",
 	main_app_sidebar_open: "app_state::sidebar::main_app_open",
 	main_app_sidebar_collapsed: "app_state::sidebar::main_app_collapsed",
@@ -224,6 +227,33 @@ export const useAppLocalStorageState = ((/* iife */) => {
 		return value;
 	};
 
+	const pageEditorSidebarOpenTabsSchema = z.array(
+		z.object({
+			id: z.string(),
+			title: z.string(),
+		}),
+	);
+
+	const parsePageEditorSidebarOpenTabs = (
+		value: string | null,
+	): app_local_storage_state_State["page_editor_sidebar_open_tabs"] => {
+		if (!value) {
+			return [];
+		}
+
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			const result = pageEditorSidebarOpenTabsSchema.safeParse(parsed);
+			if (!result.success) {
+				return [];
+			}
+
+			return result.data;
+		} catch {
+			return [];
+		}
+	};
+
 	const parsePresenceEnabled = (value: string | null) => {
 		return value !== "0";
 	};
@@ -247,6 +277,9 @@ export const useAppLocalStorageState = ((/* iife */) => {
 		page_editor_sidebar_agent_selected_tab: parsePageEditorSidebarAgentSelectedTab(
 			storage.getItem(app_local_storage_state_KEYS.page_editor_sidebar_agent_selected_tab) ??
 				(parsePagesLastTab(rawPagesLastTab) ? null : rawPagesLastTab),
+		),
+		page_editor_sidebar_open_tabs: parsePageEditorSidebarOpenTabs(
+			storage.getItem(app_local_storage_state_KEYS.page_editor_sidebar_open_tabs),
 		),
 		ai_chat_last_open: storage.getItem(app_local_storage_state_KEYS.ai_chat_last_open),
 		main_app_sidebar_open: parseSidebarOpen(storage.getItem(app_local_storage_state_KEYS.main_app_sidebar_open)),
@@ -302,6 +335,13 @@ export const useAppLocalStorageState = ((/* iife */) => {
 			writeValue(
 				app_local_storage_state_KEYS.page_editor_sidebar_agent_selected_tab,
 				state.page_editor_sidebar_agent_selected_tab,
+			);
+		}
+
+		if (state.page_editor_sidebar_open_tabs !== prev.page_editor_sidebar_open_tabs) {
+			writeValue(
+				app_local_storage_state_KEYS.page_editor_sidebar_open_tabs,
+				JSON.stringify(state.page_editor_sidebar_open_tabs),
 			);
 		}
 
@@ -376,6 +416,16 @@ export const useAppLocalStorageState = ((/* iife */) => {
 					}
 
 					setStateWithoutTriggeringWriteback({ page_editor_sidebar_agent_selected_tab: nextValue });
+					return;
+				}
+				case app_local_storage_state_KEYS.page_editor_sidebar_open_tabs: {
+					const nextValue = parsePageEditorSidebarOpenTabs(event.newValue);
+					const current = store.getState().page_editor_sidebar_open_tabs;
+					if (objects_equal_deep(current, nextValue)) {
+						return;
+					}
+
+					setStateWithoutTriggeringWriteback({ page_editor_sidebar_open_tabs: nextValue });
 					return;
 				}
 				case app_local_storage_state_KEYS.ai_chat_last_open: {
