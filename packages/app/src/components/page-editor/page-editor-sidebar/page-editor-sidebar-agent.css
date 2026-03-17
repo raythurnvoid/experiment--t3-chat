@@ -66,33 +66,45 @@
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-
 		max-width: 200px;
 
 		padding: 0px;
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab-handle {
+		grid-row: 1;
+		grid-column: 1;
+
 		margin-right: 2px;
 
 		cursor: grab;
 
 		flex-shrink: 0;
+
+		&:active {
+			cursor: grabbing;
+		}
 	}
 
-	.PageEditorSidebarAgentHeaderTabs-tab-handle:active {
-		cursor: grabbing;
+	.PageEditorSidebarAgentHeaderTabs-tab-primary-action {
+		grid-row: 1;
+		grid-column: 1/4;
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab-title {
+		grid-row: 1;
+		grid-column: 2;
+
 		min-width: 0;
 
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.PageEditorSidebarAgentHeaderTabs-tab-close {
+		grid-row: 1;
+		grid-column: 3;
 	}
 	/* #endregion header tabs */
 

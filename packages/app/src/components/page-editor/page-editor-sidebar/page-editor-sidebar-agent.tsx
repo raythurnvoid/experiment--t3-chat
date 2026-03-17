@@ -409,6 +409,7 @@ type PageEditorSidebarAgentHeaderTabs_ClassNames =
 	| "PageEditorSidebarAgentHeaderTabs-tabs-draggable"
 	| "PageEditorSidebarAgentHeaderTabs-tab"
 	| "PageEditorSidebarAgentHeaderTabs-tab-handle"
+	| "PageEditorSidebarAgentHeaderTabs-tab-primary-action"
 	| "PageEditorSidebarAgentHeaderTabs-tab-title"
 	| "PageEditorSidebarAgentHeaderTabs-tab-close";
 
@@ -492,6 +493,21 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 															"PageEditorSidebarAgentHeaderTabs-tab" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
 														)}
 													>
+														<MyTabsTabPrimaryAction
+															id={entry.id}
+															className={cn(
+																"PageEditorSidebarAgentHeaderTabs-tab-primary-action" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
+															)}
+														>
+															<span
+																className={cn(
+																	"PageEditorSidebarAgentHeaderTabs-tab-title" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
+																)}
+															>
+																{entry.title}
+															</span>
+														</MyTabsTabPrimaryAction>
+
 														<span
 															{...draggableProvided.dragHandleProps}
 															className={cn(
@@ -506,15 +522,7 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 																<GripVertical />
 															</MyIconButtonIcon>
 														</span>
-														<MyTabsTabPrimaryAction id={entry.id}>
-															<span
-																className={cn(
-																	"PageEditorSidebarAgentHeaderTabs-tab-title" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
-																)}
-															>
-																{entry.title}
-															</span>
-														</MyTabsTabPrimaryAction>
+
 														<MyIconButton
 															className={cn(
 																"PageEditorSidebarAgentHeaderTabs-tab-close" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
