@@ -1,7 +1,8 @@
-import { useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { AppElementId } from "./dom-utils.ts";
 import { useGlobalEventList } from "./global-event.tsx";
 import { check_element_is_in_allowed_areas } from "./utils.ts";
+import { useFn } from "../hooks/utils-hooks.ts";
 
 // #region useUiStickToBottom
 /**
@@ -75,7 +76,7 @@ export function useUiStickToBottom(props: useUiStickToBottom_Props) {
 		el.scrollTo({ top: el.scrollHeight, behavior });
 	};
 
-	const handleScroll = useEffectEvent(() => {
+	const handleScroll = useFn(() => {
 		const el = scrollEl;
 		if (!el) {
 			return;
@@ -99,7 +100,7 @@ export function useUiStickToBottom(props: useUiStickToBottom_Props) {
 		lastScrollTopRef.current = el.scrollTop;
 	});
 
-	const handleContentResize = useEffectEvent(() => {
+	const handleContentResize = useFn(() => {
 		if (!enable || !stickOnContentResize) {
 			handleScroll();
 			return;

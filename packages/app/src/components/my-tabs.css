@@ -159,6 +159,8 @@
 	.MyTabsPanel {
 		outline: none;
 		border-color: transparent;
+
+		contain: content;
 	}
 	/* #endregion panel */
 }

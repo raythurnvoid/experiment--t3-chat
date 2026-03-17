@@ -56,7 +56,7 @@ function get_tab_title(args: {
 	return fallbackTitle;
 }
 
-// #region thread-picker-item
+// #region thread picker item
 type PageEditorSidebarAgentThreadPickerItem_ClassNames =
 	| "PageEditorSidebarAgentThreadPicker-item"
 	| "PageEditorSidebarAgentThreadPicker-item-title"
@@ -189,9 +189,9 @@ const PageEditorSidebarAgentThreadPickerItem = memo(function PageEditorSidebarAg
 		</MySearchSelectItem>
 	);
 });
-// #endregion thread-picker-item
+// #endregion thread picker item
 
-// #region thread-picker-list
+// #region thread picker list
 type PageEditorSidebarAgentThreadPickerList_ClassNames =
 	| "PageEditorSidebarAgentThreadPickerList"
 	| "PageEditorSidebarAgentThreadPickerList-empty"
@@ -252,9 +252,9 @@ const PageEditorSidebarAgentThreadPickerList = memo(function PageEditorSidebarAg
 		</div>
 	);
 });
-// #endregion thread-picker-list
+// #endregion thread picker list
 
-// #region thread-picker
+// #region thread picker
 type PageEditorSidebarAgentThreadPicker_ClassNames =
 	| "PageEditorSidebarAgentThreadPicker"
 	| "PageEditorSidebarAgentThreadPicker-popover-content";
@@ -320,7 +320,7 @@ const PageEditorSidebarAgentThreadPicker = memo(function PageEditorSidebarAgentT
 		</div>
 	);
 });
-// #endregion thread-picker
+// #endregion thread picker
 
 // #region header
 type PageEditorSidebarAgentHeader_ClassNames = "PageEditorSidebarAgentHeader";
@@ -357,7 +357,7 @@ const PageEditorSidebarAgentHeader = memo(function PageEditorSidebarAgentHeader(
 });
 // #endregion header
 
-// #region header-actions
+// #region header actions
 type PageEditorSidebarAgentHeaderActions_ClassNames = "PageEditorSidebarAgentHeaderActions";
 
 type PageEditorSidebarAgentHeaderActions_Props = {
@@ -401,9 +401,9 @@ const PageEditorSidebarAgentHeaderActions = memo(function PageEditorSidebarAgent
 		</div>
 	);
 });
-// #endregion header-actions
+// #endregion header actions
 
-// #region header-tabs
+// #region header tabs
 type PageEditorSidebarAgentHeaderTabs_ClassNames =
 	| "PageEditorSidebarAgentHeaderTabs"
 	| "PageEditorSidebarAgentHeaderTabs-tabs-draggable"
@@ -478,63 +478,69 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 									"PageEditorSidebarAgentHeaderTabs-tabs-draggable" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
 								)}
 							>
-								{openTabs.map((entry, index) => (
-									<Draggable key={entry.id} draggableId={entry.id} index={index}>
-										{(draggableProvided, draggableSnapshot) => {
-											const draggableTab = (
-												<MyTabsTabSurface
-													ref={draggableProvided.innerRef}
-													{...draggableProvided.draggableProps}
-													className={cn(
-														"PageEditorSidebarAgentHeaderTabs-tab" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
-													)}
-												>
-													<span
-														{...draggableProvided.dragHandleProps}
+								{openTabs.map((entry, index) => {
+									const isSelectedTab = entry.id === selectedChatTabId;
+
+									return (
+										<Draggable key={entry.id} draggableId={entry.id} index={index}>
+											{(draggableProvided, draggableSnapshot) => {
+												const draggableTab = (
+													<MyTabsTabSurface
+														ref={draggableProvided.innerRef}
+														{...draggableProvided.draggableProps}
 														className={cn(
-															"PageEditorSidebarAgentHeaderTabs-tab-handle" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
-															"MyButton" satisfies MyButton_ClassNames,
-															"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
-															"MyIconButton" satisfies MyIconButton_ClassNames,
+															"PageEditorSidebarAgentHeaderTabs-tab" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
 														)}
 													>
-														<MyIconButtonIcon>
-															<GripVertical />
-														</MyIconButtonIcon>
-													</span>
-													<MyTabsTabPrimaryAction id={entry.id}>
 														<span
+															{...draggableProvided.dragHandleProps}
 															className={cn(
-																"PageEditorSidebarAgentHeaderTabs-tab-title" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
+																"PageEditorSidebarAgentHeaderTabs-tab-handle" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
+																"MyButton" satisfies MyButton_ClassNames,
+																"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
+																"MyIconButton" satisfies MyIconButton_ClassNames,
 															)}
+															tabIndex={isSelectedTab ? 0 : -1}
 														>
-															{entry.title}
+															<MyIconButtonIcon>
+																<GripVertical />
+															</MyIconButtonIcon>
 														</span>
-													</MyTabsTabPrimaryAction>
-													<MyIconButton
-														className={cn(
-															"PageEditorSidebarAgentHeaderTabs-tab-close" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
-														)}
-														variant="ghost-highlightable"
-														tooltip={openTabs.length <= 1 ? "Keep at least one tab open" : "Close tab"}
-														disabled={openTabs.length <= 1}
-														onClick={() => handleCloseTab(entry.id)}
-													>
-														<MyIconButtonIcon>
-															<X />
-														</MyIconButtonIcon>
-													</MyIconButton>
-												</MyTabsTabSurface>
-											);
+														<MyTabsTabPrimaryAction id={entry.id}>
+															<span
+																className={cn(
+																	"PageEditorSidebarAgentHeaderTabs-tab-title" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
+																)}
+															>
+																{entry.title}
+															</span>
+														</MyTabsTabPrimaryAction>
+														<MyIconButton
+															className={cn(
+																"PageEditorSidebarAgentHeaderTabs-tab-close" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
+															)}
+															variant="ghost-highlightable"
+															tooltip={openTabs.length <= 1 ? "Keep at least one tab open" : "Close tab"}
+															disabled={openTabs.length <= 1}
+															tabIndex={isSelectedTab ? 0 : -1}
+															onClick={() => handleCloseTab(entry.id)}
+														>
+															<MyIconButtonIcon>
+																<X />
+															</MyIconButtonIcon>
+														</MyIconButton>
+													</MyTabsTabSurface>
+												);
 
-											if (draggableSnapshot.isDragging && appHoistingContainer) {
-												return createPortal(draggableTab, appHoistingContainer);
-											}
+												if (draggableSnapshot.isDragging && appHoistingContainer) {
+													return createPortal(draggableTab, appHoistingContainer);
+												}
 
-											return draggableTab;
-										}}
-									</Draggable>
-								))}
+												return draggableTab;
+											}}
+										</Draggable>
+									);
+								})}
 								{droppableProvided.placeholder}
 							</div>
 						)}
@@ -556,10 +562,13 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 		</MyTabsList>
 	);
 });
-// #endregion header-tabs
+// #endregion header tabs
 
-// #region agent
-type PageEditorSidebarAgent_ClassNames = "PageEditorSidebarAgent" | "PageEditorSidebarAgent-chat-area";
+// #region root
+type PageEditorSidebarAgent_ClassNames =
+	| "PageEditorSidebarAgent"
+	| "PageEditorSidebarAgent-chat-area"
+	| "PageEditorSidebarAgent-chat-area-panel";
 
 export type PageEditorSidebarAgent_Props = {
 	/** Id of the root sidebar tab that shows this agent panel (used to know when agent is active for auto-start). */
@@ -736,11 +745,13 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 					currentThreads={currentThreads}
 					appHoistingContainer={appHoistingContainer}
 				/>
-				<MyTabsPanels
-					ref={setScrollableContainer}
-					className={cn("PageEditorSidebarAgent-chat-area" satisfies PageEditorSidebarAgent_ClassNames)}
-				>
-					<MyTabsPanel key={selectedChatTabId} tabId={selectedChatTabId}>
+				<MyTabsPanels className={cn("PageEditorSidebarAgent-chat-area" satisfies PageEditorSidebarAgent_ClassNames)}>
+					<MyTabsPanel
+						ref={setScrollableContainer}
+						key={selectedChatTabId}
+						className={"PageEditorSidebarAgent-chat-area-panel" satisfies PageEditorSidebarAgent_ClassNames}
+						tabId={selectedChatTabId}
+					>
 						<AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />
 					</MyTabsPanel>
 				</MyTabsPanels>
@@ -748,4 +759,4 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 		</div>
 	);
 });
-// #endregion agent
+// #endregion root

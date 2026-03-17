@@ -14,6 +14,23 @@
 		contain: strict;
 	}
 
+	.PageEditorSidebarAgent-chat-area {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+
+		contain: strict;
+	}
+	.PageEditorSidebarAgent-chat-area-panel {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+
+		contain: strict;
+
+		overflow: hidden auto;
+	}
+
 	/* #region header */
 	.PageEditorSidebarAgentHeader {
 		border-bottom: 1px solid var(--color-base-1-06);
@@ -27,7 +44,7 @@
 	}
 	/* #endregion header */
 
-	/* #region header-tabs */
+	/* #region header tabs */
 	.PageEditorSidebarAgentHeaderTabs {
 		flex: 1;
 
@@ -77,9 +94,9 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* #endregion header-tabs */
+	/* #endregion header tabs */
 
-	/* #region header-actions */
+	/* #region header actions */
 	.PageEditorSidebarAgentHeaderActions {
 		height: 44px;
 		width: 92px;
@@ -99,25 +116,15 @@
 
 		padding: 4px 8px;
 	}
-	/* #endregion header-actions */
+	/* #endregion header actions */
 
-	/* #region agent-chat-area */
-	.PageEditorSidebarAgent-chat-area {
-		display: flex;
-		flex: 1;
-		flex-direction: column;
-
-		overflow: hidden auto;
-	}
-	/* #endregion agent-chat-area */
-
-	/* #region thread-picker */
+	/* #region thread picker */
 	.PageEditorSidebarAgentThreadPicker-popover-content {
 		max-width: 600px;
 	}
-	/* #endregion thread-picker */
+	/* #endregion thread picker */
 
-	/* #region thread-picker-item */
+	/* #region thread picker item */
 	.PageEditorSidebarAgentThreadPicker-item {
 		display: flex;
 		align-items: center;
@@ -149,9 +156,9 @@
 		width: 14px;
 		height: 14px;
 	}
-	/* #endregion thread-picker-item */
+	/* #endregion thread picker item */
 
-	/* #region thread-picker-list */
+	/* #region thread picker list */
 	.PageEditorSidebarAgentThreadPickerList-empty {
 		padding: 12px 16px;
 
@@ -160,5 +167,5 @@
 		font-size: 0.875rem;
 		text-align: center;
 	}
-	/* #endregion thread-picker-list */
+	/* #endregion thread picker list */
 }
