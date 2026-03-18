@@ -171,7 +171,7 @@ export function useUiStickToBottom(props: useUiStickToBottom_Props) {
 
 // #region useUiInteractedOutside
 type useUiInteractedOutside_Options = {
-	allowedAreas?: Array<Element | null | undefined>;
+	allowedAreas?: Array<HTMLElement | null | undefined>;
 	enable?: boolean;
 };
 
@@ -186,7 +186,7 @@ type useUiInteractedOutside_Options = {
  * @param options.enable Enables or disables outside interaction handling.
  */
 export function useUiInteractedOutside(
-	container: Element | RefObject<Element | null> | null,
+	container: HTMLElement | RefObject<HTMLElement | null> | null,
 	callback: ((event: FocusEvent | PointerEvent) => void) | undefined,
 	options?: useUiInteractedOutside_Options,
 ) {
@@ -203,7 +203,7 @@ export function useUiInteractedOutside(
 
 			const rootElement = document.getElementById("root" satisfies AppElementId);
 			if (
-				check_element_is_in_allowed_areas(event.target, {
+				check_element_is_in_allowed_areas(event.target as HTMLElement, {
 					allowedAreas: [containerElement, ...allowedAreas],
 					restrictionScope: rootElement,
 				})
