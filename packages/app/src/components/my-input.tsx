@@ -1,8 +1,9 @@
 import "./my-input.css";
 import type { ComponentPropsWithRef } from "react";
-import { createContext, memo, use, useId } from "react";
+import { createContext, memo, use } from "react";
 import type { ExtractStrict } from "type-fest";
 
+import { useUiId } from "@/lib/ui.tsx";
 import { cn, type XCustomEventLike } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
 
@@ -246,8 +247,7 @@ export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 export const MyInput = memo(function MyInput(props: MyInput_Props) {
 	const { className, variant = "default", children, ...rest } = props;
 
-	const reactId = useId();
-	const rootId = `MyInput-${reactId}`;
+	const rootId = useUiId("MyInput");
 	const inputId = `${rootId}-input`;
 	const labelId = `${rootId}-label`;
 	const helperTextId = `${rootId}-helper-text`;

@@ -1,8 +1,23 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { AppElementId } from "./dom-utils.ts";
 import { useGlobalEventList } from "./global-event.tsx";
 import { check_element_is_in_allowed_areas } from "./utils.ts";
 import { useFn } from "../hooks/utils-hooks.ts";
+
+// #region id
+export const ui_id = ((/* iife */) => {
+	let ui_id_counter = 0;
+
+	return function ui_id(prefix = "ui") {
+		ui_id_counter += 1;
+		return `${prefix}-x${ui_id_counter}`;
+	};
+})();
+
+export function useUiId(prefix = "ui", key?: unknown) {
+	return useMemo(() => ui_id(prefix), [prefix, key]);
+}
+// #endregion id
 
 // #region useUiStickToBottom
 /**
