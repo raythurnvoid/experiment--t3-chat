@@ -4,195 +4,21 @@
 		display: flex;
 		flex-direction: column;
 	}
+	/* #endregion root */
 
-	.PageEditorSnapshotsModal-snapshot-item {
-		display: grid;
-		grid-template:
-			"icon	main-text			actions" auto
-			"icon	support-text	actions" auto / auto 1fr auto;
-		gap: 0 12px;
-		align-items: center;
-		justify-content: start;
-
-		width: 100%;
-		height: auto;
-		height: 66px;
-		padding: 12px;
-		border-radius: 8px;
-
-		text-align: start;
-
-		/* Replicate MyButton-variant-secondary styles */
-		background: var(--color-base-1-08);
-		color: var(--color-fg-11);
-		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
-		transition: background-color 0.15s ease-in-out;
-
-		font-size: 0.875rem;
-
-		user-select: none;
-		touch-action: manipulation;
-
-		&:hover {
-			background: var(--color-base-1-09);
-			cursor: pointer;
-		}
-
-		&:active {
-			background: var(--color-base-1-10);
-		}
-
-		&:has(.PageEditorSnapshotsModal-snapshot-primary-button:focus-visible) {
-			outline: 2px solid var(--color-fg-12);
-			outline-offset: -2px;
-			border-radius: 6px;
-		}
-
-		&.PageEditorSnapshotsModal-snapshot-item-archived:not(:hover, :active) {
-			background: var(--color-base-1-07);
-		}
-	}
-
-	.PageEditorSnapshotsModal-filters {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 20px;
-		border-bottom: 1px solid var(--color-base-1-07);
-	}
-
-	.PageEditorSnapshotsModal-list,
-	.PageEditorSnapshotsModal-skeleton-list {
+	/* #region skeleton */
+	.PageEditorSnapshotsModalSkeleton-list {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 	}
 
-	.PageEditorSnapshotsModal-snapshot-icon {
-		grid-area: icon;
-	}
-
-	.PageEditorSnapshotsModal-snapshot-primary-button {
-		grid-area: main-text;
-		text-align: start;
-	}
-
-	.PageEditorSnapshotsModal-snapshot-archived-label {
-		color: var(--color-fg-08);
-	}
-
-	.PageEditorSnapshotsModal-snapshot-support-text {
-		grid-area: support-text;
-		color: var(--color-fg-08);
-	}
-
-	.PageEditorSnapshotsModal-snapshot-actions {
-		grid-area: actions;
-		display: flex;
-		gap: 4px;
-		align-items: center;
-		justify-content: end;
-		height: 100%;
-	}
-
-	.PageEditorSnapshotsModal-snapshot-action-button {
-		flex-shrink: 0;
-	}
-
-	.PageEditorSnapshotsModal-skeleton-list-item {
+	.PageEditorSnapshotsModalSkeleton-list-item {
 		height: 70px;
 		border-radius: 8px;
 	}
 
-	.PageEditorSnapshotsModal-empty-message-container {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 32px 0;
-	}
-
-	.PageEditorSnapshotsModal-empty-message {
-		color: var(--color-fg-07);
-	}
-	/* #endregion root */
-
-	/* #region preview */
-	.PageEditorSnapshotsModal-preview-popover {
-		height: calc(100vh - 120px);
-		width: calc(100vw - 120px);
-		max-width: unset;
-		max-height: unset;
-
-		display: flex;
-		flex-direction: column;
-	}
-
-	.PageEditorSnapshotsModal-preview-scrollable-area {
-		background: var(--color-base-1-03);
-		padding: 0;
-
-		max-height: unset;
-
-		flex: 1;
-	}
-
-	.PageEditorSnapshotsModal-preview-snapshot-data {
-		font-size: 0.875rem;
-		color: var(--color-fg-08);
-
-		padding-inline: 20px;
-		height: 83px;
-
-		margin-bottom: 16px;
-
-		background: var(--color-base-1-05);
-
-		border-bottom: 1px solid var(--color-base-1-07);
-		box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
-
-		display: grid;
-		grid-template:
-			"time 	actions" 22px
-			"author actions" 22px /
-			1fr auto;
-		align-items: center;
-		align-content: center;
-		gap: 12px;
-	}
-
-	.PageEditorSnapshotsModal-preview-snapshot-data-time {
-		grid-area: time;
-	}
-
-	.PageEditorSnapshotsModal-preview-snapshot-data-author {
-		grid-area: author;
-	}
-
-	.PageEditorSnapshotsModal-navigation-actions {
-		grid-area: actions;
-		display: flex;
-		gap: 8px;
-	}
-
-	.PageEditorSnapshotsModal-navigation-action {
-		width: 110px;
-		justify-content: space-between;
-	}
-
-	.PageEditorSnapshotsModal-preview-error-container {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 100%;
-		height: 100%;
-	}
-
-	.PageEditorSnapshotsModal-preview-error-message {
-		font-size: 0.875rem;
-		color: var(--color-fg-07);
-	}
-
-	.PageEditorSnapshotsModal-preview-snapshot-data-skeleton {
+	.PageEditorSnapshotsModalSkeleton-preview-snapshot-data {
 		height: 1rem;
 
 		background: var(--color-base-1-07);
@@ -212,7 +38,7 @@
 		}
 	}
 
-	.PageEditorSnapshotsModal-preview-body-skeleton {
+	.PageEditorSnapshotsModalSkeleton-preview-body {
 		height: 1rem;
 
 		background: var(--color-base-1-08);
@@ -301,29 +127,214 @@
 			width: 20%;
 		}
 	}
+	/* #endregion skeleton */
 
-	.PageEditorSnapshotsModal-preview-diff-container {
+	/* #region list */
+	.PageEditorSnapshotsModalList {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.PageEditorSnapshotsModalList-empty-message-container {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 32px 0;
+	}
+
+	.PageEditorSnapshotsModalList-empty-message {
+		color: var(--color-fg-07);
+	}
+	/* #endregion list */
+
+	/* #region list item */
+	.PageEditorSnapshotsModalListItem {
+		display: grid;
+		grid-template:
+			"icon	main-text			actions" auto
+			"icon	support-text	actions" auto / auto 1fr auto;
+		gap: 0 12px;
+		align-items: center;
+		justify-content: start;
+
+		width: 100%;
+		height: 66px;
+		padding: 12px;
+		border-radius: 8px;
+
+		text-align: start;
+
+		background: var(--color-base-1-08);
+		color: var(--color-fg-11);
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+		transition: background-color 0.15s ease-in-out;
+
+		font-size: 0.875rem;
+
+		user-select: none;
+		touch-action: manipulation;
+
+		&:hover {
+			background: var(--color-base-1-09);
+			cursor: pointer;
+		}
+
+		&:active {
+			background: var(--color-base-1-10);
+		}
+
+		&:has(.PageEditorSnapshotsModalListItem-primary-button:focus-visible) {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
+			border-radius: 6px;
+		}
+	}
+
+	.PageEditorSnapshotsModalListItem-archived:not(:hover, :active) {
+		background: var(--color-base-1-07);
+	}
+
+	.PageEditorSnapshotsModalListItem-icon {
+		grid-area: icon;
+	}
+
+	.PageEditorSnapshotsModalListItem-primary-button {
+		grid-area: main-text;
+		text-align: start;
+	}
+
+	.PageEditorSnapshotsModalListItem-archived-label {
+		color: var(--color-fg-08);
+	}
+
+	.PageEditorSnapshotsModalListItem-support-text {
+		grid-area: support-text;
+		color: var(--color-fg-08);
+	}
+
+	.PageEditorSnapshotsModalListItem-actions {
+		grid-area: actions;
+		display: flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: end;
+		height: 100%;
+	}
+
+	.PageEditorSnapshotsModalListItem-action-button {
+		flex-shrink: 0;
+	}
+	/* #endregion list item */
+
+	/* #region list controls */
+	.PageEditorSnapshotsModalListControls {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 20px;
+		border-bottom: 1px solid var(--color-base-1-07);
+	}
+	/* #endregion list controls */
+
+	/* #region preview modal */
+	.PageEditorSnapshotsModalPreviewModal {
+		display: flex;
+		flex-direction: column;
+
+		height: calc(100vh - 120px);
+		width: calc(100vw - 120px);
+		max-width: unset;
+		max-height: unset;
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-scrollable-area {
+		flex: 1;
+
+		max-height: unset;
+		padding: 0;
+
+		background: var(--color-base-1-03);
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-snapshot-data {
+		display: grid;
+		grid-template:
+			"time 	actions" 22px
+			"author actions" 22px /
+			1fr auto;
+		align-items: center;
+		align-content: center;
+		gap: 12px;
+
+		height: 83px;
+		margin-bottom: 16px;
+		padding-inline: 20px;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-08);
+
+		background: var(--color-base-1-05);
+		border-bottom: 1px solid var(--color-base-1-07);
+		box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-snapshot-data-time {
+		grid-area: time;
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-snapshot-data-author {
+		grid-area: author;
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-navigation-actions {
+		grid-area: actions;
+		display: flex;
+		gap: 8px;
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-navigation-action {
+		width: 110px;
+		justify-content: space-between;
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-error-container {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		height: 100%;
+	}
+
+	.PageEditorSnapshotsModalPreviewModal-error-message {
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion preview modal */
+
+	/* #region preview modal diff block */
+	.PageEditorSnapshotsModalPreviewModalDiffBlock {
 		padding-inline: 20px;
 		white-space: pre-wrap;
 	}
 
-	.PageEditorSnapshotsModal-preview-diff-word {
+	.PageEditorSnapshotsModalPreviewModalDiffBlock-word {
 		display: inline;
 		white-space: pre-wrap;
 	}
 
-	.PageEditorSnapshotsModal-preview-diff-added {
+	.PageEditorSnapshotsModalPreviewModalDiffBlock-added {
 		color: var(--color-green-09);
 	}
 
-	.PageEditorSnapshotsModal-preview-diff-removed {
+	.PageEditorSnapshotsModalPreviewModalDiffBlock-removed {
 		color: var(--color-red-09);
 		text-decoration: line-through;
 		text-decoration-color: var(--color-red-05);
 	}
 
-	.PageEditorSnapshotsModal-preview-diff-unchanged {
+	.PageEditorSnapshotsModalPreviewModalDiffBlock-unchanged {
 		color: inherit;
 	}
-	/* #endregion preview */
+	/* #endregion preview modal diff block */
 }
