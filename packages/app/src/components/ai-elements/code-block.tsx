@@ -110,14 +110,16 @@ export const CodeBlockCopyButton = ({
 			return;
 		}
 
-		try {
-			await navigator.clipboard.writeText(code);
-			setIsCopied(true);
-			onCopy?.();
-			setTimeout(() => setIsCopied(false), timeout);
-		} catch (error) {
-			onError?.(error as Error);
-		}
+		navigator.clipboard
+			.writeText(code)
+			.then(() => {
+				setIsCopied(true);
+				onCopy?.();
+				setTimeout(() => setIsCopied(false), timeout);
+			})
+			.catch((error) => {
+				onError?.(error as Error);
+			});
 	};
 
 	const Icon = isCopied ? CheckIcon : CopyIcon;
