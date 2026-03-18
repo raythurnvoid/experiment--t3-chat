@@ -214,7 +214,7 @@ export type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 
 export type MyInputTextAreaControl_Props = Omit<
 	ComponentPropsWithRef<"textarea">,
-	ExtractStrict<keyof ComponentPropsWithRef<"textarea">, "size" | "id">
+	ExtractStrict<keyof ComponentPropsWithRef<"textarea">, "id">
 >;
 
 export const MyInputTextAreaControl = memo(function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
