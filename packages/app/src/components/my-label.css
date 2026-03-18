@@ -1,0 +1,12 @@
+@layer common_components {
+	.MyLabel {
+		display: inline-flex;
+		align-items: center;
+
+		font-size: 0.875rem;
+		color: inherit;
+
+		user-select: none;
+		cursor: pointer;
+	}
+}

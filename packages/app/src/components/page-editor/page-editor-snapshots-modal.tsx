@@ -15,10 +15,10 @@ import {
 } from "../my-modal.tsx";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "../my-icon-button.tsx";
+import { MyLabel } from "../my-label.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../my-tooltip.tsx";
 import { MySkeleton } from "../my-skeleton.tsx";
 import { MySwitch } from "../my-switch.tsx";
-import { Label } from "../ui/label.tsx";
 import { Clock, FileText, ChevronLeft, ChevronRight, Archive, ArchiveRestore } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { diffWordsWithSpace } from "diff";
@@ -228,7 +228,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 					</MyModalHeader>
 
 					<div className={cn("PageEditorSnapshotsModal-filters" satisfies PageEditorSnapshotsModal_ClassNames)}>
-						<Label htmlFor="show-archived">Show archived</Label>
+						<MyLabel htmlFor="show-archived">Show archived</MyLabel>
 						<MySwitch id="show-archived" checked={showArchived} onCheckedChange={setShowArchived} />
 					</div>
 
