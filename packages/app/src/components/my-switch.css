@@ -1,0 +1,107 @@
+@layer common_components {
+	/* #region root */
+	.MySwitch {
+		position: relative;
+
+		display: inline-flex;
+		flex-shrink: 0;
+
+		width: 36px;
+		height: 20px;
+
+		vertical-align: middle;
+		contain: content;
+	}
+	/* #endregion root */
+
+	/* #region track */
+	.MySwitchTrack {
+		position: absolute;
+		inset: 0;
+
+		border-radius: 999px;
+		border: 2px solid var(--color-fg-03);
+		outline: 2px solid transparent;
+		outline-offset: 2px;
+
+		background: var(--color-base-1-04);
+
+		pointer-events: none;
+
+		transition:
+			background-color 0.15s ease,
+			border-color 0.15s ease,
+			outline-color 0.15s ease;
+
+		.MySwitch:has(.MySwitchControl:not(:disabled):hover) & {
+			background: var(--color-base-1-05);
+			border-color: var(--color-fg-04);
+		}
+
+		.MySwitch:has(.MySwitchControl:focus-visible) & {
+			outline-color: var(--color-fg-12);
+		}
+
+		.MySwitch:has(.MySwitchControl:checked) & {
+			background: var(--color-accent-03);
+			border-color: var(--color-accent-04);
+		}
+
+		.MySwitch:has(.MySwitchControl:checked:not(:disabled):hover) & {
+			background: var(--color-accent-04);
+			border-color: var(--color-accent-05);
+		}
+
+		.MySwitch:has(.MySwitchControl:disabled) & {
+			background: var(--color-base-1-03);
+			border-color: var(--color-fg-02);
+		}
+	}
+	/* #endregion track */
+
+	/* #region thumb */
+	.MySwitchThumb {
+		position: absolute;
+		top: 2px;
+		left: 2px;
+
+		width: 12px;
+		height: 12px;
+		border-radius: 999px;
+
+		background: var(--color-fg-11);
+
+		pointer-events: none;
+
+		transition:
+			transform 0.15s ease,
+			background-color 0.15s ease;
+
+		.MySwitch:has(.MySwitchControl:checked) & {
+			transform: translateX(16px);
+			background: var(--color-fg-12);
+		}
+
+		.MySwitch:has(.MySwitchControl:disabled) & {
+			background: var(--color-fg-06);
+		}
+	}
+	/* #endregion thumb */
+
+	/* #region control */
+	.MySwitchControl {
+		position: absolute;
+		inset: 0;
+
+		margin: 0;
+		border-radius: 999px;
+		opacity: 0;
+
+		cursor: pointer;
+
+		&:disabled {
+			cursor: default;
+		}
+	}
+	/* #endregion control */
+}
