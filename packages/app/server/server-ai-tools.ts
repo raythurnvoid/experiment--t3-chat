@@ -85,6 +85,7 @@ function levenshtein(a: string, b: string): number {
  * - Brittle to whitespace/escaping/indentation changes
  */
 function* ai_chat_tool_edit_page_replacer_simple(_content: string, find: string): Generator<string, void, unknown> {
+	if (find !== find.trim()) return;
 	yield find;
 }
 
@@ -365,6 +366,12 @@ function* ai_chat_tool_edit_page_replacer_escape_normalized(
 			}
 		});
 	const unescapedFind = unescapeString(find);
+	if (unescapeString(content) === content && unescapedFind === find) {
+		return;
+	}
+	if (unescapeString(content) === unescapedFind) {
+		yield content;
+	}
 	if (content.includes(unescapedFind)) yield unescapedFind;
 	const lines = content.split("\n");
 	const findLines = unescapedFind.split("\n");
@@ -392,16 +399,16 @@ function* ai_chat_tool_edit_page_replacer_trimmed_boundary(
 	find: string,
 ): Generator<string, void, unknown> {
 	const trimmedFind = find.trim();
+	const trimmedFindLines = trimmedFind.split("\n");
 
 	if (trimmedFind === find) return;
 
 	if (content.includes(trimmedFind)) yield trimmedFind;
 
 	const lines = content.split("\n");
-	const findLines = find.split("\n");
 
-	for (let i = 0; i <= lines.length - findLines.length; i++) {
-		const block = lines.slice(i, i + findLines.length).join("\n");
+	for (let i = 0; i <= lines.length - trimmedFindLines.length; i++) {
+		const block = lines.slice(i, i + trimmedFindLines.length).join("\n");
 		if (block.trim() === trimmedFind) yield block;
 	}
 }

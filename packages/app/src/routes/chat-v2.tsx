@@ -1,8 +1,10 @@
 import { AiChat } from "@/components/ai-chat/ai-chat.tsx";
 
-export const Route = createFileRoute({
+const Route = createFileRoute({
 	component: Chat,
 });
+
+export { Route };
 
 function Chat() {
 	return <AiChat />;

@@ -17,7 +17,13 @@ import {
 } from "@/lib/utils.ts";
 import { useLiveRef } from "./utils-hooks.ts";
 import { generate_id } from "../lib/utils.ts";
-import { type ai_chat_AiSdk5UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
+import {
+	type ai_chat_AiSdk5UiMessage,
+	ai_chat_DEFAULT_MAIN_MODEL_ID,
+	ai_chat_is_main_model_id,
+	type ai_chat_MainModelId,
+	type ai_chat_Thread,
+} from "@/lib/ai-chat.ts";
 
 export type ai_chat_UiMessageMetadata = NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
 
@@ -31,6 +37,7 @@ type ThreadChatArgs = {
 type ThreadSession = {
 	chat: Chat<ai_chat_AiSdk5UiMessage> | null;
 	draftComposerText: string;
+	selectedModelId?: ai_chat_MainModelId;
 	/**
 	 * Optional branch anchor (Convex message id).
 	 *
@@ -45,6 +52,7 @@ type ThreadSession = {
 
 type ThreadStore = {
 	selectedThreadId: string | null;
+	draftSelectedModelId: ai_chat_MainModelId;
 	threadById: Map<string, ThreadSession>;
 };
 
@@ -61,6 +69,7 @@ const useAiChatStore = ((/* iife */) => {
 
 	const store = create<ThreadStore>(() => ({
 		selectedThreadId: initialSelectedThreadId ?? null,
+		draftSelectedModelId: ai_chat_DEFAULT_MAIN_MODEL_ID,
 		threadById: new Map(),
 	}));
 
@@ -154,14 +163,25 @@ function message_has_visible_parts(message: ai_chat_AiSdk5UiMessage) {
 	});
 }
 
+function get_message_selected_model_id(message?: ai_chat_AiSdk5UiMessage | null) {
+	const selectedModelId = message?.metadata?.selectedModelId;
+	if (!selectedModelId || !ai_chat_is_main_model_id(selectedModelId)) {
+		return undefined;
+	}
+
+	return selectedModelId;
+}
+
 const thread_session_create = (args?: {
 	optimisticThread?: ai_chat_Thread;
 	chat?: Chat<ai_chat_AiSdk5UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
+	selectedModelId?: ai_chat_MainModelId;
 }) => {
 	return {
 		chat: args?.chat ?? (args?.chatArgs ? create_chat_instance(args.chatArgs) : null),
 		draftComposerText: "",
+		selectedModelId: args?.selectedModelId,
 		anchorId: undefined,
 		streamingTitle: undefined,
 		optimisticThread: args?.optimisticThread,
@@ -240,6 +260,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const includeArchived = props?.includeArchived ?? true;
 
 	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
+	const draftSelectedModelId = useAiChatStore((state) => state.draftSelectedModelId);
 	const threadById = useAiChatStore((state) => state.threadById);
 
 	const session = useAiChatStore((state) =>
@@ -355,6 +376,46 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		return result;
 	})();
 
+	const persistedSelectedModelId = ((/* iife */) => {
+		if (!persistedMessagesLookup) {
+			return undefined;
+		}
+
+		for (const message of persistedMessagesLookup.list) {
+			if (message.role !== "user") {
+				continue;
+			}
+
+			const selectedModelId = get_message_selected_model_id(message);
+			if (selectedModelId) {
+				return selectedModelId;
+			}
+		}
+
+		return undefined;
+	})();
+
+	const selectedModelId = selectedThreadId
+		? (session?.selectedModelId ?? persistedSelectedModelId ?? ai_chat_DEFAULT_MAIN_MODEL_ID)
+		: draftSelectedModelId;
+
+	useEffect(() => {
+		if (!selectedThreadId || !session || session.selectedModelId !== undefined) {
+			return;
+		}
+
+		useAiChatStore.actions.setSession(selectedThreadId, (prev) => {
+			if (!prev || prev.selectedModelId !== undefined) {
+				return;
+			}
+
+			return {
+				...prev,
+				selectedModelId: persistedSelectedModelId ?? ai_chat_DEFAULT_MAIN_MODEL_ID,
+			};
+		});
+	}, [persistedSelectedModelId, selectedThreadId, session]);
+
 	const prepareSendMessagesRequest = useLiveRef<
 		NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>
 	>(async (options) => {
@@ -384,8 +445,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 			const requestBody = {
 				...options.body,
-
-				// TODO: Forward a request-scoped `model` here once the composer lifts model state into the controller.
+				model: selectedModelId,
 				threadId: metadata.isOptimistic ? undefined : options.id,
 				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
 
@@ -628,6 +688,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	})();
 
 	const startNewChat = (message?: string) => {
+		const nextSelectedModelId = selectedModelId;
 		const optimisticThread = create_optimistic_thread();
 		const optimisticChat = create_chat_instance({
 			chatId: optimisticThread._id,
@@ -635,9 +696,16 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			onFinish: (options) => handleChatFinish.current(options),
 		});
 		useAiChatStore.actions.setSession(optimisticThread._id, () => {
-			return thread_session_create({ optimisticThread: optimisticThread, chat: optimisticChat });
+			return thread_session_create({
+				optimisticThread: optimisticThread,
+				chat: optimisticChat,
+				selectedModelId: nextSelectedModelId,
+			});
 		});
-		useAiChatStore.setState(() => ({ selectedThreadId: optimisticThread._id }));
+		useAiChatStore.setState(() => ({
+			selectedThreadId: optimisticThread._id,
+			draftSelectedModelId: nextSelectedModelId,
+		}));
 
 		if (message?.trim()) {
 			optimisticChat.sendMessage(
@@ -647,6 +715,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
+						selectedModelId: nextSelectedModelId,
 					} satisfies ai_chat_UiMessageMetadata,
 				},
 				{
@@ -823,6 +892,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
+		const threadSelectedModelId = session.selectedModelId ?? selectedModelId;
+
 		const targetMessage = options?.messageId ? activeBranchMessages?.mapById.get(options.messageId) : null;
 		const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
 		const latestMessage = activeBranchMessages.list.at(-1);
@@ -877,6 +948,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				metadata: {
 					convexParentId: parentMessageIds.convexParentId,
 					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
+					selectedModelId: threadSelectedModelId,
 				} satisfies ai_chat_UiMessageMetadata,
 			},
 			{
@@ -910,6 +982,27 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				return base;
 			}
 			return { ...base, draftComposerText: message };
+		});
+	};
+
+	const setSelectedModelId = (modelId: ai_chat_MainModelId) => {
+		if (!selectedThreadId) {
+			useAiChatStore.setState(() => ({ draftSelectedModelId: modelId }));
+			return;
+		}
+
+		useAiChatStore.setState(() => ({ draftSelectedModelId: modelId }));
+
+		useAiChatStore.actions.setSession(selectedThreadId, (prev) => {
+			const base = prev ?? thread_session_create();
+			if (base.selectedModelId === modelId) {
+				return base;
+			}
+
+			return {
+				...base,
+				selectedModelId: modelId,
+			};
 		});
 	};
 
@@ -953,6 +1046,17 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 						session.chat.id = threadId;
 						return { ...session, optimisticThread: undefined };
 					});
+				} else if (session.selectedModelId !== undefined && persistedSession.selectedModelId === undefined) {
+					useAiChatStore.actions.setSession(threadId, (prev) => {
+						if (!prev || prev.selectedModelId !== undefined) {
+							return;
+						}
+
+						return {
+							...prev,
+							selectedModelId: session.selectedModelId,
+						};
+					});
 				}
 
 				useAiChatStore.actions.deleteSession(optimisticThreadId);
@@ -975,6 +1079,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 	return {
 		selectedThreadId,
+		selectedModelId,
 		session,
 
 		currentThreadsWithOptimistic,
@@ -995,6 +1100,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		removeOptimisticThread,
 
 		setComposerValue,
+		setSelectedModelId,
 		sendUserText,
 		regenerate,
 		stop,

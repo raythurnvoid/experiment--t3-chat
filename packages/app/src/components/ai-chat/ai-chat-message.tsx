@@ -21,7 +21,7 @@ import {
 	RefreshCw,
 	ShieldQuestion,
 } from "lucide-react";
-import { MySpinner } from "@/components/ui/my-spinner.tsx";
+import { MySpinner } from "@/components/my-spinner.tsx";
 import {
 	isDataUIPart,
 	isFileUIPart,
@@ -32,7 +32,13 @@ import {
 	type ToolUIPart,
 } from "ai";
 import type { ExtractStrict } from "type-fest";
-import { ai_chat_get_message_text, type ai_chat_AiSdk5UiMessage, type ai_chat_AiSdk5UiTools } from "@/lib/ai-chat.ts";
+import {
+	ai_chat_MAIN_MODEL_IDS,
+	ai_chat_get_message_text,
+	type ai_chat_AiSdk5UiMessage,
+	type ai_chat_AiSdk5UiTools,
+	type ai_chat_MainModelId,
+} from "@/lib/ai-chat.ts";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
@@ -528,7 +534,7 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 
 	const deferredContent = useDeferredValue(args?.content);
 
-	const title = result?.metadata.path
+	const title = result?.metadata?.path
 		? `Write page: ${path_name_of(result.metadata.path)}`
 		: args?.path
 			? `Write page: ${path_name_of(args.path)}`
@@ -650,7 +656,7 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
-	const text = result?.metadata.path
+	const text = result?.metadata?.path
 		? path_name_of(result.metadata.path)
 		: args?.path
 			? path_name_of(args.path)
@@ -1344,12 +1350,14 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 
 	message: ai_chat_AiSdk5UiMessage;
 	selectedThreadId: string | null;
+	selectedModelId: ai_chat_MainModelId;
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
+	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
 	onEditStart: AiChatMessage_Props["onEditStart"];
 	onEditCancel: AiChatMessage_Props["onEditCancel"];
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
@@ -1363,12 +1371,14 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		className,
 		message,
 		selectedThreadId,
+		selectedModelId,
 		isRunning,
 		isEditing,
 		messagesChildrenByParentId,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
+		onSelectedModelIdChange,
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
@@ -1476,7 +1486,10 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								canCancel={false}
 								isRunning={false}
 								initialValue={text ?? ""}
+								modelOptions={ai_chat_MAIN_MODEL_IDS}
+								selectedModelId={selectedModelId}
 								onValueChange={handleEditValueChange}
+								onSelectedModelIdChange={onSelectedModelIdChange}
 								onSubmit={handleEditSubmit}
 								onInteractedOutside={handleEditCancel}
 								onClose={handleEditCancel}
@@ -1781,12 +1794,14 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 
 	message: ai_chat_AiSdk5UiMessage;
 	selectedThreadId: string | null;
+	selectedModelId: ai_chat_MainModelId;
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
+	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
 	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
 	onEditCancel: () => void;
 	onEditSubmit: (args: { value: string }) => void;
@@ -1807,12 +1822,14 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		className,
 		message,
 		selectedThreadId,
+		selectedModelId,
 		isRunning,
 		isEditing,
 		messagesChildrenByParentId,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
+		onSelectedModelIdChange,
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
@@ -1834,9 +1851,11 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				} satisfies Partial<AiChatMessage_CustomAttributes>)}
 				message={message}
 				selectedThreadId={selectedThreadId}
+				selectedModelId={selectedModelId}
 				isRunning={isRunning}
 				isEditing={isEditing}
 				messagesChildrenByParentId={messagesChildrenByParentId}
+				onSelectedModelIdChange={onSelectedModelIdChange}
 				onToolOutput={onToolOutput}
 				onToolResumeStream={onToolResumeStream}
 				onToolStop={onToolStop}

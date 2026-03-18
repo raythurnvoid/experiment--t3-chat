@@ -49,6 +49,7 @@ import {
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
+import type { ai_chat_MainModelId } from "@/lib/ai-chat.ts";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"
@@ -78,8 +79,11 @@ export type AiChatComposer_Props = Omit<
 	canCancel: boolean;
 	isRunning: boolean;
 	initialValue: string;
+	modelOptions: readonly ai_chat_MainModelId[];
+	selectedModelId: ai_chat_MainModelId;
 
 	onValueChange?: (value: string) => void;
+	onSelectedModelIdChange: (value: ai_chat_MainModelId) => void;
 	onSubmit: (value: string) => void;
 	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
@@ -95,7 +99,10 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		canCancel,
 		isRunning,
 		initialValue,
+		modelOptions,
+		selectedModelId,
 		onValueChange,
+		onSelectedModelIdChange,
 		onSubmit,
 		onCancel,
 		onInteractedOutside,
@@ -116,16 +123,13 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 	const modes: AiChatComposer_Mode[] = ["Agent", "Ask", "Plan"];
 	const [mode, setMode] = useState<AiChatComposer_Mode>("Agent");
 
-	// Keep this local until you wire request-scoped model selection through `AiChat` and `prepareSendMessagesRequest`.
-	const models: AiChatComposer_Model[] = ["gpt-5-nano", "gpt-4.1-mini", "gpt-4.1-nano"];
-	const [model, setModel] = useState<AiChatComposer_Model>("gpt-5-nano");
 	const [modelFilter, setModelFilter] = useState("");
 	const modelFilterValue = modelFilter.trim().toLowerCase();
 	const filteredModels = modelFilterValue
-		? models.filter((modelItem) => {
+		? modelOptions.filter((modelItem) => {
 				return modelItem.toLowerCase().includes(modelFilterValue);
 			})
-		: models;
+		: modelOptions;
 
 	const canSend = !isRunning && !isEmpty;
 
@@ -410,9 +414,9 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				</MySelect>
 
 				<MySearchSelect
-					defaultValue={model}
+					value={selectedModelId}
 					setValue={(value) => {
-						setModel(value as AiChatComposer_Model);
+						onSelectedModelIdChange(value as ai_chat_MainModelId);
 					}}
 					setOpen={(open) => {
 						if (!open) {
@@ -422,7 +426,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				>
 					<MySearchSelectTrigger>
 						<MyButton type="button" variant="outline">
-							{model}
+							{selectedModelId}
 							<MySelectOpenIndicator />
 						</MyButton>
 					</MySearchSelectTrigger>
@@ -438,7 +442,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 											return (
 												<MySearchSelectItem key={modelItem} value={modelItem}>
 													{modelItem}
-													{model === modelItem && <MySelectItemIndicator />}
+													{selectedModelId === modelItem && <MySelectItemIndicator />}
 												</MySearchSelectItem>
 											);
 										})}
@@ -472,5 +476,3 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 }
 
 type AiChatComposer_Mode = "Agent" | "Ask" | "Plan";
-
-type AiChatComposer_Model = "gpt-5-nano" | "gpt-4.1-mini" | "gpt-4.1-nano";

@@ -22,6 +22,7 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
+import { MyLabel } from "@/components/my-label.tsx";
 import {
 	MyMenu,
 	MyMenuItem,
@@ -44,6 +45,7 @@ import {
 	type MySidebar_Props,
 } from "@/components/my-sidebar.tsx";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
+import { useUiId } from "@/lib/ui.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ai_chat_is_optimistic_thread, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
@@ -175,19 +177,24 @@ const AiChatThreadsArchivedToggle = memo(function AiChatThreadsArchivedToggle(
 	props: AiChatThreadsArchivedToggle_Props,
 ) {
 	const { checked, onCheckedChange } = props;
+	const inputId = useUiId("AiChatThreadsArchivedToggle-input");
 
 	return (
-		<label className={cn("AiChatThreadsArchivedToggle" satisfies AiChatThreadsArchivedToggle_ClassNames)}>
+		<div className={cn("AiChatThreadsArchivedToggle" satisfies AiChatThreadsArchivedToggle_ClassNames)}>
 			<input
+				id={inputId}
 				type="checkbox"
 				className={cn("AiChatThreadsArchivedToggle-input" satisfies AiChatThreadsArchivedToggle_ClassNames)}
 				checked={checked}
 				onChange={onCheckedChange}
 			/>
-			<span className={cn("AiChatThreadsArchivedToggle-label" satisfies AiChatThreadsArchivedToggle_ClassNames)}>
+			<MyLabel
+				htmlFor={inputId}
+				className={cn("AiChatThreadsArchivedToggle-label" satisfies AiChatThreadsArchivedToggle_ClassNames)}
+			>
 				Show archived
-			</span>
-		</label>
+			</MyLabel>
+		</div>
 	);
 });
 // #endregion archived toggle

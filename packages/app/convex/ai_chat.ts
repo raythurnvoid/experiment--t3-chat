@@ -4,7 +4,11 @@ import {
 	omit_properties,
 	should_never_happen,
 } from "../shared/shared-utils.ts";
-import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
+import {
+	ai_chat_DEFAULT_MAIN_MODEL_ID,
+	ai_chat_MAIN_MODEL_IDS,
+	type ai_chat_AiSdk5UiMessage,
+} from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
@@ -53,10 +57,6 @@ export {
 	save_pages_pending_edit,
 } from "./pages_pending_edits.ts";
 
-const ai_chat_MAIN_MODEL_IDS = ["gpt-5-nano", "gpt-4.1-mini", "gpt-4.1-nano"] as const;
-type ai_chat_MainModelId = (typeof ai_chat_MAIN_MODEL_IDS)[number];
-
-const ai_chat_DEFAULT_MAIN_MODEL_ID = "gpt-5-nano" as const satisfies ai_chat_MainModelId;
 const ai_chat_TITLE_MODEL_ID = "gpt-4.1-nano" as const;
 
 const ai_chat_SYSTEM_PROMPT = [

@@ -21,6 +21,11 @@ export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
 export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
+export const ai_chat_MAIN_MODEL_IDS = ["gpt-5-nano", "gpt-4.1-mini"] as const;
+export type ai_chat_MainModelId = (typeof ai_chat_MAIN_MODEL_IDS)[number];
+
+export const ai_chat_DEFAULT_MAIN_MODEL_ID = "gpt-5-nano" as const satisfies ai_chat_MainModelId;
+
 export type ai_chat_AiSdk5UiTools = {
 	weather: {
 		input: {
@@ -78,10 +83,15 @@ export type ai_chat_AiSdk5UiMessage = UIMessage<
 		convexId?: string | undefined;
 		convexParentId?: string | null | undefined;
 		parentClientGeneratedId: string | null;
+		selectedModelId?: ai_chat_MainModelId | undefined;
 	},
 	ai_chat_AiSdk5UiDataParts,
 	ai_chat_AiSdk5UiTools
 >;
+
+export function ai_chat_is_main_model_id(value: string): value is ai_chat_MainModelId {
+	return ai_chat_MAIN_MODEL_IDS.includes(value as ai_chat_MainModelId);
+}
 
 export function ai_chat_get_message_text(message: UIMessage) {
 	const parts = message.parts ?? [];
