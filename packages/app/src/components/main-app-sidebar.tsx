@@ -4,7 +4,7 @@ import "@/components/my-action.css";
 import { memo, useEffect, useRef } from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
-import { FileText, Home, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
+import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { dark } from "@clerk/themes";
@@ -626,12 +626,6 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						className={"MainAppSidebar-nav-list" satisfies MainAppSidebar_ClassNames}
 						aria-label="Main navigation"
 					>
-						<MainAppSidebarItem
-							to="/"
-							label="Home"
-							icon={Home}
-							tooltip={mainAppSidebarCollapsed ? "Home" : undefined}
-						/>
 						<MainAppSidebarItem
 							to="/chat"
 							label="Chat"
