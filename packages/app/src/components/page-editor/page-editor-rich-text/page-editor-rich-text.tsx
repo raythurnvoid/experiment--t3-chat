@@ -26,7 +26,7 @@ import { PageEditorRichTextToolsHistoryButtons } from "./page-editor-rich-text-t
 import { MySeparator } from "@/components/my-separator.tsx";
 import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
-import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
+import { PageEditorSnapshotsModal } from "../page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import {
 	ai_chat_HARDCODED_ORG_ID,

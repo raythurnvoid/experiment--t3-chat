@@ -27,7 +27,7 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { RefreshCcw, Save } from "lucide-react";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
-import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
+import { PageEditorSnapshotsModal } from "../page-editor-snapshots-modal.tsx";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
 import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text-skeleton.tsx";

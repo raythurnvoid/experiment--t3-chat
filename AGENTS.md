@@ -480,6 +480,7 @@ Prefer these naming rules in order. The main distinction is between root-level v
 ### Root-Level Value Symbols (default: snake_case, scope-first)
 
 Use `snake_case` for root-level value symbols such as `const`, `let`, `function`, and non-class helper objects. Choose names by symbol visibility, not by folder path.
+This rule does not apply to React components or hooks; keep following the dedicated `PascalCase` / `useXxx` rules below.
 
 - File-local/private symbols should usually omit the module/feature prefix when the file context already makes ownership obvious.
 - Exported/public values may use a module prefix for import-site discoverability, for example `pages_*`, `ai_chat_*`, `app_*`, `storage_*`.
@@ -585,6 +586,7 @@ function ai_chat_example_function() {
 ### Components and Hooks (Exceptions)
 
 Components use PascalCase. Hooks use camelCase in the `useMyHook` form:
+This exception overrides the general root-level `snake_case` rule above.
 
 ```ts
 export function ThemeProvider() {}
@@ -691,6 +693,9 @@ Before implementing a new store, read these examples and match their local style
 
 - Do not create index.\* barrel files (index.ts, index.tsx, index.js).
 - Always import from concrete files and export from the component file directly.
+- Prefer named exports. Do not add `export default` unless a framework, runtime API, or build tool strictly requires it.
+- Treat default exports as banned by default. If you use one for a technical reason, keep the reason explicit and local to that integration point.
+- TanStack Router route modules are not an exception here; keep using the route file convention they actually require (for example `export const Route = createFileRoute(...)`), not `export default`.
 - Example: import from "./components/ui/button.tsx" or export from "./button.tsx"; do not add a directory-level index.
 - Barrel files are bad for intellisense and code completion.
 

@@ -1,31 +1,37 @@
 import "./page-editor-snapshots-modal.css";
-import { useState } from "react";
+
+import { memo, useState, type MouseEvent } from "react";
 import { useQuery, useMutation } from "convex/react";
+import { Archive, ArchiveRestore, ChevronLeft, ChevronRight, Clock, FileText } from "lucide-react";
+import { diffWordsWithSpace } from "diff";
+
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
 import { format_relative_time } from "@/lib/date.ts";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { useUiId } from "@/lib/ui.tsx";
+
 import {
 	MyModal,
-	MyModalPopover,
-	MyModalHeader,
-	MyModalScrollableArea,
-	MyModalFooter,
 	MyModalCloseTrigger,
+	MyModalFooter,
+	MyModalHeader,
 	MyModalHeading,
+	MyModalPopover,
+	MyModalScrollableArea,
 } from "../my-modal.tsx";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "../my-icon-button.tsx";
 import { MyLabel } from "../my-label.tsx";
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../my-tooltip.tsx";
 import { MySkeleton } from "../my-skeleton.tsx";
 import { MySwitch } from "../my-switch.tsx";
-import { Clock, FileText, ChevronLeft, ChevronRight, Archive, ArchiveRestore } from "lucide-react";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { diffWordsWithSpace } from "diff";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../my-tooltip.tsx";
 
+// #region root
 export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal"
 	| "PageEditorSnapshotsModal-filters"
+	| "PageEditorSnapshotsModal-list"
 	| "PageEditorSnapshotsModal-skeleton-list"
 	| "PageEditorSnapshotsModal-skeleton-list-item"
 	| "PageEditorSnapshotsModal-snapshot-item"
@@ -42,7 +48,6 @@ export type PageEditorSnapshotsModal_ClassNames =
 	| "PageEditorSnapshotsModal-preview-snapshot-data"
 	| "PageEditorSnapshotsModal-preview-snapshot-data-time"
 	| "PageEditorSnapshotsModal-preview-snapshot-data-author"
-	| "PageEditorSnapshotsModal-preview-body"
 	| "PageEditorSnapshotsModal-preview-popover"
 	| "PageEditorSnapshotsModal-preview-error-container"
 	| "PageEditorSnapshotsModal-preview-error-message"
@@ -63,13 +68,17 @@ export type PageEditorSnapshotsModal_Props = {
 	sessionId: string;
 };
 
-export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {
+const SNAPSHOT_SKELETON_ROW_COUNT = 10;
+const PREVIEW_SKELETON_ROW_COUNT = 20;
+
+export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {
 	const { getCurrentMarkdown, onApplySnapshotMarkdown, pageId, sessionId } = props;
 	const [isListOpen, setIsListOpen] = useState(false);
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showArchived, setShowArchived] = useState(false);
+	const showArchivedId = useUiId("PageEditorSnapshotsModal-show-archived");
 
 	const snapshotsQueryResult = useQuery(app_convex_api.ai_docs_temp.get_page_snapshots_list, {
 		workspace_id: ai_chat_HARDCODED_ORG_ID,
@@ -94,9 +103,8 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	const archiveSnapshot = useMutation(app_convex_api.ai_docs_temp.archive_snapshot);
 	const unarchiveSnapshot = useMutation(app_convex_api.ai_docs_temp.unarchive_snapshot);
 
-	const createDiff = (snapshotContent: string) => {
-		return diffWordsWithSpace(getCurrentMarkdown(), snapshotContent);
-	};
+	const selectedSnapshotMarkdown =
+		selectedSnapshotContent && "content" in selectedSnapshotContent ? selectedSnapshotContent.content : null;
 
 	const handleSnapshotClick = (snapshotId: app_convex_Id<"pages_snapshots">) => {
 		setSelectedSnapshotId(snapshotId);
@@ -105,9 +113,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 	const handleConfirm = () => {
 		if (!selectedSnapshotId) return;
-		const snapshotMarkdown =
-			selectedSnapshotContent && "content" in selectedSnapshotContent ? selectedSnapshotContent.content : null;
-		if (snapshotMarkdown == null) return;
+		if (selectedSnapshotMarkdown == null) return;
 
 		setIsRestoring(true);
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
@@ -122,7 +128,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 			});
 			console.debug("Snapshot restored:", selectedSnapshotId);
 
-			onApplySnapshotMarkdown?.(snapshotMarkdown);
+			onApplySnapshotMarkdown?.(selectedSnapshotMarkdown);
 
 			setIsPreviewOpen(false);
 			setIsListOpen(false);
@@ -174,7 +180,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	};
 
 	const handleArchiveClick = async (
-		_e: React.MouseEvent,
+		_event: MouseEvent,
 		snapshotId: app_convex_Id<"pages_snapshots">,
 		isArchived: boolean | undefined,
 	) => {
@@ -187,12 +193,12 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 	};
 
 	const handleSnapshotItemClick = (
-		e: React.MouseEvent<HTMLDivElement>,
+		event: MouseEvent<HTMLDivElement>,
 		snapshotId: app_convex_Id<"pages_snapshots">,
 	) => {
-		const target = e.target as HTMLElement;
+		const target = event.target as HTMLElement;
 
-		// Don't forward click if clicking on an interactive element
+		// Don't forward the click when you hit an interactive element inside the row.
 		if (target.closest("button") || target.closest("a") || target.closest('[role="button"]')) {
 			return;
 		}
@@ -222,20 +228,20 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 			{/* List Modal */}
 			<MyModal open={isListOpen} setOpen={setIsListOpen}>
-				<MyModalPopover>
+				<MyModalPopover className={cn("PageEditorSnapshotsModal" satisfies PageEditorSnapshotsModal_ClassNames)}>
 					<MyModalHeader>
 						<MyModalHeading>Page Snapshots</MyModalHeading>
 					</MyModalHeader>
 
 					<div className={cn("PageEditorSnapshotsModal-filters" satisfies PageEditorSnapshotsModal_ClassNames)}>
-						<MyLabel htmlFor="show-archived">Show archived</MyLabel>
-						<MySwitch id="show-archived" checked={showArchived} onCheckedChange={setShowArchived} />
+						<MyLabel htmlFor={showArchivedId}>Show archived</MyLabel>
+						<MySwitch id={showArchivedId} checked={showArchived} onCheckedChange={setShowArchived} />
 					</div>
 
 					<MyModalScrollableArea>
 						{snapshotsQueryResult === undefined ? (
-							<div className="PageEditorSnapshotsModal-skeleton-list">
-								{Array.from({ length: 10 }, (_, index) => (
+							<div className={cn("PageEditorSnapshotsModal-skeleton-list" satisfies PageEditorSnapshotsModal_ClassNames)}>
+								{Array.from({ length: SNAPSHOT_SKELETON_ROW_COUNT }, (_, index) => (
 									<MySkeleton
 										key={index}
 										className={cn(
@@ -257,7 +263,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 								</div>
 							</div>
 						) : (
-							<div className="space-y-2">
+							<div className={cn("PageEditorSnapshotsModal-list" satisfies PageEditorSnapshotsModal_ClassNames)}>
 								{snapshotsQueryResult.snapshots.map((snapshot) => (
 									<div
 										key={snapshot._id}
@@ -457,7 +463,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 											)}
 										>
 											{selectedSnapshotContent === undefined
-												? Array.from({ length: 20 }, (_, index) => (
+												? Array.from({ length: PREVIEW_SKELETON_ROW_COUNT }, (_, index) => (
 														<MySkeleton
 															key={index}
 															className={cn(
@@ -465,7 +471,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 															)}
 														/>
 													))
-												: createDiff(selectedSnapshotContent.content).map((part, index) => (
+												: diffWordsWithSpace(getCurrentMarkdown(), selectedSnapshotContent.content).map((part, index) => (
 														<span
 															key={index}
 															className={cn(
@@ -492,8 +498,8 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 									Cancel
 								</MyButton>
 								<MyButton
-									disabled={selectedSnapshotContent == null || isRestoring}
-									aria-busy={selectedSnapshotContent == null || isRestoring}
+									disabled={selectedSnapshotMarkdown == null || isRestoring}
+									aria-busy={selectedSnapshotMarkdown == null || isRestoring}
 									onClick={handleConfirm}
 								>
 									Confirm
@@ -507,4 +513,5 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 			</MyModal>
 		</>
 	);
-}
+});
+// #endregion root

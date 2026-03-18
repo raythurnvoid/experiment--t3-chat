@@ -38,7 +38,7 @@ import {
 } from "@/lib/pages.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { PageEditorCommentsSidebar } from "../page-editor-comments-sidebar.tsx";
-import PageEditorSnapshotsModal from "../page-editor-snapshots-modal.tsx";
+import { PageEditorSnapshotsModal } from "../page-editor-snapshots-modal.tsx";
 import { Result } from "../../../lib/errors-as-values-utils.ts";
 import { PageEditorDiffSkeleton } from "./page-editor-diff-skeleton.tsx";
 
