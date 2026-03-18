@@ -4,7 +4,6 @@ import { Slot } from "@radix-ui/react-slot";
 import { PanelLeftIcon } from "lucide-react";
 import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
 
-import { Separator } from "@/components/ui/separator.tsx";
 import { MyPrimaryAction, MyPrimaryActionLink } from "@/components/my-action.tsx";
 import { MyHovercardAction } from "@/components/my-hovercard.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -314,25 +313,6 @@ export const MySidebarGroup = memo(function MySidebarGroup(props: MySidebarGroup
 	);
 });
 // #endregion group
-
-// #region separator
-type MySidebarSeparator_ClassNames = "MySidebarSeparator";
-
-export type MySidebarSeparator_Props = ComponentPropsWithRef<typeof Separator>;
-
-export const MySidebarSeparator = memo(function MySidebarSeparator(props: MySidebarSeparator_Props) {
-	const { ref, id, className, ...rest } = props;
-
-	return (
-		<Separator
-			ref={ref}
-			id={id}
-			className={cn("MySidebarSeparator" satisfies MySidebarSeparator_ClassNames, className)}
-			{...rest}
-		/>
-	);
-});
-// #endregion separator
 
 // #region title
 type MySidebarTitle_ClassNames = "MySidebarTitle";

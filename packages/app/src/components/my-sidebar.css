@@ -73,15 +73,6 @@
 	}
 	/* #endregion footer */
 
-	/* #region separator */
-	.MySidebarSeparator {
-		width: calc(100% - 1rem);
-		margin: 0.25rem auto;
-		background: var(--sidebar-border);
-		height: 1px;
-	}
-	/* #endregion separator */
-
 	/* #region group */
 	.MySidebarGroup {
 		position: relative;
