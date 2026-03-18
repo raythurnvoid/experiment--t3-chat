@@ -141,6 +141,7 @@ export function useDelay(key: any, timeout = 100) {
 export class CoalescedRunner {
 	private pendingRun: ReturnType<typeof this.createRun<any>> | null = null;
 	private currentRun: ReturnType<typeof this.createRun<any>> | null = null;
+	private activeFlushCount = 0;
 	private isDisposed = false;
 
 	private createRun<T>(task: () => Promise<T>) {
@@ -165,7 +166,7 @@ export class CoalescedRunner {
 	}
 
 	async run<T>(task: () => Promise<T>) {
-		if (this.isDisposed) {
+		if (this.isDisposed || this.activeFlushCount > 0) {
 			return { aborted: true as const };
 		}
 
@@ -185,18 +186,24 @@ export class CoalescedRunner {
 	}
 
 	async flush() {
-		while (true) {
-			if (this.isDisposed) {
-				return { aborted: true as const };
-			}
+		this.activeFlushCount += 1;
 
-			// Resolve only once both the current run and the latest pending run have drained.
-			if (!this.currentRun && !this.pendingRun) {
-				return { aborted: false as const, value: undefined };
-			}
+		try {
+			while (true) {
+				if (this.isDisposed) {
+					return { aborted: true as const };
+				}
 
-			// wait one microtask so `drain()` can advance the runner state before we check again.
-			await Promise.resolve();
+				// Resolve only once both the current run and the latest pending run have drained.
+				if (!this.currentRun && !this.pendingRun) {
+					return { aborted: false as const, value: undefined };
+				}
+
+				// wait one microtask so `drain()` can advance the runner state before we check again.
+				await Promise.resolve();
+			}
+		} finally {
+			this.activeFlushCount -= 1;
 		}
 	}
 

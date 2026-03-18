@@ -128,7 +128,7 @@ describe("CoalescedRunner", () => {
 		await expect(flushPromise).resolves.toEqual({ aborted: false, value: undefined });
 	});
 
-	test("Should allow the flush caller to run a task after queued microtasks drain", async () => {
+	test("Should let the flush caller run a task after queued microtasks drain", async () => {
 		const runner = new CoalescedRunner();
 		const runOrder: string[] = [];
 		const firstDeferred = Promise.withResolvers<string>();
@@ -160,7 +160,7 @@ describe("CoalescedRunner", () => {
 		firstDeferred.resolve("first");
 
 		await expect(targetRunPromise).resolves.toEqual({ aborted: false, value: "target" });
-		expect(runOrder).toEqual(["first", "first:then", "middle", "middle-task", "after-flush", "target"]);
+		expect(runOrder).toEqual(["first", "first:then", "middle", "after-flush", "target"]);
 	});
 
 	test("Should abort the pending task on dispose without aborting the current task", async () => {
