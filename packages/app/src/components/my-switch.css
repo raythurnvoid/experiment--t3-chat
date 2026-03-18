@@ -3,11 +3,11 @@
 	.MySwitch {
 		position: relative;
 
-		display: inline-flex;
-		flex-shrink: 0;
+		display: grid;
+		align-items: center;
+		justify-content: center;
 
-		width: 36px;
-		height: 20px;
+		flex-shrink: 0;
 
 		vertical-align: middle;
 		contain: content;
@@ -16,13 +16,18 @@
 
 	/* #region track */
 	.MySwitchTrack {
-		position: absolute;
-		inset: 0;
+		grid-row: 1;
+		grid-column: 1;
+
+		width: 36px;
+		height: 24px;
+
+		contain: strict;
 
 		border-radius: 999px;
-		border: 2px solid var(--color-fg-03);
+		border: 2px solid transparent;
 		outline: 2px solid transparent;
-		outline-offset: 2px;
+		outline-offset: -2px;
 
 		background: var(--color-base-1-04);
 
@@ -33,26 +38,26 @@
 			border-color 0.15s ease,
 			outline-color 0.15s ease;
 
-		.MySwitch:has(.MySwitchControl:not(:disabled):hover) & {
+		&:has(+ .MySwitchControl:not(:disabled):hover) {
 			background: var(--color-base-1-05);
 			border-color: var(--color-fg-04);
 		}
 
-		.MySwitch:has(.MySwitchControl:focus-visible) & {
+		&:has(+ .MySwitchControl:focus-visible) {
 			outline-color: var(--color-fg-12);
 		}
 
-		.MySwitch:has(.MySwitchControl:checked) & {
+		&:has(+ .MySwitchControl:checked) {
 			background: var(--color-accent-03);
 			border-color: var(--color-accent-04);
 		}
 
-		.MySwitch:has(.MySwitchControl:checked:not(:disabled):hover) & {
+		&:has(+ .MySwitchControl:checked:not(:disabled):hover) {
 			background: var(--color-accent-04);
 			border-color: var(--color-accent-05);
 		}
 
-		.MySwitch:has(.MySwitchControl:disabled) & {
+		&:has(+ .MySwitchControl:disabled) {
 			background: var(--color-base-1-03);
 			border-color: var(--color-fg-02);
 		}
@@ -61,28 +66,28 @@
 
 	/* #region thumb */
 	.MySwitchThumb {
-		position: absolute;
-		top: 2px;
-		left: 2px;
-
-		width: 12px;
-		height: 12px;
+		width: 20px;
+		height: 20px;
 		border-radius: 999px;
+
+		border: 2px solid var(--color-fg-03);
 
 		background: var(--color-fg-11);
 
 		pointer-events: none;
 
-		transition:
-			transform 0.15s ease,
-			background-color 0.15s ease;
+		transform: translateX(0px);
 
-		.MySwitch:has(.MySwitchControl:checked) & {
-			transform: translateX(16px);
+		transition:
+			transform 0.05s ease,
+			background-color 0.1s ease;
+
+		.MySwitchTrack:has(+ .MySwitchControl:checked) & {
+			transform: translateX(12px);
 			background: var(--color-fg-12);
 		}
 
-		.MySwitch:has(.MySwitchControl:disabled) & {
+		.MySwitchTrack:has(+ .MySwitchControl:disabled) & {
 			background: var(--color-fg-06);
 		}
 	}
@@ -90,14 +95,20 @@
 
 	/* #region control */
 	.MySwitchControl {
-		position: absolute;
-		inset: 0;
+		grid-row: 1;
+		grid-column: 1;
 
 		margin: 0;
-		border-radius: 999px;
-		opacity: 0;
+		filter: opacity(0);
+
+		height: 36px;
+		width: 36px;
 
 		cursor: pointer;
+
+		border: 2px solid var(--color-fg-03);
+		outline: 2px solid transparent;
+		outline-offset: -2px;
 
 		&:disabled {
 			cursor: default;
