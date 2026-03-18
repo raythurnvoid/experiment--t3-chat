@@ -29,7 +29,7 @@ import { MySeparator } from "@/components/my-separator.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MySpinner } from "@/components/ui/my-spinner.tsx";
+import { MySpinner } from "@/components/my-spinner.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { Editor } from "@tiptap/core";
 

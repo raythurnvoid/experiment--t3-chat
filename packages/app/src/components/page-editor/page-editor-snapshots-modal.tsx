@@ -15,9 +15,9 @@ import {
 } from "../my-modal.tsx";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "../my-icon-button.tsx";
-import { MySkeleton } from "../ui/my-skeleton.tsx";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
-import { Switch } from "../ui/switch.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../my-tooltip.tsx";
+import { MySkeleton } from "../my-skeleton.tsx";
+import { MySwitch } from "../my-switch.tsx";
 import { Label } from "../ui/label.tsx";
 import { Clock, FileText, ChevronLeft, ChevronRight, Archive, ArchiveRestore } from "lucide-react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -229,7 +229,7 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 
 					<div className={cn("PageEditorSnapshotsModal-filters" satisfies PageEditorSnapshotsModal_ClassNames)}>
 						<Label htmlFor="show-archived">Show archived</Label>
-						<Switch id="show-archived" checked={showArchived} onCheckedChange={setShowArchived} />
+						<MySwitch id="show-archived" checked={showArchived} onCheckedChange={setShowArchived} />
 					</div>
 
 					<MyModalScrollableArea>
@@ -390,8 +390,8 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 															"PageEditorSnapshotsModal-navigation-actions" satisfies PageEditorSnapshotsModal_ClassNames,
 														)}
 													>
-														<Tooltip>
-															<TooltipTrigger asChild>
+														<MyTooltip>
+															<MyTooltipTrigger>
 																<MyButton
 																	variant="outline"
 																	className={cn(
@@ -405,9 +405,9 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																	</MyButtonIcon>
 																	Newer
 																</MyButton>
-															</TooltipTrigger>
+															</MyTooltipTrigger>
 															{previousSnapshot && !isPreviousDisabled && (
-																<TooltipContent>
+																<MyTooltipContent unmountOnHide>
 																	<div>
 																		<div>{format_relative_time(previousSnapshot._creationTime)}</div>
 																		<div>
@@ -415,12 +415,12 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																				"Unknown"}
 																		</div>
 																	</div>
-																</TooltipContent>
+																</MyTooltipContent>
 															)}
-														</Tooltip>
+														</MyTooltip>
 
-														<Tooltip>
-															<TooltipTrigger asChild>
+														<MyTooltip>
+															<MyTooltipTrigger>
 																<MyButton
 																	variant="outline"
 																	className={cn(
@@ -434,9 +434,9 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																		<ChevronRight />
 																	</MyButtonIcon>
 																</MyButton>
-															</TooltipTrigger>
+															</MyTooltipTrigger>
 															{nextSnapshot && !isNextDisabled && (
-																<TooltipContent>
+																<MyTooltipContent unmountOnHide>
 																	<div>
 																		<div>{format_relative_time(nextSnapshot._creationTime)}</div>
 																		<div>
@@ -444,9 +444,9 @@ export default function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal
 																				"Unknown"}
 																		</div>
 																	</div>
-																</TooltipContent>
+																</MyTooltipContent>
 															)}
-														</Tooltip>
+														</MyTooltip>
 													</div>
 												</>
 											)}

@@ -18,7 +18,7 @@ import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/compo
 import { ArrowUp, Check } from "lucide-react";
 import { toast } from "sonner";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
-import { MySkeleton } from "@/components/ui/my-skeleton.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	PageEditorRichTextCommentComposer,
 	type PageEditorRichTextCommentComposer_Props,

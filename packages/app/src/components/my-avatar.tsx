@@ -10,7 +10,7 @@ import {
 	type ComponentPropsWithRef,
 } from "react";
 import { cn, forward_ref } from "@/lib/utils.ts";
-import { MySkeleton, type MySkeleton_Props } from "./ui/my-skeleton.tsx";
+import { MySkeleton, type MySkeleton_Props } from "./my-skeleton.tsx";
 
 type ImageLoadingStatus = "loading" | "loaded" | "fallback";
 

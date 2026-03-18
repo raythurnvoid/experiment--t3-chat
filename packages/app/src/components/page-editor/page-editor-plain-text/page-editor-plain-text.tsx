@@ -21,7 +21,7 @@ import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { usePromiseValue } from "@/lib/async.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { MySpinner } from "@/components/ui/my-spinner.tsx";
+import { MySpinner } from "@/components/my-spinner.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { RefreshCcw, Save } from "lucide-react";
