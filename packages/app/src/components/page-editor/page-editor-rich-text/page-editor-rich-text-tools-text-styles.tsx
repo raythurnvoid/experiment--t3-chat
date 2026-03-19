@@ -1,12 +1,11 @@
 import "./page-editor-rich-text-tools-text-styles.css";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
+import { memo } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { cn } from "@/lib/utils.ts";
-
-export type PageEditorRichTextToolsTextStyles_ClassNames =
-	| "PageEditorRichTextToolsTextStyles"
-	| "PageEditorRichTextToolsTextStyles-active";
+import type { Except } from "type-fest";
 
 type Item = {
 	name: string;
@@ -16,7 +15,11 @@ type Item = {
 	tooltip: string;
 };
 
-const items: Item[] = [
+type ItemState = Except<Item, "isActive"> & {
+	isActive: boolean;
+};
+
+const items: readonly Item[] = [
 	{
 		name: "bold",
 		command: (editor) => editor?.chain().focus().toggleBold().run(),
@@ -54,11 +57,79 @@ const items: Item[] = [
 	},
 ];
 
+// #region text style toggle
+type PageEditorRichTextToolsTextStyleToggle_ClassNames = "PageEditorRichTextToolsTextStyleToggle-active";
+
+type PageEditorRichTextToolsTextStyleToggle_Props = {
+	editor: Editor;
+	icon: ItemState["icon"];
+	isActive: ItemState["isActive"];
+	tooltip: ItemState["tooltip"];
+	onSelect: ItemState["command"];
+};
+
+const PageEditorRichTextToolsTextStyleToggle = memo(function PageEditorRichTextToolsTextStyleToggle(
+	props: PageEditorRichTextToolsTextStyleToggle_Props,
+) {
+	const { editor, icon: Icon, isActive, tooltip, onSelect } = props;
+
+	const handleClick = useFn(() => {
+		onSelect(editor);
+	});
+
+	return (
+		<MyIconButton
+			variant="ghost"
+			tooltip={tooltip}
+			onClick={handleClick}
+			className={cn(
+				isActive &&
+					("PageEditorRichTextToolsTextStyleToggle-active" satisfies PageEditorRichTextToolsTextStyleToggle_ClassNames),
+			)}
+		>
+			<MyIconButtonIcon>
+				<Icon />
+			</MyIconButtonIcon>
+		</MyIconButton>
+	);
+});
+// #endregion text style toggle
+
+// #region root
+export type PageEditorRichTextToolsTextStyles_ClassNames = "PageEditorRichTextToolsTextStyles";
+
 export type PageEditorRichTextToolsTextStyles_Props = {
 	editor: Editor;
 };
 
-export function PageEditorRichTextToolsTextStyles(props: PageEditorRichTextToolsTextStyles_Props) {
+type PageEditorRichTextToolsTextStylesInner_Props = PageEditorRichTextToolsTextStyles_Props & {
+	itemStates: readonly ItemState[];
+};
+
+const PageEditorRichTextToolsTextStylesInner = memo(function PageEditorRichTextToolsTextStylesInner(
+	props: PageEditorRichTextToolsTextStylesInner_Props,
+) {
+	const { editor, itemStates } = props;
+
+	return (
+		<div className={cn("PageEditorRichTextToolsTextStyles" satisfies PageEditorRichTextToolsTextStyles_ClassNames)}>
+			{itemStates.map((item) => (
+				<PageEditorRichTextToolsTextStyleToggle
+					key={item.name}
+					editor={editor}
+					icon={item.icon}
+					isActive={item.isActive}
+					tooltip={item.tooltip}
+					onSelect={item.command}
+				/>
+			))}
+		</div>
+	);
+});
+
+export const PageEditorRichTextToolsTextStyles = memo(function PageEditorRichTextToolsTextStyles(
+	props: PageEditorRichTextToolsTextStyles_Props,
+) {
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
@@ -74,24 +145,11 @@ export function PageEditorRichTextToolsTextStyles(props: PageEditorRichTextTools
 		},
 	});
 
-	return (
-		<div className={cn("PageEditorRichTextToolsTextStyles" satisfies PageEditorRichTextToolsTextStyles_ClassNames)}>
-			{items.map((item) => (
-				<MyIconButton
-					key={item.name}
-					variant="ghost"
-					tooltip={item.tooltip}
-					onClick={() => item.command(editor)}
-					className={cn(
-						item.isActive(editor) &&
-							("PageEditorRichTextToolsTextStyles-active" satisfies PageEditorRichTextToolsTextStyles_ClassNames),
-					)}
-				>
-					<MyIconButtonIcon>
-						<item.icon />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			))}
-		</div>
-	);
-}
+	const itemStates = items.map((item) => ({
+		...item,
+		isActive: item.isActive(editor),
+	}));
+
+	return <PageEditorRichTextToolsTextStylesInner editor={editor} itemStates={itemStates} />;
+});
+// #endregion root

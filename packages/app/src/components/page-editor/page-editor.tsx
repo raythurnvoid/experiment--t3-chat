@@ -606,7 +606,7 @@ export type PageEditor_ClassNames =
 	| "PageEditor-content-panel"
 	| "PageEditor-sidebar";
 
-type PageEditor_Inner_Props = {
+type PageEditorInner_Props = {
 	pageId: app_convex_Id<"pages">;
 	editorMode: PageEditor_Mode;
 	presenceStore: pages_PresenceStore | null;
@@ -622,7 +622,7 @@ type PageEditor_Inner_Props = {
 	onDiffExit?: () => void;
 };
 
-function PageEditor_Inner(props: PageEditor_Inner_Props) {
+function PageEditorInner(props: PageEditorInner_Props) {
 	const {
 		pageId,
 		editorMode,
@@ -716,7 +716,7 @@ function PageEditor_Inner(props: PageEditor_Inner_Props) {
 	});
 
 	const handleCatchBoundaryError = useFn((err: Error) => {
-		console.error("[PageEditor_Inner]", err);
+		console.error("[PageEditorInner]", err);
 	});
 
 	const getCatchBoundaryResetKey = useFn(() => 0);
@@ -836,7 +836,7 @@ export function PageEditor(props: PageEditor_Props) {
 		onEditorModeChange("diff_editor");
 	});
 
-	const handleNavigatePendingEdits = useFn<NonNullable<PageEditor_Inner_Props["onNavigatePendingEdits"]>>((args) => {
+	const handleNavigatePendingEdits = useFn<NonNullable<PageEditorInner_Props["onNavigatePendingEdits"]>>((args) => {
 		const nextView = args.forceDiffEditor ? "diff_editor" : editorMode;
 		const nextSearch = {
 			pageId: args.pageId,
@@ -847,14 +847,14 @@ export function PageEditor(props: PageEditor_Props) {
 			to: "/pages",
 			search: nextSearch,
 		}).catch((error) => {
-			console.error("[PageEditor_Inner.handleNavigatePendingEdits] Error navigating to pending edits", { error });
+			console.error("[PageEditorInner.handleNavigatePendingEdits] Error navigating to pending edits", { error });
 		});
 	});
 
 	return pageId ? (
 		<PageEditorPresenceSupplier userId={authenticated.userId} pageId={pageId}>
 			{({ presenceStore, onlineUsers }) => (
-				<PageEditor_Inner
+				<PageEditorInner
 					pageId={pageId}
 					editorMode={editorMode}
 					presenceStore={presenceStore}

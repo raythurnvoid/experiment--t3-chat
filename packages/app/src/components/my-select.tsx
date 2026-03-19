@@ -7,30 +7,6 @@ import type { ExtractStrict } from "type-fest";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
 import { ChevronDownIcon, Check } from "lucide-react";
 
-// #region items group
-export type MySelectItemsGroup_ClassNames = "MySelectItemsGroup" | "MySelectItemsGroup-separator";
-
-export type MySelectItemsGroup_Props = {
-	separator?: boolean;
-} & Ariakit.SelectGroupProps;
-
-export const MySelectItemsGroup = memo(function MySelectItemsGroup(props: MySelectItemsGroup_Props) {
-	const { className, children, separator = false, ...rest } = props;
-
-	return (
-		<Ariakit.SelectGroup
-			className={cn(
-				"MySelectItemsGroup" satisfies MySelectItemsGroup_ClassNames,
-				separator && ("MySelectItemsGroup-separator" satisfies MySelectItemsGroup_ClassNames),
-				className,
-			)}
-			{...rest}
-		>
-			{children}
-		</Ariakit.SelectGroup>
-	);
-});
-
 // #region items group text
 export type MySelectItemsGroupText_ClassNames = "MySelectItemsGroupText";
 
@@ -49,60 +25,6 @@ export const MySelectItemsGroupText = memo(function MySelectItemsGroupText(props
 	);
 });
 // #endregion items group text
-// #endregion items group
-
-// #region item
-export type MySelectItem_ClassNames = "MySelectItem";
-
-export type MySelectItem_Props = Ariakit.SelectItemProps;
-
-export const MySelectItem = memo(function MySelectItem(props: MySelectItem_Props) {
-	const { className, value, children, ...rest } = props;
-
-	return (
-		<Ariakit.SelectItem
-			className={cn("MySelectItem" satisfies MySelectItem_ClassNames, className)}
-			value={value}
-			{...rest}
-		>
-			{children}
-		</Ariakit.SelectItem>
-	);
-});
-
-// #region item indicator
-export type MySelectItemIndicator_ClassNames = "MySelectItemIndicator";
-
-export type MySelectItemIndicator_Props = MyIcon_Props;
-
-export const MySelectItemIndicator = memo(function MySelectItemIndicator(props: MySelectItemIndicator_Props) {
-	const { className, children, ...rest } = props;
-
-	return (
-		<MyIcon className={cn("MySelectItemIndicator" satisfies MySelectItemIndicator_ClassNames, className)} {...rest}>
-			{children ?? <Check />}
-		</MyIcon>
-	);
-});
-// #endregion item indicator
-
-// #region item content
-export type MySelectItemContent_ClassNames = "MySelectItemContent";
-
-export type MySelectItemContent_Props = {
-	children?: React.ReactNode;
-	className?: string;
-};
-
-export const MySelectItemContent = memo(function MySelectItemContent(props: MySelectItemContent_Props) {
-	const { className, children, ...rest } = props;
-
-	return (
-		<div className={cn("MySelectItemContent" satisfies MySelectItemContent_ClassNames, className)} {...rest}>
-			{children}
-		</div>
-	);
-});
 
 // #region item content primary
 export type MySelectItemContentPrimary_ClassNames = "MySelectItemContentPrimary";
@@ -170,32 +92,86 @@ export const MySelectItemContentIcon = memo(function MySelectItemContentIcon(pro
 	);
 });
 // #endregion item content icon
-// #endregion item content
-// #endregion item
 
-// #region popover
-export type MySelectPopover_ClassNames = "MySelectPopover";
+// #region item content
+export type MySelectItemContent_ClassNames = "MySelectItemContent";
 
-export type MySelectPopover_Props = Ariakit.SelectPopoverProps;
+export type MySelectItemContent_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
 
-export const MySelectPopover = memo(function MySelectPopover(props: MySelectPopover_Props) {
-	const { className, portal = true, portalElement, sameWidth = false, gutter = 4, children, ...rest } = props;
-
-	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
+export const MySelectItemContent = memo(function MySelectItemContent(props: MySelectItemContent_Props) {
+	const { className, children, ...rest } = props;
 
 	return (
-		<Ariakit.SelectPopover
-			className={cn("MySelectPopover" satisfies MySelectPopover_ClassNames, className)}
-			gutter={gutter}
-			sameWidth={sameWidth}
-			portal={portal}
-			portalElement={portalElement ?? appHoistingContainer ?? undefined}
+		<div className={cn("MySelectItemContent" satisfies MySelectItemContent_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+});
+// #endregion item content
+
+// #region item indicator
+export type MySelectItemIndicator_ClassNames = "MySelectItemIndicator";
+
+export type MySelectItemIndicator_Props = MyIcon_Props;
+
+export const MySelectItemIndicator = memo(function MySelectItemIndicator(props: MySelectItemIndicator_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<MyIcon className={cn("MySelectItemIndicator" satisfies MySelectItemIndicator_ClassNames, className)} {...rest}>
+			{children ?? <Check />}
+		</MyIcon>
+	);
+});
+// #endregion item indicator
+
+// #region item
+export type MySelectItem_ClassNames = "MySelectItem";
+
+export type MySelectItem_Props = Ariakit.SelectItemProps;
+
+export const MySelectItem = memo(function MySelectItem(props: MySelectItem_Props) {
+	const { className, value, children, ...rest } = props;
+
+	return (
+		<Ariakit.SelectItem
+			className={cn("MySelectItem" satisfies MySelectItem_ClassNames, className)}
+			value={value}
 			{...rest}
 		>
 			{children}
-		</Ariakit.SelectPopover>
+		</Ariakit.SelectItem>
 	);
 });
+// #endregion item
+
+// #region items group
+export type MySelectItemsGroup_ClassNames = "MySelectItemsGroup" | "MySelectItemsGroup-separator";
+
+export type MySelectItemsGroup_Props = {
+	separator?: boolean;
+} & Ariakit.SelectGroupProps;
+
+export const MySelectItemsGroup = memo(function MySelectItemsGroup(props: MySelectItemsGroup_Props) {
+	const { className, children, separator = false, ...rest } = props;
+
+	return (
+		<Ariakit.SelectGroup
+			className={cn(
+				"MySelectItemsGroup" satisfies MySelectItemsGroup_ClassNames,
+				separator && ("MySelectItemsGroup-separator" satisfies MySelectItemsGroup_ClassNames),
+				className,
+			)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.SelectGroup>
+	);
+});
+// #endregion items group
 
 // #region popover scrollable area
 export type MySelectPopoverScrollableArea_ClassNames = "MySelectPopoverScrollableArea";
@@ -239,6 +215,30 @@ export const MySelectPopoverContent = memo(function MySelectPopoverContent(props
 	);
 });
 // #endregion popover content
+
+// #region popover
+export type MySelectPopover_ClassNames = "MySelectPopover";
+
+export type MySelectPopover_Props = Ariakit.SelectPopoverProps;
+
+export const MySelectPopover = memo(function MySelectPopover(props: MySelectPopover_Props) {
+	const { className, portal = true, portalElement, sameWidth = false, gutter = 4, children, ...rest } = props;
+
+	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
+
+	return (
+		<Ariakit.SelectPopover
+			className={cn("MySelectPopover" satisfies MySelectPopover_ClassNames, className)}
+			gutter={gutter}
+			sameWidth={sameWidth}
+			portal={portal}
+			portalElement={portalElement ?? appHoistingContainer ?? undefined}
+			{...rest}
+		>
+			{children}
+		</Ariakit.SelectPopover>
+	);
+});
 // #endregion popover
 
 // #region open indicator

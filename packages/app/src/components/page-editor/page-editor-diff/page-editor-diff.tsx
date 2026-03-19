@@ -418,7 +418,7 @@ export type PageEditorDiff_Props = {
 	topStickyFloatingSlot?: React.ReactNode;
 };
 
-type PageEditorDiff_Inner_Props = PageEditorDiff_Props & {
+type PageEditorDiffInner_Props = PageEditorDiff_Props & {
 	hoistingContainer: HTMLElement;
 	editorContentState: RemoteEditorContentState;
 	isSaving: boolean;
@@ -481,7 +481,7 @@ function create_editor_content_state_from_page_content_data(
 	} satisfies RemoteEditorContentState;
 }
 
-function PageEditorDiff_Inner(props: PageEditorDiff_Inner_Props) {
+function PageEditorDiffInner(props: PageEditorDiffInner_Props) {
 	const {
 		className,
 		pageId,
@@ -1432,7 +1432,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 		});
 	};
 
-	const handleSave: PageEditorDiff_Inner_Props["onSave"] = ({ flushPendingEditUpsertIfNeeded }) => {
+	const handleSave: PageEditorDiffInner_Props["onSave"] = ({ flushPendingEditUpsertIfNeeded }) => {
 		setIsSaving(true);
 
 		Promise.try(async () => {
@@ -1485,7 +1485,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			});
 	};
 
-	const handleClickSync: PageEditorDiff_Inner_Props["onClickSync"] = (editorValues) => {
+	const handleClickSync: PageEditorDiffInner_Props["onClickSync"] = (editorValues) => {
 		if (isSyncing) return;
 
 		setIsSyncing(true);
@@ -1770,7 +1770,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 		remoteEditorContentState === undefined ? (
 		<PageEditorDiffSkeleton />
 	) : (
-		<PageEditorDiff_Inner
+		<PageEditorDiffInner
 			key={pageId}
 			{...props}
 			className={className}

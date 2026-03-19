@@ -143,7 +143,7 @@ function PageEditorPlainTextTopStickyFloatingContainer(props: PageEditorPlainTex
 // #region root
 type PageEditorPlainText_ClassNames = "PageEditorPlainText" | "PageEditorPlainText-editor";
 
-type PageEditorPlainText_Inner_Props = {
+type PageEditorPlainTextInner_Props = {
 	pageId: app_convex_Id<"pages">;
 	initialData: {
 		markdown: string;
@@ -155,7 +155,7 @@ type PageEditorPlainText_Inner_Props = {
 	topStickyFloatingSlot?: React.ReactNode;
 };
 
-function PageEditorPlainText_Inner(props: PageEditorPlainText_Inner_Props) {
+function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 	const { initialData, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
@@ -590,7 +590,7 @@ export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	return pageContentData === undefined ? (
 		<PageEditorPlainTextSkeleton />
 	) : (
-		<PageEditorPlainText_Inner
+		<PageEditorPlainTextInner
 			key={pageId}
 			pageId={pageId}
 			initialData={

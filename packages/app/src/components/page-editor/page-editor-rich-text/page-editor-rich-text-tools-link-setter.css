@@ -1,4 +1,5 @@
 @layer components {
+	/* #region root */
 	.PageEditorRichTextToolsLinkSetter-trigger-button {
 		text-decoration: underline;
 		text-decoration-color: currentColor;
@@ -13,8 +14,10 @@
 		width: 240px;
 		padding: 0;
 	}
+	/* #endregion root */
 
-	.PageEditorRichTextToolsLinkSetter-form {
+	/* #region form */
+	.PageEditorRichTextToolsLinkSetterForm {
 		display: flex;
 		gap: 4px;
 		padding: 4px;
@@ -22,8 +25,9 @@
 		align-items: center;
 	}
 
-	.PageEditorRichTextToolsLinkSetter-input {
+	.PageEditorRichTextToolsLinkSetterForm-input {
 		flex: 1;
 		contain: style;
 	}
+	/* #endregion form */
 }

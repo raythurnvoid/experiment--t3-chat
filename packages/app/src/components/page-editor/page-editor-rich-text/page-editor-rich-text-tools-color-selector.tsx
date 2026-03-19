@@ -1,6 +1,6 @@
 import "./page-editor-rich-text-tools-color-selector.css";
 import { Check, ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
 	MySelect,
 	MySelectTrigger,
@@ -18,7 +18,7 @@ import {
 } from "@/components/my-select.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { cn, sx } from "@/lib/utils.ts";
-import { useForceRender } from "@/hooks/utils-hooks.ts";
+import { useFn, useForceRender } from "@/hooks/utils-hooks.ts";
 import {
 	PageEditorRichText,
 	type PageEditorRichText_FgColorCssVarKeys,
@@ -112,6 +112,8 @@ const HIGHLIGHT_COLORS = [
 
 type FgColorCssValue = `var(${PageEditorRichText_FgColorCssVarKeys})`;
 type BgColorCssValue = `var(${PageEditorRichText_BgColorCssVarKeys})`;
+type TextColorItem = (typeof TEXT_COLORS)[number];
+type HighlightColorItem = (typeof HIGHLIGHT_COLORS)[number];
 
 type SelectedValue = FgColorCssValue | BgColorCssValue;
 
@@ -126,6 +128,7 @@ function make_selected_values(args: { color?: FgColorCssValue; background?: BgCo
 	return values;
 }
 
+// #region preview
 type PageEditorRichTextToolsColorSelectorPreview_ClassNames = "PageEditorRichTextToolsColorSelectorPreview";
 
 type PageEditorRichTextToolsColorSelectorPreview_CssVars = {
@@ -178,42 +181,148 @@ export function PageEditorRichTextToolsColorSelectorPreview(props: PageEditorRic
 		</span>
 	);
 }
+// #endregion preview
 
+// #region item
+type PageEditorRichTextToolsColorSelectorItem_ClassNames =
+	| "PageEditorRichTextToolsColorSelectorItem"
+	| "PageEditorRichTextToolsColorSelectorItem-checkIcon";
+
+type PageEditorRichTextToolsColorSelectorItem_Props<TItem extends BubbleColorMenuItem> = {
+	item: TItem;
+	isSelected: boolean;
+	onSelect: (item: TItem) => void;
+	activeColor?: FgColorCssValue;
+	activeBackground?: BgColorCssValue;
+};
+
+function PageEditorRichTextToolsColorSelectorItem<TItem extends BubbleColorMenuItem>(
+	props: PageEditorRichTextToolsColorSelectorItem_Props<TItem>,
+) {
+	const { item, isSelected, onSelect, activeColor, activeBackground } = props;
+	const handleClick = useFn(() => {
+		onSelect(item);
+	});
+
+	return (
+		<MySelectItem
+			className={cn("PageEditorRichTextToolsColorSelectorItem" satisfies PageEditorRichTextToolsColorSelectorItem_ClassNames)}
+			value={item.color}
+			onClick={handleClick}
+		>
+			<MySelectItemContent>
+				<MySelectItemContentIcon>
+					<PageEditorRichTextToolsColorSelectorPreview
+						activeColor={activeColor}
+						activeBackground={activeBackground}
+					/>
+				</MySelectItemContentIcon>
+				<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
+			</MySelectItemContent>
+
+			{isSelected && (
+				<MySelectItemIndicator>
+					<Check
+						className={cn(
+							"PageEditorRichTextToolsColorSelectorItem-checkIcon" satisfies PageEditorRichTextToolsColorSelectorItem_ClassNames,
+						)}
+					/>
+				</MySelectItemIndicator>
+			)}
+		</MySelectItem>
+	);
+}
+// #endregion item
+
+// #region list
+type PageEditorRichTextToolsColorSelectorList_Props = {
+	activeColor: TextColorItem | undefined;
+	activeBackground: HighlightColorItem | undefined;
+	onColorSelect: (item: TextColorItem) => void;
+	onHighlightSelect: (item: HighlightColorItem) => void;
+};
+
+function PageEditorRichTextToolsColorSelectorList(props: PageEditorRichTextToolsColorSelectorList_Props) {
+	const { activeColor, activeBackground, onColorSelect, onHighlightSelect } = props;
+
+	return (
+		<MySelectPopoverScrollableArea>
+			<MySelectPopoverContent>
+				<MySelectItemsGroup>
+					<MySelectItemsGroupText>Color</MySelectItemsGroupText>
+					{TEXT_COLORS.map((item) => {
+						const isSelected =
+							item === activeColor ||
+							(item.color ===
+								`var${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys}` &&
+								!activeColor);
+
+						return (
+							<PageEditorRichTextToolsColorSelectorItem
+								key={item.name}
+								item={item}
+								isSelected={isSelected}
+								onSelect={onColorSelect}
+								activeColor={item.color}
+							/>
+						);
+					})}
+				</MySelectItemsGroup>
+
+				<MySelectItemsGroup>
+					<MySelectItemsGroupText>Background</MySelectItemsGroupText>
+					{HIGHLIGHT_COLORS.map((item) => {
+						const isSelected =
+							item === activeBackground ||
+							(item.color === `var(--PageEditorRichText-text-color-bg-default)` && !activeBackground);
+
+						return (
+							<PageEditorRichTextToolsColorSelectorItem
+								key={item.name}
+								item={item}
+								isSelected={isSelected}
+								onSelect={onHighlightSelect}
+								activeBackground={item.color}
+							/>
+						);
+					})}
+				</MySelectItemsGroup>
+			</MySelectPopoverContent>
+		</MySelectPopoverScrollableArea>
+	);
+}
+// #endregion list
+
+// #region root
 export type PageEditorRichTextToolsColorSelector_ClassNames =
 	| "PageEditorRichTextToolsColorSelector"
-	| "PageEditorRichTextToolsColorSelector-popover"
-	| "PageEditorRichTextToolsColorSelector-item"
-	| "PageEditorRichTextToolsColorSelector-check-icon";
+	| "PageEditorRichTextToolsColorSelector-popover";
 
 export type PageEditorRichTextToolsColorSelector_Props = {
 	editor: Editor;
 	setDecorationHighlightOnOpen?: boolean;
 };
 
-export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextToolsColorSelector_Props) {
-	// Required to allow re-renders to access latest values via tiptap functions
-	"use no memo";
+type PageEditorRichTextToolsColorSelectorInner_Props = PageEditorRichTextToolsColorSelector_Props & {
+	activeColor: TextColorItem | undefined;
+	activeBackground: HighlightColorItem | undefined;
+	onColorSelect: (item: TextColorItem) => void;
+	onHighlightSelect: (item: HighlightColorItem) => void;
+};
 
-	const { editor, setDecorationHighlightOnOpen = false } = props;
+const PageEditorRichTextToolsColorSelectorInner = memo(function PageEditorRichTextToolsColorSelectorInner(
+	props: PageEditorRichTextToolsColorSelectorInner_Props,
+) {
+	const { editor, activeColor, activeBackground, onColorSelect, onHighlightSelect, setDecorationHighlightOnOpen = false } =
+		props;
 
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
-		editor,
-		selector: ({ editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
-		},
-	});
-
-	const forceRender = useForceRender();
 	const [open, setOpen] = useState(false);
 
 	const triggerButtonRef = useRef<HTMLButtonElement>(null);
 	const openRef = useRef(false);
 	const didSetDecorationHighlightRef = useRef(false);
 
-	const doSetOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+	const doSetOpen = useFn((next: boolean | ((prev: boolean) => boolean)) => {
 		const prev = openRef.current;
 		const nextOpen = typeof next === "function" ? next(prev) : next;
 
@@ -228,42 +337,7 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 				didSetDecorationHighlightRef.current = false;
 			}
 		}
-	};
-
-	const activeColor = editor ? TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color })) : undefined;
-	const activeBackground = editor
-		? HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }))
-		: undefined;
-
-	const handleColorSelect = (item: (typeof TEXT_COLORS)[number]) => {
-		editor.commands.command(({ commands }) => {
-			commands.unsetColor();
-			if (
-				item.color !==
-				`var(${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys})`
-			) {
-				commands.setColor(item.color);
-			}
-			return true;
-		});
-
-		forceRender();
-	};
-
-	const handleHighlightSelect = (item: (typeof HIGHLIGHT_COLORS)[number]) => {
-		editor.commands.command(({ commands }) => {
-			commands.unsetHighlight();
-			if (
-				item.color !==
-				`var${"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys}`
-			) {
-				commands.setHighlight({ color: item.color });
-			}
-			return true;
-		});
-
-		forceRender();
-	};
+	});
 
 	// Unmount useEffect
 	useEffect(() => {
@@ -314,87 +388,80 @@ export function PageEditorRichTextToolsColorSelector(props: PageEditorRichTextTo
 					autoFocusOnShow={false}
 					unmountOnHide
 				>
-					<MySelectPopoverScrollableArea>
-						<MySelectPopoverContent>
-							<MySelectItemsGroup>
-								<MySelectItemsGroupText>Color</MySelectItemsGroupText>
-								{TEXT_COLORS.map((item) => {
-									const isSelected =
-										item === activeColor ||
-										(item.color ===
-											`var${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys}` &&
-											!activeColor);
-
-									return (
-										<MySelectItem
-											key={item.name}
-											className={cn(
-												"PageEditorRichTextToolsColorSelector-item" satisfies PageEditorRichTextToolsColorSelector_ClassNames,
-											)}
-											value={item.color}
-											onClick={() => handleColorSelect(item)}
-										>
-											<MySelectItemContent>
-												<MySelectItemContentIcon>
-													<PageEditorRichTextToolsColorSelectorPreview activeColor={item.color} />
-												</MySelectItemContentIcon>
-												<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
-											</MySelectItemContent>
-
-											{isSelected && (
-												<MySelectItemIndicator>
-													<Check
-														className={cn(
-															"PageEditorRichTextToolsColorSelector-check-icon" satisfies PageEditorRichTextToolsColorSelector_ClassNames,
-														)}
-													/>
-												</MySelectItemIndicator>
-											)}
-										</MySelectItem>
-									);
-								})}
-							</MySelectItemsGroup>
-
-							<MySelectItemsGroup>
-								<MySelectItemsGroupText>Background</MySelectItemsGroupText>
-								{HIGHLIGHT_COLORS.map((item) => {
-									const isSelected =
-										item === activeBackground ||
-										(item.color === `var(--PageEditorRichText-text-color-bg-default)` && !activeBackground);
-
-									return (
-										<MySelectItem
-											key={item.name}
-											className={cn(
-												"PageEditorRichTextToolsColorSelector-item" satisfies PageEditorRichTextToolsColorSelector_ClassNames,
-											)}
-											value={item.color}
-											onClick={() => handleHighlightSelect(item)}
-										>
-											<MySelectItemContent>
-												<MySelectItemContentIcon>
-													<PageEditorRichTextToolsColorSelectorPreview activeBackground={item.color} />
-												</MySelectItemContentIcon>
-												<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
-											</MySelectItemContent>
-
-											{isSelected && (
-												<MySelectItemIndicator>
-													<Check
-														className={cn(
-															"PageEditorRichTextToolsColorSelector-check-icon" satisfies PageEditorRichTextToolsColorSelector_ClassNames,
-														)}
-													/>
-												</MySelectItemIndicator>
-											)}
-										</MySelectItem>
-									);
-								})}
-							</MySelectItemsGroup>
-						</MySelectPopoverContent>
-					</MySelectPopoverScrollableArea>
+					<PageEditorRichTextToolsColorSelectorList
+						activeColor={activeColor}
+						activeBackground={activeBackground}
+						onColorSelect={onColorSelect}
+						onHighlightSelect={onHighlightSelect}
+					/>
 				</MySelectPopover>
 			</MySelect>
 		</div>
 	);
-}
+});
+
+export const PageEditorRichTextToolsColorSelector = memo(function PageEditorRichTextToolsColorSelector(
+	props: PageEditorRichTextToolsColorSelector_Props,
+) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
+	const { editor, setDecorationHighlightOnOpen = false } = props;
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
+	const forceRender = useForceRender();
+
+	const activeColor = TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }));
+	const activeBackground = HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }));
+
+	const handleColorSelect = useFn((item: TextColorItem) => {
+		editor.commands.command(({ commands }) => {
+			commands.unsetColor();
+			if (
+				item.color !==
+				`var(${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys})`
+			) {
+				commands.setColor(item.color);
+			}
+			return true;
+		});
+
+		forceRender();
+	});
+
+	const handleHighlightSelect = useFn((item: HighlightColorItem) => {
+		editor.commands.command(({ commands }) => {
+			commands.unsetHighlight();
+			if (
+				item.color !==
+				`var${"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys}`
+			) {
+				commands.setHighlight({ color: item.color });
+			}
+			return true;
+		});
+
+		forceRender();
+	});
+
+	return (
+		<PageEditorRichTextToolsColorSelectorInner
+			editor={editor}
+			activeColor={activeColor}
+			activeBackground={activeBackground}
+			onColorSelect={handleColorSelect}
+			onHighlightSelect={handleHighlightSelect}
+			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}
+		/>
+	);
+});
+// #endregion root

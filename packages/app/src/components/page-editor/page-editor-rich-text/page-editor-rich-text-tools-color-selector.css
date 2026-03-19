@@ -1,16 +1,5 @@
 @layer components {
-	.PageEditorRichTextToolsColorSelector .MyButton {
-		width: 60px;
-	}
-
-	.PageEditorRichTextToolsColorSelector-popover {
-		width: 200px;
-	}
-
-	.PageEditorRichTextToolsColorSelector-item {
-		cursor: pointer;
-	}
-
+	/* #region preview */
 	.PageEditorRichTextToolsColorSelectorPreview {
 		border-radius: 4px;
 		border: 1px solid var(--color-base-1-10);
@@ -32,9 +21,29 @@
 		color: var(--PageEditorRichTextToolsColorSelector-selected-fg);
 		background-color: var(--PageEditorRichTextToolsColorSelector-selected-bg);
 	}
+	/* #endregion preview */
 
-	.PageEditorRichTextToolsColorSelector-check-icon {
+	/* #region item */
+	.PageEditorRichTextToolsColorSelectorItem {
+		cursor: pointer;
+	}
+
+	.PageEditorRichTextToolsColorSelectorItem-checkIcon {
 		width: 16px;
 		height: 16px;
 	}
+	/* #endregion item */
+
+	/* #region list */
+	/* #endregion list */
+
+	/* #region root */
+	.PageEditorRichTextToolsColorSelector .MyButton {
+		width: 60px;
+	}
+
+	.PageEditorRichTextToolsColorSelector-popover {
+		width: 200px;
+	}
+	/* #endregion root */
 }

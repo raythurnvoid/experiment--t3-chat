@@ -1,3 +1,4 @@
+/* #region root */
 .PageEditorRichTextToolsTextStyles {
 	display: flex;
 }
@@ -6,7 +7,10 @@
 	width: 20px;
 	height: 20px;
 }
+/* #endregion root */
 
-.PageEditorRichTextToolsTextStyles-active {
+/* #region text style toggle */
+.PageEditorRichTextToolsTextStyleToggle-active {
 	color: var(--color-accent-06);
 }
+/* #endregion text style toggle */

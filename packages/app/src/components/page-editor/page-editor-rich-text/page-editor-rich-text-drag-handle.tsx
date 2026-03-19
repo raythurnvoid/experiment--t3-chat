@@ -20,7 +20,7 @@ import {
 	CopyPlus,
 	type LucideIcon,
 } from "lucide-react";
-import { useState, useRef, type ComponentProps } from "react";
+import { memo, useState, useRef, type ComponentProps } from "react";
 import { Editor, useEditorState } from "@tiptap/react";
 import { EditorDragHandle, type EditorDragHandleProps } from "novel";
 import { offset } from "@floating-ui/dom";
@@ -37,8 +37,10 @@ import {
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
 	MyMenuItemSubMenuIndicator,
+	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
 import { MyButtonIcon, type MyButton_ClassNames, type MyButtonIcon_ClassNames } from "@/components/my-button.tsx";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import type {
 	PageEditorRichText_FgColorCssVarKeys,
@@ -48,7 +50,6 @@ import type { MyIconButton_ClassNames } from "../../my-icon-button.tsx";
 
 type TipTapNode = NonNullable<NonNullable<Parameters<NonNullable<EditorDragHandleProps["onNodeChange"]>>>[0]["node"]>;
 
-// #region ColorData
 const TEXT_COLORS = [
 	{
 		name: "Default",
@@ -129,9 +130,9 @@ const HIGHLIGHT_COLORS = [
 
 type FgColorCssValue = `var(${PageEditorRichText_FgColorCssVarKeys})`;
 type BgColorCssValue = `var(${PageEditorRichText_BgColorCssVarKeys})`;
-// #endregion ColorData
+type TextColorItem = (typeof TEXT_COLORS)[number];
+type HighlightColorItem = (typeof HIGHLIGHT_COLORS)[number];
 
-// #region TransformData
 type TransformItem = {
 	name: string;
 	Icon: LucideIcon;
@@ -214,9 +215,8 @@ const transformItems: TransformItem[] = [
 		isActive: (editor) => editor.isActive("codeBlock") ?? false,
 	},
 ];
-// #endregion TransformData
 
-// #region ColorPreview
+// #region color preview
 type PageEditorRichTextDragHandleColorPreview_ClassNames = "PageEditorRichTextDragHandleColorPreview";
 
 type PageEditorRichTextDragHandleColorPreview_CssVars = {
@@ -237,7 +237,9 @@ type PageEditorRichTextDragHandleColorPreview_Props = {
 	activeBackground?: BgColorCssValue;
 };
 
-function PageEditorRichTextDragHandleColorPreview(props: PageEditorRichTextDragHandleColorPreview_Props) {
+const PageEditorRichTextDragHandleColorPreview = memo(function PageEditorRichTextDragHandleColorPreview(
+	props: PageEditorRichTextDragHandleColorPreview_Props,
+) {
 	const { className, style, activeColor, activeBackground } = props;
 
 	return (
@@ -262,39 +264,107 @@ function PageEditorRichTextDragHandleColorPreview(props: PageEditorRichTextDragH
 			A
 		</span>
 	);
-}
-// #endregion ColorPreview
+});
+// #endregion color preview
 
-// #region ColorSubMenu
+// #region color submenu item
+type PageEditorRichTextDragHandleColorSubMenuTextItem_ClassNames = "PageEditorRichTextDragHandleColorSubMenuTextItem";
+
+type PageEditorRichTextDragHandleColorSubMenuTextItem_Props = {
+	item: TextColorItem;
+	isSelected: boolean;
+	onSelect: (item: TextColorItem) => void;
+};
+
+const PageEditorRichTextDragHandleColorSubMenuTextItem = memo(function PageEditorRichTextDragHandleColorSubMenuTextItem(
+	props: PageEditorRichTextDragHandleColorSubMenuTextItem_Props,
+) {
+	const { item, isSelected, onSelect } = props;
+
+	const handleClick = useFn<NonNullable<MyMenuItem_Props["onClick"]>>(() => {
+		onSelect(item);
+	});
+
+	return (
+		<MyMenuItem
+			className={cn(
+				"PageEditorRichTextDragHandleColorSubMenuTextItem" satisfies PageEditorRichTextDragHandleColorSubMenuTextItem_ClassNames,
+			)}
+			hideOnClick={false}
+			onClick={handleClick}
+		>
+			<MyMenuItemContent>
+				<MyMenuItemContentIcon>
+					<PageEditorRichTextDragHandleColorPreview activeColor={item.color} />
+				</MyMenuItemContentIcon>
+				<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
+			</MyMenuItemContent>
+			{isSelected && <Check className="PageEditorRichTextDragHandleMenuPopover-check" />}
+		</MyMenuItem>
+	);
+});
+
+type PageEditorRichTextDragHandleColorSubMenuHighlightItem_ClassNames =
+	"PageEditorRichTextDragHandleColorSubMenuHighlightItem";
+
+type PageEditorRichTextDragHandleColorSubMenuHighlightItem_Props = {
+	item: HighlightColorItem;
+	isSelected: boolean;
+	onSelect: (item: HighlightColorItem) => void;
+};
+
+const PageEditorRichTextDragHandleColorSubMenuHighlightItem = memo(
+	function PageEditorRichTextDragHandleColorSubMenuHighlightItem(
+		props: PageEditorRichTextDragHandleColorSubMenuHighlightItem_Props,
+	) {
+		const { item, isSelected, onSelect } = props;
+
+		const handleClick = useFn<NonNullable<MyMenuItem_Props["onClick"]>>(() => {
+			onSelect(item);
+		});
+
+		return (
+			<MyMenuItem
+				className={cn(
+					"PageEditorRichTextDragHandleColorSubMenuHighlightItem" satisfies PageEditorRichTextDragHandleColorSubMenuHighlightItem_ClassNames,
+				)}
+				hideOnClick={false}
+				onClick={handleClick}
+			>
+				<MyMenuItemContent>
+					<MyMenuItemContentIcon>
+						<PageEditorRichTextDragHandleColorPreview activeBackground={item.color} />
+					</MyMenuItemContentIcon>
+					<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
+				</MyMenuItemContent>
+				{isSelected && <Check className="PageEditorRichTextDragHandleMenuPopover-check" />}
+			</MyMenuItem>
+		);
+	},
+);
+// #endregion color submenu item
+
+// #region color submenu
 type PageEditorRichTextDragHandleColorSubMenu_ClassNames =
 	| "PageEditorRichTextDragHandleColorSubMenu"
 	| "PageEditorRichTextDragHandleColorSubMenu-trigger"
-	| "PageEditorRichTextDragHandleColorSubMenu-popover"
-	| "PageEditorRichTextDragHandleColorSubMenu-item";
+	| "PageEditorRichTextDragHandleColorSubMenu-popover";
 
 type PageEditorRichTextDragHandleColorSubMenu_Props = {
 	editor: Editor;
 };
 
-function PageEditorRichTextDragHandleColorSubMenu(props: PageEditorRichTextDragHandleColorSubMenu_Props) {
-	// Required to allow re-renders to access latest values via tiptap functions
-	"use no memo";
+type PageEditorRichTextDragHandleColorSubMenuInner_Props = PageEditorRichTextDragHandleColorSubMenu_Props & {
+	activeColor: TextColorItem | undefined;
+	activeBackground: HighlightColorItem | undefined;
+};
 
-	const { editor } = props;
+const PageEditorRichTextDragHandleColorSubMenuInner = memo(function PageEditorRichTextDragHandleColorSubMenuInner(
+	props: PageEditorRichTextDragHandleColorSubMenuInner_Props,
+) {
+	const { editor, activeColor, activeBackground } = props;
 
-	useEditorState({
-		editor,
-		selector: ({ editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
-		},
-	});
-
-	const activeColor = TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }));
-	const activeBackground = HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }));
-
-	const handleColorSelect = (item: (typeof TEXT_COLORS)[number]) => {
+	const handleColorSelect = useFn((item: TextColorItem) => {
 		const chain = editor.chain().unsetColor();
 
 		if (
@@ -305,9 +375,9 @@ function PageEditorRichTextDragHandleColorSubMenu(props: PageEditorRichTextDragH
 		}
 
 		chain.run();
-	};
+	});
 
-	const handleHighlightSelect = (item: (typeof HIGHLIGHT_COLORS)[number]) => {
+	const handleHighlightSelect = useFn((item: HighlightColorItem) => {
 		const chain = editor.chain().unsetHighlight();
 
 		if (
@@ -318,7 +388,41 @@ function PageEditorRichTextDragHandleColorSubMenu(props: PageEditorRichTextDragH
 		}
 
 		chain.run();
-	};
+	});
+
+	const renderTextColorItem = useFn((item: TextColorItem) => {
+		const isSelected =
+			item === activeColor ||
+			(item.color ===
+				`var(${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys})` &&
+				!activeColor);
+
+		return (
+			<PageEditorRichTextDragHandleColorSubMenuTextItem
+				key={item.name}
+				item={item}
+				isSelected={isSelected}
+				onSelect={handleColorSelect}
+			/>
+		);
+	});
+
+	const renderHighlightColorItem = useFn((item: HighlightColorItem) => {
+		const isSelected =
+			item === activeBackground ||
+			(item.color ===
+				`var(${"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys})` &&
+				!activeBackground);
+
+		return (
+			<PageEditorRichTextDragHandleColorSubMenuHighlightItem
+				key={item.name}
+				item={item}
+				isSelected={isSelected}
+				onSelect={handleHighlightSelect}
+			/>
+		);
+	});
 
 	return (
 		<MyMenu>
@@ -350,86 +454,122 @@ function PageEditorRichTextDragHandleColorSubMenu(props: PageEditorRichTextDragH
 				<MyMenuPopoverScrollableArea>
 					<MyMenuPopoverContent>
 						<MyMenuItemsGroupText>Color</MyMenuItemsGroupText>
-						{TEXT_COLORS.map((item) => {
-							const isSelected =
-								item === activeColor ||
-								(item.color ===
-									`var(${"--PageEditorRichText-text-color-fg-default" satisfies PageEditorRichText_FgColorCssVarKeys})` &&
-									!activeColor);
-
-							return (
-								<MyMenuItem
-									key={item.name}
-									className={cn(
-										"PageEditorRichTextDragHandleColorSubMenu-item" satisfies PageEditorRichTextDragHandleColorSubMenu_ClassNames,
-									)}
-									hideOnClick={false}
-									onClick={() => handleColorSelect(item)}
-								>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<PageEditorRichTextDragHandleColorPreview activeColor={item.color} />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-									{isSelected && <Check className="PageEditorRichTextDragHandleMenuPopover-check" />}
-								</MyMenuItem>
-							);
-						})}
+						{TEXT_COLORS.map(renderTextColorItem)}
 
 						<MyMenuItemsGroupText>Background</MyMenuItemsGroupText>
-						{HIGHLIGHT_COLORS.map((item) => {
-							const isSelected =
-								item === activeBackground ||
-								(item.color ===
-									`var(${"--PageEditorRichText-text-color-bg-default" satisfies PageEditorRichText_BgColorCssVarKeys})` &&
-									!activeBackground);
-
-							return (
-								<MyMenuItem
-									key={item.name}
-									className={cn(
-										"PageEditorRichTextDragHandleColorSubMenu-item" satisfies PageEditorRichTextDragHandleColorSubMenu_ClassNames,
-									)}
-									hideOnClick={false}
-									onClick={() => handleHighlightSelect(item)}
-								>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<PageEditorRichTextDragHandleColorPreview activeBackground={item.color} />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-									{isSelected && <Check className="PageEditorRichTextDragHandleMenuPopover-check" />}
-								</MyMenuItem>
-							);
-						})}
+						{HIGHLIGHT_COLORS.map(renderHighlightColorItem)}
 					</MyMenuPopoverContent>
 				</MyMenuPopoverScrollableArea>
 			</MyMenuPopover>
 		</MyMenu>
 	);
-}
-// #endregion ColorSubMenu
+});
 
-// #region TurnIntoSubMenu
+const PageEditorRichTextDragHandleColorSubMenu = memo(function PageEditorRichTextDragHandleColorSubMenu(
+	props: PageEditorRichTextDragHandleColorSubMenu_Props,
+) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
+	const { editor } = props;
+
+	useEditorState({
+		editor,
+		selector: ({ editor }: { editor: Editor }) => {
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
+	const activeColor = TEXT_COLORS.find((item) => editor.isActive("textStyle", { color: item.color }));
+	const activeBackground = HIGHLIGHT_COLORS.find((item) => editor.isActive("highlight", { color: item.color }));
+
+	return (
+		<PageEditorRichTextDragHandleColorSubMenuInner
+			editor={editor}
+			activeColor={activeColor}
+			activeBackground={activeBackground}
+		/>
+	);
+});
+// #endregion color submenu
+
+// #region turn into submenu item
+type PageEditorRichTextDragHandleTurnIntoItem_ClassNames =
+	| "PageEditorRichTextDragHandleTurnIntoItem"
+	| "PageEditorRichTextDragHandleTurnIntoItem-icon";
+
+type PageEditorRichTextDragHandleTurnIntoItem_Props = {
+	item: TransformItem;
+	isActive: boolean;
+	onSelect: (item: TransformItem) => void;
+};
+
+const PageEditorRichTextDragHandleTurnIntoItem = memo(function PageEditorRichTextDragHandleTurnIntoItem(
+	props: PageEditorRichTextDragHandleTurnIntoItem_Props,
+) {
+	const { item, isActive, onSelect } = props;
+
+	const handleClick = useFn<NonNullable<MyMenuItem_Props["onClick"]>>(() => {
+		onSelect(item);
+	});
+
+	return (
+		<MyMenuItem
+			className={cn(
+				"PageEditorRichTextDragHandleTurnIntoItem" satisfies PageEditorRichTextDragHandleTurnIntoItem_ClassNames,
+			)}
+			hideOnClick={false}
+			onClick={handleClick}
+		>
+			<MyMenuItemContent>
+				<MyMenuItemContentIcon
+					className={cn(
+						"PageEditorRichTextDragHandleTurnIntoItem-icon" satisfies PageEditorRichTextDragHandleTurnIntoItem_ClassNames,
+					)}
+				>
+					<item.Icon />
+				</MyMenuItemContentIcon>
+				<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
+			</MyMenuItemContent>
+			{isActive && <Check className="PageEditorRichTextDragHandleMenuPopover-check" />}
+		</MyMenuItem>
+	);
+});
+// #endregion turn into submenu item
+
+// #region turn into submenu
 type PageEditorRichTextDragHandleTurnIntoSubMenu_ClassNames =
 	| "PageEditorRichTextDragHandleTurnIntoSubMenu"
 	| "PageEditorRichTextDragHandleTurnIntoSubMenu-trigger"
-	| "PageEditorRichTextDragHandleTurnIntoSubMenu-popover"
-	| "PageEditorRichTextDragHandleTurnIntoSubMenu-item"
-	| "PageEditorRichTextDragHandleTurnIntoSubMenu-icon";
+	| "PageEditorRichTextDragHandleTurnIntoSubMenu-popover";
 
 type PageEditorRichTextDragHandleTurnIntoSubMenu_Props = {
 	editor: Editor;
 };
 
-function PageEditorRichTextDragHandleTurnIntoSubMenu(props: PageEditorRichTextDragHandleTurnIntoSubMenu_Props) {
+const PageEditorRichTextDragHandleTurnIntoSubMenu = memo(function PageEditorRichTextDragHandleTurnIntoSubMenu(
+	props: PageEditorRichTextDragHandleTurnIntoSubMenu_Props,
+) {
 	const { editor } = props;
 
-	const handleTransform = (item: TransformItem) => {
+	const handleTransform = useFn((item: TransformItem) => {
 		item.command(editor);
-	};
+	});
+
+	const renderTransformItem = useFn((item: TransformItem) => {
+		const isActive = item.isActive(editor);
+
+		return (
+			<PageEditorRichTextDragHandleTurnIntoItem
+				key={item.name}
+				item={item}
+				isActive={isActive}
+				onSelect={handleTransform}
+			/>
+		);
+	});
 
 	return (
 		<MyMenu>
@@ -459,42 +599,15 @@ function PageEditorRichTextDragHandleTurnIntoSubMenu(props: PageEditorRichTextDr
 				portalElement={editor.view.dom.parentElement}
 			>
 				<MyMenuPopoverScrollableArea>
-					<MyMenuPopoverContent>
-						{transformItems.map((item) => {
-							const isActive = item.isActive(editor);
-
-							return (
-								<MyMenuItem
-									key={item.name}
-									className={cn(
-										"PageEditorRichTextDragHandleTurnIntoSubMenu-item" satisfies PageEditorRichTextDragHandleTurnIntoSubMenu_ClassNames,
-									)}
-									hideOnClick={false}
-									onClick={() => handleTransform(item)}
-								>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon
-											className={cn(
-												"PageEditorRichTextDragHandleTurnIntoSubMenu-icon" satisfies PageEditorRichTextDragHandleTurnIntoSubMenu_ClassNames,
-											)}
-										>
-											<item.Icon />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>{item.name}</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-									{isActive && <Check className="PageEditorRichTextDragHandleMenuPopover-check" />}
-								</MyMenuItem>
-							);
-						})}
-					</MyMenuPopoverContent>
+					<MyMenuPopoverContent>{transformItems.map(renderTransformItem)}</MyMenuPopoverContent>
 				</MyMenuPopoverScrollableArea>
 			</MyMenuPopover>
 		</MyMenu>
 	);
-}
-// #endregion TurnIntoSubMenu
+});
+// #endregion turn into submenu
 
-// #region MenuPopover
+// #region menu popover
 type PageEditorRichTextDragHandleMenuPopover_ClassNames =
 	| "PageEditorRichTextDragHandleMenuPopover"
 	| "PageEditorRichTextDragHandleMenuPopover-content"
@@ -506,10 +619,12 @@ type PageEditorRichTextDragHandleMenuPopover_Props = {
 	currentNodePos: number | null;
 };
 
-function PageEditorRichTextDragHandleMenuPopover(props: PageEditorRichTextDragHandleMenuPopover_Props) {
+const PageEditorRichTextDragHandleMenuPopover = memo(function PageEditorRichTextDragHandleMenuPopover(
+	props: PageEditorRichTextDragHandleMenuPopover_Props,
+) {
 	const { editor, currentNode, currentNodePos } = props;
 
-	const handleDuplicate = () => {
+	const handleDuplicate = useFn<NonNullable<MyMenuItem_Props["onClick"]>>(() => {
 		if (!currentNode || currentNodePos === null) return;
 
 		const { state } = editor;
@@ -521,9 +636,9 @@ function PageEditorRichTextDragHandleMenuPopover(props: PageEditorRichTextDragHa
 
 		// Insert the duplicated content right after the current node
 		editor.chain().focus().insertContentAt(end, nodeJSON).run();
-	};
+	});
 
-	const handleCopyToClipboard = async () => {
+	const handleCopyToClipboard = useFn<NonNullable<MyMenuItem_Props["onClick"]>>(async () => {
 		if (!currentNode || currentNodePos === null) return;
 
 		const { state, view } = editor;
@@ -543,16 +658,16 @@ function PageEditorRichTextDragHandleMenuPopover(props: PageEditorRichTextDragHa
 			.catch((error) => {
 				console.error("[PageEditorRichTextDragHandle.handleCopy] Error copying node to clipboard", { error });
 			});
-	};
+	});
 
-	const handleDelete = () => {
+	const handleDelete = useFn<NonNullable<MyMenuItem_Props["onClick"]>>(() => {
 		if (!currentNode || currentNodePos === null) return;
 
 		const start = currentNodePos;
 		const end = currentNodePos + currentNode.nodeSize;
 
 		editor.chain().focus().deleteRange({ from: start, to: end }).run();
-	};
+	});
 
 	return (
 		<MyMenuPopover
@@ -603,19 +718,66 @@ function PageEditorRichTextDragHandleMenuPopover(props: PageEditorRichTextDragHa
 			</MyMenuPopoverScrollableArea>
 		</MyMenuPopover>
 	);
-}
-// #endregion MenuPopover
+});
+// #endregion menu popover
 
-// #region PageEditorRichTextDragHandle
-export type PageEditorRichTextDragHandle_ClassNames =
-	| "PageEditorRichTextDragHandle"
-	| "PageEditorRichTextDragHandle-button";
+// #region menu
+type PageEditorRichTextDragHandleMenu_ClassNames = "PageEditorRichTextDragHandleMenu-button";
+
+type PageEditorRichTextDragHandleMenu_Props = {
+	editor: Editor;
+	currentNode: TipTapNode | null;
+	currentNodePos: number | null;
+	onMenuOpenChange: (isOpen: boolean) => void;
+	onPointerDown: ComponentProps<"button">["onPointerDown"];
+	onPointerUp: ComponentProps<"button">["onPointerUp"];
+};
+
+const PageEditorRichTextDragHandleMenu = memo(function PageEditorRichTextDragHandleMenu(
+	props: PageEditorRichTextDragHandleMenu_Props,
+) {
+	const { editor, currentNode, currentNodePos, onMenuOpenChange, onPointerDown, onPointerUp } = props;
+
+	return (
+		<MyMenu placement="right-start" setOpen={onMenuOpenChange}>
+			<MyMenuTrigger>
+				<button
+					className={cn(
+						"PageEditorRichTextDragHandleMenu-button" satisfies PageEditorRichTextDragHandleMenu_ClassNames,
+						"MyButton" satisfies MyButton_ClassNames,
+						"MyIconButton" satisfies MyIconButton_ClassNames,
+						"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
+					)}
+					type="button"
+					aria-label="Block menu"
+					onPointerDown={onPointerDown}
+					onPointerUp={onPointerUp}
+				>
+					<MyButtonIcon className={cn("MyButtonIcon" satisfies MyButtonIcon_ClassNames)}>
+						<GripVertical />
+					</MyButtonIcon>
+				</button>
+			</MyMenuTrigger>
+			<PageEditorRichTextDragHandleMenuPopover
+				editor={editor}
+				currentNode={currentNode}
+				currentNodePos={currentNodePos}
+			/>
+		</MyMenu>
+	);
+});
+// #endregion menu
+
+// #region root
+export type PageEditorRichTextDragHandle_ClassNames = "PageEditorRichTextDragHandle";
 
 export type PageEditorRichTextDragHandle_Props = {
 	editor: Editor;
 };
 
-export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle_Props) {
+export const PageEditorRichTextDragHandle = memo(function PageEditorRichTextDragHandle(
+	props: PageEditorRichTextDragHandle_Props,
+) {
 	const { editor } = props;
 
 	const [currentNode, setCurrentNode] = useState<TipTapNode | null>(null);
@@ -646,15 +808,15 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 		],
 	}));
 
-	const handleNodeChange: EditorDragHandleProps["onNodeChange"] = ({ node, pos }) => {
+	const handleNodeChange = useFn<EditorDragHandleProps["onNodeChange"]>(({ node, pos }) => {
 		// Saving in a ref because the underneath floating-ui stuff needs to access the last value immidiately
 		// otherwise the position will be calculated wrong for a brief moment
 		currentNodeRef.current = node;
 		setCurrentNode(node);
 		setCurrentNodePos(pos ?? null);
-	};
+	});
 
-	const handleMenuOpenChange = (isOpen: boolean) => {
+	const handleMenuOpenChange = useFn((isOpen: boolean) => {
 		isOpenRef.current = isOpen;
 
 		if (isOpen) {
@@ -662,9 +824,9 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 		} else {
 			editor.commands.unlockDragHandle();
 		}
-	};
+	});
 
-	const handlePointerDown: ComponentProps<"button">["onPointerDown"] = (event) => {
+	const handlePointerDown = useFn<ComponentProps<"button">["onPointerDown"]>((event) => {
 		if (isOpenRef.current || currentNodePos == null) return;
 
 		// Select the node when menu opens for focus effect and to prepare the target
@@ -672,11 +834,11 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 		editor.commands.setNodeSelection(currentNodePos);
 
 		event.currentTarget.setPointerCapture(event.pointerId);
-	};
+	});
 
-	const handlePointerUp: ComponentProps<"button">["onPointerUp"] = (event) => {
+	const handlePointerUp = useFn<ComponentProps<"button">["onPointerUp"]>((event) => {
 		event.currentTarget.releasePointerCapture(event.pointerId);
-	};
+	});
 
 	return (
 		<EditorDragHandle
@@ -689,32 +851,15 @@ export function PageEditorRichTextDragHandle(props: PageEditorRichTextDragHandle
 			onNodeChange={handleNodeChange}
 			computePositionConfig={computePositionConfig}
 		>
-			<MyMenu placement="right-start" setOpen={handleMenuOpenChange}>
-				<MyMenuTrigger>
-					<button
-						className={cn(
-							"PageEditorRichTextDragHandle-button" satisfies PageEditorRichTextDragHandle_ClassNames,
-							"MyButton" satisfies MyButton_ClassNames,
-							"MyIconButton" satisfies MyIconButton_ClassNames,
-							"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
-						)}
-						type="button"
-						aria-label="Block menu"
-						onPointerDown={handlePointerDown}
-						onPointerUp={handlePointerUp}
-					>
-						<MyButtonIcon className={cn("MyButtonIcon" satisfies MyButtonIcon_ClassNames)}>
-							<GripVertical />
-						</MyButtonIcon>
-					</button>
-				</MyMenuTrigger>
-				<PageEditorRichTextDragHandleMenuPopover
-					editor={editor}
-					currentNode={currentNode}
-					currentNodePos={currentNodePos}
-				/>
-			</MyMenu>
+			<PageEditorRichTextDragHandleMenu
+				editor={editor}
+				currentNode={currentNode}
+				currentNodePos={currentNodePos}
+				onMenuOpenChange={handleMenuOpenChange}
+				onPointerDown={handlePointerDown}
+				onPointerUp={handlePointerUp}
+			/>
 		</EditorDragHandle>
 	);
-}
-// #endregion PageEditorRichTextDragHandle
+});
+// #endregion root

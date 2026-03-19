@@ -411,25 +411,43 @@ When editing existing code, your changes must match the existing local style and
 
 Keep component-scoped types next to their owner component instead of centralizing them in a single module-level block.
 
-- For component styling contracts, place `*_ClassNames` immediately above the related `*_Props` and component.
+- Use owner-based placement, not similarity-based placement.
+- For component styling contracts, place `Owner_ClassNames` immediately above the same owner's `Owner_Props` and component.
 - If a small component has no dedicated `*_Props`, keep its `*_ClassNames` directly above that component.
 - Avoid creating a top-level "css contracts" region that groups classnames/types for many components in one place.
-- Keep helper/data structure types with helper logic, and keep root component types with the root component region.
+- Keep owner-scoped contracts with the exact owner in their symbol name.
+- Do not mix parent-owned and child-owned contracts in the same region.
+- If you extract `ParentItem` from `Parent`, rename the extracted item's `*_ClassNames`, `*_Props`, and CSS selectors to match `ParentItem`.
 
-### Region organization (optional, user-directed)
+Examples:
 
-Use region comments when a module is large and can be clearly split into areas.
+- `Foo_ClassNames`, `Foo_Props`, and `Foo` stay together.
+- `FooItem_ClassNames`, `FooItem_Props`, and `FooItem` stay together.
+- `FooItem` must not keep using `Foo_ClassNames`.
 
-- Regions are recommended for big modules, but they are not mandatory.
-- Do not proactively add/remove region wrappers on your own; let the user decide when regions should be used.
+### Region organization
+
+Use region comments only when the user explicitly requests them, or when the module already uses regions.
+
+- Treat regions as mandatory in those cases.
+- Let the user guide region naming and organization when introducing or restructuring regions.
 - If a file already uses regions, preserve that structure and place new code in the most relevant existing region.
 - Keep regions flat (do not nest `#region` blocks).
+- Do not duplicate region labels within the same file; each region label must appear at most once per file.
 - Region labels must be lowercase words and concise.
 - If a `.tsx` file has a paired `.css` file, keep region labels aligned between TSX (`// #region ...`) and CSS (`/* #region ... */`).
-- Place `// #region <label>` before the related types/helpers and `// #endregion <label>` after the related component/function body.
-- If multiple compound components share a long prefix, shorten labels to concise lowercase names (for example `toolbar`, `bubble`) when still clear.
+- Place `// #region <label>` before the same-owner types/helpers/components and `// #endregion <label>` after that owner's body.
+- Keep owner boundaries explicit. Treat `foo` and `foo item` as different owners and different regions.
+- Do not add or remove regions in files that do not already use them unless the user explicitly requests it.
 - Do not create `#region` blocks inside a component body for "local state", "handlers", "render", etc., unless the user explicitly requests that structure.
 - If you need extra grouping inside a component, use plain comments instead of more `#region` markers.
+
+Examples:
+
+- Keep `foo submenu` contracts in `foo submenu`.
+- Keep `foo submenu item` contracts in `foo submenu item`.
+- Do not keep `FooSubMenu_ClassNames` inside the `foo submenu item` region.
+- Do not keep `FooItem_ClassNames` inside the `foo submenu` region.
 
 ### Effect placement inside components
 
@@ -461,7 +479,7 @@ Before inserting code in an existing `.tsx` module, scan:
 
 Placement rules:
 
-- If regions exist, insert inside the most relevant existing region next to similar code.
+- If regions exist, insert inside the region owned by that symbol.
 - If no regions exist, insert immediately above/below the nearest similar symbol or first call-site.
 - Do not dump new helpers/types at the top or bottom; match the file’s local organization.
 
@@ -587,6 +605,9 @@ function ai_chat_example_function() {
 
 Components use PascalCase. Hooks use camelCase in the `useMyHook` form:
 This exception overrides the general root-level `snake_case` rule above.
+
+For extracted inner components, prefer the owner name in one PascalCase symbol such as `PageEditorInner` instead of `PageEditor_Inner`.
+When you colocate owner-scoped types for that inner component, keep the same owner spelling, for example `PageEditorInner_Props`.
 
 ```ts
 export function ThemeProvider() {}

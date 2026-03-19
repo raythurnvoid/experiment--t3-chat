@@ -12,8 +12,7 @@ import {
 	TextIcon,
 	TextQuote,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { useEditor } from "novel";
+import { memo, useEffect, useRef, useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import {
 	MySelect,
@@ -27,122 +26,162 @@ import {
 	MySelectItemContent,
 	MySelectItemContentPrimary,
 	MySelectItemContentIcon,
+	type MySelectItem_Props,
 } from "@/components/my-select.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import "./page-editor-rich-text-tools-node-selector.css";
 import { PageEditorRichText } from "./page-editor-rich-text.tsx";
 import type { PageEditorRichText_CustomAttributes } from "./page-editor-rich-text.tsx";
 
-type Item = {
+type TransformItem = {
 	name: string;
-	icon: LucideIcon;
-	command: (editor: ReturnType<typeof useEditor>["editor"]) => void;
-	isActive: (editor: ReturnType<typeof useEditor>["editor"]) => boolean;
+	Icon: LucideIcon;
+	command: (editor: Editor) => void;
+	isActive: (editor: Editor) => boolean;
 };
 
-const items: Item[] = [
+const transformItems: TransformItem[] = [
 	{
 		name: "Text",
-		icon: TextIcon,
+		Icon: TextIcon,
 		command: (editor) => editor?.chain().focus().clearNodes().run(),
 		isActive: (editor) =>
 			(editor?.isActive("paragraph") && !editor?.isActive("bulletList") && !editor?.isActive("orderedList")) ?? false,
 	},
 	{
 		name: "Heading 1",
-		icon: Heading1,
+		Icon: Heading1,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 1 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 1 }) ?? false,
 	},
 	{
 		name: "Heading 2",
-		icon: Heading2,
+		Icon: Heading2,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 2 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 2 }) ?? false,
 	},
 	{
 		name: "Heading 3",
-		icon: Heading3,
+		Icon: Heading3,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 3 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 3 }) ?? false,
 	},
 	{
 		name: "Heading 4",
-		icon: Heading4,
+		Icon: Heading4,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 4 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 4 }) ?? false,
 	},
 	{
 		name: "Heading 5",
-		icon: Heading5,
+		Icon: Heading5,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 5 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 5 }) ?? false,
 	},
 	{
 		name: "Heading 6",
-		icon: Heading6,
+		Icon: Heading6,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleHeading({ level: 6 }).run(),
 		isActive: (editor) => editor?.isActive("heading", { level: 6 }) ?? false,
 	},
 	{
 		name: "To-do List",
-		icon: CheckSquare,
+		Icon: CheckSquare,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleTaskList().run(),
 		isActive: (editor) => editor?.isActive("taskItem") ?? false,
 	},
 	{
 		name: "Bullet List",
-		icon: ListOrdered,
+		Icon: ListOrdered,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleBulletList().run(),
 		isActive: (editor) => editor?.isActive("bulletList") ?? false,
 	},
 	{
 		name: "Numbered List",
-		icon: ListOrdered,
+		Icon: ListOrdered,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleOrderedList().run(),
 		isActive: (editor) => editor?.isActive("orderedList") ?? false,
 	},
 	{
 		name: "Quote",
-		icon: TextQuote,
+		Icon: TextQuote,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleBlockquote().run(),
 		isActive: (editor) => editor?.isActive("blockquote") ?? false,
 	},
 	{
 		name: "Code",
-		icon: Code,
+		Icon: Code,
 		command: (editor) => editor?.chain().focus().clearNodes().toggleCodeBlock().run(),
 		isActive: (editor) => editor?.isActive("codeBlock") ?? false,
 	},
 ];
 
+// #region item
 export type PageEditorRichTextToolsNodeSelector_ClassNames =
 	| "PageEditorRichTextToolsNodeSelector"
 	| "PageEditorRichTextToolsNodeSelector-popover"
 	| "PageEditorRichTextToolsNodeSelector-item"
 	| "PageEditorRichTextToolsNodeSelector-icon";
 
+type PageEditorRichTextToolsNodeSelectorItem_Props = {
+	item: TransformItem;
+	isActive: boolean;
+	onSelect: (item: TransformItem) => void;
+};
+
+const PageEditorRichTextToolsNodeSelectorItem = memo(function PageEditorRichTextToolsNodeSelectorItem(
+	props: PageEditorRichTextToolsNodeSelectorItem_Props,
+) {
+	const { item, isActive, onSelect } = props;
+
+	const handleClick = useFn<NonNullable<MySelectItem_Props["onClick"]>>(() => {
+		onSelect(item);
+	});
+
+	return (
+		<MySelectItem
+			className={cn(
+				"PageEditorRichTextToolsNodeSelector-item" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
+			)}
+			value={item.name}
+			onClick={handleClick}
+		>
+			<MySelectItemContent>
+				<MySelectItemContentIcon
+					className={cn(
+						"PageEditorRichTextToolsNodeSelector-icon" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
+					)}
+				>
+					<item.Icon />
+				</MySelectItemContentIcon>
+				<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
+			</MySelectItemContent>
+
+			{isActive && <MySelectItemIndicator />}
+		</MySelectItem>
+	);
+});
+// #endregion item
+
+// #region root
 export type PageEditorRichTextToolsNodeSelector_Props = {
 	editor: Editor;
 	setDecorationHighlightOnOpen?: boolean;
 };
 
-export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToolsNodeSelector_Props) {
-	// Required to allow re-renders to access latest values via tiptap functions
-	"use no memo";
+type PageEditorRichTextToolsNodeSelectorInner_Props = PageEditorRichTextToolsNodeSelector_Props & {
+	activeItemName: string;
+};
 
-	const { editor, setDecorationHighlightOnOpen = false } = props;
-
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
-		editor,
-		selector: ({ editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
-		},
-	});
+/**
+ * Inner component necessary to let the compiler optimize this while keeping the outer component un-optimized.
+ */
+const PageEditorRichTextToolsNodeSelectorInner = memo(function PageEditorRichTextToolsNodeSelectorInner(
+	props: PageEditorRichTextToolsNodeSelectorInner_Props,
+) {
+	const { editor, activeItemName, setDecorationHighlightOnOpen = false } = props;
 
 	const [open, setOpen] = useState(false);
 
@@ -150,7 +189,7 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 	const openRef = useRef(false);
 	const didSetDecorationHighlightRef = useRef(false);
 
-	const doSetOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+	const doSetOpen = useFn((next: boolean | ((prev: boolean) => boolean)) => {
 		const prev = openRef.current;
 		const nextOpen = typeof next === "function" ? next(prev) : next;
 
@@ -165,17 +204,24 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 				didSetDecorationHighlightRef.current = false;
 			}
 		}
-	};
+	});
 
-	const activeItem = items.filter((item) => item.isActive(editor)).pop() ?? {
-		name: "Multiple",
-	};
-
-	const handleClick = (item: Item) => {
+	const handleClick = useFn((item: TransformItem) => {
 		item.command(editor);
-	};
+	});
 
-	// Unmount useEffect
+	const renderItem = useFn((item: TransformItem) => {
+		return (
+			<PageEditorRichTextToolsNodeSelectorItem
+				key={item.name}
+				item={item}
+				isActive={activeItemName === item.name}
+				onSelect={handleClick}
+			/>
+		);
+	});
+
+	// Clear the decoration highlight on unmount.
 	useEffect(() => {
 		return () => {
 			if (didSetDecorationHighlightRef.current) {
@@ -186,7 +232,7 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 
 	return (
 		<div className={cn("PageEditorRichTextToolsNodeSelector" satisfies PageEditorRichTextToolsNodeSelector_ClassNames)}>
-			<MySelect value={activeItem.name} open={open} setOpen={doSetOpen}>
+			<MySelect value={activeItemName} open={open} setOpen={doSetOpen}>
 				<MySelectTrigger>
 					<MyButton
 						ref={triggerButtonRef}
@@ -195,7 +241,7 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<PageEditorRichText_CustomAttributes>)
 							: {})}
 					>
-						{activeItem.name || "Select format"}
+						{activeItemName || "Select format"}
 						<MySelectOpenIndicator />
 					</MyButton>
 				</MySelectTrigger>
@@ -205,34 +251,40 @@ export function PageEditorRichTextToolsNodeSelector(props: PageEditorRichTextToo
 					)}
 				>
 					<MySelectPopoverScrollableArea>
-						<MySelectPopoverContent>
-							{items.map((item) => (
-								<MySelectItem
-									key={item.name}
-									className={cn(
-										"PageEditorRichTextToolsNodeSelector-item" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
-									)}
-									value={item.name}
-									onClick={() => handleClick(item)}
-								>
-									<MySelectItemContent>
-										<MySelectItemContentIcon
-											className={cn(
-												"PageEditorRichTextToolsNodeSelector-icon" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
-											)}
-										>
-											<item.icon />
-										</MySelectItemContentIcon>
-										<MySelectItemContentPrimary>{item.name}</MySelectItemContentPrimary>
-									</MySelectItemContent>
-
-									{activeItem.name === item.name && <MySelectItemIndicator />}
-								</MySelectItem>
-							))}
-						</MySelectPopoverContent>
+						<MySelectPopoverContent>{transformItems.map(renderItem)}</MySelectPopoverContent>
 					</MySelectPopoverScrollableArea>
 				</MySelectPopover>
 			</MySelect>
 		</div>
 	);
-}
+});
+
+export const PageEditorRichTextToolsNodeSelector = memo(function PageEditorRichTextToolsNodeSelector(
+	props: PageEditorRichTextToolsNodeSelector_Props,
+) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
+	const { editor, setDecorationHighlightOnOpen = false } = props;
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }: { editor: Editor }) => {
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
+	const activeItemName = transformItems.filter((item) => item.isActive(editor)).pop()?.name ?? "Multiple";
+
+	return (
+		<PageEditorRichTextToolsNodeSelectorInner
+			editor={editor}
+			activeItemName={activeItemName}
+			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}
+		/>
+	);
+});
+// #endregion root

@@ -1,11 +1,12 @@
 import "./page-editor-rich-text-tools-link-setter.css";
 import { Check, Trash, LinkIcon } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { PageEditorRichText } from "./page-editor-rich-text.tsx";
 import type { PageEditorRichText_CustomAttributes } from "./page-editor-rich-text.tsx";
@@ -30,13 +31,59 @@ function getUrlFromString(str: string) {
 	}
 }
 
+// #region form
+type PageEditorRichTextToolsLinkSetterForm_ClassNames =
+	| "PageEditorRichTextToolsLinkSetterForm"
+	| "PageEditorRichTextToolsLinkSetterForm-input";
+
+type PageEditorRichTextToolsLinkSetterForm_Props = {
+	inputRef: React.RefObject<HTMLInputElement | null>;
+	activeHref: string | false;
+	onSubmit: React.FormEventHandler<HTMLFormElement>;
+};
+
+const PageEditorRichTextToolsLinkSetterForm = memo(function PageEditorRichTextToolsLinkSetterForm(
+	props: PageEditorRichTextToolsLinkSetterForm_Props,
+) {
+	const { inputRef, activeHref, onSubmit } = props;
+
+	return (
+		<form
+			onSubmit={onSubmit}
+			className={cn("PageEditorRichTextToolsLinkSetterForm" satisfies PageEditorRichTextToolsLinkSetterForm_ClassNames)}
+		>
+			<MyInput
+				className={cn("PageEditorRichTextToolsLinkSetterForm-input" satisfies PageEditorRichTextToolsLinkSetterForm_ClassNames)}
+			>
+				<MyInputBox />
+				<MyInputArea>
+					<MyInputControl ref={inputRef} type="text" placeholder="Paste a link" defaultValue={activeHref || ""} />
+				</MyInputArea>
+			</MyInput>
+			{activeHref ? (
+				<MyIconButton variant="destructive" type="submit" name="delete">
+					<MyIconButtonIcon>
+						<Trash />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			) : (
+				<MyIconButton variant="default" type="submit">
+					<MyIconButtonIcon>
+						<Check />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			)}
+		</form>
+	);
+});
+// #endregion form
+
+// #region root
 export type PageEditorRichTextToolsLinkSetter_ClassNames =
 	| "PageEditorRichTextToolsLinkSetter"
 	| "PageEditorRichTextToolsLinkSetter-trigger-button"
 	| "PageEditorRichTextToolsLinkSetter-trigger-button-active"
 	| "PageEditorRichTextToolsLinkSetter-popover-content"
-	| "PageEditorRichTextToolsLinkSetter-form"
-	| "PageEditorRichTextToolsLinkSetter-input"
 	| "PageEditorRichTextToolsLinkSetter-icon";
 
 export type PageEditorRichTextToolsLinkSetter_Props = {
@@ -44,21 +91,15 @@ export type PageEditorRichTextToolsLinkSetter_Props = {
 	setDecorationHighlightOnOpen?: boolean;
 };
 
-export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextToolsLinkSetter_Props) {
-	// Required to allow re-renders to access latest values via tiptap functions
-	"use no memo";
+type PageEditorRichTextToolsLinkSetterInner_Props = PageEditorRichTextToolsLinkSetter_Props & {
+	activeHref: string | false;
+	isLinkActive: boolean;
+};
 
-	const { editor, setDecorationHighlightOnOpen = false } = props;
-
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
-		editor,
-		selector: ({ editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
-		},
-	});
+const PageEditorRichTextToolsLinkSetterInner = memo(function PageEditorRichTextToolsLinkSetterInner(
+	props: PageEditorRichTextToolsLinkSetterInner_Props,
+) {
+	const { editor, activeHref, isLinkActive, setDecorationHighlightOnOpen = false } = props;
 
 	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -67,7 +108,7 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 	const openRef = useRef(false);
 	const didSetDecorationHighlightRef = useRef(false);
 
-	const doSetOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+	const doSetOpen = useFn((next: boolean | ((prev: boolean) => boolean)) => {
 		const prev = openRef.current;
 		const nextOpen = typeof next === "function" ? next(prev) : next;
 
@@ -82,26 +123,9 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 				didSetDecorationHighlightRef.current = false;
 			}
 		}
-	};
+	});
 
-	// Autofocus only when the popover opens (not on every render)
-	useEffect(() => {
-		if (!open) {
-			return;
-		}
-
-		const focusTimeout = setTimeout(() => {
-			inputRef.current?.focus();
-		});
-
-		return () => {
-			clearTimeout(focusTimeout);
-		};
-	}, [open]);
-
-	const activeHref = editor?.getAttributes("link").href ?? false;
-
-	const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+	const handleSubmit = useFn((e: React.FormEvent<HTMLFormElement>) => {
 		const target = e.currentTarget as HTMLFormElement;
 		e.preventDefault();
 
@@ -123,7 +147,22 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 				doSetOpen(false);
 			}
 		}
-	};
+	});
+
+	// Autofocus only when the popover opens (not on every render)
+	useEffect(() => {
+		if (!open) {
+			return;
+		}
+
+		const focusTimeout = setTimeout(() => {
+			inputRef.current?.focus();
+		});
+
+		return () => {
+			clearTimeout(focusTimeout);
+		};
+	}, [open]);
 
 	// Unmount useEffect
 	useEffect(() => {
@@ -143,7 +182,7 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 						variant="ghost"
 						className={cn(
 							"PageEditorRichTextToolsLinkSetter-trigger-button" satisfies PageEditorRichTextToolsLinkSetter_ClassNames,
-							editor.isActive("link") &&
+							isLinkActive &&
 								("PageEditorRichTextToolsLinkSetter-trigger-button-active" satisfies PageEditorRichTextToolsLinkSetter_ClassNames),
 						)}
 						{...(setDecorationHighlightOnOpen
@@ -162,43 +201,45 @@ export function PageEditorRichTextToolsLinkSetter(props: PageEditorRichTextTools
 					)}
 					gutter={10}
 				>
-					<form
+					<PageEditorRichTextToolsLinkSetterForm
+						inputRef={inputRef}
+						activeHref={activeHref}
 						onSubmit={handleSubmit}
-						className={cn(
-							"PageEditorRichTextToolsLinkSetter-form" satisfies PageEditorRichTextToolsLinkSetter_ClassNames,
-						)}
-					>
-						<MyInput
-							className={cn(
-								"PageEditorRichTextToolsLinkSetter-input" satisfies PageEditorRichTextToolsLinkSetter_ClassNames,
-							)}
-						>
-							<MyInputBox />
-							<MyInputArea>
-								<MyInputControl
-									ref={inputRef}
-									type="text"
-									placeholder="Paste a link"
-									defaultValue={editor.getAttributes("link").href || ""}
-								/>
-							</MyInputArea>
-						</MyInput>
-						{activeHref ? (
-							<MyIconButton variant="destructive" type="submit" name="delete">
-								<MyIconButtonIcon>
-									<Trash />
-								</MyIconButtonIcon>
-							</MyIconButton>
-						) : (
-							<MyIconButton variant="default" type="submit">
-								<MyIconButtonIcon>
-									<Check />
-								</MyIconButtonIcon>
-							</MyIconButton>
-						)}
-					</form>
+					/>
 				</MyPopoverContent>
 			</MyPopover>
 		</div>
 	);
-}
+});
+
+export const PageEditorRichTextToolsLinkSetter = memo(function PageEditorRichTextToolsLinkSetter(
+	props: PageEditorRichTextToolsLinkSetter_Props,
+) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
+	const { editor, setDecorationHighlightOnOpen = false } = props;
+
+	// Subscribe to editor state changes to trigger re-renders when selection changes
+	useEditorState({
+		editor,
+		selector: ({ editor }) => {
+			return {
+				selection: editor.state.selection,
+			};
+		},
+	});
+
+	const activeHref = editor.getAttributes("link").href ?? false;
+	const isLinkActive = editor.isActive("link");
+
+	return (
+		<PageEditorRichTextToolsLinkSetterInner
+			editor={editor}
+			activeHref={activeHref}
+			isLinkActive={isLinkActive}
+			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}
+		/>
+	);
+});
+// #endregion root

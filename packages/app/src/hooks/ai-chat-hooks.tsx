@@ -849,7 +849,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				messageId,
 				metadata: { isOptimistic: session.optimisticThread ? true : false } satisfies ChatRequestMetadata,
 			})
-			.catch((error) => {
+			.catch((error: unknown) => {
 				console.error("[useAiChatController.regenerate] Error regenerating message", { error, threadId, messageId });
 			});
 
@@ -1034,7 +1034,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				const persistedSession = useAiChatStore.actions.getSession(threadId);
 				if (!persistedSession) {
 					useAiChatStore.actions.setSession(threadId, () => {
-						// @ts-expect-error: Overwrite the readonly chat id to the persisted thread id.
 						session.chat.id = threadId;
 						return { ...session, optimisticThread: undefined };
 					});

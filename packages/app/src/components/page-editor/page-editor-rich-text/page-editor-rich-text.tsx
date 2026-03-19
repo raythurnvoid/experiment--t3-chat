@@ -483,7 +483,7 @@ export type PageEditorRichText_ClassNames =
 	| "PageEditorRichText-word-count-badge"
 	| "PageEditorRichText-word-count-badge-hidden";
 
-type PageEditorRichText_Inner_Props = {
+type PageEditorRichTextInner_Props = {
 	pagesYjs: pages_Yjs;
 	pageId: app_convex_Id<"pages">;
 	presenceStore: pages_PresenceStore;
@@ -491,7 +491,7 @@ type PageEditorRichText_Inner_Props = {
 	topStickyFloatingSlot?: React.ReactNode;
 };
 
-function PageEditorRichText_Inner(props: PageEditorRichText_Inner_Props) {
+function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { pagesYjs, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
@@ -711,7 +711,7 @@ export function PageEditorRichText(props: PageEditorRichText_Props) {
 		// remount on provider ownership to prevent stale state on page changes
 		<EditorRoot key={pagesYjs?.providerPageId ?? null}>
 			{pagesYjs ? (
-				<PageEditorRichText_Inner
+				<PageEditorRichTextInner
 					pagesYjs={pagesYjs}
 					pageId={pageId}
 					presenceStore={presenceStore}
