@@ -25,8 +25,6 @@ import {
 	type ai_chat_Thread,
 } from "@/lib/ai-chat.ts";
 
-export type ai_chat_UiMessageMetadata = NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
-
 type ThreadChatArgs = {
 	chatId: string | null;
 	initialMessages?: ai_chat_AiSdk5UiMessage[] | undefined;
@@ -50,12 +48,6 @@ type ThreadSession = {
 	optimisticThread?: ai_chat_Thread;
 };
 
-type ThreadStore = {
-	selectedThreadId: string | null;
-	draftSelectedModelId: ai_chat_MainModelId;
-	threadById: Map<string, ThreadSession>;
-};
-
 type ChatRequestMetadata = {
 	isOptimistic: boolean;
 };
@@ -67,9 +59,9 @@ type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessag
 const useAiChatStore = ((/* iife */) => {
 	const initialSelectedThreadId = useAppLocalStorageState.getState().ai_chat_last_open;
 
-	const store = create<ThreadStore>(() => ({
+	const store = create(() => ({
 		selectedThreadId: initialSelectedThreadId ?? null,
-		draftSelectedModelId: ai_chat_DEFAULT_MAIN_MODEL_ID,
+		draftSelectedModelId: ai_chat_DEFAULT_MAIN_MODEL_ID as string,
 		threadById: new Map(),
 	}));
 
@@ -354,7 +346,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 					convexId: message._id,
 					convexParentId: message.parentId,
 					parentClientGeneratedId: dbMessageContent.metadata?.parentClientGeneratedId ?? null,
-				} satisfies ai_chat_UiMessageMetadata,
+				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
 			} satisfies ai_chat_AiSdk5UiMessage;
 
 			result.mapById.set(message._id, uiMessage);
@@ -716,7 +708,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 						convexParentId: null,
 						parentClientGeneratedId: null,
 						selectedModelId: nextSelectedModelId,
-					} satisfies ai_chat_UiMessageMetadata,
+					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
 				},
 				{
 					metadata: {
@@ -949,7 +941,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 					convexParentId: parentMessageIds.convexParentId,
 					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
 					selectedModelId: threadSelectedModelId,
-				} satisfies ai_chat_UiMessageMetadata,
+				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
 			},
 			{
 				metadata: {
