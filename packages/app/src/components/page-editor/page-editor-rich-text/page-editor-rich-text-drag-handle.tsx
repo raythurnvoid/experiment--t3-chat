@@ -473,17 +473,21 @@ const PageEditorRichTextDragHandleColorSubMenu = memo(function PageEditorRichTex
 
 	const { editor } = props;
 
-	useEditorState({
+	// Subscribe to the derived color state so mark changes rerender immediately.
+	const editorState = useEditorState({
 		editor,
 		selector: ({ editor }: { editor: Editor }) => {
 			return {
-				selection: editor.state.selection,
+				activeColor:
+					TEXT_COLORS.find((item) => editor.isActive("textStyle", { color: item.color }))?.color ?? null,
+				activeBackground:
+					HIGHLIGHT_COLORS.find((item) => editor.isActive("highlight", { color: item.color }))?.color ?? null,
 			};
 		},
 	});
 
-	const activeColor = TEXT_COLORS.find((item) => editor.isActive("textStyle", { color: item.color }));
-	const activeBackground = HIGHLIGHT_COLORS.find((item) => editor.isActive("highlight", { color: item.color }));
+	const activeColor = TEXT_COLORS.find((item) => item.color === editorState.activeColor);
+	const activeBackground = HIGHLIGHT_COLORS.find((item) => item.color === editorState.activeBackground);
 
 	return (
 		<PageEditorRichTextDragHandleColorSubMenuInner

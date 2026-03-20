@@ -135,19 +135,17 @@ export const PageEditorRichTextToolsTextStyles = memo(function PageEditorRichTex
 
 	const { editor } = props;
 
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
+	// Subscribe to the derived text-style states so formatting transactions rerender immediately.
+	const itemActiveStates = useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
+			return items.map((item) => item.isActive(editor));
 		},
 	});
 
-	const itemStates = items.map((item) => ({
+	const itemStates = items.map((item, index) => ({
 		...item,
-		isActive: item.isActive(editor),
+		isActive: itemActiveStates[index] ?? false,
 	}));
 
 	return <PageEditorRichTextToolsTextStylesInner editor={editor} itemStates={itemStates} />;

@@ -220,24 +220,22 @@ export const PageEditorRichTextToolsLinkSetter = memo(function PageEditorRichTex
 
 	const { editor, setDecorationHighlightOnOpen = false } = props;
 
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
+	// Subscribe to the derived link state so mark changes rerender immediately.
+	const editorState = useEditorState({
 		editor,
 		selector: ({ editor }) => {
 			return {
-				selection: editor.state.selection,
+				activeHref: editor.getAttributes("link").href ?? false,
+				isLinkActive: editor.isActive("link"),
 			};
 		},
 	});
 
-	const activeHref = editor.getAttributes("link").href ?? false;
-	const isLinkActive = editor.isActive("link");
-
 	return (
 		<PageEditorRichTextToolsLinkSetterInner
 			editor={editor}
-			activeHref={activeHref}
-			isLinkActive={isLinkActive}
+			activeHref={editorState.activeHref}
+			isLinkActive={editorState.isLinkActive}
 			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}
 		/>
 	);

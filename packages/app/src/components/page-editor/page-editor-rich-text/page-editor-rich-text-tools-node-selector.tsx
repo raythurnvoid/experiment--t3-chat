@@ -268,17 +268,13 @@ export const PageEditorRichTextToolsNodeSelector = memo(function PageEditorRichT
 
 	const { editor, setDecorationHighlightOnOpen = false } = props;
 
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
+	// Subscribe to the derived active node label so block transforms rerender immediately.
+	const activeItemName = useEditorState({
 		editor,
 		selector: ({ editor }: { editor: Editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
+			return transformItems.filter((item) => item.isActive(editor)).pop()?.name ?? "Multiple";
 		},
 	});
-
-	const activeItemName = transformItems.filter((item) => item.isActive(editor)).pop()?.name ?? "Multiple";
 
 	return (
 		<PageEditorRichTextToolsNodeSelectorInner

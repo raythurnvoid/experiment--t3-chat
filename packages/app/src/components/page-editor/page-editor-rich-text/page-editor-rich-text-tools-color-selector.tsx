@@ -408,20 +408,23 @@ export const PageEditorRichTextToolsColorSelector = memo(function PageEditorRich
 
 	const { editor, setDecorationHighlightOnOpen = false } = props;
 
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
+	// Subscribe to the derived color state so mark changes rerender immediately.
+	const editorState = useEditorState({
 		editor,
 		selector: ({ editor }) => {
 			return {
-				selection: editor.state.selection,
+				activeColor:
+					TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }))?.color ?? null,
+				activeBackground:
+					HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }))?.color ?? null,
 			};
 		},
 	});
 
 	const forceRender = useForceRender();
 
-	const activeColor = TEXT_COLORS.find(({ color }) => editor.isActive("textStyle", { color }));
-	const activeBackground = HIGHLIGHT_COLORS.find(({ color }) => editor.isActive("highlight", { color }));
+	const activeColor = TEXT_COLORS.find(({ color }) => color === editorState.activeColor);
+	const activeBackground = HIGHLIGHT_COLORS.find(({ color }) => color === editorState.activeBackground);
 
 	const handleColorSelect = useFn((item: TextColorItem) => {
 		editor.commands.command(({ commands }) => {

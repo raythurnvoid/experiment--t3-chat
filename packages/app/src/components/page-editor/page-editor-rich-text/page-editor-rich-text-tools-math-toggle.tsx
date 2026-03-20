@@ -63,17 +63,13 @@ export const PageEditorRichTextToolsMathToggle = memo(function PageEditorRichTex
 
 	const { editor } = props;
 
-	// Subscribe to editor state changes to trigger re-renders when selection changes
-	useEditorState({
+	// Subscribe to the derived math state so mark changes rerender immediately.
+	const isActive = useEditorState({
 		editor,
 		selector: ({ editor }) => {
-			return {
-				selection: editor.state.selection,
-			};
+			return editor.isActive("math");
 		},
 	});
-
-	const isActive = editor.isActive("math");
 
 	return <PageEditorRichTextToolsMathToggleInner editor={editor} isActive={isActive} />;
 });

@@ -114,17 +114,21 @@ export const PageEditorRichTextToolsHistoryButtons = memo(function PageEditorRic
 
 	const { editor } = props;
 
-	useEditorState({
+	// Subscribe to the derived history state so availability changes rerender immediately.
+	const editorState = useEditorState({
 		editor,
 		selector: ({ editor: currentEditor }) => ({
-			doc: currentEditor.state.doc,
-			selection: currentEditor.state.selection,
+			canUndo: currentEditor.can().undo(),
+			canRedo: currentEditor.can().redo(),
 		}),
 	});
 
-	const canUndo = editor.can().undo();
-	const canRedo = editor.can().redo();
-
-	return <PageEditorRichTextToolsHistoryButtonsInner canRedo={canRedo} canUndo={canUndo} editor={editor} />;
+	return (
+		<PageEditorRichTextToolsHistoryButtonsInner
+			canRedo={editorState.canRedo}
+			canUndo={editorState.canUndo}
+			editor={editor}
+		/>
+	);
 });
 // #endregion root
