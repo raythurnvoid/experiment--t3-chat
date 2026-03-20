@@ -15,8 +15,9 @@ import type { AppElementId } from "../lib/dom-utils.ts";
 import { useConvexAuth, useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { MainAppHeader } from "../components/main-app-header.tsx";
 
-export type RootLayout_ClassNames = "RootLayout";
+export type RootLayout_ClassNames = "RootLayout" | "RootLayout-content";
 
 function RootLayoutInner() {
 	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
@@ -66,9 +67,11 @@ function RootLayoutInner() {
 
 	return (
 		<div className={cn("RootLayout" satisfies RootLayout_ClassNames)}>
-			<MainAppSidebar>
+			<MainAppHeader />
+			<MainAppSidebar />
+			<div className={"RootLayout-content" satisfies RootLayout_ClassNames}>
 				<Outlet />
-			</MainAppSidebar>
+			</div>
 			<AppTanStackRouterDevTools />
 			<div id={"app_hoisting_container" satisfies AppElementId}></div>
 			<div id={"app_tiptap_hoisting_container" satisfies AppElementId}></div>

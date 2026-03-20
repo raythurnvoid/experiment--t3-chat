@@ -269,32 +269,6 @@ const ProfileSection = memo(function ProfileSection() {
 });
 // #endregion profile section
 
-// #region inset
-type MainAppSidebarInset_ClassNames = "MainAppSidebarInset";
-
-type MainAppSidebarInset_Props = ComponentPropsWithRef<typeof MySidebarInset> & {
-	ref?: Ref<HTMLElement>;
-	id?: string;
-	className?: string;
-	children?: React.ReactNode;
-};
-
-const MainAppSidebarInset = memo(function MainAppSidebarInset(props: MainAppSidebarInset_Props) {
-	const { ref, id, className, children, ...rest } = props;
-
-	return (
-		<MySidebarInset
-			ref={ref}
-			id={id}
-			className={cn("MainAppSidebarInset" satisfies MainAppSidebarInset_ClassNames, className)}
-			{...rest}
-		>
-			{children}
-		</MySidebarInset>
-	);
-});
-// #endregion inset
-
 // #region item
 type MainAppSidebarItem_ClassNames = "MainAppSidebarItem" | "MainAppSidebarItem-trigger" | "MainAppSidebarItem-title";
 
@@ -528,7 +502,6 @@ const MainAppSidebarPresenceSection = memo(function MainAppSidebarPresenceSectio
 type MainAppSidebar_ClassNames =
 	| "MainAppSidebar"
 	| "MainAppSidebar-state-collapsed"
-	| "MainAppSidebar-sidebar"
 	| "MainAppSidebar-header"
 	| "MainAppSidebar-header-width-toggle"
 	| "MainAppSidebar-logo-section"
@@ -539,15 +512,14 @@ type MainAppSidebar_ClassNames =
 	| "MainAppSidebar-footer"
 	| "MainAppSidebar-footer-menu";
 
-type MainAppSidebar_Props = ComponentPropsWithRef<"div"> & {
+type MainAppSidebar_Props = {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
-	children?: React.ReactNode;
 };
 
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className } = props;
 
 	const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
 	const mainAppSidebarCollapsed = useAppLocalStorageState((state) => state.main_app_sidebar_collapsed);
@@ -570,7 +542,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	);
 
 	return (
-		<div
+		<MySidebar
 			ref={ref}
 			id={id}
 			className={cn(
@@ -578,62 +550,56 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 				mainAppSidebarCollapsed && ("MainAppSidebar-state-collapsed" satisfies MainAppSidebar_ClassNames),
 				className,
 			)}
-			{...rest}
+			state={sidebarState}
+			inert={sidebarState === "closed" ? true : undefined}
+			aria-hidden={sidebarState === "closed" ? true : undefined}
 		>
-			<MySidebar
-				state={sidebarState}
-				aria-hidden={sidebarState === "closed" ? true : undefined}
-				inert={sidebarState === "closed" ? true : undefined}
-				className={"MainAppSidebar-sidebar" satisfies MainAppSidebar_ClassNames}
-			>
-				<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
-					<MyIconButton
-						className={cn("MainAppSidebar-header-width-toggle" satisfies MainAppSidebar_ClassNames)}
-						variant="ghost-highlightable"
-						tooltip={mainAppSidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
-						onClick={handleSidebarWidthToggleClick}
-					>
-						<MyIconButtonIcon>{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}</MyIconButtonIcon>
-					</MyIconButton>
-				</MySidebarHeader>
+			<MySidebarHeader className={"MainAppSidebar-header" satisfies MainAppSidebar_ClassNames}>
+				<MyIconButton
+					className={cn("MainAppSidebar-header-width-toggle" satisfies MainAppSidebar_ClassNames)}
+					variant="ghost-highlightable"
+					tooltip={mainAppSidebarCollapsed ? "Expand sidebar" : "Minimize sidebar"}
+					onClick={handleSidebarWidthToggleClick}
+				>
+					<MyIconButtonIcon>{mainAppSidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}</MyIconButtonIcon>
+				</MyIconButton>
+			</MySidebarHeader>
 
-				<div className={"MainAppSidebar-logo-section" satisfies MainAppSidebar_ClassNames}>
-					<Link to="/" className={"MainAppSidebar-logo-link" satisfies MainAppSidebar_ClassNames}>
-						<Logo className={"MainAppSidebar-logo" satisfies MainAppSidebar_ClassNames} />
-					</Link>
-				</div>
+			<div className={"MainAppSidebar-logo-section" satisfies MainAppSidebar_ClassNames}>
+				<Link to="/" className={"MainAppSidebar-logo-link" satisfies MainAppSidebar_ClassNames}>
+					<Logo className={"MainAppSidebar-logo" satisfies MainAppSidebar_ClassNames} />
+				</Link>
+			</div>
 
-				<MainAppSidebarPresenceSection sidebarCollapsed={mainAppSidebarCollapsed} />
+			<MainAppSidebarPresenceSection sidebarCollapsed={mainAppSidebarCollapsed} />
 
-				<MySidebarScrollableArea>
-					<MySidebarList
-						className={"MainAppSidebar-nav-list" satisfies MainAppSidebar_ClassNames}
-						aria-label="Main navigation"
-					>
-						<MainAppSidebarItem
-							to="/chat"
-							label="Chat"
-							icon={MessageSquare}
-							tooltip={mainAppSidebarCollapsed ? "AI Chat" : undefined}
-						/>
-						<MainAppSidebarItem
-							to="/pages"
-							label="Pages"
-							icon={FileText}
-							tooltip={mainAppSidebarCollapsed ? "Pages" : undefined}
-						/>
-					</MySidebarList>
-				</MySidebarScrollableArea>
+			<MySidebarScrollableArea>
+				<MySidebarList
+					className={"MainAppSidebar-nav-list" satisfies MainAppSidebar_ClassNames}
+					aria-label="Main navigation"
+				>
+					<MainAppSidebarItem
+						to="/chat"
+						label="Chat"
+						icon={MessageSquare}
+						tooltip={mainAppSidebarCollapsed ? "AI Chat" : undefined}
+					/>
+					<MainAppSidebarItem
+						to="/pages"
+						label="Pages"
+						icon={FileText}
+						tooltip={mainAppSidebarCollapsed ? "Pages" : undefined}
+					/>
+				</MySidebarList>
+			</MySidebarScrollableArea>
 
-				<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
-					<MySidebarList className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
-						<ThemeToggleMenuItem />
-					</MySidebarList>
-					<ProfileSection />
-				</MySidebarFooter>
-			</MySidebar>
-			<MainAppSidebarInset>{children}</MainAppSidebarInset>
-		</div>
+			<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
+				<MySidebarList className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
+					<ThemeToggleMenuItem />
+				</MySidebarList>
+				<ProfileSection />
+			</MySidebarFooter>
+		</MySidebar>
 	);
 });
 // #endregion root

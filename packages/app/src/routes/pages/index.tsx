@@ -45,25 +45,17 @@ function RoutePagesContent(props: RoutePagesContent_Props) {
 
 	return (
 		<Suspense fallback={<PageEditorSkeleton />}>
-			{pageId && (
-				<div className={"RoutePages-editor-wrapper" satisfies RoutePages_ClassNames}>
-					<PageEditor pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />
-				</div>
-			)}
+			{pageId && <PageEditor pageId={pageId} editorMode={editorMode} onEditorModeChange={onEditorModeChange} />}
 		</Suspense>
 	);
 }
 
 type RoutePages_ClassNames =
 	| "RoutePages"
-	| "RoutePages-panels-group"
 	| "RoutePages-sidebar-panel"
 	| "RoutePages-main-panel"
-	| "RoutePages-main-content"
 	| "RoutePages-editor-panel"
-	| "RoutePages-editor-content"
-	| "RoutePages-loading-text"
-	| "RoutePages-editor-wrapper";
+	| "RoutePages-loading-text";
 
 type RoutePages_SidebarState = "closed" | "expanded";
 
@@ -186,53 +178,37 @@ function RoutePages() {
 	}, [homePageId, resolvedPage, searchPageId]);
 
 	return (
-		<div className={"RoutePages" satisfies RoutePages_ClassNames}>
-			<MyPanelGroup
-				className={"RoutePages-panels-group" satisfies RoutePages_ClassNames}
-				direction="horizontal"
-				onLayout={handlePanelLayout}
+		<MyPanelGroup
+			className={"RoutePages" satisfies RoutePages_ClassNames}
+			direction="horizontal"
+			onLayout={handlePanelLayout}
+		>
+			<MyPanel
+				defaultSize={savedPanelLayout?.[0] ?? 24}
+				className={"RoutePages-sidebar-panel" satisfies RoutePages_ClassNames}
+				isOpen={pagesSidebarOpen}
+				closeBehavior="unmount"
 			>
-				<MyPanel
-					defaultSize={savedPanelLayout?.[0] ?? 24}
-					className={"RoutePages-sidebar-panel" satisfies RoutePages_ClassNames}
-					isOpen={pagesSidebarOpen}
-					closeBehavior="unmount"
-				>
-					<PagesSidebar
-						selectedPageId={searchPageId ?? null}
-						view={effectiveView}
-						onClose={handleCloseSidebar}
-						onArchive={handleArchive}
-						onPrimaryAction={handlePrimaryAction}
-					/>
-				</MyPanel>
-				<MyPanelResizeHandle
-					isOpen={pagesSidebarOpen}
-					closeBehavior="unmount"
-					onDragging={handlePanelDragging}
+				<PagesSidebar
+					selectedPageId={searchPageId ?? null}
+					view={effectiveView}
+					onClose={handleCloseSidebar}
+					onArchive={handleArchive}
+					onPrimaryAction={handlePrimaryAction}
 				/>
-				<MyPanel
-					defaultSize={pagesSidebarState === "closed" ? 100 : (savedPanelLayout?.[1] ?? 76)}
-					minSize={40}
-					className={"RoutePages-main-panel" satisfies RoutePages_ClassNames}
-				>
-					{resolvedPageId ? (
-						<div className={"RoutePages-main-content" satisfies RoutePages_ClassNames}>
-							<div className={"RoutePages-editor-panel" satisfies RoutePages_ClassNames}>
-								<div className={"RoutePages-editor-content" satisfies RoutePages_ClassNames}>
-									<RoutePagesContent
-										pageId={resolvedPageId}
-										editorMode={effectiveView}
-										onEditorModeChange={navigateToView}
-									/>
-								</div>
-							</div>
-						</div>
-					) : searchPageId ? (
-						<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
-					) : null}
-				</MyPanel>
-			</MyPanelGroup>
-		</div>
+			</MyPanel>
+			<MyPanelResizeHandle isOpen={pagesSidebarOpen} closeBehavior="unmount" onDragging={handlePanelDragging} />
+			<MyPanel
+				defaultSize={pagesSidebarState === "closed" ? 100 : (savedPanelLayout?.[1] ?? 76)}
+				minSize={40}
+				className={"RoutePages-main-panel" satisfies RoutePages_ClassNames}
+			>
+				{resolvedPageId ? (
+					<RoutePagesContent pageId={resolvedPageId} editorMode={effectiveView} onEditorModeChange={navigateToView} />
+				) : searchPageId ? (
+					<div className={"RoutePages-loading-text" satisfies RoutePages_ClassNames}>Loading...</div>
+				) : null}
+			</MyPanel>
+		</MyPanelGroup>
 	);
 }

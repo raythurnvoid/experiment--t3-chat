@@ -38,6 +38,9 @@
 	.PageEditor-sidebar {
 		container-type: size;
 
+		/* Necessary to let the anchored comments set the size of the scrollable area */
+		contain: inline-size style;
+
 		> .MyPanelInfiniteBackground::before {
 			background-color: var(--RoutePages-background);
 		}
@@ -47,14 +50,14 @@
 	/* #region header */
 	.PageEditorHeader {
 		display: flex;
-		height: 48px;
+		flex: 1;
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
-		border-bottom: 1px solid var(--color-base-fg-03);
-		background: var(--color-base-1-05);
-		padding-left: 16px;
-		padding-right: 16px;
+
+		min-width: 0;
+
+		padding: 0 16px;
 	}
 
 	.PageEditorHeader-diff-switch {
