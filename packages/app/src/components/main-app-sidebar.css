@@ -7,7 +7,7 @@
 		min-height: 0;
 
 		&.MainAppSidebar-state-collapsed {
-			> .MainAppSidebar-sidebar {
+			> .MainAppSidebar-sidebar:not(.MySidebar-state-closed) {
 				width: 40px;
 
 				> .MainAppSidebar-header {
@@ -88,7 +88,6 @@
 					.MainAppSidebarMenuButtonLabel {
 						overflow: hidden;
 						width: 0;
-						opacity: 0;
 					}
 
 					.MainAppSidebarUserProfileButton-info {
@@ -103,12 +102,9 @@
 		--my-sidebar-width: 256px;
 
 		height: auto;
-
-		transition: opacity 200ms ease;
 	}
 
 	.MainAppSidebar-sidebar.MySidebar-state-closed {
-		opacity: 0;
 		pointer-events: none;
 	}
 
@@ -326,8 +322,7 @@
 		text-align: left;
 
 		font-size: 0.75rem;
-		color: var(--sidebar-foreground);
-		opacity: 0.7;
+		color: var(--color-fg-08);
 	}
 
 	.MainAppSidebarUserProfileButton-clerk-wrapper {
