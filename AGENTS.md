@@ -68,6 +68,19 @@ The app runs at http://localhost:5173/ during development.
 - Docs: The docs experience combines a file/tree explorer and an editor surface. Content supports rich text Markdown via BlockNote and code/diff via Monaco Diff Editor. The canvas can switch between these modes depending on the document type.
 - Collaboration: Liveblocks + Yjs provide real-time presence and editing. Convex acts as a secondary source of truth: we persist Yjs snapshots and metadata (`packages/app/convex/ai_docs_temp.ts`) and hydrate rooms from Convex when joining, ensuring recovery and consistency if Yjs state is unavailable. Webhooks/mutations upsert snapshots so new clients can catch up quickly.
 
+## Tiptap / Novel / Rich Text Editors
+
+When working on rich text editors in this repo, treat Tiptap and Novel as source-level infrastructure that must be wired into the app's CSS layering deliberately.
+
+- Do not allow Tiptap to inject runtime styles via `style[data-tiptap-style]` in mounted browser editors. Those injected styles bypass the app's layer ordering and can override component or app styles unexpectedly.
+- For mounted editors, set `injectCSS: false`. This applies both to direct `useEditor(...)` / `new Editor(...)` usage and to wrapper components built on top of Tiptap or Novel.
+- Keep the canonical editor base styles in layered app CSS (`packages/app/src/app.css` and component-owned `.css` files), not in runtime-injected Tiptap styles.
+- If a Novel wrapper is used as the shared editor entrypoint, keep its default behavior aligned with the app rule above so editor instances opt out of Tiptap CSS injection unless a caller explicitly opts in.
+- When adding or changing editor visuals, first check the app-owned layered CSS before patching vendored editor internals. Prefer fixing style precedence at the app layer.
+- Treat `.ProseMirror-selectednode`, decoration-highlight styles, placeholder styles, and other editor-state visuals as app-owned styling concerns. Keep those selectors in the repo's layered CSS so they remain predictable.
+- For headless/non-mounted Tiptap editors used only for parsing or serialization (`element: null`), CSS injection is irrelevant, but keep the configuration explicit when it improves clarity.
+- If a change appears to require fighting Tiptap's injected CSS with higher specificity, stop and disable injection instead. Do not paper over layer-order problems with selector escalation.
+
 # Project Structure and Key Directories
 
 ## Monorepo Structure

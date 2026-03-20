@@ -64,7 +64,7 @@
 
 			&::before {
 				content: "";
-				background-color: var(--color-accent-01);
+				background-color: color-mix(in oklch, var(--color-accent-04) 70%, transparent);
 				border-radius: 12px;
 
 				position: absolute;

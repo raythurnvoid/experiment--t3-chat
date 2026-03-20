@@ -158,6 +158,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			extensions,
 			editorProps: {
 				autofocus: autoFocus ? "end" : false,
+				injectCSS: false,
 				extensions,
 				content: ((/* iife */) => {
 					const result = pages_tiptap_markdown_to_json({
