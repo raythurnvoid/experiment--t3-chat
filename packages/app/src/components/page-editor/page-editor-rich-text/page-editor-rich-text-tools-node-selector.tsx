@@ -249,6 +249,7 @@ const PageEditorRichTextToolsNodeSelectorInner = memo(function PageEditorRichTex
 					className={cn(
 						"PageEditorRichTextToolsNodeSelector-popover" satisfies PageEditorRichTextToolsNodeSelector_ClassNames,
 					)}
+					unmountOnHide
 				>
 					<MySelectPopoverScrollableArea>
 						<MySelectPopoverContent>{transformItems.map(renderItem)}</MySelectPopoverContent>

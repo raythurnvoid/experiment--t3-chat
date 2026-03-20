@@ -341,8 +341,6 @@ export type PageEditorRichTextBubble_Props = {
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
 export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
-	"use no memo";
-
 	const { editor } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);

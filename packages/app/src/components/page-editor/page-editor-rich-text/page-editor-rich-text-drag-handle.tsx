@@ -20,7 +20,7 @@ import {
 	CopyPlus,
 	type LucideIcon,
 } from "lucide-react";
-import { memo, useState, useRef, type ComponentProps } from "react";
+import { memo, useState, useRef, type ComponentProps, useDeferredValue } from "react";
 import { Editor, useEditorState } from "@tiptap/react";
 import { EditorDragHandle, type EditorDragHandleProps } from "novel";
 import { offset } from "@floating-ui/dom";
@@ -675,6 +675,7 @@ const PageEditorRichTextDragHandleMenuPopover = memo(function PageEditorRichText
 				"PageEditorRichTextDragHandleMenuPopover" satisfies PageEditorRichTextDragHandleMenuPopover_ClassNames,
 			)}
 			portalElement={editor.view.dom.parentElement}
+			unmountOnHide
 		>
 			<MyMenuPopoverScrollableArea>
 				<MyMenuPopoverContent
@@ -781,7 +782,9 @@ export const PageEditorRichTextDragHandle = memo(function PageEditorRichTextDrag
 	const { editor } = props;
 
 	const [currentNode, setCurrentNode] = useState<TipTapNode | null>(null);
+	const currentNodeDeferred = useDeferredValue(currentNode);
 	const [currentNodePos, setCurrentNodePos] = useState<number | null>(null);
+	const currentNodePosDeferred = useDeferredValue(currentNodePos);
 	const currentNodeRef = useRef<TipTapNode>(null);
 
 	const isOpenRef = useRef(false);
@@ -853,8 +856,8 @@ export const PageEditorRichTextDragHandle = memo(function PageEditorRichTextDrag
 		>
 			<PageEditorRichTextDragHandleMenu
 				editor={editor}
-				currentNode={currentNode}
-				currentNodePos={currentNodePos}
+				currentNode={currentNodeDeferred}
+				currentNodePos={currentNodePosDeferred}
 				onMenuOpenChange={handleMenuOpenChange}
 				onPointerDown={handlePointerDown}
 				onPointerUp={handlePointerUp}

@@ -723,16 +723,21 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 	const [showArchived, setShowArchived] = useState(false);
 	const showArchivedId = useUiId("PageEditorSnapshotsModal-show-archived");
 
-	const snapshotsQueryResult = useStableQuery(app_convex_api.ai_docs_temp.get_page_snapshots_list, {
-		workspace_id: ai_chat_HARDCODED_ORG_ID,
-		project_id: ai_chat_HARDCODED_PROJECT_ID,
-		page_id: pageId,
-		show_archived: showArchived,
-	});
+	const snapshotsQueryResult = useStableQuery(
+		app_convex_api.ai_docs_temp.get_page_snapshots_list,
+		isListOpen
+			? {
+					workspace_id: ai_chat_HARDCODED_ORG_ID,
+					project_id: ai_chat_HARDCODED_PROJECT_ID,
+					page_id: pageId,
+					show_archived: showArchived,
+				}
+			: "skip",
+	);
 
 	const selectedSnapshotContent = useStableQuery(
 		app_convex_api.ai_docs_temp.get_page_snapshot_content,
-		selectedSnapshotId
+		isListOpen && isPreviewOpen && selectedSnapshotId
 			? {
 					workspace_id: ai_chat_HARDCODED_ORG_ID,
 					project_id: ai_chat_HARDCODED_PROJECT_ID,
