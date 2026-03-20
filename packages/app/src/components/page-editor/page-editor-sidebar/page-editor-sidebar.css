@@ -45,6 +45,9 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
+
+		/* Necessary to let the anchored comments set the size of the scrollable area */
+		contain: inline-size style;
 	}
 
 	.PageEditorSidebar-panel-empty {

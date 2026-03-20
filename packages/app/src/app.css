@@ -20,8 +20,6 @@
 	body {
 		margin: 0;
 		min-width: 320px;
-		/* height: 100vh;
-		overflow: hidden; */
 	}
 
 	::selection {
@@ -397,7 +395,7 @@
 
 	#root {
 		/* overflow: hidden; */
-		min-height: 100vh;
+		min-height: 100dvh;
 		isolation: isolate;
 	}
 

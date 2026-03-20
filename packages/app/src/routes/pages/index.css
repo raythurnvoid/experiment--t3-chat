@@ -11,26 +11,9 @@
 		min-width: 0;
 	}
 
-	.RoutePages-panels-group {
-		flex: 1;
-		min-width: 0;
-	}
-
-	.RoutePages-main-content {
-		display: flex;
-		height: 100%;
-		min-width: 0;
-		flex: 1 1 0%;
-		flex-direction: column;
-	}
-
 	.RoutePages-editor-panel {
 		contain: strict;
 		height: 100%;
-
-		.RoutePages-editor-content {
-			height: 100%;
-		}
 	}
 
 	/* Loading states */
@@ -39,11 +22,5 @@
 		font-size: 0.875rem;
 		line-height: 1.25rem;
 		color: hsl(var(--muted-foreground));
-	}
-
-	/* Editor content wrapper */
-	.RoutePages-editor-wrapper {
-		height: 100%;
-		width: 100%;
 	}
 }

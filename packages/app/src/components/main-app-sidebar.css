@@ -1,110 +1,101 @@
 @layer components {
 	/* #region root */
 	.MainAppSidebar {
+		width: 256px;
+
 		display: flex;
 
 		flex: 1;
 		min-height: 0;
 
-		&.MainAppSidebar-state-collapsed {
-			> .MainAppSidebar-sidebar:not(.MySidebar-state-closed) {
-				width: 40px;
+		&.MainAppSidebar-state-collapsed:not(.MySidebar-state-closed) {
+			width: 40px;
 
-				> .MainAppSidebar-header {
-					padding-left: 2px;
-					padding-right: 2px;
-				}
+			> .MainAppSidebar-header {
+				padding-left: 2px;
+				padding-right: 2px;
+			}
 
-				.MainAppSidebarItem {
-					> .MainAppSidebarItem-trigger {
-						width: 36px;
-						height: 36px;
-						padding: 6px;
-						justify-content: center;
-
-						> .MainAppSidebarItem-title {
-							display: none;
-						}
-
-						> .MySidebarListItemIcon {
-							font-size: 24px;
-						}
-					}
-				}
-
-				> .MainAppSidebar-logo-section {
-					.MainAppSidebar-logo-link {
-						visibility: hidden;
-						pointer-events: none;
-					}
-				}
-
-				> .MySidebarScrollableArea .MainAppSidebar-nav-list {
-					padding-left: 2px;
-					padding-right: 2px;
-				}
-
-				> .MainAppSidebarPresenceSection {
-					padding-left: 2px;
-					padding-right: 2px;
-				}
-
-				> .MySidebarSection .MainAppSidebarPresenceControl {
+			.MainAppSidebarItem {
+				> .MainAppSidebarItem-trigger {
 					width: 36px;
 					height: 36px;
-					grid-template-columns: auto;
+					padding: 6px;
+					justify-content: center;
 
-					&:not(:has(.MainAppSidebarPresenceControl-primary-trigger)) {
-						display: flex;
-						align-items: center;
-						justify-content: center;
-						padding: 6px;
-					}
-
-					> .MySidebarListItemTitle {
+					> .MainAppSidebarItem-title {
 						display: none;
 					}
 
-					> .MySidebarListItemIcon,
-					.MainAppSidebarPresenceControl-primary-trigger-content > .MySidebarListItemIcon {
+					> .MySidebarListItemIcon {
 						font-size: 24px;
-					}
-
-					.MainAppSidebarPresenceControl-primary-trigger {
-						padding: 6px;
-						justify-content: center;
-
-						> .MainAppSidebarPresenceControl-primary-trigger-content {
-							justify-content: center;
-
-							> .MainAppSidebarPresenceControl-online-label {
-								display: none;
-							}
-						}
-					}
-				}
-
-				> .MainAppSidebar-footer {
-					.MainAppSidebarMenuButtonLabel {
-						overflow: hidden;
-						width: 0;
-					}
-
-					.MainAppSidebarUserProfileButton-info {
-						display: none;
 					}
 				}
 			}
+
+			> .MainAppSidebar-logo-section {
+				.MainAppSidebar-logo-link {
+					visibility: hidden;
+					pointer-events: none;
+				}
+			}
+
+			> .MySidebarScrollableArea .MainAppSidebar-nav-list {
+				padding-left: 2px;
+				padding-right: 2px;
+			}
+
+			> .MainAppSidebarPresenceSection {
+				padding-left: 2px;
+				padding-right: 2px;
+			}
+
+			> .MySidebarSection .MainAppSidebarPresenceControl {
+				width: 36px;
+				height: 36px;
+				grid-template-columns: auto;
+
+				&:not(:has(.MainAppSidebarPresenceControl-primary-trigger)) {
+					display: flex;
+					align-items: center;
+					justify-content: center;
+					padding: 6px;
+				}
+
+				> .MySidebarListItemTitle {
+					display: none;
+				}
+
+				> .MySidebarListItemIcon,
+				.MainAppSidebarPresenceControl-primary-trigger-content > .MySidebarListItemIcon {
+					font-size: 24px;
+				}
+
+				.MainAppSidebarPresenceControl-primary-trigger {
+					padding: 6px;
+					justify-content: center;
+
+					> .MainAppSidebarPresenceControl-primary-trigger-content {
+						justify-content: center;
+
+						> .MainAppSidebarPresenceControl-online-label {
+							display: none;
+						}
+					}
+				}
+			}
+
+			> .MainAppSidebar-footer {
+				.MainAppSidebarMenuButtonLabel {
+					overflow: hidden;
+					width: 0;
+				}
+
+				.MainAppSidebarUserProfileButton-info {
+					display: none;
+				}
+			}
 		}
-	}
-
-	.MainAppSidebar-sidebar {
-		width: 256px;
-		height: auto;
-	}
-
-	.MainAppSidebar-sidebar.MySidebar-state-closed {
-		pointer-events: none;
 	}
 
 	.MainAppSidebar-header {

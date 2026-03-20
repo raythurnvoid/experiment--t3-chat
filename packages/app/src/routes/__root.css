@@ -1,7 +1,25 @@
 @layer components {
 	.RootLayout {
-		display: flex;
-		flex-direction: column;
+		--RootLayout-header-height: 48px;
+
+		display: grid;
+		grid-template: var(--RootLayout-header-height) calc(100dvh - var(--RootLayout-header-height)) / max-content 1fr;
+
 		min-height: inherit;
+
+		> .MainAppHeader {
+			grid-row: 1;
+			grid-column: 1 / -1;
+		}
+
+		> .MainAppSidebar {
+			grid-row: 2;
+			grid-column: 1;
+		}
+
+		> .RootLayout-content {
+			grid-row: 2;
+			grid-column: 2;
+		}
 	}
 }

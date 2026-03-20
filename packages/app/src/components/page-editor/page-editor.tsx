@@ -3,6 +3,7 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorDiffSkeleton } from "./page-editor-diff/page-editor-diff-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEvent, useRef } from "react";
+import { createPortal } from "react-dom";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text/page-editor-plain-text-skeleton.tsx";
 import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
@@ -44,6 +45,7 @@ import {
 	MyPanelResizeHandle,
 	type MyPanelResizeHandle_Props,
 } from "../my-resizable-panel-group.tsx";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useAppLocalStorageState } from "@/lib/storage.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -733,14 +735,19 @@ function PageEditorInner(props: PageEditorInner_Props) {
 		/>
 	) : null;
 
-	const headerSlot = (
-		<PageEditorHeader
-			pageId={pageId}
-			editorMode={editorMode}
-			onEditorModeChange={onEditorModeChange}
-			onlineUsers={onlineUsers}
-		/>
-	);
+	const headerPortalElement = document.getElementById("app_main_header_content" satisfies AppElementId);
+
+	const headerSlot = headerPortalElement
+		? createPortal(
+				<PageEditorHeader
+					pageId={pageId}
+					editorMode={editorMode}
+					onEditorModeChange={onEditorModeChange}
+					onlineUsers={onlineUsers}
+				/>,
+				headerPortalElement,
+			)
+		: null;
 
 	const leftPanelStyle =
 		editorMode === "rich_text_editor"

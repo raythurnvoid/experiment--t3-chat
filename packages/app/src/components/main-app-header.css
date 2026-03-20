@@ -1,0 +1,208 @@
+@layer components {
+	/* #region root */
+	.MainAppHeader {
+		display: flex;
+		align-items: center;
+
+		height: 48px;
+		min-height: 48px;
+
+		background: var(--color-base-1-05);
+
+		border-bottom: 1px solid var(--color-fg-03);
+	}
+
+	.MainAppHeader-content {
+		display: flex;
+		align-items: center;
+		flex: 1;
+		min-width: 0;
+	}
+	/* #endregion root */
+
+	/* #region workspace controls */
+	.MainAppHeaderWorkspaceControls {
+		display: flex;
+		align-items: center;
+
+		padding: 0 12px;
+
+		width: 280px;
+	}
+
+	.MainAppHeaderWorkspaceControls-button {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+
+		padding: 8px 12px;
+
+		width: 100%;
+
+		background: transparent;
+
+		border: 1px solid transparent;
+		border-radius: 12px;
+
+		cursor: pointer;
+
+		transition:
+			background-color 120ms ease,
+			border-color 120ms ease;
+
+		&:hover {
+			background: var(--color-base-1-03);
+		}
+
+		&:focus-visible {
+			background: var(--color-base-1-03);
+
+			border-color: var(--color-fg-03);
+			outline: none;
+		}
+	}
+
+	.MainAppHeaderWorkspaceControls-text {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+
+		min-width: 0;
+	}
+
+	.MainAppHeaderWorkspaceControls-primary-text,
+	.MainAppHeaderWorkspaceControls-secondary-text {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.MainAppHeaderWorkspaceControls-primary-text {
+		font-size: 13px;
+		font-weight: 600;
+		line-height: 1.2;
+		color: var(--color-fg-12);
+	}
+
+	.MainAppHeaderWorkspaceControls-secondary-text {
+		font-size: 12px;
+		line-height: 1.2;
+		color: var(--color-fg-06);
+	}
+
+	.MainAppHeaderWorkspaceControls-icon {
+		flex: none;
+
+		width: 16px;
+		height: 16px;
+
+		color: var(--color-fg-06);
+	}
+	/* #endregion workspace controls */
+
+	/* #region workspace controls modal */
+	.MainAppHeaderWorkspaceControlsModal {
+		display: flex;
+		flex-direction: column;
+
+		max-width: 680px;
+
+		background:
+			linear-gradient(180deg, color-mix(in srgb, var(--color-base-1-04) 86%, transparent), var(--color-base-1-03)),
+			var(--color-base-1-03);
+
+		border-color: var(--color-base-1-09);
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-header-copy {
+		display: grid;
+		gap: 6px;
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-body {
+		display: grid;
+		gap: 20px;
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-section {
+		display: grid;
+		gap: 10px;
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-section-title,
+	.MainAppHeaderWorkspaceControlsModal-current-selection-label {
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1.2;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--color-fg-06);
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-current-selection {
+		display: grid;
+		grid-template-columns: minmax(0, 88px) minmax(0, 1fr);
+		row-gap: 8px;
+		column-gap: 12px;
+
+		padding: 14px 16px;
+
+		background: var(--color-base-1-04);
+
+		border: 1px solid var(--color-base-1-09);
+		border-radius: 14px;
+		box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-fg-12) 4%, transparent);
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-current-selection-workspace,
+	.MainAppHeaderWorkspaceControlsModal-current-selection-project,
+	.MainAppHeaderWorkspaceControlsModal-list-item-label {
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-list {
+		display: grid;
+		gap: 10px;
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-list-item {
+		display: grid;
+		gap: 4px;
+
+		padding: 12px 14px;
+
+		background: var(--color-base-1-02);
+
+		border: 1px solid var(--color-base-1-08);
+		border-radius: 14px;
+		transition:
+			background-color 120ms ease,
+			border-color 120ms ease;
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-list-item-current {
+		background: var(--color-base-1-04);
+
+		border-color: var(--color-base-1-10);
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-list-item-label,
+	.MainAppHeaderWorkspaceControlsModal-list-item-description,
+	.MainAppHeaderWorkspaceControlsModal-current-selection-workspace,
+	.MainAppHeaderWorkspaceControlsModal-current-selection-project {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.MainAppHeaderWorkspaceControlsModal-list-item-description {
+		font-size: 12px;
+		line-height: 1.35;
+		color: var(--color-fg-06);
+	}
+	/* #endregion workspace controls modal */
+}
