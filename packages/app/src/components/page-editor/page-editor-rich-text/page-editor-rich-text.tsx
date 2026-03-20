@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { useState, useEffect, useRef, useEffectEvent } from "react";
+import { memo, useState, useEffect, useRef, useEffectEvent } from "react";
 import { createPortal } from "react-dom";
 import {
 	EditorContent,
@@ -46,7 +46,7 @@ import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-co
 import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
-import { useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import { useFn, useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
@@ -64,18 +64,88 @@ export type PageEditorRichTextToolbar_ClassNames =
 	| "PageEditorRichTextToolbar-word-count-badge-hidden";
 
 export type PageEditorRichTextToolbar_Props = {
-	editor: Editor;
-	syncStatus: SyncStatus;
-	syncChanged: boolean;
 	charsCount: number;
+	editor: Editor;
 	pageId: app_convex_Id<"pages">;
 	sessionId: string;
+	syncChanged: boolean;
+	syncStatus: SyncStatus;
 };
 
-function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
-	const { editor, syncStatus, syncChanged, charsCount, pageId, sessionId } = props;
+type PageEditorRichTextToolbarTools_Props = {
+	editor: Editor;
+};
+
+const PageEditorRichTextToolbarTools = memo(function PageEditorRichTextToolbarTools(
+	props: PageEditorRichTextToolbarTools_Props,
+) {
+	const { editor } = props;
+
+	return (
+		<>
+			<PageEditorRichTextToolsHistoryButtons editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsNodeSelector editor={editor} setDecorationHighlightOnOpen={true} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsLinkSetter editor={editor} setDecorationHighlightOnOpen={true} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsMathToggle editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsTextStyles editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsColorSelector editor={editor} setDecorationHighlightOnOpen={true} />
+			<MySeparator orientation="vertical" />
+		</>
+	);
+});
+
+type PageEditorRichTextToolbarStatus_Props = {
+	charsCount: number;
+	getCurrentMarkdown: () => string;
+	pageId: app_convex_Id<"pages">;
+	sessionId: string;
+	syncChanged: boolean;
+	syncStatus: SyncStatus;
+};
+
+const PageEditorRichTextToolbarStatus = memo(function PageEditorRichTextToolbarStatus(
+	props: PageEditorRichTextToolbarStatus_Props,
+) {
+	const { charsCount, getCurrentMarkdown, pageId, sessionId, syncChanged, syncStatus } = props;
+
+	return (
+		<>
+			<MyBadge
+				variant="secondary"
+				className={cn("PageEditorRichTextToolbar-status-badge" satisfies PageEditorRichTextToolbar_ClassNames)}
+			>
+				{/*
+					If syncChanged it's false then force to show "Saved" because when the
+					editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
+					*/}
+				{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
+			</MyBadge>
+			<MyBadge
+				variant="secondary"
+				className={cn(
+					charsCount
+						? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
+						: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
+				)}
+			>
+				{charsCount} Words
+			</MyBadge>
+			<PageEditorSnapshotsModal pageId={pageId} sessionId={sessionId} getCurrentMarkdown={getCurrentMarkdown} />
+		</>
+	);
+});
+
+const PageEditorRichTextToolbar = memo(function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
+	const { charsCount, editor, pageId, sessionId, syncChanged, syncStatus } = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
+
+	const getCurrentMarkdown = useFn(() => editor.getMarkdown());
 
 	return (
 		<div
@@ -87,48 +157,20 @@ function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
 		>
 			{portalElement && (
 				<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
-					<PageEditorRichTextToolsHistoryButtons editor={editor} />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsNodeSelector editor={editor} setDecorationHighlightOnOpen={true} />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsLinkSetter editor={editor} setDecorationHighlightOnOpen={true} />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsMathToggle editor={editor} />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsTextStyles editor={editor} />
-					<MySeparator orientation="vertical" />
-					<PageEditorRichTextToolsColorSelector editor={editor} setDecorationHighlightOnOpen={true} />
-					<MySeparator orientation="vertical" />
-					<MyBadge
-						variant="secondary"
-						className={cn("PageEditorRichTextToolbar-status-badge" satisfies PageEditorRichTextToolbar_ClassNames)}
-					>
-						{/*
-					If syncChanged it's false then force to show "Saved" because when the
-					editor is mounted the liveblocks syncStatus is stuck to "synchronizing"
-					*/}
-						{syncStatus === "synchronizing" && syncChanged ? "Unsaved" : "Saved"}
-					</MyBadge>
-					<MyBadge
-						variant="secondary"
-						className={cn(
-							charsCount
-								? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
-								: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
-						)}
-					>
-						{charsCount} Words
-					</MyBadge>
-					<PageEditorSnapshotsModal
+					<PageEditorRichTextToolbarTools editor={editor} />
+					<PageEditorRichTextToolbarStatus
+						charsCount={charsCount}
+						getCurrentMarkdown={getCurrentMarkdown}
 						pageId={pageId}
 						sessionId={sessionId}
-						getCurrentMarkdown={() => editor.getMarkdown()}
+						syncChanged={syncChanged}
+						syncStatus={syncStatus}
 					/>
 				</div>
 			)}
 		</div>
 	);
-}
+});
 // #endregion toolbar
 
 // #region top sticky floating container
@@ -138,7 +180,9 @@ type PageEditorRichTextTopStickyFloatingContainer_Props = {
 	topStickyFloatingSlot: React.ReactNode;
 };
 
-function PageEditorRichTextTopStickyFloatingContainer(props: PageEditorRichTextTopStickyFloatingContainer_Props) {
+const PageEditorRichTextTopStickyFloatingContainer = memo(function PageEditorRichTextTopStickyFloatingContainer(
+	props: PageEditorRichTextTopStickyFloatingContainer_Props,
+) {
 	const { topStickyFloatingSlot } = props;
 
 	return (
@@ -150,20 +194,134 @@ function PageEditorRichTextTopStickyFloatingContainer(props: PageEditorRichTextT
 			{topStickyFloatingSlot}
 		</div>
 	);
-}
+});
 // #endregion top sticky floating container
+
+// #region bubble content
+
+export type PageEditorRichTextBubbleContent_ClassNames = "PageEditorRichTextBubbleContent";
+
+export type PageEditorRichTextBubbleContentDefaultActions_ClassNames =
+	| "PageEditorRichTextBubbleContentDefaultActions"
+	| "PageEditorRichTextBubbleContentDefaultActions-button"
+	| "PageEditorRichTextBubbleContentDefaultActions-icon";
+
+type PageEditorRichTextBubbleContentDefaultActions_Props = {
+	editor: Editor;
+	onClickAi: MyButton_Props["onClick"];
+	onClickComment: MyButton_Props["onClick"];
+};
+
+const PageEditorRichTextBubbleContentDefaultActions = memo(function PageEditorRichTextBubbleContentDefaultActions(
+	props: PageEditorRichTextBubbleContentDefaultActions_Props,
+) {
+	const { editor, onClickAi, onClickComment } = props;
+
+	return (
+		<div
+			className={cn(
+				"PageEditorRichTextBubbleContentDefaultActions" satisfies PageEditorRichTextBubbleContentDefaultActions_ClassNames,
+			)}
+		>
+			<MyButton
+				variant="ghost"
+				className={cn(
+					"PageEditorRichTextBubbleContentDefaultActions-button" satisfies PageEditorRichTextBubbleContentDefaultActions_ClassNames,
+				)}
+				onClick={onClickAi}
+			>
+				<MyButtonIcon
+					className={cn(
+						"PageEditorRichTextBubbleContentDefaultActions-icon" satisfies PageEditorRichTextBubbleContentDefaultActions_ClassNames,
+					)}
+				>
+					<Sparkles />
+				</MyButtonIcon>
+				Ask AI
+			</MyButton>
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsNodeSelector editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsLinkSetter editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsMathToggle editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsTextStyles editor={editor} />
+			<MySeparator orientation="vertical" />
+			<PageEditorRichTextToolsColorSelector editor={editor} />
+			<MySeparator orientation="vertical" />
+			<MyButton
+				variant="ghost"
+				className={cn(
+					"PageEditorRichTextBubbleContentDefaultActions-button" satisfies PageEditorRichTextBubbleContentDefaultActions_ClassNames,
+				)}
+				onClick={onClickComment}
+			>
+				<MyButtonIcon
+					className={cn(
+						"PageEditorRichTextBubbleContentDefaultActions-icon" satisfies PageEditorRichTextBubbleContentDefaultActions_ClassNames,
+					)}
+				>
+					<MessageSquarePlus />
+				</MyButtonIcon>
+				Comment
+			</MyButton>
+		</div>
+	);
+});
+
+type PageEditorRichTextBubbleContent_Props = {
+	editor: Editor;
+	openAi: boolean;
+	openComment: boolean;
+	portalElement: HTMLElement | null;
+	onPortalRef: (inst: HTMLDivElement | null) => void;
+	onClickAi: MyButton_Props["onClick"];
+	onClickComment: MyButton_Props["onClick"];
+	onDiscardAi: () => void;
+	onCloseComment: () => void;
+};
+
+const PageEditorRichTextBubbleContent = memo(function PageEditorRichTextBubbleContent(
+	props: PageEditorRichTextBubbleContent_Props,
+) {
+	const {
+		editor,
+		openAi,
+		openComment,
+		portalElement,
+		onPortalRef,
+		onClickAi,
+		onClickComment,
+		onDiscardAi,
+		onCloseComment,
+	} = props;
+
+	return (
+		<div
+			ref={onPortalRef}
+			className={cn("PageEditorRichTextBubbleContent" satisfies PageEditorRichTextBubbleContent_ClassNames)}
+		>
+			{openAi && <PageEditorRichTextToolsInlineAi editor={editor} onDiscard={onDiscardAi} />}
+			{openComment && <PageEditorRichTextToolsComment onClose={onCloseComment} />}
+			{!openAi && !openComment && portalElement ? (
+				<PageEditorRichTextBubbleContentDefaultActions
+					editor={editor}
+					onClickAi={onClickAi}
+					onClickComment={onClickComment}
+				/>
+			) : null}
+		</div>
+	);
+});
+// #endregion bubble content
 
 // #region bubble
 
 // Derived from Liveblocks:
 // liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
 
-export type PageEditorRichTextBubble_ClassNames =
-	| "PageEditorRichTextBubble"
-	| "PageEditorRichTextBubble-rendered"
-	| "PageEditorRichTextBubble-content"
-	| "PageEditorRichTextBubble-button"
-	| "PageEditorRichTextBubble-icon";
+export type PageEditorRichTextBubble_ClassNames = "PageEditorRichTextBubble" | "PageEditorRichTextBubble-rendered";
 
 export type PageEditorRichTextBubble_Props = {
 	editor: Editor;
@@ -182,7 +340,9 @@ export type PageEditorRichTextBubble_Props = {
  * - The user interacts with portaled/hoisted popovers opened from the bubble (`isElContainedInManagedAreas`)
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
-export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
+export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) {
+	"use no memo";
+
 	const { editor } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
@@ -206,11 +366,11 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 	 */
 	const hoistingContainer = document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId);
 
-	const updateBubbleMenuPosition = () => {
+	const updateBubbleMenuPosition = useFn(() => {
 		editor.view.dispatch(editor.state.tr.setMeta("bubbleMenu", "updatePosition"));
-	};
+	});
 
-	const shouldShow: NonNullable<EditorBubbleProps["shouldShow"]> = (params) => {
+	const shouldShow = useFn<NonNullable<EditorBubbleProps["shouldShow"]>>((params) => {
 		// If nothing is in focus we can close the bubble
 		if (document.activeElement === document.body) {
 			return false;
@@ -236,9 +396,9 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		const novelResult = EditorBubble.novelShouldShowImpl(params);
 
 		return novelResult;
-	};
+	});
 
-	const handleHide: NonNullable<EditorBubbleProps["options"]>["onHide"] = () => {
+	const handleHide = useFn<NonNullable<EditorBubbleProps["options"]>["onHide"]>(() => {
 		isShownRef.current = false;
 
 		// Reset rendered state so it's already `true` on show
@@ -248,23 +408,23 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		setOpenComment(false);
 
 		PageEditorRichText.clearDecorationHighlightProperly(editor);
-	};
+	});
 
-	const handleShow: NonNullable<EditorBubbleProps["options"]>["onShow"] = () => {
+	const handleShow = useFn<NonNullable<EditorBubbleProps["options"]>["onShow"]>(() => {
 		isShownRef.current = true;
 
 		editor.commands.setDecorationHighlight();
-	};
+	});
 
 	// handle the escape key when the bubble menu or its descendants are focused
-	const handleKeyDown: EditorBubbleProps["onKeyDown"] = (event) => {
+	const handleKeyDown = useFn<EditorBubbleProps["onKeyDown"]>((event) => {
 		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
 			setRendered(false);
 			editor.commands.focus();
 		}
-	};
+	});
 
-	const handleClickAi: MyButton_Props["onClick"] = () => {
+	const handleClickAi = useFn<MyButton_Props["onClick"]>(() => {
 		setOpenAi(true);
 
 		// Recalculate the bubble menu position after the AI component is rendered
@@ -276,9 +436,9 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			.catch((error) => {
 				console.error("[PageEditorRichText.handleClickAi] Error updating bubble menu position", { error });
 			});
-	};
+	});
 
-	const handleClickComment: MyButton_Props["onClick"] = () => {
+	const handleClickComment = useFn<MyButton_Props["onClick"]>(() => {
 		setOpenComment(true);
 
 		// Recalculate the bubble menu position after the comment component is rendered
@@ -290,16 +450,20 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			.catch((error) => {
 				console.error("[PageEditorRichText.handleClickComment] Error updating bubble menu position", { error });
 			});
-	};
+	});
 
-	const handleDiscardAi: () => void = () => {
+	const handleDiscardAi = useFn(() => {
 		setOpenAi(false);
-	};
+	});
 
-	const handleCloseComment: () => void = () => {
+	const handleCloseComment = useFn(() => {
 		setOpenComment(false);
 		setRendered(false);
-	};
+	});
+
+	const handlePortalElementRef = useFn((inst: HTMLDivElement | null) => {
+		setPortalElement(inst);
+	});
 
 	// On mount
 	useEffect(() => {
@@ -399,6 +563,16 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 		};
 	}, []);
 
+	const bubbleOptions = {
+		placement: "bottom-start",
+		flip: false,
+		shift: {
+			padding: 120,
+		},
+		onHide: handleHide,
+		onShow: handleShow,
+	} satisfies NonNullable<EditorBubbleProps["options"]>;
+
 	return hoistingContainer ? (
 		<EditorBubble
 			ref={bubbleSurfaceRef}
@@ -408,68 +582,23 @@ export function PageEditorRichTextBubble(props: PageEditorRichTextBubble_Props) 
 			)}
 			appendTo={hoistingContainer}
 			shouldShow={shouldShow}
-			options={{
-				placement: "bottom-start",
-				flip: false,
-				shift: {
-					padding: 120,
-				},
-				onHide: handleHide,
-				onShow: handleShow,
-			}}
+			options={bubbleOptions}
 			onKeyDown={handleKeyDown}
 		>
-			<div
-				ref={(inst) => {
-					setPortalElement(inst);
-				}}
-				className={cn("PageEditorRichTextBubble-content" satisfies PageEditorRichTextBubble_ClassNames)}
-			>
-				{openAi && <PageEditorRichTextToolsInlineAi editor={editor} onDiscard={handleDiscardAi} />}
-				{openComment && <PageEditorRichTextToolsComment onClose={handleCloseComment} />}
-				{!openAi && !openComment && portalElement && (
-					<>
-						<MyButton
-							variant="ghost"
-							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
-							onClick={handleClickAi}
-						>
-							<MyButtonIcon
-								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
-							>
-								<Sparkles />
-							</MyButtonIcon>
-							Ask AI
-						</MyButton>
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsNodeSelector editor={editor} />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsLinkSetter editor={editor} />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsMathToggle editor={editor} />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsTextStyles editor={editor} />
-						<MySeparator orientation="vertical" />
-						<PageEditorRichTextToolsColorSelector editor={editor} />
-						<MySeparator orientation="vertical" />
-						<MyButton
-							variant="ghost"
-							className={cn("PageEditorRichTextBubble-button" satisfies PageEditorRichTextBubble_ClassNames)}
-							onClick={handleClickComment}
-						>
-							<MyButtonIcon
-								className={cn("PageEditorRichTextBubble-icon" satisfies PageEditorRichTextBubble_ClassNames)}
-							>
-								<MessageSquarePlus />
-							</MyButtonIcon>
-							Comment
-						</MyButton>
-					</>
-				)}
-			</div>
+			<PageEditorRichTextBubbleContent
+				editor={editor}
+				openAi={openAi}
+				openComment={openComment}
+				portalElement={portalElement}
+				onPortalRef={handlePortalElementRef}
+				onClickAi={handleClickAi}
+				onClickComment={handleClickComment}
+				onDiscardAi={handleDiscardAi}
+				onCloseComment={handleCloseComment}
+			/>
 		</EditorBubble>
 	) : null;
-}
+});
 // #endregion bubble
 
 // #region root
@@ -609,12 +738,12 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			>
 				{editor && (
 					<PageEditorRichTextToolbar
-						editor={editor}
 						charsCount={charsCount}
-						syncStatus={pagesYjs.syncStatus}
-						syncChanged={pagesYjs.syncChanged}
+						editor={editor}
 						pageId={pageId}
 						sessionId={presenceStore.localSessionId}
+						syncChanged={pagesYjs.syncChanged}
+						syncStatus={pagesYjs.syncStatus}
 					/>
 				)}
 				<PageEditorRichTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />

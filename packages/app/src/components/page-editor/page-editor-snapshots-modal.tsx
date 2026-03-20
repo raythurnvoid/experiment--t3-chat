@@ -1,7 +1,7 @@
 import "./page-editor-snapshots-modal.css";
 
-import { memo, useEffect, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { memo, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
+import { useMutation } from "convex/react";
 import { Archive, ArchiveRestore, ChevronLeft, ChevronRight, Clock, FileText } from "lucide-react";
 import { diffWordsWithSpace } from "diff";
 
@@ -26,6 +26,7 @@ import { MySkeleton } from "../my-skeleton.tsx";
 import { MySwitch } from "../my-switch.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../my-tooltip.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
 
 type PageEditorSnapshotsModal_UserRecord = {
 	displayName?: string;
@@ -54,28 +55,6 @@ type PageEditorSnapshotsModal_PreviewSnapshotContent = {
 
 const SNAPSHOT_SKELETON_ROW_COUNT = 10;
 const PREVIEW_SKELETON_ROW_COUNT = 20;
-const LOADING_SKELETON_DELAY_MS = 150;
-
-function useDelayedLoadingState(isLoading: boolean, delayMs = LOADING_SKELETON_DELAY_MS) {
-	const [showDelayedLoadingState, setShowDelayedLoadingState] = useState(false);
-
-	useEffect(() => {
-		if (!isLoading) {
-			setShowDelayedLoadingState(false);
-			return;
-		}
-
-		const timeoutId = window.setTimeout(() => {
-			setShowDelayedLoadingState(true);
-		}, delayMs);
-
-		return () => {
-			window.clearTimeout(timeoutId);
-		};
-	}, [delayMs, isLoading]);
-
-	return showDelayedLoadingState;
-}
 
 // #region skeleton
 type PageEditorSnapshotsModalSkeleton_ClassNames =
@@ -174,7 +153,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 ) {
 	const { snapshot, userDisplayName, onClickArchive, onClickSnapshot } = props;
 
-	const handleRowClick = (event: MouseEvent<HTMLDivElement>) => {
+	const handleRowClick = useFn((event: MouseEvent<HTMLDivElement>) => {
 		const target = event.target as HTMLElement;
 
 		// Don't forward the click when you hit an interactive element inside the row.
@@ -183,7 +162,15 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 		}
 
 		onClickSnapshot(snapshot._id);
-	};
+	});
+
+	const handlePrimaryClick = useFn(() => {
+		onClickSnapshot(snapshot._id);
+	});
+
+	const handleArchiveClick = useFn(() => {
+		onClickArchive(snapshot._id, snapshot.is_archived);
+	});
 
 	return (
 		<div
@@ -204,7 +191,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 				className={cn(
 					"PageEditorSnapshotsModalListItem-primary-button" satisfies PageEditorSnapshotsModalListItem_ClassNames,
 				)}
-				onClick={() => onClickSnapshot(snapshot._id)}
+				onClick={handlePrimaryClick}
 			>
 				{format_relative_time(snapshot._creationTime)}
 				{snapshot.is_archived && (
@@ -225,9 +212,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 				{userDisplayName}
 			</span>
 			<div
-				className={cn(
-					"PageEditorSnapshotsModalListItem-actions" satisfies PageEditorSnapshotsModalListItem_ClassNames,
-				)}
+				className={cn("PageEditorSnapshotsModalListItem-actions" satisfies PageEditorSnapshotsModalListItem_ClassNames)}
 			>
 				<MyIconButton
 					className={cn(
@@ -235,7 +220,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 					)}
 					variant="ghost-highlightable"
 					tooltip={snapshot.is_archived ? "Restore" : "Archive"}
-					onClick={() => onClickArchive(snapshot._id, snapshot.is_archived)}
+					onClick={handleArchiveClick}
 				>
 					<MyIconButtonIcon>{snapshot.is_archived ? <ArchiveRestore /> : <Archive />}</MyIconButtonIcon>
 				</MyIconButton>
@@ -260,7 +245,9 @@ const PageEditorSnapshotsModalListControls = memo(function PageEditorSnapshotsMo
 	const { showArchived, showArchivedId, onCheckedChange } = props;
 
 	return (
-		<div className={cn("PageEditorSnapshotsModalListControls" satisfies PageEditorSnapshotsModalListControls_ClassNames)}>
+		<div
+			className={cn("PageEditorSnapshotsModalListControls" satisfies PageEditorSnapshotsModalListControls_ClassNames)}
+		>
 			<MyLabel htmlFor={showArchivedId}>Show archived</MyLabel>
 			<MySwitch id={showArchivedId} checked={showArchived} onCheckedChange={onCheckedChange} />
 		</div>
@@ -284,7 +271,9 @@ type PageEditorSnapshotsModalList_Props = {
 	onClickSnapshot: (snapshotId: app_convex_Id<"pages_snapshots">) => void;
 };
 
-const PageEditorSnapshotsModalList = memo(function PageEditorSnapshotsModalList(props: PageEditorSnapshotsModalList_Props) {
+const PageEditorSnapshotsModalList = memo(function PageEditorSnapshotsModalList(
+	props: PageEditorSnapshotsModalList_Props,
+) {
 	const { snapshotsQueryResult, showSkeletonWhenLoading, onClickArchive, onClickSnapshot } = props;
 
 	if (snapshotsQueryResult === undefined) {
@@ -335,27 +324,22 @@ type PageEditorSnapshotsModalPreviewModalDiffBlock_ClassNames =
 	| "PageEditorSnapshotsModalPreviewModalDiffBlock-removed"
 	| "PageEditorSnapshotsModalPreviewModalDiffBlock-unchanged";
 
-type PageEditorSnapshotsModalPreviewModalDiffBlock_Props = {
-	getCurrentMarkdown: () => string;
-	selectedSnapshotContent: PageEditorSnapshotsModal_PreviewSnapshotContent | undefined;
-	showSkeletonWhenLoading: boolean;
+type PageEditorSnapshotsModalPreviewModalDiffBlockInner_Props = {
+	currentMarkdown: string;
+	snapshotMarkdown: string;
 };
 
-const PageEditorSnapshotsModalPreviewModalDiffBlock = memo(function PageEditorSnapshotsModalPreviewModalDiffBlock(
-	props: PageEditorSnapshotsModalPreviewModalDiffBlock_Props,
-) {
-	const { getCurrentMarkdown, selectedSnapshotContent, showSkeletonWhenLoading } = props;
+const PageEditorSnapshotsModalPreviewModalDiffBlockInner = memo(
+	function PageEditorSnapshotsModalPreviewModalDiffBlockInner(
+		props: PageEditorSnapshotsModalPreviewModalDiffBlockInner_Props,
+	) {
+		const { currentMarkdown, snapshotMarkdown } = props;
 
-	return (
-		<pre
-			className={cn(
-				"PageEditorSnapshotsModalPreviewModalDiffBlock" satisfies PageEditorSnapshotsModalPreviewModalDiffBlock_ClassNames,
-			)}
-		>
-			{selectedSnapshotContent === undefined ? (
-				showSkeletonWhenLoading ? <PageEditorSnapshotsModalSkeletonPreviewModalBody /> : null
-			) : (
-				diffWordsWithSpace(getCurrentMarkdown(), selectedSnapshotContent.content).map((part, index) => (
+		const diffParts = diffWordsWithSpace(currentMarkdown, snapshotMarkdown);
+
+		return (
+			<>
+				{diffParts.map((part, index) => (
 					<span
 						key={index}
 						className={cn(
@@ -371,7 +355,38 @@ const PageEditorSnapshotsModalPreviewModalDiffBlock = memo(function PageEditorSn
 					>
 						{part.value}
 					</span>
-				))
+				))}
+			</>
+		);
+	},
+);
+
+type PageEditorSnapshotsModalPreviewModalDiffBlock_Props = {
+	currentMarkdown: string;
+	selectedSnapshotContent: PageEditorSnapshotsModal_PreviewSnapshotContent | undefined;
+	showSkeletonWhenLoading: boolean;
+};
+
+const PageEditorSnapshotsModalPreviewModalDiffBlock = memo(function PageEditorSnapshotsModalPreviewModalDiffBlock(
+	props: PageEditorSnapshotsModalPreviewModalDiffBlock_Props,
+) {
+	const { currentMarkdown, selectedSnapshotContent, showSkeletonWhenLoading } = props;
+
+	return (
+		<pre
+			className={cn(
+				"PageEditorSnapshotsModalPreviewModalDiffBlock" satisfies PageEditorSnapshotsModalPreviewModalDiffBlock_ClassNames,
+			)}
+		>
+			{selectedSnapshotContent === undefined ? (
+				showSkeletonWhenLoading ? (
+					<PageEditorSnapshotsModalSkeletonPreviewModalBody />
+				) : null
+			) : (
+				<PageEditorSnapshotsModalPreviewModalDiffBlockInner
+					currentMarkdown={currentMarkdown}
+					snapshotMarkdown={selectedSnapshotContent.content}
+				/>
 			)}
 		</pre>
 	);
@@ -391,45 +406,48 @@ type PageEditorSnapshotsModalPreviewModal_ClassNames =
 	| "PageEditorSnapshotsModalPreviewModal-error-message";
 
 type PageEditorSnapshotsModalPreviewModal_Props = {
-	getCurrentMarkdown: () => string;
 	isNextDisabled: boolean;
 	isPreviousDisabled: boolean;
 	isRestoring: boolean;
 	nextSnapshot: PageEditorSnapshotsModal_ListSnapshot | null;
-	onClickCancel: () => void;
-	onClickConfirm: () => void;
-	onClickNext: () => void;
-	onClickPrevious: () => void;
 	open: boolean;
 	previousSnapshot: PageEditorSnapshotsModal_ListSnapshot | null;
 	selectedSnapshotContent: PageEditorSnapshotsModal_PreviewSnapshotContent | null | undefined;
 	selectedSnapshotMarkdown: string | null;
-	setOpen: Dispatch<SetStateAction<boolean>>;
 	showSkeletonWhenLoading: boolean;
 	snapshotsQueryResult: PageEditorSnapshotsModal_ListQueryResult | undefined;
+	getCurrentMarkdown: () => string;
+	setOpen: Dispatch<SetStateAction<boolean>>;
+	onClickCancel: () => void;
+	onClickConfirm: () => void;
+	onClickNext: () => void;
+	onClickPrevious: () => void;
 };
 
 const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsModalPreviewModal(
 	props: PageEditorSnapshotsModalPreviewModal_Props,
 ) {
 	const {
-		getCurrentMarkdown,
 		isNextDisabled,
 		isPreviousDisabled,
 		isRestoring,
 		nextSnapshot,
-		onClickCancel,
-		onClickConfirm,
-		onClickNext,
-		onClickPrevious,
 		open,
 		previousSnapshot,
 		selectedSnapshotContent,
 		selectedSnapshotMarkdown,
-		setOpen,
 		showSkeletonWhenLoading,
 		snapshotsQueryResult,
+		getCurrentMarkdown,
+		setOpen,
+		onClickCancel,
+		onClickConfirm,
+		onClickNext,
+		onClickPrevious,
 	} = props;
+
+	const currentMarkdownForSnapshotDiff =
+		selectedSnapshotContent === undefined ? "" : getCurrentMarkdown();
 
 	return (
 		<MyModal open={open} setOpen={setOpen}>
@@ -467,7 +485,9 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 								)}
 							>
 								{selectedSnapshotContent === undefined ? (
-									showSkeletonWhenLoading ? <PageEditorSnapshotsModalSkeletonPreviewModalSnapshotData /> : null
+									showSkeletonWhenLoading ? (
+										<PageEditorSnapshotsModalSkeletonPreviewModalSnapshotData />
+									) : null
 								) : (
 									<>
 										<div
@@ -482,7 +502,8 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 												"PageEditorSnapshotsModalPreviewModal-snapshot-data-author" satisfies PageEditorSnapshotsModalPreviewModal_ClassNames,
 											)}
 										>
-											{selectedSnapshotContent.usersDict?.[selectedSnapshotContent.created_by]?.displayName ?? "Unknown"}
+											{selectedSnapshotContent.usersDict?.[selectedSnapshotContent.created_by]?.displayName ??
+												"Unknown"}
 										</div>
 										<div
 											className={cn(
@@ -537,7 +558,9 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 													<MyTooltipContent unmountOnHide>
 														<div>
 															<div>{format_relative_time(nextSnapshot._creationTime)}</div>
-															<div>{snapshotsQueryResult?.usersDict[nextSnapshot.created_by]?.displayName ?? "Unknown"}</div>
+															<div>
+																{snapshotsQueryResult?.usersDict[nextSnapshot.created_by]?.displayName ?? "Unknown"}
+															</div>
 														</div>
 													</MyTooltipContent>
 												)}
@@ -547,7 +570,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 								)}
 							</div>
 							<PageEditorSnapshotsModalPreviewModalDiffBlock
-								getCurrentMarkdown={getCurrentMarkdown}
+								currentMarkdown={currentMarkdownForSnapshotDiff}
 								selectedSnapshotContent={selectedSnapshotContent}
 								showSkeletonWhenLoading={showSkeletonWhenLoading}
 							/>
@@ -575,18 +598,124 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 });
 // #endregion preview modal
 
-// #region root
+// #region modal
 export type PageEditorSnapshotsModal_ClassNames = "PageEditorSnapshotsModal";
 
-export type PageEditorSnapshotsModal_Props = {
+type PageEditorSnapshotsModalListModal_Props = {
+	isListOpen: boolean;
+	isNextDisabled: boolean;
+	isPreviewOpen: boolean;
+	isPreviousDisabled: boolean;
+	isRestoring: boolean;
+	listShowSkeletonWhenLoading: boolean;
+	nextSnapshot: PageEditorSnapshotsModal_ListSnapshot | null;
+	previousSnapshot: PageEditorSnapshotsModal_ListSnapshot | null;
+	previewShowSkeletonWhenLoading: boolean;
+	selectedSnapshotContent: PageEditorSnapshotsModal_PreviewSnapshotContent | null | undefined;
+	selectedSnapshotMarkdown: string | null;
+	showArchived: boolean;
+	showArchivedId: string;
+	snapshotsQueryResult: PageEditorSnapshotsModal_ListQueryResult | undefined;
 	getCurrentMarkdown: () => string;
-	onApplySnapshotMarkdown?: (markdown: string) => void;
+	setIsListOpen: Dispatch<SetStateAction<boolean>>;
+	setIsPreviewOpen: Dispatch<SetStateAction<boolean>>;
+	setShowArchived: Dispatch<SetStateAction<boolean>>;
+	onClickArchive: PageEditorSnapshotsModalList_Props["onClickArchive"];
+	onClickCancel: () => void;
+	onClickConfirm: () => void;
+	onClickNextSnapshot: () => void;
+	onClickPreviousSnapshot: () => void;
+	onClickSnapshot: (snapshotId: app_convex_Id<"pages_snapshots">) => void;
+};
+
+const PageEditorSnapshotsModalListModal = memo(function PageEditorSnapshotsModalListModal(
+	props: PageEditorSnapshotsModalListModal_Props,
+) {
+	const {
+		isListOpen,
+		isNextDisabled,
+		isPreviewOpen,
+		isPreviousDisabled,
+		isRestoring,
+		listShowSkeletonWhenLoading,
+		nextSnapshot,
+		previousSnapshot,
+		previewShowSkeletonWhenLoading,
+		selectedSnapshotContent,
+		selectedSnapshotMarkdown,
+		showArchived,
+		showArchivedId,
+		snapshotsQueryResult,
+		getCurrentMarkdown,
+		setIsListOpen,
+		setIsPreviewOpen,
+		setShowArchived,
+		onClickArchive,
+		onClickCancel,
+		onClickConfirm,
+		onClickNextSnapshot,
+		onClickPreviousSnapshot,
+		onClickSnapshot,
+	} = props;
+
+	return (
+		<MyModal open={isListOpen} setOpen={setIsListOpen}>
+			<MyModalPopover className={cn("PageEditorSnapshotsModal" satisfies PageEditorSnapshotsModal_ClassNames)}>
+				<MyModalHeader>
+					<MyModalHeading>Page Snapshots</MyModalHeading>
+				</MyModalHeader>
+
+				<PageEditorSnapshotsModalListControls
+					showArchived={showArchived}
+					showArchivedId={showArchivedId}
+					onCheckedChange={setShowArchived}
+				/>
+
+				<MyModalScrollableArea>
+					<PageEditorSnapshotsModalList
+						snapshotsQueryResult={snapshotsQueryResult}
+						showSkeletonWhenLoading={listShowSkeletonWhenLoading}
+						onClickArchive={onClickArchive}
+						onClickSnapshot={onClickSnapshot}
+					/>
+				</MyModalScrollableArea>
+
+				<MyModalCloseTrigger />
+
+				<PageEditorSnapshotsModalPreviewModal
+					isNextDisabled={isNextDisabled}
+					isPreviousDisabled={isPreviousDisabled}
+					isRestoring={isRestoring}
+					nextSnapshot={nextSnapshot}
+					open={isPreviewOpen}
+					previousSnapshot={previousSnapshot}
+					selectedSnapshotContent={selectedSnapshotContent}
+					selectedSnapshotMarkdown={selectedSnapshotMarkdown}
+					showSkeletonWhenLoading={previewShowSkeletonWhenLoading}
+					snapshotsQueryResult={snapshotsQueryResult}
+					getCurrentMarkdown={getCurrentMarkdown}
+					setOpen={setIsPreviewOpen}
+					onClickCancel={onClickCancel}
+					onClickConfirm={onClickConfirm}
+					onClickNext={onClickNextSnapshot}
+					onClickPrevious={onClickPreviousSnapshot}
+				/>
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion modal
+
+// #region root
+export type PageEditorSnapshotsModal_Props = {
 	pageId: app_convex_Id<"pages">;
 	sessionId: string;
+	getCurrentMarkdown: () => string;
+	onApplySnapshotMarkdown?: (markdown: string) => void;
 };
 
 export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(props: PageEditorSnapshotsModal_Props) {
-	const { getCurrentMarkdown, onApplySnapshotMarkdown, pageId, sessionId } = props;
+	const { pageId, sessionId, getCurrentMarkdown, onApplySnapshotMarkdown } = props;
 	const [isListOpen, setIsListOpen] = useState(false);
 	const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 	const [selectedSnapshotId, setSelectedSnapshotId] = useState<app_convex_Id<"pages_snapshots"> | null>(null);
@@ -601,7 +730,7 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 		show_archived: showArchived,
 	});
 
-	const selectedSnapshotContent = useQuery(
+	const selectedSnapshotContent = useStableQuery(
 		app_convex_api.ai_docs_temp.get_page_snapshot_content,
 		selectedSnapshotId
 			? {
@@ -619,23 +748,22 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 
 	const selectedSnapshotMarkdown =
 		selectedSnapshotContent && "content" in selectedSnapshotContent ? selectedSnapshotContent.content : null;
-	const showListLoadingSkeleton = useDelayedLoadingState(isListOpen && snapshotsQueryResult === undefined);
-	const showPreviewLoadingSkeleton = useDelayedLoadingState(
-		isPreviewOpen && selectedSnapshotId != null && selectedSnapshotContent === undefined,
-	);
 
-	const handleClickSnapshot = (snapshotId: app_convex_Id<"pages_snapshots">) => {
+	const handleOpenSnapshotsList = useFn(() => {
+		setIsListOpen(true);
+	});
+
+	const handleClickSnapshot = useFn((snapshotId: app_convex_Id<"pages_snapshots">) => {
 		setSelectedSnapshotId(snapshotId);
 		setIsPreviewOpen(true);
-	};
+	});
 
-	const handleClickConfirm = () => {
+	const handleClickConfirm = useFn(() => {
 		if (!selectedSnapshotId) return;
 		if (selectedSnapshotMarkdown == null) return;
 
 		setIsRestoring(true);
-		// Use an async IIFE because the React compiler has problems with try catch finally blocks
-		(async (/* iife */) => {
+		Promise.try(async () => {
 			await restoreSnapshot({
 				workspaceId: ai_chat_HARDCODED_ORG_ID,
 				projectId: ai_chat_HARDCODED_PROJECT_ID,
@@ -651,21 +779,21 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 			setIsPreviewOpen(false);
 			setIsListOpen(false);
 			setSelectedSnapshotId(null);
-		})()
+		})
 			.catch((err) => {
 				console.error("Failed to restore snapshot:", err);
 			})
 			.finally(() => {
 				setIsRestoring(false);
 			});
-	};
+	});
 
-	const handleClickCancel = () => {
+	const handleClickCancel = useFn(() => {
 		setIsPreviewOpen(false);
 		setSelectedSnapshotId(null);
-	};
+	});
 
-	const handleClickPreviousSnapshot = () => {
+	const handleClickPreviousSnapshot = useFn(() => {
 		if (!snapshotsQueryResult || !selectedSnapshotId) {
 			const error = should_never_happen("[PageEditorSnapshotsModal.handleClickPreviousSnapshot]: missing deps", {
 				snapshotsQueryResult,
@@ -679,9 +807,9 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 		if (currentIndex > 0) {
 			setSelectedSnapshotId(snapshotsQueryResult.snapshots[currentIndex - 1]._id);
 		}
-	};
+	});
 
-	const handleClickNextSnapshot = () => {
+	const handleClickNextSnapshot = useFn(() => {
 		if (!snapshotsQueryResult || !selectedSnapshotId) {
 			const error = should_never_happen("[PageEditorSnapshotsModal.handleClickNextSnapshot]: missing deps", {
 				snapshotsQueryResult,
@@ -695,19 +823,18 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 		if (currentIndex < snapshotsQueryResult.snapshots.length - 1) {
 			setSelectedSnapshotId(snapshotsQueryResult.snapshots[currentIndex + 1]._id);
 		}
-	};
+	});
 
-	const handleClickArchive = async (
-		snapshotId: app_convex_Id<"pages_snapshots">,
-		isArchived: boolean | undefined,
-	) => {
-		const mutation = isArchived ? unarchiveSnapshot : archiveSnapshot;
-		await mutation({
-			workspace_id: ai_chat_HARDCODED_ORG_ID,
-			project_id: ai_chat_HARDCODED_PROJECT_ID,
-			page_snapshot_id: snapshotId,
-		});
-	};
+	const handleClickArchive = useFn<PageEditorSnapshotsModalList_Props["onClickArchive"]>(
+		async (snapshotId, isArchived) => {
+			const mutation = isArchived ? unarchiveSnapshot : archiveSnapshot;
+			await mutation({
+				workspace_id: ai_chat_HARDCODED_ORG_ID,
+				project_id: ai_chat_HARDCODED_PROJECT_ID,
+				page_snapshot_id: snapshotId,
+			});
+		},
+	);
 
 	const currentIndex =
 		snapshotsQueryResult && selectedSnapshotId
@@ -722,64 +849,48 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 	const isNextDisabled =
 		!snapshotsQueryResult || !selectedSnapshotId || currentIndex === (snapshotsQueryResult?.snapshots.length ?? 0) - 1;
 
+	const previewSelectedSnapshotContent =
+		selectedSnapshotContent === undefined || selectedSnapshotContent === null
+			? selectedSnapshotContent
+			: {
+					_creationTime: selectedSnapshotContent._creationTime,
+					content: selectedSnapshotContent.content,
+					created_by: selectedSnapshotContent.created_by,
+					usersDict: selectedSnapshotContent.usersDict,
+				};
+
 	return (
 		<>
-			<MyIconButton variant="ghost" tooltip="Snapshots" onClick={() => setIsListOpen(true)}>
+			<MyIconButton variant="ghost" tooltip="Snapshots" onClick={handleOpenSnapshotsList}>
 				<Clock />
 			</MyIconButton>
 
-			<MyModal open={isListOpen} setOpen={setIsListOpen}>
-				<MyModalPopover className={cn("PageEditorSnapshotsModal" satisfies PageEditorSnapshotsModal_ClassNames)}>
-					<MyModalHeader>
-						<MyModalHeading>Page Snapshots</MyModalHeading>
-					</MyModalHeader>
-
-					<PageEditorSnapshotsModalListControls
-						showArchived={showArchived}
-						showArchivedId={showArchivedId}
-						onCheckedChange={setShowArchived}
-					/>
-
-					<MyModalScrollableArea>
-						<PageEditorSnapshotsModalList
-							snapshotsQueryResult={snapshotsQueryResult ?? undefined}
-							showSkeletonWhenLoading={showListLoadingSkeleton}
-							onClickArchive={handleClickArchive}
-							onClickSnapshot={handleClickSnapshot}
-						/>
-					</MyModalScrollableArea>
-
-					<MyModalCloseTrigger />
-
-					<PageEditorSnapshotsModalPreviewModal
-						getCurrentMarkdown={getCurrentMarkdown}
-						isNextDisabled={isNextDisabled}
-						isPreviousDisabled={isPreviousDisabled}
-						isRestoring={isRestoring}
-						nextSnapshot={nextSnapshot}
-						onClickCancel={handleClickCancel}
-						onClickConfirm={handleClickConfirm}
-						onClickNext={handleClickNextSnapshot}
-						onClickPrevious={handleClickPreviousSnapshot}
-						open={isPreviewOpen}
-						previousSnapshot={previousSnapshot}
-						selectedSnapshotContent={
-							selectedSnapshotContent === undefined || selectedSnapshotContent === null
-								? selectedSnapshotContent
-								: {
-										_creationTime: selectedSnapshotContent._creationTime,
-										content: selectedSnapshotContent.content,
-										created_by: selectedSnapshotContent.created_by,
-										usersDict: selectedSnapshotContent.usersDict,
-									}
-						}
-						selectedSnapshotMarkdown={selectedSnapshotMarkdown}
-						setOpen={setIsPreviewOpen}
-						showSkeletonWhenLoading={showPreviewLoadingSkeleton}
-						snapshotsQueryResult={snapshotsQueryResult ?? undefined}
-					/>
-				</MyModalPopover>
-			</MyModal>
+			<PageEditorSnapshotsModalListModal
+				isListOpen={isListOpen}
+				isNextDisabled={isNextDisabled}
+				isPreviewOpen={isPreviewOpen}
+				isPreviousDisabled={isPreviousDisabled}
+				isRestoring={isRestoring}
+				listShowSkeletonWhenLoading={isListOpen}
+				nextSnapshot={nextSnapshot}
+				previousSnapshot={previousSnapshot}
+				previewShowSkeletonWhenLoading={isPreviewOpen && selectedSnapshotId != null}
+				selectedSnapshotContent={previewSelectedSnapshotContent}
+				selectedSnapshotMarkdown={selectedSnapshotMarkdown}
+				showArchived={showArchived}
+				showArchivedId={showArchivedId}
+				snapshotsQueryResult={snapshotsQueryResult ?? undefined}
+				getCurrentMarkdown={getCurrentMarkdown}
+				setIsListOpen={setIsListOpen}
+				setIsPreviewOpen={setIsPreviewOpen}
+				setShowArchived={setShowArchived}
+				onClickArchive={handleClickArchive}
+				onClickCancel={handleClickCancel}
+				onClickConfirm={handleClickConfirm}
+				onClickNextSnapshot={handleClickNextSnapshot}
+				onClickPreviousSnapshot={handleClickPreviousSnapshot}
+				onClickSnapshot={handleClickSnapshot}
+			/>
 		</>
 	);
 });

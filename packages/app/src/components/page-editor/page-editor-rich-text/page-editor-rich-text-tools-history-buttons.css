@@ -1,5 +1,26 @@
 @layer components {
-	.PageEditorRichTextToolsHistoryButtons {
-		display: flex;
+	/* #region undo */
+	.PageEditorRichTextToolsHistoryUndoButton {
+		& .MyIconButtonIcon {
+			width: 20px;
+			height: 20px;
+		}
 	}
+	/* #endregion undo */
+
+	/* #region redo */
+	.PageEditorRichTextToolsHistoryRedoButton {
+		& .MyIconButtonIcon {
+			width: 20px;
+			height: 20px;
+		}
+	}
+	/* #endregion redo */
+
+	/* #region root */
+	.PageEditorRichTextToolsHistoryButtonsInner {
+		display: flex;
+		gap: 4px;
+	}
+	/* #endregion root */
 }

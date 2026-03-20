@@ -155,14 +155,14 @@ export class CoalescedRunner {
 	}
 
 	private drain() {
-		(async (/* iife */) => {
+		Promise.try(async () => {
 			while (this.pendingRun) {
 				this.currentRun = this.pendingRun;
 				this.pendingRun = null;
 				await this.currentRun.task().catch(() => {});
 				this.currentRun = null;
 			}
-		})();
+		}).catch((e) => console.error(e));
 	}
 
 	async run<T>(task: () => Promise<T>) {

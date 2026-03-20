@@ -1,10 +1,10 @@
 @layer components {
-	/* #region root */
+	/* #region modal */
 	.PageEditorSnapshotsModal {
 		display: flex;
 		flex-direction: column;
 	}
-	/* #endregion root */
+	/* #endregion modal */
 
 	/* #region skeleton */
 	.PageEditorSnapshotsModalSkeleton-list {

@@ -231,7 +231,10 @@
 		display: none;
 	}
 
-	.PageEditorRichTextBubble-content {
+	/* #endregion bubble */
+
+	/* #region bubble content */
+	.PageEditorRichTextBubbleContent {
 		display: flex;
 
 		width: fit-content;
@@ -248,7 +251,11 @@
 			0 8px 10px -6px rgb(0 0 0 / 0.1);
 	}
 
-	.PageEditorRichTextBubble-button {
+	.PageEditorRichTextBubbleContentDefaultActions {
+		display: contents;
+	}
+
+	.PageEditorRichTextBubbleContentDefaultActions-button {
 		gap: 4px;
 		border-radius: 0;
 
@@ -261,10 +268,10 @@
 		}
 	}
 
-	.PageEditorRichTextBubble-icon {
+	.PageEditorRichTextBubbleContentDefaultActions-icon {
 		width: 20px;
 		height: 20px;
 	}
 
-	/* #endregion bubble */
+	/* #endregion bubble content */
 }
