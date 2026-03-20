@@ -9,6 +9,7 @@ import { ClerkProvider } from "@clerk/clerk-react";
 import { ThemeProvider } from "./components/theme-provider.tsx";
 import { ConvexProviderWithAuth } from "convex/react";
 import { AppAuthProvider } from "./components/app-auth.tsx";
+import { AppHotkeysProvider } from "./components/app-hotkeys.tsx";
 
 // Create a new router instance
 const router = createRouter({ routeTree });
@@ -30,13 +31,15 @@ declare module "@tanstack/react-router" {
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ThemeProvider>
-			<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
-				<AppAuthProvider>
-					<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useAuth}>
-						<RouterProvider router={router} />
-					</ConvexProviderWithAuth>
-				</AppAuthProvider>
-			</ClerkProvider>
+			<AppHotkeysProvider>
+				<ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+					<AppAuthProvider>
+						<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useAuth}>
+							<RouterProvider router={router} />
+						</ConvexProviderWithAuth>
+					</AppAuthProvider>
+				</ClerkProvider>
+			</AppHotkeysProvider>
 		</ThemeProvider>
 	</StrictMode>,
 );

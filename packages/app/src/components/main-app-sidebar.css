@@ -99,8 +99,7 @@
 	}
 
 	.MainAppSidebar-sidebar {
-		--my-sidebar-width: 256px;
-
+		width: 256px;
 		height: auto;
 	}
 

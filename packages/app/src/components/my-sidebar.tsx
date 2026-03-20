@@ -2,20 +2,12 @@ import "./my-sidebar.css";
 
 import { Slot } from "@radix-ui/react-slot";
 import { PanelLeftIcon } from "lucide-react";
-import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
+import { memo, type ComponentPropsWithRef } from "react";
 
 import { MyPrimaryAction, MyPrimaryActionLink } from "@/components/my-action.tsx";
 import { MyHovercardAction } from "@/components/my-hovercard.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
-
-type MySidebar_CssVars = {
-	"--my-sidebar-width": string;
-};
-
-const MySidebar_CssVars_DEFAULTS: Partial<MySidebar_CssVars> = {
-	"--my-sidebar-width": "320px",
-};
 
 // #region list item
 type MySidebarListItem_ClassNames = "MySidebarListItem";
@@ -428,7 +420,7 @@ export const MySidebarInset = memo(function MySidebarInset(props: MySidebarInset
 // #endregion inset
 
 // #region root
-type MySidebar_ClassNames = "MySidebar" | "MySidebar-state-expanded" | "MySidebar-state-closed" | "MySidebar-mounted";
+type MySidebar_ClassNames = "MySidebar" | "MySidebar-state-expanded" | "MySidebar-state-closed";
 
 export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
 	state: "closed" | "expanded";
@@ -436,11 +428,6 @@ export type MySidebar_Props = ComponentPropsWithRef<"aside"> & {
 
 export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
 	const { ref, id, className, state, children, style, ...rest } = props;
-	const [isMounted, setIsMounted] = useState(false);
-
-	useEffect(() => {
-		setIsMounted(true);
-	}, []);
 
 	const stateClassName =
 		state === "expanded"
@@ -454,13 +441,9 @@ export const MySidebar = memo(function MySidebar(props: MySidebar_Props) {
 			className={cn(
 				"MySidebar" satisfies MySidebar_ClassNames,
 				stateClassName,
-				isMounted && ("MySidebar-mounted" satisfies MySidebar_ClassNames),
 				className,
 			)}
-			style={{
-				...MySidebar_CssVars_DEFAULTS,
-				...style,
-			}}
+			style={style}
 			{...rest}
 		>
 			{children}

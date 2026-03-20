@@ -7,39 +7,21 @@
 		flex-direction: column;
 		min-height: 0;
 		height: 100%;
-		width: var(--my-sidebar-width);
+		width: 320px;
 		flex-shrink: 0;
 		contain: strict;
 
 		background: var(--color-base-1-03);
 		color: var(--color-fg-09);
 		border-right: 1px solid var(--color-fg-02);
-
-		transition: width 0.2s ease-in-out allow-discrete;
 	}
 
 	.MySidebar-state-closed {
-		width: 0;
+		display: none;
 	}
 
 	.MySidebar-state-expanded {
-		width: var(--my-sidebar-width);
-
-		.MySidebar-mounted .MySidebar-state-expanded {
-			@starting-style {
-				width: 0;
-			}
-		}
-	}
-
-	.MySidebar-state-closed {
-		width: 0;
-	}
-
-	.MySidebar-state-expanded {
-		width: var(--my-sidebar-width);
-
-		transition: none;
+		width: 320px;
 	}
 	/* #endregion root */
 

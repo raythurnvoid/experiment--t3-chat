@@ -1,7 +1,7 @@
 import "./main-app-sidebar.css";
 import "@/components/my-action.css";
 
-import { memo, useEffect, useRef } from "react";
+import { memo, useRef } from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
@@ -12,6 +12,7 @@ import { dark } from "@clerk/themes";
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
 import { app_presence_set_enabled, usePresence, usePresenceEnabled, usePresenceList } from "@/hooks/presence-hooks.ts";
 import { useThemeContext } from "@/components/theme-provider.tsx";
@@ -38,8 +39,6 @@ import {
 	MySidebarListItemTitle,
 	type MySidebar_Props,
 } from "@/components/my-sidebar.tsx";
-
-const main_app_sidebar_KEYBOARD_SHORTCUT = "b";
 
 // #region theme toggle item
 type MainAppSidebarThemeToggleMenuItem_ClassNames =
@@ -555,35 +554,20 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 
 	const sidebarState: MySidebar_Props["state"] = !isOpen ? "closed" : "expanded";
 
-	const toggleSidebar = useFn(() => {
-		useAppLocalStorageState.setState((state) => ({
-			main_app_sidebar_open: !state.main_app_sidebar_open,
-		}));
-	});
-
 	const handleSidebarWidthToggleClick = useFn(() => {
 		useAppLocalStorageState.setState((state) => ({
 			main_app_sidebar_collapsed: !state.main_app_sidebar_collapsed,
 		}));
 	});
 
-	useEffect(() => {
-		const handleKeyDown = (event: KeyboardEvent) => {
-			if (event.key.toLowerCase() !== main_app_sidebar_KEYBOARD_SHORTCUT) {
-				return;
-			}
-
-			if (!event.metaKey && !event.ctrlKey) {
-				return;
-			}
-
-			event.preventDefault();
-			toggleSidebar();
-		};
-
-		window.addEventListener("keydown", handleKeyDown);
-		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [toggleSidebar]);
+	AppHotkeysProvider.useHotkey(
+		"Mod+B",
+		useFn(() => {
+			useAppLocalStorageState.setState((state) => ({
+				main_app_sidebar_open: !state.main_app_sidebar_open,
+			}));
+		}),
+	);
 
 	return (
 		<div
