@@ -1,5 +1,5 @@
 import "./page-editor-rich-text.css";
-import { memo, useState, useEffect, useRef, useEffectEvent } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
 	EditorContent,
@@ -11,7 +11,7 @@ import {
 	handleImagePaste,
 	EditorBubble,
 } from "novel";
-import { Editor } from "@tiptap/react";
+import { Editor, useEditorState } from "@tiptap/react";
 import { useLiveblocksExtension } from "@liveblocks/react-tiptap";
 import type { YjsSyncStatus } from "@liveblocks/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -46,7 +46,7 @@ import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-co
 import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
-import { useFn, useLiveRef, useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import { useFn, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
@@ -64,7 +64,6 @@ export type PageEditorRichTextToolbar_ClassNames =
 	| "PageEditorRichTextToolbar-word-count-badge-hidden";
 
 export type PageEditorRichTextToolbar_Props = {
-	charsCount: number;
 	editor: Editor;
 	pageId: app_convex_Id<"pages">;
 	sessionId: string;
@@ -100,7 +99,7 @@ const PageEditorRichTextToolbarTools = memo(function PageEditorRichTextToolbarTo
 });
 
 type PageEditorRichTextToolbarStatus_Props = {
-	charsCount: number;
+	editor: Editor;
 	getCurrentMarkdown: () => string;
 	pageId: app_convex_Id<"pages">;
 	sessionId: string;
@@ -111,7 +110,12 @@ type PageEditorRichTextToolbarStatus_Props = {
 const PageEditorRichTextToolbarStatus = memo(function PageEditorRichTextToolbarStatus(
 	props: PageEditorRichTextToolbarStatus_Props,
 ) {
-	const { charsCount, getCurrentMarkdown, pageId, sessionId, syncChanged, syncStatus } = props;
+	const { editor, getCurrentMarkdown, pageId, sessionId, syncChanged, syncStatus } = props;
+
+	const wordsCount = useEditorState({
+		editor,
+		selector: ({ editor: currentEditor }) => currentEditor.storage.characterCount.words(),
+	});
 
 	return (
 		<>
@@ -128,12 +132,12 @@ const PageEditorRichTextToolbarStatus = memo(function PageEditorRichTextToolbarS
 			<MyBadge
 				variant="secondary"
 				className={cn(
-					charsCount
+					wordsCount
 						? ("PageEditorRichTextToolbar-word-count-badge" satisfies PageEditorRichTextToolbar_ClassNames)
 						: ("PageEditorRichTextToolbar-word-count-badge-hidden" satisfies PageEditorRichTextToolbar_ClassNames),
 				)}
 			>
-				{charsCount} Words
+				{wordsCount} Words
 			</MyBadge>
 			<PageEditorSnapshotsModal pageId={pageId} sessionId={sessionId} getCurrentMarkdown={getCurrentMarkdown} />
 		</>
@@ -141,7 +145,7 @@ const PageEditorRichTextToolbarStatus = memo(function PageEditorRichTextToolbarS
 });
 
 const PageEditorRichTextToolbar = memo(function PageEditorRichTextToolbar(props: PageEditorRichTextToolbar_Props) {
-	const { charsCount, editor, pageId, sessionId, syncChanged, syncStatus } = props;
+	const { editor, pageId, sessionId, syncChanged, syncStatus } = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
@@ -159,7 +163,7 @@ const PageEditorRichTextToolbar = memo(function PageEditorRichTextToolbar(props:
 				<div className={cn("PageEditorRichTextToolbar-scrollable-area" satisfies PageEditorRichTextToolbar_ClassNames)}>
 					<PageEditorRichTextToolbarTools editor={editor} />
 					<PageEditorRichTextToolbarStatus
-						charsCount={charsCount}
+						editor={editor}
 						getCurrentMarkdown={getCurrentMarkdown}
 						pageId={pageId}
 						sessionId={sessionId}
@@ -599,6 +603,69 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 });
 // #endregion bubble
 
+// #region anchored comments layer
+type PageEditorRichTextAnchoredCommentsLayer_Props = {
+	commentsPortalHost: HTMLElement | null;
+	editor: Editor;
+	isEditorReady: boolean;
+};
+
+const PageEditorRichTextAnchoredCommentsLayer = memo(function PageEditorRichTextAnchoredCommentsLayer(
+	props: PageEditorRichTextAnchoredCommentsLayer_Props,
+) {
+	const { commentsPortalHost, editor, isEditorReady } = props;
+
+	const threadIdsKey = useEditorState({
+		editor,
+		selector: ({ editor: currentEditor }) => getThreadIdsFromEditorState(currentEditor.state).toSorted().join("\n"),
+	});
+
+	const threadIds = threadIdsKey ? threadIdsKey.split("\n") : [];
+
+	const threadsQuery = useStableQuery(
+		app_convex_api.chat_messages.chat_messages_threads_list,
+		threadIds.length > 0
+			? {
+					workspaceId: ai_chat_HARDCODED_ORG_ID,
+					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					threadIds,
+					isArchived: false,
+				}
+			: "skip",
+	);
+
+	useEffect(() => {
+		if (!isEditorReady || !threadsQuery || threadIds.length === 0) {
+			return;
+		}
+
+		const activeThreadIds = new Set(threadsQuery.threads.map((thread) => thread.id as string));
+		const threadsToUpdate = threadIds.map((threadId) => ({
+			threadId,
+			orphan: !activeThreadIds.has(threadId),
+		}));
+
+		if (threadsToUpdate.length > 0) {
+			editor.commands.command(({ commands }) => {
+				threadsToUpdate.forEach(({ threadId, orphan }) => {
+					commands.markCommentAsOrphan({ threadId, orphan });
+				});
+				return true;
+			});
+		}
+	}, [editor, isEditorReady, threadIds, threadsQuery]);
+
+	if (!commentsPortalHost) {
+		return null;
+	}
+
+	return createPortal(
+		<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />,
+		commentsPortalHost,
+	);
+});
+// #endregion anchored comments layer
+
 // #region root
 export type PageEditorRichText_ClassNames =
 	| "PageEditorRichText"
@@ -622,12 +689,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { pagesYjs, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
 	const [editor, setEditor] = useState<Editor | null>(null);
-	const editorRef = useLiveRef(editor);
-
-	const [charsCount, setCharsCount] = useState<number>(0);
-
-	const [threadIds, setThreadIds] = useState<string[]>([]);
-	const threadIdsKeyRef = useRef<string>("");
 
 	const isEditorReady = pagesYjs.syncStatus === "synchronizing" || pagesYjs.syncStatus === "synchronized";
 
@@ -657,70 +718,9 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 
 	const extensions = [...defaultExtensions, PageEditorRichTextToolsSlashCommand.slashCommand, liveblocks];
 
-	const threadsQuery = useStableQuery(
-		app_convex_api.chat_messages.chat_messages_threads_list,
-		threadIds.length > 0
-			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					threadIds: threadIds,
-					isArchived: false,
-				}
-			: "skip",
-	);
-
-	const currentMarkdownContent = useRef<string | null>(null);
-
-	const updateThreadIds = (editor: Editor) => {
-		const nextThreadIds = getThreadIdsFromEditorState(editor.state).toSorted();
-		const nextKey = nextThreadIds.join("\n");
-
-		if (nextKey === threadIdsKeyRef.current) return;
-
-		threadIdsKeyRef.current = nextKey;
-		setThreadIds(nextThreadIds);
-	};
-
-	const handleThreadsQuery = useEffectEvent(() => {
-		if (!editor || !isEditorReady || !threadsQuery || threadIds.length === 0) {
-			return;
-		}
-
-		const activeThreadIds = new Set(threadsQuery.threads.map((thread) => thread.id as string));
-		const threadsToUpdate = threadIds.map((threadId) => ({
-			threadId,
-			orphan: !activeThreadIds.has(threadId),
-		}));
-
-		if (threadsToUpdate.length > 0) {
-			editorRef.current?.commands.command(({ commands }) => {
-				threadsToUpdate.forEach(({ threadId, orphan }) => {
-					commands.markCommentAsOrphan({ threadId, orphan });
-				});
-				return true;
-			});
-		}
-	});
-
 	const handleCreate: EditorContentProps["onCreate"] = ({ editor }) => {
 		setEditor(editor);
-
-		updateThreadIds(editor);
 	};
-
-	const handleUpdate: EditorContentProps["onUpdate"] = ({ editor }) => {
-		setCharsCount(editor.storage.characterCount.words());
-
-		updateThreadIds(editor);
-	};
-
-	useEffect(handleThreadsQuery, [editor, isEditorReady, threadsQuery]);
-
-	useEffect(() => {
-		if (editor && isEditorReady) {
-			currentMarkdownContent.current = editor.getMarkdown();
-		}
-	}, [isEditorReady]);
 
 	return (
 		<>
@@ -736,7 +736,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			>
 				{editor && (
 					<PageEditorRichTextToolbar
-						charsCount={charsCount}
 						editor={editor}
 						pageId={pageId}
 						sessionId={presenceStore.localSessionId}
@@ -767,7 +766,6 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					extensions={extensions}
 					immediatelyRender={false}
 					onCreate={handleCreate}
-					onUpdate={handleUpdate}
 					slotAfter={
 						editor && (
 							<>
@@ -780,12 +778,13 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 					}
 				></EditorContent>
 			</div>
-			{commentsPortalHost &&
-				editor &&
-				createPortal(
-					<PageEditorRichTextAnchoredComments editor={editor} threads={threadsQuery?.threads} />,
-					commentsPortalHost,
-				)}
+			{editor && (
+				<PageEditorRichTextAnchoredCommentsLayer
+					commentsPortalHost={commentsPortalHost}
+					editor={editor}
+					isEditorReady={isEditorReady}
+				/>
+			)}
 			{!isEditorReady && <PageEditorRichTextSkeleton />}
 		</>
 	);
