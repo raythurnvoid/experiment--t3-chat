@@ -4,6 +4,44 @@ import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import { encode_path_segment } from "../server/server-utils.ts";
 import { db_upsert_page_chunks } from "./ai_docs_temp.ts";
 
+async function migrate_pages_snapshots_is_archived_to_archived_at_fn(ctx: MutationCtx) {
+	const snapshots = await ctx.db.query("pages_snapshots").collect();
+	let patched = 0;
+
+	for (const snapshot of snapshots) {
+		const compatSnapshot = snapshot as typeof snapshot & {
+			archived_at?: number;
+			is_archived?: boolean;
+		};
+
+		if (typeof compatSnapshot.archived_at === "number" && compatSnapshot.is_archived === undefined) {
+			continue;
+		}
+
+		await ctx.db.patch("pages_snapshots", snapshot._id, {
+			// Keep an existing archived_at value if one is already present.
+			// Backfill legacy archived rows with _creationTime because the legacy
+			// schema only stored a boolean and the original archive timestamp is lost.
+			archived_at:
+				typeof compatSnapshot.archived_at === "number"
+					? compatSnapshot.archived_at
+					: compatSnapshot.is_archived
+						? compatSnapshot._creationTime
+						: -1,
+			is_archived: undefined,
+		} as Partial<Doc<"pages_snapshots">> & {
+			archived_at?: number;
+			is_archived?: undefined;
+		});
+		patched += 1;
+	}
+
+	return {
+		scanned: snapshots.length,
+		patched,
+	};
+}
+
 const delete_all_archived_pages_returns_validator = v.object({
 	pages: v.number(),
 	pages_markdown_content: v.number(),
@@ -131,7 +169,9 @@ async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 				.collect(),
 			ctx.db
 				.query("pages_snapshots")
-				.withIndex("by_page_id", (q) => q.eq("page_id", page._id))
+				.withIndex("by_workspace_project_page_id_archived_at", (q) =>
+					q.eq("workspace_id", page.workspaceId).eq("project_id", page.projectId).eq("page_id", page._id),
+				)
 				.collect(),
 		]);
 
@@ -314,6 +354,15 @@ export const delete_all_archived_pages = internalMutation({
 	args: {},
 	returns: delete_all_archived_pages_returns_validator,
 	handler: (ctx) => delete_all_archived_pages_and_linked_rows(ctx),
+});
+
+export const migrate_pages_snapshots_is_archived_to_archived_at = internalMutation({
+	args: {},
+	returns: v.object({
+		scanned: v.number(),
+		patched: v.number(),
+	}),
+	handler: (ctx) => migrate_pages_snapshots_is_archived_to_archived_at_fn(ctx),
 });
 
 export const unset_pages_is_archived_flags = internalMutation({

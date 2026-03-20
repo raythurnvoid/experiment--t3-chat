@@ -1,7 +1,7 @@
 import "./page-editor-snapshots-modal.css";
 
 import { memo, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQueries } from "convex/react";
 import { Archive, ArchiveRestore, ChevronLeft, ChevronRight, Clock, FileText } from "lucide-react";
 import { diffWordsWithSpace } from "diff";
 
@@ -38,19 +38,17 @@ type PageEditorSnapshotsModal_ListSnapshot = {
 	_id: app_convex_Id<"pages_snapshots">;
 	_creationTime: number;
 	created_by: string;
-	is_archived?: boolean;
+	archived_at: number;
 };
 
 type PageEditorSnapshotsModal_ListQueryResult = {
 	snapshots: PageEditorSnapshotsModal_ListSnapshot[];
-	usersDict: PageEditorSnapshotsModal_UsersDict;
 };
 
 type PageEditorSnapshotsModal_PreviewSnapshotContent = {
 	_creationTime: number;
 	content: string;
 	created_by: string;
-	usersDict?: PageEditorSnapshotsModal_UsersDict;
 };
 
 const SNAPSHOT_SKELETON_ROW_COUNT = 10;
@@ -141,10 +139,7 @@ type PageEditorSnapshotsModalListItem_ClassNames =
 type PageEditorSnapshotsModalListItem_Props = {
 	snapshot: PageEditorSnapshotsModal_ListSnapshot;
 	userDisplayName: string;
-	onClickArchive: (
-		snapshotId: app_convex_Id<"pages_snapshots">,
-		isArchived: boolean | undefined,
-	) => void | Promise<void>;
+	onClickArchive: (snapshotId: app_convex_Id<"pages_snapshots">, isArchived: boolean) => void | Promise<void>;
 	onClickSnapshot: (snapshotId: app_convex_Id<"pages_snapshots">) => void;
 };
 
@@ -152,6 +147,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 	props: PageEditorSnapshotsModalListItem_Props,
 ) {
 	const { snapshot, userDisplayName, onClickArchive, onClickSnapshot } = props;
+	const isArchived = snapshot.archived_at > 0;
 
 	const handleRowClick = useFn((event: MouseEvent<HTMLDivElement>) => {
 		const target = event.target as HTMLElement;
@@ -169,14 +165,14 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 	});
 
 	const handleArchiveClick = useFn(() => {
-		onClickArchive(snapshot._id, snapshot.is_archived);
+		onClickArchive(snapshot._id, isArchived);
 	});
 
 	return (
 		<div
 			className={cn(
 				"PageEditorSnapshotsModalListItem" satisfies PageEditorSnapshotsModalListItem_ClassNames,
-				snapshot.is_archived &&
+				isArchived &&
 					("PageEditorSnapshotsModalListItem-archived" satisfies PageEditorSnapshotsModalListItem_ClassNames),
 			)}
 			onClick={handleRowClick}
@@ -194,7 +190,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 				onClick={handlePrimaryClick}
 			>
 				{format_relative_time(snapshot._creationTime)}
-				{snapshot.is_archived && (
+				{isArchived && (
 					<span
 						className={cn(
 							"PageEditorSnapshotsModalListItem-archived-label" satisfies PageEditorSnapshotsModalListItem_ClassNames,
@@ -219,10 +215,10 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 						"PageEditorSnapshotsModalListItem-action-button" satisfies PageEditorSnapshotsModalListItem_ClassNames,
 					)}
 					variant="ghost-highlightable"
-					tooltip={snapshot.is_archived ? "Restore" : "Archive"}
+					tooltip={isArchived ? "Restore" : "Archive"}
 					onClick={handleArchiveClick}
 				>
-					<MyIconButtonIcon>{snapshot.is_archived ? <ArchiveRestore /> : <Archive />}</MyIconButtonIcon>
+					<MyIconButtonIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyIconButtonIcon>
 				</MyIconButton>
 			</div>
 		</div>
@@ -263,18 +259,16 @@ type PageEditorSnapshotsModalList_ClassNames =
 
 type PageEditorSnapshotsModalList_Props = {
 	snapshotsQueryResult: PageEditorSnapshotsModal_ListQueryResult | undefined;
+	usersDict: PageEditorSnapshotsModal_UsersDict;
 	showSkeletonWhenLoading: boolean;
-	onClickArchive: (
-		snapshotId: app_convex_Id<"pages_snapshots">,
-		isArchived: boolean | undefined,
-	) => void | Promise<void>;
+	onClickArchive: (snapshotId: app_convex_Id<"pages_snapshots">, isArchived: boolean) => void | Promise<void>;
 	onClickSnapshot: (snapshotId: app_convex_Id<"pages_snapshots">) => void;
 };
 
 const PageEditorSnapshotsModalList = memo(function PageEditorSnapshotsModalList(
 	props: PageEditorSnapshotsModalList_Props,
 ) {
-	const { snapshotsQueryResult, showSkeletonWhenLoading, onClickArchive, onClickSnapshot } = props;
+	const { snapshotsQueryResult, usersDict, showSkeletonWhenLoading, onClickArchive, onClickSnapshot } = props;
 
 	if (snapshotsQueryResult === undefined) {
 		if (!showSkeletonWhenLoading) {
@@ -306,7 +300,7 @@ const PageEditorSnapshotsModalList = memo(function PageEditorSnapshotsModalList(
 				<PageEditorSnapshotsModalListItem
 					key={snapshot._id}
 					snapshot={snapshot}
-					userDisplayName={snapshotsQueryResult.usersDict[snapshot.created_by]?.displayName ?? "Unknown"}
+					userDisplayName={usersDict[snapshot.created_by]?.displayName ?? "Unknown"}
 					onClickArchive={onClickArchive}
 					onClickSnapshot={onClickSnapshot}
 				/>
@@ -415,7 +409,7 @@ type PageEditorSnapshotsModalPreviewModal_Props = {
 	selectedSnapshotContent: PageEditorSnapshotsModal_PreviewSnapshotContent | null | undefined;
 	selectedSnapshotMarkdown: string | null;
 	showSkeletonWhenLoading: boolean;
-	snapshotsQueryResult: PageEditorSnapshotsModal_ListQueryResult | undefined;
+	usersDict: PageEditorSnapshotsModal_UsersDict;
 	getCurrentMarkdown: () => string;
 	setOpen: Dispatch<SetStateAction<boolean>>;
 	onClickCancel: () => void;
@@ -437,7 +431,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 		selectedSnapshotContent,
 		selectedSnapshotMarkdown,
 		showSkeletonWhenLoading,
-		snapshotsQueryResult,
+		usersDict,
 		getCurrentMarkdown,
 		setOpen,
 		onClickCancel,
@@ -446,8 +440,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 		onClickPrevious,
 	} = props;
 
-	const currentMarkdownForSnapshotDiff =
-		selectedSnapshotContent === undefined ? "" : getCurrentMarkdown();
+	const currentMarkdownForSnapshotDiff = selectedSnapshotContent === undefined ? "" : getCurrentMarkdown();
 
 	return (
 		<MyModal open={open} setOpen={setOpen}>
@@ -502,8 +495,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 												"PageEditorSnapshotsModalPreviewModal-snapshot-data-author" satisfies PageEditorSnapshotsModalPreviewModal_ClassNames,
 											)}
 										>
-											{selectedSnapshotContent.usersDict?.[selectedSnapshotContent.created_by]?.displayName ??
-												"Unknown"}
+											{usersDict[selectedSnapshotContent.created_by]?.displayName ?? "Unknown"}
 										</div>
 										<div
 											className={cn(
@@ -530,9 +522,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 													<MyTooltipContent unmountOnHide>
 														<div>
 															<div>{format_relative_time(previousSnapshot._creationTime)}</div>
-															<div>
-																{snapshotsQueryResult?.usersDict[previousSnapshot.created_by]?.displayName ?? "Unknown"}
-															</div>
+															<div>{usersDict[previousSnapshot.created_by]?.displayName ?? "Unknown"}</div>
 														</div>
 													</MyTooltipContent>
 												)}
@@ -558,9 +548,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 													<MyTooltipContent unmountOnHide>
 														<div>
 															<div>{format_relative_time(nextSnapshot._creationTime)}</div>
-															<div>
-																{snapshotsQueryResult?.usersDict[nextSnapshot.created_by]?.displayName ?? "Unknown"}
-															</div>
+															<div>{usersDict[nextSnapshot.created_by]?.displayName ?? "Unknown"}</div>
 														</div>
 													</MyTooltipContent>
 												)}
@@ -616,6 +604,7 @@ type PageEditorSnapshotsModalListModal_Props = {
 	showArchived: boolean;
 	showArchivedId: string;
 	snapshotsQueryResult: PageEditorSnapshotsModal_ListQueryResult | undefined;
+	usersDict: PageEditorSnapshotsModal_UsersDict;
 	getCurrentMarkdown: () => string;
 	setIsListOpen: Dispatch<SetStateAction<boolean>>;
 	setIsPreviewOpen: Dispatch<SetStateAction<boolean>>;
@@ -646,6 +635,7 @@ const PageEditorSnapshotsModalListModal = memo(function PageEditorSnapshotsModal
 		showArchived,
 		showArchivedId,
 		snapshotsQueryResult,
+		usersDict,
 		getCurrentMarkdown,
 		setIsListOpen,
 		setIsPreviewOpen,
@@ -674,6 +664,7 @@ const PageEditorSnapshotsModalListModal = memo(function PageEditorSnapshotsModal
 				<MyModalScrollableArea>
 					<PageEditorSnapshotsModalList
 						snapshotsQueryResult={snapshotsQueryResult}
+						usersDict={usersDict}
 						showSkeletonWhenLoading={listShowSkeletonWhenLoading}
 						onClickArchive={onClickArchive}
 						onClickSnapshot={onClickSnapshot}
@@ -692,7 +683,7 @@ const PageEditorSnapshotsModalListModal = memo(function PageEditorSnapshotsModal
 					selectedSnapshotContent={selectedSnapshotContent}
 					selectedSnapshotMarkdown={selectedSnapshotMarkdown}
 					showSkeletonWhenLoading={previewShowSkeletonWhenLoading}
-					snapshotsQueryResult={snapshotsQueryResult}
+					usersDict={usersDict}
 					getCurrentMarkdown={getCurrentMarkdown}
 					setOpen={setIsPreviewOpen}
 					onClickCancel={onClickCancel}
@@ -734,6 +725,43 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 				}
 			: "skip",
 	);
+
+	const snapshotUserIds = snapshotsQueryResult
+		? [...new Set(snapshotsQueryResult.snapshots.map((snapshot) => snapshot.created_by))]
+		: [];
+
+	const userAnagraphicsQueryResults = useQueries(
+		Object.fromEntries(
+			snapshotUserIds.map((userId) => [
+				userId,
+				{
+					query: app_convex_api.users.get_anagraphic,
+					args: { userId },
+				},
+			]),
+		),
+	);
+
+	const usersDict = ((/* iife */) => {
+		const usersDict: PageEditorSnapshotsModal_UsersDict = {};
+
+		if (!snapshotsQueryResult) {
+			return usersDict;
+		}
+
+		for (const userId of snapshotUserIds) {
+			const queryResult = userAnagraphicsQueryResults[userId];
+			if (queryResult === undefined || queryResult instanceof Error || queryResult === null) {
+				continue;
+			}
+
+			usersDict[userId] = {
+				displayName: queryResult?.displayName,
+			};
+		}
+
+		return usersDict;
+	})();
 
 	const selectedSnapshotContent = useStableQuery(
 		app_convex_api.ai_docs_temp.get_page_snapshot_content,
@@ -861,7 +889,6 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 					_creationTime: selectedSnapshotContent._creationTime,
 					content: selectedSnapshotContent.content,
 					created_by: selectedSnapshotContent.created_by,
-					usersDict: selectedSnapshotContent.usersDict,
 				};
 
 	return (
@@ -885,6 +912,7 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 				showArchived={showArchived}
 				showArchivedId={showArchivedId}
 				snapshotsQueryResult={snapshotsQueryResult ?? undefined}
+				usersDict={usersDict}
 				getCurrentMarkdown={getCurrentMarkdown}
 				setIsListOpen={setIsListOpen}
 				setIsPreviewOpen={setIsPreviewOpen}

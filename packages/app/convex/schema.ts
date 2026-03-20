@@ -261,11 +261,12 @@ const app_convex_schema = defineSchema({
 		project_id: v.string(),
 		page_id: v.id("pages"),
 		created_by: v.id("users"),
-		is_archived: v.optional(v.boolean()),
-	})
-		.index("by_page_id", ["page_id"])
-		.index("by_page_id_is_archived", ["page_id", "is_archived"])
-		.index("by_workspace_project", ["workspace_id", "project_id"]),
+		/**
+		 * Use -1 for snapshots that were never archived, 0 for snapshots that were
+		 * unarchived, and > 0 for the archive timestamp in milliseconds.
+		 */
+		archived_at: v.number(),
+	}).index("by_workspace_project_page_id_archived_at", ["workspace_id", "project_id", "page_id", "archived_at"]),
 
 	pages_snapshots_contents: defineTable({
 		workspace_id: v.string(),

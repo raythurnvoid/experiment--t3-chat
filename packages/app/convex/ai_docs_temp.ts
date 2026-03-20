@@ -1869,46 +1869,25 @@ export const get_page_snapshots_list = query({
 	},
 	returns: v.object({
 		snapshots: v.array(doc(app_convex_schema, "pages_snapshots")),
-		usersDict: v.record(
-			v.id("users"),
-			v.object({
-				_id: v.id("users"),
-				displayName: v.string(),
-			}),
-		),
 	}),
 	handler: async (ctx, args) => {
-		let snapshotsQuery = ctx.db
+		const snapshots = await ctx.db
 			.query("pages_snapshots")
-			.withIndex("by_page_id", (q) => q.eq("page_id", args.page_id))
-			.order("desc");
+			.withIndex("by_workspace_project_page_id_archived_at", (q) => {
+				const qBase = q
+					.eq("workspace_id", args.workspace_id)
+					.eq("project_id", args.project_id)
+					.eq("page_id", args.page_id);
 
-		// Filter only not archived snapshots if show_archived is falsy
-		if (!args.show_archived) {
-			snapshotsQuery = snapshotsQuery.filter((q) => q.eq(q.field("is_archived"), false));
-		}
+				const qFinal = args.show_archived ? qBase.gt("archived_at", 0) : qBase.lte("archived_at", 0);
 
-		const snapshots = await snapshotsQuery.collect();
-
-		const usersDict: Record<Id<"users">, { _id: Id<"users">; displayName: string }> = {};
-
-		const uniqueUserIds = Array.from(new Set(snapshots.map((s) => s.created_by)));
-		const usersWithAnagraphics = await Promise.all(
-			uniqueUserIds.map((userId) => ctx.runQuery(internal.users.get_with_anagraphic, { userId })),
-		);
-
-		for (const userWithAnagraphic of usersWithAnagraphics) {
-			if (!userWithAnagraphic || !userWithAnagraphic.anagraphic) continue;
-
-			usersDict[userWithAnagraphic.user._id] = {
-				_id: userWithAnagraphic.user._id,
-				displayName: userWithAnagraphic.anagraphic.displayName,
-			};
-		}
+				return qFinal;
+			})
+			.order("desc")
+			.collect();
 
 		return {
 			snapshots,
-			usersDict,
 		};
 	},
 });
@@ -1936,19 +1915,11 @@ async function do_get_page_snapshot_content(
 		return null;
 	}
 
-	const usersDict: Record<Id<"users">, { _id: Id<"users">; displayName: string }> = {};
-	const user = await ctx.db.get("users", snapshot.created_by);
-	const anagraphic = user?.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
-	if (user && anagraphic) {
-		usersDict[user._id] = { _id: user._id, displayName: anagraphic.displayName };
-	}
-
 	return {
 		content: content.content,
 		page_snapshot_id: content.page_snapshot_id,
 		_creationTime: content._creationTime,
 		created_by: snapshot.created_by,
-		usersDict,
 	};
 }
 
@@ -1965,13 +1936,6 @@ export const get_page_snapshot_content = query({
 			page_snapshot_id: v.id("pages_snapshots"),
 			_creationTime: v.number(),
 			created_by: v.id("users"),
-			usersDict: v.record(
-				v.id("users"),
-				v.object({
-					_id: v.id("users"),
-					displayName: v.string(),
-				}),
-			),
 		}),
 		v.null(),
 	),
@@ -1986,7 +1950,7 @@ export const archive_snapshot = mutation({
 	},
 	handler: async (ctx, args) => {
 		await ctx.db.patch("pages_snapshots", args.page_snapshot_id, {
-			is_archived: true,
+			archived_at: Date.now(),
 		});
 	},
 });
@@ -1999,7 +1963,7 @@ export const unarchive_snapshot = mutation({
 	},
 	handler: async (ctx, args) => {
 		await ctx.db.patch("pages_snapshots", args.page_snapshot_id, {
-			is_archived: false,
+			archived_at: 0,
 		});
 	},
 });
@@ -2430,7 +2394,7 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 		project_id: args.project_id,
 		page_id: args.page_id,
 		created_by: args.created_by,
-		is_archived: false,
+		archived_at: -1,
 	});
 
 	// Create content entry
