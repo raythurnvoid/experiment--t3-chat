@@ -17,6 +17,7 @@ import type * as migrations from "../migrations.js";
 import type * as pages_pending_edits from "../pages_pending_edits.js";
 import type * as presence from "../presence.js";
 import type * as users from "../users.js";
+import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -34,6 +35,7 @@ declare const fullApi: ApiFromModules<{
   pages_pending_edits: typeof pages_pending_edits;
   presence: typeof presence;
   users: typeof users;
+  workspaces: typeof workspaces;
 }>;
 
 /**

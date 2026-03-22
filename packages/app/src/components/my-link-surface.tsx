@@ -10,10 +10,17 @@ type MyLinkSurface_ClassNames =
 	| "MyLinkSurface-variant-button-tertiary"
 	| "MyLinkSurface-variant-button-ghost"
 	| "MyLinkSurface-variant-button-ghost-accent"
-	| "MyLinkSurface-variant-button-ghost-highlightable";
+	| "MyLinkSurface-variant-button-ghost-highlightable"
+	| "MyLinkSurface-variant-button-icon-ghost-highlightable";
 
 export type MyLinkSurface_Props = React.ComponentProps<"span"> & {
-	variant?: "default" | "button-tertiary" | "button-ghost" | "button-ghost-accent" | "button-ghost-highlightable";
+	variant?:
+		| "default"
+		| "button-tertiary"
+		| "button-ghost"
+		| "button-ghost-accent"
+		| "button-ghost-highlightable"
+		| "button-icon-ghost-highlightable";
 };
 
 export const MyLinkSurface = memo(function MyLinkSurface(props: MyLinkSurface_Props) {
@@ -35,6 +42,10 @@ export const MyLinkSurface = memo(function MyLinkSurface(props: MyLinkSurface_Pr
 				variant === "button-ghost-highlightable" &&
 					("MyLinkSurface-variant-button-ghost-highlightable" satisfies MyLinkSurface_ClassNames),
 				variant === "button-ghost-highlightable" &&
+					("MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames),
+				variant === "button-icon-ghost-highlightable" &&
+					("MyLinkSurface-variant-button-icon-ghost-highlightable" satisfies MyLinkSurface_ClassNames),
+				variant === "button-icon-ghost-highlightable" &&
 					("MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames),
 				className,
 			)}

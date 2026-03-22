@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 
 const app_convex_schema = defineSchema({
-	// #region AI
+	// #region ai
 	ai_chat_threads: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
@@ -58,9 +58,9 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
 
-	// #endregion AI
+	// #endregion ai
 
-	// #region Pages
+	// #region pages
 	pages_pending_edits: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
@@ -275,9 +275,9 @@ const app_convex_schema = defineSchema({
 		content: v.string(),
 		page_id: v.id("pages"),
 	}).index("by_workspace_project_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
-	// #endregion Pages
+	// #endregion pages
 
-	// #region Chat Messages
+	// #region chat messages
 	/**
 	 * Chat messages table - a single table that represents both threads and messages.
 	 * Root messages have `threadId = null`.
@@ -308,14 +308,41 @@ const app_convex_schema = defineSchema({
 		/** Markdown content; produced from TipTap rich text on submit */
 		content: v.string(),
 	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
-	// #endregion Chat Messages
+	// #endregion chat messages
 
-	// #region Users
+	// #region workspaces
+	workspaces: defineTable({
+		name: v.string(),
+		default: v.boolean(),
+		defaultProjectId: v.optional(v.id("workspaces_projects")),
+		updatedAt: v.number(),
+	}),
+
+	workspaces_projects: defineTable({
+		workspaceId: v.id("workspaces"),
+		name: v.string(),
+		default: v.boolean(),
+		updatedAt: v.number(),
+	}).index("by_workspaceId_default", ["workspaceId", "default"]),
+
+	workspaces_projects_users: defineTable({
+		workspaceId: v.optional(v.id("workspaces")),
+		projectId: v.id("workspaces_projects"),
+		userId: v.id("users"),
+		updatedAt: v.optional(v.number()),
+	})
+		.index("by_projectId_userId", ["projectId", "userId"])
+		.index("by_userId", ["userId"]),
+	// #endregion workspaces
+
+	// #region users
 	users: defineTable({
 		/** Clerk user ID, null for anonymous users */
 		clerkUserId: v.union(v.string(), v.null()),
 		/** Anonymous auth JWT; null once upgraded */
 		anonymousAuthToken: v.union(v.string(), v.null()),
+		defaultWorkspaceId: v.optional(v.id("workspaces")),
+		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
 	}).index("by_clerk_user_id", ["clerkUserId"]),
 
@@ -326,7 +353,7 @@ const app_convex_schema = defineSchema({
 		avatarUrl: v.optional(v.string()),
 		updatedAt: v.number(),
 	}),
-	// #endregion Users
+	// #endregion users
 });
 
 export default app_convex_schema;

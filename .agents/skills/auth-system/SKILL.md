@@ -133,6 +133,53 @@ The action `generate_assistant_ui_token` uses `ctx.auth.getUserIdentity()` to de
 - Anonymous user: detected by `identity.issuer === VITE_CONVEX_HTTP_URL`, uses `identity.subject`
 - No identity: falls back to [shared-auth-constants.ts](../../../packages/app/shared/shared-auth-constants.ts) for `anonymous`
 
+## Current workspace/project system
+
+The app now provisions and persists a real workspace/project membership model in Convex.
+
+Schema files:
+
+- [schema.ts](../../../packages/app/convex/schema.ts)
+- [workspaces.ts](../../../packages/app/convex/workspaces.ts)
+- [users.ts](../../../packages/app/convex/users.ts)
+
+Current tenancy tables:
+
+- `workspaces`
+- `workspaces_projects`
+- `workspaces_projects_users`
+
+Current bootstrap behavior:
+
+- Every `users` row stores `defaultWorkspaceId` and `defaultProjectId`.
+- Every `workspaces` row stores `defaultProjectId`.
+- When an anonymous user is created, `internal.users.users_create_anonymous_user` also provisions a default workspace/project membership.
+- When a Clerk user is resolved or linked from an anonymous account, `internal.users.resolve_user` also ensures the default workspace/project exists.
+
+Default tenancy model:
+
+- The default workspace is named `Personal`.
+- The default project is named `Home`.
+- Every workspace always has a default `Home` project.
+- Membership rows live in `workspaces_projects_users`.
+
+Current authorization model (temporary):
+
+- Workspace “admin” is currently defined by membership in that workspace’s default `Home` project.
+- This is intentionally temporary and not treated as a final secure ownership model.
+
+Current restrictions:
+
+- The default workspace cannot be deleted.
+- The default project cannot be deleted.
+- Users cannot invite collaborators into the default workspace.
+- Inviting a user to a workspace adds them to that workspace’s default `Home` project.
+
+Important implementation note:
+
+- The workspace/project system is now real in Convex, but many app surfaces still use older hardcoded workspace/project ids outside this tenancy module.
+- Treat the tenancy tables as the canonical membership/bootstrap model, but verify callsites before assuming the whole app is fully switched over.
+
 # Planned functionality (not fully implemented yet)
 
 ## Projects and workspaces

@@ -128,6 +128,18 @@ pnpm exec convex run --component migrations lib:getStatus
 - Run migration before tightening required fields, then re-check generated types:
 	- `pnpm exec convex run migrations:run_<name>`
 	- Expect `_generated` typings to update after schema/function changes.
+- Treat table renames as full data migrations, not symbol renames:
+	- Add the new table alongside the old table in a compatibility phase.
+	- Copy legacy rows into the new table with an idempotent mapping key when needed.
+	- Remap all foreign references and pointer fields before deleting legacy rows.
+	- Switch code paths to the new table only after the copy succeeds.
+- For table-renamed ids stored on other tables, use temporary compatibility validators when needed:
+	- Prefer `v.union(v.id("old_table"), v.id("new_table"))` during the remap window.
+	- Tighten back to `v.id("new_table")` only after live rows are migrated.
+- If strict schema rollout happens before legacy-field cleanup, recover with a temporary compatibility schema:
+	- Reintroduce the legacy field(s) as optional in the validator.
+	- Run the cleanup mutation to unset legacy fields from live rows.
+	- Re-tighten the schema immediately after verification.
 - Add focused runtime checks for boot-critical flows after API key renames:
 	- App boot/homepage initialization.
 	- Pages tree create/rename/archive/move.

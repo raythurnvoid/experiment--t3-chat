@@ -822,17 +822,15 @@ export const archive_pages = mutation({
 
 		const pages = Result_all(
 			await Promise.all(
-				(function* (/* iife */) {
-					for (const pageId of pageIds) {
-						yield ctx.db.get("pages", pageId).then((page) => {
-							if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-								return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
-							}
+				pageIds.map((pageId) =>
+					ctx.db.get("pages", pageId).then((page) => {
+						if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+							return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+						}
 
-							return Result({ _yay: page });
-						});
-					}
-				})(),
+						return Result({ _yay: page });
+					}),
+				),
 			),
 		);
 
@@ -915,16 +913,14 @@ export const unarchive_pages = mutation({
 
 		const pages = Result_all(
 			await Promise.all(
-				(function* (/* iife */) {
-					for (const pageId of pageIds) {
-						yield ctx.db.get("pages", pageId).then((page) => {
-							if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-								return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
-							}
-							return Result({ _yay: page });
-						});
-					}
-				})(),
+				pageIds.map((pageId) =>
+					ctx.db.get("pages", pageId).then((page) => {
+						if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+							return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+						}
+						return Result({ _yay: page });
+					}),
+				),
 			),
 		);
 

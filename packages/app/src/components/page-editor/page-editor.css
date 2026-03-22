@@ -82,11 +82,13 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
 		font-size: 0.875rem;
 		color: var(--gray-800);
 	}
 
-	.PageEditorHeader-breadcrumb-home,
 	.PageEditorHeader-breadcrumb-segment,
 	.PageEditorHeader-breadcrumb-segment-current {
 		white-space: nowrap;
@@ -99,7 +101,6 @@
 		justify-content: center;
 	}
 
-	.PageEditorHeader-breadcrumb-home,
 	.PageEditorHeader-breadcrumb-segment {
 		color: var(--gray-600);
 		cursor: pointer;
@@ -110,17 +111,10 @@
 		}
 	}
 
-	.PageEditorHeader-breadcrumb-home-underline-hack {
-		position: absolute;
-		display: flex;
+	.PageEditorHeader-breadcrumb-home {
+		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 16px;
-		height: 16px;
-		margin-top: 4px;
-		pointer-events: none;
-		user-select: none;
-		text-decoration: inherit;
 	}
 
 	.PageEditorHeader-breadcrumb-segment-current {

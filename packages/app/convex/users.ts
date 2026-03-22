@@ -18,6 +18,7 @@ import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../share
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { Id } from "./_generated/dataModel";
 import { v_result } from "../server/convex-utils.ts";
+import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
 	throw new Error("ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env");
@@ -107,20 +108,31 @@ export const users_create_anonymous_user = internalMutation({
 	args: {},
 	returns: v.id("users"),
 	handler: async (ctx, args) => {
+		const now = Date.now();
+
 		const userId = await ctx.db.insert("users", {
 			clerkUserId: null,
 			anonymousAuthToken: null,
 		});
 
-		const anagraphicId = await ctx.db.insert("users_anagraphics", {
-			userId: userId,
-			displayName: users_create_anonymouse_user_display_name(userId),
-			updatedAt: Date.now(),
-		});
+		await Promise.all([
+			ctx.db
+				.insert("users_anagraphics", {
+					userId: userId,
+					displayName: users_create_anonymouse_user_display_name(userId),
+					updatedAt: now,
+				})
+				.then((anagraphicId) =>
+					ctx.db.patch("users", userId, {
+						anagraphic: anagraphicId,
+					}),
+				),
 
-		await ctx.db.patch("users", userId, {
-			anagraphic: anagraphicId,
-		});
+			workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				userId,
+				now,
+			}),
+		]);
 
 		return userId;
 	},
@@ -254,57 +266,81 @@ export const resolve_user = internalMutation({
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`" } });
 			}
 
+			// Upgrade anonymous user to canonical user
 			if (!user.clerkUserId) {
 				if (user.anonymousAuthToken !== args.anonymousUserToken) {
 					return Result({ _nay: { message: "Invalid `anonymousUserToken`, cannot link to Clerk account" } });
 				}
 
-				// If a user already exists for this Clerk account (e.g. from a previous sign-in),
-				// remove it so the anonymous user can become the canonical user record.
-				const existingClerkUsers = await ctx.db
-					.query("users")
-					.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", args.clerkUserId))
-					.collect();
-				for (const existingUser of existingClerkUsers) {
-					if (existingUser._id !== user._id) {
-						await Promise.all([
-							existingUser.anagraphic ? ctx.db.delete("users_anagraphics", existingUser.anagraphic) : undefined,
-							ctx.db.delete("users", existingUser._id),
-						]);
-					}
+				await Promise.all([
+					// If a user already exists for this Clerk account (e.g. from a previous sign-in),
+					// remove it so the anonymous user can become the canonical user record.
+					ctx.db
+						.query("users")
+						.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", args.clerkUserId))
+						.collect()
+						.then((existingClerkUsers) =>
+							Promise.all(
+								existingClerkUsers.map(async (existingUser) => {
+									if (existingUser._id !== user._id) {
+										await Promise.all([
+											existingUser.anagraphic ? ctx.db.delete("users_anagraphics", existingUser.anagraphic) : undefined,
+											ctx.db.delete("users", existingUser._id),
+										]);
+									}
+								}),
+							),
+						),
+
+					ctx.db.patch("users", user._id, {
+						clerkUserId: args.clerkUserId,
+						anonymousAuthToken: null,
+					}),
+
+					Promise.try(async () => {
+						if (user.anagraphic) {
+							await ctx.db.patch("users_anagraphics", user.anagraphic, {
+								displayName: args.displayName,
+								updatedAt: now,
+							});
+						} else {
+							const anagraphicId = await ctx.db.insert("users_anagraphics", {
+								userId: user._id,
+								displayName: args.displayName,
+								updatedAt: now,
+							});
+							await ctx.db.patch("users", user._id, { anagraphic: anagraphicId });
+						}
+					}),
+
+					workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+						userId,
+						now,
+					}),
+				]);
+			} else {
+				// The user is already linked to another Clerk account, this should never happen
+				if (user.clerkUserId !== args.clerkUserId) {
+					return Result({ _nay: { message: "User already linked to different Clerk account" } });
 				}
 
-				await ctx.db.patch("users", user._id, {
-					clerkUserId: args.clerkUserId,
-					anonymousAuthToken: null,
+				await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+					userId,
+					now,
 				});
-
-				if (user.anagraphic) {
-					await ctx.db.patch("users_anagraphics", user.anagraphic, {
-						displayName: args.displayName,
-						updatedAt: now,
-					});
-				} else {
-					const anagraphicId = await ctx.db.insert("users_anagraphics", {
-						userId: user._id,
-						displayName: args.displayName,
-						updatedAt: now,
-					});
-					await ctx.db.patch("users", user._id, { anagraphic: anagraphicId });
-				}
-			}
-			// The user is already linked to another Clerk account, this should never happen
-			else if (user.clerkUserId !== args.clerkUserId) {
-				return Result({ _nay: { message: "User already linked to different Clerk account" } });
 			}
 
 			resultUserId = user._id;
-		} else {
+		}
+		// Case 2: No token provided - create new user
+		else {
 			const user = await ctx.db
 				.query("users")
 				.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", args.clerkUserId))
 				.first();
 
+			// If we realize that the user already exists, we can use the existing user
+			// but this should never happen.
 			if (user) {
 				resultUserId = user._id;
 			}
@@ -315,13 +351,21 @@ export const resolve_user = internalMutation({
 					anonymousAuthToken: null,
 				});
 
-				const anagraphicId = await ctx.db.insert("users_anagraphics", {
-					userId: userId,
-					displayName: args.displayName,
-					updatedAt: Date.now(),
-				});
-
-				await ctx.db.patch("users", userId, { anagraphic: anagraphicId });
+				await Promise.all([
+					ctx.db
+						.insert("users_anagraphics", {
+							userId: userId,
+							displayName: args.displayName,
+							updatedAt: Date.now(),
+						})
+						.then((anagraphicId) =>
+							ctx.db.patch("users", userId, { anagraphic: anagraphicId }).then(() => anagraphicId),
+						),
+					workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+						userId,
+						now,
+					}),
+				]);
 
 				resultUserId = userId;
 			}

@@ -87,7 +87,6 @@ type PageEditorHeader_ClassNames =
 	| "PageEditorHeader-sidebars-actions"
 	| "PageEditorHeader-breadcrumb"
 	| "PageEditorHeader-breadcrumb-home"
-	| "PageEditorHeader-breadcrumb-home-underline-hack"
 	| "PageEditorHeader-breadcrumb-segment"
 	| "PageEditorHeader-breadcrumb-segment-current"
 	| "PageEditorHeader-breadcrumb-separator"
@@ -142,23 +141,18 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 				<ol className={cn("PageEditorHeader-breadcrumb" satisfies PageEditorHeader_ClassNames)}>
 					{pageId && treeItemsList && breadcrumbPath.length > 0 ? (
 						<>
-							<MyLink
-								className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
-								to="/pages"
-								search={{ pageId: homePageId, view: editorMode }}
-								variant="button-ghost-highlightable"
-								tooltip="Home"
-							>
-								<li
-									className={cn(
-										"PageEditorHeader-breadcrumb-home-underline-hack" satisfies PageEditorHeader_ClassNames,
-									)}
-									inert
+							<li>
+								<MyLink
+									aria-label="Home"
+									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
+									to="/pages"
+									search={{ pageId: homePageId, view: editorMode }}
+									variant="button-icon-ghost-highlightable"
+									tooltip="Home"
 								>
-									&nbsp;&nbsp;&nbsp;&nbsp;
-								</li>
-								<Home size={16} />
-							</MyLink>
+									<Home />
+								</MyLink>
+							</li>
 							<span>/</span>
 							{breadcrumbPath.map((item, index) => {
 								const isCurrentPage = index === breadcrumbPath.length - 1;

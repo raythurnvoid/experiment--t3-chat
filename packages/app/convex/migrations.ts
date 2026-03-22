@@ -82,6 +82,54 @@ async function unset_pages_is_archived_flags_fn(ctx: MutationCtx) {
 	};
 }
 
+/**
+ * Compatibility migration for the rollout phase where
+ * `workspaces_projects_users.updatedAt` is still optional.
+ *
+ * Run this before dropping `updatedAt` from the schema.
+ */
+async function unset_workspaces_projects_users_updated_at_fn(ctx: MutationCtx) {
+	const projectUsers = await ctx.db.query("workspaces_projects_users").collect();
+	let patched = 0;
+
+	for (const projectUser of projectUsers) {
+		if (!Object.prototype.hasOwnProperty.call(projectUser as Record<string, unknown>, "updatedAt")) {
+			continue;
+		}
+
+		await ctx.db.patch("workspaces_projects_users", projectUser._id, {
+			["updatedAt"]: undefined,
+		} as unknown as Partial<Doc<"workspaces_projects_users">>);
+		patched += 1;
+	}
+
+	return {
+		scanned: projectUsers.length,
+		patched,
+	};
+}
+
+async function rename_default_workspaces_projects_desk_to_home_fn(ctx: MutationCtx) {
+	const projects = await ctx.db.query("workspaces_projects").collect();
+	let patched = 0;
+
+	for (const project of projects) {
+		if (!project.default || project.name !== "Desk") {
+			continue;
+		}
+
+		await ctx.db.patch("workspaces_projects", project._id, {
+			name: "Home",
+		});
+		patched += 1;
+	}
+
+	return {
+		scanned: projects.length,
+		patched,
+	};
+}
+
 async function delete_all_archived_pages_and_linked_rows(ctx: MutationCtx) {
 	const archivedPages = (await ctx.db.query("pages").collect()).filter((page) => page.archiveOperationId !== undefined);
 	if (archivedPages.length === 0) {
@@ -372,6 +420,24 @@ export const unset_pages_is_archived_flags = internalMutation({
 		patched: v.number(),
 	}),
 	handler: (ctx) => unset_pages_is_archived_flags_fn(ctx),
+});
+
+export const unset_workspaces_projects_users_updated_at = internalMutation({
+	args: {},
+	returns: v.object({
+		scanned: v.number(),
+		patched: v.number(),
+	}),
+	handler: (ctx) => unset_workspaces_projects_users_updated_at_fn(ctx),
+});
+
+export const rename_default_workspaces_projects_desk_to_home = internalMutation({
+	args: {},
+	returns: v.object({
+		scanned: v.number(),
+		patched: v.number(),
+	}),
+	handler: (ctx) => rename_default_workspaces_projects_desk_to_home_fn(ctx),
 });
 
 export const audit_active_duplicate_materialized_paths = internalMutation({

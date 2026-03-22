@@ -1,6 +1,6 @@
 import "./main-app-header.css";
 
-import { memo, useState, type ComponentPropsWithRef, type RefObject } from "react";
+import { memo, useState, type ComponentPropsWithRef } from "react";
 import { ChevronsUpDown } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
