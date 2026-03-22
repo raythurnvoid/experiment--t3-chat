@@ -43,8 +43,8 @@ export function pages_create_tree_root(): pages_TreeItem {
 	};
 }
 
-export function pages_create_room_id(workspaceId: string, projectId: string, pageId: string): string {
-	return `pages::${workspaceId}::${projectId}::${pageId}`;
+export function pages_create_room_id(workspaceId: string, projectId: string, pageId: string) {
+	return `pages::${workspaceId}::${projectId}::${pageId}` as const;
 }
 
 export function pages_validate_name(name: string) {

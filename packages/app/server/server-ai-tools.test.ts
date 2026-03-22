@@ -1,4 +1,4 @@
-import "../convex/setup.test.ts";
+import { test_mocks_hardcoded } from "../convex/setup.test.ts";
 import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
 import {
@@ -9,11 +9,16 @@ import {
 	ai_chat_tool_create_edit_page,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
 import { pages_chunk_BITMASK_FLAGS } from "./pages-markdown-chunking-mastra.ts";
 
 type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>>;
+
+const server_ai_tools_test_ctx_data = {
+	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+	projectId: test_mocks_hardcoded.project_id.project_1,
+	userId: test_mocks_hardcoded.user.user_1.id,
+} as const;
 
 const server_ai_tools_test_user_identity_default = {
 	issuer: "https://clerk.test",
@@ -53,7 +58,10 @@ function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
 
 test("list_pages tool: inputSchema defaults", () => {
 	const { ctx } = makeCtx(async () => ({ items: [], truncated: false }));
-	const tool = ai_chat_tool_create_list_pages(ctx);
+	const tool = ai_chat_tool_create_list_pages(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_list_pages>[1],
+	);
 
 	const parsed = has_defined_property(tool.inputSchema, "parse") ? tool.inputSchema.parse({}) : undefined;
 	expect(parsed).toEqual({ path: "/", maxDepth: 5, limit: 100 });
@@ -76,7 +84,10 @@ test("list_pages tool: execute renders tree, applies ignore, and calls convex wi
 		return listReturn;
 	});
 
-	const tool = ai_chat_tool_create_list_pages(ctx);
+	const tool = ai_chat_tool_create_list_pages(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_list_pages>[1],
+	);
 	const result = await tool.execute?.(
 		{ path: "/", maxDepth: 10, limit: 100, ignore: ["**/Play"] },
 		{ toolCallId: "test", messages: [] },
@@ -96,8 +107,8 @@ test("list_pages tool: execute renders tree, applies ignore, and calls convex wi
 	const [, args] = calls[0];
 	expect(args).toEqual({
 		path: "/",
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
 		maxDepth: 10,
 		limit: 100,
 	});
@@ -145,7 +156,10 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 	};
 
 	const { ctx, runQuery } = makeCtx(async (_ref, _args) => searchReturn);
-	const tool = ai_chat_tool_create_text_search_pages(ctx);
+	const tool = ai_chat_tool_create_text_search_pages(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_text_search_pages>[1],
+	);
 	const result = await tool.execute?.({ query: "value", limit: 20 }, { toolCallId: "test", messages: [] });
 
 	if (!result) {
@@ -158,11 +172,10 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 	expect(runQuery).toHaveBeenCalledTimes(1);
 	const [, args] = runQuery.mock.calls[0]!;
 	expect(args).toEqual({
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
 		query: "value",
 		limit: 20,
-		userId: "user_1",
 	});
 
 	expect(result.output).toContain("/Docs/CodeGuide (lines 41-43, chunk #2)");
@@ -181,7 +194,10 @@ test("read_page tool forwards pendingEditId and returns it in metadata", async (
 	};
 
 	const { ctx, runQuery } = makeCtx(async () => currentContent);
-	const tool = ai_chat_tool_create_read_page(ctx);
+	const tool = ai_chat_tool_create_read_page(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_read_page>[1],
+	);
 	const result = await tool.execute?.(
 		{ path: "/Docs/Plan", pendingEditId, limit: 2000 },
 		{ toolCallId: "test", messages: [] },
@@ -198,9 +214,8 @@ test("read_page tool forwards pendingEditId and returns it in metadata", async (
 	const [, args] = runQuery.mock.calls[0]!;
 	expect(args).toEqual({
 		path: "/Docs/Plan",
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
-		userId: "user_1",
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
 		pendingEditId,
 	});
 
@@ -226,7 +241,10 @@ test("write_page tool stores pending unstaged branch updates from the agent", as
 		runQueryCallCount += 1;
 		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
 	});
-	const tool = ai_chat_tool_create_write_page(ctx);
+	const tool = ai_chat_tool_create_write_page(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_page>[1],
+	);
 	const result = await tool.execute?.(
 		{ path: "/Docs/Plan", content: "# Updated" },
 		{ toolCallId: "test", messages: [] },
@@ -243,8 +261,9 @@ test("write_page tool stores pending unstaged branch updates from the agent", as
 	expect(runMutation).toHaveBeenCalledTimes(1);
 	const [, args] = runMutation.mock.calls[0]!;
 	expect(args).toEqual({
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: test_mocks_hardcoded.user.user_1.id,
 		pageId,
 		pendingEditId,
 		unstagedMarkdown: "# Updated",
@@ -269,7 +288,10 @@ test("edit_page tool stores pending unstaged branch updates from the agent", asy
 		runQueryCallCount += 1;
 		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
 	});
-	const tool = ai_chat_tool_create_edit_page(ctx);
+	const tool = ai_chat_tool_create_edit_page(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_page>[1],
+	);
 	const result = await tool.execute?.(
 		{
 			path: "/Docs/Hello",
@@ -291,8 +313,9 @@ test("edit_page tool stores pending unstaged branch updates from the agent", asy
 	expect(runMutation).toHaveBeenCalledTimes(1);
 	const [, args] = runMutation.mock.calls[0]!;
 	expect(args).toEqual({
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: test_mocks_hardcoded.user.user_1.id,
 		pageId,
 		pendingEditId,
 		unstagedMarkdown: "Hello team",
@@ -397,7 +420,10 @@ test("edit_page tool preserves the baseline trailing newline shape", async () =>
 		runQueryCallCount += 1;
 		return runQueryCallCount === 1 ? currentContent : { _id: pendingEditId };
 	});
-	const tool = ai_chat_tool_create_edit_page(ctx);
+	const tool = ai_chat_tool_create_edit_page(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_page>[1],
+	);
 	const result = await tool.execute?.(
 		{
 			path: "/Docs/Newline",
@@ -417,8 +443,9 @@ test("edit_page tool preserves the baseline trailing newline shape", async () =>
 
 	const [, args] = runMutation.mock.calls[0]!;
 	expect(args).toEqual({
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: test_mocks_hardcoded.user.user_1.id,
 		pageId,
 		pendingEditId,
 		unstagedMarkdown: "Hello team\n",

@@ -1,4 +1,4 @@
-import { query, mutation, internalMutation, type MutationCtx } from "./_generated/server.js";
+import { query, mutation, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
@@ -7,8 +7,10 @@ import { v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
+import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import {
 	pages_db_cancel_pending_edit_cleanup_tasks,
+	pages_db_get_pending_edit,
 	pages_db_get_yjs_content_and_sequence,
 	pages_db_schedule_pending_edit_cleanup,
 	pages_yjs_doc_apply_array_buffer_update,
@@ -174,24 +176,13 @@ async function pages_pending_edit_resolve_branch_docs(
 		pendingEditId?: app_convex_Doc<"pages_pending_edits">["_id"];
 	},
 ) {
-	const pendingEditById = args.pendingEditId ? await ctx.db.get("pages_pending_edits", args.pendingEditId) : null;
-	const existingPendingEdit =
-		pendingEditById &&
-		pendingEditById.workspaceId === args.workspaceId &&
-		pendingEditById.projectId === args.projectId &&
-		pendingEditById.userId === args.userId &&
-		pendingEditById.pageId === args.pageId
-			? pendingEditById
-			: await ctx.db
-					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
-							.eq("userId", args.userId)
-							.eq("pageId", args.pageId),
-					)
-					.first();
+	const existingPendingEdit = await pages_db_get_pending_edit(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		userId: args.userId,
+		pageId: args.pageId,
+		pendingEditId: args.pendingEditId,
+	});
 
 	if (existingPendingEdit) {
 		return Result({
@@ -335,6 +326,78 @@ async function pages_pending_edit_upsert_branch_docs(
 	return Result({ _yay: null });
 }
 
+async function pages_pending_edit_upsert_updates(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: string;
+		pageId: app_convex_Doc<"pages_pending_edits">["pageId"];
+		pendingEditId?: app_convex_Doc<"pages_pending_edits">["_id"];
+		stagedMarkdown?: string;
+		unstagedMarkdown: string;
+	},
+) {
+	const page = await ctx.db.get("pages", args.pageId);
+	if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	const branchDocsResult = await pages_pending_edit_resolve_branch_docs(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		userId: args.userId,
+		pageId: page._id,
+		pendingEditId: args.pendingEditId,
+	});
+	if (branchDocsResult._nay) {
+		return branchDocsResult;
+	}
+
+	const { existingPendingEdit, baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc, unstagedBranchYjsDoc } =
+		branchDocsResult._yay;
+
+	if (args.stagedMarkdown !== undefined) {
+		const stagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
+			mut_yjsDoc: stagedBranchYjsDoc,
+			markdown: args.stagedMarkdown,
+		});
+		if (stagedBranchProjection._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to project staged markdown into pending branch",
+					cause: stagedBranchProjection._nay,
+				},
+			});
+		}
+	}
+
+	const unstagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
+		mut_yjsDoc: unstagedBranchYjsDoc,
+		markdown: args.unstagedMarkdown,
+	});
+	if (unstagedBranchProjection._nay) {
+		return Result({
+			_nay: {
+				message: "Failed to project unstaged markdown into pending branch",
+				cause: unstagedBranchProjection._nay.cause,
+			},
+		});
+	}
+
+	return await pages_pending_edit_upsert_branch_docs(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		userId: args.userId,
+		pageId: page._id,
+		existingPendingEdit,
+		baseYjsSequence,
+		baseYjsDoc,
+		stagedBranchYjsDoc,
+		unstagedBranchYjsDoc,
+	});
+}
+
 export const remove_pages_pending_edit_if_expired = internalMutation({
 	args: {
 		pendingEditId: v.id("pages_pending_edits"),
@@ -376,8 +439,7 @@ export const remove_pages_pending_edit_if_expired = internalMutation({
 
 export const upsert_pages_pending_edit_updates = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		pendingEditId: v.optional(v.id("pages_pending_edits")),
 		stagedMarkdown: v.optional(v.string()),
@@ -388,66 +450,47 @@ export const upsert_pages_pending_edit_updates = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const branchDocsResult = await pages_pending_edit_resolve_branch_docs(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		return await pages_pending_edit_upsert_updates(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			userId: user.id,
 			pageId: args.pageId,
 			pendingEditId: args.pendingEditId,
+			stagedMarkdown: args.stagedMarkdown,
+			unstagedMarkdown: args.unstagedMarkdown,
 		});
-		if (branchDocsResult._nay) {
-			return branchDocsResult;
-		}
+	},
+});
 
-		const { existingPendingEdit, baseYjsSequence, baseYjsDoc, stagedBranchYjsDoc, unstagedBranchYjsDoc } =
-			branchDocsResult._yay;
-
-		if (args.stagedMarkdown !== undefined) {
-			const stagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
-				mut_yjsDoc: stagedBranchYjsDoc,
-				markdown: args.stagedMarkdown,
-			});
-			if (stagedBranchProjection._nay) {
-				return Result({
-					_nay: {
-						message: "Failed to project staged markdown into pending branch",
-						cause: stagedBranchProjection._nay,
-					},
-				});
-			}
-		}
-
-		const unstagedBranchProjection = pages_pending_edit_project_markdown_to_branch({
-			mut_yjsDoc: unstagedBranchYjsDoc,
-			markdown: args.unstagedMarkdown,
-		});
-		if (unstagedBranchProjection._nay) {
-			return Result({
-				_nay: {
-					message: "Failed to project unstaged markdown into pending branch",
-					cause: unstagedBranchProjection._nay.cause,
-				},
-			});
-		}
-
-		return await pages_pending_edit_upsert_branch_docs(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			userId: user.id,
-			pageId: args.pageId,
-			existingPendingEdit,
-			baseYjsSequence,
-			baseYjsDoc,
-			stagedBranchYjsDoc,
-			unstagedBranchYjsDoc,
-		});
+export const upsert_pages_pending_edit_updates_internal = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		pageId: v.id("pages"),
+		pendingEditId: v.optional(v.id("pages_pending_edits")),
+		stagedMarkdown: v.optional(v.string()),
+		unstagedMarkdown: v.string(),
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		return await pages_pending_edit_upsert_updates(ctx, args);
 	},
 });
 
 export const persist_pages_pending_edit_rebased_state = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		pendingEditId: v.optional(v.id("pages_pending_edits")),
 		baseYjsSequence: v.number(),
@@ -462,33 +505,25 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const [existingPendingEdit, yjsContent] = await Promise.all([
-			Promise.try(async () => {
-				const pendingEditById = args.pendingEditId ? await ctx.db.get("pages_pending_edits", args.pendingEditId) : null;
-				if (
-					pendingEditById &&
-					pendingEditById.workspaceId === args.workspaceId &&
-					pendingEditById.projectId === args.projectId &&
-					pendingEditById.userId === user.id &&
-					pendingEditById.pageId === args.pageId
-				) {
-					return pendingEditById;
-				}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
-				return await ctx.db
-					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
-							.eq("userId", user.id)
-							.eq("pageId", args.pageId),
-					)
-					.first();
+		const [existingPendingEdit, yjsContent] = await Promise.all([
+			pages_db_get_pending_edit(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				userId: user.id,
+				pageId: args.pageId,
+				pendingEditId: args.pendingEditId,
 			}),
 			pages_db_get_yjs_content_and_sequence(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				pageId: args.pageId,
 			}),
 		]);
@@ -573,8 +608,8 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 
 		if (!existingPendingEdit) {
 			pendingEditId = await ctx.db.insert("pages_pending_edits", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				userId: user.id,
 				pageId: args.pageId,
 				baseYjsSequence: args.baseYjsSequence,
@@ -631,49 +666,64 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 
 export const get_pages_pending_edit = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		pendingEditId: v.optional(v.id("pages_pending_edits")),
 	},
 	returns: v.union(doc(app_convex_schema, "pages_pending_edits"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
 
-		const pendingEditById = args.pendingEditId ? await ctx.db.get("pages_pending_edits", args.pendingEditId) : null;
-		const pendingEdit =
-			pendingEditById &&
-			pendingEditById.workspaceId === args.workspaceId &&
-			pendingEditById.projectId === args.projectId &&
-			pendingEditById.userId === user.id &&
-			pendingEditById.pageId === args.pageId
-				? pendingEditById
-				: await ctx.db
-						.query("pages_pending_edits")
-						.withIndex("by_workspace_project_user_page", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("userId", user.id)
-								.eq("pageId", args.pageId),
-						)
-						.first();
-		return pendingEdit;
+		return await pages_db_get_pending_edit(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			userId: user.id,
+			pageId: args.pageId,
+			pendingEditId: args.pendingEditId,
+		});
+	},
+});
+
+export const get_pages_pending_edit_internal = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		pageId: v.id("pages"),
+		pendingEditId: v.optional(v.id("pages_pending_edits")),
+	},
+	returns: v.union(doc(app_convex_schema, "pages_pending_edits"), v.null()),
+	handler: async (ctx, args) => {
+		return await pages_db_get_pending_edit(ctx, args);
 	},
 });
 
 export const list_pages_pending_edits = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 	},
 	returns: v.array(doc(app_convex_schema, "pages_pending_edits")),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return [];
+		}
+
 		const pagesPendingEdits = await ctx.db
 			.query("pages_pending_edits")
 			.withIndex("by_workspace_project_user_page", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", user.id),
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("userId", user.id),
 			)
 			.order("asc")
 			.collect();
@@ -684,20 +734,26 @@ export const list_pages_pending_edits = query({
 
 export const get_pages_pending_edit_last_sequence_saved = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 	},
 	returns: v.union(doc(app_convex_schema, "pages_pending_edits_last_sequence_saved"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
 
 		return await ctx.db
 			.query("pages_pending_edits_last_sequence_saved")
 			.withIndex("by_workspace_project_user_page", (q) =>
 				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
 					.eq("userId", user.id)
 					.eq("pageId", args.pageId),
 			)
@@ -707,8 +763,7 @@ export const get_pages_pending_edit_last_sequence_saved = query({
 
 export const save_pages_pending_edit = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		pendingEditId: v.optional(v.id("pages_pending_edits")),
 	},
@@ -719,34 +774,25 @@ export const save_pages_pending_edit = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		const [pendingEdit, yjsContent] = await Promise.all([
-			Promise.try(async () => {
-				const pendingEditById = args.pendingEditId ? await ctx.db.get("pages_pending_edits", args.pendingEditId) : null;
-				if (
-					pendingEditById &&
-					pendingEditById.workspaceId === args.workspaceId &&
-					pendingEditById.projectId === args.projectId &&
-					pendingEditById.userId === user.id &&
-					pendingEditById.pageId === args.pageId
-				) {
-					return pendingEditById;
-				}
-
-				return await ctx.db
-					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
-							.eq("userId", user.id)
-							.eq("pageId", args.pageId),
-					)
-					.first();
+			pages_db_get_pending_edit(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				userId: user.id,
+				pageId: args.pageId,
+				pendingEditId: args.pendingEditId,
 			}),
 			pages_db_get_yjs_content_and_sequence(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				pageId: args.pageId,
 			}),
 		]);
@@ -795,8 +841,8 @@ export const save_pages_pending_edit = mutation({
 		});
 		if (diffUpdateForLatestPageYjsDoc) {
 			const result = await pages_db_yjs_push_update(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				pageId: args.pageId,
 				update: pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
 				sessionId: `pages_pending_edit:${user.id}`,
@@ -830,8 +876,8 @@ export const save_pages_pending_edit = mutation({
 		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([
 				pages_pending_edit_upsert_last_sequence_saved(ctx, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
 					userId: user.id,
 					pageId: args.pageId,
 					lastSequenceSaved: nextBaseYjsSequence,
@@ -870,8 +916,8 @@ export const save_pages_pending_edit = mutation({
 				expectedUpdatedAt: now,
 			}),
 			pages_pending_edit_upsert_last_sequence_saved(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				userId: user.id,
 				pageId: args.pageId,
 				lastSequenceSaved: nextBaseYjsSequence,

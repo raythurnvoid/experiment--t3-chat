@@ -6,7 +6,6 @@ import { make } from "../src/lib/utils.ts";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { MutationCtx } from "./_generated/server";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import presence_test from "@convex-dev/presence/test";
 
 // #region helpers
@@ -25,13 +24,17 @@ export function test_convex() {
 
 export const test_mocks_hardcoded = ((/* iife */) => {
 	const workspace_id = {
-		workspace_1: ai_chat_HARDCODED_ORG_ID,
-		workspace_2: "workspace_2",
+		workspace_1: "app_workspace_test_1",
+		workspace_2: "app_workspace_test_2",
 	} as const;
 
 	const project_id = {
-		project_1: ai_chat_HARDCODED_PROJECT_ID,
-		project_2: "project_2",
+		project_1: "app_project_test_1",
+		project_2: "app_project_test_2",
+	} as const;
+
+	const membership_id = {
+		membership_1: "test_membership" as Id<"workspaces_projects_users">,
 	} as const;
 
 	const user = {
@@ -72,6 +75,7 @@ export const test_mocks_hardcoded = ((/* iife */) => {
 	return {
 		workspace_id,
 		project_id,
+		membership_id,
 		user,
 		page: {
 			page_root_generic,
@@ -114,17 +118,61 @@ export const test_mocks = {
 };
 
 export const test_mocks_fill_db_with = {
-	nested_pages: async (ctx: MutationCtx) => {
-		const createdByUserId = await ctx.db.insert("users", {
-			clerkUserId: null,
-			anonymousAuthToken: null,
+	membership: async (
+		ctx: MutationCtx,
+		args?: {
+			userId?: Id<"users">;
+			workspaceName?: string;
+			projectName?: string;
+		},
+	) => {
+		const now = Date.now();
+		const userId =
+			args?.userId ??
+			(await ctx.db.insert("users", {
+				clerkUserId: null,
+				anonymousAuthToken: null,
+			}));
+		const workspaceId = await ctx.db.insert("workspaces", {
+			name: args?.workspaceName ?? "Test Workspace",
+			default: false,
+			updatedAt: now,
 		});
+		const projectId = await ctx.db.insert("workspaces_projects", {
+			workspaceId,
+			name: args?.projectName ?? "Test Project",
+			default: false,
+			updatedAt: now,
+		});
+		await ctx.db.patch("workspaces", workspaceId, {
+			defaultProjectId: projectId,
+		});
+		const membershipId = await ctx.db.insert("workspaces_projects_users", {
+			workspaceId,
+			projectId,
+			userId,
+			updatedAt: now,
+		});
+
+		return {
+			userId,
+			workspaceId,
+			projectId,
+			membershipId,
+		} as const;
+	},
+
+	nested_pages: async (ctx: MutationCtx) => {
+		const membership = await test_mocks_fill_db_with.membership(ctx);
+		const createdByUserId = membership.userId;
 
 		/** /root_1 */
 		const page_root_1 = await ctx.db.get(
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1.name,
@@ -139,6 +187,8 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_1.name,
@@ -153,6 +203,8 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name,
@@ -167,6 +219,8 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_1_child_2.name,
@@ -181,6 +235,8 @@ export const test_mocks_fill_db_with = {
 			"pages",
 			await ctx.db.insert("pages", {
 				...test_mocks.pages.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.page.page_root_2.name,
@@ -191,6 +247,10 @@ export const test_mocks_fill_db_with = {
 		if (!page_root_2) throw new Error("page_root_2 not found");
 
 		return {
+			userId: createdByUserId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			membershipId: membership.membershipId,
 			pages: {
 				page_root_1,
 				page_root_1_child_1,

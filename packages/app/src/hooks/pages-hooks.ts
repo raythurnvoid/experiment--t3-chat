@@ -12,13 +12,12 @@ export type pages_Yjs = {
 
 export type pages_Yjs_Props = {
 	pageId: app_convex_Id<"pages">;
-	workspaceId: string;
-	projectId: string;
+	membershipId: app_convex_Id<"workspaces_projects_users">;
 	presenceStore: pages_PresenceStore;
 };
 
 export function usePagesYjs(props: pages_Yjs_Props) {
-	const { pageId, workspaceId, projectId, presenceStore } = props;
+	const { pageId, membershipId, presenceStore } = props;
 
 	const [yjsProvider, setYjsProvider] = useState<LiveblocksYjsProvider | undefined>(undefined);
 	const [providerPageId, setProviderPageId] = useState<app_convex_Id<"pages"> | undefined>(undefined);
@@ -38,9 +37,8 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 		const reactStrictWorkaroundTimer = setTimeout(() => {
 			const yjsProvider = new LiveblocksYjsProvider({
 				pageId: pageId,
+				membershipId: membershipId,
 				presenceStore: presenceStore,
-				workspaceId: workspaceId,
-				projectId: projectId,
 			});
 
 			setYjsProvider(yjsProvider);
@@ -68,7 +66,7 @@ export function usePagesYjs(props: pages_Yjs_Props) {
 			clearTimeout(reactStrictWorkaroundTimer);
 			onDestroyRef.current?.();
 		};
-	}, [pageId, workspaceId, projectId, presenceStore]);
+	}, [membershipId, pageId, presenceStore]);
 
 	return yjsProvider && providerPageId
 		? {

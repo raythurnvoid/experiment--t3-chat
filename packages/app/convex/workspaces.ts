@@ -2,71 +2,164 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { workspaces_db_create } from "../server/workspaces.ts";
 
-type DbCtx = Pick<QueryCtx | MutationCtx, "db">;
+/**
+ * TODO: to be implemented
+ */
+async function user_is_workspace_admin(ctx: MutationCtx, args: { workspaceId: Id<"workspaces">; userId: Id<"users"> }) {
+	return true;
+}
 
-async function get_default_project_for_workspace(ctx: DbCtx, workspaceId: Id<"workspaces">) {
-	const workspace = await ctx.db.get("workspaces", workspaceId);
-	if (!workspace) {
+/**
+ * TODO: to be implemented
+ */
+async function user_is_project_admin(
+	ctx: MutationCtx,
+	args: { projectId: Id<"workspaces_projects">; userId: Id<"users"> },
+) {
+	return true;
+}
+
+export const list = query({
+	args: {},
+	returns: v.object({
+		workspaces: v.array(doc(app_convex_schema, "workspaces")),
+		workspaceIdsProjectsDict: v.record(v.id("workspaces"), v.array(doc(app_convex_schema, "workspaces_projects"))),
+	}),
+	handler: async (ctx) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const memberships = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", user.id))
+			.collect();
+
+		const projectIdsByWorkspace = new Map<Id<"workspaces">, Set<Id<"workspaces_projects">>>();
+		for (const membership of memberships) {
+			let projectIds = projectIdsByWorkspace.get(membership.workspaceId);
+			if (!projectIds) {
+				projectIds = new Set();
+				projectIdsByWorkspace.set(membership.workspaceId, projectIds);
+			}
+			projectIds.add(membership.projectId);
+		}
+
+		const [workspaceIds, workspaces] = await Promise.try(async () => {
+			const workspaceIds = [];
+			const workspacesPromises = [];
+			for (const workspaceId of projectIdsByWorkspace.keys()) {
+				workspaceIds.push(workspaceId);
+				workspacesPromises.push(ctx.db.get("workspaces", workspaceId));
+			}
+			const workspaces = (await Promise.all(workspacesPromises)).filter((workspace) => workspace !== null);
+
+			return [workspaceIds, workspaces] as const;
+		});
+
+		const workspaceIdsProjectsDict = Object.fromEntries(
+			await Promise.all(
+				workspaceIds.map(async (workspaceId) => {
+					const projectIds = projectIdsByWorkspace.get(workspaceId);
+
+					if (!projectIds) {
+						throw should_never_happen("Project ids not found for workspace", { workspaceId });
+					}
+
+					const projectsPromises = [];
+					for (const projectId of projectIds) {
+						projectsPromises.push(ctx.db.get("workspaces_projects", projectId));
+					}
+
+					const projects = await (async (/* iife */) => {
+						const projects = await Promise.all(projectsPromises);
+						const results = [];
+						for (const project of projects) {
+							if (project !== null) {
+								results.push(project);
+							}
+						}
+						return results;
+					})();
+
+					return [workspaceId, projects] as const;
+				}),
+			),
+		);
+
+		return { workspaces, workspaceIdsProjectsDict };
+	},
+});
+
+export const get_membership_for_scope = query({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+	},
+	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const workspaceId = ctx.db.normalizeId("workspaces", args.workspaceId);
+		const projectId = ctx.db.normalizeId("workspaces_projects", args.projectId);
+		if (!workspaceId || !projectId) {
+			return null;
+		}
+
+		const membership = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_userId_workspaceId_projectId", (q) =>
+				q.eq("userId", user.id).eq("workspaceId", workspaceId).eq("projectId", projectId),
+			)
+			.first();
+
+		return membership;
+	},
+});
+
+async function db_get_membership(
+	ctx: QueryCtx,
+	args: { membershipId: Id<"workspaces_projects_users">; userId: Id<"users"> },
+) {
+	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
+	if (!membership || membership.userId !== args.userId) {
 		return null;
 	}
-
-	if (workspace.defaultProjectId) {
-		const project = await ctx.db.get("workspaces_projects", workspace.defaultProjectId);
-		if (project && project.workspaceId === workspaceId) {
-			return project;
-		}
-	}
-
-	return await ctx.db
-		.query("workspaces_projects")
-		.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", workspaceId).eq("default", true))
-		.first();
+	return membership;
 }
 
 /**
- * TODO: to be implemented
+ * Get the membership doc.
+ *
+ * Useful to check user access to resources.
  */
-async function user_is_workspace_admin(ctx: DbCtx, args: { workspaceId: Id<"workspaces">; userId: Id<"users"> }) {
-	return true;
-}
-
-/**
- * TODO: to be implemented
- */
-async function user_is_project_admin(ctx: DbCtx, args: { projectId: Id<"workspaces_projects">; userId: Id<"users"> }) {
-	return true;
-}
-
-export const get_default_project = query({
+export const get_membership = query({
 	args: {
-		workspaceId: v.id("workspaces"),
+		membershipId: v.id("workspaces_projects_users"),
 	},
-	returns: v.union(doc(app_convex_schema, "workspaces_projects"), v.null()),
+	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		return await db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+	},
+});
+
+export const get_membership_from_string = query({
+	args: {
+		membershipId: v.string(),
+	},
+	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
-		const workspace = await ctx.db.get("workspaces", args.workspaceId);
-		if (!workspace) {
+		const membershipId = ctx.db.normalizeId("workspaces_projects_users", args.membershipId.trim());
+		if (!membershipId) {
 			return null;
 		}
 
-		const project = await get_default_project_for_workspace(ctx, workspace._id);
-		if (!project) {
-			return null;
-		}
-
-		return (await user_is_workspace_admin(ctx, {
-			workspaceId: workspace._id,
-			userId: user.id,
-		}))
-			? project
-			: null;
+		return await db_get_membership(ctx, { membershipId, userId: user.id });
 	},
 });
 

@@ -16,7 +16,7 @@ import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { usePromiseValue } from "@/lib/async.ts";
@@ -158,11 +158,12 @@ type PageEditorPlainTextInner_Props = {
 function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 	const { initialData, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const pushYjsUpdateMutation = useMutation(api.ai_docs_temp.yjs_push_update);
 
 	const serverSequenceData = useQuery(api.ai_docs_temp.get_page_last_yjs_sequence, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 		pageId,
 	});
 
@@ -305,8 +306,7 @@ function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 			});
 
@@ -378,8 +378,7 @@ function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 
 			if (diffUpdate) {
 				const result = await pushYjsUpdateMutation({
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId,
 					update: pages_u8_to_array_buffer(diffUpdate),
 					sessionId: presenceStore.localSessionId,
@@ -445,8 +444,7 @@ function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 			}
 
 			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 			});
 
@@ -575,10 +573,11 @@ export type PageEditorPlainText_Props = {
 export function PageEditorPlainText(props: PageEditorPlainText_Props) {
 	const { pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const pageContentData = usePromiseValue(
 		pages_fetch_page_yjs_state_and_markdown({
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			membershipId,
 			pageId,
 		}),
 	);

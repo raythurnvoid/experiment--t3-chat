@@ -8,13 +8,9 @@ import type { api_schemas_Main } from "@/lib/api-schemas.ts";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { useAppLocalStorageState } from "@/lib/storage.ts";
-import {
-	ai_chat_HARDCODED_ORG_ID,
-	ai_chat_HARDCODED_PROJECT_ID,
-	get_id_generator,
-	should_never_happen,
-} from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
+import { get_id_generator, should_never_happen } from "@/lib/utils.ts";
 import { useLiveRef } from "./utils-hooks.ts";
 import { generate_id } from "../lib/utils.ts";
 import {
@@ -57,10 +53,8 @@ type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessag
 };
 
 const useAiChatStore = ((/* iife */) => {
-	const initialSelectedThreadId = useAppLocalStorageState.getState().ai_chat_last_open;
-
 	const store = create(() => ({
-		selectedThreadId: initialSelectedThreadId ?? null,
+		selectedThreadId: null as string | null,
 		draftSelectedModelId: ai_chat_DEFAULT_MAIN_MODEL_ID as string,
 		threadById: new Map(),
 	}));
@@ -99,14 +93,14 @@ const useAiChatStore = ((/* iife */) => {
 	});
 })();
 
-function create_optimistic_thread(): ai_chat_Thread {
+function create_optimistic_thread(tenant: { workspaceId: string; projectId: string }): ai_chat_Thread {
 	const clientId = generate_id("ai_thread");
 	const now = Date.now();
 	return {
 		_id: clientId as app_convex_Id<"ai_chat_threads">,
 		_creationTime: now,
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		workspaceId: tenant.workspaceId,
+		projectId: tenant.projectId,
 		clientGeneratedId: clientId,
 		title: null,
 		archived: false,
@@ -251,6 +245,19 @@ export type useAiChatController_Props = {
 export const useAiChatController = (props?: useAiChatController_Props) => {
 	const includeArchived = props?.includeArchived ?? true;
 
+	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const [lastOpenThreadId, setLastOpenThreadId] = useAppLocalStorageStateValue(
+		`app_state::ai_chat_last_open::scope::${workspaceId}::${projectId}`,
+	);
+
+	useEffect(() => {
+		useAiChatStore.setState({ threadById: new Map() });
+	}, [workspaceId, projectId]);
+
+	useEffect(() => {
+		useAiChatStore.setState({ selectedThreadId: lastOpenThreadId });
+	}, [lastOpenThreadId]);
+
 	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
 	const draftSelectedModelId = useAiChatStore((state) => state.draftSelectedModelId);
 	const threadById = useAiChatStore((state) => state.threadById);
@@ -259,11 +266,15 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
 	);
 
-	const threads = usePaginatedQuery(app_convex_api.ai_chat.threads_list, { archived: false }, { initialNumItems: 100 });
+	const threads = usePaginatedQuery(
+		app_convex_api.ai_chat.threads_list,
+		{ membershipId, archived: false },
+		{ initialNumItems: 100 },
+	);
 
 	const archivedThreads = usePaginatedQuery(
 		app_convex_api.ai_chat.threads_list,
-		includeArchived ? { archived: true } : "skip",
+		includeArchived ? { membershipId, archived: true } : "skip",
 		{ initialNumItems: 100 },
 	);
 
@@ -275,6 +286,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		app_convex_api.ai_chat.thread_messages_list,
 		selectedThreadId && session && !session.optimisticThread
 			? {
+					membershipId,
 					threadId: selectedThreadId,
 					order: "desc",
 				}
@@ -444,6 +456,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				messages: messagesToAppend,
 				trigger: options.trigger,
 				parentId,
+				membershipId,
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {
@@ -486,6 +499,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		}
 
 		addThreadMessages({
+			membershipId,
 			threadId,
 			parentId: options.message.metadata?.convexParentId ?? null,
 			messages: [
@@ -494,13 +508,23 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 					content: strip_provider_metadata_from_message_parts(options.message),
 				},
 			],
-		}).catch((error) => {
-			console.error("[useAiChatController.handleChatFinish] Failed to persist aborted assistant message", {
-				error,
-				threadId,
-				messageId: options.message.id,
+		})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatController.handleChatFinish] Failed to persist aborted assistant message", {
+						result,
+						threadId,
+						messageId: options.message.id,
+					});
+				}
+			})
+			.catch((error) => {
+				console.error("[useAiChatController.handleChatFinish] Failed to persist aborted assistant message", {
+					error,
+					threadId,
+					messageId: options.message.id,
+				});
 			});
-		});
 	});
 
 	const unselectedChatInstance = create_chat_instance({
@@ -681,7 +705,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 	const startNewChat = (message?: string) => {
 		const nextSelectedModelId = selectedModelId;
-		const optimisticThread = create_optimistic_thread();
+		const optimisticThread = create_optimistic_thread({ workspaceId, projectId });
 		const optimisticChat = create_chat_instance({
 			chatId: optimisticThread._id,
 			prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
@@ -720,9 +744,14 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	};
 
 	const branchChat = (threadId: string, messageId?: string) => {
-		branchThread({ threadId, ...(messageId ? { messageId } : {}) })
+		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
 			.then((result) => {
-				selectThread(result.threadId);
+				if (result._nay) {
+					console.error("[useAiChatController.branchChat] Branch failed", { result, threadId, messageId });
+					return;
+				}
+
+				selectThread(result._yay.threadId);
 			})
 			.catch((error) => {
 				console.error("[useAiChatController.branchChat] Error branching chat", { error, threadId, messageId });
@@ -750,7 +779,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		}
 
 		if (!session?.optimisticThread) {
-			useAppLocalStorageState.setState({ ai_chat_last_open: threadId });
+			setLastOpenThreadId(threadId);
 		}
 
 		useAiChatStore.setState(() => {
@@ -773,9 +802,23 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	};
 
 	const setThreadStarred = (threadId: string, starred: boolean) => {
-		updateThread({ threadId, starred }).catch((error) => {
-			console.error("[useAiChatController.setThreadStarred] Error updating thread star", { error, threadId, starred });
-		});
+		void updateThread({ threadId, membershipId, starred })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatController.setThreadStarred] Failed to update thread star", {
+						result,
+						threadId,
+						starred,
+					});
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[useAiChatController.setThreadStarred] Unexpected error updating thread star", {
+					error,
+					threadId,
+					starred,
+				});
+			});
 	};
 
 	const archiveThread = (threadId: string, isArchived: boolean) => {
@@ -794,17 +837,28 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			return;
 		}
 
-		if (isArchived && storeSelectedThreadId === threadId) {
-			useAiChatStore.setState(() => ({ selectedThreadId: null }));
-		}
+		void updateThread({ membershipId, threadId, isArchived })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatController.archiveThread] Failed to update archive status", {
+						result,
+						threadId,
+						isArchived,
+					});
+					return;
+				}
 
-		updateThread({ threadId, isArchived }).catch((error) => {
-			console.error("[useAiChatController.archiveThread] Error updating archive status", {
-				error,
-				threadId,
-				isArchived,
+				if (isArchived && storeSelectedThreadId === threadId) {
+					useAiChatStore.setState(() => ({ selectedThreadId: null }));
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[useAiChatController.archiveThread] Unexpected error updating archive status", {
+					error,
+					threadId,
+					isArchived,
+				});
 			});
-		});
 	};
 
 	const removeOptimisticThread = (threadId: string) => {
@@ -1054,7 +1108,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 				// Swap selection to the persisted thread if the optimistic thread was selected.
 				if (useAiChatStore.getState().selectedThreadId === optimisticThreadId) {
-					useAppLocalStorageState.setState({ ai_chat_last_open: threadId });
+					setLastOpenThreadId(threadId);
 				}
 
 				useAiChatStore.setState((prev) => {

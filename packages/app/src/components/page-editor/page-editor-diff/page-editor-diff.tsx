@@ -9,13 +9,8 @@ import { DiffEditor, type DiffEditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useConvex, useQuery } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
-import {
-	ai_chat_HARDCODED_ORG_ID,
-	ai_chat_HARDCODED_PROJECT_ID,
-	cn,
-	should_never_happen,
-	type CSSPropertiesX,
-} from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { cn, should_never_happen, type CSSPropertiesX } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import type { pages_PresenceStore } from "@/lib/pages.ts";
@@ -498,6 +493,8 @@ function PageEditorDiffInner(props: PageEditorDiffInner_Props) {
 		topStickyFloatingSlot,
 	} = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const id = useId();
 	const anchorName = `${"--PageEditorDiff-anchor-name" satisfies keyof PageEditorDiff_CssVars}-${id}`;
 
@@ -775,8 +772,7 @@ function PageEditorDiffInner(props: PageEditorDiffInner_Props) {
 
 		return convex
 			.mutation(api.pages_pending_edits.upsert_pages_pending_edit_updates, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 				pendingEditId,
 				stagedMarkdown,
@@ -912,8 +908,7 @@ function PageEditorDiffInner(props: PageEditorDiffInner_Props) {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await pages_fetch_page_yjs_state_and_markdown({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 			});
 
@@ -1375,21 +1370,20 @@ function PageEditorDiffInner(props: PageEditorDiffInner_Props) {
 export function PageEditorDiff(props: PageEditorDiff_Props) {
 	const { pageId, pendingEditId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const convex = useConvex();
 	const pendingEdit = useStableQuery(api.pages_pending_edits.get_pages_pending_edit, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 		pageId,
 		pendingEditId,
 	});
 	const pendingEditLastSequenceSaved = useQuery(api.pages_pending_edits.get_pages_pending_edit_last_sequence_saved, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 		pageId,
 	});
 	const serverSequenceData = useQuery(api.ai_docs_temp.get_page_last_yjs_sequence, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 		pageId,
 	});
 
@@ -1443,8 +1437,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			}
 
 			const savePendingResult = await convex.mutation(api.pages_pending_edits.save_pages_pending_edit, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 				pendingEditId: currentPendingEditId,
 			});
@@ -1455,16 +1448,14 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 
 			const [nextPageContentData] = await Promise.allSettled([
 				pages_fetch_page_yjs_state_and_markdown({
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId,
 				}),
 				// Fetch also the pending edits query to ensure we perform
 				// the state cleanups only after we are sure the data is available
 				// in the local convex cache.
 				convex.query(api.pages_pending_edits.get_pages_pending_edit, {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId,
 					pendingEditId: currentPendingEditId,
 				}),
@@ -1500,8 +1491,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			}
 
 			const nextPageContentData = await pages_fetch_page_yjs_state_and_markdown({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 			});
 			if (!nextPageContentData) {
@@ -1553,8 +1543,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			const persistRebasedStateResult = await convex.mutation(
 				api.pages_pending_edits.persist_pages_pending_edit_rebased_state,
 				{
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId,
 					pendingEditId: currentPendingEditId,
 					baseYjsSequence: nextPageContentData.yjsSequence,
@@ -1575,8 +1564,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 			// sync cleanup waits for the authoritative pending-edit cache state to converge.
 			await Promise.allSettled([
 				convex.query(api.pages_pending_edits.get_pages_pending_edit, {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId,
 					pendingEditId: currentPendingEditId,
 				}),
@@ -1621,8 +1609,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 
 		Promise.try(async () => {
 			const nextPageContentData = await pages_fetch_page_yjs_state_and_markdown({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 			});
 			if (didCancel) return;
@@ -1655,8 +1642,7 @@ export function PageEditorDiff(props: PageEditorDiff_Props) {
 
 		Promise.try(async () => {
 			const nextPageContentData = await pages_fetch_page_yjs_state_and_markdown({
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageId,
 			});
 			if (didCancel) return;

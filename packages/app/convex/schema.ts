@@ -326,13 +326,13 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspaceId_default", ["workspaceId", "default"]),
 
 	workspaces_projects_users: defineTable({
-		workspaceId: v.optional(v.id("workspaces")),
+		workspaceId: v.id("workspaces"),
 		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		updatedAt: v.optional(v.number()),
 	})
 		.index("by_projectId_userId", ["projectId", "userId"])
-		.index("by_userId", ["userId"]),
+		.index("by_userId_workspaceId_projectId", ["userId", "workspaceId", "projectId"]),
 	// #endregion workspaces
 
 	// #region users

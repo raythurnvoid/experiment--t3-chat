@@ -4,7 +4,7 @@ import { v } from "convex/values";
 import { Presence } from "@convex-dev/presence";
 import { pages_db_reschedule_pending_edit_cleanup_for_user } from "../server/pages.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -24,6 +24,11 @@ export const heartbeat = mutation({
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
 
 		if (result.isNewSession) {
+			const memberships = await ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", user.id))
+				.collect();
+
 			await Promise.all([
 				ctx.runMutation(components.presence.public.setSessionData, {
 					sessionToken: result.sessionToken,
@@ -32,12 +37,14 @@ export const heartbeat = mutation({
 					},
 				}),
 				// Use reconnecting as a signal to restore any disconnect-driven short cleanup
-				// window back to the normal long-lived pending-edit TTL.
-				pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					userId: user.id,
-				}),
+				// window back to the normal long-lived pending-edit TTL for the user's scopes.
+				...memberships.map((membership) =>
+					pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
+						userId: user.id,
+					}),
+				),
 			]);
 		}
 
@@ -238,12 +245,21 @@ export const disconnect = mutation({
 			return result;
 		}
 
-		await pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
-			userId: user.id,
-			delayMs: 30_000,
-		});
+		const memberships = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", user.id))
+			.collect();
+
+		await Promise.all(
+			memberships.map(async (membership) => {
+				await pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					userId: user.id,
+					delayMs: 30_000,
+				});
+			}),
+		);
 
 		return result;
 	},

@@ -1,23 +1,24 @@
 import "./index.css";
 
 import React, { Suspense, useRef } from "react";
-import type { PageEditor_Props } from "../../components/page-editor/page-editor.tsx";
+import type { PageEditor_Props } from "@/components/page-editor/page-editor.tsx";
 import { PagesSidebar } from "./-components/pages-sidebar.tsx";
 import { useEffect } from "react";
-import { PageEditorSkeleton } from "../../components/page-editor/page-editor-skeleton.tsx";
+import { PageEditorSkeleton } from "@/components/page-editor/page-editor-skeleton.tsx";
 import { z } from "zod";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { pages_editor_view_values, type pages_EditorView } from "@/lib/pages.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
-import { useStableQuery } from "../../hooks/convex-hooks.ts";
-import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { useStableQuery } from "@/hooks/convex-hooks.ts";
+import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
 
 const PageEditor = React.lazy(() =>
-	import("../../components/page-editor/page-editor.tsx").then((module) => ({
+	import("@/components/page-editor/page-editor.tsx").then((module) => ({
 		default: module.PageEditor,
 	})),
 );
@@ -63,15 +64,20 @@ function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 
+	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
+
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
-	const pagesSidebarOpen = useAppLocalStorageState((state) => state.pages_sidebar_open);
-	const savedPanelLayout = useAppLocalStorageState((state) => state.main_panel_layout);
+	const [pagesSidebarOpen, setPagesSidebarOpen] = useAppLocalStorageStateValue("app_state::sidebar::pages_open");
+	const [savedPanelLayout, setMainPanelLayout] = useAppLocalStorageStateValue("app_state::resizable_panel::main_panel");
 	const panelLayoutRef = useRef(savedPanelLayout ?? [24, 76]);
 	const pagesSidebarState: RoutePages_SidebarState = pagesSidebarOpen ? "expanded" : "closed";
 
-	const lastOpenPageId = useAppLocalStorageState((state) => state.pages_last_open);
-	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
+	const [lastOpenPageId, setLastOpenPageId] = useAppLocalStorageStateValue(
+		`app_state::pages_last_open::scope::${workspaceId}::${projectId}`,
+	);
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_scope[scopeKey] ?? "");
 
 	const searchPageId = searchParams.pageId;
 
@@ -79,8 +85,7 @@ function RoutePages() {
 		app_convex_api.ai_docs_temp.get,
 		searchPageId
 			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId: searchPageId,
 				}
 			: "skip",
@@ -92,7 +97,8 @@ function RoutePages() {
 		const view = effectiveView === "rich_text_editor" ? undefined : effectiveView;
 
 		navigate({
-			to: "/pages",
+			to: "/w/$workspaceId/p/$projectId/pages",
+			params: { workspaceId, projectId },
 			search: { pageId, view },
 		}).catch((error) => {
 			console.error("[PagesRoute.navigateToPage] Error navigating to page", { error, pageId, view });
@@ -103,7 +109,8 @@ function RoutePages() {
 		const pageId = searchPageId ?? homePageId;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
 		navigate({
-			to: "/pages",
+			to: "/w/$workspaceId/p/$projectId/pages",
+			params: { workspaceId, projectId },
 			search: { pageId, view },
 		}).catch((error) => {
 			console.error("[PagesRoute.navigateToView] Error navigating to view", { error, pageId, view });
@@ -127,7 +134,7 @@ function RoutePages() {
 	);
 
 	const handleCloseSidebar = useFn<React.ComponentProps<typeof PagesSidebar>["onClose"]>(() => {
-		useAppLocalStorageState.setState({ pages_sidebar_open: false });
+		setPagesSidebarOpen(false);
 	});
 
 	const handlePanelLayout = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayout"]>>((layout) => {
@@ -140,7 +147,7 @@ function RoutePages() {
 				return;
 			}
 
-			useAppLocalStorageState.setState({ main_panel_layout: panelLayoutRef.current });
+			setMainPanelLayout(panelLayoutRef.current);
 		},
 	);
 
@@ -156,7 +163,7 @@ function RoutePages() {
 		}
 
 		navigateToPage(homePageId);
-	}, [homePageId, lastOpenPageId, searchPageId]);
+	}, [homePageId, lastOpenPageId, navigateToPage, searchPageId]);
 
 	// Persist the current URL page id as "last open" for next visits.
 	useEffect(() => {
@@ -164,8 +171,8 @@ function RoutePages() {
 			return;
 		}
 
-		useAppLocalStorageState.setState({ pages_last_open: searchPageId });
-	}, [searchPageId]);
+		setLastOpenPageId(searchPageId);
+	}, [searchPageId, setLastOpenPageId]);
 
 	// If a requested page id cannot be resolved, clear stale last-open and fall back to homepage.
 	useEffect(() => {
@@ -173,9 +180,9 @@ function RoutePages() {
 			return;
 		}
 
-		useAppLocalStorageState.setState({ pages_last_open: null });
+		setLastOpenPageId(null);
 		navigateToPage(homePageId);
-	}, [homePageId, resolvedPage, searchPageId]);
+	}, [homePageId, navigateToPage, resolvedPage, searchPageId, setLastOpenPageId]);
 
 	return (
 		<MyPanelGroup

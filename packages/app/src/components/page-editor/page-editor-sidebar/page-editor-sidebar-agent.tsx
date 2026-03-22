@@ -30,7 +30,11 @@ import {
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useAppLocalStorageState, type app_local_storage_state_State } from "@/lib/storage.ts";
+import {
+	app_local_storage_set_value,
+	type storage_local_ValueByKey,
+	useAppLocalStorageValue,
+} from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
 
 const DROPPABLE_ID = "page_editor_sidebar_agent_tabs";
@@ -327,7 +331,7 @@ type PageEditorSidebarAgentHeader_ClassNames = "PageEditorSidebarAgentHeader";
 
 type PageEditorSidebarAgentHeader_Props = {
 	controller: AiChatController;
-	openTabs: app_local_storage_state_State["page_editor_sidebar_open_tabs"];
+	openTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"];
 	selectedChatTabId: string;
 	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 	appHoistingContainer: HTMLElement | null;
@@ -362,7 +366,7 @@ type PageEditorSidebarAgentHeaderActions_ClassNames = "PageEditorSidebarAgentHea
 
 type PageEditorSidebarAgentHeaderActions_Props = {
 	controller: AiChatController;
-	openTabs: app_local_storage_state_State["page_editor_sidebar_open_tabs"];
+	openTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"];
 	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 };
 
@@ -378,11 +382,12 @@ const PageEditorSidebarAgentHeaderActions = memo(function PageEditorSidebarAgent
 			currentThreads,
 			streamingTitleByThreadId: controller.streamingTitleByThreadId,
 		});
-		useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+		app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
 		if (!inOpenTabs) {
-			useAppLocalStorageState.setState((prev) => ({
-				page_editor_sidebar_open_tabs: [...prev.page_editor_sidebar_open_tabs, { id: threadId, title }],
-			}));
+			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", (previousTabs) => [
+				...previousTabs,
+				{ id: threadId, title },
+			]);
 		}
 	});
 
@@ -415,7 +420,7 @@ type PageEditorSidebarAgentHeaderTabs_ClassNames =
 
 type PageEditorSidebarAgentHeaderTabs_Props = {
 	controller: AiChatController;
-	openTabs: app_local_storage_state_State["page_editor_sidebar_open_tabs"];
+	openTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"];
 	selectedChatTabId: string;
 	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 	appHoistingContainer: HTMLElement | null;
@@ -436,7 +441,7 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 		const [removed] = next.splice(source.index, 1);
 		next.splice(destination.index, 0, removed);
 
-		useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: next });
+		app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", next);
 	});
 
 	const handleCloseTab = useFn((threadId: string) => {
@@ -455,12 +460,12 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 		if (shouldSwitchTab) {
 			const fallbackTab = nextOpenTabs[closedTabIndex - 1] ?? nextOpenTabs[closedTabIndex] ?? nextOpenTabs[0];
 			if (fallbackTab) {
-				useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: fallbackTab.id });
+				app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", fallbackTab.id);
 				controller.selectThread(fallbackTab.id);
 			}
 		}
 
-		useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: nextOpenTabs });
+		app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", nextOpenTabs);
 	});
 
 	return (
@@ -588,9 +593,9 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 	const controller = useAiChatController({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
-	const rootSelectedTab = useAppLocalStorageState((state) => state.pages_last_tab);
-	const openTabs = useAppLocalStorageState((state) => state.page_editor_sidebar_open_tabs);
-	const selectedAgentTab = useAppLocalStorageState((state) => state.page_editor_sidebar_agent_selected_tab);
+	const rootSelectedTab = useAppLocalStorageValue("app_state::pages_last_tab");
+	const openTabs = useAppLocalStorageValue("app_state::page_editor_sidebar_open_tabs");
+	const selectedAgentTab = useAppLocalStorageValue("app_state::page_editor_sidebar_agent_selected_tab");
 	const currentThreads = controller.currentThreadsWithOptimistic.unarchived.results;
 	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
@@ -612,7 +617,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 	// Replace optimistic open-tab ids with their persisted thread ids once the thread is upgraded.
 	useEffect(() => {
 		let changed = false;
-		const nextOpenTabs: app_local_storage_state_State["page_editor_sidebar_open_tabs"] = [];
+		const nextOpenTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"] = [];
 		const seenIds = new Set<string>();
 
 		for (const openTab of openTabs) {
@@ -647,7 +652,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 		}
 
 		if (changed) {
-			useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: nextOpenTabs });
+			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", nextOpenTabs);
 		}
 
 		if (!selectedAgentTab) {
@@ -659,9 +664,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 		});
 
 		if (persistedSelectedThread && persistedSelectedThread._id !== selectedAgentTab) {
-			useAppLocalStorageState.setState({
-				page_editor_sidebar_agent_selected_tab: persistedSelectedThread._id,
-			});
+			app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", persistedSelectedThread._id);
 		}
 	}, [openTabs, selectedAgentTab, currentThreads, controller.streamingTitleByThreadId]);
 
@@ -688,8 +691,8 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 					});
 					const nextOpenTabs = [...openTabs];
 					nextOpenTabs[upgradedOpenTabIndex] = { id: threadId, title };
-					useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: nextOpenTabs });
-					useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+					app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", nextOpenTabs);
+					app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
 					return;
 				}
 			}
@@ -699,15 +702,16 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 				currentThreads,
 				streamingTitleByThreadId: controller.streamingTitleByThreadId,
 			});
-			useAppLocalStorageState.setState((prev) => ({
-				page_editor_sidebar_open_tabs: [...prev.page_editor_sidebar_open_tabs, { id: threadId, title }],
-			}));
-			useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", (previousTabs) => [
+				...previousTabs,
+				{ id: threadId, title },
+			]);
+			app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
 			return;
 		}
 
 		if (selectedAgentTab !== threadId) {
-			useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: threadId });
+			app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
 		}
 	}, [controller.selectedThreadId, controller.streamingTitleByThreadId, openTabs, selectedAgentTab, currentThreads]);
 
@@ -728,7 +732,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 			return tab;
 		});
 		if (changed) {
-			useAppLocalStorageState.setState({ page_editor_sidebar_open_tabs: next });
+			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", next);
 		}
 	}, [openTabs, currentThreads, controller.streamingTitleByThreadId]);
 
@@ -737,7 +741,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 			return;
 		}
 
-		useAppLocalStorageState.setState({ page_editor_sidebar_agent_selected_tab: nextSelectedId });
+		app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", nextSelectedId);
 		if (nextSelectedId !== NEW_CHAT_TAB_ID) {
 			controller.selectThread(nextSelectedId);
 		}

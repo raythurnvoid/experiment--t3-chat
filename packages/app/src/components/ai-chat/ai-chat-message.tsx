@@ -50,6 +50,7 @@ import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block
 import { MyLink } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { MyButtonIcon, type MyButton_ClassNames } from "../my-button.tsx";
 
 // #region tool chip
@@ -86,7 +87,9 @@ type AiChatMessagePartToolStatus_Props = {
 	isChatRunning: boolean;
 };
 
-const AiChatMessagePartToolStatus = memo(function AiChatMessagePartToolStatus(props: AiChatMessagePartToolStatus_Props) {
+const AiChatMessagePartToolStatus = memo(function AiChatMessagePartToolStatus(
+	props: AiChatMessagePartToolStatus_Props,
+) {
 	const { state, isChatRunning } = props;
 
 	const isLoading = state === "input-streaming" || state === "input-available";
@@ -133,7 +136,9 @@ type AiChatMessagePartDisclosure_Props = React.ComponentProps<"details"> & {
 	className?: string | undefined;
 };
 
-const AiChatMessagePartDisclosure = memo(function AiChatMessagePartDisclosure(props: AiChatMessagePartDisclosure_Props) {
+const AiChatMessagePartDisclosure = memo(function AiChatMessagePartDisclosure(
+	props: AiChatMessagePartDisclosure_Props,
+) {
 	const { className, ...rest } = props;
 
 	return (
@@ -302,6 +307,8 @@ const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPag
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
 	return (
 		<AiChatMessagePartDisclosure
 			className={cn("AiChatMessagePartToolReadPage" satisfies AiChatMessagePartToolReadPage_ClassNames, className)}
@@ -316,7 +323,8 @@ const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPag
 				{result?.metadata?.pageId && (
 					<MyLink
 						className={"AiChatMessagePartToolReadPage-link" satisfies AiChatMessagePartToolReadPage_ClassNames}
-						to="/pages"
+						to="/w/$workspaceId/p/$projectId/pages"
+						params={{ workspaceId, projectId }}
 						search={{ pageId: result.metadata.pageId }}
 						variant="button-ghost-accent"
 					>
@@ -532,6 +540,8 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
 	const deferredContent = useDeferredValue(args?.content);
 
 	const title = result?.metadata?.path
@@ -550,7 +560,8 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 			{pageId ? (
 				<MyLink
 					className={"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames}
-					to="/pages"
+					to="/w/$workspaceId/p/$projectId/pages"
+					params={{ workspaceId, projectId }}
 					search={{ pageId, view: "diff_editor" }}
 					variant="button-ghost-accent"
 				>
@@ -656,6 +667,8 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
 	const text = result?.metadata?.path
 		? path_name_of(result.metadata.path)
 		: args?.path
@@ -678,7 +691,8 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 				{result?.metadata?.pageId && (
 					<MyLink
 						className={"AiChatMessagePartToolEditPage-link" satisfies AiChatMessagePartToolEditPage_ClassNames}
-						to="/pages"
+						to="/w/$workspaceId/p/$projectId/pages"
+						params={{ workspaceId, projectId }}
 						search={{ pageId: result.metadata.pageId }}
 						variant="button-ghost-accent"
 					>

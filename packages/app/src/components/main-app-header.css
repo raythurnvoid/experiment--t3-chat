@@ -167,6 +167,22 @@
 			border-color 120ms ease;
 	}
 
+	button.MainAppHeaderWorkspaceControlsModal-list-item {
+		width: 100%;
+
+		font: inherit;
+		text-align: start;
+		color: inherit;
+
+		cursor: pointer;
+
+		&:hover:not(.MainAppHeaderWorkspaceControlsModal-list-item-current) {
+			background: var(--color-base-1-03);
+
+			border-color: var(--color-base-1-09);
+		}
+	}
+
 	.MainAppHeaderWorkspaceControlsModal-list-item-current {
 		background: var(--color-base-1-04);
 

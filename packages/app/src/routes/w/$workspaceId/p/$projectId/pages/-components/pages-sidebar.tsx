@@ -60,7 +60,9 @@ import {
 	MyMenuTrigger,
 	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen, sx } from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
+import { cn, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
@@ -1089,6 +1091,8 @@ type PagesSidebarHeader_Props = {
 const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
 	const { homePageId, view, onClose } = props;
 
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
 	return (
 		<MySidebarHeader className={cn("PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames)}>
 			<div className={cn("PagesSidebarHeader-top-section-left" satisfies PagesSidebarHeader_ClassNames)}>
@@ -1103,7 +1107,8 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 						<MyLink
 							className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
 							variant="button-tertiary"
-							to="/pages"
+							to="/w/$workspaceId/p/$projectId/pages"
+							params={{ workspaceId, projectId }}
 							search={{ pageId: homePageId, view }}
 						>
 							<MySidebarTitle>Pages</MySidebarTitle>
@@ -1187,9 +1192,13 @@ const PagesSidebarTopSection = memo(function PagesSidebarTopSection(props: Pages
 
 			<div className={cn("PagesSidebarTopSection-actions" satisfies PagesSidebarTopSection_ClassNames)}>
 				{selectedPageIdsCount > 1 ? (
-					<div className={cn("PagesSidebarTopSection-multi-selection-counter" satisfies PagesSidebarTopSection_ClassNames)}>
+					<div
+						className={cn("PagesSidebarTopSection-multi-selection-counter" satisfies PagesSidebarTopSection_ClassNames)}
+					>
 						<span
-							className={cn("PagesSidebarTopSection-multi-selection-counter-label" satisfies PagesSidebarTopSection_ClassNames)}
+							className={cn(
+								"PagesSidebarTopSection-multi-selection-counter-label" satisfies PagesSidebarTopSection_ClassNames,
+							)}
 						>
 							{selectedPageIdsCount} items selected
 						</span>
@@ -1281,7 +1290,10 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	const navigate = useNavigate();
 	const convex = useConvex();
-	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
+	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+
+	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_scope[scopeKey] ?? "");
 
 	const [searchQuery, setSearchQuery] = useState("");
 	const searchQueryDeferred = useDeferredValue(searchQuery);
@@ -1301,8 +1313,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 	const selectedPagePathAutoExpandedOnMountRef = useRef(false);
 
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 	});
 
 	// For some reason the compiler is not auto memoizing this so we need `useMemo`
@@ -1493,10 +1504,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 		return convex
 			.mutation(app_convex_api.ai_docs_temp.move_pages, {
+				membershipId,
 				itemIds: movedPageIds.map((itemId) => pages_sidebar_to_page_id(itemId)),
 				targetParentId: pages_sidebar_to_parent_id(targetParentId),
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -1531,16 +1541,14 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 			.mutation(
 				app_convex_api.ai_docs_temp.rename_page,
 				{
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					membershipId,
 					pageId: pages_sidebar_to_page_id(itemId),
 					name: trimmedValue,
 				},
 				{
 					optimisticUpdate: (localStore, args) => {
 						const treeItemsList = localStore.getQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
-							workspaceId: ai_chat_HARDCODED_ORG_ID,
-							projectId: ai_chat_HARDCODED_PROJECT_ID,
+							membershipId,
 						});
 						if (!treeItemsList) {
 							return;
@@ -1548,8 +1556,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 						localStore.setQuery(
 							app_convex_api.ai_docs_temp.get_tree_items_list,
 							{
-								workspaceId: ai_chat_HARDCODED_ORG_ID,
-								projectId: ai_chat_HARDCODED_PROJECT_ID,
+								membershipId,
 							},
 							treeItemsList.map((treeItem) => {
 								if (treeItem._id === itemId) {
@@ -1773,10 +1780,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 		setIsCreatingPage(true);
 		convex
 			.mutation(app_convex_api.ai_docs_temp.create_page, {
+				membershipId,
 				parentId: pages_sidebar_to_parent_id(parentPageId),
 				name: nextPageName,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -1787,7 +1793,8 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				}
 
 				return navigate({
-					to: "/pages",
+					to: "/w/$workspaceId/p/$projectId/pages",
+					params: { workspaceId, projectId },
 					search: { pageId: result._yay.pageId, view },
 				}).then(() => {
 					return startRename(result._yay.pageId);
@@ -1813,8 +1820,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 		convex
 			.mutation(app_convex_api.ai_docs_temp.archive_pages, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageIds: Array.from(pageIdsToArchive),
 			})
 			.then((result) => {
@@ -1857,8 +1863,7 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 		markPageAsPending(pageId);
 		convex
 			.mutation(app_convex_api.ai_docs_temp.unarchive_pages, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				membershipId,
 				pageIds: [pages_sidebar_to_page_id(pageId)],
 			})
 			.then((result) => {
@@ -2003,7 +2008,6 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				onCreateRootPageClick={handleCreateRootPageClick}
 				onArchiveToggleClick={handleArchiveToggleClick}
 			/>
-
 
 			<div className={cn("PagesSidebar-content" satisfies PagesSidebar_ClassNames)}>
 				<PagesSidebarTree

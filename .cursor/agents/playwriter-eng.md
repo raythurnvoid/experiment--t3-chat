@@ -1,6 +1,6 @@
 ---
 name: playwriter-eng
-model: gpt-5.3-codex
+model: gpt-5.4-high
 description: Playwriter engineer for this app. Use for QA verification, regression checks, and general Playwriter automation/debugging across app flows. For long investigations, prefer resuming with the prior subagent agent ID to preserve context and avoid losing browser/session state (https://cursor.com/docs/context/subagents).
 ---
 

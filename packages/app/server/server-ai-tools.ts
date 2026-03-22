@@ -4,7 +4,7 @@ import dedent from "dedent";
 import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
-import { api, internal } from "../convex/_generated/api.js";
+import { internal } from "../convex/_generated/api.js";
 import {
 	decode_path_segment,
 	path_extract_segments_from,
@@ -13,8 +13,6 @@ import {
 	server_path_parent_of,
 } from "./server-utils.ts";
 import { minimatch } from "minimatch";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "./server-utils.ts";
 import { pages_chunk_has_bitmask_flag, pages_chunk_BITMASK_FLAGS } from "./pages-markdown-chunking-mastra.ts";
 
 /**
@@ -519,7 +517,9 @@ export function replace_once_or_all(
 	}
 
 	if (!foundMatch) {
-		throw new Error("oldString not found in content. It must match exactly, including whitespace, indentation, and line endings.");
+		throw new Error(
+			"oldString not found in content. It must match exactly, including whitespace, indentation, and line endings.",
+		);
 	}
 
 	throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.");
@@ -528,7 +528,13 @@ export function replace_once_or_all(
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
  */
-export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
+export function ai_chat_tool_create_read_page(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+	},
+) {
 	return tool({
 		description: dedent`\
 			Reads a page from the DB. You can access any page directly by using this tool.
@@ -556,15 +562,13 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
 			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
 
 			const pageContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
 				path: normalizedPath,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
-				userId: user.id,
 				pendingEditId,
 			});
 
@@ -573,9 +577,9 @@ export function ai_chat_tool_create_read_page(ctx: ActionCtx) {
 				const parentPath = server_path_parent_of(normalizedPath);
 				if (parentPath) {
 					const siblingPaths = await ctx.runQuery(internal.ai_docs_temp.read_dir, {
+						workspaceId: ctxData.workspaceId,
+						projectId: ctxData.projectId,
 						path: parentPath,
-						workspaceId: ai_chat_HARDCODED_ORG_ID,
-						projectId: ai_chat_HARDCODED_PROJECT_ID,
 					});
 
 					const pageName = path_name_of(normalizedPath);
@@ -653,7 +657,13 @@ export type ai_chat_tool_create_read_page_ToolOutput = InferToolOutput<ai_chat_t
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
-export function ai_chat_tool_create_list_pages(ctx: ActionCtx) {
+export function ai_chat_tool_create_list_pages(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+	},
+) {
 	return tool({
 		description: dedent`\
 			Lists descendants pages in a given path. \
@@ -682,8 +692,8 @@ export function ai_chat_tool_create_list_pages(ctx: ActionCtx) {
 
 			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: path,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
 				maxDepth: args.maxDepth,
 				limit: args.limit,
 			});
@@ -750,7 +760,13 @@ export type ai_chat_tool_create_list_pages_ToolOutput = InferToolOutput<ai_chat_
 /**
  * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
  */
-export function ai_chat_tool_create_glob_pages(ctx: ActionCtx) {
+export function ai_chat_tool_create_glob_pages(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+	},
+) {
 	return tool({
 		description: dedent`\
 			Fast page pattern matching tool that works with any database size. \
@@ -777,8 +793,8 @@ export function ai_chat_tool_create_glob_pages(ctx: ActionCtx) {
 			// Get all pages under the search path
 			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: searchPath,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
 				maxDepth: 10,
 				limit: args.limit,
 				include: args.pattern,
@@ -819,7 +835,13 @@ export type ai_chat_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_chat_
  *
  * Search pages by applying a regex pattern against page name + text_content
  */
-export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
+export function ai_chat_tool_create_grep_pages(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+	},
+) {
 	return tool({
 		description: dedent`\
       Fast content search over pages using regular expressions.\
@@ -852,7 +874,6 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const searchPath = server_path_normalize(args.path || "/");
 
 			// Compile regex
@@ -866,8 +887,8 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
 			// Discover candidate pages using the same traversal logic as list_pages
 			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
 				path: searchPath,
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
 				maxDepth: args.maxDepth,
 				limit: args.limit,
 				include: args.include,
@@ -880,9 +901,8 @@ export function ai_chat_tool_create_grep_pages(ctx: ActionCtx) {
 				// Read page content
 				const page = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
 					path: item.path,
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					userId: user.id,
+					workspaceId: ctxData.workspaceId,
+					projectId: ctxData.projectId,
 				});
 
 				const pageName = path_name_of(item.path);
@@ -943,7 +963,13 @@ type ai_chat_tool_create_grep_pages_Tool = ReturnType<typeof ai_chat_tool_create
 export type ai_chat_tool_create_grep_pages_ToolInput = InferToolInput<ai_chat_tool_create_grep_pages_Tool>;
 export type ai_chat_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_pages_Tool>;
 
-export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx) {
+export function ai_chat_tool_create_text_search_pages(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+	},
+) {
 	return tool({
 		description: dedent`\
 			Ultra-fast text search over page content using a plain-text chunk index.\
@@ -962,13 +988,11 @@ export function ai_chat_tool_create_text_search_pages(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const res = await ctx.runQuery(internal.ai_docs_temp.text_search_pages, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
 				query: args.query,
 				limit: args.limit ?? 20,
-				userId: user.id,
 			});
 
 			if (!res.items.length) {
@@ -1044,7 +1068,14 @@ export type ai_chat_tool_create_text_search_pages_ToolOutput =
  *
  * Tool for proposing page content with preview diff (no direct apply)
  */
-export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
+export function ai_chat_tool_create_write_page(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+	},
+) {
 	return tool({
 		description: dedent`\
 			Writes a page in the system.
@@ -1073,7 +1104,6 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const path = server_path_normalize(args.path);
 			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
 			if (!path.startsWith("/") || path === "/") {
@@ -1083,10 +1113,9 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 			const currentPageContent = await ctx.runQuery(
 				internal.ai_docs_temp.get_page_last_available_markdown_content_by_path,
 				{
+					workspaceId: ctxData.workspaceId,
+					projectId: ctxData.projectId,
 					path,
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					userId: user.id,
 					pendingEditId,
 				},
 			);
@@ -1100,10 +1129,9 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 
 			if (!pageId) {
 				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					workspaceId: ctxData.workspaceId,
+					projectId: ctxData.projectId,
 					path,
-					userId: user.id,
 				});
 				if (created._nay) {
 					throw new Error("[server-ai-tools.ai_chat_tool_create_write_page] Error creating page by path", {
@@ -1114,16 +1142,18 @@ export function ai_chat_tool_create_write_page(ctx: ActionCtx) {
 				pageId = created._yay.pageId;
 			}
 
-			await ctx.runMutation(api.pages_pending_edits.upsert_pages_pending_edit_updates, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			await ctx.runMutation(internal.pages_pending_edits.upsert_pages_pending_edit_updates_internal, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				userId: ctxData.userId,
 				pageId,
 				pendingEditId: currentPageContent?.pendingEditId ?? undefined,
 				unstagedMarkdown: newText,
 			});
-			const nextPendingEdit = await ctx.runQuery(api.pages_pending_edits.get_pages_pending_edit, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			const nextPendingEdit = await ctx.runQuery(internal.pages_pending_edits.get_pages_pending_edit_internal, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				userId: ctxData.userId,
 				pageId,
 				pendingEditId: currentPageContent?.pendingEditId ?? undefined,
 			});
@@ -1154,7 +1184,14 @@ export type ai_chat_tool_create_write_page_ToolOutput = InferToolOutput<ai_chat_
  * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on DB pages,
  * and stores a pending edit for human-in-the-loop review.
  */
-export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
+export function ai_chat_tool_create_edit_page(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+	},
+) {
 	return tool({
 		description: dedent`\
 			Edits an existing page by replacing text and returns a preview diff.
@@ -1183,7 +1220,6 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 		}),
 
 		execute: async (args) => {
-			const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 			const normalizedPath = server_path_normalize(args.path);
 			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
@@ -1193,10 +1229,9 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			const currentPageContent = await ctx.runQuery(
 				internal.ai_docs_temp.get_page_last_available_markdown_content_by_path,
 				{
+					workspaceId: ctxData.workspaceId,
+					projectId: ctxData.projectId,
 					path: normalizedPath,
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
-					userId: user.id,
 					pendingEditId,
 				},
 			);
@@ -1207,30 +1242,31 @@ export function ai_chat_tool_create_edit_page(ctx: ActionCtx) {
 			const oldString = normalize_lf_newlines(args.oldString);
 			const newString = normalize_lf_newlines(args.newString);
 
-			const { content: modifiedTextRaw, matches, matcher } = replace_once_or_all(
-				currentPageContent.content,
-				oldString,
-				newString,
-				{
-					replaceAll: args.replaceAll,
-					mode: "auto",
-				},
-			);
+			const {
+				content: modifiedTextRaw,
+				matches,
+				matcher,
+			} = replace_once_or_all(currentPageContent.content, oldString, newString, {
+				replaceAll: args.replaceAll,
+				mode: "auto",
+			});
 			const modifiedText = normalize_ai_edit_content(modifiedTextRaw, currentPageContent.content);
 			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
 
 			const pageId = currentPageContent.pageId;
 
-			await ctx.runMutation(api.pages_pending_edits.upsert_pages_pending_edit_updates, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			await ctx.runMutation(internal.pages_pending_edits.upsert_pages_pending_edit_updates_internal, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				userId: ctxData.userId,
 				pageId,
 				pendingEditId: currentPageContent.pendingEditId ?? undefined,
 				unstagedMarkdown: modifiedText,
 			});
-			const nextPendingEdit = await ctx.runQuery(api.pages_pending_edits.get_pages_pending_edit, {
-				workspaceId: ai_chat_HARDCODED_ORG_ID,
-				projectId: ai_chat_HARDCODED_PROJECT_ID,
+			const nextPendingEdit = await ctx.runQuery(internal.pages_pending_edits.get_pages_pending_edit_internal, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				userId: ctxData.userId,
 				pageId,
 				pendingEditId: currentPageContent.pendingEditId ?? undefined,
 			});

@@ -2,7 +2,7 @@ import "./page-editor-sidebar.css";
 import { memo, type Ref } from "react";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PageEditorSidebarAgent } from "@/components/page-editor/page-editor-sidebar/page-editor-sidebar-agent.tsx";
-import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -26,14 +26,15 @@ export type PageEditorSidebar_Props = {
 export const PageEditorSidebar = memo(function PageEditorSidebar(props: PageEditorSidebar_Props) {
 	const { commentsContainerRef } = props;
 
-	const pagesLastTab = useAppLocalStorageState((state) => state.pages_last_tab) ?? PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS;
+	const [storedPagesLastTab, setStoredPagesLastTab] = useAppLocalStorageStateValue("app_state::pages_last_tab");
+	const pagesLastTab = storedPagesLastTab ?? PAGE_EDITOR_SIDEBAR_TAB_ID_COMMENTS;
 
 	const handleTabChange = (nextSelectedId: string | null | undefined) => {
 		if (!nextSelectedId || nextSelectedId === pagesLastTab) {
 			return;
 		}
 
-		useAppLocalStorageState.setState({ pages_last_tab: nextSelectedId as AppElementId });
+		setStoredPagesLastTab(nextSelectedId as AppElementId);
 	};
 
 	return (

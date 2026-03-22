@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_hardcoded } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
@@ -16,15 +16,21 @@ import {
 } from "../server/pages.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-async function seed_page_with_markdown(args: { ctx: MutationCtx; path: string; name: string; markdown: string }) {
+async function seed_page_with_markdown(args: {
+	ctx: MutationCtx;
+	path: string;
+	name: string;
+	markdown: string;
+	membership?: {
+		userId: Id<"users">;
+		workspaceId: string;
+		projectId: string;
+		membershipId: Id<"workspaces_projects_users">;
+	};
+}) {
 	const { ctx, path, name, markdown } = args;
-	const workspaceId = test_mocks_hardcoded.workspace_id.workspace_1;
-	const projectId = test_mocks_hardcoded.project_id.project_1;
-
-	const userId = await ctx.db.insert("users", {
-		clerkUserId: null,
-		anonymousAuthToken: null,
-	});
+	const membership = args.membership ?? (await test_mocks_fill_db_with.membership(ctx));
+	const { userId, workspaceId, projectId, membershipId } = membership;
 
 	const pageId = await ctx.db.insert("pages", {
 		workspaceId,
@@ -93,6 +99,7 @@ async function seed_page_with_markdown(args: { ctx: MutationCtx; path: string; n
 	return {
 		workspaceId,
 		projectId,
+		membershipId,
 		userId,
 		pageId,
 		baseMarkdown: baseMarkdownResult._yay,
@@ -311,8 +318,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nChanged once`;
 
 		const unresolved = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -323,8 +329,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		expect(unresolved._yay).toBeNull();
 
 		const ready = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: changedMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -349,8 +354,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		expect(firstPendingRow).not.toBeNull();
 
 		const readyAgain = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: changedMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -384,8 +388,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		expect(secondPendingRowMarkdownState.stagedMarkdown).toBe(secondPendingRowMarkdownState.unstagedMarkdown);
 
 		const discarded = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
@@ -429,8 +432,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const firstMarkdown = `${seeded.baseMarkdown}\n\nFirst`;
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: firstMarkdown,
@@ -454,8 +456,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const secondMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nSecond`);
 		const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			pendingEditId: firstPendingRow._id,
 			stagedMarkdown: secondMarkdown,
@@ -505,8 +506,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		});
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nFirst`,
@@ -529,16 +529,14 @@ describe("upsert_pages_pending_edit_updates", () => {
 		}
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
 		});
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nCurrent`,
@@ -563,8 +561,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const fallbackMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nFallback`);
 		const fallbackUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			pendingEditId: stalePendingRow._id,
 			stagedMarkdown: fallbackMarkdown,
@@ -615,8 +612,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const agentMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
 		const agentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			unstagedMarkdown: agentMarkdown,
 		});
@@ -669,8 +665,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const stagedMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nUser staged`);
 		const firstAgentMarkdown = normalize_pending_edit_markdown(`${stagedMarkdown}\n\nAgent proposal`);
 		const stagedPendingEditResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: stagedMarkdown,
 			unstagedMarkdown: firstAgentMarkdown,
@@ -681,8 +676,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const secondAgentMarkdown = normalize_pending_edit_markdown(`${firstAgentMarkdown}\n\nAgent follow up`);
 		const secondAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			unstagedMarkdown: secondAgentMarkdown,
 		});
@@ -734,8 +728,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const whitespaceMarkdown = seeded.baseMarkdown + " ";
 		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			unstagedMarkdown: whitespaceMarkdown,
 		});
@@ -787,8 +780,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const agentMarkdown = normalize_pending_edit_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
 		const firstAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			unstagedMarkdown: agentMarkdown,
 		});
@@ -797,8 +789,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		}
 
 		const discardAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			unstagedMarkdown: seeded.baseMarkdown,
 		});
@@ -841,8 +832,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup task first`;
 		const firstUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: firstMarkdown,
@@ -880,8 +870,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 
 		const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup task second`;
 		const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: secondMarkdown,
 			unstagedMarkdown: secondMarkdown,
@@ -917,8 +906,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
 
 		const discardResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
@@ -957,8 +945,7 @@ describe("pages_db_reschedule_pending_edit_cleanup_for_user", () => {
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nReschedule pending`;
 		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -1038,8 +1025,7 @@ describe("presence.disconnect", () => {
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect pending`;
 		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -1126,8 +1112,7 @@ describe("presence.disconnect", () => {
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect multi-session pending`;
 		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -1224,16 +1209,14 @@ describe("save_pages_pending_edit", () => {
 		const stagedMarkdown = `${seeded.baseMarkdown}\n\nAccepted chunk`;
 		const unstagedMarkdown = `${stagedMarkdown}\n\nUnresolved chunk`;
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown,
 			unstagedMarkdown,
 		});
 
 		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 		});
 		if (saveResult._nay) {
@@ -1311,8 +1294,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingEditLastSequenceSavedBeforeFirstSave = await asUser.query(
 			api.ai_chat.get_pages_pending_edit_last_sequence_saved,
 			{
-				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
+				membershipId: seeded.membershipId,
 				pageId: seeded.pageId,
 			},
 		);
@@ -1320,8 +1302,7 @@ describe("save_pages_pending_edit", () => {
 
 		const resolvedMarkdown = `${seeded.baseMarkdown}\n\nFully resolved`;
 		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: resolvedMarkdown,
 			unstagedMarkdown: resolvedMarkdown,
@@ -1331,8 +1312,7 @@ describe("save_pages_pending_edit", () => {
 		}
 
 		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 		});
 		if (saveResult._nay) {
@@ -1344,8 +1324,7 @@ describe("save_pages_pending_edit", () => {
 		expect(saveResult._yay.newSequence).not.toBeNull();
 
 		const pendingEditLastSequenceSaved = await asUser.query(api.ai_chat.get_pages_pending_edit_last_sequence_saved, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 		});
 		expect(pendingEditLastSequenceSaved).not.toBeNull();
@@ -1395,8 +1374,7 @@ describe("save_pages_pending_edit", () => {
 
 		const staleMarkdown = `${seeded.baseMarkdown}\n\nStale row`;
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: staleMarkdown,
 			unstagedMarkdown: staleMarkdown,
@@ -1419,8 +1397,7 @@ describe("save_pages_pending_edit", () => {
 		}
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
@@ -1428,8 +1405,7 @@ describe("save_pages_pending_edit", () => {
 
 		const currentMarkdown = `${seeded.baseMarkdown}\n\nCurrent row`;
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: currentMarkdown,
 			unstagedMarkdown: currentMarkdown,
@@ -1453,8 +1429,7 @@ describe("save_pages_pending_edit", () => {
 		expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
 
 		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			pendingEditId: stalePendingRow._id,
 		});
@@ -1481,8 +1456,7 @@ describe("save_pages_pending_edit", () => {
 		expect(pendingAfterSave).toBeNull();
 
 		const pendingEditLastSequenceSaved = await asUser.query(api.ai_chat.get_pages_pending_edit_last_sequence_saved, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 		});
 		expect(pendingEditLastSequenceSaved).not.toBeNull();
@@ -1517,8 +1491,7 @@ describe("save_pages_pending_edit", () => {
 		});
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
@@ -1533,16 +1506,14 @@ describe("save_pages_pending_edit", () => {
 		);
 
 		await asUser.mutation(api.ai_docs_temp.yjs_push_update, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			update: remoteDiff,
 			sessionId: "remote-session",
 		});
 
 		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 		});
 		if (saveResult._nay) {
@@ -1624,16 +1595,14 @@ describe("pages_pending_edits_last_sequence_saved", () => {
 		const pendingEditLastSequenceSavedBeforeChanges = await asUser.query(
 			api.ai_chat.get_pages_pending_edit_last_sequence_saved,
 			{
-				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
+				membershipId: seeded.membershipId,
 				pageId: seeded.pageId,
 			},
 		);
 		expect(pendingEditLastSequenceSavedBeforeChanges).toBeNull();
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
@@ -1642,8 +1611,7 @@ describe("pages_pending_edits_last_sequence_saved", () => {
 		const pendingEditLastSequenceSavedAfterUpsert = await asUser.query(
 			api.ai_chat.get_pages_pending_edit_last_sequence_saved,
 			{
-				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
+				membershipId: seeded.membershipId,
 				pageId: seeded.pageId,
 			},
 		);
@@ -1670,8 +1638,7 @@ describe("pages_pending_edits_last_sequence_saved", () => {
 		}
 
 		const persistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			baseYjsSequence: latestPageState.yjsSequence,
 			baseYjsUpdate: latestPageState.yjsUpdate,
@@ -1685,8 +1652,7 @@ describe("pages_pending_edits_last_sequence_saved", () => {
 		const pendingEditLastSequenceSavedAfterPersist = await asUser.query(
 			api.ai_chat.get_pages_pending_edit_last_sequence_saved,
 			{
-				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
+				membershipId: seeded.membershipId,
 				pageId: seeded.pageId,
 			},
 		);
@@ -1713,8 +1679,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		});
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
@@ -1730,8 +1695,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		);
 
 		await asUser.mutation(api.ai_docs_temp.yjs_push_update, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			update: remoteDiff,
 			sessionId: "remote-session",
@@ -1759,8 +1723,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		}
 
 		const persistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			baseYjsSequence: latestPageState.yjsSequence,
 			baseYjsUpdate: latestPageState.yjsUpdate,
@@ -1811,9 +1774,11 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 				path: "/pending-edits-persist-mismatch-b",
 				name: "pending-edits-persist-mismatch-b",
 				markdown: "# Page B",
+				membership: pageA,
 			});
 
 			return {
+				membershipId: pageA.membershipId,
 				workspaceId: pageA.workspaceId,
 				projectId: pageA.projectId,
 				userId: pageA.userId,
@@ -1830,15 +1795,13 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		});
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageAId,
 			stagedMarkdown: seeded.pageABaseMarkdown,
 			unstagedMarkdown: `${seeded.pageABaseMarkdown}\n\nPage A current`,
 		});
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageBId,
 			stagedMarkdown: seeded.pageBBaseMarkdown,
 			unstagedMarkdown: `${seeded.pageBBaseMarkdown}\n\nPage B current`,
@@ -1893,8 +1856,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		}
 
 		const persistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageAId,
 			pendingEditId: pageBPendingRow._id,
 			baseYjsSequence: latestPageState.yjsSequence,
@@ -1965,8 +1927,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		});
 
 		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnresolved only`,
@@ -1982,8 +1943,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		);
 
 		const clearResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			baseYjsSequence: latestPageState.yjsSequence,
 			baseYjsUpdate: latestPageState.yjsUpdate,
@@ -2045,16 +2005,14 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		);
 
 		await asUser.mutation(api.ai_docs_temp.yjs_push_update, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			update: remoteDiff,
 			sessionId: "remote-session",
 		});
 
 		const stalePersistResult = await asUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			baseYjsSequence: stalePageState.yjsSequence,
 			baseYjsUpdate: stalePageState.yjsUpdate,
@@ -2087,8 +2045,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 
 		const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending first`;
 		const firstUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: firstMarkdown,
@@ -2128,8 +2085,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 
 		const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending second`;
 		const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: secondMarkdown,
 			unstagedMarkdown: secondMarkdown,
@@ -2186,8 +2142,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nCleanup expired`;
 		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
+			membershipId: seeded.membershipId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -2249,5 +2204,75 @@ describe("remove_pages_pending_edit_if_expired", () => {
 			}),
 		);
 		expect(cleanupTasksAfterCleanup).toHaveLength(0);
+	});
+});
+
+describe("membership scoped pending edits", () => {
+	test("pending edit APIs reject cross-user membership ids", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_page_with_markdown({
+				ctx,
+				path: "/pending-edits-membership-unauthorized",
+				name: "pending-edits-membership-unauthorized",
+				markdown: "# Base",
+			}),
+		);
+
+		const otherUserId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: null,
+				anonymousAuthToken: null,
+			}),
+		);
+		const asOtherUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: otherUserId,
+			name: "Other User",
+		});
+
+		const unauthorizedUpsert = await asOtherUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnauthorized`,
+		});
+		if (!unauthorizedUpsert._nay) {
+			throw new Error("Expected upsert_pages_pending_edit_updates to reject cross-user membership");
+		}
+		expect(unauthorizedUpsert._nay.message).toBe("Unauthorized");
+
+		const unauthorizedPending = await asOtherUser.query(api.ai_chat.get_pages_pending_edit, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+		expect(unauthorizedPending).toBeNull();
+
+		const unauthorizedLastSaved = await asOtherUser.query(api.ai_chat.get_pages_pending_edit_last_sequence_saved, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+		expect(unauthorizedLastSaved).toBeNull();
+
+		const unauthorizedSave = await asOtherUser.mutation(api.ai_chat.save_pages_pending_edit, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+		if (!unauthorizedSave._nay) {
+			throw new Error("Expected save_pages_pending_edit to reject cross-user membership");
+		}
+		expect(unauthorizedSave._nay.message).toBe("Unauthorized");
+
+		const unauthorizedPersist = await asOtherUser.mutation(api.ai_chat.persist_pages_pending_edit_rebased_state, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+			baseYjsSequence: 0,
+			baseYjsUpdate: new ArrayBuffer(0),
+			stagedBranchYjsUpdate: new ArrayBuffer(0),
+			unstagedBranchYjsUpdate: new ArrayBuffer(0),
+		});
+		if (!unauthorizedPersist._nay) {
+			throw new Error("Expected persist_pages_pending_edit_rebased_state to reject cross-user membership");
+		}
+		expect(unauthorizedPersist._nay.message).toBe("Unauthorized");
 	});
 });

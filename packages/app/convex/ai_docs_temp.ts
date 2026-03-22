@@ -61,6 +61,7 @@ import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { v_result } from "../server/convex-utils.ts";
+import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
 	if (parentPath === "/") {
@@ -262,7 +263,13 @@ async function resolve_page_id_from_path_fn(
 export const resolve_page_id_from_path = internalQuery({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(v.id("pages"), v.null()),
-	handler: (ctx, args) => resolve_page_id_from_path_fn(ctx, args),
+	handler: async (ctx, args) => {
+		return resolve_page_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+	},
 });
 
 async function resolve_tree_node_id_from_path_fn(
@@ -287,7 +294,13 @@ async function resolve_tree_node_id_from_path_fn(
 export const resolve_tree_node_id_from_path = internalQuery({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(v.id("pages"), v.literal(pages_ROOT_ID), v.null()),
-	handler: (ctx, args) => resolve_tree_node_id_from_path_fn(ctx, args),
+	handler: async (ctx, args) => {
+		return resolve_tree_node_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+	},
 });
 
 async function resolve_parent_path_from_parent_id(
@@ -368,15 +381,23 @@ export type pages_TreeItem = Infer<typeof get_tree_items_list_validator>[number]
 
 export const get_tree_items_list = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 	},
 	returns: get_tree_items_list_validator,
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return [];
+		}
+
 		const pages = await ctx.db
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_name", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
 			)
 			.order("asc")
 			.filter((q) => q.neq(q.field("name"), ""))
@@ -561,21 +582,29 @@ async function do_create_page(
 
 export const create_page = mutation({
 	args: {
+		membershipId: v.id("workspaces_projects_users"),
 		parentId: v.union(v.id("pages"), v.literal(pages_ROOT_ID)),
 		name: v.string(),
-		workspaceId: v.string(),
-		projectId: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
 		const nameValidationResult = pages_validate_name(args.name);
 		if (nameValidationResult._nay) {
 			return nameValidationResult;
 		}
 
 		const page = await do_create_page(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			parentId: args.parentId,
 			name: args.name,
 			markdown_content: "",
@@ -591,18 +620,28 @@ export const create_page = mutation({
 
 export const create_page_quick = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
-		const { workspaceId, projectId } = args;
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		// Ensure ".tmp" under root exists
 		const tmp = await ctx.db
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
-				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", pages_ROOT_ID).eq("name", ".tmp"),
+				q
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
+					.eq("parentId", pages_ROOT_ID)
+					.eq("name", ".tmp"),
 			)
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
@@ -611,8 +650,8 @@ export const create_page_quick = mutation({
 
 		if (!tmp) {
 			const tmpPage = await do_create_page(ctx, {
-				workspaceId: workspaceId,
-				projectId: projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				parentId: pages_ROOT_ID,
 				name: ".tmp",
 				markdown_content:
@@ -631,8 +670,8 @@ export const create_page_quick = mutation({
 		// Create quick page under ".tmp"
 		const title = `Quick page created at ${new Date().toLocaleString("en-GB", { hour12: false })}`;
 		const page = await do_create_page(ctx, {
-			workspaceId: workspaceId,
-			projectId: projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			parentId: tmpPageId,
 			name: title,
 			markdown_content: "",
@@ -648,17 +687,24 @@ export const create_page_quick = mutation({
 
 export const rename_page = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		name: v.string(),
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
 		const page = await ctx.db.get("pages", args.pageId);
-		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-			return Result({ _yay: null });
+		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (is_home_page(page)) {
@@ -672,8 +718,8 @@ export const rename_page = mutation({
 		}
 
 		const parentPath = await resolve_parent_path_from_parent_id(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			parentId: page.parentId,
 		});
 		if (parentPath == null) {
@@ -682,8 +728,8 @@ export const rename_page = mutation({
 		const renamedPath = pages_materialized_path_join(parentPath, args.name);
 		if (page.archiveOperationId === undefined) {
 			const activePathConflict = await find_active_path_conflict(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				path: renamedPath,
 				excludePageIds: [args.pageId],
 			});
@@ -704,8 +750,8 @@ export const rename_page = mutation({
 			updatedAt: Date.now(),
 		});
 		await cascade_page_descendants_path(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			parentId: args.pageId,
 			parentPath: renamedPath,
 		});
@@ -715,16 +761,24 @@ export const rename_page = mutation({
 
 export const move_pages = mutation({
 	args: {
+		membershipId: v.id("workspaces_projects_users"),
 		itemIds: v.array(v.id("pages")),
 		targetParentId: v.union(v.id("pages"), v.literal(pages_ROOT_ID)),
-		workspaceId: v.string(),
-		projectId: v.string(),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			parentId: args.targetParentId,
 		});
 		if (targetParentPath == null) {
@@ -735,7 +789,7 @@ export const move_pages = mutation({
 
 		for (const itemId of args.itemIds) {
 			const page = await ctx.db.get("pages", itemId);
-			if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+			if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
 				continue;
 			}
 			if (is_home_page(page)) {
@@ -766,8 +820,8 @@ export const move_pages = mutation({
 			movedPathByPageId.set(pageToMove.movedPath, pageToMove.itemId);
 
 			const activePathConflict = await find_active_path_conflict(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				path: pageToMove.movedPath,
 				excludePageIds: movingPageIds,
 			});
@@ -783,15 +837,15 @@ export const move_pages = mutation({
 
 		for (const pageToMove of pagesToMove) {
 			await ctx.db.patch("pages", pageToMove.itemId, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				parentId: args.targetParentId,
 				path: pageToMove.movedPath,
 				updatedAt: Date.now(),
 			});
 			await cascade_page_descendants_path(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				parentId: pageToMove.itemId,
 				parentPath: pageToMove.movedPath,
 			});
@@ -802,20 +856,26 @@ export const move_pages = mutation({
 
 export const archive_pages = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageIds: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		const pageIds = [];
 		for (const maybePageId of args.pageIds) {
 			const pageId = ctx.db.normalizeId("pages", maybePageId);
 			if (!pageId) {
-				return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId: maybePageId } } });
+				return Result({ _nay: { name: "nay", message: "Not found", data: { pageId: maybePageId } } });
 			}
 			pageIds.push(pageId);
 		}
@@ -824,8 +884,8 @@ export const archive_pages = mutation({
 			await Promise.all(
 				pageIds.map((pageId) =>
 					ctx.db.get("pages", pageId).then((page) => {
-						if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-							return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+						if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+							return Result({ _nay: { name: "nay", message: "Not found", data: { pageId } } });
 						}
 
 						return Result({ _yay: page });
@@ -859,8 +919,8 @@ export const archive_pages = mutation({
 				.query("pages")
 				.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("projectId", membership.projectId)
 						.gte("path", descendantsPathPrefix)
 						.lt("path", `${descendantsPathPrefix}\uffff`),
 				)
@@ -890,13 +950,19 @@ export const archive_pages = mutation({
 
 export const unarchive_pages = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageIds: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		if (args.pageIds.length === 0) {
 			return Result({ _yay: null });
@@ -906,7 +972,7 @@ export const unarchive_pages = mutation({
 		for (const maybePageId of args.pageIds) {
 			const pageId = ctx.db.normalizeId("pages", maybePageId);
 			if (!pageId) {
-				return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId: maybePageId } } });
+				return Result({ _nay: { name: "nay", message: "Not found", data: { pageId: maybePageId } } });
 			}
 			pageIds.push(pageId);
 		}
@@ -915,8 +981,8 @@ export const unarchive_pages = mutation({
 			await Promise.all(
 				pageIds.map((pageId) =>
 					ctx.db.get("pages", pageId).then((page) => {
-						if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
-							return Result({ _nay: { name: "nay", message: "Page not found", data: { pageId } } });
+						if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+							return Result({ _nay: { name: "nay", message: "Not found", data: { pageId } } });
 						}
 						return Result({ _yay: page });
 					}),
@@ -1036,8 +1102,8 @@ export const unarchive_pages = mutation({
 							// If parent is still archived or invalid, move this subtree to root when unarchiving.
 							shouldMoveToRoot =
 								!parentPage ||
-								parentPage.workspaceId !== args.workspaceId ||
-								parentPage.projectId !== args.projectId ||
+								parentPage.workspaceId !== membership.workspaceId ||
+								parentPage.projectId !== membership.projectId ||
 								parentPage.archiveOperationId !== undefined;
 						}
 
@@ -1084,8 +1150,8 @@ export const unarchive_pages = mutation({
 								.query("pages")
 								.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
 									q
-										.eq("workspaceId", args.workspaceId)
-										.eq("projectId", args.projectId)
+										.eq("workspaceId", membership.workspaceId)
+										.eq("projectId", membership.projectId)
 										.gte("path", `${ancestorPage.path}/`)
 										.lt("path", `${ancestorPage.path}/\uffff`),
 								)
@@ -1135,8 +1201,8 @@ export const unarchive_pages = mutation({
 		// Validate top-most ancestor conflicts against currently not archived pages outside this operation.
 		for (const [ancestorTargetPath, ancestorPage] of ancestorsPagesByTargetPath) {
 			const conflictPage = await find_active_path_conflict(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				path: ancestorTargetPath,
 			});
 
@@ -1178,19 +1244,27 @@ export const unarchive_pages = mutation({
 
 export const get = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.string(),
 	},
 	returns: v.union(doc(app_convex_schema, "pages"), v.null()),
 	handler: async (ctx, args) => {
-		const normalizedPageId = ctx.db.normalizeId("pages", args.pageId);
-		if (!normalizedPageId) {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
 			return null;
 		}
 
-		const page = await ctx.db.get("pages", normalizedPageId);
-		if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) {
+		const pageId = ctx.db.normalizeId("pages", args.pageId);
+		if (!pageId) {
+			return null;
+		}
+
+		const page = await ctx.db.get("pages", pageId);
+		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
 			return null;
 		}
 
@@ -1199,7 +1273,7 @@ export const get = query({
 });
 
 export const get_page_by_path = query({
-	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
+	args: { membershipId: v.id("workspaces_projects_users"), path: v.string() },
 	returns: v.union(
 		v.object({
 			workspaceId: v.union(v.string(), v.null()),
@@ -1211,14 +1285,26 @@ export const get_page_by_path = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
 		const pageConvexId = await resolve_id_from_path(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			path: args.path,
 		});
 
 		if (!pageConvexId) return null;
 		const page = await ctx.db.get("pages", pageConvexId);
+		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+			return null;
+		}
 
 		return page
 			? {
@@ -1429,7 +1515,6 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		path: v.string(),
-		userId: v.string(),
 		pendingEditId: v.optional(v.id("pages_pending_edits")),
 	},
 	returns: v.union(
@@ -1441,6 +1526,8 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
 		const convexId = await resolve_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -1466,7 +1553,7 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 			pendingEditById &&
 			pendingEditById.workspaceId === args.workspaceId &&
 			pendingEditById.projectId === args.projectId &&
-			pendingEditById.userId === args.userId &&
+			pendingEditById.userId === user.id &&
 			pendingEditById.pageId === convexId
 				? pendingEditById
 				: await ctx.db
@@ -1475,7 +1562,7 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
-								.eq("userId", args.userId as string)
+								.eq("userId", user.id)
 								.eq("pageId", convexId),
 						)
 						.first();
@@ -1512,14 +1599,23 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 });
 
 export const get_plain_text = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
+	args: { membershipId: v.id("workspaces_projects_users"), pageId: v.id("pages") },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
 		const page = await ctx.db.get("pages", args.pageId);
 		if (
 			!page ||
-			page.workspaceId !== args.workspaceId ||
-			page.projectId !== args.projectId ||
+			page.workspaceId !== membership.workspaceId ||
+			page.projectId !== membership.projectId ||
 			page.archiveOperationId !== undefined
 		) {
 			return null;
@@ -1528,7 +1624,7 @@ export const get_plain_text = query({
 		const latestChunkByPage = await ctx.db
 			.query("pages_plain_text_chunks")
 			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
+				q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId).eq("pageId", args.pageId),
 			)
 			.order("desc")
 			.first();
@@ -1536,8 +1632,8 @@ export const get_plain_text = query({
 		if (!latestChunkByPage) {
 			throw should_never_happen("Missing plain text chunks for page", {
 				pageId: args.pageId,
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: page.workspaceId,
+				projectId: page.projectId,
 			});
 		}
 
@@ -1545,8 +1641,8 @@ export const get_plain_text = query({
 			.query("pages_plain_text_chunks")
 			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
 				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
+					.eq("workspaceId", page.workspaceId)
+					.eq("projectId", page.projectId)
 					.eq("pageId", args.pageId)
 					.eq("yjsSequence", latestChunkByPage.yjsSequence),
 			)
@@ -1558,36 +1654,41 @@ export const get_plain_text = query({
 });
 
 export const get_page_last_yjs_sequence = query({
-	args: { workspaceId: v.string(), projectId: v.string(), pageId: v.id("pages") },
+	args: { membershipId: v.id("workspaces_projects_users"), pageId: v.id("pages") },
 	returns: v.union(v.object({ lastSequence: v.number() }), v.null()),
 	handler: async (ctx, args) => {
-		const page = await ctx.db.get("pages", args.pageId).then((page) => {
-			if (!page || page.workspaceId !== args.workspaceId || page.projectId !== args.projectId) return null;
-			return page;
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
 		});
+		if (!membership) {
+			return null;
+		}
 
-		if (!page) {
+		const page = await ctx.db.get("pages", args.pageId);
+		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
 			return null;
 		}
 
 		if (!page.yjsLastSequenceId) {
 			throw should_never_happen("page.yjsLastSequenceId is not set", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: page.workspaceId,
+				projectId: page.projectId,
 				pageId: args.pageId,
 				yjsLastSequenceId: page.yjsLastSequenceId,
 			});
 		}
 
 		const lastYjsSequenceDoc = await ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId).then((doc) => {
-			if (!doc || doc.workspace_id !== args.workspaceId || doc.project_id !== args.projectId) return null;
+			if (!doc || doc.workspace_id !== page.workspaceId || doc.project_id !== page.projectId) return null;
 			return doc;
 		});
 
 		if (!lastYjsSequenceDoc) {
 			throw should_never_happen("lastYjsSequenceDoc is not valorized", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: page.workspaceId,
+				projectId: page.projectId,
 				pageId: args.pageId,
 				yjsLastSequenceId: page.yjsLastSequenceId,
 			});
@@ -1603,7 +1704,6 @@ export const text_search_pages = internalQuery({
 		projectId: v.string(),
 		query: v.string(),
 		limit: v.number(),
-		userId: v.string(),
 	},
 	returns: v.object({
 		items: v.array(
@@ -1634,8 +1734,6 @@ export const text_search_pages = internalQuery({
 			hasChunkBelow: boolean;
 		}>;
 	}> => {
-		void args.userId;
-
 		const matches = await ctx.db
 			.query("pages_plain_text_chunks")
 			.withSearchIndex("search_by_plain_text_chunk", (q) =>
@@ -1741,11 +1839,9 @@ export const create_page_by_path = internalMutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		path: v.string(),
-		userId: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
-		const { workspaceId, projectId } = args;
 		const path = args.path.trim();
 		const segments = path_extract_segments_from(path);
 		for (const segment of segments) {
@@ -1765,7 +1861,11 @@ export const create_page_by_path = internalMutation({
 			const existing = await ctx.db
 				.query("pages")
 				.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
-					q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("parentId", currentParent).eq("name", name),
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("parentId", currentParent)
+						.eq("name", name),
 				)
 				.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 				.first();
@@ -1773,8 +1873,8 @@ export const create_page_by_path = internalMutation({
 			if (!existing) {
 				// Create missing segment
 				const page = await do_create_page(ctx, {
-					workspaceId: workspaceId,
-					projectId: projectId,
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
 					parentId: currentParent,
 					name: name,
 					markdown_content: "",
@@ -1808,18 +1908,26 @@ export const create_page_by_path = internalMutation({
 
 export const ensure_home_page = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
 		// Find homepage (empty name under root)
 		const homepage = await ctx.db
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
 					.eq("parentId", pages_ROOT_ID)
 					.eq("name", ""),
 			)
@@ -1832,8 +1940,8 @@ export const ensure_home_page = mutation({
 
 		// Create homepage with empty name
 		const result = await do_create_page(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			parentId: pages_ROOT_ID,
 			name: "",
 			markdown_content: "",
@@ -1858,24 +1966,34 @@ const store_version_snapshot_args_schema = v.object({
 
 export const get_page_snapshots_list = query({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.id("pages"),
-		show_archived: v.boolean(),
+		membershipId: v.id("workspaces_projects_users"),
+		pageId: v.id("pages"),
+		showArchived: v.boolean(),
 	},
 	returns: v.object({
 		snapshots: v.array(doc(app_convex_schema, "pages_snapshots")),
 	}),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return {
+				snapshots: [],
+			};
+		}
+
 		const snapshots = await ctx.db
 			.query("pages_snapshots")
 			.withIndex("by_workspace_project_page_id_archived_at", (q) => {
 				const qBase = q
-					.eq("workspace_id", args.workspace_id)
-					.eq("project_id", args.project_id)
-					.eq("page_id", args.page_id);
+					.eq("workspace_id", membership.workspaceId)
+					.eq("project_id", membership.projectId)
+					.eq("page_id", args.pageId);
 
-				const qFinal = args.show_archived ? qBase.gt("archived_at", 0) : qBase.lte("archived_at", 0);
+				const qFinal = args.showArchived ? qBase.gt("archived_at", 0) : qBase.lte("archived_at", 0);
 
 				return qFinal;
 			})
@@ -1888,26 +2006,59 @@ export const get_page_snapshots_list = query({
 	},
 });
 
+export const get_page_snapshot = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		pageId: v.id("pages"),
+		pageSnapshotId: v.id("pages_snapshots"),
+	},
+	returns: v.union(doc(app_convex_schema, "pages_snapshots"), v.null()),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const snapshot = await ctx.db.get("pages_snapshots", args.pageSnapshotId);
+		if (!snapshot) {
+			return null;
+		}
+
+		if (
+			snapshot.workspace_id !== membership.workspaceId ||
+			snapshot.project_id !== membership.projectId ||
+			snapshot.page_id !== args.pageId
+		) {
+			return null;
+		}
+
+		return snapshot;
+	},
+});
+
 async function do_get_page_snapshot_content(
 	ctx: QueryCtx,
-	args: { workspace_id: string; project_id: string; page_snapshot_id: Id<"pages_snapshots"> },
+	args: {
+		workspaceId: string;
+		projectId: string;
+		pageId: Id<"pages">;
+		pageSnapshotId: Id<"pages_snapshots">;
+	},
 ) {
 	const content = await ctx.db
 		.query("pages_snapshots_contents")
 		.withIndex("by_workspace_project_page_snapshot_id", (q) =>
 			q
-				.eq("workspace_id", args.workspace_id)
-				.eq("project_id", args.project_id)
-				.eq("page_snapshot_id", args.page_snapshot_id),
+				.eq("workspace_id", args.workspaceId)
+				.eq("project_id", args.projectId)
+				.eq("page_snapshot_id", args.pageSnapshotId),
 		)
 		.first();
-
-	if (!content) {
-		return null;
-	}
-
-	const snapshot = await ctx.db.get("pages_snapshots", args.page_snapshot_id);
-	if (!snapshot) {
+	if (!content || content.page_id !== args.pageId) {
 		return null;
 	}
 
@@ -1915,52 +2066,96 @@ async function do_get_page_snapshot_content(
 		content: content.content,
 		page_snapshot_id: content.page_snapshot_id,
 		_creationTime: content._creationTime,
-		created_by: snapshot.created_by,
 	};
 }
 
 export const get_page_snapshot_content = query({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_id: v.id("pages"),
-		page_snapshot_id: v.id("pages_snapshots"),
+		membershipId: v.id("workspaces_projects_users"),
+		pageId: v.id("pages"),
+		pageSnapshotId: v.id("pages_snapshots"),
 	},
 	returns: v.union(
 		v.object({
 			content: v.string(),
 			page_snapshot_id: v.id("pages_snapshots"),
 			_creationTime: v.number(),
-			created_by: v.id("users"),
 		}),
 		v.null(),
 	),
-	handler: do_get_page_snapshot_content,
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		return await do_get_page_snapshot_content(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			pageId: args.pageId,
+			pageSnapshotId: args.pageSnapshotId,
+		});
+	},
 });
 
 export const archive_snapshot = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_snapshot_id: v.id("pages_snapshots"),
+		membershipId: v.id("workspaces_projects_users"),
+		pageSnapshotId: v.id("pages_snapshots"),
 	},
+	returns: v.null(),
 	handler: async (ctx, args) => {
-		await ctx.db.patch("pages_snapshots", args.page_snapshot_id, {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const snapshot = await ctx.db.get("pages_snapshots", args.pageSnapshotId);
+		if (!snapshot || snapshot.workspace_id !== membership.workspaceId || snapshot.project_id !== membership.projectId) {
+			return null;
+		}
+
+		await ctx.db.patch("pages_snapshots", args.pageSnapshotId, {
 			archived_at: Date.now(),
 		});
+
+		return null;
 	},
 });
 
 export const unarchive_snapshot = mutation({
 	args: {
-		workspace_id: v.string(),
-		project_id: v.string(),
-		page_snapshot_id: v.id("pages_snapshots"),
+		membershipId: v.id("workspaces_projects_users"),
+		pageSnapshotId: v.id("pages_snapshots"),
 	},
+	returns: v.null(),
 	handler: async (ctx, args) => {
-		await ctx.db.patch("pages_snapshots", args.page_snapshot_id, {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const snapshot = await ctx.db.get("pages_snapshots", args.pageSnapshotId);
+		if (!snapshot || snapshot.workspace_id !== membership.workspaceId || snapshot.project_id !== membership.projectId) {
+			return null;
+		}
+
+		await ctx.db.patch("pages_snapshots", args.pageSnapshotId, {
 			archived_at: 0,
 		});
+		return null;
 	},
 });
 
@@ -2079,16 +2274,24 @@ async function write_markdown_to_yjs_sync(
 
 export const yjs_get_doc_last_snapshot = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 	},
 	returns: v.union(doc(app_convex_schema, "pages_yjs_snapshots"), v.null()),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
 		return await ctx.db
 			.query("pages_yjs_snapshots")
 			.withIndex("by_workspace_project_page_id_sequence", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+				q.eq("workspace_id", membership.workspaceId).eq("project_id", membership.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
 			.first();
@@ -2328,8 +2531,7 @@ export async function pages_db_yjs_push_update(
 
 export const yjs_push_update = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		update: v.bytes(),
 		sessionId: v.string(),
@@ -2342,9 +2544,22 @@ export const yjs_push_update = mutation({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const page = await ctx.db.get("pages", args.pageId);
+		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+			return null;
+		}
+
 		return pages_db_yjs_push_update(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: page.workspaceId,
+			projectId: page.projectId,
 			pageId: args.pageId,
 			update: args.update,
 			sessionId: args.sessionId,
@@ -2356,8 +2571,7 @@ export const yjs_push_update = mutation({
 
 export const yjs_get_incremental_updates = query({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 	},
 	returns: v.union(
@@ -2367,10 +2581,19 @@ export const yjs_get_incremental_updates = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
 		const updates = await ctx.db
 			.query("pages_yjs_updates")
 			.withIndex("by_workspace_project_page_id_sequence", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+				q.eq("workspace_id", membership.workspaceId).eq("project_id", membership.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
 			.collect();
@@ -2407,8 +2630,7 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 
 export const restore_snapshot = mutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
 		pageId: v.id("pages"),
 		pageSnapshotId: v.id("pages_snapshots"),
 		sessionId: v.string(),
@@ -2422,31 +2644,36 @@ export const restore_snapshot = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		const [snapshotContent, page] = await Promise.all([
 			do_get_page_snapshot_content(ctx, {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
-				page_snapshot_id: args.pageSnapshotId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				pageId: args.pageId,
+				pageSnapshotId: args.pageSnapshotId,
 			}),
-			ctx.db.get("pages", args.pageId).then((doc) => {
-				if (!doc || doc.workspaceId !== args.workspaceId || doc.projectId !== args.projectId) return null;
-				return doc;
+			ctx.db.get("pages", args.pageId).then((page) => {
+				if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+					return null;
+				}
+
+				return page;
 			}),
 		]);
 
-		if (
-			!snapshotContent ||
-			!page ||
-			!page.markdownContentId ||
-			page.workspaceId !== args.workspaceId ||
-			page.projectId !== args.projectId
-		) {
-			const msg = "Page not found";
+		if (!snapshotContent || !page || !page.markdownContentId) {
+			const msg = "Not found";
 			console.error(
 				should_never_happen(msg, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
 					pageId: args.pageId,
 					snapshotContentNotFound: !snapshotContent,
 					pageNotFound: !page,
@@ -2463,8 +2690,8 @@ export const restore_snapshot = mutation({
 
 		if (!page.yjsLastSequenceId) {
 			throw should_never_happen("page.yjsLastSequenceId is not set", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				pageId: args.pageId,
 				yjsLastSequenceId: page.yjsLastSequenceId,
 			});
@@ -2480,8 +2707,8 @@ export const restore_snapshot = mutation({
 		await Promise.all([
 			// Store current state as a backup snapshot
 			store_version_snapshot(ctx, {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
+				workspace_id: membership.workspaceId,
+				project_id: membership.projectId,
 				page_id: args.pageId,
 				content: args.currentMarkdownContent,
 				created_by: createdBy,
@@ -2489,8 +2716,8 @@ export const restore_snapshot = mutation({
 
 			// Store the restored content as a new snapshot
 			store_version_snapshot(ctx, {
-				workspace_id: args.workspaceId,
-				project_id: args.projectId,
+				workspace_id: membership.workspaceId,
+				project_id: membership.projectId,
 				page_id: args.pageId,
 				content: snapshotContent.content,
 				created_by: createdBy,
@@ -2502,8 +2729,8 @@ export const restore_snapshot = mutation({
 			}),
 
 			write_markdown_to_yjs_sync(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				userId: user.name,
 				pageId: args.pageId,
 				markdownContent: snapshotContent.content,
@@ -2515,8 +2742,8 @@ export const restore_snapshot = mutation({
 		const yjsLastSequenceDoc = await ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId);
 		if (!yjsLastSequenceDoc) {
 			throw should_never_happen("yjsLastSequenceDoc is not valorized", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
 				pageId: args.pageId,
 				yjsLastSequenceId: page.yjsLastSequenceId,
 				yjsLastSequenceDoc,
@@ -2532,8 +2759,8 @@ export const restore_snapshot = mutation({
 					updated_at: now,
 				}),
 				db_upsert_page_chunks(ctx, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
 					pageId: args.pageId,
 					yjsSequence: yjsLastSequenceDoc.last_sequence,
 					markdownContent: snapshotContent.content,

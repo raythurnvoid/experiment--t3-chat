@@ -9,7 +9,7 @@ import { useMutation } from "convex/react";
 import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { ArrowUp } from "lucide-react";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	PageEditorRichTextCommentComposer,
@@ -75,8 +75,8 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 
 		// Create a new root message (thread) in Convex
 		createCommentsThread({
-			workspaceId: ai_chat_HARDCODED_ORG_ID,
-			projectId: ai_chat_HARDCODED_PROJECT_ID,
+			workspaceId,
+			projectId,
 			content: markdownContent.trim(),
 		})
 			.then((result) => {

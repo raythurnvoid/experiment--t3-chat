@@ -58,8 +58,31 @@ Non-obvious runtime details:
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - Assistant responses are persisted in `onFinish` under the resolved persisted parent message.
 - New threads store the optimistic `clientGeneratedThreadId` so the frontend can dedupe before the SSE mapping arrives.
-- The agent is currently scoped to the hardcoded workspace/project ids used across the app chat/page system.
+- Thread/page access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
+
+# Thread Access And Error Contract
+
+For thread-scoped Convex functions in `../../../packages/app/convex/ai_chat.ts`, keep membership checks, arg order, and error strings aligned.
+
+Use this pattern:
+
+1. Put `membershipId` first in `args`.
+2. Load `user`.
+3. Load `membership` from `membershipId`.
+4. If `membership` is missing, return `"Unauthorized"` (or `null` for nullable queries).
+5. Normalize/load the requested thread/message resource.
+6. If the resource id is invalid or the row is missing, return `"Not found"` (or `null` for nullable queries).
+7. Compare `thread.workspaceId` / `thread.projectId` directly to the membership row.
+8. If the workspace/project on the resource does not match the membership row, return `"Unauthorized"`.
+
+Important details:
+
+- Prefer direct `workspaceId` / `projectId` comparisons over a small helper for thread-scoped access checks.
+- Keep `thread_*` mutation handlers on `v_result(...)` when they have recoverable access/not-found failures.
+- Keep `thread_*` queries nullable when the current API already uses `null` for inaccessible or missing resources.
+- When `POST /api/chat` calls a Result-returning thread mutation, bubble `_nay.message` to the HTTP response/logging path instead of throwing.
+- Prefer inlining small `messages: [...]` / `.map(...)` payloads into `ctx.runMutation(...)` calls rather than introducing tiny temporary variables only to avoid repetition.
 
 # Current Toolbelt
 

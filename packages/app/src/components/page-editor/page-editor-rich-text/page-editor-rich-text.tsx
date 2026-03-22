@@ -28,12 +28,8 @@ import { uploadFn } from "./image-upload.ts";
 import { PageEditorRichTextAnchoredComments } from "./page-editor-rich-text-comments.tsx";
 import { PageEditorSnapshotsModal } from "../page-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
-import {
-	ai_chat_HARDCODED_ORG_ID,
-	ai_chat_HARDCODED_PROJECT_ID,
-	check_element_is_in_allowed_areas,
-	cn,
-} from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { check_element_is_in_allowed_areas, cn } from "@/lib/utils.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
@@ -615,6 +611,8 @@ const PageEditorRichTextAnchoredCommentsLayer = memo(function PageEditorRichText
 ) {
 	const { commentsPortalHost, editor, isEditorReady } = props;
 
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
 	const threadIdsKey = useEditorState({
 		editor,
 		selector: ({ editor: currentEditor }) => getThreadIdsFromEditorState(currentEditor.state).toSorted().join("\n"),
@@ -626,8 +624,8 @@ const PageEditorRichTextAnchoredCommentsLayer = memo(function PageEditorRichText
 		app_convex_api.chat_messages.chat_messages_threads_list,
 		threadIds.length > 0
 			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					workspaceId,
+					projectId,
 					threadIds,
 					isArchived: false,
 				}
@@ -826,10 +824,11 @@ export type PageEditorRichText_Props = React.ComponentProps<"div"> & {
 export function PageEditorRichText(props: PageEditorRichText_Props) {
 	const { pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot, ...rest } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const pagesYjs = usePagesYjs({
 		pageId: pageId,
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 		presenceStore,
 	});
 

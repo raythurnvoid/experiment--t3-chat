@@ -105,6 +105,25 @@ When calling Result-returning helpers:
 - Bubble `_nay` when possible.
 - If bubbling is not possible at that boundary, at least log `_nay` with context.
 
+## Membership-scoped Convex handlers
+
+When a Convex handler is scoped by a membership row (for example `membershipId: v.id("workspaces_projects_users")`), keep the validation flow and error contract consistent:
+
+- Put `membershipId` first in `args` and first in call-site object literals.
+- For mutation handlers that can fail recoverably, use `returns: v_result(...)` and return `Result(...)` instead of throwing.
+- For query handlers, prefer `null` on missing access/resource unless the API explicitly uses `Result`.
+- In membership-scoped handlers, load `user` first, then load `membership`.
+- If `membership` is missing, return `_nay.message = "Unauthorized"` (or `null` for nullable queries).
+- After membership succeeds, normalize/load the requested resource.
+- If the requested thread/message/resource id is invalid or the row does not exist, return `_nay.message = "Not found"` (or `null` for nullable queries).
+- After loading the resource, compare `workspaceId` and `projectId` directly against the membership row. Do not use a helper for these thread-scoped checks.
+- If the resource exists but belongs to a different workspace/project scope than the membership row, return `_nay.message = "Unauthorized"`.
+- Keep DB writes after these fallible checks so `_nay` returns do not leave partial writes behind.
+
+Small style rule for these handlers:
+
+- Prefer inlining small repeated `Result({ _nay: ... })` returns and small `ctx.runMutation(..., { messages: [...] })` payloads instead of adding tiny local helper functions/variables only to avoid repetition.
+
 ## Fail-fast concurrent Result loop (Result_all + Promise.all)
 
 When processing many items concurrently and each item can fail with `_nay`, prefer this pattern:

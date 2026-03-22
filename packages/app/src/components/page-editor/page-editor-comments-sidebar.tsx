@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useGlobalEvent, useGlobalEventList } from "@/lib/global-event.tsx";
@@ -60,14 +60,16 @@ export type PageEditorCommentsSidebar_Props = {
 export function PageEditorCommentsSidebar(props: PageEditorCommentsSidebar_Props) {
 	const { threadIds } = props;
 
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
 	const [query, setFilterValue] = useState("");
 
 	const threadsQuery = useStableQuery(
 		app_convex_api.chat_messages.chat_messages_threads_list,
 		threadIds.length > 0
 			? {
-					workspaceId: ai_chat_HARDCODED_ORG_ID,
-					projectId: ai_chat_HARDCODED_PROJECT_ID,
+					workspaceId,
+					projectId,
 					threadIds,
 					isArchived: false,
 				}

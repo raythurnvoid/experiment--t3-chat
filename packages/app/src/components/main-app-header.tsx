@@ -1,6 +1,8 @@
 import "./main-app-header.css";
 
 import { memo, useState, type ComponentPropsWithRef } from "react";
+import { useQuery } from "convex/react";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronsUpDown } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -15,6 +17,9 @@ import {
 	MyModalTrigger,
 } from "@/components/my-modal.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_tenant_default_project_for_workspace } from "@/lib/app-tenant-paths.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region workspace controls
@@ -28,49 +33,92 @@ type MainAppHeaderWorkspaceControls_ClassNames =
 
 type MainAppHeaderWorkspaceControls_ListItem = {
 	description: string;
+	id: string;
 	isCurrent?: boolean;
 	label: string;
+	onSelect: () => void;
 };
-
-const mock_workspace_record = {
-	projectName: "Launchpad",
-	workspaceName: "Northstar Studio",
-};
-
-const mock_workspace_items: MainAppHeaderWorkspaceControls_ListItem[] = [
-	{
-		isCurrent: true,
-		label: "Northstar Studio",
-		description: "Product design, engineering, and ops",
-	},
-	{
-		label: "Acme Client Services",
-		description: "External partner workspace",
-	},
-	{
-		label: "Internal R&D",
-		description: "Experiments and incubation work",
-	},
-];
-
-const mock_project_items: MainAppHeaderWorkspaceControls_ListItem[] = [
-	{
-		isCurrent: true,
-		label: "Launchpad",
-		description: "Default product surface for the current tenant",
-	},
-	{
-		label: "Growth Site",
-		description: "Marketing pages and onboarding flows",
-	},
-	{
-		label: "Admin Console",
-		description: "Permissions, billing, and workspace settings",
-	},
-];
 
 const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
+	const navigate = useNavigate();
+	const pathname = useRouterState({ select: (s) => s.location.pathname });
+
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
+	const workspaceList = useQuery(app_convex_api.workspaces.list);
+
 	const [isOpen, setIsOpen] = useState(false);
+
+	const workspaces = workspaceList?.workspaces;
+	const projects = workspaceId ? workspaceList?.workspaceIdsProjectsDict[workspaceId] : undefined;
+
+	const lastPathSegment = pathname.split("/").filter(Boolean).at(-1) ?? "";
+	const tenantRouteSuffix = lastPathSegment === "chat" ? "chat" : "pages";
+
+	const currentWorkspaceName = workspaces?.find((w) => w._id === workspaceId)?.name ?? "…";
+	const currentProjectName = projects?.find((p) => p._id === projectId)?.name ?? "…";
+
+	const navigateToTenant = (nextWorkspaceId: string, nextProjectId: string) => {
+		const to =
+			tenantRouteSuffix === "chat"
+				? ("/w/$workspaceId/p/$projectId/chat" as const)
+				: ("/w/$workspaceId/p/$projectId/pages" as const);
+
+		navigate({
+			to,
+			params: { workspaceId: nextWorkspaceId, projectId: nextProjectId },
+		});
+		setIsOpen(false);
+	};
+
+	const workspaceItems: MainAppHeaderWorkspaceControls_ListItem[] =
+		workspaces?.map((w) => ({
+			id: w._id,
+			label: w.name,
+			description: w.default ? "Default workspace" : "",
+			isCurrent: w._id === workspaceId,
+			onSelect: () => {
+				if (w._id === workspaceId) {
+					setIsOpen(false);
+					return;
+				}
+
+				if (!workspaceList) {
+					console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
+					return;
+				}
+
+				const defaultProject = app_tenant_default_project_for_workspace({
+					workspace: w,
+					projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
+				});
+
+				if (!defaultProject) {
+					console.error("[MainAppHeaderWorkspaceControls] Failed to resolve default project for workspace", {
+						workspaceId: w._id,
+					});
+					return;
+				}
+
+				navigateToTenant(w._id, defaultProject._id);
+			},
+		})) ?? [];
+
+	const projectItems: MainAppHeaderWorkspaceControls_ListItem[] =
+		projects?.map((p) => ({
+			id: p._id,
+			label: p.name,
+			description: p.default ? "Default project" : "",
+			isCurrent: p._id === projectId,
+			onSelect: () => {
+				if (p._id === projectId) {
+					setIsOpen(false);
+					return;
+				}
+
+				navigateToTenant(workspaceId, p._id);
+			},
+		})) ?? [];
 
 	return (
 		<MyModal open={isOpen} setOpen={setIsOpen}>
@@ -84,7 +132,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 							"MainAppHeaderWorkspaceControls-primary-text" satisfies MainAppHeaderWorkspaceControls_ClassNames,
 						)}
 					>
-						{mock_workspace_record.workspaceName}
+						{workspaces === undefined ? "Loading…" : currentWorkspaceName}
 					</span>
 
 					<span
@@ -92,7 +140,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 							"MainAppHeaderWorkspaceControls-secondary-text" satisfies MainAppHeaderWorkspaceControls_ClassNames,
 						)}
 					>
-						{mock_workspace_record.projectName}
+						{projects === undefined ? "…" : currentProjectName}
 					</span>
 
 					<ChevronsUpDown
@@ -102,10 +150,10 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 			</MyModalTrigger>
 
 			<MainAppHeaderWorkspaceControlsModal
-				projectItems={mock_project_items}
-				projectName={mock_workspace_record.projectName}
-				workspaceItems={mock_workspace_items}
-				workspaceName={mock_workspace_record.workspaceName}
+				projectItems={projectItems}
+				projectName={currentProjectName}
+				workspaceItems={workspaceItems}
+				workspaceName={currentWorkspaceName}
 			/>
 		</MyModal>
 	);
@@ -152,7 +200,9 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 					)}
 				>
 					<MyModalHeading>Workspace and project</MyModalHeading>
-					<MyModalDescription>Use mocked tenant data here until the real switcher is wired up.</MyModalDescription>
+					<MyModalDescription>
+						Switch workspace or project. Changing workspace opens that workspace’s default project.
+					</MyModalDescription>
 				</div>
 			</MyModalHeader>
 
@@ -223,7 +273,7 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 							"MainAppHeaderWorkspaceControlsModal-section-title" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
 						)}
 					>
-						Mock workspaces
+						Workspaces
 					</div>
 
 					<div
@@ -232,13 +282,15 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 						)}
 					>
 						{workspaceItems.map((item) => (
-							<div
-								key={item.label}
+							<button
+								key={item.id}
+								type="button"
 								className={cn(
 									"MainAppHeaderWorkspaceControlsModal-list-item" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
 									item.isCurrent &&
 										("MainAppHeaderWorkspaceControlsModal-list-item-current" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames),
 								)}
+								onClick={item.onSelect}
 							>
 								<div
 									className={cn(
@@ -248,14 +300,16 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 									{item.label}
 								</div>
 
-								<div
-									className={cn(
-										"MainAppHeaderWorkspaceControlsModal-list-item-description" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-									)}
-								>
-									{item.description}
-								</div>
-							</div>
+								{item.description ? (
+									<div
+										className={cn(
+											"MainAppHeaderWorkspaceControlsModal-list-item-description" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
+										)}
+									>
+										{item.description}
+									</div>
+								) : null}
+							</button>
 						))}
 					</div>
 				</section>
@@ -270,7 +324,7 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 							"MainAppHeaderWorkspaceControlsModal-section-title" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
 						)}
 					>
-						Mock projects
+						Projects
 					</div>
 
 					<div
@@ -279,13 +333,15 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 						)}
 					>
 						{projectItems.map((item) => (
-							<div
-								key={item.label}
+							<button
+								key={item.id}
+								type="button"
 								className={cn(
 									"MainAppHeaderWorkspaceControlsModal-list-item" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
 									item.isCurrent &&
 										("MainAppHeaderWorkspaceControlsModal-list-item-current" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames),
 								)}
+								onClick={item.onSelect}
 							>
 								<div
 									className={cn(
@@ -295,14 +351,16 @@ const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspace
 									{item.label}
 								</div>
 
-								<div
-									className={cn(
-										"MainAppHeaderWorkspaceControlsModal-list-item-description" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-									)}
-								>
-									{item.description}
-								</div>
-							</div>
+								{item.description ? (
+									<div
+										className={cn(
+											"MainAppHeaderWorkspaceControlsModal-list-item-description" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
+										)}
+									>
+										{item.description}
+									</div>
+								) : null}
+							</button>
 						))}
 					</div>
 				</section>

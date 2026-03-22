@@ -6,7 +6,9 @@ import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEve
 import { createPortal } from "react-dom";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text/page-editor-plain-text-skeleton.tsx";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, cn, should_never_happen } from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
+import { cn, should_never_happen } from "@/lib/utils.ts";
 import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { PageEditorSidebar } from "./page-editor-sidebar/page-editor-sidebar.tsx";
 import { useMutation, useQuery } from "convex/react";
@@ -47,7 +49,7 @@ import {
 } from "../my-resizable-panel-group.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
-import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { useAppLocalStorageStateValue, useAppLocalStorageValue } from "@/lib/storage.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 
 function get_breadcrumb_path(
@@ -111,8 +113,12 @@ type PageEditorHeader_Props = {
 function PageEditorHeader(props: PageEditorHeader_Props) {
 	const { pageId, editorMode, onlineUsers, onEditorModeChange } = props;
 
-	const homePageId = useAppGlobalStore((state) => state.pages_home_id);
-	const pagesSidebarOpen = useAppLocalStorageState((state) => state.pages_sidebar_open);
+	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+
+	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_scope[scopeKey] ?? "");
+
+	const pagesSidebarOpen = useAppLocalStorageValue("app_state::sidebar::pages_open");
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as PageEditorHeader_Props["editorMode"]);
@@ -120,8 +126,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 
 	// Query tree items to build breadcrumb path
 	const treeItemsList = useQuery(app_convex_api.ai_docs_temp.get_tree_items_list, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 	});
 
 	// Build breadcrumb path from pageId up to root
@@ -145,7 +150,8 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 								<MyLink
 									aria-label="Home"
 									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
-									to="/pages"
+									to="/w/$workspaceId/p/$projectId/pages"
+									params={{ workspaceId, projectId }}
 									search={{ pageId: homePageId, view: editorMode }}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
@@ -170,7 +176,8 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 											<li>
 												<MyLink
 													className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
-													to="/pages"
+													to="/w/$workspaceId/p/$projectId/pages"
+													params={{ workspaceId, projectId }}
 													search={{ pageId: item.index, view: editorMode }}
 													variant="button-tertiary"
 												>
@@ -323,7 +330,9 @@ type PageEditorPresenceSupplier_Props = {
 function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Props) {
 	const { userId, pageId, children } = props;
 
-	const roomId = pages_create_room_id(ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID, pageId);
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	
+	const roomId = pages_create_room_id(workspaceId, projectId, pageId);
 
 	const presence = usePresence({
 		roomId: roomId,
@@ -630,9 +639,10 @@ function PageEditorInner(props: PageEditorInner_Props) {
 		onDiffExit,
 	} = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const allPendingEditsResult = useQuery(app_convex_api.pages_pending_edits.list_pages_pending_edits, {
-		workspaceId: ai_chat_HARDCODED_ORG_ID,
-		projectId: ai_chat_HARDCODED_PROJECT_ID,
+		membershipId,
 	});
 
 	const pendingEditsOrdered = allPendingEditsResult ? allPendingEditsResult.toReversed() : [];
@@ -649,7 +659,9 @@ function PageEditorInner(props: PageEditorInner_Props) {
 		: "Review pending edits";
 
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
-	const savedPanelLayout = useAppLocalStorageState((state) => state.page_editor_panel_layout);
+	const [savedPanelLayout, setSavedPanelLayout] = useAppLocalStorageStateValue(
+		"app_state::resizable_panel::page_editor_panel",
+	);
 	const panelLayoutRef = useRef(savedPanelLayout ?? [75, 25]);
 
 	const handleDiffExit = useFn(() => {
@@ -708,7 +720,7 @@ function PageEditorInner(props: PageEditorInner_Props) {
 			return;
 		}
 
-		useAppLocalStorageState.setState({ page_editor_panel_layout: panelLayoutRef.current });
+		setSavedPanelLayout(panelLayoutRef.current);
 	});
 
 	const handleCatchBoundaryError = useFn((err: Error) => {
@@ -824,6 +836,7 @@ export function PageEditor(props: PageEditor_Props) {
 
 	const navigate = useNavigate();
 	const authenticated = AppAuthProvider.useAuthenticated();
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
 
 	useImperativeHandle(
 		ref,
@@ -845,7 +858,8 @@ export function PageEditor(props: PageEditor_Props) {
 		};
 
 		navigate({
-			to: "/pages",
+			to: "/w/$workspaceId/p/$projectId/pages",
+			params: { workspaceId, projectId },
 			search: nextSearch,
 		}).catch((error) => {
 			console.error("[PageEditorInner.handleNavigatePendingEdits] Error navigating to pending edits", { error });

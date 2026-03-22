@@ -1,9 +1,6 @@
 import { createIdGenerator } from "ai";
 import type { KeysOfUnion, LiteralUnion } from "type-fest";
 
-export const ai_chat_HARDCODED_ORG_ID = "app_workspace_local_dev";
-export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
-
 export const is_browser = ((/* iife */) => {
 	function value() {
 		if (typeof globalThis.window === "undefined") {

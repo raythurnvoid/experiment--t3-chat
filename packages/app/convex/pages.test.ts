@@ -1,161 +1,168 @@
 import { expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with, test_mocks_hardcoded } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
-import type { ActionCtx } from "./_generated/server";
 import { pages_ROOT_ID } from "../server/pages.ts";
 
 test("list_pages", async () => {
 	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
 
-	await t.run(async (ctx) => {
-		const db = await test_mocks_fill_db_with.nested_pages(ctx);
+	const result_list_root = await list_dir({
+		runQuery: asUser.query,
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: "/",
+	});
 
-		const result_list_root = await list_dir(ctx as any, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
-			path: "/",
-		});
+	expect(result_list_root.items).toHaveLength(Object.keys(db.pages).length);
 
-		expect(result_list_root.items).toHaveLength(Object.keys(db.pages).length);
+	expect(result_list_root.items[0]).toStrictEqual({
+		path: `/${db.pages.page_root_1.name}`,
+		updatedAt: db.pages.page_root_1.updatedAt,
+	});
 
-		expect(result_list_root.items[0]).toStrictEqual({
-			path: `/${db.pages.page_root_1.name}`,
-			updatedAt: db.pages.page_root_1.updatedAt,
-		});
+	// The list must be depth-first
+	expect(result_list_root.items[1]).toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1.updatedAt,
+	});
+	expect(result_list_root.items[2]).toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1_deep_1.updatedAt,
+	});
 
-		// The list must be depth-first
-		expect(result_list_root.items[1]).toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updatedAt,
-		});
-		expect(result_list_root.items[2]).toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1_deep_1.updatedAt,
-		});
+	const result_list_page_root_1 = await list_dir({
+		runQuery: asUser.query,
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: `/${db.pages.page_root_1.name}`,
+	});
 
-		const result_list_page_root_1 = await list_dir(ctx as any, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
-			path: `/${db.pages.page_root_1.name}`,
-		});
+	expect(result_list_page_root_1.items).toHaveLength(
+		[db.pages.page_root_1_child_1, db.pages.page_root_1_child_1_deep_1, db.pages.page_root_1_child_2].length,
+	);
 
-		expect(result_list_page_root_1.items).toHaveLength(
-			[db.pages.page_root_1_child_1, db.pages.page_root_1_child_1_deep_1, db.pages.page_root_1_child_2].length,
-		);
-
-		// The list must be depth-first
-		expect(result_list_page_root_1.items[0]).toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updatedAt,
-		});
+	// The list must be depth-first
+	expect(result_list_page_root_1.items[0]).toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1.updatedAt,
 	});
 });
 
 test("list_pages_new", async () => {
 	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
 
-	await t.run(async (ctx) => {
-		const db = await test_mocks_fill_db_with.nested_pages(ctx);
+	const result_root = await asUser.query(internal.ai_docs_temp.list_pages, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: "/",
+		maxDepth: 10,
+		limit: 100,
+	});
 
-		const result_root = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
-			path: "/",
-			maxDepth: 10,
-			limit: 100,
-		});
+	expect(result_root.items).toHaveLength(Object.keys(db.pages).length);
 
-		expect(result_root.items).toHaveLength(Object.keys(db.pages).length);
+	expect(result_root.items[0], "The first result must be the first page at the root").toStrictEqual({
+		path: `/${db.pages.page_root_1.name}`,
+		updatedAt: db.pages.page_root_1.updatedAt,
+		depthTruncated: false,
+	});
 
-		expect(result_root.items[0], "The first result must be the first page at the root").toStrictEqual({
-			path: `/${db.pages.page_root_1.name}`,
-			updatedAt: db.pages.page_root_1.updatedAt,
-			depthTruncated: false,
-		});
+	expect(result_root.items[1], "The list must be depth-first").toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1.updatedAt,
+		depthTruncated: false,
+	});
+	expect(result_root.items[2], "The list must be depth-first").toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1_deep_1.updatedAt,
+		depthTruncated: false,
+	});
 
-		expect(result_root.items[1], "The list must be depth-first").toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updatedAt,
-			depthTruncated: false,
-		});
-		expect(result_root.items[2], "The list must be depth-first").toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1_deep_1.updatedAt,
-			depthTruncated: false,
-		});
+	expect(result_root.truncated).toBe(false);
 
-		expect(result_root.truncated).toBe(false);
+	const result_under_root1 = await asUser.query(internal.ai_docs_temp.list_pages, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: `/${db.pages.page_root_1.name}`,
+		maxDepth: 10,
+		limit: 100,
+	});
 
-		const result_under_root1 = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
-			path: `/${db.pages.page_root_1.name}`,
-			maxDepth: 10,
-			limit: 100,
-		});
+	expect(result_under_root1.items).toHaveLength(
+		[db.pages.page_root_1_child_1, db.pages.page_root_1_child_1_deep_1, db.pages.page_root_1_child_2].length,
+	);
 
-		expect(result_under_root1.items).toHaveLength(
-			[db.pages.page_root_1_child_1, db.pages.page_root_1_child_1_deep_1, db.pages.page_root_1_child_2].length,
-		);
+	expect(result_under_root1.items[0], "The first result must be the first child of the root").toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1.updatedAt,
+		depthTruncated: false,
+	});
 
-		expect(result_under_root1.items[0], "The first result must be the first child of the root").toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updatedAt,
-			depthTruncated: false,
-		});
+	// Depth truncation flagging: with maxDepth 1, the first child with deeper matches should be marked
+	const result_depth1 = await asUser.query(internal.ai_docs_temp.list_pages, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: "/",
+		maxDepth: 1,
+		limit: 100,
+	});
 
-		// Depth truncation flagging: with maxDepth 1, the first child with deeper matches should be marked
-		const result_depth1 = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
-			path: "/",
-			maxDepth: 1,
-			limit: 100,
-		});
-
-		expect(result_depth1.items[1]).toStrictEqual({
-			path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
-			updatedAt: db.pages.page_root_1_child_1.updatedAt,
-			depthTruncated: true,
-		});
+	expect(result_depth1.items[1]).toStrictEqual({
+		path: `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`,
+		updatedAt: db.pages.page_root_1_child_1.updatedAt,
+		depthTruncated: true,
 	});
 });
 
 test("resolve_page_id_from_path uses materialized paths", async () => {
 	const t = test_convex();
-
-	await t.run(async (ctx) => {
-		const db = await test_mocks_fill_db_with.nested_pages(ctx);
-
-		const root1Path = `/${db.pages.page_root_1.name}`;
-		const child1Path = `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`;
-		const deep1Path = `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`;
-
-		const [root1Id, child1Id, deep1Id] = await Promise.all([
-			ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-				projectId: test_mocks_hardcoded.project_id.project_1,
-				path: root1Path,
-			}),
-			ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-				projectId: test_mocks_hardcoded.project_id.project_1,
-				path: child1Path,
-			}),
-			ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-				projectId: test_mocks_hardcoded.project_id.project_1,
-				path: deep1Path,
-			}),
-		]);
-
-		expect(root1Id).toBe(db.pages.page_root_1._id);
-		expect(child1Id).toBe(db.pages.page_root_1_child_1._id);
-		expect(deep1Id).toBe(db.pages.page_root_1_child_1_deep_1._id);
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
 	});
+
+	const root1Path = `/${db.pages.page_root_1.name}`;
+	const child1Path = `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}`;
+	const deep1Path = `/${db.pages.page_root_1.name}/${db.pages.page_root_1_child_1.name}/${db.pages.page_root_1_child_1_deep_1.name}`;
+
+	const [root1Id, child1Id, deep1Id] = await Promise.all([
+		asUser.query(internal.ai_docs_temp.resolve_page_id_from_path, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: root1Path,
+		}),
+		asUser.query(internal.ai_docs_temp.resolve_page_id_from_path, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: child1Path,
+		}),
+		asUser.query(internal.ai_docs_temp.resolve_page_id_from_path, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: deep1Path,
+		}),
+	]);
+
+	expect(root1Id).toBe(db.pages.page_root_1._id);
+	expect(child1Id).toBe(db.pages.page_root_1_child_1._id);
+	expect(deep1Id).toBe(db.pages.page_root_1_child_1_deep_1._id);
 });
 
 test("rename_page updates descendants materialized paths", async () => {
@@ -169,8 +176,7 @@ test("rename_page updates descendants materialized paths", async () => {
 
 	const renamedRootName = "renamed_root";
 	await asUser.mutation(api.ai_docs_temp.rename_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageId: db.pages.page_root_1._id,
 		name: renamedRootName,
 	});
@@ -202,8 +208,7 @@ test("move_pages updates descendants materialized paths", async () => {
 	await asUser.mutation(api.ai_docs_temp.move_pages, {
 		itemIds: [db.pages.page_root_1_child_1._id],
 		targetParentId: db.pages.page_root_2._id,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 
 	await t.run(async (ctx) => {
@@ -229,8 +234,7 @@ test("homepage path stays immutable on rename and move", async () => {
 	});
 
 	const ensuredHomepage = await asUser.mutation(api.ai_docs_temp.ensure_home_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 	if (ensuredHomepage._nay) {
 		throw new Error("ensure_home_page failed in test");
@@ -238,8 +242,7 @@ test("homepage path stays immutable on rename and move", async () => {
 	const homepageId = ensuredHomepage._yay.pageId;
 
 	await asUser.mutation(api.ai_docs_temp.rename_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageId: homepageId,
 		name: "renamed_home",
 	});
@@ -247,8 +250,7 @@ test("homepage path stays immutable on rename and move", async () => {
 	await asUser.mutation(api.ai_docs_temp.move_pages, {
 		itemIds: [homepageId],
 		targetParentId: db.pages.page_root_1._id,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 
 	await t.run(async (ctx) => {
@@ -271,8 +273,7 @@ test("create_page rejects duplicate active path", async () => {
 	const duplicateCreation = await asUser.mutation(api.ai_docs_temp.create_page, {
 		parentId: pages_ROOT_ID,
 		name: db.pages.page_root_1.name,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 
 	if (duplicateCreation._yay) {
@@ -296,8 +297,7 @@ test("create_page rejects names containing path separator characters", async () 
 		const result = await asUser.mutation(api.ai_docs_temp.create_page, {
 			parentId: pages_ROOT_ID,
 			name: invalidName,
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
+			membershipId: db.membershipId,
 		});
 
 		if (result._yay) {
@@ -313,8 +313,8 @@ test("create_page rejects names containing path separator characters", async () 
 				.query("pages")
 				.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 					q
-						.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
-						.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+						.eq("workspaceId", db.workspaceId)
+						.eq("projectId", db.projectId)
 						.eq("parentId", pages_ROOT_ID)
 						.eq("name", invalidName),
 				)
@@ -339,24 +339,21 @@ test("archived pages can share path with a new active page", async () => {
 	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {
 		parentId: pages_ROOT_ID,
 		name: duplicateName,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 	if (createdPage._nay) {
 		throw new Error("Expected initial page creation to succeed");
 	}
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [createdPage._yay.pageId],
 	});
 
 	const recreatedPage = await asUser.mutation(api.ai_docs_temp.create_page, {
 		parentId: pages_ROOT_ID,
 		name: duplicateName,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 	if (recreatedPage._nay) {
 		throw new Error("Expected recreated page creation to succeed");
@@ -367,10 +364,7 @@ test("archived pages can share path with a new active page", async () => {
 		const pagesAtPath = await ctx.db
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
-				q
-					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
-					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
-					.eq("path", path),
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", path),
 			)
 			.collect();
 
@@ -390,8 +384,7 @@ test("rename_page returns conflict and keeps original path", async () => {
 	});
 
 	const renameResult = await asUser.mutation(api.ai_docs_temp.rename_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageId: db.pages.page_root_2._id,
 		name: db.pages.page_root_1.name,
 	});
@@ -426,8 +419,7 @@ test("rename_page rejects names containing path separator characters and keeps o
 
 	for (const invalidName of invalidNames) {
 		const renameResult = await asUser.mutation(api.ai_docs_temp.rename_page, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
+			membershipId: db.membershipId,
 			pageId: db.pages.page_root_2._id,
 			name: invalidName,
 		});
@@ -456,8 +448,7 @@ test("move_pages returns conflict and keeps original path", async () => {
 	const conflictingSibling = await asUser.mutation(api.ai_docs_temp.create_page, {
 		parentId: db.pages.page_root_2._id,
 		name: db.pages.page_root_1_child_1.name,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 	if (conflictingSibling._nay) {
 		throw new Error("Expected conflicting sibling creation to succeed");
@@ -466,8 +457,7 @@ test("move_pages returns conflict and keeps original path", async () => {
 	const moveResult = await asUser.mutation(api.ai_docs_temp.move_pages, {
 		itemIds: [db.pages.page_root_1_child_1._id],
 		targetParentId: db.pages.page_root_2._id,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 	if (!("_nay" in moveResult)) {
 		throw new Error("Expected move to fail with path conflict");
@@ -496,14 +486,12 @@ test("unarchive_pages returns conflict when active page already has the same pat
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const renameArchived = await asUser.mutation(api.ai_docs_temp.rename_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageId: db.pages.page_root_2._id,
 		name: db.pages.page_root_1.name,
 	});
@@ -512,8 +500,7 @@ test("unarchive_pages returns conflict when active page already has the same pat
 	}
 
 	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 	if (!("_nay" in unarchiveResult)) {
@@ -542,14 +529,12 @@ test("unarchive_pages excludes unrequested ancestors from archive operation", as
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_1._id],
 	});
 
 	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_1_child_1._id],
 	});
 	if (unarchiveResult._nay) {
@@ -583,14 +568,12 @@ test("resolve_page_id_from_path ignores archived pages with duplicate path", asy
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const renameArchived = await asUser.mutation(api.ai_docs_temp.rename_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageId: db.pages.page_root_2._id,
 		name: db.pages.page_root_1.name,
 	});
@@ -598,13 +581,11 @@ test("resolve_page_id_from_path ignores archived pages with duplicate path", asy
 		throw new Error("Expected archived rename to succeed");
 	}
 
-	const resolvedRoot1 = await t.run(async (ctx) =>
-		ctx.runQuery(internal.ai_docs_temp.resolve_page_id_from_path, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
-			path: `/${db.pages.page_root_1.name}`,
-		}),
-	);
+	const resolvedRoot1 = await asUser.query(internal.ai_docs_temp.resolve_page_id_from_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: `/${db.pages.page_root_1.name}`,
+	});
 
 	expect(resolvedRoot1).toBe(db.pages.page_root_1._id);
 });
@@ -620,10 +601,9 @@ test("create_page_by_path rejects invalid path segments", async () => {
 
 	const invalidPath = "/invalid_parent/invalid\\name";
 	const createByPath = await asUser.mutation(internal.ai_docs_temp.create_page_by_path, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
 		path: invalidPath,
-		userId: String(db.pages.page_root_1.createdBy),
 	});
 
 	if (createByPath._yay) {
@@ -637,8 +617,8 @@ test("create_page_by_path rejects invalid path segments", async () => {
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
 				q
-					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
-					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
 					.eq("parentId", pages_ROOT_ID)
 					.eq("name", "invalid_parent"),
 			)
@@ -659,16 +639,14 @@ test("create_page_by_path reuses only active pages", async () => {
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const createByPath = await asUser.mutation(internal.ai_docs_temp.create_page_by_path, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
 		path: `/${db.pages.page_root_2.name}/new_leaf`,
-		userId: String(db.pages.page_root_1.createdBy),
 	});
 	if (createByPath._nay) {
 		throw new Error("Expected create_page_by_path to succeed with archived duplicate ancestor");
@@ -679,10 +657,7 @@ test("create_page_by_path reuses only active pages", async () => {
 		const pagesAtRoot2Path = await ctx.db
 			.query("pages")
 			.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
-				q
-					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
-					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
-					.eq("path", root2Path),
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", root2Path),
 			)
 			.collect();
 		expect(pagesAtRoot2Path).toHaveLength(2);
@@ -700,19 +675,17 @@ test("create_page_by_path reuses only active pages", async () => {
 	});
 });
 
-async function list_dir(
-	ctx: ActionCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		path: string;
-		maxDepth?: number;
-		limit?: number;
-		include?: string;
-	},
-): Promise<{ items: Array<{ path: string; updatedAt: number }>; metadata: { count: number; truncated: boolean } }> {
+async function list_dir(args: {
+	runQuery: (ref: any, args: any) => Promise<any>;
+	workspaceId: string;
+	projectId: string;
+	path: string;
+	maxDepth?: number;
+	limit?: number;
+	include?: string;
+}): Promise<{ items: Array<{ path: string; updatedAt: number }>; metadata: { count: number; truncated: boolean } }> {
 	// Resolve the starting node id for the provided path
-	const startNodeId = await ctx.runQuery(internal.ai_docs_temp.resolve_tree_node_id_from_path, {
+	const startNodeId = await args.runQuery(internal.ai_docs_temp.resolve_tree_node_id_from_path, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: args.path,
@@ -736,7 +709,7 @@ async function list_dir(
 		const frame = stack.pop();
 		if (!frame) continue;
 
-		const paginatedResult = await ctx.runQuery(internal.ai_docs_temp.get_page_info_for_list_dir_pagination, {
+		const paginatedResult = await args.runQuery(internal.ai_docs_temp.get_page_info_for_list_dir_pagination, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			parentId: frame.parentId,
@@ -802,8 +775,7 @@ test("N07 rename_page idempotency: same name no-op", async () => {
 	const before = await t.run(async (ctx) => ctx.db.get("pages", db.pages.page_root_1._id));
 
 	const renameResult = await asUser.mutation(api.ai_docs_temp.rename_page, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageId: db.pages.page_root_1._id,
 		name: db.pages.page_root_1.name,
 	});
@@ -828,8 +800,7 @@ test("N08 move_pages idempotency: same parent no-op", async () => {
 	const moveResult = await asUser.mutation(api.ai_docs_temp.move_pages, {
 		itemIds: [db.pages.page_root_1_child_1._id],
 		targetParentId: db.pages.page_root_1._id,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 	});
 	expect(moveResult).not.toHaveProperty("_nay");
 
@@ -848,28 +819,24 @@ test("N09 archive/unarchive idempotency", async () => {
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 
 	const archiveAgain = await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 	expect(archiveAgain).not.toHaveProperty("_nay");
 
 	const unarchiveResult = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 	expect(unarchiveResult).not.toHaveProperty("_nay");
 
 	const unarchiveAgain = await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_2._id],
 	});
 	expect(unarchiveAgain).not.toHaveProperty("_nay");
@@ -890,20 +857,17 @@ test("N02 archive child then parent then unarchive parent restores hierarchy", a
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_1_child_1._id],
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_1._id],
 	});
 
 	await asUser.mutation(api.ai_docs_temp.unarchive_pages, {
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
+		membershipId: db.membershipId,
 		pageIds: [db.pages.page_root_1._id],
 	});
 
@@ -918,4 +882,73 @@ test("N02 archive child then parent then unarchive parent restores hierarchy", a
 		expect(pageRoot1Child1?.parentId).toBe(pageRoot1?._id);
 		expect(pageRoot1Child1Deep1?.parentId).toBe(pageRoot1Child1?._id);
 	});
+});
+
+test("membership-scoped page and yjs APIs reject cross-user membership ids", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const ownerIdentity = {
+		issuer: "https://clerk.test",
+		external_id: db.pages.page_root_1.createdBy,
+		name: "Owner User",
+	};
+	const asOwner = t.withIdentity(ownerIdentity);
+
+	const otherUserId = await t.run(async (ctx) =>
+		ctx.db.insert("users", {
+			clerkUserId: null,
+			anonymousAuthToken: null,
+		}),
+	);
+	const asOtherUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: otherUserId,
+		name: "Other User",
+	});
+
+	const unauthorizedRename = await asOtherUser.mutation(api.ai_docs_temp.rename_page, {
+		membershipId: db.membershipId,
+		pageId: db.pages.page_root_1._id,
+		name: "should-not-rename",
+	});
+	if (!unauthorizedRename._nay) {
+		throw new Error("Expected rename_page to reject cross-user membership access");
+	}
+	expect(unauthorizedRename._nay.message).toBe("Unauthorized");
+
+	const createdPage = await asOwner.mutation(api.ai_docs_temp.create_page, {
+		membershipId: db.membershipId,
+		parentId: pages_ROOT_ID,
+		name: "membership-yjs-regression-page",
+	});
+	if (createdPage._nay) {
+		throw new Error("Expected owner to create regression page");
+	}
+
+	const snapshotsResult = await asOtherUser.query(api.ai_docs_temp.get_page_snapshots_list, {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+		showArchived: false,
+	});
+	expect(snapshotsResult.snapshots).toEqual([]);
+
+	const unauthorizedYjsSnapshot = await asOtherUser.query(api.ai_docs_temp.yjs_get_doc_last_snapshot, {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+	});
+	expect(unauthorizedYjsSnapshot).toBeNull();
+
+	const unauthorizedYjsUpdates = await asOtherUser.query(api.ai_docs_temp.yjs_get_incremental_updates, {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+	});
+	expect(unauthorizedYjsUpdates).toBeNull();
+
+	const unauthorizedYjsPush = await asOtherUser.mutation(api.ai_docs_temp.yjs_push_update, {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+		update: new ArrayBuffer(0),
+		sessionId: "cross-user-membership",
+	});
+	expect(unauthorizedYjsPush).toBeNull();
 });

@@ -516,6 +516,8 @@ This rule does not apply to React components or hooks; keep following the dedica
 - File-local/private symbols should usually omit the module/feature prefix when the file context already makes ownership obvious.
 - Exported/public values may use a module prefix for import-site discoverability, for example `pages_*`, `ai_chat_*`, `app_*`, `storage_*`.
 - Match the file's established constant casing, but keep the semantic name short. Do not repeat the full feature path in private constants, ids, storage keys, or local glue helpers just because the symbol lives in that feature file.
+- Name private helpers after their actual module-level role, not after a redundant feature prefix. Prefer `runtime`, `cache_by_storage_key`, or `registered_field_definitions` over `app_local_storage_runtime`, `cacheByStorageKey`, or `definitionByStorageKey` when the file context already provides the namespace.
+- Prefer names that describe the current axis of the abstraction. If an API is keyed by storage keys, use `key`, `storage_key`, `cache_by_storage_key`, and similar terms instead of older `field` / `scope` terminology that no longer reflects the public shape.
 - Prefer plain descriptive names such as `strip_provider_metadata_from_message_parts` over `ai_chat_strip_provider_metadata_from_message_parts`.
 - Keep well-established exceptions when they improve clarity or match external APIs: hooks use `useXxx`, short shared utilities may stay `cn` / `sx`, and wrappers over external APIs may preserve existing camelCase names.
 
@@ -538,8 +540,10 @@ Use one of these two shapes:
 
 Do not add a module/feature prefix to a private type just because it lives in that feature file. Prefer `OpenTabRecord` over `page_editor_sidebar_open_tab_Entry` when the file context already provides the namespace. If you add a prefix to an exported/public type-like root-level symbol, keep the namespace prefix in `snake_case` and the type-like suffix in PascalCase (for example `ai_chat_Stream`, `pages_DocSnapshot`, `ai_chat_Result`).
 
+When a private type supports generic module machinery rather than one specific exported owner, prefer a plain PascalCase name such as `FieldDefinition` over `app_local_storage_FieldDefinition`. Reserve owner-scoped names like `OwnerSymbol_Descriptor` for declarations that are truly owned by that symbol, not for every private type in the file.
+
 ```ts
-export const ai_chat_HARDCODED_PROJECT_ID = "app_project_local_dev";
+export const ai_chat_MAIN_MODEL_IDS = ["gpt-5-nano", "gpt-4.1-mini"] as const;
 
 export class ai_chat_MyClass {
 	constructor(public projectId: string) {}

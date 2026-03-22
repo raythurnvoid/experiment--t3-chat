@@ -7,11 +7,13 @@ import type { LucideIcon } from "lucide-react";
 import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link, useRouterState } from "@tanstack/react-router";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_tenantPaths_chat, app_tenantPaths_pages } from "@/lib/app-tenant-paths.ts";
 import { dark } from "@clerk/themes";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useAppLocalStorageState } from "@/lib/storage.ts";
+import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
 import { app_presence_set_enabled, usePresence, usePresenceEnabled, usePresenceList } from "@/hooks/presence-hooks.ts";
@@ -27,7 +29,6 @@ import {
 	MySidebarFooter,
 	MySidebarHeader,
 	MySidebarHovercardAction,
-	MySidebarInset,
 	MySidebarList,
 	MySidebarListItem,
 	MySidebarListItemIcon,
@@ -521,23 +522,26 @@ type MainAppSidebar_Props = {
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const isOpen = useAppLocalStorageState((state) => state.main_app_sidebar_open);
-	const mainAppSidebarCollapsed = useAppLocalStorageState((state) => state.main_app_sidebar_collapsed);
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
+
+	const chatPath = app_tenantPaths_chat({ workspaceId, projectId });
+	const pagesPath = app_tenantPaths_pages({ workspaceId, projectId });
+
+	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
+	const [mainAppSidebarCollapsed, setMainAppSidebarCollapsed] = useAppLocalStorageStateValue(
+		"app_state::sidebar::main_app_collapsed",
+	);
 
 	const sidebarState: MySidebar_Props["state"] = !isOpen ? "closed" : "expanded";
 
 	const handleSidebarWidthToggleClick = useFn(() => {
-		useAppLocalStorageState.setState((state) => ({
-			main_app_sidebar_collapsed: !state.main_app_sidebar_collapsed,
-		}));
+		setMainAppSidebarCollapsed((value) => !value);
 	});
 
 	AppHotkeysProvider.useHotkey(
 		"Mod+B",
 		useFn(() => {
-			useAppLocalStorageState.setState((state) => ({
-				main_app_sidebar_open: !state.main_app_sidebar_open,
-			}));
+			setIsOpen((value) => !value);
 		}),
 	);
 
@@ -579,13 +583,13 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 					aria-label="Main navigation"
 				>
 					<MainAppSidebarItem
-						to="/chat"
+						to={chatPath}
 						label="Chat"
 						icon={MessageSquare}
 						tooltip={mainAppSidebarCollapsed ? "AI Chat" : undefined}
 					/>
 					<MainAppSidebarItem
-						to="/pages"
+						to={pagesPath}
 						label="Pages"
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Pages" : undefined}

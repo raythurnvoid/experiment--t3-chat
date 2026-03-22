@@ -114,6 +114,38 @@ export async function pages_db_get_yjs_content_and_sequence(
 	};
 }
 
+export async function pages_db_get_pending_edit(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: string;
+		pageId: Id<"pages">;
+		pendingEditId?: Id<"pages_pending_edits">;
+	},
+) {
+	const pendingEditById = args.pendingEditId ? await ctx.db.get("pages_pending_edits", args.pendingEditId) : null;
+	const pendingEdit =
+		pendingEditById &&
+		pendingEditById.workspaceId === args.workspaceId &&
+		pendingEditById.projectId === args.projectId &&
+		pendingEditById.userId === args.userId &&
+		pendingEditById.pageId === args.pageId
+			? pendingEditById
+			: await ctx.db
+					.query("pages_pending_edits")
+					.withIndex("by_workspace_project_user_page", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("userId", args.userId)
+							.eq("pageId", args.pageId),
+					)
+					.first();
+
+	return pendingEdit;
+}
+
 export async function pages_db_cancel_pending_edit_cleanup_tasks(
 	ctx: MutationCtx,
 	args: {
@@ -129,9 +161,7 @@ export async function pages_db_cancel_pending_edit_cleanup_tasks(
 		...cleanupTasks.map((cleanupTask) =>
 			pages_db_cancel_scheduled_function_if_present(ctx, cleanupTask.scheduledFunctionId),
 		),
-		...cleanupTasks.map((cleanupTask) =>
-			pages_db_delete_pending_edit_cleanup_task_if_present(ctx, cleanupTask._id),
-		),
+		...cleanupTasks.map((cleanupTask) => pages_db_delete_pending_edit_cleanup_task_if_present(ctx, cleanupTask._id)),
 	]);
 }
 

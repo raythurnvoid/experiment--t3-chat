@@ -14,7 +14,6 @@ import {
 	users_create_anonymouse_user_display_name,
 	users_create_fallback_display_name,
 } from "../shared/users.ts";
-import { ai_chat_HARDCODED_ORG_ID, ai_chat_HARDCODED_PROJECT_ID } from "../shared/shared-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { Id } from "./_generated/dataModel";
 import { v_result } from "../server/convex-utils.ts";
@@ -168,8 +167,6 @@ export const get = internalQuery({
 
 export const get_with_anagraphic = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
 		userId: v.string(),
 	},
 	returns: v.union(
@@ -180,10 +177,6 @@ export const get_with_anagraphic = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		if (args.workspaceId !== ai_chat_HARDCODED_ORG_ID || args.projectId !== ai_chat_HARDCODED_PROJECT_ID) {
-			return null;
-		}
-
 		const userId = ctx.db.normalizeId("users", args.userId);
 		if (!userId) {
 			return null;
@@ -469,8 +462,6 @@ export function users_http_routes(router: RouterForConvexModules) {
 								}
 
 								const userWithAnagraphic = await ctx.runQuery(internal.users.get_with_anagraphic, {
-									workspaceId: ai_chat_HARDCODED_ORG_ID,
-									projectId: ai_chat_HARDCODED_PROJECT_ID,
 									userId: sub,
 								});
 

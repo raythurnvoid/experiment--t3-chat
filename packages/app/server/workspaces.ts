@@ -1,6 +1,20 @@
 import type { Id } from "../convex/_generated/dataModel";
-import type { MutationCtx } from "../convex/_generated/server";
+import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import { Result } from "../shared/errors-as-values-utils.ts";
+
+/**
+ * Get a membership doc by id and verify it belongs to the given user.
+ */
+export async function workspaces_db_get_membership_for_user(
+	ctx: QueryCtx | MutationCtx,
+	args: { userId: Id<"users">; membershipId: Id<"workspaces_projects_users"> },
+) {
+	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
+	if (!membership || membership.userId !== args.userId) {
+		return null;
+	}
+	return membership;
+}
 
 const DEFAULT_WORKSPACE_NAME = "Personal";
 const DEFAULT_PROJECT_NAME = "Home";

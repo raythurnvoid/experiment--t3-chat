@@ -205,8 +205,7 @@ export function pages_yjs_reconcile_branch_with_local_markdown(args: {
 }
 
 export async function pages_fetch_page_yjs_state_and_markdown(args: {
-	workspaceId: string;
-	projectId: string;
+	membershipId: app_convex_Id<"workspaces_projects_users">;
 	pageId: app_convex_Id<"pages">;
 }) {
 	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
