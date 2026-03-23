@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-react";
-import { createContext, use, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, use, useEffect, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Result } from "../lib/errors-as-values-utils.ts";
 import { type app_convex_Id } from "../lib/app-convex-client.ts";

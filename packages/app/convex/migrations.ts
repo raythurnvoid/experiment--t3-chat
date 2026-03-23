@@ -141,6 +141,65 @@ async function unset_workspaces_projects_users_updated_at_fn(ctx: MutationCtx) {
 	};
 }
 
+/**
+ * Compatibility migration for the rollout phase where
+ * `users.anonymousAuthToken` may still contain a legacy JWT string or explicit null.
+ *
+ * Run this before tightening the schema to an optional `v.id("users_anon_tokens")`.
+ */
+async function migrate_users_anonymous_auth_tokens_to_table_fn(ctx: MutationCtx) {
+	const users = await ctx.db.query("users").collect();
+	let inserted = 0;
+	let patchedToIds = 0;
+	let clearedNulls = 0;
+	let skipped = 0;
+
+	for (const user of users) {
+		const compatUser = user as typeof user & {
+			anonymousAuthToken?: string | Id<"users_anon_tokens"> | null;
+		};
+
+		if (!Object.prototype.hasOwnProperty.call(compatUser, "anonymousAuthToken")) {
+			skipped += 1;
+			continue;
+		}
+
+		if (compatUser.anonymousAuthToken === null) {
+			await ctx.db.patch("users", user._id, {
+				anonymousAuthToken: undefined,
+			} as Partial<Doc<"users">> & {
+				anonymousAuthToken?: undefined;
+			});
+			clearedNulls += 1;
+			continue;
+		}
+
+		if (typeof compatUser.anonymousAuthToken !== "string") {
+			skipped += 1;
+			continue;
+		}
+
+		const tokenId = await ctx.db.insert("users_anon_tokens", {
+			userId: user._id,
+			token: compatUser.anonymousAuthToken,
+			updatedAt: user._creationTime,
+		});
+		await ctx.db.patch("users", user._id, {
+			anonymousAuthToken: tokenId,
+		});
+		inserted += 1;
+		patchedToIds += 1;
+	}
+
+	return {
+		scanned: users.length,
+		inserted,
+		patchedToIds,
+		clearedNulls,
+		skipped,
+	};
+}
+
 async function rename_default_workspaces_projects_desk_to_home_fn(ctx: MutationCtx) {
 	const projects = await ctx.db.query("workspaces_projects").collect();
 	let patched = 0;
@@ -525,6 +584,18 @@ export const unset_workspaces_projects_users_updated_at = internalMutation({
 		patched: v.number(),
 	}),
 	handler: (ctx) => unset_workspaces_projects_users_updated_at_fn(ctx),
+});
+
+export const migrate_users_anonymous_auth_tokens_to_table = internalMutation({
+	args: {},
+	returns: v.object({
+		scanned: v.number(),
+		inserted: v.number(),
+		patchedToIds: v.number(),
+		clearedNulls: v.number(),
+		skipped: v.number(),
+	}),
+	handler: (ctx) => migrate_users_anonymous_auth_tokens_to_table_fn(ctx),
 });
 
 export const rename_default_workspaces_projects_desk_to_home = internalMutation({

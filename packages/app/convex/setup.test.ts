@@ -131,7 +131,6 @@ export const test_mocks_fill_db_with = {
 			args?.userId ??
 			(await ctx.db.insert("users", {
 				clerkUserId: null,
-				anonymousAuthToken: null,
 			}));
 		const workspaceId = await ctx.db.insert("workspaces", {
 			name: args?.workspaceName ?? "test-workspace",

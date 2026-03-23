@@ -9,7 +9,6 @@ describe("create_workspace", () => {
 		const userId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
 				clerkUserId: "clerk-user-1",
-				anonymousAuthToken: null,
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -36,7 +35,6 @@ describe("create_workspace", () => {
 		const userId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
 				clerkUserId: "clerk-user-2",
-				anonymousAuthToken: null,
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -62,11 +60,9 @@ describe("create_workspace", () => {
 			Promise.all([
 				ctx.db.insert("users", {
 					clerkUserId: "clerk-user-3",
-					anonymousAuthToken: null,
 				}),
 				ctx.db.insert("users", {
 					clerkUserId: "clerk-user-4",
-					anonymousAuthToken: null,
 				}),
 			]),
 		);
@@ -99,11 +95,9 @@ describe("create_workspace", () => {
 			Promise.all([
 				ctx.db.insert("users", {
 					clerkUserId: "clerk-user-4",
-					anonymousAuthToken: null,
 				}).then((userId) => workspaces_db_create(ctx, { userId, name: "personal", now: Date.now(), default: true })),
 				ctx.db.insert("users", {
 					clerkUserId: "clerk-user-5",
-					anonymousAuthToken: null,
 				}).then((userId) => workspaces_db_create(ctx, { userId, name: "personal", now: Date.now(), default: true })),
 			]),
 		);
@@ -148,7 +142,6 @@ describe("get_membership_by_workspace_project_name", () => {
 		const otherUserId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
 				clerkUserId: "clerk-user-5",
-				anonymousAuthToken: null,
 			}),
 		);
 		const asOtherUser = t.withIdentity({
@@ -172,11 +165,9 @@ describe("get_membership_by_workspace_project_name", () => {
 			const now = Date.now();
 			const userId = await ctx.db.insert("users", {
 				clerkUserId: "clerk-user-6",
-				anonymousAuthToken: null,
 			});
 			const otherUserId = await ctx.db.insert("users", {
 				clerkUserId: "clerk-user-7",
-				anonymousAuthToken: null,
 			});
 
 			const workspaceId = await ctx.db.insert("workspaces", {
@@ -255,7 +246,6 @@ describe("migrate_workspace_and_project_names_to_url_safe", () => {
 			const [userId, workspaceId1, workspaceId2] = await Promise.all([
 				ctx.db.insert("users", {
 					clerkUserId: "clerk-user-6",
-					anonymousAuthToken: null,
 				}),
 				ctx.db.insert("workspaces", {
 					name: "Personal",

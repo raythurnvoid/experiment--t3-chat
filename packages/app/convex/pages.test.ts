@@ -897,7 +897,6 @@ test("membership-scoped page and yjs APIs reject cross-user membership ids", asy
 	const otherUserId = await t.run(async (ctx) =>
 		ctx.db.insert("users", {
 			clerkUserId: null,
-			anonymousAuthToken: null,
 		}),
 	);
 	const asOtherUser = t.withIdentity({

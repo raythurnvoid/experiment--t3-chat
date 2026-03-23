@@ -2222,7 +2222,6 @@ describe("membership scoped pending edits", () => {
 		const otherUserId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
 				clerkUserId: null,
-				anonymousAuthToken: null,
 			}),
 		);
 		const asOtherUser = t.withIdentity({

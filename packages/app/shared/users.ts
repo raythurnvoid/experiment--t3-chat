@@ -29,6 +29,7 @@ export function users_get_user_id_from_jwt(jwt: string) {
 
 	return {
 		userId: payload.sub,
+		tokenId: typeof payload.jti === "string" ? payload.jti : null,
 		expiresAt: typeof payload.exp === "number" ? payload.exp * 1000 : null,
 	};
 }

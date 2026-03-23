@@ -9,7 +9,6 @@ test("delete_all_archived_pages also deletes chunk rows", async () => {
 	await t.run(async (ctx) => {
 		const userId = await ctx.db.insert("users", {
 			clerkUserId: null,
-			anonymousAuthToken: null,
 		});
 
 		const basePageData = {

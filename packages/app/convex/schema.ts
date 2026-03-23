@@ -336,11 +336,16 @@ const app_convex_schema = defineSchema({
 	// #endregion workspaces
 
 	// #region users
+	users_anon_tokens: defineTable({
+		userId: v.id("users"),
+		token: v.string(),
+		updatedAt: v.number(),
+	}).index("by_userId", ["userId"]),
+
 	users: defineTable({
 		/** Clerk user ID, null for anonymous users */
 		clerkUserId: v.union(v.string(), v.null()),
-		/** Anonymous auth JWT; null once upgraded */
-		anonymousAuthToken: v.union(v.string(), v.null()),
+		anonymousAuthToken: v.optional(v.id("users_anon_tokens")),
 		defaultWorkspaceId: v.optional(v.id("workspaces")),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
