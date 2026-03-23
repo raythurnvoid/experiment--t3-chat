@@ -7,7 +7,7 @@ import { create_deferred } from "../lib/async.ts";
 import { app_fetch_auth_anonymous, app_fetch_auth_resolve_user } from "../lib/fetch.ts";
 import { storage_local } from "../lib/storage.ts";
 import { delay } from "../lib/utils.ts";
-import { useAsyncEffect, useStateRef } from "../hooks/utils-hooks.ts";
+import { useAsyncEffect, useFn, useStateRef } from "../hooks/utils-hooks.ts";
 
 function jwt_read_payload_claim_string(jwt: string, key: string): string | null {
 	const parts = jwt.split(".");
@@ -69,7 +69,7 @@ async function auth_get_anonymous_convex_token(args?: { skipCache?: boolean }) {
 		}
 	}
 
-	// If skipCache is true and we have a cached token, try to refresh it first
+	// If skipCache is true and we have a cached token, ask the server to validate and refresh if needed.
 	if (args?.skipCache && cached) {
 		const refreshResult = await app_fetch_auth_anonymous({ token: cached.token });
 		if (refreshResult._yay) {
@@ -181,7 +181,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		userId: null,
 	});
 
-	const [fetchAnonymousToken] = useState(() => (options?: { skipCache?: boolean }): Promise<string | null> => {
+	const fetchAnonymousToken = useFn((options?: { skipCache?: boolean }): Promise<string | null> => {
 		const signal = tokenFlowAbortControllerRef.current.signal;
 
 		// Force refresh: reset the deferred
@@ -271,7 +271,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 	 * It always resolves and never rejects to ensure convex auth can transition to unauthenticated,
 	 * the convex client only handle resolved promises.
 	 */
-	const [getToken] = useState(() => async (options?: { skipCache?: boolean }): Promise<string | null> => {
+	const getToken = useFn(async (options?: { skipCache?: boolean }): Promise<string | null> => {
 		const skipCache = options?.skipCache ?? false;
 
 		try {
@@ -303,7 +303,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		}
 	});
 
-	const [fetchAccessToken] = useState(() => (options: { forceRefreshToken: boolean }) => {
+	const fetchAccessToken = useFn((options: { forceRefreshToken: boolean }) => {
 		return getToken({ skipCache: options.forceRefreshToken });
 	});
 

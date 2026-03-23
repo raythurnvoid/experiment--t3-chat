@@ -54,6 +54,11 @@ const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
 const ANONYMOUS_USERS_JWT_KID_LIST = ["anonymous-user-jwt-2025-12"];
 
 /**
+ * Refresh tokens that are 3 days away from expiry.
+ */
+const ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
  * Returns the public JWK `x` and `y` coordinates for the configured PEM key.
  */
 const get_anonymous_users_jwt_public_xy = ((/* iife */) => {
@@ -242,14 +247,14 @@ export const resolve_user = internalMutation({
 
 		// Case 1: Token provided - link anonymous user to Clerk
 		if (args.anonymousUserToken) {
-			let userIdFromToken: string;
+			let authFromToken: ReturnType<typeof users_get_user_id_from_jwt>;
 			try {
-				userIdFromToken = users_get_user_id_from_jwt(args.anonymousUserToken);
+				authFromToken = users_get_user_id_from_jwt(args.anonymousUserToken);
 			} catch {
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`" } });
 			}
 
-			const userId = ctx.db.normalizeId("users", userIdFromToken);
+			const userId = ctx.db.normalizeId("users", authFromToken.userId);
 			if (!userId) {
 				return Result({ _nay: { message: "Invalid `anonymousUserToken`" } });
 			}
@@ -454,19 +459,29 @@ export function users_http_routes(router: RouterForConvexModules) {
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							const body = (await request.json().catch(() => null)) as null | Body;
 
-							// Refresh path: if token is provided, extract user ID and re-issue for same user
+							// Refresh path: if token is provided, only re-issue when it is close to expiry.
 							if (body?.token) {
-								const sub = users_get_user_id_from_jwt(body.token);
-								if (!sub) {
+								const authFromToken = users_get_user_id_from_jwt(body.token);
+								if (!authFromToken.userId) {
 									return { status: 400, body: { message: "Invalid token subject" } } as const;
 								}
 
 								const userWithAnagraphic = await ctx.runQuery(internal.users.get_with_anagraphic, {
-									userId: sub,
+									userId: authFromToken.userId,
 								});
 
 								if (!userWithAnagraphic || userWithAnagraphic.user.anonymousAuthToken !== body.token) {
 									return { status: 401, body: { message: "Invalid token" } } as const;
+								}
+
+								if (
+									authFromToken.expiresAt &&
+									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS
+								) {
+									return {
+										status: 200,
+										body: { token: body.token, userId: userWithAnagraphic.user._id },
+									} as const;
 								}
 
 								const newJwt = await sign_anonymous_users_jwt({

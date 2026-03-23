@@ -85,7 +85,7 @@ export const list = query({
 
 				const userDoc = await ctx.db.get("users", userId);
 				if (!userDoc || !userDoc.anagraphic) {
-					console.error(should_never_happen("[presence.list] missing user or anagraphic id", { userId }));
+					console.error(should_never_happen("[presence.list] missing user", { userId }));
 					return null;
 				}
 
@@ -195,7 +195,10 @@ export const listRoom = query({
 
 				const userDoc = await ctx.db.get("users", userId);
 				if (!userDoc || !userDoc.anagraphic) {
-					should_never_happen("[presence.listRoom] missing user or anagraphic id", { userId });
+					should_never_happen("[presence.listRoom] missing user or anagraphic id", {
+						userId,
+						anagraphicId: userDoc?.anagraphic,
+					});
 					return null;
 				}
 
