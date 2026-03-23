@@ -138,8 +138,8 @@ const storage_local_schema = {
 		equals: (left, right) => left === right || (left != null && right != null && objects_equal_deep(left, right)),
 	}),
 
-	"app_state::pages_last_open::scope::${workspaceId}::${projectId}": define_field<
-		`app_state::pages_last_open::scope::${string}::${string}`,
+	"app_state::pages_last_open::scope::${membershipId}": define_field<
+		`app_state::pages_last_open::scope::${string}`,
 		string | null
 	>({
 		parse: (value) => value,
@@ -147,8 +147,8 @@ const storage_local_schema = {
 		defaultValue: null,
 	}),
 
-	"app_state::ai_chat_last_open::scope::${workspaceId}::${projectId}": define_field<
-		`app_state::ai_chat_last_open::scope::${string}::${string}`,
+	"app_state::ai_chat_last_open::scope::${membershipId}": define_field<
+		`app_state::ai_chat_last_open::scope::${string}`,
 		string | null
 	>({
 		parse: (value) => value,
@@ -347,7 +347,7 @@ function get_local_storage_field_definition_from_key(key: storage_local_Key) {
 
 	if (key.includes("::scope::")) {
 		const [staticKey] = key.split("::scope::");
-		const normalizedKey = `${staticKey}::scope::\${workspaceId}::\${projectId}` as keyof typeof storage_local_schema;
+		const normalizedKey = `${staticKey}::scope::\${membershipId}` as keyof typeof storage_local_schema;
 
 		if (normalizedKey in storage_local_schema) {
 			return storage_local_schema[normalizedKey];

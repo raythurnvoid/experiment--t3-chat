@@ -247,12 +247,12 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
 	const [lastOpenThreadId, setLastOpenThreadId] = useAppLocalStorageStateValue(
-		`app_state::ai_chat_last_open::scope::${workspaceId}::${projectId}`,
+		`app_state::ai_chat_last_open::scope::${membershipId}`,
 	);
 
 	useEffect(() => {
 		useAiChatStore.setState({ threadById: new Map() });
-	}, [workspaceId, projectId]);
+	}, [membershipId]);
 
 	useEffect(() => {
 		useAiChatStore.setState({ selectedThreadId: lastOpenThreadId });

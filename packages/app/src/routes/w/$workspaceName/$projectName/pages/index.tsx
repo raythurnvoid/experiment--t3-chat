@@ -63,7 +63,7 @@ function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 
-	const { membershipId, workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
+	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
 
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
@@ -73,7 +73,7 @@ function RoutePages() {
 	const pagesSidebarState: RoutePages_SidebarState = pagesSidebarOpen ? "expanded" : "closed";
 
 	const [lastOpenPageId, setLastOpenPageId] = useAppLocalStorageStateValue(
-		`app_state::pages_last_open::scope::${workspaceId}::${projectId}`,
+		`app_state::pages_last_open::scope::${membershipId}`,
 	);
 	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_membership_id[membershipId] ?? "");
 
