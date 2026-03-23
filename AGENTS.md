@@ -222,6 +222,14 @@ Exceptions (add an explicit return type when it helps):
 - Exported/public API functions where the return type is part of the contract
 - When inference is unstable/too-wide and a return annotation prevents regressions
 
+## Test organization
+
+When you add or reorganize tests in an existing `.test.ts` file, group related cases under top-level `describe("<function_name>")` blocks instead of leaving a flat list of `test(...)` calls.
+
+- Use one `describe(...)` per primary function or behavior under test.
+- Keep individual `test(...)` names specific, but avoid repeating grouping that already belongs in the enclosing `describe(...)`.
+- Follow the local pattern already used by nearby test files before introducing a different layout.
+
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 ## Comments that explain code

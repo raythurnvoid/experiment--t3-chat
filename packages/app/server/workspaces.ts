@@ -2,6 +2,42 @@ import type { Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import { Result } from "../shared/errors-as-values-utils.ts";
 
+const DEFAULT_WORKSPACE_NAME = "personal";
+const DEFAULT_PROJECT_NAME = "home";
+
+const workspace_project_name_regex = /^[a-z]+(?:-[a-z]+)*$/;
+
+/**
+ * Validate a workspace or project name.
+ *
+ * @returns A result containing the trimmed name if valid, or an error message if invalid.
+ */
+export function workspaces_validate_name(name: string) {
+	const trimmedName = name.trim();
+
+	if (trimmedName === "") {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Name cannot be empty",
+			},
+		});
+	}
+
+	if (!workspace_project_name_regex.test(trimmedName)) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Invalid name",
+			},
+		});
+	}
+
+	return Result({
+		_yay: trimmedName,
+	});
+}
+
 /**
  * Get a membership doc by id and verify it belongs to the given user.
  */
@@ -16,19 +52,32 @@ export async function workspaces_db_get_membership_for_user(
 	return membership;
 }
 
-const DEFAULT_WORKSPACE_NAME = "Personal";
-const DEFAULT_PROJECT_NAME = "Home";
-
 export async function workspaces_db_create(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; name: string; now: number; default?: boolean },
 ) {
-	const name = args.name.trim();
-
-	if (name === "") {
+	const nameResult = workspaces_validate_name(args.name);
+	if (nameResult._nay) {
 		return Result({
 			_nay: {
-				message: "Workspace name cannot be empty",
+				message: nameResult._nay.message,
+			},
+		});
+	}
+	const name = nameResult._yay;
+
+	const allowDuplicateDefaultWorkspaceName = Boolean(args.default) && name === DEFAULT_WORKSPACE_NAME;
+
+	const existingWorkspace = allowDuplicateDefaultWorkspaceName
+		? null
+		: await ctx.db
+				.query("workspaces")
+				.withIndex("by_name", (q) => q.eq("name", name))
+				.first();
+	if (existingWorkspace) {
+		return Result({
+			_nay: {
+				message: "Workspace name already exists",
 			},
 		});
 	}

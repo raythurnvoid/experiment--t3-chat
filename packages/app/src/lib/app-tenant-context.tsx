@@ -5,7 +5,9 @@ export type AppTenantContextValue = {
 	/** Convex `workspaces_projects_users` document id for the current user and tenant. */
 	membershipId: app_convex_Id<"workspaces_projects_users">;
 	projectId: string;
+	projectName: string;
 	workspaceId: string;
+	workspaceName: string;
 };
 
 const AppTenantContext = createContext<AppTenantContextValue | null>(null);
@@ -16,10 +18,14 @@ type AppTenantProvider_Props = AppTenantContextValue & {
 
 const AppTenantProvider = Object.assign(
 	memo(function AppTenantProvider(props: AppTenantProvider_Props) {
-		const { membershipId, workspaceId, projectId, children } = props;
+		const { membershipId, workspaceId, workspaceName, projectId, projectName, children } = props;
 
 		return (
-			<AppTenantContext.Provider value={{ membershipId, workspaceId, projectId }}>{children}</AppTenantContext.Provider>
+			<AppTenantContext.Provider
+				value={{ membershipId, workspaceId, workspaceName, projectId, projectName }}
+			>
+				{children}
+			</AppTenantContext.Provider>
 		);
 	}),
 	{

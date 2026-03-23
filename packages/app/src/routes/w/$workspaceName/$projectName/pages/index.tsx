@@ -15,7 +15,6 @@ import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
 
 const PageEditor = React.lazy(() =>
 	import("@/components/page-editor/page-editor.tsx").then((module) => ({
@@ -64,8 +63,7 @@ function RoutePages() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
 
-	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
-	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
+	const { membershipId, workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
 
 	const effectiveView: pages_EditorView = searchParams.view ?? "rich_text_editor";
 
@@ -77,7 +75,7 @@ function RoutePages() {
 	const [lastOpenPageId, setLastOpenPageId] = useAppLocalStorageStateValue(
 		`app_state::pages_last_open::scope::${workspaceId}::${projectId}`,
 	);
-	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_scope[scopeKey] ?? "");
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_membership_id[membershipId] ?? "");
 
 	const searchPageId = searchParams.pageId;
 
@@ -97,8 +95,8 @@ function RoutePages() {
 		const view = effectiveView === "rich_text_editor" ? undefined : effectiveView;
 
 		navigate({
-			to: "/w/$workspaceId/p/$projectId/pages",
-			params: { workspaceId, projectId },
+			to: "/w/$workspaceName/$projectName/pages",
+			params: { workspaceName, projectName },
 			search: { pageId, view },
 		}).catch((error) => {
 			console.error("[PagesRoute.navigateToPage] Error navigating to page", { error, pageId, view });
@@ -109,8 +107,8 @@ function RoutePages() {
 		const pageId = searchPageId ?? homePageId;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
 		navigate({
-			to: "/w/$workspaceId/p/$projectId/pages",
-			params: { workspaceId, projectId },
+			to: "/w/$workspaceName/$projectName/pages",
+			params: { workspaceName, projectName },
 			search: { pageId, view },
 		}).catch((error) => {
 			console.error("[PagesRoute.navigateToView] Error navigating to view", { error, pageId, view });

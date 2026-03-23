@@ -61,7 +61,6 @@ import {
 	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
 import { cn, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
@@ -1091,7 +1090,7 @@ type PagesSidebarHeader_Props = {
 const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarHeader_Props) {
 	const { homePageId, view, onClose } = props;
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { workspaceName, projectName } = AppTenantProvider.useContext();
 
 	return (
 		<MySidebarHeader className={cn("PagesSidebarHeader" satisfies PagesSidebarHeader_ClassNames)}>
@@ -1107,8 +1106,8 @@ const PagesSidebarHeader = memo(function PagesSidebarHeader(props: PagesSidebarH
 						<MyLink
 							className={cn("PagesSidebarHeader-title" satisfies PagesSidebarHeader_ClassNames)}
 							variant="button-tertiary"
-							to="/w/$workspaceId/p/$projectId/pages"
-							params={{ workspaceId, projectId }}
+							to="/w/$workspaceName/$projectName/pages"
+							params={{ workspaceName, projectName }}
 							search={{ pageId: homePageId, view }}
 						>
 							<MySidebarTitle>Pages</MySidebarTitle>
@@ -1290,10 +1289,9 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 
 	const navigate = useNavigate();
 	const convex = useConvex();
-	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
 
-	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
-	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_scope[scopeKey] ?? "");
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_membership_id[membershipId] ?? "");
 
 	const [searchQuery, setSearchQuery] = useState("");
 	const searchQueryDeferred = useDeferredValue(searchQuery);
@@ -1793,8 +1791,8 @@ export const PagesSidebar = memo(function PagesSidebar(props: PagesSidebar_Props
 				}
 
 				return navigate({
-					to: "/w/$workspaceId/p/$projectId/pages",
-					params: { workspaceId, projectId },
+					to: "/w/$workspaceName/$projectName/pages",
+					params: { workspaceName, projectName },
 					search: { pageId: result._yay.pageId, view },
 				}).then(() => {
 					return startRename(result._yay.pageId);

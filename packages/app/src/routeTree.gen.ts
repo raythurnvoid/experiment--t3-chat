@@ -12,77 +12,77 @@ import type { CreateFileRoute, FileRoutesByPath } from '@tanstack/react-router'
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as WWorkspaceIdPProjectIdRouteRouteImport } from './routes/w/$workspaceId/p/$projectId/route'
-import { Route as WWorkspaceIdPProjectIdChatRouteImport } from './routes/w/$workspaceId/p/$projectId/chat'
-import { Route as WWorkspaceIdPProjectIdPagesIndexRouteImport } from './routes/w/$workspaceId/p/$projectId/pages/index'
+import { Route as WWorkspaceNameProjectNameRouteRouteImport } from './routes/w/$workspaceName/$projectName/route'
+import { Route as WWorkspaceNameProjectNameChatRouteImport } from './routes/w/$workspaceName/$projectName/chat'
+import { Route as WWorkspaceNameProjectNamePagesIndexRouteImport } from './routes/w/$workspaceName/$projectName/pages/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WWorkspaceIdPProjectIdRouteRoute =
-  WWorkspaceIdPProjectIdRouteRouteImport.update({
-    id: '/w/$workspaceId/p/$projectId',
-    path: '/w/$workspaceId/p/$projectId',
+const WWorkspaceNameProjectNameRouteRoute =
+  WWorkspaceNameProjectNameRouteRouteImport.update({
+    id: '/w/$workspaceName/$projectName',
+    path: '/w/$workspaceName/$projectName',
     getParentRoute: () => rootRouteImport,
   } as any)
-const WWorkspaceIdPProjectIdChatRoute =
-  WWorkspaceIdPProjectIdChatRouteImport.update({
+const WWorkspaceNameProjectNameChatRoute =
+  WWorkspaceNameProjectNameChatRouteImport.update({
     id: '/chat',
     path: '/chat',
-    getParentRoute: () => WWorkspaceIdPProjectIdRouteRoute,
+    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
   } as any)
-const WWorkspaceIdPProjectIdPagesIndexRoute =
-  WWorkspaceIdPProjectIdPagesIndexRouteImport.update({
+const WWorkspaceNameProjectNamePagesIndexRoute =
+  WWorkspaceNameProjectNamePagesIndexRouteImport.update({
     id: '/pages/',
     path: '/pages/',
-    getParentRoute: () => WWorkspaceIdPProjectIdRouteRoute,
+    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/w/$workspaceId/p/$projectId': typeof WWorkspaceIdPProjectIdRouteRouteWithChildren
-  '/w/$workspaceId/p/$projectId/chat': typeof WWorkspaceIdPProjectIdChatRoute
-  '/w/$workspaceId/p/$projectId/pages': typeof WWorkspaceIdPProjectIdPagesIndexRoute
+  '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
+  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
+  '/w/$workspaceName/$projectName/pages': typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/w/$workspaceId/p/$projectId': typeof WWorkspaceIdPProjectIdRouteRouteWithChildren
-  '/w/$workspaceId/p/$projectId/chat': typeof WWorkspaceIdPProjectIdChatRoute
-  '/w/$workspaceId/p/$projectId/pages': typeof WWorkspaceIdPProjectIdPagesIndexRoute
+  '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
+  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
+  '/w/$workspaceName/$projectName/pages': typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/w/$workspaceId/p/$projectId': typeof WWorkspaceIdPProjectIdRouteRouteWithChildren
-  '/w/$workspaceId/p/$projectId/chat': typeof WWorkspaceIdPProjectIdChatRoute
-  '/w/$workspaceId/p/$projectId/pages/': typeof WWorkspaceIdPProjectIdPagesIndexRoute
+  '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
+  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
+  '/w/$workspaceName/$projectName/pages/': typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/w/$workspaceId/p/$projectId'
-    | '/w/$workspaceId/p/$projectId/chat'
-    | '/w/$workspaceId/p/$projectId/pages'
+    | '/w/$workspaceName/$projectName'
+    | '/w/$workspaceName/$projectName/chat'
+    | '/w/$workspaceName/$projectName/pages'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/w/$workspaceId/p/$projectId'
-    | '/w/$workspaceId/p/$projectId/chat'
-    | '/w/$workspaceId/p/$projectId/pages'
+    | '/w/$workspaceName/$projectName'
+    | '/w/$workspaceName/$projectName/chat'
+    | '/w/$workspaceName/$projectName/pages'
   id:
     | '__root__'
     | '/'
-    | '/w/$workspaceId/p/$projectId'
-    | '/w/$workspaceId/p/$projectId/chat'
-    | '/w/$workspaceId/p/$projectId/pages/'
+    | '/w/$workspaceName/$projectName'
+    | '/w/$workspaceName/$projectName/chat'
+    | '/w/$workspaceName/$projectName/pages/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  WWorkspaceIdPProjectIdRouteRoute: typeof WWorkspaceIdPProjectIdRouteRouteWithChildren
+  WWorkspaceNameProjectNameRouteRoute: typeof WWorkspaceNameProjectNameRouteRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -94,26 +94,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$workspaceId/p/$projectId': {
-      id: '/w/$workspaceId/p/$projectId'
-      path: '/w/$workspaceId/p/$projectId'
-      fullPath: '/w/$workspaceId/p/$projectId'
-      preLoaderRoute: typeof WWorkspaceIdPProjectIdRouteRouteImport
+    '/w/$workspaceName/$projectName': {
+      id: '/w/$workspaceName/$projectName'
+      path: '/w/$workspaceName/$projectName'
+      fullPath: '/w/$workspaceName/$projectName'
+      preLoaderRoute: typeof WWorkspaceNameProjectNameRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$workspaceId/p/$projectId/chat': {
-      id: '/w/$workspaceId/p/$projectId/chat'
+    '/w/$workspaceName/$projectName/chat': {
+      id: '/w/$workspaceName/$projectName/chat'
       path: '/chat'
-      fullPath: '/w/$workspaceId/p/$projectId/chat'
-      preLoaderRoute: typeof WWorkspaceIdPProjectIdChatRouteImport
-      parentRoute: typeof WWorkspaceIdPProjectIdRouteRoute
+      fullPath: '/w/$workspaceName/$projectName/chat'
+      preLoaderRoute: typeof WWorkspaceNameProjectNameChatRouteImport
+      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
     }
-    '/w/$workspaceId/p/$projectId/pages/': {
-      id: '/w/$workspaceId/p/$projectId/pages/'
+    '/w/$workspaceName/$projectName/pages/': {
+      id: '/w/$workspaceName/$projectName/pages/'
       path: '/pages'
-      fullPath: '/w/$workspaceId/p/$projectId/pages'
-      preLoaderRoute: typeof WWorkspaceIdPProjectIdPagesIndexRouteImport
-      parentRoute: typeof WWorkspaceIdPProjectIdRouteRoute
+      fullPath: '/w/$workspaceName/$projectName/pages'
+      preLoaderRoute: typeof WWorkspaceNameProjectNamePagesIndexRouteImport
+      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
     }
   }
 }
@@ -127,55 +127,55 @@ declare module './routes/index' {
     FileRoutesByPath['/']['fullPath']
   >
 }
-declare module './routes/w/$workspaceId/p/$projectId/route' {
+declare module './routes/w/$workspaceName/$projectName/route' {
   const createFileRoute: CreateFileRoute<
-    '/w/$workspaceId/p/$projectId',
-    FileRoutesByPath['/w/$workspaceId/p/$projectId']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId']['id'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId']['path'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId']['fullPath']
+    '/w/$workspaceName/$projectName',
+    FileRoutesByPath['/w/$workspaceName/$projectName']['parentRoute'],
+    FileRoutesByPath['/w/$workspaceName/$projectName']['id'],
+    FileRoutesByPath['/w/$workspaceName/$projectName']['path'],
+    FileRoutesByPath['/w/$workspaceName/$projectName']['fullPath']
   >
 }
-declare module './routes/w/$workspaceId/p/$projectId/chat' {
+declare module './routes/w/$workspaceName/$projectName/chat' {
   const createFileRoute: CreateFileRoute<
-    '/w/$workspaceId/p/$projectId/chat',
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/chat']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/chat']['id'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/chat']['path'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/chat']['fullPath']
+    '/w/$workspaceName/$projectName/chat',
+    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['parentRoute'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['id'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['path'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['fullPath']
   >
 }
-declare module './routes/w/$workspaceId/p/$projectId/pages/index' {
+declare module './routes/w/$workspaceName/$projectName/pages/index' {
   const createFileRoute: CreateFileRoute<
-    '/w/$workspaceId/p/$projectId/pages/',
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/pages/']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/pages/']['id'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/pages/']['path'],
-    FileRoutesByPath['/w/$workspaceId/p/$projectId/pages/']['fullPath']
+    '/w/$workspaceName/$projectName/pages/',
+    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['parentRoute'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['id'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['path'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['fullPath']
   >
 }
 
-interface WWorkspaceIdPProjectIdRouteRouteChildren {
-  WWorkspaceIdPProjectIdChatRoute: typeof WWorkspaceIdPProjectIdChatRoute
-  WWorkspaceIdPProjectIdPagesIndexRoute: typeof WWorkspaceIdPProjectIdPagesIndexRoute
+interface WWorkspaceNameProjectNameRouteRouteChildren {
+  WWorkspaceNameProjectNameChatRoute: typeof WWorkspaceNameProjectNameChatRoute
+  WWorkspaceNameProjectNamePagesIndexRoute: typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 
-const WWorkspaceIdPProjectIdRouteRouteChildren: WWorkspaceIdPProjectIdRouteRouteChildren =
+const WWorkspaceNameProjectNameRouteRouteChildren: WWorkspaceNameProjectNameRouteRouteChildren =
   {
-    WWorkspaceIdPProjectIdChatRoute: WWorkspaceIdPProjectIdChatRoute,
-    WWorkspaceIdPProjectIdPagesIndexRoute:
-      WWorkspaceIdPProjectIdPagesIndexRoute,
+    WWorkspaceNameProjectNameChatRoute: WWorkspaceNameProjectNameChatRoute,
+    WWorkspaceNameProjectNamePagesIndexRoute:
+      WWorkspaceNameProjectNamePagesIndexRoute,
   }
 
-const WWorkspaceIdPProjectIdRouteRouteWithChildren =
-  WWorkspaceIdPProjectIdRouteRoute._addFileChildren(
-    WWorkspaceIdPProjectIdRouteRouteChildren,
+const WWorkspaceNameProjectNameRouteRouteWithChildren =
+  WWorkspaceNameProjectNameRouteRoute._addFileChildren(
+    WWorkspaceNameProjectNameRouteRouteChildren,
   )
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  WWorkspaceIdPProjectIdRouteRoute:
-    WWorkspaceIdPProjectIdRouteRouteWithChildren,
+  WWorkspaceNameProjectNameRouteRoute:
+    WWorkspaceNameProjectNameRouteRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

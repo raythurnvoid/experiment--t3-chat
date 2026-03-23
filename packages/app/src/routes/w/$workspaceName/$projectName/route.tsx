@@ -7,32 +7,31 @@ import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
-import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
 
 const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout() {
 	const params = Route.useParams();
-	const { workspaceId, projectId } = params;
+	const { workspaceName, projectName } = params;
 
-	const membership = useQuery(app_convex_api.workspaces.get_membership_for_scope, {
-		workspaceId,
-		projectId,
+	const membership = useQuery(app_convex_api.workspaces.get_membership_by_workspace_project_name, {
+		workspaceName,
+		projectName,
 	});
+	const membershipId = membership?._id ?? "";
 
 	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
 	const canEnsureHomePageRef = useRef(true);
-	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
 
-	const pagesHomeIdForScope = useAppGlobalStore((s) => s.pages_home_id_by_scope[scopeKey] ?? "");
+	const pagesHomeIdForMembership = useAppGlobalStore((s) => s.pages_home_id_by_membership_id[membershipId] ?? "");
 
 	useEffect(() => {
 		canEnsureHomePageRef.current = true;
-	}, [scopeKey]);
+	}, [membershipId]);
 
 	useEffect(() => {
-		if (membership == null || pagesHomeIdForScope || !canEnsureHomePageRef.current) {
+		if (membership == null || pagesHomeIdForMembership || !canEnsureHomePageRef.current) {
 			return;
 		}
 
@@ -46,12 +45,12 @@ const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout(
 					});
 					return;
 				}
-				useAppGlobalStore.actions.setPagesHomeIdForScope(scopeKey, result._yay.pageId);
+				useAppGlobalStore.actions.setPagesHomeIdForMembershipId(membership._id, result._yay.pageId);
 			})
 			.catch((error: unknown) => {
 				should_never_happen("Error while initializing the home page", { error });
 			});
-	}, [ensureHomepage, pagesHomeIdForScope, scopeKey, membership]);
+	}, [ensureHomepage, membership, pagesHomeIdForMembership]);
 
 	if (membership === undefined) {
 		return <div>Loading workspace…</div>;
@@ -61,14 +60,21 @@ const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout(
 		return <div>You do not have access to this workspace/project.</div>;
 	}
 
-	const membershipId = membership._id;
-
-	if (!pagesHomeIdForScope) {
+	if (!pagesHomeIdForMembership) {
 		return <div>Preparing workspace…</div>;
 	}
 
+	const workspaceId = membership.workspaceId;
+	const projectId = membership.projectId;
+
 	return (
-		<AppTenantProvider membershipId={membershipId} workspaceId={workspaceId} projectId={projectId}>
+		<AppTenantProvider
+			membershipId={membership._id}
+			workspaceId={workspaceId}
+			workspaceName={workspaceName}
+			projectId={projectId}
+			projectName={projectName}
+		>
 			<div className={cn("RootLayout" satisfies RootLayout_ClassNames)}>
 				<MainAppHeader />
 				<MainAppSidebar />

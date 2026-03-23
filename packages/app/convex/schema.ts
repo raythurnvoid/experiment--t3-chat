@@ -316,7 +316,7 @@ const app_convex_schema = defineSchema({
 		default: v.boolean(),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		updatedAt: v.number(),
-	}),
+	}).index("by_name", ["name"]),
 
 	workspaces_projects: defineTable({
 		workspaceId: v.id("workspaces"),

@@ -19,7 +19,7 @@ import {
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { app_tenant_default_project_for_workspace } from "@/lib/app-tenant-paths.ts";
+import { app_tenant_default_project_for_workspace } from "@/lib/urls.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region workspace controls
@@ -43,7 +43,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const navigate = useNavigate();
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
 
 	const workspaceList = useQuery(app_convex_api.workspaces.list);
 
@@ -55,18 +55,18 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const lastPathSegment = pathname.split("/").filter(Boolean).at(-1) ?? "";
 	const tenantRouteSuffix = lastPathSegment === "chat" ? "chat" : "pages";
 
-	const currentWorkspaceName = workspaces?.find((w) => w._id === workspaceId)?.name ?? "…";
-	const currentProjectName = projects?.find((p) => p._id === projectId)?.name ?? "…";
+	const currentWorkspaceName = workspaces?.find((w) => w._id === workspaceId)?.name ?? workspaceName ?? "…";
+	const currentProjectName = projects?.find((p) => p._id === projectId)?.name ?? projectName ?? "…";
 
-	const navigateToTenant = (nextWorkspaceId: string, nextProjectId: string) => {
+	const navigateToWorkspaceProject = (nextWorkspaceName: string, nextProjectName: string) => {
 		const to =
 			tenantRouteSuffix === "chat"
-				? ("/w/$workspaceId/p/$projectId/chat" as const)
-				: ("/w/$workspaceId/p/$projectId/pages" as const);
+				? ("/w/$workspaceName/$projectName/chat" as const)
+				: ("/w/$workspaceName/$projectName/pages" as const);
 
 		navigate({
 			to,
-			params: { workspaceId: nextWorkspaceId, projectId: nextProjectId },
+			params: { workspaceName: nextWorkspaceName, projectName: nextProjectName },
 		});
 		setIsOpen(false);
 	};
@@ -100,7 +100,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 					return;
 				}
 
-				navigateToTenant(w._id, defaultProject._id);
+				navigateToWorkspaceProject(w.name, defaultProject.name);
 			},
 		})) ?? [];
 
@@ -116,7 +116,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 					return;
 				}
 
-				navigateToTenant(workspaceId, p._id);
+				navigateToWorkspaceProject(currentWorkspaceName, p.name);
 			},
 		})) ?? [];
 

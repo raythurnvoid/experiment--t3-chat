@@ -6,7 +6,7 @@ import { server_convex_get_user_fallback_to_anonymous, should_never_happen } fro
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
-import { workspaces_db_create } from "../server/workspaces.ts";
+import { workspaces_db_create, workspaces_validate_name } from "../server/workspaces.ts";
 
 /**
  * TODO: to be implemented
@@ -51,11 +51,20 @@ export const list = query({
 		const [workspaceIds, workspaces] = await Promise.try(async () => {
 			const workspaceIds = [];
 			const workspacesPromises = [];
+
 			for (const workspaceId of projectIdsByWorkspace.keys()) {
 				workspaceIds.push(workspaceId);
 				workspacesPromises.push(ctx.db.get("workspaces", workspaceId));
 			}
-			const workspaces = (await Promise.all(workspacesPromises)).filter((workspace) => workspace !== null);
+
+			const workspaces = [];
+			for (const workspacePromise of workspacesPromises) {
+				const workspace = await workspacePromise;
+
+				if (workspace) {
+					workspaces.push(workspace);
+				}
+			}
 
 			return [workspaceIds, workspaces] as const;
 		});
@@ -74,16 +83,13 @@ export const list = query({
 						projectsPromises.push(ctx.db.get("workspaces_projects", projectId));
 					}
 
-					const projects = await (async (/* iife */) => {
-						const projects = await Promise.all(projectsPromises);
-						const results = [];
-						for (const project of projects) {
-							if (project !== null) {
-								results.push(project);
-							}
+					const projects = [];
+					for (const projectPromise of projectsPromises) {
+						const project = await projectPromise;
+						if (project !== null) {
+							projects.push(project);
 						}
-						return results;
-					})();
+					}
 
 					return [workspaceId, projects] as const;
 				}),
@@ -116,6 +122,74 @@ export const get_membership_for_scope = query({
 			.first();
 
 		return membership;
+	},
+});
+
+export const get_membership_by_workspace_project_name = query({
+	args: {
+		workspaceName: v.string(),
+		projectName: v.string(),
+	},
+	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => ctx.db.get("users", user.id));
+		if (!user) {
+			return null;
+		}
+
+		const workspaceNameResult = workspaces_validate_name(args.workspaceName);
+		if (workspaceNameResult._nay) {
+			return null;
+		}
+
+		const projectNameResult = workspaces_validate_name(args.projectName);
+		if (projectNameResult._nay) {
+			return null;
+		}
+
+		const memberships = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", user._id))
+			.collect();
+
+		const candidateMembershipsPromises = [];
+		for (const membership of memberships) {
+			candidateMembershipsPromises.push(
+				Promise.all([
+					ctx.db.get("workspaces", membership.workspaceId),
+					ctx.db.get("workspaces_projects", membership.projectId),
+				]).then(([workspace, project]) => {
+					if (!workspace || !project) {
+						return;
+					}
+
+					if (project.workspaceId !== membership.workspaceId) {
+						return;
+					}
+
+					if (workspace.name !== workspaceNameResult._yay || project.name !== projectNameResult._yay) {
+						return;
+					}
+
+					return membership;
+				}),
+			);
+		}
+
+		let foundMembership = null;
+		for (const candidateMembershipsPromise of candidateMembershipsPromises) {
+			const candidateMembership = await candidateMembershipsPromise;
+			if (candidateMembership) {
+				foundMembership = candidateMembership;
+				break;
+			}
+		}
+
+		if (!foundMembership) {
+			return null;
+		}
+
+		return foundMembership;
 	},
 });
 
@@ -328,9 +402,10 @@ export const delete_workspace = mutation({
 				.query("workspaces_projects")
 				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", workspace._id))
 				.collect()
-				.then((projects) =>
-					Promise.all(
-						projects.map((project) =>
+				.then((projects) => {
+					const promises = [];
+					for (const project of projects) {
+						promises.push(
 							Promise.all([
 								ctx.db
 									.query("workspaces_projects_users")
@@ -341,12 +416,12 @@ export const delete_workspace = mutation({
 											projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
 										),
 									),
-
 								ctx.db.delete("workspaces_projects", project._id),
 							]),
-						),
-					),
-				),
+						);
+					}
+					return Promise.all(promises);
+				}),
 
 			ctx.db.delete("workspaces", workspace._id),
 		]);
@@ -431,7 +506,7 @@ export const delete_project = mutation({
 				.query("workspaces_projects_users")
 				.withIndex("by_projectId_userId", (q) => q.eq("projectId", project._id))
 				.collect()
-				.then(async (projectUsers) =>
+				.then((projectUsers) =>
 					Promise.all(projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id))),
 				),
 

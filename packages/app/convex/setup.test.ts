@@ -134,13 +134,13 @@ export const test_mocks_fill_db_with = {
 				anonymousAuthToken: null,
 			}));
 		const workspaceId = await ctx.db.insert("workspaces", {
-			name: args?.workspaceName ?? "Test Workspace",
+			name: args?.workspaceName ?? "test-workspace",
 			default: false,
 			updatedAt: now,
 		});
 		const projectId = await ctx.db.insert("workspaces_projects", {
 			workspaceId,
-			name: args?.projectName ?? "Test Project",
+			name: args?.projectName ?? "test-project",
 			default: false,
 			updatedAt: now,
 		});

@@ -17,16 +17,19 @@ export const useAppGlobalStore = ((/* iife */) => {
 		ai_chat_composer_selection_collapsed_and_at_end: false,
 
 		/**
-		 * Homepage Convex page id keyed by `app_tenantPaths_scopeKey` (workspace + project scope).
+		 * Homepage Convex page id keyed by membership id.
 		 */
-		pages_home_id_by_scope: {} as Record<string, string>,
+		pages_home_id_by_membership_id: {} as Record<string, string>,
 	}));
 
 	return Object.assign(store, {
 		actions: {
-			setPagesHomeIdForScope: (scopeKey: string, pagesHomeId: string) => {
+			setPagesHomeIdForMembershipId: (membershipId: string, pagesHomeId: string) => {
 				store.setState((state) => ({
-					pages_home_id_by_scope: { ...state.pages_home_id_by_scope, [scopeKey]: pagesHomeId },
+					pages_home_id_by_membership_id: {
+						...state.pages_home_id_by_membership_id,
+						[membershipId]: pagesHomeId,
+					},
 				}));
 			},
 		},

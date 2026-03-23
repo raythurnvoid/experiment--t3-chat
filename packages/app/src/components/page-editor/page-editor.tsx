@@ -7,7 +7,6 @@ import { createPortal } from "react-dom";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text/page-editor-plain-text-skeleton.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_tenantPaths_scopeKey } from "@/lib/app-tenant-paths.ts";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { PageEditorSidebar } from "./page-editor-sidebar/page-editor-sidebar.tsx";
@@ -113,10 +112,9 @@ type PageEditorHeader_Props = {
 function PageEditorHeader(props: PageEditorHeader_Props) {
 	const { pageId, editorMode, onlineUsers, onEditorModeChange } = props;
 
-	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
 
-	const scopeKey = app_tenantPaths_scopeKey({ workspaceId, projectId });
-	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_scope[scopeKey] ?? "");
+	const homePageId = useAppGlobalStore((state) => state.pages_home_id_by_membership_id[membershipId] ?? "");
 
 	const pagesSidebarOpen = useAppLocalStorageValue("app_state::sidebar::pages_open");
 
@@ -150,8 +148,8 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 								<MyLink
 									aria-label="Home"
 									className={cn("PageEditorHeader-breadcrumb-home" satisfies PageEditorHeader_ClassNames)}
-									to="/w/$workspaceId/p/$projectId/pages"
-									params={{ workspaceId, projectId }}
+									to="/w/$workspaceName/$projectName/pages"
+									params={{ workspaceName, projectName }}
 									search={{ pageId: homePageId, view: editorMode }}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
@@ -176,8 +174,8 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 											<li>
 												<MyLink
 													className={cn("PageEditorHeader-breadcrumb-segment" satisfies PageEditorHeader_ClassNames)}
-													to="/w/$workspaceId/p/$projectId/pages"
-													params={{ workspaceId, projectId }}
+													to="/w/$workspaceName/$projectName/pages"
+													params={{ workspaceName, projectName }}
 													search={{ pageId: item.index, view: editorMode }}
 													variant="button-tertiary"
 												>
@@ -331,7 +329,7 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 	const { userId, pageId, children } = props;
 
 	const { workspaceId, projectId } = AppTenantProvider.useContext();
-	
+
 	const roomId = pages_create_room_id(workspaceId, projectId, pageId);
 
 	const presence = usePresence({
@@ -836,7 +834,7 @@ export function PageEditor(props: PageEditor_Props) {
 
 	const navigate = useNavigate();
 	const authenticated = AppAuthProvider.useAuthenticated();
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { workspaceName, projectName } = AppTenantProvider.useContext();
 
 	useImperativeHandle(
 		ref,
@@ -858,8 +856,8 @@ export function PageEditor(props: PageEditor_Props) {
 		};
 
 		navigate({
-			to: "/w/$workspaceId/p/$projectId/pages",
-			params: { workspaceId, projectId },
+			to: "/w/$workspaceName/$projectName/pages",
+			params: { workspaceName, projectName },
 			search: nextSearch,
 		}).catch((error) => {
 			console.error("[PageEditorInner.handleNavigatePendingEdits] Error navigating to pending edits", { error });

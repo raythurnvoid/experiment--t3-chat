@@ -8,7 +8,7 @@ import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, 
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_tenantPaths_chat, app_tenantPaths_pages } from "@/lib/app-tenant-paths.ts";
+import { url_path_chat, url_path_pages } from "@/lib/urls.ts";
 import { dark } from "@clerk/themes";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
@@ -522,10 +522,10 @@ type MainAppSidebar_Props = {
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { workspaceName, projectName } = AppTenantProvider.useContext();
 
-	const chatPath = app_tenantPaths_chat({ workspaceId, projectId });
-	const pagesPath = app_tenantPaths_pages({ workspaceId, projectId });
+	const chatPath = url_path_chat({ workspaceName, projectName });
+	const pagesPath = url_path_pages({ workspaceName, projectName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
 	const [mainAppSidebarCollapsed, setMainAppSidebarCollapsed] = useAppLocalStorageStateValue(

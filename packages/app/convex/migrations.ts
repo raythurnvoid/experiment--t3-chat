@@ -4,6 +4,38 @@ import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import { encode_path_segment } from "../server/server-utils.ts";
 import { db_upsert_page_chunks } from "./ai_docs_temp.ts";
 
+export function app_tenant_slugify_name(args: { value: string; fallback: string }) {
+	const collapsedName = args.value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-+|-+$/g, "");
+
+	return collapsedName === "" ? args.fallback : collapsedName;
+}
+
+const app_tenant_dedupe_name = ((/* iife */) => {
+	function value(args: { baseName: string; isTaken: (candidate: string) => boolean }) {
+		if (!args.isTaken(args.baseName)) {
+			return args.baseName;
+		}
+
+		let suffix = 2;
+		for (;;) {
+			const candidate = `${args.baseName}-${suffix}`;
+			if (!args.isTaken(candidate)) {
+				return candidate;
+			}
+			suffix += 1;
+		}
+	}
+
+	return function app_tenant_dedupe_name(args: { baseName: string; isTaken: (candidate: string) => boolean }) {
+		return value(args);
+	};
+})();
+
 async function migrate_pages_snapshots_is_archived_to_archived_at_fn(ctx: MutationCtx) {
 	const snapshots = await ctx.db.query("pages_snapshots").collect();
 	let patched = 0;
@@ -127,6 +159,70 @@ async function rename_default_workspaces_projects_desk_to_home_fn(ctx: MutationC
 	return {
 		scanned: projects.length,
 		patched,
+	};
+}
+
+async function migrate_workspace_and_project_names_to_url_safe_fn(ctx: MutationCtx) {
+	const workspaces = await ctx.db.query("workspaces").collect();
+	const usedWorkspaceNames = new Set<string>();
+	let patchedWorkspaces = 0;
+
+	for (const workspace of workspaces) {
+		const baseName = app_tenant_slugify_name({
+			value: workspace.name,
+			fallback: "workspace",
+		});
+		const nextName =
+			workspace.default && baseName === "personal"
+				? baseName
+				: app_tenant_dedupe_name({
+						baseName,
+						isTaken: (candidate) => usedWorkspaceNames.has(candidate),
+					});
+		usedWorkspaceNames.add(nextName);
+
+		if (workspace.name !== nextName) {
+			await ctx.db.patch("workspaces", workspace._id, {
+				name: nextName,
+			});
+			patchedWorkspaces += 1;
+		}
+	}
+
+	const projects = await ctx.db.query("workspaces_projects").collect();
+	const usedProjectNamesByWorkspaceId = new Map<Id<"workspaces">, Set<string>>();
+	let patchedProjects = 0;
+
+	for (const project of projects) {
+		let usedProjectNames = usedProjectNamesByWorkspaceId.get(project.workspaceId);
+		if (!usedProjectNames) {
+			usedProjectNames = new Set<string>();
+			usedProjectNamesByWorkspaceId.set(project.workspaceId, usedProjectNames);
+		}
+
+		const baseName = app_tenant_slugify_name({
+			value: project.name,
+			fallback: "project",
+		});
+		const nextName = app_tenant_dedupe_name({
+			baseName,
+			isTaken: (candidate) => usedProjectNames.has(candidate),
+		});
+		usedProjectNames.add(nextName);
+
+		if (project.name !== nextName) {
+			await ctx.db.patch("workspaces_projects", project._id, {
+				name: nextName,
+			});
+			patchedProjects += 1;
+		}
+	}
+
+	return {
+		scannedProjects: projects.length,
+		scannedWorkspaces: workspaces.length,
+		patchedProjects,
+		patchedWorkspaces,
 	};
 }
 
@@ -438,6 +534,17 @@ export const rename_default_workspaces_projects_desk_to_home = internalMutation(
 		patched: v.number(),
 	}),
 	handler: (ctx) => rename_default_workspaces_projects_desk_to_home_fn(ctx),
+});
+
+export const migrate_workspace_and_project_names_to_url_safe = internalMutation({
+	args: {},
+	returns: v.object({
+		scannedProjects: v.number(),
+		scannedWorkspaces: v.number(),
+		patchedProjects: v.number(),
+		patchedWorkspaces: v.number(),
+	}),
+	handler: (ctx) => migrate_workspace_and_project_names_to_url_safe_fn(ctx),
 });
 
 export const audit_active_duplicate_materialized_paths = internalMutation({

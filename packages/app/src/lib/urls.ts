@@ -1,18 +1,14 @@
 /**
  * URL helpers for workspace/project scoped routes.
  *
- * Canonical path shape: `/w/{workspaceId}/p/{projectId}/...`
+ * Canonical path shape: `/w/{workspaceName}/{projectName}/...`
  */
-export function app_tenantPaths_tenantPrefix(args: { workspaceId: string; projectId: string }) {
-	return `/w/${args.workspaceId}/p/${args.projectId}`;
+export function url_path_pages(args: { workspaceName: string; projectName: string }) {
+	return `/w/${args.workspaceName}/${args.projectName}/pages`;
 }
 
-export function app_tenantPaths_pages(args: { workspaceId: string; projectId: string }) {
-	return `${app_tenantPaths_tenantPrefix(args)}/pages`;
-}
-
-export function app_tenantPaths_chat(args: { workspaceId: string; projectId: string }) {
-	return `${app_tenantPaths_tenantPrefix(args)}/chat`;
+export function url_path_chat(args: { workspaceName: string; projectName: string }) {
+	return `/w/${args.workspaceName}/${args.projectName}/chat`;
 }
 
 export function app_tenantPaths_scopeKey(args: { workspaceId: string; projectId: string }) {
@@ -23,11 +19,13 @@ type App_tenant_workspace_for_defaults = {
 	_id: string;
 	default: boolean;
 	defaultProjectId?: string;
+	name: string;
 };
 
 type App_tenant_project_for_defaults = {
 	_id: string;
 	default: boolean;
+	name: string;
 };
 
 /**
@@ -52,7 +50,7 @@ export function app_tenant_default_project_for_workspace(args: {
 export function app_tenant_defaults_from_workspace_list(args: {
 	workspaces: App_tenant_workspace_for_defaults[];
 	workspaceIdsProjectsDict: Record<string, App_tenant_project_for_defaults[]>;
-}): { workspaceId: string; projectId: string } | null {
+}): { workspaceName: string; projectName: string } | null {
 	const workspace = args.workspaces.find((w) => w.default) ?? args.workspaces[0];
 	if (!workspace) {
 		return null;
@@ -64,5 +62,5 @@ export function app_tenant_defaults_from_workspace_list(args: {
 		return null;
 	}
 
-	return { workspaceId: workspace._id, projectId: project._id };
+	return { workspaceName: workspace.name, projectName: project.name };
 }
