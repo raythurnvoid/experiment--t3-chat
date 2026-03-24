@@ -1,5 +1,5 @@
 import { Outlet } from "@tanstack/react-router";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useQuery } from "convex/react";
 import { memo, useEffect, useRef } from "react";
 
 import { MainAppHeader } from "@/components/main-app-header.tsx";
@@ -20,27 +20,38 @@ const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout(
 		projectName,
 	});
 	const membershipId = membership?._id ?? "";
+	const convex = useConvex();
 
-	const ensureHomepage = useMutation(app_convex_api.ai_docs_temp.ensure_home_page);
-	const canEnsureHomePageRef = useRef(true);
+	const homePage = useQuery(app_convex_api.ai_docs_temp.get_home_page, membership ? { membershipId: membership._id } : "skip");
+	const canCreateHomePageRef = useRef(true);
 
 	const pagesHomeIdForMembership = useAppGlobalStore((s) => s.pages_home_id_by_membership_id[membershipId] ?? "");
 
 	useEffect(() => {
-		canEnsureHomePageRef.current = true;
+		canCreateHomePageRef.current = true;
 	}, [membershipId]);
 
 	useEffect(() => {
-		if (membership == null || pagesHomeIdForMembership || !canEnsureHomePageRef.current) {
+		if (membership == null || homePage === undefined) {
 			return;
 		}
 
-		canEnsureHomePageRef.current = false;
+		if (homePage) {
+			useAppGlobalStore.actions.setPagesHomeIdForMembershipId(membership._id, homePage.pageId);
+			return;
+		}
 
-		ensureHomepage({ membershipId: membership._id })
+		if (!canCreateHomePageRef.current) {
+			return;
+		}
+
+		canCreateHomePageRef.current = false;
+
+		convex
+			.mutation(app_convex_api.ai_docs_temp.create_home_page, { membershipId: membership._id })
 			.then((result) => {
 				if (result._nay) {
-					console.error("[TenantWorkspaceProjectLayout.ensure_home_page] Failed to ensure home page", {
+					console.error("[TenantWorkspaceProjectLayout.create_home_page] Failed to create home page", {
 						result,
 					});
 					return;
@@ -50,7 +61,7 @@ const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout(
 			.catch((error: unknown) => {
 				should_never_happen("Error while initializing the home page", { error });
 			});
-	}, [ensureHomepage, membership, pagesHomeIdForMembership]);
+	}, [convex, homePage, membership]);
 
 	if (membership === undefined) {
 		return <div>Loading workspace…</div>;

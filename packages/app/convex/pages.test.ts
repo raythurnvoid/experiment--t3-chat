@@ -233,11 +233,11 @@ test("homepage path stays immutable on rename and move", async () => {
 		name: "Test User",
 	});
 
-	const ensuredHomepage = await asUser.mutation(api.ai_docs_temp.ensure_home_page, {
+	const ensuredHomepage = await asUser.mutation(api.ai_docs_temp.create_home_page, {
 		membershipId: db.membershipId,
 	});
 	if (ensuredHomepage._nay) {
-		throw new Error("ensure_home_page failed in test");
+		throw new Error("create_home_page failed in test");
 	}
 	const homepageId = ensuredHomepage._yay.pageId;
 

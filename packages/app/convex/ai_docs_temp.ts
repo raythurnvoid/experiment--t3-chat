@@ -140,7 +140,21 @@ function db_query_pages_by_path(
 		);
 }
 
-async function find_active_path_conflict(
+function db_get_home_page(ctx: pages_QueryOrMutationCtx, args: { workspaceId: string; projectId: string }) {
+	return ctx.db
+		.query("pages")
+		.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("parentId", pages_ROOT_ID)
+				.eq("name", ""),
+		)
+		.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+		.first();
+}
+
+async function db_find_active_path_conflict(
 	ctx: MutationCtx,
 	args: {
 		workspaceId: string;
@@ -462,7 +476,7 @@ async function do_create_page(
 		});
 	}
 	const pagePath = pages_materialized_path_join(parentPath, args.name);
-	const activePathConflict = await find_active_path_conflict(ctx, {
+	const activePathConflict = await db_find_active_path_conflict(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: pagePath,
@@ -727,7 +741,7 @@ export const rename_page = mutation({
 		}
 		const renamedPath = pages_materialized_path_join(parentPath, args.name);
 		if (page.archiveOperationId === undefined) {
-			const activePathConflict = await find_active_path_conflict(ctx, {
+			const activePathConflict = await db_find_active_path_conflict(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				path: renamedPath,
@@ -819,7 +833,7 @@ export const move_pages = mutation({
 			}
 			movedPathByPageId.set(pageToMove.movedPath, pageToMove.itemId);
 
-			const activePathConflict = await find_active_path_conflict(ctx, {
+			const activePathConflict = await db_find_active_path_conflict(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				path: pageToMove.movedPath,
@@ -1200,7 +1214,7 @@ export const unarchive_pages = mutation({
 
 		// Validate top-most ancestor conflicts against currently not archived pages outside this operation.
 		for (const [ancestorTargetPath, ancestorPage] of ancestorsPagesByTargetPath) {
-			const conflictPage = await find_active_path_conflict(ctx, {
+			const conflictPage = await db_find_active_path_conflict(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				path: ancestorTargetPath,
@@ -1906,7 +1920,42 @@ export const create_page_by_path = internalMutation({
 	},
 });
 
-export const ensure_home_page = mutation({
+export const get_home_page = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+	},
+	returns: v.union(
+		v.object({
+			page: doc(app_convex_schema, "pages"),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const page = await db_get_home_page(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+		});
+
+		if (!page) {
+			return null;
+		}
+
+		return {
+			page,
+		};
+	},
+});
+
+export const create_home_page = mutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 	},
@@ -1921,21 +1970,13 @@ export const ensure_home_page = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// Find homepage (empty name under root)
-		const homepage = await ctx.db
-			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
-				q
-					.eq("workspaceId", membership.workspaceId)
-					.eq("projectId", membership.projectId)
-					.eq("parentId", pages_ROOT_ID)
-					.eq("name", ""),
-			)
-			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
-			.first();
+		const page = await db_get_home_page(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+		});
 
-		if (homepage) {
-			return Result({ _yay: { pageId: homepage._id } });
+		if (page) {
+			return Result({ _yay: { pageId: page._id } });
 		}
 
 		// Create homepage with empty name

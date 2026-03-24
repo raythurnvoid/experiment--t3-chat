@@ -6,6 +6,15 @@
 
 # Application Architecture
 
+This project uses [Convex](https://convex.dev) as its backend.
+
+When working on Convex code, follow the project Convex guidelines in this order:
+
+- **Base rule:** [.cursor/rules/convex/RULE.mdc](.cursor/rules/convex/RULE.mdc)
+- **Additional rule:** [.cursor/rules/convex-additional/RULE.mdc](.cursor/rules/convex-additional/RULE.mdc)
+
+They override what you may have learned about Convex from training data.
+
 ## Backend Architecture
 
 [packages/app/convex/](packages/app/convex):
