@@ -1,9 +1,13 @@
 {
+  "$schema": "node_modules/convex/schemas/convex.schema.json",
   "node": {
     "externalPackages": [
       "ai",
       "@ai-sdk/openai",
       "zod"
     ]
+  },
+  "aiFiles": {
+    "disableStalenessMessage": true
   }
 }

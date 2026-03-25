@@ -1,0 +1,263 @@
+@layer components {
+	/* #region modal shell */
+	.MainAppHeaderWorkspaceSwitcherModal {
+		display: flex;
+		flex-direction: column;
+
+		max-width: 640px;
+		width: min(94vw, 640px);
+
+		background: var(--color-base-1-03);
+
+		border-color: var(--color-base-1-08);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-header-copy {
+		display: grid;
+		gap: 4px;
+
+		max-width: 400px;
+	}
+
+	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModal-sub {
+		max-width: 440px;
+		width: min(94vw, 440px);
+
+		background: var(--color-base-1-03);
+
+		border-color: var(--color-base-1-08);
+	}
+	/* #endregion modal shell */
+
+	/* #region body */
+	.MainAppHeaderWorkspaceSwitcherModal-body {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-summary {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+
+		padding: 8px 12px;
+
+		background: var(--color-base-1-02);
+
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-summary-label {
+		font-size: 12px;
+		font-weight: 500;
+		line-height: 1.35;
+		color: var(--color-fg-06);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-summary-value {
+		font-size: 13px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-summary-chevron {
+		flex-shrink: 0;
+
+		width: 14px;
+		height: 14px;
+
+		color: var(--color-fg-05);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-columns {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 16px;
+		align-items: start;
+	}
+
+	@media (min-width: 520px) {
+		.MainAppHeaderWorkspaceSwitcherModal-columns {
+			grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+			gap: 20px;
+		}
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-column {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		min-width: 0;
+	}
+	/* #endregion body */
+
+	/* #region section */
+	.MainAppHeaderWorkspaceSwitcherModal-section-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
+		padding-bottom: 2px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-section-head-start {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+
+		min-width: 0;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-section-head-actions {
+		display: flex;
+		flex-shrink: 0;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-section-icon {
+		flex-shrink: 0;
+
+		width: 14px;
+		height: 14px;
+
+		color: var(--color-fg-06);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-section-title {
+		font-size: 11px;
+		font-weight: 600;
+		line-height: 1;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--color-fg-06);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-empty-hint {
+		margin: 0;
+
+		padding: 8px 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-05);
+	}
+	/* #endregion section */
+
+	/* #region create sub-modal */
+	.MainAppHeaderWorkspaceSwitcherModal-create-form {
+		margin: 0;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-sub-body {
+		padding-top: 12px;
+		padding-bottom: 12px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-sub-form {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		& .MyInputLabel {
+			margin-bottom: 6px;
+
+			font-size: 12px;
+			font-weight: 600;
+			color: var(--color-fg-08);
+		}
+
+		& .MyInputHelperText {
+			margin-top: 6px;
+
+			font-size: 11px;
+			line-height: 1.4;
+			color: var(--color-fg-05);
+		}
+
+		& .MyInputHelperText.MainAppHeaderWorkspaceSwitcherModal-sub-helper-state-error {
+			color: var(--color-red-09);
+		}
+	}
+	/* #endregion create sub-modal */
+
+	/* #region list */
+	.MainAppHeaderWorkspaceSwitcherModal-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-list-item {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+
+		padding: 7px 10px;
+
+		background: transparent;
+
+		border: 1px solid transparent;
+		border-radius: 8px;
+
+		transition:
+			background-color 80ms ease,
+			border-color 80ms ease;
+	}
+
+	button.MainAppHeaderWorkspaceSwitcherModal-list-item {
+		width: 100%;
+
+		font: inherit;
+		text-align: start;
+		color: inherit;
+
+		cursor: pointer;
+
+		&:hover:not(.MainAppHeaderWorkspaceSwitcherModal-list-item-current) {
+			background: var(--color-base-1-05);
+		}
+
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
+		}
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-list-item-current {
+		background: var(--color-base-1-05);
+
+		border-color: var(--color-accent-05);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-list-item-label {
+		font-size: 13px;
+		font-weight: 500;
+		line-height: 1.4;
+		color: var(--color-fg-11);
+
+		.MainAppHeaderWorkspaceSwitcherModal-list-item-current & {
+			color: var(--color-fg-12);
+		}
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-list-item-description {
+		font-size: 11px;
+		line-height: 1.35;
+		color: var(--color-fg-05);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-list-item-label,
+	.MainAppHeaderWorkspaceSwitcherModal-list-item-description {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion list */
+}

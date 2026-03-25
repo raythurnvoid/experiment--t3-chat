@@ -1,21 +1,17 @@
 import "./main-app-header.css";
 
+import type { FunctionArgs } from "convex/server";
 import { memo, useState, type ComponentPropsWithRef } from "react";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronsUpDown } from "lucide-react";
 
-import { MyButton } from "@/components/my-button.tsx";
 import {
-	MyModal,
-	MyModalCloseTrigger,
-	MyModalDescription,
-	MyModalHeader,
-	MyModalHeading,
-	MyModalPopover,
-	MyModalScrollableArea,
-	MyModalTrigger,
-} from "@/components/my-modal.tsx";
+	MainAppHeaderWorkspaceSwitcherModal,
+	type MainAppHeaderWorkspaceSwitcherModal_ListItem,
+} from "@/components/main-app-header-workspace-controls-modal.tsx";
+import { MyButton } from "@/components/my-button.tsx";
+import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
@@ -31,14 +27,6 @@ type MainAppHeaderWorkspaceControls_ClassNames =
 	| "MainAppHeaderWorkspaceControls-secondary-text"
 	| "MainAppHeaderWorkspaceControls-icon";
 
-type MainAppHeaderWorkspaceControls_ListItem = {
-	description: string;
-	id: string;
-	isCurrent?: boolean;
-	label: string;
-	onSelect: () => void;
-};
-
 const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
 	const navigate = useNavigate();
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -46,6 +34,8 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const { workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
 
 	const workspaceList = useQuery(app_convex_api.workspaces.list);
+	const createWorkspace = useMutation(app_convex_api.workspaces.create_workspace);
+	const createProject = useMutation(app_convex_api.workspaces.create_project);
 
 	const [isOpen, setIsOpen] = useState(false);
 
@@ -57,6 +47,8 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 
 	const currentWorkspaceName = workspaces?.find((w) => w._id === workspaceId)?.name ?? workspaceName ?? "…";
 	const currentProjectName = projects?.find((p) => p._id === projectId)?.name ?? projectName ?? "…";
+
+	const listLoaded = workspaces !== undefined;
 
 	const navigateToWorkspaceProject = (nextWorkspaceName: string, nextProjectName: string) => {
 		const to =
@@ -71,7 +63,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		setIsOpen(false);
 	};
 
-	const workspaceItems: MainAppHeaderWorkspaceControls_ListItem[] =
+	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
 		workspaces?.map((w) => ({
 			id: w._id,
 			label: w.name,
@@ -104,7 +96,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 			},
 		})) ?? [];
 
-	const projectItems: MainAppHeaderWorkspaceControls_ListItem[] =
+	const projectItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
 		projects?.map((p) => ({
 			id: p._id,
 			label: p.name,
@@ -149,228 +141,28 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				</MyButton>
 			</MyModalTrigger>
 
-			<MainAppHeaderWorkspaceControlsModal
+			<MainAppHeaderWorkspaceSwitcherModal
+				createProject={createProject}
+				createWorkspace={createWorkspace}
+				listLoaded={listLoaded}
 				projectItems={projectItems}
 				projectName={currentProjectName}
+				workspaceId={
+					workspaceId as FunctionArgs<typeof app_convex_api.workspaces.create_project>["workspaceId"]
+				}
 				workspaceItems={workspaceItems}
 				workspaceName={currentWorkspaceName}
+				onAfterCreateProject={({ projectName: nextProjectName, workspaceName: nextWorkspaceName }) =>
+					navigateToWorkspaceProject(nextWorkspaceName, nextProjectName)
+				}
+				onAfterCreateWorkspace={({ projectName: nextProjectName, workspaceName: nextWorkspaceName }) =>
+					navigateToWorkspaceProject(nextWorkspaceName, nextProjectName)
+				}
 			/>
 		</MyModal>
 	);
 });
 // #endregion workspace controls
-
-// #region workspace controls modal
-type MainAppHeaderWorkspaceControlsModal_ClassNames =
-	| "MainAppHeaderWorkspaceControlsModal"
-	| "MainAppHeaderWorkspaceControlsModal-header-copy"
-	| "MainAppHeaderWorkspaceControlsModal-body"
-	| "MainAppHeaderWorkspaceControlsModal-section"
-	| "MainAppHeaderWorkspaceControlsModal-section-title"
-	| "MainAppHeaderWorkspaceControlsModal-current-selection"
-	| "MainAppHeaderWorkspaceControlsModal-current-selection-label"
-	| "MainAppHeaderWorkspaceControlsModal-current-selection-workspace"
-	| "MainAppHeaderWorkspaceControlsModal-current-selection-project"
-	| "MainAppHeaderWorkspaceControlsModal-list"
-	| "MainAppHeaderWorkspaceControlsModal-list-item"
-	| "MainAppHeaderWorkspaceControlsModal-list-item-current"
-	| "MainAppHeaderWorkspaceControlsModal-list-item-label"
-	| "MainAppHeaderWorkspaceControlsModal-list-item-description";
-
-type MainAppHeaderWorkspaceControlsModal_Props = {
-	projectItems: MainAppHeaderWorkspaceControls_ListItem[];
-	projectName: string;
-	workspaceItems: MainAppHeaderWorkspaceControls_ListItem[];
-	workspaceName: string;
-};
-
-const MainAppHeaderWorkspaceControlsModal = memo(function MainAppHeaderWorkspaceControlsModal(
-	props: MainAppHeaderWorkspaceControlsModal_Props,
-) {
-	const { projectItems, projectName, workspaceItems, workspaceName } = props;
-
-	return (
-		<MyModalPopover
-			className={cn("MainAppHeaderWorkspaceControlsModal" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames)}
-		>
-			<MyModalHeader>
-				<div
-					className={cn(
-						"MainAppHeaderWorkspaceControlsModal-header-copy" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-					)}
-				>
-					<MyModalHeading>Workspace and project</MyModalHeading>
-					<MyModalDescription>
-						Switch workspace or project. Changing workspace opens that workspace’s default project.
-					</MyModalDescription>
-				</div>
-			</MyModalHeader>
-
-			<MyModalScrollableArea
-				className={cn(
-					"MainAppHeaderWorkspaceControlsModal-body" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-				)}
-			>
-				<section
-					className={cn(
-						"MainAppHeaderWorkspaceControlsModal-section" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-					)}
-				>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceControlsModal-section-title" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-						)}
-					>
-						Current selection
-					</div>
-
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceControlsModal-current-selection" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-						)}
-					>
-						<div
-							className={cn(
-								"MainAppHeaderWorkspaceControlsModal-current-selection-label" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-							)}
-						>
-							Workspace
-						</div>
-
-						<div
-							className={cn(
-								"MainAppHeaderWorkspaceControlsModal-current-selection-workspace" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-							)}
-						>
-							{workspaceName}
-						</div>
-
-						<div
-							className={cn(
-								"MainAppHeaderWorkspaceControlsModal-current-selection-label" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-							)}
-						>
-							Project
-						</div>
-
-						<div
-							className={cn(
-								"MainAppHeaderWorkspaceControlsModal-current-selection-project" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-							)}
-						>
-							{projectName}
-						</div>
-					</div>
-				</section>
-
-				<section
-					className={cn(
-						"MainAppHeaderWorkspaceControlsModal-section" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-					)}
-				>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceControlsModal-section-title" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-						)}
-					>
-						Workspaces
-					</div>
-
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceControlsModal-list" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-						)}
-					>
-						{workspaceItems.map((item) => (
-							<button
-								key={item.id}
-								type="button"
-								className={cn(
-									"MainAppHeaderWorkspaceControlsModal-list-item" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-									item.isCurrent &&
-										("MainAppHeaderWorkspaceControlsModal-list-item-current" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames),
-								)}
-								onClick={item.onSelect}
-							>
-								<div
-									className={cn(
-										"MainAppHeaderWorkspaceControlsModal-list-item-label" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-									)}
-								>
-									{item.label}
-								</div>
-
-								{item.description ? (
-									<div
-										className={cn(
-											"MainAppHeaderWorkspaceControlsModal-list-item-description" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-										)}
-									>
-										{item.description}
-									</div>
-								) : null}
-							</button>
-						))}
-					</div>
-				</section>
-
-				<section
-					className={cn(
-						"MainAppHeaderWorkspaceControlsModal-section" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-					)}
-				>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceControlsModal-section-title" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-						)}
-					>
-						Projects
-					</div>
-
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceControlsModal-list" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-						)}
-					>
-						{projectItems.map((item) => (
-							<button
-								key={item.id}
-								type="button"
-								className={cn(
-									"MainAppHeaderWorkspaceControlsModal-list-item" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-									item.isCurrent &&
-										("MainAppHeaderWorkspaceControlsModal-list-item-current" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames),
-								)}
-								onClick={item.onSelect}
-							>
-								<div
-									className={cn(
-										"MainAppHeaderWorkspaceControlsModal-list-item-label" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-									)}
-								>
-									{item.label}
-								</div>
-
-								{item.description ? (
-									<div
-										className={cn(
-											"MainAppHeaderWorkspaceControlsModal-list-item-description" satisfies MainAppHeaderWorkspaceControlsModal_ClassNames,
-										)}
-									>
-										{item.description}
-									</div>
-								) : null}
-							</button>
-						))}
-					</div>
-				</section>
-			</MyModalScrollableArea>
-
-			<MyModalCloseTrigger />
-		</MyModalPopover>
-	);
-});
-// #endregion workspace controls modal
 
 // #region root
 type MainAppHeader_ClassNames = "MainAppHeader" | "MainAppHeader-content";

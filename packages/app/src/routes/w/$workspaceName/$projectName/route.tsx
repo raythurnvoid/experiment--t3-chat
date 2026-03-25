@@ -37,7 +37,7 @@ const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout(
 		}
 
 		if (homePage) {
-			useAppGlobalStore.actions.setPagesHomeIdForMembershipId(membership._id, homePage.pageId);
+			useAppGlobalStore.actions.setPagesHomeIdForMembershipId(membership._id, homePage.page._id);
 			return;
 		}
 

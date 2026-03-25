@@ -22,6 +22,8 @@ describe("create_workspace", () => {
 		});
 
 		expect(result._yay).toBeTruthy();
+		expect(result._yay?.name).toBe("acme-labs");
+		expect(result._yay?.defaultProjectName).toBe("home");
 
 		const workspace = result._yay ? await t.run((ctx) => ctx.db.get("workspaces", result._yay.workspaceId)) : null;
 		const project = result._yay ? await t.run((ctx) => ctx.db.get("workspaces_projects", result._yay.defaultProjectId)) : null;
@@ -30,7 +32,7 @@ describe("create_workspace", () => {
 		expect(project?.name).toBe("home");
 	});
 
-	test("rejects invalid names", async () => {
+	test("rejects names that are still invalid after autofix", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
@@ -43,7 +45,7 @@ describe("create_workspace", () => {
 			name: "Test User",
 		});
 
-		const invalidNames = ["Acme", "acme labs", "acme_1", "acme--labs", "-acme", "acme-", ""];
+		const invalidNames = ["", "!!!", "---", "   ", "\t\t"];
 
 		for (const name of invalidNames) {
 			const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -52,6 +54,26 @@ describe("create_workspace", () => {
 
 			expect(result._nay?.message).toBeTruthy();
 		}
+	});
+
+	test("autofixes messy workspace names before create", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-autofix-ws",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "  Acme Labs!!  ",
+		});
+
+		expect(result._yay?.name).toBe("acme-labs");
 	});
 
 	test("rejects duplicate global workspace names", async () => {
@@ -104,6 +126,136 @@ describe("create_workspace", () => {
 
 		expect(results[0]._yay).toBeTruthy();
 		expect(results[1]._yay).toBeTruthy();
+	});
+});
+
+describe("create_project", () => {
+	test("creates a project for a member workspace", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-create-proj",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "proj-workspace",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "docs",
+		});
+
+		expect(result._yay?.name).toBe("docs");
+
+		const membership = result._yay
+			? await t.run(async (ctx) =>
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_projectId_userId", (q) =>
+							q.eq("projectId", result._yay!.projectId).eq("userId", userId),
+						)
+						.first(),
+				)
+			: null;
+		expect(membership).toBeTruthy();
+	});
+
+	test("rejects duplicate project names in the same workspace", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-create-proj-dup",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "dup-proj-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const first = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "alpha",
+		});
+		expect(first._yay).toBeTruthy();
+
+		const second = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "alpha",
+		});
+		expect(second._nay?.message).toBe("Project name already exists");
+	});
+
+	test("autofixes messy project names before create", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-autofix-proj",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "autofix-proj-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "  My Docs!!  ",
+		});
+
+		expect(result._yay?.name).toBe("my-docs");
+	});
+
+	test("rejects when the user is not in the workspace", async () => {
+		const t = test_convex();
+		const userIds = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-proj-a" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-proj-b" }),
+			]),
+		);
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userIds[0],
+			name: "Owner",
+		});
+
+		const wsResult = await owner.mutation(api.workspaces.create_workspace, {
+			name: "private-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const stranger = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userIds[1],
+			name: "Stranger",
+		});
+
+		const result = await stranger.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "intruder",
+		});
+		expect(result._nay?.message).toBe("Workspace not found");
 	});
 });
 

@@ -6,7 +6,7 @@ import { server_convex_get_user_fallback_to_anonymous, should_never_happen } fro
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
-import { workspaces_db_create, workspaces_validate_name } from "../server/workspaces.ts";
+import { workspaces_db_create, workspaces_db_create_project, workspaces_validate_name } from "../server/workspaces.ts";
 
 /**
  * TODO: to be implemented
@@ -245,6 +245,8 @@ export const create_workspace = mutation({
 		_yay: v.object({
 			workspaceId: v.id("workspaces"),
 			defaultProjectId: v.id("workspaces_projects"),
+			name: v.string(),
+			defaultProjectName: v.string(),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -254,6 +256,32 @@ export const create_workspace = mutation({
 
 		return await workspaces_db_create(ctx, {
 			userId: user.id,
+			name: args.name,
+			now,
+		});
+	},
+});
+
+export const create_project = mutation({
+	args: {
+		workspaceId: v.id("workspaces"),
+		name: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			name: v.string(),
+			projectId: v.id("workspaces_projects"),
+			workspaceId: v.id("workspaces"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const now = Date.now();
+
+		return await workspaces_db_create_project(ctx, {
+			userId: user.id,
+			workspaceId: args.workspaceId,
 			name: args.name,
 			now,
 		});
