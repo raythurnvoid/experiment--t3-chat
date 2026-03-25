@@ -1,7 +1,6 @@
 import "./main-app-header.css";
 
-import type { FunctionArgs } from "convex/server";
-import { memo, useState, type ComponentPropsWithRef } from "react";
+import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronsUpDown } from "lucide-react";
@@ -14,7 +13,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { app_tenant_default_project_for_workspace } from "@/lib/urls.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -27,6 +26,11 @@ type MainAppHeaderWorkspaceControls_ClassNames =
 	| "MainAppHeaderWorkspaceControls-secondary-text"
 	| "MainAppHeaderWorkspaceControls-icon";
 
+type MainAppHeaderWorkspaceControls_LocalDraft = {
+	workspaceId: app_convex_Id<"workspaces">;
+	projectId: app_convex_Id<"workspaces_projects">;
+};
+
 const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
 	const navigate = useNavigate();
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -38,9 +42,28 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const createProject = useMutation(app_convex_api.workspaces.create_project);
 
 	const [isOpen, setIsOpen] = useState(false);
+	const [localDraft, setLocalDraft] = useState<MainAppHeaderWorkspaceControls_LocalDraft | null>(null);
 
 	const workspaces = workspaceList?.workspaces;
 	const projects = workspaceId ? workspaceList?.workspaceIdsProjectsDict[workspaceId] : undefined;
+
+	useEffect(() => {
+		if (!isOpen) {
+			return;
+		}
+
+		if (!workspaceId || !projectId) {
+			return;
+		}
+
+		setLocalDraft({ workspaceId, projectId });
+	}, [isOpen, workspaceId, projectId]);
+
+	const draftWorkspaceId = localDraft?.workspaceId ?? workspaceId;
+	const draftProjectId = localDraft?.projectId ?? projectId;
+
+	const draftProjects =
+		draftWorkspaceId && workspaceList ? workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] : undefined;
 
 	const lastPathSegment = pathname.split("/").filter(Boolean).at(-1) ?? "";
 	const tenantRouteSuffix = lastPathSegment === "chat" ? "chat" : "pages";
@@ -48,7 +71,13 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const currentWorkspaceName = workspaces?.find((w) => w._id === workspaceId)?.name ?? workspaceName ?? "…";
 	const currentProjectName = projects?.find((p) => p._id === projectId)?.name ?? projectName ?? "…";
 
+	const draftWorkspaceRecord = workspaces?.find((w) => w._id === draftWorkspaceId);
+	const draftWorkspaceName = draftWorkspaceRecord?.name ?? workspaceName ?? "…";
+
 	const listLoaded = workspaces !== undefined;
+
+	const switchDisabled =
+		!listLoaded || (draftWorkspaceId === workspaceId && draftProjectId === projectId);
 
 	const navigateToWorkspaceProject = (nextWorkspaceName: string, nextProjectName: string) => {
 		const to =
@@ -63,15 +92,34 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		setIsOpen(false);
 	};
 
+	const handleWorkspaceSwitcherSwitch = () => {
+		if (!workspaceList || !workspaces) {
+			console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
+			return;
+		}
+
+		const nextWorkspace = workspaces.find((w) => w._id === draftWorkspaceId);
+		const nextProjects = workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] ?? [];
+		const nextProject = nextProjects.find((p) => p._id === draftProjectId);
+
+		if (!nextWorkspace || !nextProject) {
+			console.error("[MainAppHeaderWorkspaceControls] Failed to resolve draft workspace/project", {
+				draftWorkspaceId,
+				draftProjectId,
+			});
+			return;
+		}
+
+		navigateToWorkspaceProject(nextWorkspace.name, nextProject.name);
+	};
+
 	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
 		workspaces?.map((w) => ({
 			id: w._id,
 			label: w.name,
 			description: w.default ? "Default workspace" : "",
-			isCurrent: w._id === workspaceId,
 			onSelect: () => {
-				if (w._id === workspaceId) {
-					setIsOpen(false);
+				if (w._id === draftWorkspaceId) {
 					return;
 				}
 
@@ -92,23 +140,24 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 					return;
 				}
 
-				navigateToWorkspaceProject(w.name, defaultProject.name);
+				setLocalDraft({ workspaceId: w._id, projectId: defaultProject._id });
 			},
 		})) ?? [];
 
 	const projectItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
-		projects?.map((p) => ({
+		draftProjects?.map((p) => ({
 			id: p._id,
 			label: p.name,
 			description: p.default ? "Default project" : "",
-			isCurrent: p._id === projectId,
 			onSelect: () => {
-				if (p._id === projectId) {
-					setIsOpen(false);
+				if (p._id === draftProjectId) {
 					return;
 				}
 
-				navigateToWorkspaceProject(currentWorkspaceName, p.name);
+				setLocalDraft((prev) => ({
+					workspaceId: prev?.workspaceId ?? draftWorkspaceId,
+					projectId: p._id,
+				}));
 			},
 		})) ?? [];
 
@@ -145,19 +194,21 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				createProject={createProject}
 				createWorkspace={createWorkspace}
 				listLoaded={listLoaded}
+				draftProjectId={draftProjectId}
+				draftWorkspaceId={draftWorkspaceId}
 				projectItems={projectItems}
 				projectName={currentProjectName}
-				workspaceId={
-					workspaceId as FunctionArgs<typeof app_convex_api.workspaces.create_project>["workspaceId"]
-				}
+				switchDisabled={switchDisabled}
 				workspaceItems={workspaceItems}
-				workspaceName={currentWorkspaceName}
+				workspaceName={draftWorkspaceName}
 				onAfterCreateProject={({ projectName: nextProjectName, workspaceName: nextWorkspaceName }) =>
 					navigateToWorkspaceProject(nextWorkspaceName, nextProjectName)
 				}
 				onAfterCreateWorkspace={({ projectName: nextProjectName, workspaceName: nextWorkspaceName }) =>
 					navigateToWorkspaceProject(nextWorkspaceName, nextProjectName)
 				}
+				onCancel={() => setIsOpen(false)}
+				onSwitch={handleWorkspaceSwitcherSwitch}
 			/>
 		</MyModal>
 	);

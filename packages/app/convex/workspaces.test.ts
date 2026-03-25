@@ -4,6 +4,26 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { workspaces_db_create } from "../server/workspaces.ts";
 
 describe("create_workspace", () => {
+	test("accepts names with digits after the first character", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-digits-ws",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "team-2-east",
+		});
+
+		expect(result._yay?.name).toBe("team-2-east");
+	});
+
 	test("accepts valid lowercase dash names", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -45,7 +65,7 @@ describe("create_workspace", () => {
 			name: "Test User",
 		});
 
-		const invalidNames = ["", "!!!", "---", "   ", "\t\t"];
+		const invalidNames = ["", "!!!", "---", "   ", "\t\t", "ab", "a", "12"];
 
 		for (const name of invalidNames) {
 			const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -54,6 +74,26 @@ describe("create_workspace", () => {
 
 			expect(result._nay?.message).toBeTruthy();
 		}
+	});
+
+	test("rejects names shorter than 3 characters after autofix", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-short-name",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "  !!ab!!  ",
+		});
+
+		expect(result._nay?.message).toBe("Name must be at least 3 characters");
 	});
 
 	test("autofixes messy workspace names before create", async () => {
@@ -223,6 +263,32 @@ describe("create_project", () => {
 		});
 
 		expect(result._yay?.name).toBe("my-docs");
+	});
+
+	test("accepts project names with digits after the first character", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-digits-proj",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "digits-proj-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "sprint-2",
+		});
+
+		expect(result._yay?.name).toBe("sprint-2");
 	});
 
 	test("rejects when the user is not in the workspace", async () => {

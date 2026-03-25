@@ -1,25 +1,54 @@
 import { Result } from "./errors-as-values-utils.ts";
 
-const workspace_project_name_regex = /^[a-z]+(?:-[a-z]+)*$/;
+/** Letters, digits (not first char), single hyphens between segments; min length enforced separately. */
+const workspace_project_name_regex = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+const workspace_project_name_min_length = 3;
+
+export type workspaces_name_autofix_Options = {
+	/**
+	 * When `false`, keep trailing hyphens while the user is typing so separators (space, `_`, punctuation)
+	 * stay visible as `-` instead of disappearing after end-trim.
+	 * Leading hyphens are still removed once the string contains a letter (slug prefix rule).
+	 */
+	trim_trailing_hyphens?: boolean;
+};
 
 /**
- * Normalize user-provided workspace or project name input to kebab-case segments (`a-z`, single hyphens).
- * Map every non-letter to `-`, lowercase ASCII letters, collapse hyphens, trim leading/trailing hyphens.
+ * Normalize user-provided workspace or project name input to kebab-case: ASCII letters, optional digits after the first letter, single hyphens.
+ * Lowercase ASCII letters, map other separators to `-`, collapse hyphens, trim leading/trailing hyphens (unless `trim_trailing_hyphens: false`).
+ * Drop leading digits until a letter appears so the result can start with a letter when possible.
  */
-export function workspaces_name_autofix(raw: string) {
+export function workspaces_name_autofix(raw: string, options?: workspaces_name_autofix_Options) {
+	const trim_trailing_hyphens = options?.trim_trailing_hyphens ?? true;
+
 	const lower = raw.toLowerCase();
 	let out = "";
 	for (let i = 0; i < lower.length; i++) {
-		const code = lower.charCodeAt(i);
+		const ch = lower[i]!;
+		const code = ch.charCodeAt(0);
 		if (code >= 97 && code <= 122) {
-			out += lower[i];
+			out += ch;
+		} else if (code >= 48 && code <= 57) {
+			// Allow digits only after at least one letter is present in the raw output (first char must be a-z).
+			if (/[a-z]/.test(out)) {
+				out += ch;
+			}
 		} else {
 			out += "-";
 		}
 	}
 
 	out = out.replace(/-+/g, "-");
-	out = out.replace(/^-+|-+$/g, "");
+
+	if (trim_trailing_hyphens) {
+		out = out.replace(/^-+|-+$/g, "");
+	} else {
+		// Keep a lone `-` (or hyphens before any letter) so draft input shows converted separators.
+		if (/[a-z]/.test(out)) {
+			out = out.replace(/^-+/, "");
+		}
+	}
 
 	return out;
 }
@@ -35,6 +64,15 @@ export function workspaces_name_validate(name: string) {
 			_nay: {
 				name: "nay",
 				message: "Name cannot be empty",
+			},
+		});
+	}
+
+	if (trimmed.length < workspace_project_name_min_length) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Name must be at least 3 characters",
 			},
 		});
 	}

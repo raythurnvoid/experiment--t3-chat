@@ -448,6 +448,9 @@ Keep component-scoped types next to their owner component instead of centralizin
 - Keep owner-scoped contracts with the exact owner in their symbol name.
 - Do not mix parent-owned and child-owned contracts in the same region.
 - If you extract `ParentItem` from `Parent`, rename the extracted item's `*_ClassNames`, `*_Props`, and CSS selectors to match `ParentItem`.
+- If the user asks for multiple sibling components (for example `FooSelected`, `FooSelectable`, and `Foo`), treat them as three separate owners. Do not keep their types in one shared "components" region.
+- If a coordinating wrapper component renders no owned DOM node, keep only its `Owner_Props` and component in that region; do not invent shared class contracts for it.
+- If sibling variants both need similar slots like label/description, each variant still owns its own slot classes (`FooSelected-label`, `FooSelectable-label`) unless the user explicitly asked for a shared base owner.
 
 Examples:
 
@@ -471,6 +474,9 @@ Use region comments only when the user explicitly requests them, or when the mod
 - Do not add or remove regions in files that do not already use them unless the user explicitly requests it.
 - Do not create `#region` blocks inside a component body for "local state", "handlers", "render", etc., unless the user explicitly requests that structure.
 - If you need extra grouping inside a component, use plain comments instead of more `#region` markers.
+- When the user asks for concrete extracted components, region labels should usually match those concrete owners one-for-one (`foo selected`, `foo selectable`, `foo`) instead of using one catch-all region such as `foo components`.
+- If a supporting non-component shape also needs a region, give it a distinct label like `foo model` so it does not collide with the actual component-owner region names.
+- A composer/chooser component still gets its own region even when its paired CSS region is intentionally empty or comment-only because it only composes other owners.
 
 Examples:
 
@@ -478,6 +484,98 @@ Examples:
 - Keep `foo submenu item` contracts in `foo submenu item`.
 - Do not keep `FooSubMenu_ClassNames` inside the `foo submenu item` region.
 - Do not keep `FooItem_ClassNames` inside the `foo submenu` region.
+
+### Anatomy example
+
+Use this pattern when a feature module extracts multiple concrete sibling components plus one chooser/composer:
+
+```tsx
+// #region item selected
+type FooItemSelected_ClassNames =
+	| "FooItemSelected"
+	| "FooItemSelected-label"
+	| "FooItemSelected-description";
+
+type FooItemSelected_Props = {
+	label: string;
+	description: string;
+};
+
+const FooItemSelected = memo(function FooItemSelected(props: FooItemSelected_Props) {
+	const { label, description } = props;
+	return <div className={cn("FooItemSelected" satisfies FooItemSelected_ClassNames)} />;
+});
+// #endregion item selected
+
+// #region item selectable
+type FooItemSelectable_ClassNames =
+	| "FooItemSelectable"
+	| "FooItemSelectable-label"
+	| "FooItemSelectable-description";
+
+type FooItemSelectable_Props = {
+	label: string;
+	description: string;
+	onSelect: () => void;
+};
+
+const FooItemSelectable = memo(function FooItemSelectable(props: FooItemSelectable_Props) {
+	const { label, description, onSelect } = props;
+	return <button type="button" className={cn("FooItemSelectable" satisfies FooItemSelectable_ClassNames)} onClick={onSelect} />;
+});
+// #endregion item selectable
+
+// #region item
+type FooItem_Props = {
+	item: {
+		id: string;
+		label: string;
+		description: string;
+		onSelect: () => void;
+		isCurrent: boolean;
+	};
+};
+
+const FooItem = memo(function FooItem(props: FooItem_Props) {
+	const { item } = props;
+	return item.isCurrent ? (
+		<FooItemSelected label={item.label} description={item.description} />
+	) : (
+		<FooItemSelectable label={item.label} description={item.description} onSelect={item.onSelect} />
+	);
+});
+// #endregion item
+```
+
+```css
+/* #region item selected */
+.FooItemSelected {}
+
+.FooItemSelected-label {}
+
+.FooItemSelected-description {}
+/* #endregion item selected */
+
+/* #region item selectable */
+.FooItemSelectable {}
+
+.FooItemSelectable-label {}
+
+.FooItemSelectable-description {}
+/* #endregion item selectable */
+
+/* #region item */
+/* FooItem composes siblings only; no owned selectors. */
+/* #endregion item */
+```
+
+Key takeaways:
+
+- Give each concrete owner its own region.
+- Keep each owner's `_ClassNames`, `_Props`, and selectors inside that same owner region.
+- Use kebab-case suffixes in class strings (`-label`, `-description`, `-icon-wrap`).
+- Create regions only for real long-lived owners or boundaries. Inline one-off supporting data shapes in the nearest owning region unless a separate owner boundary materially improves clarity.
+- Let the chooser/composer region stay small; if it owns no DOM, it usually owns no selectors.
 
 ### Effect placement inside components
 
@@ -498,6 +596,8 @@ Keep the same prop order in both `*_Props` definitions and JSX call sites.
 - Keep named slots after callback/event props.
 - Keep `children` last.
 - Keep `...rest` as the final destructured item.
+- For feature-local extracted components that own a specific UI shape, prefer structured props (`icon`, `title`, `items`, `selectedItemId`, `onCreate`) over broad `ReactNode` slot props (`headSlot`, `listSlot`) unless the component is intentionally a reusable layout primitive.
+- Use named slot props only when caller-controlled composition is the goal. Do not default to slot APIs for local composition when plain data + callback props describe the component more clearly.
 
 ### Insertion placement (pre-scan first)
 
@@ -949,6 +1049,8 @@ export function Toolbar(props: Toolbar_Props) {
 ## Component Styles
 
 - Declare a `_ClassNames` union type enumerating all CSS class strings. Class values are prefixed with the component name and use kebab-case. **Always include a root class equal to the component name**, even when styles are minimal, so the component is easy to identify in the DOM.
+- Keep every suffix segment in class string literals kebab-case. Use `ComponentName-icon-wrap`, not `ComponentName-iconWrap`.
+- If sibling components own similar slots, repeat the slot suffix under each owner instead of inventing a shared pseudo-owner. Prefer `FooSelected-label` and `FooSelectable-label` over a shared `Foo-label` when `Foo` itself is only a chooser/composer.
 
 ```ts
 type Thread_ClassNames = "Thread" | "Thread-header" | "Thread-actions";
@@ -1007,6 +1109,9 @@ Use this when the reused component is actually rendered (its CSS is already load
 Each component owns exactly one `<ComponentName>_ClassNames` type for its own class contract. If a module contains multiple components (including compound subcomponents), each component defines and uses its own `_ClassNames` type.
 
 **Type placement**: put each `_ClassNames` type directly above its component definition, before related `_Props` / `_Ref` types.
+
+- A chooser/composer component and each concrete rendered variant count as separate components for this rule. `Foo`, `FooSelected`, and `FooSelectable` must not be collapsed into one `_ClassNames` contract.
+- If the chooser/composer has no owned DOM node, it may omit `_ClassNames` entirely. In that case, keep only `Foo_Props` and `Foo` in its region.
 
 ## Region boundaries: class name ownership (default)
 
@@ -1797,6 +1902,7 @@ For memoized components with attached static exports, use this pattern:
 
 - Prefer `MyContextProvider.useContext` over a separate `export function useMyContext()`.
 - Attach only _stable_ helpers/hooks/constants that are conceptually owned by the component.
+- Do not use `Object.assign(..., { Subpart })` just to fake a local compound component API for organization. Reserve attached static exports for genuine public static helpers or constants that are conceptually part of that component's API.
 
 ```tsx
 const MyContextProvider = Object.assign(

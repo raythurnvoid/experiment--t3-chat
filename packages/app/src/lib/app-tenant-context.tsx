@@ -4,9 +4,9 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 export type AppTenantContextValue = {
 	/** Convex `workspaces_projects_users` document id for the current user and tenant. */
 	membershipId: app_convex_Id<"workspaces_projects_users">;
-	projectId: string;
+	projectId: app_convex_Id<"workspaces_projects">;
 	projectName: string;
-	workspaceId: string;
+	workspaceId: app_convex_Id<"workspaces">;
 	workspaceName: string;
 };
 
