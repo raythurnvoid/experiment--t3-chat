@@ -16,6 +16,7 @@ export default defineConfig({
 				extends: true,
 				test: {
 					include: ["src/**/*.test.{ts,tsx}", "shared/**/*.test.ts"],
+					exclude: ["src/**/*.browser.test.{ts,tsx}"],
 					includeSource: ["src/**/*.{ts,tsx}"],
 					name: "src",
 					environment: "happy-dom",
@@ -26,6 +27,19 @@ export default defineConfig({
 							// Keep this list as small as possible and scoped to the convex/server test dependency graph.
 							inline: ["@tiptap/extension-collaboration"],
 						},
+					},
+				},
+			},
+			{
+				extends: true,
+				test: {
+					include: ["src/**/*.browser.test.{ts,tsx}"],
+					name: "browser",
+					browser: {
+						enabled: true,
+						provider: "playwright",
+						headless: true,
+						instances: [{ browser: "chromium" }],
 					},
 				},
 			},

@@ -66,134 +66,14 @@ type MainAppHeaderWorkspaceSwitcherModal_CreateProjectResult = FunctionReturnTyp
 >;
 // #endregion create args / results
 
-// #region list item selected
-type MainAppHeaderWorkspaceSwitcherModalListItemSelected_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModalListItemSelected"
-	| "MainAppHeaderWorkspaceSwitcherModalListItemSelected-border";
-
-export type MainAppHeaderWorkspaceSwitcherModalListItemSelected_Props = {
-	label: string;
-	description: string;
-};
-
-export const MainAppHeaderWorkspaceSwitcherModalListItemSelected = memo(
-	function MainAppHeaderWorkspaceSwitcherModalListItemSelected(
-		props: MainAppHeaderWorkspaceSwitcherModalListItemSelected_Props,
-	) {
-		const { label, description } = props;
-
-		const descriptionText = description.trim() ? description : "(No description)";
-
-		return (
-			<>
-				<div
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItemSelected" satisfies MainAppHeaderWorkspaceSwitcherModalListItemSelected_ClassNames,
-						"MainAppHeaderWorkspaceSwitcherModalListItem-content" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-					)}
-					aria-current="true"
-				>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItemSelected-border" satisfies MainAppHeaderWorkspaceSwitcherModalListItemSelected_ClassNames,
-						)}
-						aria-hidden
-					/>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-						)}
-					>
-						{label}
-					</div>
-
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-description" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-						)}
-					>
-						{descriptionText}
-					</div>
-				</div>
-				<div
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-actions" satisfies MainAppHeaderWorkspaceSwitcherModalListItemSelectable_ClassNames,
-					)}
-					aria-hidden
-				/>
-			</>
-		);
-	},
-);
-// #endregion list item selected
-
-// #region list item selectable
-type MainAppHeaderWorkspaceSwitcherModalListItemSelectable_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModalListItemSelectable"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-actions";
-
-export type MainAppHeaderWorkspaceSwitcherModalListItemSelectable_Props = {
-	label: string;
-	description: string;
-	onSelect: () => void;
-};
-
-export const MainAppHeaderWorkspaceSwitcherModalListItemSelectable = memo(
-	function MainAppHeaderWorkspaceSwitcherModalListItemSelectable(
-		props: MainAppHeaderWorkspaceSwitcherModalListItemSelectable_Props,
-	) {
-		const { label, description, onSelect } = props;
-
-		const handleSelect = useFn(() => {
-			onSelect();
-		});
-
-		const descriptionText = description.trim() ? description : "(No description)";
-
-		return (
-			<>
-				<MySidebarListItemPrimaryAction
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItemSelectable" satisfies MainAppHeaderWorkspaceSwitcherModalListItemSelectable_ClassNames,
-						"MainAppHeaderWorkspaceSwitcherModalListItem-content" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-						"MyFocus-row" satisfies MyFocus_ClassNames,
-					)}
-					onClick={handleSelect}
-				>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-						)}
-					>
-						{label}
-					</div>
-
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-description" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-						)}
-					>
-						{descriptionText}
-					</div>
-				</MySidebarListItemPrimaryAction>
-				<div
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-actions" satisfies MainAppHeaderWorkspaceSwitcherModalListItemSelectable_ClassNames,
-					)}
-					aria-hidden
-				/>
-			</>
-		);
-	},
-);
-// #endregion list item selectable
-
 // #region list item
 type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalListItem"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-content"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-label"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-description";
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-description"
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-actions"
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-current-border";
 
 export type MainAppHeaderWorkspaceSwitcherModalListItem_Props = {
 	item: MainAppHeaderWorkspaceSwitcherModal_ListItem;
@@ -204,21 +84,58 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 ) {
 	const { item } = props;
 
+	const handleSelect = useFn(() => {
+		item.onSelect();
+	});
+
+	const descriptionText = item.description.trim() ? item.description : "(No description)";
+	const isCurrent = Boolean(item.isCurrent);
+
 	return (
 		<MySidebarListItem
 			className={cn(
 				"MainAppHeaderWorkspaceSwitcherModalListItem" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 			)}
 		>
-			{item.isCurrent ? (
-				<MainAppHeaderWorkspaceSwitcherModalListItemSelected label={item.label} description={item.description} />
-			) : (
-				<MainAppHeaderWorkspaceSwitcherModalListItemSelectable
-					label={item.label}
-					description={item.description}
-					onSelect={item.onSelect}
-				/>
-			)}
+			<MySidebarListItemPrimaryAction
+				className={cn(
+					"MainAppHeaderWorkspaceSwitcherModalListItem-content" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+					"MyFocus-row" satisfies MyFocus_ClassNames,
+				)}
+				selected={isCurrent}
+				aria-current={isCurrent ? "true" : undefined}
+				onClick={handleSelect}
+			>
+				{isCurrent && (
+					<div
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalListItem-current-border" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						)}
+						aria-hidden
+					/>
+				)}
+				<div
+					className={cn(
+						"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+					)}
+				>
+					{item.label}
+				</div>
+
+				<div
+					className={cn(
+						"MainAppHeaderWorkspaceSwitcherModalListItem-description" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+					)}
+				>
+					{descriptionText}
+				</div>
+			</MySidebarListItemPrimaryAction>
+			<div
+				className={cn(
+					"MainAppHeaderWorkspaceSwitcherModalListItem-actions" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+				)}
+				aria-hidden
+			/>
 		</MySidebarListItem>
 	);
 });
@@ -419,9 +336,7 @@ type MainAppHeaderWorkspaceSwitcherModalCreateModal_Props = {
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
-	function MainAppHeaderWorkspaceSwitcherModalCreateModal(
-		props: MainAppHeaderWorkspaceSwitcherModalCreateModal_Props,
-	) {
+	function MainAppHeaderWorkspaceSwitcherModalCreateModal(props: MainAppHeaderWorkspaceSwitcherModalCreateModal_Props) {
 		const {
 			open,
 			setOpen,
@@ -659,20 +574,10 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					</MyModalScrollableArea>
 
 					<MyModalFooter>
-						<MyButton
-							type="button"
-							disabled={isSubmitting}
-							variant="outline"
-							onClick={() => setOpen(false)}
-						>
+						<MyButton type="button" disabled={isSubmitting} variant="outline" onClick={() => setOpen(false)}>
 							Cancel
 						</MyButton>
-						<MyButton
-							type="submit"
-							form={createFormDomId}
-							disabled={!isNameValid || isSubmitting}
-							variant="accent"
-						>
+						<MyButton type="submit" form={createFormDomId} disabled={!isNameValid || isSubmitting} variant="accent">
 							{isSubmitting ? "Creating…" : dialogTitle}
 						</MyButton>
 					</MyModalFooter>
