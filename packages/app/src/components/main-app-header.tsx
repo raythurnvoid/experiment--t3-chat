@@ -1,21 +1,23 @@
 import "./main-app-header.css";
 
 import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useQuery } from "convex/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronsUpDown } from "lucide-react";
 
 import {
 	MainAppHeaderWorkspaceSwitcherModal,
 	type MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection,
+	type MainAppHeaderWorkspaceSwitcherModal_AfterRename,
 	type MainAppHeaderWorkspaceSwitcherModal_ListItem,
+	type MainAppHeaderWorkspaceSwitcherModal_RenameTarget,
 } from "@/components/main-app-header-workspace-controls-modal.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { app_tenant_default_project_for_workspace } from "@/lib/urls.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -58,11 +60,10 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const { workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
 
 	const workspaceList = useQuery(app_convex_api.workspaces.list);
-	const createWorkspace = useMutation(app_convex_api.workspaces.create_workspace);
-	const createProject = useMutation(app_convex_api.workspaces.create_project);
 
 	const [isOpen, setIsOpen] = useState(false);
 	const [localDraft, setLocalDraft] = useState<MainAppHeaderWorkspaceControls_LocalDraft | null>(null);
+	const [renameTarget, setRenameTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_RenameTarget | null>(null);
 
 	const workspaces = workspaceList?.workspaces;
 	const projects = workspaceId ? workspaceList?.workspaceIdsProjectsDict[workspaceId] : undefined;
@@ -82,18 +83,112 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const draftWorkspaceRecord = workspaces?.find((w) => w._id === draftWorkspaceId);
 	const draftWorkspaceName = draftWorkspaceRecord?.name ?? workspaceName ?? "…";
 
-	const draftProjectRecord = draftProjects?.find((p) => p._id === draftProjectId);
-	const draftProjectName = draftProjectRecord?.name ?? currentProjectName ?? "…";
-
 	const listLoaded = workspaces !== undefined;
 
 	const switchDisabled = !listLoaded || (draftWorkspaceId === workspaceId && draftProjectId === projectId);
+
+	const navigateToWorkspaceProject = useFn((nextWorkspaceName: string, nextProjectName: string) => {
+		const to =
+			tenantRouteSuffix === "chat"
+				? ("/w/$workspaceName/$projectName/chat" as const)
+				: ("/w/$workspaceName/$projectName/pages" as const);
+
+		navigate({
+			to,
+			params: { workspaceName: nextWorkspaceName, projectName: nextProjectName },
+		});
+		setIsOpen(false);
+	});
 
 	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = main_app_header_workspace_controls_move_list_item_to_front_by_id(
 		(workspaces ?? []).map((w) => ({
 			id: w._id,
 			label: w.name,
 			description: w.default ? "Default workspace" : "",
+			isDefault: w.default,
+			onEdit: w.default
+				? undefined
+				: () => {
+						if (!workspaceList) {
+							console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded for rename");
+							return;
+						}
+
+						const primary = app_tenant_default_project_for_workspace({
+							workspace: w,
+							projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
+						});
+
+						if (!primary) {
+							console.error("[MainAppHeaderWorkspaceControls] Failed to resolve primary project for rename", {
+								workspaceId: w._id,
+							});
+							return;
+						}
+
+						setRenameTarget({
+							kind: "workspace",
+							id: w._id,
+							initialName: w.name,
+							defaultProjectId: primary._id as app_convex_Id<"workspaces_projects">,
+						});
+					},
+			onDelete: w.default
+				? undefined
+				: () => {
+						void (async (/* iife */) => {
+							const result = await app_convex.mutation(app_convex_api.workspaces.delete_workspace, {
+								workspaceId: w._id,
+							});
+
+							if (result == null) {
+								return;
+							}
+
+							if (result._nay) {
+								console.error("[MainAppHeaderWorkspaceControls] Failed to delete workspace", {
+									result,
+									workspaceId: w._id,
+								});
+								return;
+							}
+
+							await app_convex.query(app_convex_api.workspaces.list, {});
+
+							if (w._id === workspaceId && workspaces && workspaceList) {
+								const remaining = workspaces.filter((row) => row._id !== w._id);
+								const fallback = remaining[0];
+								if (!fallback) {
+									return;
+								}
+
+								const defaultProject = app_tenant_default_project_for_workspace({
+									workspace: fallback,
+									projects: workspaceList.workspaceIdsProjectsDict[fallback._id] ?? [],
+								});
+
+								if (!defaultProject) {
+									console.error(
+										"[MainAppHeaderWorkspaceControls] Failed to resolve default project after workspace delete",
+										{ workspaceId: fallback._id },
+									);
+									return;
+								}
+
+								navigateToWorkspaceProject(fallback.name, defaultProject.name);
+								return;
+							}
+
+							if (w._id === draftWorkspaceId && w._id !== workspaceId && workspaceId && projectId) {
+								setLocalDraft({ workspaceId, projectId });
+							}
+						})().catch((error) => {
+							console.error("[MainAppHeaderWorkspaceControls] Unexpected delete workspace error", {
+								error,
+								workspaceId: w._id,
+							});
+						});
+					},
 			onSelect: () => {
 				if (w._id === draftWorkspaceId) {
 					return;
@@ -125,39 +220,124 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		workspaceId,
 	);
 
-	const projectItemsRaw: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = (draftProjects ?? []).map((p) => ({
-		id: p._id,
-		label: p.name,
-		description: p.default ? "Default project" : "",
-		onSelect: () => {
-			if (p._id === draftProjectId) {
-				return;
-			}
+	const projectItemsRaw: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = (draftProjects ?? []).map((p) => {
+		const projectIsPrimary =
+			draftWorkspaceRecord !== undefined &&
+			((draftWorkspaceRecord.defaultProjectId !== undefined && p._id === draftWorkspaceRecord.defaultProjectId) ||
+				p.default);
 
-			setLocalDraft({
-				workspaceId: draftWorkspaceId,
-				projectId: p._id,
-			});
-		},
-	}));
+		return {
+			id: p._id,
+			label: p.name,
+			description: p.default ? "Default project" : "",
+			isDefault: p.default,
+			onEdit: projectIsPrimary
+				? undefined
+				: () => {
+						if (!draftWorkspaceRecord || !workspaceList) {
+							console.error("[MainAppHeaderWorkspaceControls] Missing draft workspace for project rename");
+							return;
+						}
+
+						const primary = app_tenant_default_project_for_workspace({
+							workspace: draftWorkspaceRecord,
+							projects: workspaceList.workspaceIdsProjectsDict[draftWorkspaceRecord._id] ?? [],
+						});
+
+						if (!primary) {
+							console.error("[MainAppHeaderWorkspaceControls] Failed to resolve primary project for rename", {
+								workspaceId: draftWorkspaceRecord._id,
+							});
+							return;
+						}
+
+						setRenameTarget({
+							kind: "project",
+							id: p._id,
+							initialName: p.name,
+							workspaceId: draftWorkspaceRecord._id,
+							defaultProjectId: primary._id as app_convex_Id<"workspaces_projects">,
+						});
+					},
+			onDelete: p.default
+				? undefined
+				: () => {
+						void (async (/* iife */) => {
+							const result = await app_convex.mutation(app_convex_api.workspaces.delete_project, {
+								projectId: p._id,
+							});
+
+							if (result == null) {
+								return;
+							}
+
+							if (result._nay) {
+								console.error("[MainAppHeaderWorkspaceControls] Failed to delete project", {
+									result,
+									projectId: p._id,
+								});
+								return;
+							}
+
+							await app_convex.query(app_convex_api.workspaces.list, {});
+
+							if (p._id === projectId && workspaceId && projects && workspaces) {
+								const ws = workspaces.find((row) => row._id === workspaceId);
+								if (!ws) {
+									return;
+								}
+
+								const remaining = projects.filter((row) => row._id !== p._id);
+								const fallback = remaining.find((row) => row.default) ?? remaining[0];
+								if (!fallback) {
+									return;
+								}
+
+								navigateToWorkspaceProject(ws.name, fallback.name);
+								return;
+							}
+
+							if (p._id === draftProjectId && draftWorkspaceId && workspaceList) {
+								const projs = workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] ?? [];
+								const fallback =
+									projs.find((row) => row._id !== p._id && row.default) ??
+									projs.find((row) => row._id !== p._id);
+								if (!fallback) {
+									if (workspaceId && projectId) {
+										setLocalDraft({ workspaceId, projectId });
+									}
+									return;
+								}
+
+								setLocalDraft({
+									workspaceId: draftWorkspaceId,
+									projectId: fallback._id as app_convex_Id<"workspaces_projects">,
+								});
+							}
+						})().catch((error) => {
+							console.error("[MainAppHeaderWorkspaceControls] Unexpected delete project error", {
+								error,
+								projectId: p._id,
+							});
+						});
+					},
+			onSelect: () => {
+				if (p._id === draftProjectId) {
+					return;
+				}
+
+				setLocalDraft({
+					workspaceId: draftWorkspaceId,
+					projectId: p._id,
+				});
+			},
+		};
+	});
 
 	const projectItems =
 		draftWorkspaceId === workspaceId
 			? main_app_header_workspace_controls_move_list_item_to_front_by_id(projectItemsRaw, projectId)
 			: projectItemsRaw;
-
-	const navigateToWorkspaceProject = useFn((nextWorkspaceName: string, nextProjectName: string) => {
-		const to =
-			tenantRouteSuffix === "chat"
-				? ("/w/$workspaceName/$projectName/chat" as const)
-				: ("/w/$workspaceName/$projectName/pages" as const);
-
-		navigate({
-			to,
-			params: { workspaceName: nextWorkspaceName, projectName: nextProjectName },
-		});
-		setIsOpen(false);
-	});
 
 	const handleWorkspaceSwitcherSwitch = useFn(() => {
 		if (!workspaceList || !workspaces) {
@@ -189,12 +369,26 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		},
 	);
 
+	const handleWorkspaceSwitcherAfterRename = useFn((args: MainAppHeaderWorkspaceSwitcherModal_AfterRename) => {
+		if (args.kind === "workspace") {
+			if (workspaceId === args.workspaceId && currentWorkspaceName === args.oldName) {
+				navigateToWorkspaceProject(args.newName, currentProjectName);
+			}
+			return;
+		}
+
+		if (args.projectId && projectId === args.projectId && currentProjectName === args.oldName) {
+			navigateToWorkspaceProject(currentWorkspaceName, args.newName);
+		}
+	});
+
 	const handleWorkspaceSwitcherCancel = useFn(() => {
 		setIsOpen(false);
 	});
 
 	useEffect(() => {
 		if (!isOpen) {
+			setRenameTarget(null);
 			return;
 		}
 
@@ -236,12 +430,16 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 
 			<MainAppHeaderWorkspaceSwitcherModal
 				dialogOpen={isOpen}
-				createProject={createProject}
-				createWorkspace={createWorkspace}
+				createProject={(args) => app_convex.mutation(app_convex_api.workspaces.create_project, args)}
+				createWorkspace={(args) => app_convex.mutation(app_convex_api.workspaces.create_workspace, args)}
 				listLoaded={listLoaded}
 				draftProjectId={draftProjectId}
 				draftWorkspaceId={draftWorkspaceId}
 				projectItems={projectItems}
+				renameProject={(args) => app_convex.mutation(app_convex_api.workspaces.rename_project, args)}
+				renameTarget={renameTarget}
+				renameWorkspace={(args) => app_convex.mutation(app_convex_api.workspaces.rename_workspace, args)}
+				setRenameTarget={setRenameTarget}
 				switchDisabled={switchDisabled}
 				summaryProjectName={currentProjectName}
 				summaryWorkspaceName={currentWorkspaceName}
@@ -249,6 +447,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				workspaceName={draftWorkspaceName}
 				onAfterCreateProject={handleWorkspaceSwitcherAfterCreate}
 				onAfterCreateWorkspace={handleWorkspaceSwitcherAfterCreate}
+				onAfterRename={handleWorkspaceSwitcherAfterRename}
 				onCancel={handleWorkspaceSwitcherCancel}
 				onSwitch={handleWorkspaceSwitcherSwitch}
 			/>

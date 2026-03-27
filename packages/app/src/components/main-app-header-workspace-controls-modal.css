@@ -169,14 +169,15 @@
 	/* #endregion select head */
 
 	/* #region select list */
-	.MainAppHeaderWorkspaceSwitcherModalSelectList.MySidebarList {
+	.MainAppHeaderWorkspaceSwitcherModalSelectList {
+		display: flex;
+		flex-direction: column;
+
 		margin: 0;
 		padding: 0;
 
 		gap: 2px;
-	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectPane .MainAppHeaderWorkspaceSwitcherModalSelectList {
 		flex: 1 1 auto;
 
 		min-height: 0;
@@ -193,37 +194,26 @@
 
 		min-width: 0;
 
-		overflow: hidden;
+		contain: content;
 	}
 	/* #endregion select pane */
 
 	/* #region list item */
 	.MainAppHeaderWorkspaceSwitcherModalListItem {
-		display: flex;
-		flex-direction: row;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-rows: auto auto;
+		align-items: center;
 
-		box-sizing: border-box;
+		padding: 0;
 
 		width: 100%;
 		height: 58px;
 
-		contain: strict;
-	}
-
-	.MainAppHeaderWorkspaceSwitcherModalListItem-content {
-		position: relative;
-
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		grid-template-rows: auto auto;
-
 		column-gap: 8px;
-		row-gap: 0px;
+		row-gap: 0;
 
-		width: 100%;
-		height: 100%;
-
-		contain: layout;
+		border-radius: 8px;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-current-border {
@@ -245,7 +235,6 @@
 		grid-column: 1;
 		grid-row: 1;
 
-		font-size: 0.875em;
 		font-weight: 500;
 		color: var(--color-fg-10);
 	}
@@ -254,7 +243,7 @@
 		grid-column: 1;
 		grid-row: 2;
 
-		font-size: 0.75em;
+		font-size: 0.875em;
 		color: var(--color-fg-09);
 	}
 
@@ -266,7 +255,11 @@
 		align-items: center;
 		justify-content: end;
 
-		flex-shrink: 0;
+		height: 100%;
+
+		contain: content;
+
+		margin-right: 1px;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-label,
@@ -278,13 +271,17 @@
 	}
 	/* #endregion list item */
 
-	/* list item primary action */
-	.MySidebarListItemPrimaryAction {
+	.MainAppHeaderWorkspaceSwitcherModalListItem-primary {
+		display: grid;
+		grid-template-columns: subgrid;
+		grid-template-rows: subgrid;
+
 		grid-column: 1 / -1;
 		grid-row: 1 / -1;
 
-		position: relative;
-		z-index: 1;
+		align-items: center;
+		justify-content: start;
+		gap: 0;
 
 		width: 100%;
 		height: 100%;
@@ -292,9 +289,19 @@
 		padding: 8px 10px;
 
 		border-width: 0;
-		outline-offset: -2px;
 
 		border-radius: 8px;
+
+		outline-offset: -2px;
+
+		isolation: isolate;
+
+		/* for the subgrid to work paint and layout container cannot be used */
+		contain: size style;
+
+		&[data-selected]:not(:hover):not(:focus-visible) {
+			background: var(--color-base-1-04);
+		}
 	}
 	/* #endregion list item primary action */
 }

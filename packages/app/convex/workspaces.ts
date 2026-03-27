@@ -5,10 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import {
-	workspaces_list_sort_projects_for_workspace,
-	workspaces_list_sort_workspaces,
-} from "../shared/workspaces.ts";
+import { workspaces_list_sort_projects_for_workspace, workspaces_list_sort_workspaces } from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
 import { workspaces_db_create, workspaces_db_create_project, workspaces_validate_name } from "../server/workspaces.ts";
 
@@ -379,6 +376,214 @@ export const add_user_to_workspace_project = mutation({
 
 		return Result({
 			_yay: null,
+		});
+	},
+});
+
+export const rename_workspace = mutation({
+	args: {
+		workspaceId: v.id("workspaces"),
+		defaultProjectId: v.id("workspaces_projects"),
+		name: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			name: v.string(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const [workspace, defaultProject, workspaceUserLookup] = await Promise.all([
+			ctx.db.get("workspaces", args.workspaceId),
+			ctx.db.get("workspaces_projects", args.defaultProjectId),
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_projectId_userId", (q) =>
+					q.eq("projectId", args.defaultProjectId).eq("userId", user.id),
+				)
+				.first(),
+		]);
+
+		if (
+			!workspace ||
+			defaultProject === null ||
+			defaultProject.workspaceId !== args.workspaceId ||
+			!(workspace.defaultProjectId === defaultProject._id || defaultProject.default) ||
+			!workspaceUserLookup
+		) {
+			return Result({
+				_nay: {
+					message: "Not found",
+				},
+			});
+		}
+
+		if (!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))) {
+			return Result({
+				_nay: {
+					message: "Permission denied",
+				},
+			});
+		}
+
+		if (workspace.default) {
+			return Result({
+				_nay: {
+					message: "Cannot rename the default workspace",
+				},
+			});
+		}
+
+		const nameResult = workspaces_validate_name(args.name);
+		if (nameResult._nay) {
+			return Result({
+				_nay: {
+					message: nameResult._nay.message,
+				},
+			});
+		}
+		const name = nameResult._yay;
+		const now = Date.now();
+
+		const existingWorkspace = await ctx.db
+			.query("workspaces")
+			.withIndex("by_name", (q) => q.eq("name", name))
+			.first();
+		if (existingWorkspace && existingWorkspace._id !== args.workspaceId) {
+			return Result({
+				_nay: {
+					message: "Workspace name already exists",
+				},
+			});
+		}
+
+		await ctx.db.patch("workspaces", args.workspaceId, {
+			name,
+			updatedAt: now,
+		});
+
+		return Result({
+			_yay: {
+				name,
+			},
+		});
+	},
+});
+
+export const rename_project = mutation({
+	args: {
+		workspaceId: v.id("workspaces"),
+		defaultProjectId: v.id("workspaces_projects"),
+		projectId: v.id("workspaces_projects"),
+		name: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			name: v.string(),
+			workspaceId: v.id("workspaces"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const [workspace, project, defaultProject, defaultProjectMembership, projectMembership] = await Promise.all([
+			ctx.db.get("workspaces", args.workspaceId),
+			ctx.db.get("workspaces_projects", args.projectId),
+			ctx.db.get("workspaces_projects", args.defaultProjectId),
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_projectId_userId", (q) =>
+					q.eq("projectId", args.defaultProjectId).eq("userId", user.id),
+				)
+				.first(),
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.projectId).eq("userId", user.id))
+				.first(),
+		]);
+
+		if (
+			!workspace ||
+			!project ||
+			!defaultProject ||
+			project.workspaceId !== args.workspaceId ||
+			defaultProject.workspaceId !== args.workspaceId ||
+			!(workspace.defaultProjectId === defaultProject._id || defaultProject.default) ||
+			!defaultProjectMembership ||
+			!projectMembership
+		) {
+			return Result({
+				_nay: {
+					message: "Not found",
+				},
+			});
+		}
+
+		if (
+			!(await user_is_project_admin(ctx, { projectId: project._id, userId: user.id })) &&
+			!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))
+		) {
+			return Result({
+				_nay: {
+					message: "Permission denied",
+				},
+			});
+		}
+
+		if (
+			(workspace.defaultProjectId !== undefined && project._id === workspace.defaultProjectId) ||
+			project.default
+		) {
+			return Result({
+				_nay: {
+					message: "Cannot rename the default project",
+				},
+			});
+		}
+
+		const nameResult = workspaces_validate_name(args.name);
+		if (nameResult._nay) {
+			return Result({
+				_nay: {
+					message: nameResult._nay.message,
+				},
+			});
+		}
+		const name = nameResult._yay;
+		const now = Date.now();
+
+		const [defaultProjects, nonDefaultProjects] = await Promise.all([
+			ctx.db
+				.query("workspaces_projects")
+				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
+				.collect(),
+			ctx.db
+				.query("workspaces_projects")
+				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
+				.collect(),
+		]);
+
+		for (const row of [...defaultProjects, ...nonDefaultProjects]) {
+			if (row._id !== args.projectId && row.name === name) {
+				return Result({
+					_nay: {
+						message: "Project name already exists",
+					},
+				});
+			}
+		}
+
+		await ctx.db.patch("workspaces_projects", args.projectId, {
+			name,
+			updatedAt: now,
+		});
+
+		return Result({
+			_yay: {
+				name,
+				workspaceId: project.workspaceId,
+			},
 		});
 	},
 });

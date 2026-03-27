@@ -325,6 +325,257 @@ describe("create_project", () => {
 	});
 });
 
+describe("rename_workspace", () => {
+	test("rejects renaming the default workspace", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-rename-default-ws",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				name: "personal",
+				now: Date.now(),
+				default: true,
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.rename_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: created._yay!.defaultProjectId,
+			name: "renamed-personal",
+		});
+
+		expect(result._nay?.message).toBe("Cannot rename the default workspace");
+	});
+
+	test("allows renaming a non-default workspace", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-rename-nond-ws",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				name: "extra-ws-rename",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.rename_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: created._yay!.defaultProjectId,
+			name: "extra-renamed",
+		});
+
+		expect(result._yay?.name).toBe("extra-renamed");
+	});
+
+	test("returns Not found when defaultProjectId is not the workspace primary", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-rename-ws-wrong-default-proj",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				name: "ws-wrong-default-arg",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const extra = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: created._yay!.workspaceId,
+			name: "side-project",
+		});
+		expect(extra._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.rename_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: extra._yay!.projectId,
+			name: "renamed-ws",
+		});
+
+		expect(result._nay?.message).toBe("Not found");
+	});
+
+	test("returns Not found when the user has no membership on the workspace", async () => {
+		const t = test_convex();
+		const userIds = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-rename-ws-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-rename-ws-stranger" }),
+			]),
+		);
+
+		const created = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId: userIds[0],
+				name: "private-rename-ws",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const stranger = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userIds[1],
+			name: "Stranger",
+		});
+
+		const result = await stranger.mutation(api.workspaces.rename_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: created._yay!.defaultProjectId,
+			name: "hijacked",
+		});
+
+		expect(result._nay?.message).toBe("Not found");
+	});
+});
+
+describe("rename_project", () => {
+	test("rejects renaming the primary project when project.default is true", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-rename-primary-proj",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "rename-proj-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.rename_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			defaultProjectId: wsResult._yay!.defaultProjectId,
+			projectId: wsResult._yay!.defaultProjectId,
+			name: "new-home",
+		});
+
+		expect(result._nay?.message).toBe("Cannot rename the default project");
+	});
+
+	test("rejects renaming the primary project when only defaultProjectId matches", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-rename-primary-proj-id",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "rename-proj-ws-id-only",
+		});
+		expect(wsResult._yay).toBeTruthy();
+		const workspaceId = wsResult._yay!.workspaceId;
+		const homeId = wsResult._yay!.defaultProjectId;
+
+		const extra = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId,
+			name: "zebra-docs",
+		});
+		expect(extra._yay).toBeTruthy();
+		const zebraId = extra._yay!.projectId;
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("workspaces_projects", homeId, { default: false });
+			await ctx.db.patch("workspaces", workspaceId, { defaultProjectId: zebraId });
+		});
+
+		const blocked = await asUser.mutation(api.workspaces.rename_project, {
+			workspaceId,
+			defaultProjectId: zebraId,
+			projectId: zebraId,
+			name: "blocked-zebra",
+		});
+		expect(blocked._nay?.message).toBe("Cannot rename the default project");
+
+		const ok = await asUser.mutation(api.workspaces.rename_project, {
+			workspaceId,
+			defaultProjectId: zebraId,
+			projectId: homeId,
+			name: "former-home",
+		});
+		expect(ok._yay?.name).toBe("former-home");
+	});
+
+	test("allows renaming a non-primary project", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-rename-secondary-proj",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "rename-secondary-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const extra = await asUser.mutation(api.workspaces.create_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "sidecar",
+		});
+		expect(extra._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.rename_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			defaultProjectId: wsResult._yay!.defaultProjectId,
+			projectId: extra._yay!.projectId,
+			name: "sidecar-renamed",
+		});
+
+		expect(result._yay?.name).toBe("sidecar-renamed");
+	});
+});
+
 describe("get_membership_by_workspace_project_name", () => {
 	test("resolves membership for an accessible tenant", async () => {
 		const t = test_convex();

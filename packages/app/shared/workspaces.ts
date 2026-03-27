@@ -138,17 +138,6 @@ export function workspaces_list_sort_compare_name_then_id(
 	return a._id.localeCompare(b._id);
 }
 
-function workspaces_list_sort_project_is_primary_for_workspace(
-	workspace: workspaces_list_sort_WorkspaceShape,
-	project: workspaces_list_sort_ProjectShape,
-): boolean {
-	if (workspace.defaultProjectId !== undefined && project._id === workspace.defaultProjectId) {
-		return true;
-	}
-
-	return project.default;
-}
-
 export function workspaces_list_sort_workspaces<T extends workspaces_list_sort_WorkspaceShape>(workspaces: T[]): T[] {
 	return [...workspaces].sort((a, b) => {
 		const rank = (w: workspaces_list_sort_WorkspaceShape) => (w.default ? 0 : 1);
@@ -167,7 +156,7 @@ export function workspaces_list_sort_projects_for_workspace<
 >(workspace: TWorkspace, projects: TProject[]): TProject[] {
 	return [...projects].sort((a, b) => {
 		const rank = (p: workspaces_list_sort_ProjectShape) =>
-			workspaces_list_sort_project_is_primary_for_workspace(workspace, p) ? 0 : 1;
+			(workspace.defaultProjectId !== undefined && p._id === workspace.defaultProjectId) || p.default ? 0 : 1;
 		const byPrimary = rank(a) - rank(b);
 		if (byPrimary !== 0) {
 			return byPrimary;
