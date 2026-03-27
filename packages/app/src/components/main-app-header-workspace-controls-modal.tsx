@@ -38,9 +38,9 @@ import {
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
 import { MySidebarList, MySidebarListItem, MySidebarListItemPrimaryAction } from "@/components/my-sidebar.tsx";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
-import { workspaces_name_autofix, workspaces_name_validate } from "@/lib/workspaces-name.ts";
+import { workspaces_name_autofix, workspaces_name_validate } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region list item model
@@ -65,6 +65,15 @@ type MainAppHeaderWorkspaceSwitcherModal_CreateProjectResult = FunctionReturnTyp
 	typeof app_convex_api.workspaces.create_project
 >;
 // #endregion create args / results
+
+// #region after create selection
+export type MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection = {
+	workspaceId: app_convex_Id<"workspaces">;
+	projectId: app_convex_Id<"workspaces_projects">;
+	workspaceName: string;
+	projectName: string;
+};
+// #endregion after create selection
 
 // #region list item
 type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
@@ -97,45 +106,50 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 				"MainAppHeaderWorkspaceSwitcherModalListItem" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 			)}
 		>
-			<MySidebarListItemPrimaryAction
+			<div
 				className={cn(
 					"MainAppHeaderWorkspaceSwitcherModalListItem-content" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-					"MyFocus-row" satisfies MyFocus_ClassNames,
 				)}
-				selected={isCurrent}
-				aria-current={isCurrent ? "true" : undefined}
-				onClick={handleSelect}
 			>
-				{isCurrent && (
+				<MySidebarListItemPrimaryAction
+					className={cn("MyFocus-row" satisfies MyFocus_ClassNames)}
+					selected={isCurrent}
+					aria-current={isCurrent ? "true" : undefined}
+					onClick={handleSelect}
+				>
+					{isCurrent && (
+						<div
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalListItem-current-border" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+							)}
+							aria-hidden
+						/>
+					)}
+
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-current-border" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+							"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						)}
+					>
+						{item.label}
+					</div>
+
+					<div
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalListItem-description" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						)}
+					>
+						{descriptionText}
+					</div>
+
+					<div
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalListItem-actions" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 						)}
 						aria-hidden
 					/>
-				)}
-				<div
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-					)}
-				>
-					{item.label}
-				</div>
-
-				<div
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-description" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-					)}
-				>
-					{descriptionText}
-				</div>
-			</MySidebarListItemPrimaryAction>
-			<div
-				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalListItem-actions" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-				)}
-				aria-hidden
-			/>
+				</MySidebarListItemPrimaryAction>
+			</div>
 		</MySidebarListItem>
 	);
 });
@@ -203,13 +217,15 @@ type MainAppHeaderWorkspaceSwitcherModalSelectList_ClassNames = "MainAppHeaderWo
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectList_Props = {
 	children: ReactNode;
+	myFocusSyncKey: string;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectList(props: MainAppHeaderWorkspaceSwitcherModalSelectList_Props) {
-		const { children } = props;
+		const { children, myFocusSyncKey } = props;
 
 		const [list, setList] = useState<HTMLUListElement | null>(null);
+		const focusRef = useRef<MyFocus | null>(null);
 
 		useEffect(() => {
 			if (!list) {
@@ -218,11 +234,17 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 
 			const focus = new MyFocus(list);
 			focus.start();
+			focusRef.current = focus;
 
 			return () => {
+				focusRef.current = null;
 				focus.stop();
 			};
 		}, [list]);
+
+		useEffect(() => {
+			focusRef.current?.sync();
+		}, [myFocusSyncKey]);
 
 		return (
 			<MySidebarList
@@ -248,16 +270,19 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Item = Omit<
 export type MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props = {
 	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Item[];
 	selectedItemId: string;
+	dialogOpen: boolean;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectPaneList = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPaneList(
 		props: MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props,
 	) {
-		const { items, selectedItemId } = props;
+		const { items, selectedItemId, dialogOpen } = props;
+
+		const myFocusSyncKey = `${dialogOpen}:${selectedItemId}:${items.map((item) => item.id).join(",")}`;
 
 		return (
-			<MainAppHeaderWorkspaceSwitcherModalSelectList>
+			<MainAppHeaderWorkspaceSwitcherModalSelectList myFocusSyncKey={myFocusSyncKey}>
 				{items.map((item) => (
 					<MainAppHeaderWorkspaceSwitcherModalListItem
 						key={item.id}
@@ -278,13 +303,14 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	title: string;
 	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Item[];
 	selectedItemId: string;
+	dialogOpen: boolean;
 	createDisabled?: boolean;
 	onCreate: () => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPane(props: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props) {
-		const { icon, title, items, selectedItemId, createDisabled, onCreate } = props;
+		const { icon, title, items, selectedItemId, dialogOpen, createDisabled, onCreate } = props;
 
 		return (
 			<section
@@ -299,7 +325,11 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 					onCreate={onCreate}
 				/>
 
-				<MainAppHeaderWorkspaceSwitcherModalSelectPaneList items={items} selectedItemId={selectedItemId} />
+				<MainAppHeaderWorkspaceSwitcherModalSelectPaneList
+					dialogOpen={dialogOpen}
+					items={items}
+					selectedItemId={selectedItemId}
+				/>
 			</section>
 		);
 	},
@@ -331,8 +361,8 @@ type MainAppHeaderWorkspaceSwitcherModalCreateModal_Props = {
 	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateWorkspaceResult | undefined>;
 	workspaceId: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs["workspaceId"];
 	workspaceName: string;
-	onAfterCreateProject: (args: { projectName: string; workspaceName: string }) => void;
-	onAfterCreateWorkspace: (args: { projectName: string; workspaceName: string }) => void;
+	onAfterCreateProject: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
+	onAfterCreateWorkspace: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
@@ -407,7 +437,6 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 				if (kind === "workspace") {
 					const result = await createWorkspace({ name });
-					setIsSubmitting(false);
 
 					if (result == null) {
 						return;
@@ -420,8 +449,12 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 						return;
 					}
 
+					await app_convex.query(app_convex_api.workspaces.list, {});
+
 					setOpen(false);
 					onAfterCreateWorkspace({
+						workspaceId: result._yay.workspaceId,
+						projectId: result._yay.defaultProjectId,
 						workspaceName: result._yay.name,
 						projectName: result._yay.defaultProjectName,
 					});
@@ -429,7 +462,6 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				}
 
 				const result = await createProject({ name, workspaceId });
-				setIsSubmitting(false);
 
 				if (result == null) {
 					return;
@@ -442,15 +474,25 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					return;
 				}
 
+				await app_convex.query(app_convex_api.workspaces.list, {});
+
 				setOpen(false);
-				onAfterCreateProject({ workspaceName, projectName: result._yay.name });
-			})().catch((error) => {
-				setIsSubmitting(false);
-				console.error("[MainAppHeaderWorkspaceSwitcherModalCreateModal] Unexpected create error", {
-					error,
-					kind,
+				onAfterCreateProject({
+					workspaceId: result._yay.workspaceId,
+					projectId: result._yay.projectId,
+					workspaceName,
+					projectName: result._yay.name,
 				});
-			});
+			})()
+				.catch((error) => {
+					console.error("[MainAppHeaderWorkspaceSwitcherModalCreateModal] Unexpected create error", {
+						error,
+						kind,
+					});
+				})
+				.finally(() => {
+					setIsSubmitting(false);
+				});
 		};
 
 		const handleNameInput: FormEventHandler<HTMLInputElement> = (event) => {
@@ -603,6 +645,7 @@ type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModal-footer";
 
 type MainAppHeaderWorkspaceSwitcherModal_Props = {
+	dialogOpen: boolean;
 	createProject: (
 		args: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs,
 	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateProjectResult | undefined>;
@@ -613,12 +656,14 @@ type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	draftProjectId: app_convex_Id<"workspaces_projects">;
 	draftWorkspaceId: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs["workspaceId"];
 	projectItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
-	projectName: string;
 	switchDisabled: boolean;
+	summaryProjectName: string;
+	summaryWorkspaceName: string;
 	workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
+	/** Workspace name for create-project flow (draft row), not necessarily the routed tenant. */
 	workspaceName: string;
-	onAfterCreateProject: (args: { projectName: string; workspaceName: string }) => void;
-	onAfterCreateWorkspace: (args: { projectName: string; workspaceName: string }) => void;
+	onAfterCreateProject: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
+	onAfterCreateWorkspace: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
 	onCancel: () => void;
 	onSwitch: () => void;
 };
@@ -627,14 +672,16 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 	props: MainAppHeaderWorkspaceSwitcherModal_Props,
 ) {
 	const {
+		dialogOpen,
 		createProject,
 		createWorkspace,
 		listLoaded,
 		draftProjectId,
 		draftWorkspaceId,
 		projectItems,
-		projectName,
 		switchDisabled,
+		summaryProjectName,
+		summaryWorkspaceName,
 		workspaceItems,
 		workspaceName,
 		onAfterCreateProject,
@@ -693,7 +740,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 								"MainAppHeaderWorkspaceSwitcherModal-summary-value" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
 							)}
 						>
-							{listLoaded ? workspaceName : "…"}
+							{listLoaded ? summaryWorkspaceName : "…"}
 						</span>{" "}
 						<MyIcon
 							className={cn(
@@ -708,7 +755,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 								"MainAppHeaderWorkspaceSwitcherModal-summary-value" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
 							)}
 						>
-							{listLoaded ? projectName : "…"}
+							{listLoaded ? summaryProjectName : "…"}
 						</span>
 					</div>
 
@@ -718,6 +765,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 						)}
 					>
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
+							dialogOpen={dialogOpen}
 							icon={<Folder />}
 							title="Workspaces"
 							items={workspaceItems}
@@ -726,6 +774,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 						/>
 
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
+							dialogOpen={dialogOpen}
 							icon={<FolderKanban />}
 							title="Projects"
 							items={projectItems}

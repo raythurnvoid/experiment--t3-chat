@@ -580,3 +580,99 @@ describe("migrate_workspace_and_project_names_to_url_safe", () => {
 		expect(workspace2?.name).toBe("personal");
 	});
 });
+
+describe("list", () => {
+	test("orders non-default workspaces alphabetically by name", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-list-sort-1",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsZ = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "zebra-team",
+		});
+		expect(wsZ._yay).toBeTruthy();
+
+		const wsA = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "acme-team",
+		});
+		expect(wsA._yay).toBeTruthy();
+
+		const list = await asUser.query(api.workspaces.list, {});
+		const names = list.workspaces.map((w) => w.name);
+
+		expect(names).toEqual(["acme-team", "zebra-team"]);
+	});
+
+	test("places default workspace before other workspaces", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-list-sort-2",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const seedResult = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				name: "personal",
+				now: Date.now(),
+				default: true,
+			}),
+		);
+		expect(seedResult._yay).toBeTruthy();
+
+		await asUser.mutation(api.workspaces.create_workspace, { name: "mango-extra" });
+		await asUser.mutation(api.workspaces.create_workspace, { name: "alpha-extra" });
+
+		const list = await asUser.query(api.workspaces.list, {});
+		const names = list.workspaces.map((w) => w.name);
+
+		expect(names[0]).toBe("personal");
+		expect(names.slice(1)).toEqual(["alpha-extra", "mango-extra"]);
+	});
+
+	test("orders projects with workspace primary first then alphabetically", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-list-sort-3",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const ws = await asUser.mutation(api.workspaces.create_workspace, {
+			name: "proj-sort-ws",
+		});
+		expect(ws._yay).toBeTruthy();
+		const workspaceId = ws._yay!.workspaceId;
+
+		await asUser.mutation(api.workspaces.create_project, {
+			workspaceId,
+			name: "zebra-project",
+		});
+
+		const list = await asUser.query(api.workspaces.list, {});
+		const projects = list.workspaceIdsProjectsDict[workspaceId];
+		const projectNames = projects.map((p) => p.name);
+
+		expect(projectNames[0]).toBe("home");
+		expect(projectNames[1]).toBe("zebra-project");
+	});
+});

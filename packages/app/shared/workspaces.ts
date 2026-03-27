@@ -1,5 +1,7 @@
 import { Result } from "./errors-as-values-utils.ts";
 
+// #region names
+
 /** Letters, digits (not first char), single hyphens between segments; min length enforced separately. */
 const workspace_project_name_regex = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
@@ -98,3 +100,81 @@ export function workspaces_name_autofix_and_validate(raw: string) {
 	const fixed = workspaces_name_autofix(raw);
 	return workspaces_name_validate(fixed);
 }
+
+// #endregion names
+
+// #region list sort
+
+/**
+ * Stable presentation order for `workspaces.list`: default rows first, then locale-aware name order, `_id` tiebreaker.
+ * Keep in sync with routing fallbacks in `app_tenant_default_project_for_workspace` (defaultProjectId, then `default` flag).
+ */
+
+export type workspaces_list_sort_WorkspaceShape = {
+	_id: string;
+	name: string;
+	default: boolean;
+	defaultProjectId?: string;
+};
+
+export type workspaces_list_sort_ProjectShape = {
+	_id: string;
+	name: string;
+	default: boolean;
+};
+
+export function workspaces_list_sort_compare_name_then_id(
+	a: { name: string; _id: string },
+	b: { name: string; _id: string },
+): number {
+	const primary = a.name.localeCompare(b.name, undefined, {
+		numeric: true,
+		sensitivity: "base",
+	});
+	if (primary !== 0) {
+		return primary;
+	}
+
+	return a._id.localeCompare(b._id);
+}
+
+function workspaces_list_sort_project_is_primary_for_workspace(
+	workspace: workspaces_list_sort_WorkspaceShape,
+	project: workspaces_list_sort_ProjectShape,
+): boolean {
+	if (workspace.defaultProjectId !== undefined && project._id === workspace.defaultProjectId) {
+		return true;
+	}
+
+	return project.default;
+}
+
+export function workspaces_list_sort_workspaces<T extends workspaces_list_sort_WorkspaceShape>(workspaces: T[]): T[] {
+	return [...workspaces].sort((a, b) => {
+		const rank = (w: workspaces_list_sort_WorkspaceShape) => (w.default ? 0 : 1);
+		const byDefault = rank(a) - rank(b);
+		if (byDefault !== 0) {
+			return byDefault;
+		}
+
+		return workspaces_list_sort_compare_name_then_id(a, b);
+	});
+}
+
+export function workspaces_list_sort_projects_for_workspace<
+	TProject extends workspaces_list_sort_ProjectShape,
+	TWorkspace extends workspaces_list_sort_WorkspaceShape,
+>(workspace: TWorkspace, projects: TProject[]): TProject[] {
+	return [...projects].sort((a, b) => {
+		const rank = (p: workspaces_list_sort_ProjectShape) =>
+			workspaces_list_sort_project_is_primary_for_workspace(workspace, p) ? 0 : 1;
+		const byPrimary = rank(a) - rank(b);
+		if (byPrimary !== 0) {
+			return byPrimary;
+		}
+
+		return workspaces_list_sort_compare_name_then_id(a, b);
+	});
+}
+
+// #endregion list sort

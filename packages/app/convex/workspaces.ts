@@ -3,8 +3,12 @@ import { doc } from "convex-helpers/validators";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
+import { Result } from "../shared/errors-as-values-utils.ts";
+import {
+	workspaces_list_sort_projects_for_workspace,
+	workspaces_list_sort_workspaces,
+} from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
 import { workspaces_db_create, workspaces_db_create_project, workspaces_validate_name } from "../server/workspaces.ts";
 
@@ -48,12 +52,10 @@ export const list = query({
 			projectIds.add(membership.projectId);
 		}
 
-		const [workspaceIds, workspaces] = await Promise.try(async () => {
-			const workspaceIds = [];
+		const workspacesUnsorted = await Promise.try(async () => {
 			const workspacesPromises = [];
 
 			for (const workspaceId of projectIdsByWorkspace.keys()) {
-				workspaceIds.push(workspaceId);
 				workspacesPromises.push(ctx.db.get("workspaces", workspaceId));
 			}
 
@@ -66,12 +68,16 @@ export const list = query({
 				}
 			}
 
-			return [workspaceIds, workspaces] as const;
+			return workspaces;
 		});
+
+		// Presentation order: default workspace first, then locale-aware name (+ `_id` tiebreaker). Project rows per workspace: workspace primary first (`defaultProjectId` / `default` flag), then the same name rule.
+		const workspaces = workspaces_list_sort_workspaces(workspacesUnsorted);
 
 		const workspaceIdsProjectsDict = Object.fromEntries(
 			await Promise.all(
-				workspaceIds.map(async (workspaceId) => {
+				workspaces.map(async (workspace) => {
+					const workspaceId = workspace._id;
 					const projectIds = projectIdsByWorkspace.get(workspaceId);
 
 					if (!projectIds) {
@@ -91,7 +97,9 @@ export const list = query({
 						}
 					}
 
-					return [workspaceId, projects] as const;
+					const projectsSorted = workspaces_list_sort_projects_for_workspace(workspace, projects);
+
+					return [workspaceId, projectsSorted] as const;
 				}),
 			),
 		);

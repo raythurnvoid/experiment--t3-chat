@@ -1,7 +1,7 @@
 import type { Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { workspaces_name_autofix_and_validate } from "../shared/workspaces-name.ts";
+import { workspaces_name_autofix_and_validate } from "../shared/workspaces.ts";
 
 const DEFAULT_WORKSPACE_NAME = "personal";
 const DEFAULT_PROJECT_NAME = "home";

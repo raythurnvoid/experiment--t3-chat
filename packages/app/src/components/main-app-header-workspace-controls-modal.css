@@ -198,40 +198,6 @@
 	/* #endregion select pane */
 
 	/* #region list item */
-	.MainAppHeaderWorkspaceSwitcherModalListItem-content {
-		position: relative;
-
-		display: grid;
-		grid-template-columns: minmax(0, 1fr);
-		grid-template-rows: auto auto;
-		align-content: center;
-
-		height: 100%;
-		width: 100%;
-
-		padding: 8px 10px;
-
-		contain: layout;
-
-		align-items: center;
-
-		gap: 0px;
-	}
-
-	.MainAppHeaderWorkspaceSwitcherModalListItem-current-border {
-		position: absolute;
-		inset: -2px;
-
-		box-sizing: border-box;
-
-		border: 1px solid var(--color-accent-05);
-		border-radius: 6px;
-
-		background: transparent;
-
-		pointer-events: none;
-	}
-
 	.MainAppHeaderWorkspaceSwitcherModalListItem {
 		display: flex;
 		flex-direction: row;
@@ -241,10 +207,38 @@
 		width: 100%;
 		height: 58px;
 
-		border: 1px solid transparent;
-		border-radius: 8px;
-
 		contain: strict;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalListItem-content {
+		position: relative;
+
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-rows: auto auto;
+
+		column-gap: 8px;
+		row-gap: 0px;
+
+		width: 100%;
+		height: 100%;
+
+		contain: layout;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalListItem-current-border {
+		position: absolute;
+		z-index: -1;
+		inset: 0;
+
+		box-sizing: border-box;
+
+		border: 1px solid var(--color-accent-05);
+		border-radius: inherit;
+
+		background: transparent;
+
+		pointer-events: none;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-label {
@@ -264,6 +258,17 @@
 		color: var(--color-fg-09);
 	}
 
+	.MainAppHeaderWorkspaceSwitcherModalListItem-actions {
+		grid-column: 2;
+		grid-row: 1 / span 2;
+
+		display: flex;
+		align-items: center;
+		justify-content: end;
+
+		flex-shrink: 0;
+	}
+
 	.MainAppHeaderWorkspaceSwitcherModalListItem-label,
 	.MainAppHeaderWorkspaceSwitcherModalListItem-description {
 		contain: content;
@@ -272,4 +277,24 @@
 		min-width: 0;
 	}
 	/* #endregion list item */
+
+	/* list item primary action */
+	.MySidebarListItemPrimaryAction {
+		grid-column: 1 / -1;
+		grid-row: 1 / -1;
+
+		position: relative;
+		z-index: 1;
+
+		width: 100%;
+		height: 100%;
+
+		padding: 8px 10px;
+
+		border-width: 0;
+		outline-offset: -2px;
+
+		border-radius: 8px;
+	}
+	/* #endregion list item primary action */
 }
