@@ -1,5 +1,4 @@
-import { access, readFile } from "node:fs/promises";
-import { constants } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -14,28 +13,35 @@ const read_stdin = () =>
 		process.stdin.on("error", reject);
 	});
 
-const file_exists = async (filePath) => {
-	try {
-		await access(filePath, constants.F_OK);
-		return true;
-	} catch {
-		return false;
+const normalize_workspace_root = (root) => {
+	if (typeof root !== "string") {
+		return "";
 	}
+
+	return root.replace(/^\/(?=[a-zA-Z]:[\\/])/, "");
 };
 
 const main = async () => {
-	await read_stdin().catch(() => "");
+	const raw = await read_stdin().catch(() => "");
+	let payload = {};
+	try {
+		payload = raw.trim() ? JSON.parse(raw) : {};
+	} catch {
+		payload = {};
+	}
 
-	const projectDir = process.env.CURSOR_PROJECT_DIR || process.cwd();
+	const workspace_roots = Array.isArray(payload.workspace_roots) ? payload.workspace_roots : [];
+	const projectDir =
+		workspace_roots
+			.map(normalize_workspace_root)
+			.find((root) => /(?:^|[\\/])t3-chat$/i.test(root)) ?? process.cwd();
 	const readmePath = path.join(projectDir, "..", "t3-chat-+personal", "sources", "README.md");
-	const exists = await file_exists(readmePath);
+	const readmeContent = await readFile(readmePath, "utf8").catch(() => null);
 
-	if (!exists) {
+	if (!readmeContent) {
 		process.stdout.write(JSON.stringify({}) + "\n");
 		return;
 	}
-
-	const readmeContent = await readFile(readmePath, "utf8");
 
 	process.stdout.write(
 		JSON.stringify({
