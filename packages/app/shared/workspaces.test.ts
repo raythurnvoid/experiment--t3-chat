@@ -1,11 +1,14 @@
 import { describe, expect, test } from "vitest";
 import {
+	workspaces_description_max_length,
+	workspaces_description_normalize,
 	workspaces_list_sort_compare_name_then_id,
 	workspaces_list_sort_projects_for_workspace,
 	workspaces_list_sort_workspaces,
 	workspaces_name_autofix,
 	workspaces_name_autofix_and_validate,
 	workspaces_name_validate,
+	workspaces_switcher_list_secondary_line,
 } from "./workspaces.ts";
 
 describe("workspaces_name_autofix", () => {
@@ -108,6 +111,66 @@ describe("workspaces_list_sort_workspaces", () => {
 		]);
 
 		expect(sorted.map((w) => w._id)).toEqual(["w1", "w2"]);
+	});
+});
+
+describe("workspaces_description_normalize", () => {
+	test("trims and accepts empty as empty string", () => {
+		expect(workspaces_description_normalize("")._yay).toBe("");
+		expect(workspaces_description_normalize("   \n  ")._yay).toBe("");
+		expect(workspaces_description_normalize("  hello  ")._yay).toBe("hello");
+	});
+
+	test("rejects when longer than max length", () => {
+		const long = "a".repeat(workspaces_description_max_length + 1);
+		expect(workspaces_description_normalize(long)._nay?.message).toBe("Description is too long");
+	});
+
+	test("accepts at max length", () => {
+		const ok = "a".repeat(workspaces_description_max_length);
+		expect(workspaces_description_normalize(ok)._yay).toBe(ok);
+	});
+});
+
+describe("workspaces_switcher_list_secondary_line", () => {
+	test("prefers stored description", () => {
+		expect(
+			workspaces_switcher_list_secondary_line({
+				storedDescription: "Custom",
+				isDefaultWorkspace: true,
+				isPrimaryProject: true,
+			}),
+		).toBe("Custom");
+	});
+
+	test("falls back to default workspace label", () => {
+		expect(
+			workspaces_switcher_list_secondary_line({
+				storedDescription: "",
+				isDefaultWorkspace: true,
+				isPrimaryProject: false,
+			}),
+		).toBe("Default workspace");
+	});
+
+	test("falls back to default project label", () => {
+		expect(
+			workspaces_switcher_list_secondary_line({
+				storedDescription: "",
+				isDefaultWorkspace: false,
+				isPrimaryProject: true,
+			}),
+		).toBe("Default project");
+	});
+
+	test("returns empty when no stored text and not default primary", () => {
+		expect(
+			workspaces_switcher_list_secondary_line({
+				storedDescription: "",
+				isDefaultWorkspace: false,
+				isPrimaryProject: false,
+			}),
+		).toBe("");
 	});
 });
 

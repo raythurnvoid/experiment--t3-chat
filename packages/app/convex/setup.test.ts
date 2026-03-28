@@ -134,12 +134,14 @@ export const test_mocks_fill_db_with = {
 			}));
 		const workspaceId = await ctx.db.insert("workspaces", {
 			name: args?.workspaceName ?? "test-workspace",
+			description: "",
 			default: false,
 			updatedAt: now,
 		});
 		const projectId = await ctx.db.insert("workspaces_projects", {
 			workspaceId,
 			name: args?.projectName ?? "test-project",
+			description: "",
 			default: false,
 			updatedAt: now,
 		});

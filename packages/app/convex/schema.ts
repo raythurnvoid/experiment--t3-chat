@@ -313,6 +313,7 @@ const app_convex_schema = defineSchema({
 	// #region workspaces
 	workspaces: defineTable({
 		name: v.string(),
+		description: v.string(),
 		default: v.boolean(),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		updatedAt: v.number(),
@@ -321,6 +322,7 @@ const app_convex_schema = defineSchema({
 	workspaces_projects: defineTable({
 		workspaceId: v.id("workspaces"),
 		name: v.string(),
+		description: v.string(),
 		default: v.boolean(),
 		updatedAt: v.number(),
 	}).index("by_workspaceId_default", ["workspaceId", "default"]),

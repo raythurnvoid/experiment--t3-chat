@@ -29,18 +29,28 @@ type App_tenant_project_for_defaults = {
 };
 
 /**
- * Pick default project for one workspace using the same rules as `workspaces.list`-based routing.
+ * Resolve the actual workspace primary project when the client can see it.
+ * If `defaultProjectId` is present but omitted from `projects`, the primary is hidden to this user.
+ */
+export function app_tenant_primary_project_for_workspace(args: {
+	workspace: App_tenant_workspace_for_defaults;
+	projects: App_tenant_project_for_defaults[];
+}): App_tenant_project_for_defaults | null {
+	if (args.workspace.defaultProjectId) {
+		return args.projects.find((p) => p._id === args.workspace.defaultProjectId) ?? null;
+	}
+
+	return args.projects.find((p) => p.default) ?? null;
+}
+
+/**
+ * Pick a navigable default project for one workspace using the same rules as `workspaces.list`-based routing.
  */
 export function app_tenant_default_project_for_workspace(args: {
 	workspace: App_tenant_workspace_for_defaults;
 	projects: App_tenant_project_for_defaults[];
 }): App_tenant_project_for_defaults | null {
-	const project =
-		(args.workspace.defaultProjectId
-			? args.projects.find((p) => p._id === args.workspace.defaultProjectId)
-			: undefined) ??
-		args.projects.find((p) => p.default) ??
-		args.projects[0];
+	const project = app_tenant_primary_project_for_workspace(args) ?? args.projects[0];
 	return project ?? null;
 }
 

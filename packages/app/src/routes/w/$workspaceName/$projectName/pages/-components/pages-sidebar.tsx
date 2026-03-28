@@ -61,7 +61,7 @@ import {
 	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn, should_never_happen, sx } from "@/lib/utils.ts";
+import { cn, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
@@ -230,7 +230,7 @@ type PagesSidebarTreeItemMoreAction_ClassNames = "PagesSidebarTreeItemMoreAction
 type PagesSidebarTreeItemMoreAction_Props = {
 	archiveOperationId: string | undefined;
 	isPending: boolean;
-	isTabbable: boolean;
+	isFocused: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	onRename: () => void;
@@ -246,7 +246,7 @@ const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAct
 	const {
 		archiveOperationId,
 		isPending,
-		isTabbable,
+		isFocused,
 		canExpandSubtree,
 		canCollapseSubtree,
 		onRename,
@@ -281,7 +281,7 @@ const PagesSidebarTreeItemMoreAction = memo(function PagesSidebarTreeItemMoreAct
 
 	return (
 		<MyMenu>
-			<MyMenuTrigger tabIndex={isTabbable ? 0 : -1}>
+			<MyMenuTrigger tabIndex={isFocused ? 0 : -1}>
 				<MyIconButton
 					className={cn("PagesSidebarTreeItemMoreAction" satisfies PagesSidebarTreeItemMoreAction_ClassNames)}
 					variant="ghost-highlightable"
@@ -342,12 +342,12 @@ type PagesSidebarTreeItemArrow_ClassNames = "PagesSidebarTreeItemArrow" | "Pages
 type PagesSidebarTreeItemArrow_Props = {
 	isExpanded: boolean;
 	isPending: boolean;
-	isTabbable: boolean;
+	isFocused: boolean;
 	onClick: () => void;
 };
 
 const PagesSidebarTreeItemArrow = memo(function PagesSidebarTreeItemArrow(props: PagesSidebarTreeItemArrow_Props) {
-	const { isExpanded, isPending, isTabbable, onClick } = props;
+	const { isExpanded, isPending, isFocused, onClick } = props;
 
 	return (
 		<div className={"PagesSidebarTreeItemArrow" satisfies PagesSidebarTreeItemArrow_ClassNames}>
@@ -356,7 +356,7 @@ const PagesSidebarTreeItemArrow = memo(function PagesSidebarTreeItemArrow(props:
 				tooltip={isExpanded ? "Collapse page" : "Expand page"}
 				tooltipSide="bottom"
 				variant="ghost-highlightable"
-				tabIndex={isTabbable ? 0 : -1}
+				tabIndex={isFocused ? 0 : -1}
 				onClick={onClick}
 				disabled={isPending}
 			>
@@ -380,6 +380,14 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 	const { renameInputProps, isRenaming, title } = props;
 
 	const value = isRenaming ? (renameInputProps.value ?? "") : title;
+	const handleRenameInputRef = useFn((element: HTMLInputElement | null) => {
+		forward_ref(element, renameInputProps.ref);
+		if (!isRenaming || !element) {
+			return;
+		}
+
+		element.select();
+	});
 
 	return (
 		<MyInput
@@ -389,10 +397,12 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 			<MyInputBox />
 			<MyInputControl
 				{...(isRenaming ? renameInputProps : null)}
+				ref={isRenaming ? handleRenameInputRef : undefined}
 				className={"PagesSidebarTreeItemTitle-input" satisfies PagesSidebarTreeItemTitle_ClassNames}
 				readOnly={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
 				value={value}
+				autoFocus
 			/>
 		</MyInput>
 	);
@@ -433,12 +443,13 @@ type PagesSidebarTreeItemPrimaryAction_Props = {
 	isPending: boolean;
 	isSelected: boolean;
 	isTreeDragging: boolean;
+	isFocused: boolean;
 };
 
 const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrimaryAction(
 	props: PagesSidebarTreeItemPrimaryAction_Props,
 ) {
-	const { itemProps, title, updatedAt, updatedBy, isPending, isSelected, isTreeDragging } = props;
+	const { itemProps, title, updatedAt, updatedBy, isPending, isSelected, isTreeDragging, isFocused } = props;
 
 	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedBy || "Unknown"}`;
 
@@ -447,7 +458,7 @@ const PagesSidebarTreeItemPrimaryAction = memo(function PagesSidebarTreeItemPrim
 			{...itemProps}
 			className={"PagesSidebarTreeItemPrimaryAction" satisfies PagesSidebarTreeItemPrimaryAction_ClassNames}
 			selected={isSelected}
-			disabled={isPending}
+			disabled={isPending && !isFocused}
 			tooltip={tooltipContent}
 			tooltipTimeout={2000}
 			tooltipDisabled={isTreeDragging}
@@ -486,7 +497,7 @@ type PagesSidebarTreeItemActions_ClassNames = "PagesSidebarTreeItemActions";
 type PagesSidebarTreeItemActions_Props = {
 	archiveOperationId: PagesSidebarTreeItemMoreAction_Props["archiveOperationId"];
 	isPending: boolean;
-	isTabbable: boolean;
+	isFocused: boolean;
 	canExpandSubtree: PagesSidebarTreeItemMoreAction_Props["canExpandSubtree"];
 	canCollapseSubtree: PagesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
 	onCreatePage: PagesSidebarTreeItemSecondaryAction_Props["onClick"];
@@ -503,7 +514,7 @@ const PagesSidebarTreeItemActions = memo(function PagesSidebarTreeItemActions(
 	const {
 		archiveOperationId,
 		isPending,
-		isTabbable,
+		isFocused,
 		canExpandSubtree,
 		canCollapseSubtree,
 		onCreatePage,
@@ -516,15 +527,11 @@ const PagesSidebarTreeItemActions = memo(function PagesSidebarTreeItemActions(
 
 	return (
 		<div className={"PagesSidebarTreeItemActions" satisfies PagesSidebarTreeItemActions_ClassNames}>
-			<PagesSidebarTreeItemSecondaryActionCreatePage
-				isActive={isTabbable}
-				disabled={isPending}
-				onClick={onCreatePage}
-			/>
+			<PagesSidebarTreeItemSecondaryActionCreatePage isActive={isFocused} disabled={isPending} onClick={onCreatePage} />
 			<PagesSidebarTreeItemMoreAction
 				archiveOperationId={archiveOperationId}
 				isPending={isPending}
-				isTabbable={isTabbable}
+				isFocused={isFocused}
 				canExpandSubtree={canExpandSubtree}
 				canCollapseSubtree={canCollapseSubtree}
 				onRename={onRename}
@@ -678,7 +685,7 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 	const isArchived = itemData.archiveOperationId !== undefined;
 	const isNavigated = selectedPageId === itemId;
 	const isPending = isBusy || pendingActionPageIds.has(itemId);
-	const isTabbableRow = useVal(() => item.isFocused());
+	const isFocused = useVal(() => item.isFocused());
 	const isDragTarget = useVal(() => item.isDraggingOver());
 	const isExpanded = useVal(() => item.isExpanded());
 
@@ -803,6 +810,7 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 					isPending={isPending}
 					isSelected={isSelected}
 					isTreeDragging={isTreeDragging}
+					isFocused={isFocused}
 				/>
 
 				<PagesSidebarTreeItemPrimaryContent
@@ -814,7 +822,7 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 				<PagesSidebarTreeItemArrow
 					isExpanded={isExpanded}
 					isPending={isPending}
-					isTabbable={isTabbableRow}
+					isFocused={isFocused}
 					onClick={handleTreeItemArrowClick}
 				/>
 
@@ -823,7 +831,7 @@ const PagesSidebarTreeItem = memo(function PagesSidebarTreeItem(props: PagesSide
 				<PagesSidebarTreeItemActions
 					archiveOperationId={itemData.archiveOperationId}
 					isPending={isPending}
-					isTabbable={isTabbableRow}
+					isFocused={isFocused}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					onCreatePage={handleCreatePageClick}

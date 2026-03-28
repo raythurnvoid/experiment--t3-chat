@@ -1,7 +1,7 @@
 import type { Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { workspaces_name_autofix_and_validate } from "../shared/workspaces.ts";
+import { workspaces_description_normalize, workspaces_name_autofix_and_validate } from "../shared/workspaces.ts";
 
 const DEFAULT_WORKSPACE_NAME = "personal";
 const DEFAULT_PROJECT_NAME = "home";
@@ -13,6 +13,10 @@ const DEFAULT_PROJECT_NAME = "home";
  */
 export function workspaces_validate_name(name: string) {
 	return workspaces_name_autofix_and_validate(name);
+}
+
+export function workspaces_validate_description(raw: string) {
+	return workspaces_description_normalize(raw);
 }
 
 /**
@@ -31,7 +35,7 @@ export async function workspaces_db_get_membership_for_user(
 
 export async function workspaces_db_create(
 	ctx: MutationCtx,
-	args: { userId: Id<"users">; name: string; now: number; default?: boolean },
+	args: { userId: Id<"users">; name: string; description: string; now: number; default?: boolean },
 ) {
 	const nameResult = workspaces_validate_name(args.name);
 	if (nameResult._nay) {
@@ -61,6 +65,7 @@ export async function workspaces_db_create(
 
 	const workspaceId = await ctx.db.insert("workspaces", {
 		name,
+		description: args.description,
 		default: args.default ?? false,
 		updatedAt: args.now,
 	});
@@ -68,6 +73,7 @@ export async function workspaces_db_create(
 	const defaultProjectId = await ctx.db.insert("workspaces_projects", {
 		workspaceId,
 		name: DEFAULT_PROJECT_NAME,
+		description: "",
 		default: true,
 		updatedAt: args.now,
 	});
@@ -107,7 +113,7 @@ export async function workspaces_db_create(
 
 export async function workspaces_db_create_project(
 	ctx: MutationCtx,
-	args: { userId: Id<"users">; workspaceId: Id<"workspaces">; name: string; now: number },
+	args: { userId: Id<"users">; workspaceId: Id<"workspaces">; name: string; description: string; now: number },
 ) {
 	const nameResult = workspaces_validate_name(args.name);
 	if (nameResult._nay) {
@@ -167,6 +173,7 @@ export async function workspaces_db_create_project(
 	const projectId = await ctx.db.insert("workspaces_projects", {
 		workspaceId: args.workspaceId,
 		name,
+		description: args.description,
 		default: false,
 		updatedAt: args.now,
 	});
@@ -200,6 +207,7 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 		await workspaces_db_create(ctx, {
 			userId: args.userId,
 			name: DEFAULT_WORKSPACE_NAME,
+			description: "",
 			now: args.now,
 			default: true,
 		});

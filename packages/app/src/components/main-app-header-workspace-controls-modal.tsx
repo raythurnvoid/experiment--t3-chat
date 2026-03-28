@@ -37,6 +37,7 @@ import {
 	MyInputControl,
 	MyInputHelperText,
 	MyInputLabel,
+	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
 import {
 	MyModal,
@@ -50,7 +51,12 @@ import {
 } from "@/components/my-modal.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
-import { workspaces_name_autofix, workspaces_name_validate } from "@/lib/workspaces.ts";
+import {
+	workspaces_description_max_length,
+	workspaces_description_normalize,
+	workspaces_name_autofix,
+	workspaces_name_validate,
+} from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region list item model
@@ -437,6 +443,8 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 const main_app_header_workspace_switcher_modal_CREATE_NAME_HELPER_TEXT =
 	"Lowercase letters and hyphens only (kebab-case).";
 
+const main_app_header_workspace_switcher_modal_CREATE_DESCRIPTION_HELPER_TEXT = `Plain text, up to ${workspaces_description_max_length} characters. Leave empty if you do not need a description.`;
+
 type MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub"
@@ -479,10 +487,13 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 		const createFormDomId = `MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form-${useId().replace(/:/g, "")}`;
 
 		const nameInputRef = useRef<HTMLInputElement>(null);
+		const descriptionInputRef = useRef<HTMLTextAreaElement>(null);
 		const nameSubmitFailuresRef = useRef<Set<string>>(new Set());
 		const [isNameValid, setIsNameValid] = useState(false);
 		const [isNameNonEmpty, setIsNameNonEmpty] = useState(false);
+		const [isDescriptionValid, setIsDescriptionValid] = useState(true);
 		const [submitMessage, setSubmitMessage] = useState<string | undefined>(undefined);
+		const [descriptionSubmitMessage, setDescriptionSubmitMessage] = useState<string | undefined>(undefined);
 		const [isSubmitting, setIsSubmitting] = useState(false);
 
 		const sync_name_value_for_submit = (el: HTMLInputElement) => {
@@ -504,6 +515,16 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			setSubmitMessage(undefined);
 		};
 
+		const sync_description_value_for_submit = (el: HTMLTextAreaElement) => {
+			const validated = workspaces_description_normalize(el.value);
+			setIsDescriptionValid(!validated._nay);
+		};
+
+		const apply_description_input_to_control = (el: HTMLTextAreaElement) => {
+			sync_description_value_for_submit(el);
+			setDescriptionSubmitMessage(undefined);
+		};
+
 		const handleFormSubmit: FormEventHandler<HTMLFormElement> = (event) => {
 			event.preventDefault();
 			if (isSubmitting) {
@@ -512,6 +533,11 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 			const el = nameInputRef.current;
 			if (!el) {
+				return;
+			}
+
+			const descriptionEl = descriptionInputRef.current;
+			if (!descriptionEl) {
 				return;
 			}
 
@@ -528,21 +554,34 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				return;
 			}
 
+			sync_description_value_for_submit(descriptionEl);
+			const descriptionValidated = workspaces_description_normalize(descriptionEl.value);
+			if (descriptionValidated._nay) {
+				setDescriptionSubmitMessage(descriptionValidated._nay.message);
+				return;
+			}
+			const description = descriptionValidated._yay;
+
 			void (async (/* iife */) => {
 				setIsSubmitting(true);
 				setSubmitMessage(undefined);
+				setDescriptionSubmitMessage(undefined);
 
 				if (kind === "workspace") {
-					const result = await createWorkspace({ name });
+					const result = await createWorkspace({ name, description });
 
 					if (result == null) {
 						return;
 					}
 
 					if (result._nay) {
-						nameSubmitFailuresRef.current.add(name);
-						setIsNameValid(false);
-						setSubmitMessage(result._nay.message);
+						if (result._nay.message === "Description is too long") {
+							setDescriptionSubmitMessage(result._nay.message);
+						} else {
+							nameSubmitFailuresRef.current.add(name);
+							setIsNameValid(false);
+							setSubmitMessage(result._nay.message);
+						}
 						return;
 					}
 
@@ -558,16 +597,20 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					return;
 				}
 
-				const result = await createProject({ name, workspaceId });
+				const result = await createProject({ name, workspaceId, description });
 
 				if (result == null) {
 					return;
 				}
 
 				if (result._nay) {
-					nameSubmitFailuresRef.current.add(name);
-					setIsNameValid(false);
-					setSubmitMessage(result._nay.message);
+					if (result._nay.message === "Description is too long") {
+						setDescriptionSubmitMessage(result._nay.message);
+					} else {
+						nameSubmitFailuresRef.current.add(name);
+						setIsNameValid(false);
+						setSubmitMessage(result._nay.message);
+					}
 					return;
 				}
 
@@ -626,6 +669,10 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			apply_name_input_to_control(event.currentTarget);
 		};
 
+		const handleDescriptionInput: FormEventHandler<HTMLTextAreaElement> = (event) => {
+			apply_description_input_to_control(event.currentTarget);
+		};
+
 		useEffect(() => {
 			if (!open) {
 				return;
@@ -633,14 +680,21 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 			nameSubmitFailuresRef.current.clear();
 			setSubmitMessage(undefined);
+			setDescriptionSubmitMessage(undefined);
 
 			const el = nameInputRef.current;
 			if (el) {
 				el.value = "";
 			}
 
+			const descriptionEl = descriptionInputRef.current;
+			if (descriptionEl) {
+				descriptionEl.value = "";
+			}
+
 			setIsNameValid(false);
 			setIsNameNonEmpty(false);
+			setIsDescriptionValid(true);
 		}, [open, kind]);
 
 		const dialogTitle = kind === "workspace" ? "Create workspace" : "Create project";
@@ -708,6 +762,32 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 										{submitMessage ?? main_app_header_workspace_switcher_modal_CREATE_NAME_HELPER_TEXT}
 									</MyInputHelperText>
 								</MyInput>
+
+								<MyInput variant="surface">
+									<MyInputLabel>Description</MyInputLabel>
+									<MyInputArea>
+										<MyInputBox />
+										<MyInputTextAreaControl
+											ref={descriptionInputRef}
+											rows={3}
+											autoComplete="off"
+											placeholder={
+												kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"
+											}
+											aria-invalid={!isDescriptionValid}
+											disabled={isSubmitting}
+											onInput={handleDescriptionInput}
+										/>
+									</MyInputArea>
+									<MyInputHelperText
+										className={cn(
+											descriptionSubmitMessage &&
+												("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
+										)}
+									>
+										{descriptionSubmitMessage ?? main_app_header_workspace_switcher_modal_CREATE_DESCRIPTION_HELPER_TEXT}
+									</MyInputHelperText>
+								</MyInput>
 							</div>
 						</form>
 					</MyModalScrollableArea>
@@ -716,7 +796,12 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 						<MyButton type="button" disabled={isSubmitting} variant="outline" onClick={() => setOpen(false)}>
 							Cancel
 						</MyButton>
-						<MyButton type="submit" form={createFormDomId} disabled={!isNameValid || isSubmitting} variant="accent">
+						<MyButton
+							type="submit"
+							form={createFormDomId}
+							disabled={!isNameValid || !isDescriptionValid || isSubmitting}
+							variant="accent"
+						>
 							{isSubmitting ? "Creating…" : dialogTitle}
 						</MyButton>
 					</MyModalFooter>

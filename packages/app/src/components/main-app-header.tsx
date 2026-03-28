@@ -18,7 +18,8 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { app_tenant_default_project_for_workspace } from "@/lib/urls.ts";
+import { app_tenant_default_project_for_workspace, app_tenant_primary_project_for_workspace } from "@/lib/urls.ts";
+import { workspaces_switcher_list_secondary_line } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region workspace controls
@@ -100,165 +101,160 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		setIsOpen(false);
 	});
 
-	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = main_app_header_workspace_controls_move_list_item_to_front_by_id(
-		(workspaces ?? []).map((w) => ({
-			id: w._id,
-			label: w.name,
-			description: w.default ? "Default workspace" : "",
-			isDefault: w.default,
-			onEdit: w.default
-				? undefined
-				: () => {
-						if (!workspaceList) {
-							console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded for rename");
+	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
+		main_app_header_workspace_controls_move_list_item_to_front_by_id(
+			(workspaces ?? []).map((w) => {
+				const renamePrimaryProject = workspaceList
+					? app_tenant_primary_project_for_workspace({
+							workspace: w,
+							projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
+						})
+					: null;
+
+				return {
+					id: w._id,
+					label: w.name,
+					description: workspaces_switcher_list_secondary_line({
+						storedDescription: w.description ?? "",
+						isDefaultWorkspace: w.default,
+						isPrimaryProject: false,
+					}),
+					isDefault: w.default,
+					onEdit:
+						w.default || !renamePrimaryProject
+							? undefined
+							: () => {
+									setRenameTarget({
+										kind: "workspace",
+										id: w._id,
+										initialName: w.name,
+										defaultProjectId: renamePrimaryProject._id as app_convex_Id<"workspaces_projects">,
+									});
+								},
+					onDelete: w.default
+						? undefined
+						: () => {
+								void (async (/* iife */) => {
+									const result = await app_convex.mutation(app_convex_api.workspaces.delete_workspace, {
+										workspaceId: w._id,
+									});
+
+									if (result == null) {
+										return;
+									}
+
+									if (result._nay) {
+										console.error("[MainAppHeaderWorkspaceControls] Failed to delete workspace", {
+											result,
+											workspaceId: w._id,
+										});
+										return;
+									}
+
+									await app_convex.query(app_convex_api.workspaces.list, {});
+
+									if (w._id === workspaceId && workspaces && workspaceList) {
+										const remaining = workspaces.filter((row) => row._id !== w._id);
+										const fallback = remaining[0];
+										if (!fallback) {
+											return;
+										}
+
+										const defaultProject = app_tenant_default_project_for_workspace({
+											workspace: fallback,
+											projects: workspaceList.workspaceIdsProjectsDict[fallback._id] ?? [],
+										});
+
+										if (!defaultProject) {
+											console.error(
+												"[MainAppHeaderWorkspaceControls] Failed to resolve default project after workspace delete",
+												{ workspaceId: fallback._id },
+											);
+											return;
+										}
+
+										navigateToWorkspaceProject(fallback.name, defaultProject.name);
+										return;
+									}
+
+									if (w._id === draftWorkspaceId && w._id !== workspaceId && workspaceId && projectId) {
+										setLocalDraft({ workspaceId, projectId });
+									}
+								})().catch((error) => {
+									console.error("[MainAppHeaderWorkspaceControls] Unexpected delete workspace error", {
+										error,
+										workspaceId: w._id,
+									});
+								});
+							},
+					onSelect: () => {
+						if (w._id === draftWorkspaceId) {
 							return;
 						}
 
-						const primary = app_tenant_default_project_for_workspace({
+						if (!workspaceList) {
+							console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
+							return;
+						}
+
+						const defaultProject = app_tenant_default_project_for_workspace({
 							workspace: w,
 							projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
 						});
 
-						if (!primary) {
-							console.error("[MainAppHeaderWorkspaceControls] Failed to resolve primary project for rename", {
+						if (!defaultProject) {
+							console.error("[MainAppHeaderWorkspaceControls] Failed to resolve default project for workspace", {
 								workspaceId: w._id,
 							});
 							return;
 						}
 
-						setRenameTarget({
-							kind: "workspace",
-							id: w._id,
-							initialName: w.name,
-							defaultProjectId: primary._id as app_convex_Id<"workspaces_projects">,
+						setLocalDraft({
+							workspaceId: w._id,
+							projectId: defaultProject._id as app_convex_Id<"workspaces_projects">,
 						});
 					},
-			onDelete: w.default
-				? undefined
-				: () => {
-						void (async (/* iife */) => {
-							const result = await app_convex.mutation(app_convex_api.workspaces.delete_workspace, {
-								workspaceId: w._id,
-							});
-
-							if (result == null) {
-								return;
-							}
-
-							if (result._nay) {
-								console.error("[MainAppHeaderWorkspaceControls] Failed to delete workspace", {
-									result,
-									workspaceId: w._id,
-								});
-								return;
-							}
-
-							await app_convex.query(app_convex_api.workspaces.list, {});
-
-							if (w._id === workspaceId && workspaces && workspaceList) {
-								const remaining = workspaces.filter((row) => row._id !== w._id);
-								const fallback = remaining[0];
-								if (!fallback) {
-									return;
-								}
-
-								const defaultProject = app_tenant_default_project_for_workspace({
-									workspace: fallback,
-									projects: workspaceList.workspaceIdsProjectsDict[fallback._id] ?? [],
-								});
-
-								if (!defaultProject) {
-									console.error(
-										"[MainAppHeaderWorkspaceControls] Failed to resolve default project after workspace delete",
-										{ workspaceId: fallback._id },
-									);
-									return;
-								}
-
-								navigateToWorkspaceProject(fallback.name, defaultProject.name);
-								return;
-							}
-
-							if (w._id === draftWorkspaceId && w._id !== workspaceId && workspaceId && projectId) {
-								setLocalDraft({ workspaceId, projectId });
-							}
-						})().catch((error) => {
-							console.error("[MainAppHeaderWorkspaceControls] Unexpected delete workspace error", {
-								error,
-								workspaceId: w._id,
-							});
-						});
-					},
-			onSelect: () => {
-				if (w._id === draftWorkspaceId) {
-					return;
-				}
-
-				if (!workspaceList) {
-					console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
-					return;
-				}
-
-				const defaultProject = app_tenant_default_project_for_workspace({
-					workspace: w,
-					projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
-				});
-
-				if (!defaultProject) {
-					console.error("[MainAppHeaderWorkspaceControls] Failed to resolve default project for workspace", {
-						workspaceId: w._id,
-					});
-					return;
-				}
-
-				setLocalDraft({
-					workspaceId: w._id,
-					projectId: defaultProject._id as app_convex_Id<"workspaces_projects">,
-				});
-			},
-		})),
-		workspaceId,
-	);
+				};
+			}),
+			workspaceId,
+		);
 
 	const projectItemsRaw: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = (draftProjects ?? []).map((p) => {
-		const projectIsPrimary =
-			draftWorkspaceRecord !== undefined &&
-			((draftWorkspaceRecord.defaultProjectId !== undefined && p._id === draftWorkspaceRecord.defaultProjectId) ||
-				p.default);
+		const renamePrimaryProject =
+			draftWorkspaceRecord && workspaceList
+				? app_tenant_primary_project_for_workspace({
+						workspace: draftWorkspaceRecord,
+						projects: workspaceList.workspaceIdsProjectsDict[draftWorkspaceRecord._id] ?? [],
+					})
+				: null;
+		const projectIsPrimary = renamePrimaryProject?._id === p._id;
 
 		return {
 			id: p._id,
 			label: p.name,
-			description: p.default ? "Default project" : "",
+			description: workspaces_switcher_list_secondary_line({
+				storedDescription: p.description ?? "",
+				isDefaultWorkspace: false,
+				isPrimaryProject: projectIsPrimary,
+			}),
 			isDefault: p.default,
-			onEdit: projectIsPrimary
-				? undefined
-				: () => {
-						if (!draftWorkspaceRecord || !workspaceList) {
-							console.error("[MainAppHeaderWorkspaceControls] Missing draft workspace for project rename");
-							return;
-						}
+			onEdit:
+				projectIsPrimary || !renamePrimaryProject
+					? undefined
+					: () => {
+							if (!draftWorkspaceRecord) {
+								console.error("[MainAppHeaderWorkspaceControls] Missing draft workspace for project rename");
+								return;
+							}
 
-						const primary = app_tenant_default_project_for_workspace({
-							workspace: draftWorkspaceRecord,
-							projects: workspaceList.workspaceIdsProjectsDict[draftWorkspaceRecord._id] ?? [],
-						});
-
-						if (!primary) {
-							console.error("[MainAppHeaderWorkspaceControls] Failed to resolve primary project for rename", {
+							setRenameTarget({
+								kind: "project",
+								id: p._id,
+								initialName: p.name,
 								workspaceId: draftWorkspaceRecord._id,
+								defaultProjectId: renamePrimaryProject._id as app_convex_Id<"workspaces_projects">,
 							});
-							return;
-						}
-
-						setRenameTarget({
-							kind: "project",
-							id: p._id,
-							initialName: p.name,
-							workspaceId: draftWorkspaceRecord._id,
-							defaultProjectId: primary._id as app_convex_Id<"workspaces_projects">,
-						});
-					},
+						},
 			onDelete: p.default
 				? undefined
 				: () => {
@@ -300,8 +296,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 							if (p._id === draftProjectId && draftWorkspaceId && workspaceList) {
 								const projs = workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] ?? [];
 								const fallback =
-									projs.find((row) => row._id !== p._id && row.default) ??
-									projs.find((row) => row._id !== p._id);
+									projs.find((row) => row._id !== p._id && row.default) ?? projs.find((row) => row._id !== p._id);
 								if (!fallback) {
 									if (workspaceId && projectId) {
 										setLocalDraft({ workspaceId, projectId });

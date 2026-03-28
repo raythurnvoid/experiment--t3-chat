@@ -200,6 +200,45 @@ async function migrate_users_anonymous_auth_tokens_to_table_fn(ctx: MutationCtx)
 	};
 }
 
+async function backfill_workspace_and_project_descriptions_fn(ctx: MutationCtx) {
+	const workspacesDocs = await ctx.db.query("workspaces").collect();
+	let patchedWorkspaces = 0;
+
+	for (const row of workspacesDocs) {
+		const description = (row as { description?: unknown }).description;
+		if (typeof description === "string") {
+			continue;
+		}
+
+		await ctx.db.patch("workspaces", row._id, {
+			description: "",
+		});
+		patchedWorkspaces += 1;
+	}
+
+	const projectsDocs = await ctx.db.query("workspaces_projects").collect();
+	let patchedProjects = 0;
+
+	for (const row of projectsDocs) {
+		const description = (row as { description?: unknown }).description;
+		if (typeof description === "string") {
+			continue;
+		}
+
+		await ctx.db.patch("workspaces_projects", row._id, {
+			description: "",
+		});
+		patchedProjects += 1;
+	}
+
+	return {
+		scannedWorkspaces: workspacesDocs.length,
+		scannedProjects: projectsDocs.length,
+		patchedWorkspaces,
+		patchedProjects,
+	};
+}
+
 async function rename_default_workspaces_projects_desk_to_home_fn(ctx: MutationCtx) {
 	const projects = await ctx.db.query("workspaces_projects").collect();
 	let patched = 0;
@@ -605,6 +644,25 @@ export const rename_default_workspaces_projects_desk_to_home = internalMutation(
 		patched: v.number(),
 	}),
 	handler: (ctx) => rename_default_workspaces_projects_desk_to_home_fn(ctx),
+});
+
+/**
+ * Backfill `description: ""` on `workspaces` / `workspaces_projects` when the field is missing or not a string.
+ * Idempotent. Run from `packages/app`: `pnpm run convex:migrate:workspace-descriptions`
+ * (`pnpm exec convex run migrations:backfill_workspace_and_project_descriptions`).
+ *
+ * If your deployment still has pre-schema rows that omit `description`, deploy `v.optional(v.string())` for that
+ * field first so reads succeed, then run this mutation, then tighten to `v.string()`.
+ */
+export const backfill_workspace_and_project_descriptions = internalMutation({
+	args: {},
+	returns: v.object({
+		scannedWorkspaces: v.number(),
+		scannedProjects: v.number(),
+		patchedWorkspaces: v.number(),
+		patchedProjects: v.number(),
+	}),
+	handler: (ctx) => backfill_workspace_and_project_descriptions_fn(ctx),
 });
 
 export const migrate_workspace_and_project_names_to_url_safe = internalMutation({

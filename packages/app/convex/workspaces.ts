@@ -7,7 +7,12 @@ import { v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { workspaces_list_sort_projects_for_workspace, workspaces_list_sort_workspaces } from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
-import { workspaces_db_create, workspaces_db_create_project, workspaces_validate_name } from "../server/workspaces.ts";
+import {
+	workspaces_db_create,
+	workspaces_db_create_project,
+	workspaces_validate_description,
+	workspaces_validate_name,
+} from "../server/workspaces.ts";
 
 /**
  * TODO: to be implemented
@@ -245,6 +250,7 @@ export const get_membership_from_string = query({
 export const create_workspace = mutation({
 	args: {
 		name: v.string(),
+		description: v.string(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -257,11 +263,21 @@ export const create_workspace = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		const descriptionResult = workspaces_validate_description(args.description);
+		if (descriptionResult._nay) {
+			return Result({
+				_nay: {
+					message: descriptionResult._nay.message,
+				},
+			});
+		}
+
 		const now = Date.now();
 
 		return await workspaces_db_create(ctx, {
 			userId: user.id,
 			name: args.name,
+			description: descriptionResult._yay,
 			now,
 		});
 	},
@@ -271,6 +287,7 @@ export const create_project = mutation({
 	args: {
 		workspaceId: v.id("workspaces"),
 		name: v.string(),
+		description: v.string(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -282,12 +299,22 @@ export const create_project = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		const descriptionResult = workspaces_validate_description(args.description);
+		if (descriptionResult._nay) {
+			return Result({
+				_nay: {
+					message: descriptionResult._nay.message,
+				},
+			});
+		}
+
 		const now = Date.now();
 
 		return await workspaces_db_create_project(ctx, {
 			userId: user.id,
 			workspaceId: args.workspaceId,
 			name: args.name,
+			description: descriptionResult._yay,
 			now,
 		});
 	},

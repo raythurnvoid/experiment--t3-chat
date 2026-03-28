@@ -94,6 +94,55 @@ export function workspaces_name_validate(name: string) {
 }
 
 /**
+ * Maximum stored length for workspace/project description (after trim).
+ */
+export const workspaces_description_max_length = 500;
+
+/**
+ * Normalize user-provided description: trim; empty after trim → store as `""`; reject when longer than
+ * {@link workspaces_description_max_length}.
+ */
+export function workspaces_description_normalize(raw: string) {
+	const trimmed = raw.trim();
+
+	if (trimmed.length > workspaces_description_max_length) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Description is too long",
+			},
+		});
+	}
+
+	return Result({
+		_yay: trimmed,
+	});
+}
+
+export type workspaces_switcher_list_secondary_line_Args = {
+	storedDescription: string;
+	isDefaultWorkspace: boolean;
+	isPrimaryProject: boolean;
+};
+
+/**
+ * Build secondary line copy for workspace/project switcher lists: prefer stored description, then default labels.
+ */
+export function workspaces_switcher_list_secondary_line(args: workspaces_switcher_list_secondary_line_Args) {
+	const text = args.storedDescription;
+	if (text !== "") {
+		return text;
+	}
+	if (args.isDefaultWorkspace) {
+		return "Default workspace";
+	}
+	if (args.isPrimaryProject) {
+		return "Default project";
+	}
+	return "";
+}
+
+/**
  * Apply autofix, then validate. Use at API boundaries so callers accept messy user input safely.
  */
 export function workspaces_name_autofix_and_validate(raw: string) {

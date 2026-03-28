@@ -57,7 +57,7 @@
 	/* #region handle */
 	.MyPanelResizeHandleContainer {
 		contain: layout style size;
-		z-index: 2;
+		z-index: 1;
 
 		display: flex;
 		justify-content: center;
