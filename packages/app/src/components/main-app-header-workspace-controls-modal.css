@@ -20,6 +20,10 @@
 
 		max-width: 400px;
 	}
+
+	.MainAppHeaderWorkspaceSwitcherModal-header-description {
+		color: var(--color-fg-07);
+	}
 	/* #endregion root */
 
 	/* #region body */

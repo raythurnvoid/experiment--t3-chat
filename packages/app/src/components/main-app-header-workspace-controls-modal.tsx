@@ -1122,6 +1122,7 @@ export const MainAppHeaderWorkspaceSwitcherModalRenameModal = memo(
 type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModal"
 	| "MainAppHeaderWorkspaceSwitcherModal-header-copy"
+	| "MainAppHeaderWorkspaceSwitcherModal-header-description"
 	| "MainAppHeaderWorkspaceSwitcherModal-body"
 	| "MainAppHeaderWorkspaceSwitcherModal-summary"
 	| "MainAppHeaderWorkspaceSwitcherModal-summary-label"
@@ -1208,7 +1209,11 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 						)}
 					>
 						<MyModalHeading>Workspace</MyModalHeading>
-						<MyModalDescription>
+						<MyModalDescription
+							className={
+								"MainAppHeaderWorkspaceSwitcherModal-header-description" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames
+							}
+						>
 							Select a workspace to list its projects, choose a project, then click Switch.
 						</MyModalDescription>
 					</div>
