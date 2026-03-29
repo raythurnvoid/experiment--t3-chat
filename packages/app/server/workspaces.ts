@@ -1,7 +1,9 @@
 import type { Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import { user_limits, workspace_limits } from "../shared/limits.ts";
 import { workspaces_description_normalize, workspaces_name_autofix_and_validate } from "../shared/workspaces.ts";
+import { should_never_happen } from "./server-utils.ts";
 
 const DEFAULT_WORKSPACE_NAME = "personal";
 const DEFAULT_PROJECT_NAME = "home";
@@ -63,10 +65,39 @@ export async function workspaces_db_create(
 		});
 	}
 
+	if (!args.default) {
+		const definition = user_limits.EXTRA_WORKSPACES;
+		const limit = await ctx.db
+			.query("limits_per_user")
+			.withIndex("by_userId_limitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
+			.first();
+		if (!limit) {
+			throw should_never_happen("[workspaces_db_create] Missing user limit doc", {
+				userId: args.userId,
+				limitName: definition.name,
+			});
+		}
+
+		const remainingCount = Math.max(0, limit.maxCount - limit.usedCount);
+		if (remainingCount <= 0) {
+			return Result({
+				_nay: {
+					message: definition.disabledReason,
+				},
+			});
+		}
+
+		await ctx.db.patch("limits_per_user", limit._id, {
+			usedCount: limit.usedCount + 1,
+			updatedAt: args.now,
+		});
+	}
+
 	const workspaceId = await ctx.db.insert("workspaces", {
 		name,
 		description: args.description,
 		default: args.default ?? false,
+		ownerUserId: args.userId,
 		updatedAt: args.now,
 	});
 
@@ -81,6 +112,15 @@ export async function workspaces_db_create(
 	const updates = [
 		ctx.db.patch("workspaces", workspaceId, {
 			defaultProjectId,
+		}),
+
+		ctx.db.insert("limits_per_workspace", {
+			workspaceId,
+			limitName: workspace_limits.EXTRA_PROJECTS.name,
+			usedCount: 0,
+			maxCount: workspace_limits.EXTRA_PROJECTS.maxCount,
+			createdAt: args.now,
+			updatedAt: args.now,
 		}),
 
 		ctx.db.insert("workspaces_projects_users", {
@@ -170,6 +210,32 @@ export async function workspaces_db_create_project(
 		}
 	}
 
+	const limit = await ctx.db
+		.query("limits_per_workspace")
+		.withIndex("by_workspaceId_limitName", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("limitName", workspace_limits.EXTRA_PROJECTS.name),
+		)
+		.first();
+	if (!limit) {
+		throw should_never_happen("[workspaces_db_create_project] Missing workspace limit doc", {
+			workspaceId: args.workspaceId,
+			limitName: workspace_limits.EXTRA_PROJECTS.name,
+		});
+	}
+	const remainingCount = Math.max(0, limit.maxCount - limit.usedCount);
+	if (remainingCount <= 0) {
+		return Result({
+			_nay: {
+				message: workspace_limits.EXTRA_PROJECTS.disabledReason,
+			},
+		});
+	}
+
+	await ctx.db.patch("limits_per_workspace", limit._id, {
+		usedCount: limit.usedCount + 1,
+		updatedAt: args.now,
+	});
+
 	const projectId = await ctx.db.insert("workspaces_projects", {
 		workspaceId: args.workspaceId,
 		name,
@@ -197,11 +263,9 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number },
 ) {
-	const workspace = await ctx.db.get("users", args.userId).then((user) => {
-		if (user?.defaultWorkspaceId) {
-			return ctx.db.get("workspaces", user.defaultWorkspaceId);
-		}
-	});
+	const workspace = await ctx.db
+		.get("users", args.userId)
+		.then((user) => (user?.defaultWorkspaceId ? ctx.db.get("workspaces", user.defaultWorkspaceId) : null));
 
 	if (!workspace) {
 		await workspaces_db_create(ctx, {

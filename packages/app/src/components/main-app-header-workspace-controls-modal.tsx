@@ -261,20 +261,23 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 // #region select head
 type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-copy"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-icon"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-description"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create";
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
 	iconSlot: ReactNode;
 	title: string;
 	createDisabled?: boolean;
+	createDisabledReason?: string;
 	onCreate: () => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectHead(props: MainAppHeaderWorkspaceSwitcherModalSelectHead_Props) {
-		const { iconSlot, title, createDisabled, onCreate } = props;
+		const { iconSlot, title, createDisabled, createDisabledReason, onCreate } = props;
 
 		return (
 			<div
@@ -292,10 +295,25 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 				</MyIcon>
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+						"MainAppHeaderWorkspaceSwitcherModalSelectHead-copy" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 					)}
 				>
-					{title}
+					<div
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+						)}
+					>
+						{title}
+					</div>
+					{createDisabledReason ? (
+						<div
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalSelectHead-description" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+							)}
+						>
+							{createDisabledReason}
+						</div>
+					) : null}
 				</div>
 				<MyButton
 					className={cn(
@@ -408,12 +426,13 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	selectedItemId: string;
 	dialogOpen: boolean;
 	createDisabled?: boolean;
+	createDisabledReason?: string;
 	onCreate: () => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPane(props: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props) {
-		const { icon, title, items, selectedItemId, dialogOpen, createDisabled, onCreate } = props;
+		const { icon, title, items, selectedItemId, dialogOpen, createDisabled, createDisabledReason, onCreate } = props;
 
 		return (
 			<section
@@ -425,6 +444,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 					iconSlot={icon}
 					title={title}
 					createDisabled={createDisabled}
+					createDisabledReason={createDisabledReason}
 					onCreate={onCreate}
 				/>
 
@@ -785,7 +805,8 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 												("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
 										)}
 									>
-										{descriptionSubmitMessage ?? main_app_header_workspace_switcher_modal_CREATE_DESCRIPTION_HELPER_TEXT}
+										{descriptionSubmitMessage ??
+											main_app_header_workspace_switcher_modal_CREATE_DESCRIPTION_HELPER_TEXT}
 									</MyInputHelperText>
 								</MyInput>
 							</div>
@@ -1139,6 +1160,10 @@ type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	createWorkspace: (
 		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
 	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateWorkspaceResult | undefined>;
+	createProjectDisabled: boolean;
+	createProjectDisabledReason?: string;
+	createWorkspaceDisabled: boolean;
+	createWorkspaceDisabledReason?: string;
 	listLoaded: boolean;
 	draftProjectId: app_convex_Id<"workspaces_projects">;
 	draftWorkspaceId: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs["workspaceId"];
@@ -1167,6 +1192,10 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 		dialogOpen,
 		createProject,
 		createWorkspace,
+		createProjectDisabled,
+		createProjectDisabledReason,
+		createWorkspaceDisabled,
+		createWorkspaceDisabledReason,
 		listLoaded,
 		draftProjectId,
 		draftWorkspaceId,
@@ -1194,8 +1223,6 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 		setCreateDialogKind(kind);
 		setCreateDialogOpen(true);
 	};
-
-	const canCreateProject = listLoaded;
 
 	return (
 		<>
@@ -1271,6 +1298,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							title="Workspaces"
 							items={workspaceItems}
 							selectedItemId={draftWorkspaceId}
+							createDisabled={createWorkspaceDisabled}
+							createDisabledReason={createWorkspaceDisabledReason}
 							onCreate={() => openCreateDialog("workspace")}
 						/>
 
@@ -1280,7 +1309,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							title="Projects"
 							items={projectItems}
 							selectedItemId={draftProjectId}
-							createDisabled={!canCreateProject}
+							createDisabled={createProjectDisabled}
+							createDisabledReason={createProjectDisabledReason}
 							onCreate={() => openCreateDialog("project")}
 						/>
 					</div>

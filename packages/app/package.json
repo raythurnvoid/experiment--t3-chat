@@ -174,7 +174,6 @@
 		"typescript": "~5.9.3",
 		"vite": "^6.3.6",
 		"vite-plugin-monaco-editor-esm": "^2.0.2",
-		"vite-plus": "^0.1.14",
 		"vitest": "^3.2.4"
 	}
 }

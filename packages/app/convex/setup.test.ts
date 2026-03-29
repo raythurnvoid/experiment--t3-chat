@@ -7,6 +7,12 @@ import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { MutationCtx } from "./_generated/server";
 import presence_test from "@convex-dev/presence/test";
+import {
+	workspaces_db_create,
+	workspaces_db_create_project,
+	workspaces_db_ensure_default_workspace_and_project_for_user,
+} from "../server/workspaces.ts";
+import { user_limits } from "../shared/limits.ts";
 
 // #region helpers
 
@@ -127,37 +133,97 @@ export const test_mocks_fill_db_with = {
 		},
 	) => {
 		const now = Date.now();
+		const workspaceName = args?.workspaceName ?? "test-workspace";
+		const projectName = args?.projectName ?? "test-project";
 		const userId =
 			args?.userId ??
 			(await ctx.db.insert("users", {
 				clerkUserId: null,
 			}));
-		const workspaceId = await ctx.db.insert("workspaces", {
-			name: args?.workspaceName ?? "test-workspace",
-			description: "",
-			default: false,
-			updatedAt: now,
-		});
-		const projectId = await ctx.db.insert("workspaces_projects", {
-			workspaceId,
-			name: args?.projectName ?? "test-project",
-			description: "",
-			default: false,
-			updatedAt: now,
-		});
-		await ctx.db.patch("workspaces", workspaceId, {
-			defaultProjectId: projectId,
-		});
-		const membershipId = await ctx.db.insert("workspaces_projects_users", {
-			workspaceId,
-			projectId,
+
+		const userLimit = await ctx.db
+			.query("limits_per_user")
+			.withIndex("by_userId_limitName", (q) =>
+				q.eq("userId", userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+			)
+			.first();
+		if (!userLimit) {
+			await ctx.db.insert("limits_per_user", {
+				userId,
+				limitName: user_limits.EXTRA_WORKSPACES.name,
+				usedCount: 0,
+				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
+				createdAt: now,
+				updatedAt: now,
+			});
+		}
+
+		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 			userId,
-			updatedAt: now,
+			now,
 		});
+
+		const user = await ctx.db.get("users", userId);
+		if (!user?.defaultWorkspaceId || !user.defaultProjectId) {
+			throw new Error("Expected default workspace bootstrap to set user defaults");
+		}
+
+		if (workspaceName === "personal" && projectName === "home") {
+			const membershipId = await ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_projectId_userId", (q) => q.eq("projectId", user.defaultProjectId!).eq("userId", userId))
+				.first()
+				.then((membership) => membership?._id);
+			if (!membershipId) {
+				throw new Error("Expected default workspace membership after bootstrap");
+			}
+
+			return {
+				userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
+				membershipId,
+			} as const;
+		}
+
+		const workspaceResult = await workspaces_db_create(ctx, {
+			userId,
+			name: workspaceName,
+			description: "",
+			now,
+		});
+		if (workspaceResult._nay) {
+			throw new Error(`Failed to seed workspace membership: ${workspaceResult._nay.message}`);
+		}
+
+		let projectId = workspaceResult._yay.defaultProjectId;
+		if (projectName !== "home") {
+			const projectResult = await workspaces_db_create_project(ctx, {
+				userId,
+				workspaceId: workspaceResult._yay.workspaceId,
+				name: projectName,
+				description: "",
+				now,
+			});
+			if (projectResult._nay) {
+				throw new Error(`Failed to seed project membership: ${projectResult._nay.message}`);
+			}
+
+			projectId = projectResult._yay.projectId;
+		}
+
+		const membershipId = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_projectId_userId", (q) => q.eq("projectId", projectId).eq("userId", userId))
+			.first()
+			.then((membership) => membership?._id);
+		if (!membershipId) {
+			throw new Error("Expected workspace membership after seed setup");
+		}
 
 		return {
 			userId,
-			workspaceId,
+			workspaceId: workspaceResult._yay.workspaceId,
 			projectId,
 			membershipId,
 		} as const;

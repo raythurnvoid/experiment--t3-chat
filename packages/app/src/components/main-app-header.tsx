@@ -6,6 +6,9 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronsUpDown } from "lucide-react";
 
 import {
+	AppAuthProvider,
+} from "@/components/app-auth.tsx";
+import {
 	MainAppHeaderWorkspaceSwitcherModal,
 	type MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection,
 	type MainAppHeaderWorkspaceSwitcherModal_AfterRename,
@@ -57,6 +60,7 @@ function main_app_header_workspace_controls_move_list_item_to_front_by_id<T exte
 const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
 	const navigate = useNavigate();
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
+	const auth = AppAuthProvider.useAuth();
 
 	const { workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
 
@@ -71,6 +75,24 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 
 	const draftWorkspaceId = localDraft?.workspaceId ?? workspaceId;
 	const draftProjectId = localDraft?.projectId ?? projectId;
+	const createWorkspaceCapability = useQuery(
+		app_convex_api.limits.get_user_limit,
+		auth.userId
+			? {
+					userId: auth.userId as app_convex_Id<"users">,
+					limitName: "extra_workspaces",
+				}
+			: "skip",
+	);
+	const draftProjectCreateCapability = useQuery(
+		app_convex_api.limits.get_workspace_limit,
+		draftWorkspaceId
+			? {
+					workspaceId: draftWorkspaceId,
+					limitName: "extra_projects",
+				}
+			: "skip",
+	);
 
 	const draftProjects =
 		draftWorkspaceId && workspaceList ? workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] : undefined;
@@ -85,6 +107,12 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const draftWorkspaceName = draftWorkspaceRecord?.name ?? workspaceName ?? "…";
 
 	const listLoaded = workspaces !== undefined;
+	const createWorkspaceDisabled = !listLoaded || !createWorkspaceCapability?.allowed;
+	const createWorkspaceDisabledReason =
+		listLoaded && createWorkspaceCapability?.disabledReason ? createWorkspaceCapability.disabledReason : undefined;
+	const createProjectDisabled = !listLoaded || !draftProjectCreateCapability?.allowed;
+	const createProjectDisabledReason =
+		listLoaded && draftProjectCreateCapability?.disabledReason ? draftProjectCreateCapability.disabledReason : undefined;
 
 	const switchDisabled = !listLoaded || (draftWorkspaceId === workspaceId && draftProjectId === projectId);
 
@@ -427,6 +455,10 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				dialogOpen={isOpen}
 				createProject={(args) => app_convex.mutation(app_convex_api.workspaces.create_project, args)}
 				createWorkspace={(args) => app_convex.mutation(app_convex_api.workspaces.create_workspace, args)}
+				createProjectDisabled={createProjectDisabled}
+				createProjectDisabledReason={createProjectDisabledReason}
+				createWorkspaceDisabled={createWorkspaceDisabled}
+				createWorkspaceDisabledReason={createWorkspaceDisabledReason}
 				listLoaded={listLoaded}
 				draftProjectId={draftProjectId}
 				draftWorkspaceId={draftWorkspaceId}

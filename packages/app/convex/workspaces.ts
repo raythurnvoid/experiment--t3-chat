@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import { user_limits, workspace_limits } from "../shared/limits.ts";
 import { workspaces_list_sort_projects_for_workspace, workspaces_list_sort_workspaces } from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
 import {
@@ -18,7 +19,10 @@ import {
 /**
  * TODO: to be implemented
  */
-async function user_is_workspace_admin(ctx: MutationCtx, args: { workspaceId: Id<"workspaces">; userId: Id<"users"> }) {
+async function user_is_workspace_admin(
+	_ctx: MutationCtx,
+	_args: { workspaceId: Id<"workspaces">; userId: Id<"users"> },
+) {
 	return true;
 }
 
@@ -26,8 +30,8 @@ async function user_is_workspace_admin(ctx: MutationCtx, args: { workspaceId: Id
  * TODO: to be implemented
  */
 async function user_is_project_admin(
-	ctx: MutationCtx,
-	args: { projectId: Id<"workspaces_projects">; userId: Id<"users"> },
+	_ctx: MutationCtx,
+	_args: { projectId: Id<"workspaces_projects">; userId: Id<"users"> },
 ) {
 	return true;
 }
@@ -110,7 +114,10 @@ export const list = query({
 			),
 		);
 
-		return { workspaces, workspaceIdsProjectsDict };
+		return {
+			workspaces,
+			workspaceIdsProjectsDict,
+		};
 	},
 });
 
@@ -430,9 +437,7 @@ export const rename_workspace = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) =>
-					q.eq("projectId", args.defaultProjectId).eq("userId", user.id),
-				)
+				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.defaultProjectId).eq("userId", user.id))
 				.first(),
 		]);
 
@@ -524,9 +529,7 @@ export const rename_project = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) =>
-					q.eq("projectId", args.defaultProjectId).eq("userId", user.id),
-				)
+				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.defaultProjectId).eq("userId", user.id))
 				.first(),
 			ctx.db
 				.query("workspaces_projects_users")
@@ -562,10 +565,7 @@ export const rename_project = mutation({
 			});
 		}
 
-		if (
-			(workspace.defaultProjectId !== undefined && project._id === workspace.defaultProjectId) ||
-			project.default
-		) {
+		if ((workspace.defaultProjectId !== undefined && project._id === workspace.defaultProjectId) || project.default) {
 			return Result({
 				_nay: {
 					message: "Cannot rename the default project",
@@ -627,7 +627,7 @@ export const purge_data_deletion_requests = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const now = args.nowTs ?? Date.now();
-		
+
 		const cutoff = now - WORKSPACE_DATA_DELETION_RETENTION_MS;
 		const limit = args.limit ?? WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE;
 
@@ -845,6 +845,29 @@ export const delete_workspace = mutation({
 			).flat(),
 		);
 
+		if (workspace.ownerUserId) {
+			const now = Date.now();
+			const ownerUserId = workspace.ownerUserId;
+			const limitDefinition = user_limits.EXTRA_WORKSPACES;
+			const limit = await ctx.db
+				.query("limits_per_user")
+				.withIndex("by_userId_limitName", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
+				.first();
+
+			if (limit && limit.usedCount > 0) {
+				await ctx.db.patch("limits_per_user", limit._id, {
+					usedCount: limit.usedCount - 1,
+					updatedAt: now,
+				});
+			}
+		}
+
+		const workspaceLimits = await ctx.db
+			.query("limits_per_workspace")
+			.withIndex("by_workspaceId_limitName", (q) => q.eq("workspaceId", workspace._id))
+			.collect();
+		await Promise.all(workspaceLimits.map((limitDoc) => ctx.db.delete("limits_per_workspace", limitDoc._id)));
+
 		await ctx.db.delete("workspaces", workspace._id);
 		for (const user_id of affected_user_ids) {
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
@@ -868,6 +891,8 @@ export const delete_project = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const now = Date.now();
 
 		const [[project, workspace, workspaceUserLookup], projectUserLookup] = await Promise.all([
 			ctx.db.get("workspaces_projects", args.projectId).then(
@@ -934,7 +959,24 @@ export const delete_project = mutation({
 			workspaceId: workspace._id,
 			projectId: project._id,
 		});
-		await Promise.all(projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)));
+		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
+		const limit = await ctx.db
+			.query("limits_per_workspace")
+			.withIndex("by_workspaceId_limitName", (q) =>
+				q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name),
+			)
+			.first();
+
+		if (limit && limit.usedCount > 0) {
+			await ctx.db.patch("limits_per_workspace", limit._id, {
+				usedCount: limit.usedCount - 1,
+				updatedAt: now,
+			});
+		}
+		await Promise.all(
+			projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+		);
+
 		await ctx.db.delete("workspaces_projects", project._id);
 		for (const user_id of affected_user_ids) {
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {

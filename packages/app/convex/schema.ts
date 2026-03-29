@@ -315,6 +315,7 @@ const app_convex_schema = defineSchema({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
+		ownerUserId: v.optional(v.id("users")),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		updatedAt: v.number(),
 	}).index("by_name", ["name"]),
@@ -340,6 +341,28 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("workspaces"),
 		projectId: v.id("workspaces_projects"),
 	}).index("by_workspaceId_projectId", ["workspaceId", "projectId"]),
+
+	limits_per_user: defineTable({
+		userId: v.id("users"),
+		limitName: v.union(v.literal("extra_workspaces")),
+		usedCount: v.number(),
+		maxCount: v.number(),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		lastReconciledAt: v.optional(v.number()),
+	})
+		.index("by_userId_limitName", ["userId", "limitName"])
+		.index("by_userId", ["userId"]),
+
+	limits_per_workspace: defineTable({
+		workspaceId: v.id("workspaces"),
+		limitName: v.union(v.literal("extra_projects")),
+		usedCount: v.number(),
+		maxCount: v.number(),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		lastReconciledAt: v.optional(v.number()),
+	}).index("by_workspaceId_limitName", ["workspaceId", "limitName"]),
 	// #endregion workspaces
 
 	// #region users

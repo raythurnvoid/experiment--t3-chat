@@ -18,7 +18,6 @@ Use this skill for migration tasks in `packages/app/convex`.
 ## Project defaults
 
 - Convex code root: `packages/app/convex`
-- Package manager: `pnpm`
 - Migration component package: `@convex-dev/migrations`
 - Convex app config file: `packages/app/convex/convex.config.ts`
 - Migration file location: `packages/app/convex/migrations.ts`
@@ -96,13 +95,13 @@ From `packages/app`:
 
 ```bash
 pnpm add @convex-dev/migrations
-pnpm exec convex run migrations:run_<migration_name>
+pnpx convex run migrations:run_<migration_name>
 ```
 
 Optional status check:
 
 ```bash
-pnpm exec convex run --component migrations lib:getStatus
+pnpx convex run --component migrations lib:getStatus
 ```
 
 ## Verification
@@ -126,7 +125,7 @@ pnpm exec convex run --component migrations lib:getStatus
 	- Use `newField ?? old_field` patterns.
 	- Unset legacy field with `old_field: undefined`.
 - Run migration before tightening required fields, then re-check generated types:
-	- `pnpm exec convex run migrations:run_<name>`
+	- `pnpx convex run migrations:run_<name>`
 	- Expect `_generated` typings to update after schema/function changes.
 - Treat table renames as full data migrations, not symbol renames:
 	- Add the new table alongside the old table in a compatibility phase.

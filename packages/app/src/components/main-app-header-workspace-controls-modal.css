@@ -146,10 +146,16 @@
 	/* #region select head */
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead {
 		display: flex;
-		align-items: center;
+		align-items: start;
 		gap: 8px;
 
 		padding-bottom: 2px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-copy {
+		display: grid;
+		flex: 1;
+		gap: 4px;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-icon {
@@ -159,12 +165,16 @@
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title {
-		flex: 1;
-
 		font-size: 0.75em;
 		font-weight: 600;
 		line-height: 1;
 		color: var(--color-fg-06);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-description {
+		font-size: 11px;
+		line-height: 1.4;
+		color: var(--color-fg-05);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-create {

@@ -1,38 +1,39 @@
 {
-	"name": "t3-chat-clone",
-	"private": true,
-	"version": "0.0.0",
-	"license": "Apache-2.0",
-	"type": "module",
-	"scripts": {},
-	"devDependencies": {
-		"@eslint/js": "^9.39.1",
-		"@types/node": "^25.2.3",
-		"eslint": "^9.39.1",
-		"eslint-plugin-import": "^2.32.0",
-		"eslint-plugin-react-hooks": "^7.0.1",
-		"eslint-plugin-react-refresh": "^0.5.0",
-		"globals": "^16.5.0",
-		"prettier": "^3.5.3",
-		"prettier-plugin-tailwindcss": "^0.6.14",
-		"tsc-silent": "^1.2.2",
-		"typescript": "~5.9.3",
-		"typescript-eslint": "^8.47.0",
-		"yargs": "15.4.1"
-	},
-	"pnpm": {
-		"overrides": {
-			"@tiptap/y-tiptap": "3.0.0",
-			"marked": "17.0.1",
-			"react": "19.2.4",
-			"react-dom": "19.2.4"
-		},
-		"onlyBuiltDependencies": [
-			"@clerk/shared",
-			"core-js",
-			"core-js-pure",
-			"esbuild",
-			"msw"
-		]
-	}
+  "name": "t3-chat-clone",
+  "private": true,
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {},
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^25.2.3",
+    "eslint": "^9.39.1",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.0",
+    "globals": "^16.5.0",
+    "prettier": "^3.5.3",
+    "prettier-plugin-tailwindcss": "^0.6.14",
+    "tsc-silent": "^1.2.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.47.0",
+    "yargs": "15.4.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "@tiptap/y-tiptap": "3.0.0",
+      "marked": "17.0.1",
+      "react": "19.2.4",
+      "react-dom": "19.2.4"
+    },
+    "onlyBuiltDependencies": [
+      "@clerk/shared",
+      "core-js",
+      "core-js-pure",
+      "esbuild",
+      "msw"
+    ]
+  },
+  "packageManager": "pnpm@10.33.0"
 }

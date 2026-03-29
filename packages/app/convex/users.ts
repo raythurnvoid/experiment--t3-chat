@@ -14,6 +14,7 @@ import {
 	users_create_anonymouse_user_display_name,
 	users_create_fallback_display_name,
 } from "../shared/users.ts";
+import { user_limits } from "../shared/limits.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { Id } from "./_generated/dataModel";
 import { v_result } from "../server/convex-utils.ts";
@@ -120,7 +121,7 @@ export const users_create_anonymous_user = internalMutation({
 		userId: v.id("users"),
 		tokenId: v.id("users_anon_tokens"),
 	}),
-	handler: async (ctx, args) => {
+	handler: async (ctx, _args) => {
 		const now = Date.now();
 
 		const userId = await ctx.db.insert("users", {
@@ -141,6 +142,15 @@ export const users_create_anonymous_user = internalMutation({
 						})
 						.then(() => tokenId),
 				),
+
+			ctx.db.insert("limits_per_user", {
+				userId,
+				limitName: user_limits.EXTRA_WORKSPACES.name,
+				usedCount: 0,
+				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
+				createdAt: now,
+				updatedAt: now,
+			}),
 
 			ctx.db
 				.insert("users_anagraphics", {
@@ -460,6 +470,14 @@ export const resolve_user = internalMutation({
 				});
 
 				await Promise.all([
+					ctx.db.insert("limits_per_user", {
+						userId,
+						limitName: user_limits.EXTRA_WORKSPACES.name,
+						usedCount: 0,
+						maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
+						createdAt: now,
+						updatedAt: now,
+					}),
 					ctx.db
 						.insert("users_anagraphics", {
 							userId: userId,
