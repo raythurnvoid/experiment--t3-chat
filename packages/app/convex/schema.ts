@@ -335,6 +335,11 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_projectId_userId", ["projectId", "userId"])
 		.index("by_userId_workspaceId_projectId", ["userId", "workspaceId", "projectId"]),
+
+	workspaces_data_deletion_requests: defineTable({
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
+	}).index("by_workspaceId_projectId", ["workspaceId", "projectId"]),
 	// #endregion workspaces
 
 	// #region users

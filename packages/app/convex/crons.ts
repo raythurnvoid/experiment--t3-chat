@@ -9,4 +9,10 @@ crons.daily(
 	internal.ai_docs_temp.cleanup_old_snapshots,
 );
 
+crons.weekly(
+	"purge queued workspace data deletions",
+	{ dayOfWeek: "sunday", hourUTC: 6, minuteUTC: 0 }, // 6AM UTC
+	internal.workspaces.purge_data_deletion_requests,
+);
+
 export default crons;

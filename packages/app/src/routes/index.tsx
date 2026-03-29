@@ -1,4 +1,3 @@
-import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { memo, useEffect } from "react";
 

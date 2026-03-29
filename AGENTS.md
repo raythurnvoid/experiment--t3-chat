@@ -222,6 +222,17 @@ Quality Standard: Understanding should be deep enough to explain concepts confid
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
+## Trust application invariants
+
+When changing application code, default to trusting the product invariants enforced by the app's public queries, mutations, routes, and other supported entrypoints.
+
+- Do not add defensive checks, repair paths, or "self-healing" data logic just because the database schema could theoretically allow an invalid state.
+- If you think a corrupted state can happen, point to the exact real bug or reachable flow that would create it. Name the concrete mutation, query, route, background job, migration, or user action path.
+- If you cannot identify a real reachable corruption path, do not add extra validation or repair code for that hypothetical state.
+- Treat "the schema does not prevent it" as insufficient reasoning by itself. In this codebase, the application layer is often the real invariant boundary.
+- Prefer fixing the actual bug at the source over masking it downstream with fallback behavior.
+- Do not silently recreate pointers, memberships, or related records to paper over a suspected invariant violation unless the user explicitly wants a repair/migration flow and there is a concrete product reason for it.
+
 ## TypeScript return types: prefer inference
 
 Avoid explicitly annotating function return types; prefer TypeScript's inferred return type.

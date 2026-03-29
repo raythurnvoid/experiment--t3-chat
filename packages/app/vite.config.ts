@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
@@ -120,6 +120,12 @@ export default defineConfig({
 			"@tiptap/extension-table-header",
 			"@tiptap/extension-table-row",
 		],
+	},
+	fmt: {
+		ignorePatterns: ["dist/**", "reference-submodules/**"],
+		useTabs: true,
+		singleQuote: false,
+		printWidth: 120,
 	},
 });
 

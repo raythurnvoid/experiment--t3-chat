@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -10,6 +10,7 @@ import app_convex_schema from "./schema.ts";
 import {
 	workspaces_db_create,
 	workspaces_db_create_project,
+	workspaces_db_ensure_default_workspace_and_project_for_user,
 	workspaces_validate_description,
 	workspaces_validate_name,
 } from "../server/workspaces.ts";
@@ -30,6 +31,9 @@ async function user_is_project_admin(
 ) {
 	return true;
 }
+
+const WORKSPACE_DATA_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE = 50;
 
 export const list = query({
 	args: {},
@@ -615,6 +619,152 @@ export const rename_project = mutation({
 	},
 });
 
+export const purge_data_deletion_requests = internalMutation({
+	args: {
+		nowTs: v.optional(v.number()),
+		limit: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const now = args.nowTs ?? Date.now();
+		
+		const cutoff = now - WORKSPACE_DATA_DELETION_RETENTION_MS;
+		const limit = args.limit ?? WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE;
+
+		const requests = await ctx.db
+			.query("workspaces_data_deletion_requests")
+			.withIndex("by_creation_time", (q) => q.lte("_creationTime", cutoff))
+			.order("asc")
+			.take(limit);
+
+		for (const request of requests) {
+			const workspace_id = String(request.workspaceId);
+			const project_id = String(request.projectId);
+
+			const [
+				ai_chat_threads,
+				ai_chat_threads_messages,
+				pages_pending_edits,
+				pages_pending_edits_last_sequence_saved,
+				pages,
+				pages_markdown_content,
+				pages_markdown_chunks,
+				pages_plain_text_chunks,
+				pages_yjs_snapshots,
+				pages_yjs_updates,
+				pages_yjs_docs_last_sequences,
+				pages_snapshots,
+				pages_snapshots_contents,
+				chat_messages,
+			] = await Promise.all([
+				ctx.db
+					.query("ai_chat_threads")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("ai_chat_threads_messages_aisdk_5")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("pages_pending_edits")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("pages_pending_edits_last_sequence_saved")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("pages")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("pages_markdown_content")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+				ctx.db
+					.query("pages_markdown_chunks")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("pages_plain_text_chunks")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+				ctx.db
+					.query("pages_yjs_snapshots")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+				ctx.db
+					.query("pages_yjs_updates")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+				ctx.db
+					.query("pages_yjs_docs_last_sequences")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+				ctx.db
+					.query("pages_snapshots")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+				ctx.db
+					.query("pages_snapshots_contents")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+				ctx.db
+					.query("chat_messages")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+			]);
+
+			const pending_edit_ids = new Set(pages_pending_edits.map((row) => row._id));
+			const page_ids = new Set(pages.map((row) => row._id));
+
+			const [pages_pending_edits_cleanup_tasks, pages_yjs_snapshot_schedules] = await Promise.all([
+				ctx.db
+					.query("pages_pending_edits_cleanup_tasks")
+					.collect()
+					.then((rows) => rows.filter((row) => pending_edit_ids.has(row.pendingEditId))),
+				ctx.db
+					.query("pages_yjs_snapshot_schedules")
+					.collect()
+					.then((rows) => rows.filter((row) => page_ids.has(row.page_id))),
+			]);
+
+			await Promise.all(
+				pages_pending_edits_cleanup_tasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)),
+			);
+			await Promise.all(
+				pages_yjs_snapshot_schedules.map((row) => ctx.db.delete("pages_yjs_snapshot_schedules", row._id)),
+			);
+			await Promise.all(
+				ai_chat_threads_messages.map((row) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", row._id)),
+			);
+			await Promise.all(ai_chat_threads.map((row) => ctx.db.delete("ai_chat_threads", row._id)));
+			await Promise.all(chat_messages.map((row) => ctx.db.delete("chat_messages", row._id)));
+			await Promise.all(
+				pages_pending_edits_last_sequence_saved.map((row) =>
+					ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id),
+				),
+			);
+			await Promise.all(pages_pending_edits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
+			await Promise.all(pages_plain_text_chunks.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)));
+			await Promise.all(pages_markdown_chunks.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)));
+			await Promise.all(pages_yjs_snapshots.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)));
+			await Promise.all(pages_yjs_updates.map((row) => ctx.db.delete("pages_yjs_updates", row._id)));
+			await Promise.all(
+				pages_yjs_docs_last_sequences.map((row) => ctx.db.delete("pages_yjs_docs_last_sequences", row._id)),
+			);
+			await Promise.all(pages_snapshots_contents.map((row) => ctx.db.delete("pages_snapshots_contents", row._id)));
+			await Promise.all(pages_snapshots.map((row) => ctx.db.delete("pages_snapshots", row._id)));
+			await Promise.all(pages_markdown_content.map((row) => ctx.db.delete("pages_markdown_content", row._id)));
+			await Promise.all(pages.map((row) => ctx.db.delete("pages", row._id)));
+
+			await ctx.db.delete("workspaces_data_deletion_requests", request._id);
+		}
+
+		return null;
+	},
+});
+
 export const delete_workspace = mutation({
 	args: {
 		workspaceId: v.id("workspaces"),
@@ -665,34 +815,43 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		await Promise.all([
-			ctx.db
-				.query("workspaces_projects")
-				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", workspace._id))
-				.collect()
-				.then((projects) => {
-					const promises = [];
-					for (const project of projects) {
-						promises.push(
-							Promise.all([
-								ctx.db
-									.query("workspaces_projects_users")
-									.withIndex("by_projectId_userId", (q) => q.eq("projectId", project._id))
-									.collect()
-									.then((projectUsers) =>
-										Promise.all(
-											projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
-										),
-									),
-								ctx.db.delete("workspaces_projects", project._id),
-							]),
-						);
-					}
-					return Promise.all(promises);
-				}),
+		const workspace_projects = await ctx.db
+			.query("workspaces_projects")
+			.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", workspace._id))
+			.collect();
+		const affected_user_ids = new Set<Id<"users">>(
+			(
+				await Promise.all(
+					workspace_projects.map(async (project) => {
+						const projectUsers = await ctx.db
+							.query("workspaces_projects_users")
+							.withIndex("by_projectId_userId", (q) => q.eq("projectId", project._id))
+							.collect();
 
-			ctx.db.delete("workspaces", workspace._id),
-		]);
+						await Promise.all([
+							ctx.db.insert("workspaces_data_deletion_requests", {
+								workspaceId: workspace._id,
+								projectId: project._id,
+							}),
+							Promise.all(
+								projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+							),
+							ctx.db.delete("workspaces_projects", project._id),
+						]);
+
+						return projectUsers.map((projectUser) => projectUser.userId);
+					}),
+				)
+			).flat(),
+		);
+
+		await ctx.db.delete("workspaces", workspace._id);
+		for (const user_id of affected_user_ids) {
+			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				userId: user_id,
+				now: Date.now(),
+			});
+		}
 
 		return Result({
 			_yay: null,
@@ -769,17 +928,20 @@ export const delete_project = mutation({
 			});
 		}
 
-		await Promise.all([
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", project._id))
-				.collect()
-				.then((projectUsers) =>
-					Promise.all(projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id))),
-				),
+		const affected_user_ids = new Set<Id<"users">>(projectUserLookup.map((projectUser) => projectUser.userId));
 
-			ctx.db.delete("workspaces_projects", project._id),
-		]);
+		await ctx.db.insert("workspaces_data_deletion_requests", {
+			workspaceId: workspace._id,
+			projectId: project._id,
+		});
+		await Promise.all(projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)));
+		await ctx.db.delete("workspaces_projects", project._id);
+		for (const user_id of affected_user_ids) {
+			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				userId: user_id,
+				now: Date.now(),
+			});
+		}
 
 		return Result({
 			_yay: null,

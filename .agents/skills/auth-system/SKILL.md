@@ -109,7 +109,9 @@ Internal mutation behavior:
 
 - If `anonymousUserToken` is provided:
   - validates token and finds the anonymous user
-  - links that user record to the Clerk user (canonicalize anonymous into signed-in)
+  - links that same user record to the Clerk user (canonicalize anonymous into signed-in in place)
+  - preserves the same Convex `users` id across upgrade
+  - preserves the same default workspace/project in the normal upgrade path, so existing workspace/project memberships and data stay attached to the upgraded user
   - may delete other existing users for the same Clerk id so the anonymous record becomes canonical
 - If no `anonymousUserToken`:
   - finds or creates a Convex user record for the Clerk user id
@@ -135,50 +137,15 @@ The action `generate_assistant_ui_token` uses `ctx.auth.getUserIdentity()` to de
 
 ## Current workspace/project system
 
-The app now provisions and persists a real workspace/project membership model in Convex.
+**Canonical detail:** see [workspaces-tenancy skill](../workspaces-tenancy/SKILL.md) (schema vs API guards, `personal`/`home`, rename/delete, invitations, deletion queue, anonymous-upgrade tenancy continuity, and `ensure` semantics).
 
-Schema files:
+Summary:
 
-- [schema.ts](../../../packages/app/convex/schema.ts)
-- [workspaces.ts](../../../packages/app/convex/workspaces.ts)
-- [users.ts](../../../packages/app/convex/users.ts)
+- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `workspaces_data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
+- Bootstrap: `users_create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
+- **Implementation note:** Many app surfaces may still use older hardcoded workspace/project ids outside this tenancy module—verify callsites.
 
-Current tenancy tables:
-
-- `workspaces`
-- `workspaces_projects`
-- `workspaces_projects_users`
-
-Current bootstrap behavior:
-
-- Every `users` row stores `defaultWorkspaceId` and `defaultProjectId`.
-- Every `workspaces` row stores `defaultProjectId`.
-- When an anonymous user is created, `internal.users.users_create_anonymous_user` also provisions a default workspace/project membership.
-- When a Clerk user is resolved or linked from an anonymous account, `internal.users.resolve_user` also ensures the default workspace/project exists.
-
-Default tenancy model:
-
-- The default workspace is named `Personal`.
-- The default project is named `Home`.
-- Every workspace always has a default `Home` project.
-- Membership rows live in `workspaces_projects_users`.
-
-Current authorization model (temporary):
-
-- Workspace “admin” is currently defined by membership in that workspace’s default `Home` project.
-- This is intentionally temporary and not treated as a final secure ownership model.
-
-Current restrictions:
-
-- The default workspace cannot be deleted.
-- The default project cannot be deleted.
-- Users cannot invite collaborators into the default workspace.
-- Inviting a user to a workspace adds them to that workspace’s default `Home` project.
-
-Important implementation note:
-
-- The workspace/project system is now real in Convex, but many app surfaces still use older hardcoded workspace/project ids outside this tenancy module.
-- Treat the tenancy tables as the canonical membership/bootstrap model, but verify callsites before assuming the whole app is fully switched over.
+Authorization stubs in `workspaces.ts` (`user_is_workspace_admin`, `user_is_project_admin`) are temporary; replace for real RBAC.
 
 # Planned functionality (not fully implemented yet)
 
@@ -227,7 +194,9 @@ The owner may:
 
 When the user upgrades by signing up (Clerk-authenticated, linked to Convex user id):
 
-- The anonymous user record is linked to the Clerk identity (so content is retained).
+- The anonymous user record is linked to the Clerk identity in place.
+- The same Convex `users` id remains canonical after upgrade.
+- The user keeps the same default workspace/project and therefore keeps the same associated workspace/project-scoped data in the normal upgrade path.
 - The user must not be able to access the same private resources while logged out.
 - Default security migration:
   - all workspaces become private
