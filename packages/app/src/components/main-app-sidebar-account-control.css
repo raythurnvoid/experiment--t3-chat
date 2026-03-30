@@ -1,0 +1,67 @@
+@layer components {
+	.MainAppSidebarAccountControl {
+		width: 100%;
+
+		container-type: inline-size;
+	}
+
+	.MainAppSidebarAccountControl-trigger {
+		width: 100%;
+		min-width: 0;
+		height: auto;
+		padding: 8px;
+
+		display: flex;
+		align-items: center;
+		justify-content: start;
+		gap: 12px;
+	}
+
+	.MainAppSidebarAccountControl-avatar {
+		flex-shrink: 0;
+	}
+
+	.MainAppSidebarAccountControl-copy {
+		display: flex;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.MainAppSidebarAccountControl-name {
+		width: 100%;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--sidebar-foreground);
+	}
+
+	.MainAppSidebarAccountControl-chevron {
+		width: 16px;
+		height: 16px;
+
+		flex-shrink: 0;
+		color: var(--color-fg-08);
+	}
+
+	.MainAppSidebarAccountControl-menu {
+		min-width: 220px;
+	}
+
+	@container (width < 200px) {
+		.MainAppSidebarAccountControl-trigger {
+			justify-content: center;
+			padding: 6px;
+			gap: 0;
+		}
+
+		.MainAppSidebarAccountControl-copy,
+		.MainAppSidebarAccountControl-chevron {
+			display: none;
+		}
+	}
+}

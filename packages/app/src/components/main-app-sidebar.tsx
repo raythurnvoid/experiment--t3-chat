@@ -1,15 +1,13 @@
 import "./main-app-sidebar.css";
 import "@/components/my-action.css";
 
-import { memo, useRef } from "react";
+import { memo } from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
-import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from "@clerk/clerk-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { url_path_chat, url_path_pages } from "@/lib/urls.ts";
-import { dark } from "@clerk/themes";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -20,6 +18,7 @@ import { app_presence_set_enabled, usePresence, usePresenceEnabled, usePresenceL
 import { useThemeContext } from "@/components/theme-provider.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { Logo } from "@/components/logo.tsx";
+import { MainAppSidebarAccountControl } from "@/components/main-app-sidebar-account-control.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -123,148 +122,13 @@ const MainAppSidebarMenuButtonLabel = memo(function MainAppSidebarMenuButtonLabe
 });
 // #endregion menu button label
 
-// #region user profile button
-type MainAppSidebarUserProfileButton_ClassNames =
-	| "MainAppSidebarUserProfileButton"
-	| "MainAppSidebarUserProfileButton-button"
-	| "MainAppSidebarUserProfileButton-avatar"
-	| "MainAppSidebarUserProfileButton-avatar-image"
-	| "MainAppSidebarUserProfileButton-info"
-	| "MainAppSidebarUserProfileButton-name"
-	| "MainAppSidebarUserProfileButton-email"
-	| "MainAppSidebarUserProfileButton-clerk-wrapper"
-	| "MainAppSidebarClerkAvatarBox"
-	| "MainAppSidebarClerkPopoverCard"
-	| "MainAppSidebarClerkPopoverMain"
-	| "MainAppSidebarClerkPopoverActionButton"
-	| "MainAppSidebarClerkPopoverActionButtonText"
-	| "MainAppSidebarClerkPopoverFooter";
-
-const UserProfileButton = memo(function UserProfileButton() {
-	const { user } = useUser();
-	const userButtonRef = useRef<HTMLDivElement>(null);
-
-	const theme = useThemeContext();
-
-	const displayName = ((/* iife */) => {
-		if (!user) {
-			return "User";
-		}
-
-		const firstName = user.firstName ? user.firstName : "";
-		const lastName = user.lastName ? user.lastName : "";
-		const fullName = `${firstName} ${lastName}`.trim();
-
-		if (fullName !== "") {
-			return fullName;
-		}
-
-		if (user.username) {
-			return user.username;
-		}
-
-		return "User";
-	})();
-
-	const emailAddress = user?.primaryEmailAddress?.emailAddress ? user.primaryEmailAddress.emailAddress : "";
-
-	const handleCustomButtonClick = useFn(() => {
-		// Trigger the hidden UserButton
-		const userButton = userButtonRef.current?.querySelector("button");
-		if (userButton) {
-			userButton.click();
-		}
-	});
-
-	if (!user) {
-		return null;
-	}
-
-	return (
-		<div className={"MainAppSidebarUserProfileButton" satisfies MainAppSidebarUserProfileButton_ClassNames}>
-			{/* Custom display button */}
-			<MyButton
-				variant="ghost-highlightable"
-				onClick={handleCustomButtonClick}
-				className={"MainAppSidebarUserProfileButton-button" satisfies MainAppSidebarUserProfileButton_ClassNames}
-			>
-				<div className={"MainAppSidebarUserProfileButton-avatar" satisfies MainAppSidebarUserProfileButton_ClassNames}>
-					<img
-						src={user.imageUrl}
-						alt={displayName}
-						className={
-							"MainAppSidebarUserProfileButton-avatar-image" satisfies MainAppSidebarUserProfileButton_ClassNames
-						}
-					/>
-				</div>
-				<div className={"MainAppSidebarUserProfileButton-info" satisfies MainAppSidebarUserProfileButton_ClassNames}>
-					<span className={"MainAppSidebarUserProfileButton-name" satisfies MainAppSidebarUserProfileButton_ClassNames}>
-						{displayName}
-					</span>
-					{emailAddress && (
-						<span
-							className={"MainAppSidebarUserProfileButton-email" satisfies MainAppSidebarUserProfileButton_ClassNames}
-						>
-							{emailAddress}
-						</span>
-					)}
-				</div>
-			</MyButton>
-
-			{/* Hidden UserButton for popup functionality */}
-			<div
-				ref={userButtonRef}
-				className={"MainAppSidebarUserProfileButton-clerk-wrapper" satisfies MainAppSidebarUserProfileButton_ClassNames}
-			>
-				<UserButton
-					appearance={{
-						baseTheme: theme.resolved_theme === "dark" ? dark : (undefined as any),
-						elements: {
-							userButtonAvatarBox: "MainAppSidebarClerkAvatarBox" satisfies MainAppSidebarUserProfileButton_ClassNames,
-							userButtonPopoverCard:
-								"MainAppSidebarClerkPopoverCard" satisfies MainAppSidebarUserProfileButton_ClassNames,
-							userButtonPopoverMain:
-								"MainAppSidebarClerkPopoverMain" satisfies MainAppSidebarUserProfileButton_ClassNames,
-							userButtonPopoverActionButton:
-								"MainAppSidebarClerkPopoverActionButton" satisfies MainAppSidebarUserProfileButton_ClassNames,
-							userButtonPopoverActionButtonText:
-								"MainAppSidebarClerkPopoverActionButtonText" satisfies MainAppSidebarUserProfileButton_ClassNames,
-							userButtonPopoverFooter:
-								"MainAppSidebarClerkPopoverFooter" satisfies MainAppSidebarUserProfileButton_ClassNames,
-						},
-					}}
-					userProfileMode="modal"
-				/>
-			</div>
-		</div>
-	);
-});
-// #endregion user profile button
-
 // #region profile section
-type MainAppSidebarProfileSection_ClassNames =
-	| "MainAppSidebarProfileSection"
-	| "MainAppSidebarProfileSection-signin-button"
-	| "MainAppSidebarProfileSection-user";
+type MainAppSidebarProfileSection_ClassNames = "MainAppSidebarProfileSection";
 
 const ProfileSection = memo(function ProfileSection() {
 	return (
 		<div className={"MainAppSidebarProfileSection" satisfies MainAppSidebarProfileSection_ClassNames}>
-			<SignedOut>
-				<SignInButton>
-					<MyButton
-						variant="outline"
-						className={"MainAppSidebarProfileSection-signin-button" satisfies MainAppSidebarProfileSection_ClassNames}
-					>
-						Sign In
-					</MyButton>
-				</SignInButton>
-			</SignedOut>
-			<SignedIn>
-				<div className={"MainAppSidebarProfileSection-user" satisfies MainAppSidebarProfileSection_ClassNames}>
-					<UserProfileButton />
-				</div>
-			</SignedIn>
+			<MainAppSidebarAccountControl />
 		</div>
 	);
 });
