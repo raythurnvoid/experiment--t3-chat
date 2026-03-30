@@ -380,14 +380,22 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 	const { renameInputProps, isRenaming, title } = props;
 
 	const value = isRenaming ? (renameInputProps.value ?? "") : title;
+	const renameInputElementRef = useRef<HTMLInputElement | null>(null);
+
 	const handleRenameInputRef = useFn((element: HTMLInputElement | null) => {
+		renameInputElementRef.current = element;
 		forward_ref(element, renameInputProps.ref);
-		if (!isRenaming || !element) {
+	});
+
+	// when renaming starts focus the input and select the whole text.
+	useLayoutEffect(() => {
+		if (!isRenaming) {
 			return;
 		}
 
-		element.select();
-	});
+		renameInputElementRef.current?.focus();
+		renameInputElementRef.current?.select();
+	}, [isRenaming]);
 
 	return (
 		<MyInput
@@ -402,7 +410,6 @@ const PagesSidebarTreeItemTitle = memo(function PagesSidebarTreeItemTitle(props:
 				readOnly={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
 				value={value}
-				autoFocus
 			/>
 		</MyInput>
 	);
