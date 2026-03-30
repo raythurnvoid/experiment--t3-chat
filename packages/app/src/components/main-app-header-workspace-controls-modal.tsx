@@ -14,7 +14,7 @@ import {
 	type ReactNode,
 	type SetStateAction,
 } from "react";
-import { ChevronRight, EllipsisVertical, Folder, FolderKanban, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, CircleHelp, EllipsisVertical, Folder, FolderKanban, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyButton } from "@/components/my-button.tsx";
@@ -49,6 +49,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import {
@@ -263,8 +264,12 @@ type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-copy"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-icon"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-description"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-limit"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-help"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create";
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
@@ -272,12 +277,15 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
 	title: string;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
+	limitFraction?: string;
+	limitTooltip?: string;
 	onCreate: () => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectHead(props: MainAppHeaderWorkspaceSwitcherModalSelectHead_Props) {
-		const { iconSlot, title, createDisabled, createDisabledReason, onCreate } = props;
+		const { iconSlot, title, createDisabled, createDisabledReason, limitFraction, limitTooltip, onCreate } = props;
+		const createDisabledTooltip = createDisabled ? createDisabledReason : undefined;
 
 		return (
 			<div
@@ -298,35 +306,108 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 						"MainAppHeaderWorkspaceSwitcherModalSelectHead-copy" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 					)}
 				>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
-						)}
-					>
-						{title}
-					</div>
-					{createDisabledReason ? (
+					{limitFraction && limitTooltip ? (
 						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalSelectHead-description" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 							)}
 						>
-							{createDisabledReason}
+							<div
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								)}
+							>
+								{title}
+							</div>
+							<MyTooltip placement="bottom">
+								<MyTooltipTrigger tabIndex={0}>
+									<span
+										className={cn(
+											"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+										)}
+									>
+										{limitFraction}
+										<MyIcon
+											className={cn(
+												"MainAppHeaderWorkspaceSwitcherModalSelectHead-help" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+											)}
+											aria-hidden
+										>
+											<CircleHelp />
+										</MyIcon>
+									</span>
+								</MyTooltipTrigger>
+								<MyTooltipContent unmountOnHide>
+									<>{limitTooltip}</>
+								</MyTooltipContent>
+							</MyTooltip>
 						</div>
-					) : null}
-				</div>
-				<MyButton
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalSelectHead-create" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+					) : (
+						<div
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+							)}
+						>
+							<div
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								)}
+							>
+								{title}
+							</div>
+							{limitFraction ? (
+								<span
+									className={cn(
+										"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+									)}
+								>
+									({limitFraction})
+								</span>
+							) : null}
+						</div>
 					)}
-					type="button"
-					disabled={Boolean(createDisabled)}
-					variant="ghost-highlightable"
-					onClick={onCreate}
-				>
-					<Plus aria-hidden />
-					Create
-				</MyButton>
+				</div>
+				{createDisabledTooltip ? (
+					<MyTooltip placement="bottom">
+						<MyTooltipTrigger>
+							<span
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								)}
+							>
+								<MyButton
+									className={cn(
+										"MainAppHeaderWorkspaceSwitcherModalSelectHead-create" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+									)}
+									type="button"
+									disabled
+									variant="ghost-highlightable"
+									onClick={onCreate}
+								>
+									<Plus aria-hidden />
+									Create
+								</MyButton>
+							</span>
+						</MyTooltipTrigger>
+						<MyTooltipContent unmountOnHide>
+							<>{createDisabledTooltip}</>
+						</MyTooltipContent>
+					</MyTooltip>
+				) : (
+					<MyButton
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalSelectHead-create" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+						)}
+						type="button"
+						disabled={Boolean(createDisabled)}
+						variant="ghost-highlightable"
+						onClick={onCreate}
+					>
+						<Plus aria-hidden />
+						Create
+					</MyButton>
+				)}
 			</div>
 		);
 	},
@@ -427,12 +508,25 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	dialogOpen: boolean;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
+	limitFraction?: string;
+	limitTooltip?: string;
 	onCreate: () => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPane(props: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props) {
-		const { icon, title, items, selectedItemId, dialogOpen, createDisabled, createDisabledReason, onCreate } = props;
+		const {
+			icon,
+			title,
+			items,
+			selectedItemId,
+			dialogOpen,
+			createDisabled,
+			createDisabledReason,
+			limitFraction,
+			limitTooltip,
+			onCreate,
+		} = props;
 
 		return (
 			<section
@@ -445,6 +539,8 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 					title={title}
 					createDisabled={createDisabled}
 					createDisabledReason={createDisabledReason}
+					limitFraction={limitFraction}
+					limitTooltip={limitTooltip}
 					onCreate={onCreate}
 				/>
 
@@ -1168,10 +1264,14 @@ type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	draftProjectId: app_convex_Id<"workspaces_projects">;
 	draftWorkspaceId: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs["workspaceId"];
 	projectItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
+	projectLimitFraction?: string;
+	projectLimitTooltip?: string;
 	switchDisabled: boolean;
 	summaryProjectName: string;
 	summaryWorkspaceName: string;
 	workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
+	workspaceLimitFraction?: string;
+	workspaceLimitTooltip?: string;
 	/** Workspace name for create-project flow (draft row), not necessarily the routed tenant. */
 	workspaceName: string;
 	renameProject: MainAppHeaderWorkspaceSwitcherModalRenameModal_Props["renameProject"];
@@ -1200,10 +1300,14 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 		draftProjectId,
 		draftWorkspaceId,
 		projectItems,
+		projectLimitFraction,
+		projectLimitTooltip,
 		switchDisabled,
 		summaryProjectName,
 		summaryWorkspaceName,
 		workspaceItems,
+		workspaceLimitFraction,
+		workspaceLimitTooltip,
 		workspaceName,
 		renameProject,
 		renameTarget,
@@ -1300,6 +1404,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							selectedItemId={draftWorkspaceId}
 							createDisabled={createWorkspaceDisabled}
 							createDisabledReason={createWorkspaceDisabledReason}
+							limitFraction={workspaceLimitFraction}
+							limitTooltip={workspaceLimitTooltip}
 							onCreate={() => openCreateDialog("workspace")}
 						/>
 
@@ -1311,6 +1417,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							selectedItemId={draftProjectId}
 							createDisabled={createProjectDisabled}
 							createDisabledReason={createProjectDisabledReason}
+							limitFraction={projectLimitFraction}
+							limitTooltip={projectLimitTooltip}
 							onCreate={() => openCreateDialog("project")}
 						/>
 					</div>

@@ -57,6 +57,52 @@ function main_app_header_workspace_controls_move_list_item_to_front_by_id<T exte
 	return picked ? [picked, ...next] : items;
 }
 
+function main_app_header_workspace_controls_limit_tooltip(args: {
+	kind: "project" | "workspace";
+	currentCount: number | undefined;
+	maxCount: number | undefined;
+}) {
+	const { kind, currentCount, maxCount } = args;
+
+	if (currentCount === undefined || maxCount === undefined) {
+		return kind === "workspace" ? "Loading workspace limit." : "Loading project limit.";
+	}
+
+	const maxTotal = 1 + maxCount;
+	const remaining = Math.max(0, maxTotal - currentCount);
+
+	return kind === "workspace"
+		? `Using ${currentCount} of ${maxTotal} total workspaces. ${remaining} remaining available.`
+		: `Using ${currentCount} of ${maxTotal} total projects in this workspace. ${remaining} remaining available.`;
+}
+
+function main_app_header_workspace_controls_create_disabled_tooltip(args: {
+	kind: "project" | "workspace";
+	createDisabled: boolean;
+	createDisabledReason: string | undefined;
+	maxCount: number | undefined;
+}) {
+	const { kind, createDisabled, createDisabledReason, maxCount } = args;
+
+	if (!createDisabled) {
+		return undefined;
+	}
+
+	if (createDisabledReason) {
+		return createDisabledReason;
+	}
+
+	if (maxCount === undefined) {
+		return kind === "workspace" ? "Loading workspace limit." : "Loading project limit.";
+	}
+
+	const maxTotal = 1 + maxCount;
+
+	return kind === "workspace"
+		? `All ${maxTotal} available workspace slots are already in use.`
+		: `All ${maxTotal} available project slots in this workspace are already in use.`;
+}
+
 const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
 	const navigate = useNavigate();
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -108,11 +154,43 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 
 	const listLoaded = workspaces !== undefined;
 	const createWorkspaceDisabled = !listLoaded || !createWorkspaceCapability?.allowed;
-	const createWorkspaceDisabledReason =
-		listLoaded && createWorkspaceCapability?.disabledReason ? createWorkspaceCapability.disabledReason : undefined;
 	const createProjectDisabled = !listLoaded || !draftProjectCreateCapability?.allowed;
-	const createProjectDisabledReason =
-		listLoaded && draftProjectCreateCapability?.disabledReason ? draftProjectCreateCapability.disabledReason : undefined;
+	const createWorkspaceDisabledReason = main_app_header_workspace_controls_create_disabled_tooltip({
+		kind: "workspace",
+		createDisabled: createWorkspaceDisabled,
+		createDisabledReason: createWorkspaceCapability?.disabledReason ?? undefined,
+		maxCount: createWorkspaceCapability?.maxCount,
+	});
+	const createProjectDisabledReason = main_app_header_workspace_controls_create_disabled_tooltip({
+		kind: "project",
+		createDisabled: createProjectDisabled,
+		createDisabledReason: draftProjectCreateCapability?.disabledReason ?? undefined,
+		maxCount: draftProjectCreateCapability?.maxCount,
+	});
+	const workspaceLimitFraction = auth.userId
+		? workspaces && createWorkspaceCapability
+			? `${workspaces.length}/${1 + createWorkspaceCapability.maxCount}`
+			: "…/…"
+		: undefined;
+	const projectLimitFraction = auth.userId
+		? draftProjects && draftProjectCreateCapability
+			? `${draftProjects.length}/${1 + draftProjectCreateCapability.maxCount}`
+			: "…/…"
+		: undefined;
+	const workspaceLimitTooltip = auth.userId
+		? main_app_header_workspace_controls_limit_tooltip({
+				kind: "workspace",
+				currentCount: workspaces?.length,
+				maxCount: createWorkspaceCapability?.maxCount,
+			})
+		: undefined;
+	const projectLimitTooltip = auth.userId
+		? main_app_header_workspace_controls_limit_tooltip({
+				kind: "project",
+				currentCount: draftProjects?.length,
+				maxCount: draftProjectCreateCapability?.maxCount,
+			})
+		: undefined;
 
 	const switchDisabled = !listLoaded || (draftWorkspaceId === workspaceId && draftProjectId === projectId);
 
@@ -463,6 +541,8 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				draftProjectId={draftProjectId}
 				draftWorkspaceId={draftWorkspaceId}
 				projectItems={projectItems}
+				projectLimitFraction={projectLimitFraction}
+				projectLimitTooltip={projectLimitTooltip}
 				renameProject={(args) => app_convex.mutation(app_convex_api.workspaces.rename_project, args)}
 				renameTarget={renameTarget}
 				renameWorkspace={(args) => app_convex.mutation(app_convex_api.workspaces.rename_workspace, args)}
@@ -471,6 +551,8 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				summaryProjectName={currentProjectName}
 				summaryWorkspaceName={currentWorkspaceName}
 				workspaceItems={workspaceItems}
+				workspaceLimitFraction={workspaceLimitFraction}
+				workspaceLimitTooltip={workspaceLimitTooltip}
 				workspaceName={draftWorkspaceName}
 				onAfterCreateProject={handleWorkspaceSwitcherAfterCreate}
 				onAfterCreateWorkspace={handleWorkspaceSwitcherAfterCreate}

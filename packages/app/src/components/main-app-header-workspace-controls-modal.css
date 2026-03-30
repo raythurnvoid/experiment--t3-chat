@@ -121,23 +121,7 @@
 		flex-direction: column;
 		gap: 8px;
 
-		& .MyInputLabel {
-			margin-bottom: 6px;
-
-			font-size: 12px;
-			font-weight: 600;
-			color: var(--color-fg-08);
-		}
-
-		& .MyInputHelperText {
-			margin-top: 6px;
-
-			font-size: 11px;
-			line-height: 1.4;
-			color: var(--color-fg-05);
-		}
-
-		& .MyInputHelperText.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error {
+		.MyInputHelperText.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error {
 			color: var(--color-red-09);
 		}
 	}
@@ -146,7 +130,7 @@
 	/* #region select head */
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead {
 		display: flex;
-		align-items: start;
+		align-items: center;
 		gap: 8px;
 
 		padding-bottom: 2px;
@@ -156,6 +140,8 @@
 		display: grid;
 		flex: 1;
 		gap: 4px;
+
+		min-width: 0;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-icon {
@@ -164,17 +150,52 @@
 		color: var(--color-fg-06);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title {
-		font-size: 0.75em;
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+
+		min-width: 0;
+
+		font-size: 0.875em;
 		font-weight: 600;
 		line-height: 1;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title {
+		display: flex;
+		align-items: baseline;
+
 		color: var(--color-fg-06);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-description {
-		font-size: 11px;
-		line-height: 1.4;
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger {
+		cursor: help;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-limit {
+		display: inline-flex;
+		flex-shrink: 0;
+		align-items: center;
+		gap: 2px;
+
 		color: var(--color-fg-05);
+
+		text-box-trim: trim-both;
+		text-box-edge: cap alphabetic;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-help {
+		flex-shrink: 0;
+
+		color: var(--color-fg-05);
+
+		font-size: 12px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger {
+		display: inline-flex;
+		flex-shrink: 0;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-create {
