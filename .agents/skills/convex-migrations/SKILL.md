@@ -18,6 +18,7 @@ Use this skill for migration tasks in `packages/app/convex`.
 ## Project defaults
 
 - Convex code root: `packages/app/convex`
+- Package manager: `pnpm`
 - Migration component package: `@convex-dev/migrations`
 - Convex app config file: `packages/app/convex/convex.config.ts`
 - Migration file location: `packages/app/convex/migrations.ts`
@@ -110,6 +111,9 @@ pnpx convex run --component migrations lib:getStatus
 - Schema compiles with tightened shape.
 - Updated write paths no longer write legacy field.
 - No diagnostics in modified files.
+- Keep migration verification separate from regular runtime coverage:
+	- Do not make normal feature tests call migration runners or `packages/app/convex/migrations.ts` APIs.
+	- Add focused migration-specific tests only when the task actually introduces or changes a migration.
 
 ## Real-run lessons (important)
 

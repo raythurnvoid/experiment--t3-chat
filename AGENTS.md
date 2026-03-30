@@ -249,6 +249,8 @@ When you add or reorganize tests in an existing `.test.ts` file, group related c
 - Use one `describe(...)` per primary function or behavior under test.
 - Keep individual `test(...)` names specific, but avoid repeating grouping that already belongs in the enclosing `describe(...)`.
 - Follow the local pattern already used by nearby test files before introducing a different layout.
+- Do not make regular runtime tests depend on Convex migration functions or `packages/app/convex/migrations.ts` entrypoints.
+- If you need to verify a migration, add a focused migration-specific test for that migration instead of routing normal feature tests through migration APIs.
 
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
