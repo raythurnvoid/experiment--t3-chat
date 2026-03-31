@@ -2,8 +2,8 @@ import "./main-app-sidebar-account-control.css";
 
 import { useClerk, useUser } from "@clerk/clerk-react";
 import { useQuery } from "convex/react";
-import { ChevronsUpDown, LogIn, LogOut, UserRound, UserRoundPlus } from "lucide-react";
-import { memo } from "react";
+import { ChevronsUpDown, LogIn, LogOut, User, UserRound, UserRoundPlus } from "lucide-react";
+import { memo, type ComponentPropsWithRef } from "react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
@@ -23,14 +23,209 @@ import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { users_create_anonymouse_user_display_name } from "../../shared/users.ts";
 
-type MainAppSidebarAccountControl_ClassNames =
-	| "MainAppSidebarAccountControl"
-	| "MainAppSidebarAccountControl-trigger"
-	| "MainAppSidebarAccountControl-avatar"
-	| "MainAppSidebarAccountControl-copy"
-	| "MainAppSidebarAccountControl-name"
-	| "MainAppSidebarAccountControl-chevron"
-	| "MainAppSidebarAccountControl-menu";
+// #region menu item
+type MainSidebarAccountControlMenuItem_Props = {
+	icon: React.ReactNode;
+	label: string;
+	onClick: () => void;
+};
+
+const MainSidebarAccountControlMenuItem = memo(function MainSidebarAccountControlMenuItem(
+	props: MainSidebarAccountControlMenuItem_Props,
+) {
+	const { icon, label, onClick } = props;
+
+	return (
+		<MyMenuItem onClick={onClick}>
+			<MyMenuItemContent>
+				<MyMenuItemContentIcon>{icon}</MyMenuItemContentIcon>
+				<MyMenuItemContentPrimary>{label}</MyMenuItemContentPrimary>
+			</MyMenuItemContent>
+		</MyMenuItem>
+	);
+});
+// #endregion menu item
+
+// #region profile data
+type MainSidebarAccountControlMenuProfileData_ClassNames =
+	| "MainSidebarAccountControlMenuProfileData"
+	| "MainSidebarAccountControlMenuProfileData-avatar"
+	| "MainSidebarAccountControlMenuProfileData-avatar-icon"
+	| "MainSidebarAccountControlMenuProfileData-copy"
+	| "MainSidebarAccountControlMenuProfileData-status"
+	| "MainSidebarAccountControlMenuProfileData-name";
+
+type MainSidebarAccountControlMenuProfileData_Props = {
+	avatarUrl: string | undefined;
+	displayName: string;
+	accountStatusLabel: string;
+	isAnonymous: boolean;
+};
+
+const MainSidebarAccountControlMenuProfileData = memo(function MainSidebarAccountControlMenuProfileData(
+	props: MainSidebarAccountControlMenuProfileData_Props,
+) {
+	const { avatarUrl, displayName, accountStatusLabel, isAnonymous } = props;
+
+	const avatarFallback = isAnonymous ? (
+		<User
+			className={
+				"MainSidebarAccountControlMenuProfileData-avatar-icon" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
+			}
+			aria-hidden
+		/>
+	) : (
+		compute_fallback_user_name(displayName)
+	);
+
+	return (
+		<div className={"MainSidebarAccountControlMenuProfileData" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}>
+			<MyAvatar
+				size="32px"
+				className={"MainSidebarAccountControlMenuProfileData-avatar" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+			>
+				<MyAvatarImage src={avatarUrl} alt={displayName} />
+				<MyAvatarFallback>{avatarFallback}</MyAvatarFallback>
+			</MyAvatar>
+			<div
+				className={"MainSidebarAccountControlMenuProfileData-copy" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+			>
+				<div
+					className={"MainSidebarAccountControlMenuProfileData-status" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+				>
+					{accountStatusLabel}
+				</div>
+				<div
+					className={"MainSidebarAccountControlMenuProfileData-name" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+				>
+					{displayName}
+				</div>
+			</div>
+		</div>
+	);
+});
+// #endregion profile data
+
+// #region account control menu
+type MainSidebarAccountControlMenu_ClassNames = "MainSidebarAccountControlMenu";
+
+type MainSidebarAccountControlMenu_Props = {
+	avatarUrl: string | undefined;
+	displayName: string;
+	accountStatusLabel: string;
+	isAnonymous: boolean;
+	onOpenSignIn: () => void;
+	onOpenSignUp: () => void;
+	onOpenUserProfile: () => void;
+	onSignOut: () => void;
+};
+
+const MainSidebarAccountControlMenu = memo(function MainSidebarAccountControlMenu(
+	props: MainSidebarAccountControlMenu_Props,
+) {
+	const {
+		avatarUrl,
+		displayName,
+		accountStatusLabel,
+		isAnonymous,
+		onOpenSignIn,
+		onOpenSignUp,
+		onOpenUserProfile,
+		onSignOut,
+	} = props;
+
+	return (
+		<MyMenuPopover placement="top-start" gutter={6}>
+			<MyMenuPopoverContent className={"MainSidebarAccountControlMenu" satisfies MainSidebarAccountControlMenu_ClassNames}>
+				<MainSidebarAccountControlMenuProfileData
+					avatarUrl={avatarUrl}
+					displayName={displayName}
+					accountStatusLabel={accountStatusLabel}
+					isAnonymous={isAnonymous}
+				/>
+				{isAnonymous ? (
+					<>
+						<MainSidebarAccountControlMenuItem icon={<LogIn />} label="Log in" onClick={onOpenSignIn} />
+						<MainSidebarAccountControlMenuItem
+							icon={<UserRoundPlus />}
+							label="Sign up"
+							onClick={onOpenSignUp}
+						/>
+					</>
+				) : (
+					<>
+						<MainSidebarAccountControlMenuItem
+							icon={<UserRound />}
+							label="Manage account"
+							onClick={onOpenUserProfile}
+						/>
+						<MainSidebarAccountControlMenuItem icon={<LogOut />} label="Sign out" onClick={onSignOut} />
+					</>
+				)}
+			</MyMenuPopoverContent>
+		</MyMenuPopover>
+	);
+});
+// #endregion account control menu
+
+// #region trigger
+type MainAppSidebarAccountControlTrigger_ClassNames =
+	| "MainAppSidebarAccountControlTrigger"
+	| "MainAppSidebarAccountControlTrigger-avatar"
+	| "MainAppSidebarAccountControlTrigger-avatar-icon"
+	| "MainAppSidebarAccountControlTrigger-copy"
+	| "MainAppSidebarAccountControlTrigger-name"
+	| "MainAppSidebarAccountControlTrigger-chevron";
+
+type MainAppSidebarAccountControlTrigger_Props = {
+	avatarUrl: string | undefined;
+	displayName: string;
+	avatarFallback: React.ReactNode;
+} & ComponentPropsWithRef<typeof MyButton>;
+
+const MainAppSidebarAccountControlTrigger = memo(function MainAppSidebarAccountControlTrigger(
+	props: MainAppSidebarAccountControlTrigger_Props,
+) {
+	const { ref, id, className, avatarUrl, displayName, avatarFallback, ...rest } = props;
+
+	return (
+		<MyButton
+			ref={ref}
+			id={id}
+			type="button"
+			variant="ghost-highlightable"
+			className={cn(
+				"MainAppSidebarAccountControlTrigger" satisfies MainAppSidebarAccountControlTrigger_ClassNames,
+				className,
+			)}
+			{...rest}
+		>
+			<MyAvatar
+				size="32px"
+				className={"MainAppSidebarAccountControlTrigger-avatar" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+			>
+				<MyAvatarImage src={avatarUrl} alt={displayName} />
+				<MyAvatarFallback>{avatarFallback}</MyAvatarFallback>
+			</MyAvatar>
+			<span className={"MainAppSidebarAccountControlTrigger-copy" satisfies MainAppSidebarAccountControlTrigger_ClassNames}>
+				<span
+					className={"MainAppSidebarAccountControlTrigger-name" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+				>
+					{displayName}
+				</span>
+			</span>
+			<ChevronsUpDown
+				className={cn(
+					"MainAppSidebarAccountControlTrigger-chevron" satisfies MainAppSidebarAccountControlTrigger_ClassNames,
+				)}
+			/>
+		</MyButton>
+	);
+});
+// #endregion trigger
+
+// #region root
+type MainAppSidebarAccountControl_ClassNames = "MainAppSidebarAccountControl";
 
 export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountControl() {
 	const auth = AppAuthProvider.useAuth();
@@ -75,6 +270,15 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 			: clerkDisplayName ?? "User");
 	const avatarUrl = anagraphic?.avatarUrl ?? user?.imageUrl ?? undefined;
 	const triggerAriaLabel = auth.isAnonymous ? `Anonymous account: ${displayName}` : `Account: ${displayName}`;
+	const accountStatusLabel = auth.isAnonymous ? "Not logged in" : "Signed in";
+	const avatarFallback = auth.isAnonymous ? (
+		<User
+			className={"MainAppSidebarAccountControlTrigger-avatar-icon" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+			aria-hidden
+		/>
+	) : (
+		compute_fallback_user_name(displayName)
+	);
 
 	const handleOpenSignIn = useFn(() => {
 		void clerk.openSignIn();
@@ -93,78 +297,26 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 		<MyMenu>
 			<div className={"MainAppSidebarAccountControl" satisfies MainAppSidebarAccountControl_ClassNames}>
 				<MyMenuTrigger>
-					<MyButton
-						type="button"
-						variant="ghost-highlightable"
-						className={"MainAppSidebarAccountControl-trigger" satisfies MainAppSidebarAccountControl_ClassNames}
+					<MainAppSidebarAccountControlTrigger
+						avatarUrl={avatarUrl}
+						displayName={displayName}
+						avatarFallback={avatarFallback}
 						aria-label={triggerAriaLabel}
-					>
-						<MyAvatar
-							size="32px"
-							className={"MainAppSidebarAccountControl-avatar" satisfies MainAppSidebarAccountControl_ClassNames}
-						>
-							<MyAvatarImage src={avatarUrl} alt={displayName} />
-							<MyAvatarFallback>{compute_fallback_user_name(displayName)}</MyAvatarFallback>
-						</MyAvatar>
-						<span className={"MainAppSidebarAccountControl-copy" satisfies MainAppSidebarAccountControl_ClassNames}>
-							<span className={"MainAppSidebarAccountControl-name" satisfies MainAppSidebarAccountControl_ClassNames}>
-								{displayName}
-							</span>
-						</span>
-						<ChevronsUpDown
-							className={cn(
-								"MainAppSidebarAccountControl-chevron" satisfies MainAppSidebarAccountControl_ClassNames,
-							)}
-						/>
-					</MyButton>
+					/>
 				</MyMenuTrigger>
 
-				<MyMenuPopover placement="top-start" gutter={6}>
-					<MyMenuPopoverContent
-						className={"MainAppSidebarAccountControl-menu" satisfies MainAppSidebarAccountControl_ClassNames}
-					>
-						{auth.isAnonymous ? (
-							<>
-								<MyMenuItem onClick={handleOpenSignIn}>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<LogIn />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>Log in</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-								</MyMenuItem>
-								<MyMenuItem onClick={handleOpenSignUp}>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<UserRoundPlus />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>Sign up</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-								</MyMenuItem>
-							</>
-						) : (
-							<>
-								<MyMenuItem onClick={handleOpenUserProfile}>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<UserRound />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>Manage account</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-								</MyMenuItem>
-								<MyMenuItem onClick={handleSignOut}>
-									<MyMenuItemContent>
-										<MyMenuItemContentIcon>
-											<LogOut />
-										</MyMenuItemContentIcon>
-										<MyMenuItemContentPrimary>Sign out</MyMenuItemContentPrimary>
-									</MyMenuItemContent>
-								</MyMenuItem>
-							</>
-						)}
-					</MyMenuPopoverContent>
-				</MyMenuPopover>
+				<MainSidebarAccountControlMenu
+					avatarUrl={avatarUrl}
+					displayName={displayName}
+					accountStatusLabel={accountStatusLabel}
+					isAnonymous={Boolean(auth.isAnonymous)}
+					onOpenSignIn={handleOpenSignIn}
+					onOpenSignUp={handleOpenSignUp}
+					onOpenUserProfile={handleOpenUserProfile}
+					onSignOut={handleSignOut}
+				/>
 			</div>
 		</MyMenu>
 	);
 });
+// #endregion root

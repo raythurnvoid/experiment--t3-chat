@@ -226,7 +226,10 @@ export const MyMenuPopoverContent = memo(function MyMenuPopoverContent(props: My
 // #region popover
 export type MyMenuPopover_ClassNames = "MyMenuPopover";
 
-export type MyMenuPopover_Props = Ariakit.MenuProps;
+export type MyMenuPopover_Props = Ariakit.MenuProps & {
+	placement?: string;
+	gutter?: number;
+};
 
 export const MyMenuPopover = memo(function MyMenuPopover(props: MyMenuPopover_Props) {
 	const { ref, id, className, portal = true, portalElement, children, ...rest } = props;

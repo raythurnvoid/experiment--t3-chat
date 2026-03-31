@@ -86,9 +86,29 @@
 			}
 
 			> .MainAppSidebar-footer {
+				padding-left: 2px;
+				padding-right: 2px;
+
 				.MainAppSidebarMenuButtonLabel {
 					overflow: hidden;
 					width: 0;
+				}
+
+				.MainAppSidebarThemeToggleMenuItem-button {
+					width: 36px;
+					padding: 6px;
+					justify-content: center;
+				}
+
+				.MainAppSidebarProfileSection {
+					display: flex;
+					justify-content: center;
+					padding-left: 0;
+					padding-right: 0;
+				}
+
+				.MainAppSidebarAccountControl {
+					width: 36px;
 				}
 			}
 		}

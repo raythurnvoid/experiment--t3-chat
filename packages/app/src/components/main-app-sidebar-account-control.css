@@ -1,11 +1,63 @@
 @layer components {
-	.MainAppSidebarAccountControl {
-		width: 100%;
+	/* #region menu item */
+	/* MainSidebarAccountControlMenuItem delegates to shared menu primitives only. */
+	/* #endregion menu item */
 
-		container-type: inline-size;
+	/* #region profile data */
+	.MainSidebarAccountControlMenuProfileData {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		margin-bottom: 4px;
+		padding: 6px;
+		border-bottom: 1px solid var(--color-base-1-06);
 	}
 
-	.MainAppSidebarAccountControl-trigger {
+	.MainSidebarAccountControlMenuProfileData-avatar {
+		flex-shrink: 0;
+	}
+
+	.MainSidebarAccountControlMenuProfileData-avatar-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.MainSidebarAccountControlMenuProfileData-copy {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.MainSidebarAccountControlMenuProfileData-status {
+		font-size: 0.75rem;
+		line-height: 1rem;
+		color: var(--color-fg-08);
+	}
+
+	.MainSidebarAccountControlMenuProfileData-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1.25rem;
+		color: var(--color-fg-11);
+	}
+	/* #endregion profile data */
+
+	/* #region account control menu */
+	.MainSidebarAccountControlMenu {
+		min-width: 220px;
+		max-width: 260px;
+	}
+	/* #endregion account control menu */
+
+	/* #region trigger */
+	.MainAppSidebarAccountControlTrigger {
 		width: 100%;
 		min-width: 0;
 		height: auto;
@@ -17,17 +69,22 @@
 		gap: 12px;
 	}
 
-	.MainAppSidebarAccountControl-avatar {
+	.MainAppSidebarAccountControlTrigger-avatar {
 		flex-shrink: 0;
 	}
 
-	.MainAppSidebarAccountControl-copy {
+	.MainAppSidebarAccountControlTrigger-avatar-icon {
+		width: 16px;
+		height: 16px;
+	}
+
+	.MainAppSidebarAccountControlTrigger-copy {
 		display: flex;
 		flex: 1;
 		min-width: 0;
 	}
 
-	.MainAppSidebarAccountControl-name {
+	.MainAppSidebarAccountControlTrigger-name {
 		width: 100%;
 
 		overflow: hidden;
@@ -40,7 +97,7 @@
 		color: var(--sidebar-foreground);
 	}
 
-	.MainAppSidebarAccountControl-chevron {
+	.MainAppSidebarAccountControlTrigger-chevron {
 		width: 16px;
 		height: 16px;
 
@@ -48,20 +105,27 @@
 		color: var(--color-fg-08);
 	}
 
-	.MainAppSidebarAccountControl-menu {
-		min-width: 220px;
-	}
-
 	@container (width < 200px) {
-		.MainAppSidebarAccountControl-trigger {
+		.MainAppSidebarAccountControlTrigger {
+			height: 36px;
 			justify-content: center;
-			padding: 6px;
+			padding: 2px;
 			gap: 0;
 		}
 
-		.MainAppSidebarAccountControl-copy,
-		.MainAppSidebarAccountControl-chevron {
+		.MainAppSidebarAccountControlTrigger-copy,
+		.MainAppSidebarAccountControlTrigger-chevron {
 			display: none;
 		}
 	}
+	/* #endregion trigger */
+
+	/* #region root */
+	.MainAppSidebarAccountControl {
+		width: 100%;
+
+		container-type: inline-size;
+	}
+	/* #endregion root */
+
 }
