@@ -180,7 +180,7 @@ export const MyModalCloseTrigger = memo(function MyModalCloseTrigger(props: MyMo
 			className={cn("MyModalCloseTrigger" satisfies MyModalCloseTrigger_ClassNames, className)}
 			render={
 				children ?? (
-					<MyIconButton variant="ghost" tooltip="Close">
+					<MyIconButton variant="ghost-highlightable" tooltip="Close">
 						<X />
 					</MyIconButton>
 				)

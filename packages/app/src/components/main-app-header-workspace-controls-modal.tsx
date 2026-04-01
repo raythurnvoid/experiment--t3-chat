@@ -14,7 +14,16 @@ import {
 	type ReactNode,
 	type SetStateAction,
 } from "react";
-import { ChevronRight, CircleHelp, EllipsisVertical, Folder, FolderKanban, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+	Briefcase,
+	ChevronRight,
+	CircleHelp,
+	EllipsisVertical,
+	FolderKanban,
+	Pencil,
+	Plus,
+	Trash2,
+} from "lucide-react";
 
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyButton } from "@/components/my-button.tsx";
@@ -310,7 +319,6 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 						<div
 							className={cn(
 								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
-								"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 							)}
 						>
 							<div
@@ -321,7 +329,12 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 								{title}
 							</div>
 							<MyTooltip placement="bottom">
-								<MyTooltipTrigger tabIndex={0}>
+								<MyTooltipTrigger
+									className={cn(
+										"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+									)}
+									tabIndex={0}
+								>
 									<span
 										className={cn(
 											"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
@@ -463,14 +476,9 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 );
 // #endregion select list
 
-export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Item = Omit<
-	MainAppHeaderWorkspaceSwitcherModal_ListItem,
-	"isCurrent"
->;
-
 // #region select pane list
 export type MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props = {
-	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Item[];
+	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props["items"];
 	selectedItemId: string;
 	dialogOpen: boolean;
 };
@@ -503,7 +511,7 @@ type MainAppHeaderWorkspaceSwitcherModalSelectPane_ClassNames = "MainAppHeaderWo
 export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	icon: ReactNode;
 	title: string;
-	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Item[];
+	items: Omit<MainAppHeaderWorkspaceSwitcherModal_ListItem, "isCurrent">[];
 	selectedItemId: string;
 	dialogOpen: boolean;
 	createDisabled?: boolean;
@@ -1398,7 +1406,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					>
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
 							dialogOpen={dialogOpen}
-							icon={<Folder />}
+							icon={<Briefcase />}
 							title="Workspaces"
 							items={workspaceItems}
 							selectedItemId={draftWorkspaceId}

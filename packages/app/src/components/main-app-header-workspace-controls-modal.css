@@ -32,7 +32,7 @@
 		flex-direction: column;
 		flex: 1 1 auto;
 
-		gap: 24px;
+		gap: 13px;
 
 		min-height: 0;
 
@@ -275,7 +275,7 @@
 		contain: content;
 
 		font-weight: 500;
-		color: var(--color-fg-10);
+		color: var(--color-fg-09);
 
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -294,10 +294,11 @@
 		overflow: hidden;
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 2;
+		line-clamp: 2;
 
 		font-size: 0.875em;
 		line-height: 1.35;
-		color: var(--color-fg-09);
+		color: var(--color-fg-08);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-actions {
@@ -347,6 +348,17 @@
 
 		&[data-selected]:not(:hover):not(:focus-visible) {
 			background: var(--color-base-1-04);
+		}
+
+		&:hover,
+		&:focus-visible {
+			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+				color: var(--color-fg-11);
+			}
+
+			.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+				color: var(--color-fg-10);
+			}
 		}
 	}
 	/* #endregion list item primary action */
