@@ -5,7 +5,8 @@ import { Result } from "./errors-as-values-utils.ts";
 /** Letters, digits (not first char), single hyphens between segments; min length enforced separately. */
 const workspace_project_name_regex = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
-const workspace_project_name_min_length = 3;
+export const workspaces_name_min_length = 3;
+export const workspaces_name_max_length = 20;
 
 export type workspaces_name_autofix_Options = {
 	/**
@@ -70,11 +71,20 @@ export function workspaces_name_validate(name: string) {
 		});
 	}
 
-	if (trimmed.length < workspace_project_name_min_length) {
+	if (trimmed.length < workspaces_name_min_length) {
 		return Result({
 			_nay: {
 				name: "nay",
 				message: "Name must be at least 3 characters",
+			},
+		});
+	}
+
+	if (trimmed.length > workspaces_name_max_length) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Name must be at most 20 characters",
 			},
 		});
 	}
@@ -96,7 +106,7 @@ export function workspaces_name_validate(name: string) {
 /**
  * Maximum stored length for workspace/project description (after trim).
  */
-export const workspaces_description_max_length = 500;
+export const workspaces_description_max_length = 50;
 
 /**
  * Normalize user-provided description: trim; empty after trim → store as `""`; reject when longer than

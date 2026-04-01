@@ -7,6 +7,7 @@ import {
 	workspaces_list_sort_workspaces,
 	workspaces_name_autofix,
 	workspaces_name_autofix_and_validate,
+	workspaces_name_max_length,
 	workspaces_name_validate,
 	workspaces_switcher_list_secondary_line,
 } from "./workspaces.ts";
@@ -62,6 +63,17 @@ describe("workspaces_name_validate", () => {
 		expect(workspaces_name_validate("abc")._yay).toBe("abc");
 		expect(workspaces_name_validate("ab1")._yay).toBe("ab1");
 		expect(workspaces_name_validate("a2-b3")._yay).toBe("a2-b3");
+	});
+
+	test("rejects names longer than max length", () => {
+		expect(workspaces_name_validate("a".repeat(workspaces_name_max_length + 1))._nay?.message).toBe(
+			"Name must be at most 20 characters",
+		);
+	});
+
+	test("accepts names at max length", () => {
+		const name = "a".repeat(workspaces_name_max_length);
+		expect(workspaces_name_validate(name)._yay).toBe(name);
 	});
 
 	test("rejects leading digit, trailing dash, or double hyphen in normalized input", () => {

@@ -9,6 +9,7 @@ import {
 } from "../server/workspaces.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { user_limits } from "../shared/limits.ts";
+import { workspaces_description_max_length, workspaces_name_max_length } from "../shared/workspaces.ts";
 
 async function workspaces_test_seed_default_workspace(ctx: MutationCtx, args: { userId: Id<"users">; now?: number }) {
 	await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
@@ -274,6 +275,28 @@ describe("create_workspace", () => {
 		expect(result._nay?.message).toBe("Name must be at least 3 characters");
 	});
 
+	test("rejects names longer than max length", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-long-name-ws",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "a".repeat(workspaces_name_max_length + 1),
+		});
+
+		expect(result._nay?.message).toBe("Name must be at most 20 characters");
+	});
+
 	test("autofixes messy workspace names before create", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -420,7 +443,7 @@ describe("create_workspace", () => {
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "x".repeat(501),
+			description: "x".repeat(workspaces_description_max_length + 1),
 			name: "long-desc-ws",
 		});
 		expect(result._nay?.message).toBe("Description is too long");
@@ -1063,7 +1086,7 @@ describe("add_user_to_workspace_project", () => {
 	});
 });
 
-describe("rename_workspace", () => {
+describe("edit_workspace", () => {
 	test("rejects renaming the default workspace", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -1080,13 +1103,14 @@ describe("rename_workspace", () => {
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId }));
 		expect(created._yay).toBeTruthy();
 
-		const result = await asUser.mutation(api.workspaces.rename_workspace, {
+		const result = await asUser.mutation(api.workspaces.edit_workspace, {
 			workspaceId: created._yay!.workspaceId,
 			defaultProjectId: created._yay!.defaultProjectId,
 			name: "renamed-personal",
+			description: "",
 		});
 
-		expect(result._nay?.message).toBe("Cannot rename the default workspace");
+		expect(result._nay?.message).toBe("Cannot edit the default workspace");
 	});
 
 	test("allows renaming a non-default workspace", async () => {
@@ -1114,10 +1138,11 @@ describe("rename_workspace", () => {
 		);
 		expect(created._yay).toBeTruthy();
 
-		const result = await asUser.mutation(api.workspaces.rename_workspace, {
+		const result = await asUser.mutation(api.workspaces.edit_workspace, {
 			workspaceId: created._yay!.workspaceId,
 			defaultProjectId: created._yay!.defaultProjectId,
 			name: "extra-renamed",
+			description: "",
 		});
 
 		expect(result._yay?.name).toBe("extra-renamed");
@@ -1147,15 +1172,106 @@ describe("rename_workspace", () => {
 		const before = await t.run((ctx) => ctx.db.get("workspaces", wsId));
 		expect(before?.description).toBe("Product org");
 
-		const renamed = await asUser.mutation(api.workspaces.rename_workspace, {
+		const renamed = await asUser.mutation(api.workspaces.edit_workspace, {
 			workspaceId: wsId,
 			defaultProjectId: created._yay!.defaultProjectId,
 			name: "rename-keep-desc-ws-next",
+			description: "Product org",
 		});
 		expect(renamed._yay?.name).toBe("rename-keep-desc-ws-next");
 
 		const after = await t.run((ctx) => ctx.db.get("workspaces", wsId));
 		expect(after?.description).toBe("Product org");
+	});
+
+	test("updates workspace description when editing workspace", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-edit-workspace-desc",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "Planning",
+			name: "edit-workspace",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const edited = await asUser.mutation(api.workspaces.edit_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: created._yay!.defaultProjectId,
+			name: "edit-workspace-next",
+			description: "Planning and delivery",
+		});
+		expect(edited._yay?.name).toBe("edit-workspace-next");
+
+		const after = await t.run((ctx) => ctx.db.get("workspaces", created._yay!.workspaceId));
+		expect(after?.description).toBe("Planning and delivery");
+	});
+
+	test("rejects workspace edit when description is longer than max length", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-edit-workspace-desc-long",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "edit-ws-desc-long",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.edit_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: created._yay!.defaultProjectId,
+			name: "edit-ws-desc-next",
+			description: "x".repeat(workspaces_description_max_length + 1),
+		});
+		expect(result._nay?.message).toBe("Description is too long");
+	});
+
+	test("rejects workspace edit when name is longer than max length", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-edit-workspace-name-long",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "edit-ws-name-long",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const result = await asUser.mutation(api.workspaces.edit_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			defaultProjectId: created._yay!.defaultProjectId,
+			name: "a".repeat(workspaces_name_max_length + 1),
+			description: "",
+		});
+		expect(result._nay?.message).toBe("Name must be at most 20 characters");
 	});
 
 	test("returns Not found when defaultProjectId is not the workspace primary", async () => {
@@ -1190,10 +1306,11 @@ describe("rename_workspace", () => {
 		});
 		expect(extra._yay).toBeTruthy();
 
-		const result = await asUser.mutation(api.workspaces.rename_workspace, {
+		const result = await asUser.mutation(api.workspaces.edit_workspace, {
 			workspaceId: created._yay!.workspaceId,
 			defaultProjectId: extra._yay!.projectId,
 			name: "renamed-ws",
+			description: "",
 		});
 
 		expect(result._nay?.message).toBe("Not found");
@@ -1226,17 +1343,18 @@ describe("rename_workspace", () => {
 			name: "Stranger",
 		});
 
-		const result = await stranger.mutation(api.workspaces.rename_workspace, {
+		const result = await stranger.mutation(api.workspaces.edit_workspace, {
 			workspaceId: created._yay!.workspaceId,
 			defaultProjectId: created._yay!.defaultProjectId,
 			name: "hijacked",
+			description: "",
 		});
 
 		expect(result._nay?.message).toBe("Not found");
 	});
 });
 
-describe("rename_project", () => {
+describe("edit_project", () => {
 	test("rejects renaming the primary project when project.default is true", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -1257,14 +1375,15 @@ describe("rename_project", () => {
 		});
 		expect(wsResult._yay).toBeTruthy();
 
-		const result = await asUser.mutation(api.workspaces.rename_project, {
+		const result = await asUser.mutation(api.workspaces.edit_project, {
 			workspaceId: wsResult._yay!.workspaceId,
 			defaultProjectId: wsResult._yay!.defaultProjectId,
 			projectId: wsResult._yay!.defaultProjectId,
 			name: "new-home",
+			description: "",
 		});
 
-		expect(result._nay?.message).toBe("Cannot rename the default project");
+		expect(result._nay?.message).toBe("Cannot edit the default project");
 	});
 
 	test("rejects renaming the primary project when only defaultProjectId matches", async () => {
@@ -1302,19 +1421,21 @@ describe("rename_project", () => {
 			await ctx.db.patch("workspaces", workspaceId, { defaultProjectId: zebraId });
 		});
 
-		const blocked = await asUser.mutation(api.workspaces.rename_project, {
+		const blocked = await asUser.mutation(api.workspaces.edit_project, {
 			workspaceId,
 			defaultProjectId: zebraId,
 			projectId: zebraId,
 			name: "blocked-zebra",
+			description: "",
 		});
-		expect(blocked._nay?.message).toBe("Cannot rename the default project");
+		expect(blocked._nay?.message).toBe("Cannot edit the default project");
 
-		const ok = await asUser.mutation(api.workspaces.rename_project, {
+		const ok = await asUser.mutation(api.workspaces.edit_project, {
 			workspaceId,
 			defaultProjectId: zebraId,
 			projectId: homeId,
 			name: "former-home",
+			description: "",
 		});
 		expect(ok._yay?.name).toBe("former-home");
 	});
@@ -1346,11 +1467,12 @@ describe("rename_project", () => {
 		});
 		expect(extra._yay).toBeTruthy();
 
-		const result = await asUser.mutation(api.workspaces.rename_project, {
+		const result = await asUser.mutation(api.workspaces.edit_project, {
 			workspaceId: wsResult._yay!.workspaceId,
 			defaultProjectId: wsResult._yay!.defaultProjectId,
 			projectId: extra._yay!.projectId,
 			name: "sidecar-renamed",
+			description: "",
 		});
 
 		expect(result._yay?.name).toBe("sidecar-renamed");
@@ -1387,16 +1509,57 @@ describe("rename_project", () => {
 		const before = await t.run((ctx) => ctx.db.get("workspaces_projects", projectId));
 		expect(before?.description).toBe("Scratch space");
 
-		const renamed = await asUser.mutation(api.workspaces.rename_project, {
+		const renamed = await asUser.mutation(api.workspaces.edit_project, {
 			workspaceId: wsResult._yay!.workspaceId,
 			defaultProjectId: wsResult._yay!.defaultProjectId,
 			projectId,
 			name: "side-note-v2",
+			description: "Scratch space",
 		});
 		expect(renamed._yay?.name).toBe("side-note-v2");
 
 		const after = await t.run((ctx) => ctx.db.get("workspaces_projects", projectId));
 		expect(after?.description).toBe("Scratch space");
+	});
+
+	test("updates project description when editing project", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-edit-project-desc",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "edit-proj-desc-ws",
+		});
+		expect(wsResult._yay).toBeTruthy();
+
+		const extra = await asUser.mutation(api.workspaces.create_project, {
+			description: "Scratch space",
+			workspaceId: wsResult._yay!.workspaceId,
+			name: "edit-proj-desc",
+		});
+		expect(extra._yay).toBeTruthy();
+
+		const edited = await asUser.mutation(api.workspaces.edit_project, {
+			workspaceId: wsResult._yay!.workspaceId,
+			defaultProjectId: wsResult._yay!.defaultProjectId,
+			projectId: extra._yay!.projectId,
+			name: "edit-proj-next",
+			description: "Docs and notes",
+		});
+		expect(edited._yay?.name).toBe("edit-proj-next");
+
+		const after = await t.run((ctx) => ctx.db.get("workspaces_projects", extra._yay!.projectId));
+		expect(after?.description).toBe("Docs and notes");
 	});
 });
 

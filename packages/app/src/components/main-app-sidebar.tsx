@@ -5,7 +5,7 @@ import { memo } from "react";
 import type { ComponentPropsWithRef, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { url_path_chat, url_path_pages } from "@/lib/urls.ts";
 
@@ -146,7 +146,11 @@ type MainAppSidebarItem_Props = {
 
 const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSidebarItem_Props) {
 	const { to, label, icon: Icon, tooltip } = props;
-	const pathname = useRouterState({ select: (s) => s.location.pathname });
+
+	const pathname = useRouterState<RegisteredRouter, string>({
+		select: (state) => state.location.pathname,
+	});
+
 	const isActive = to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
 
 	return (

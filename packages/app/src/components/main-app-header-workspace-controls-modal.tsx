@@ -10,9 +10,11 @@ import {
 	type ClipboardEventHandler,
 	type CompositionEventHandler,
 	type Dispatch,
-	type FormEventHandler,
+	type InputEventHandler,
+	type RefObject,
 	type ReactNode,
 	type SetStateAction,
+	type SubmitEventHandler,
 } from "react";
 import {
 	Briefcase,
@@ -46,7 +48,6 @@ import {
 	MyInputControl,
 	MyInputHelperText,
 	MyInputLabel,
-	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
 import {
 	MyModal,
@@ -65,76 +66,51 @@ import {
 	workspaces_description_max_length,
 	workspaces_description_normalize,
 	workspaces_name_autofix,
+	workspaces_name_max_length,
+	workspaces_name_min_length,
 	workspaces_name_validate,
 } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
 
 // #region list item model
 export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
-	description: string;
 	id: string;
+	label: string;
+	description: string;
 	isCurrent?: boolean;
 	isDefault?: boolean;
-	label: string;
-	onDelete?: () => void;
 	onEdit?: () => void;
+	onDelete?: () => void;
 	onSelect: () => void;
 };
 // #endregion list item model
 
-// #region rename target / callback
-export type MainAppHeaderWorkspaceSwitcherModal_RenameTarget =
+// #region edit target / callback
+export type MainAppHeaderWorkspaceSwitcherModal_EditTarget =
 	| {
 			kind: "workspace";
 			id: string;
 			initialName: string;
+			initialDescription: string;
 			defaultProjectId: app_convex_Id<"workspaces_projects">;
 	  }
 	| {
 			kind: "project";
 			id: string;
 			initialName: string;
+			initialDescription: string;
 			workspaceId: app_convex_Id<"workspaces">;
 			defaultProjectId: app_convex_Id<"workspaces_projects">;
 	  };
 
-export type MainAppHeaderWorkspaceSwitcherModal_AfterRename = {
+export type MainAppHeaderWorkspaceSwitcherModal_AfterEdit = {
 	kind: "project" | "workspace";
 	oldName: string;
 	newName: string;
+	workspaceId: app_convex_Id<"workspaces">;
 	projectId?: app_convex_Id<"workspaces_projects">;
-	workspaceId: app_convex_Id<"workspaces">;
 };
-// #endregion rename target / callback
-
-// #region create args / results
-type MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs = FunctionArgs<
-	typeof app_convex_api.workspaces.create_project
->;
-
-type MainAppHeaderWorkspaceSwitcherModal_CreateWorkspaceResult = FunctionReturnType<
-	typeof app_convex_api.workspaces.create_workspace
->;
-type MainAppHeaderWorkspaceSwitcherModal_CreateProjectResult = FunctionReturnType<
-	typeof app_convex_api.workspaces.create_project
->;
-
-type MainAppHeaderWorkspaceSwitcherModal_RenameWorkspaceResult = FunctionReturnType<
-	typeof app_convex_api.workspaces.rename_workspace
->;
-type MainAppHeaderWorkspaceSwitcherModal_RenameProjectResult = FunctionReturnType<
-	typeof app_convex_api.workspaces.rename_project
->;
-// #endregion create args / results
-
-// #region after create selection
-export type MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection = {
-	workspaceId: app_convex_Id<"workspaces">;
-	projectId: app_convex_Id<"workspaces_projects">;
-	workspaceName: string;
-	projectName: string;
-};
-// #endregion after create selection
+// #endregion edit target / callback
 
 // #region list item
 type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
@@ -180,12 +156,12 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 			)}
 		>
 			<MyButton
-				type="button"
-				variant="ghost-highlightable"
 				className={cn(
 					"MainAppHeaderWorkspaceSwitcherModalListItem-primary" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
 				)}
+				type="button"
+				variant="ghost-highlightable"
 				data-selected={isCurrent || undefined}
 				aria-current={isCurrent ? "true" : undefined}
 				onClick={handleSelect}
@@ -282,18 +258,19 @@ type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create";
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
-	iconSlot: ReactNode;
 	title: string;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
 	limitFraction?: string;
 	limitTooltip?: string;
 	onCreate: () => void;
+	iconSlot: ReactNode;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectHead(props: MainAppHeaderWorkspaceSwitcherModalSelectHead_Props) {
-		const { iconSlot, title, createDisabled, createDisabledReason, limitFraction, limitTooltip, onCreate } = props;
+		const { title, createDisabled, createDisabledReason, limitFraction, limitTooltip, onCreate, iconSlot } = props;
+
 		const createDisabledTooltip = createDisabled ? createDisabledReason : undefined;
 
 		return (
@@ -431,13 +408,13 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 type MainAppHeaderWorkspaceSwitcherModalSelectList_ClassNames = "MainAppHeaderWorkspaceSwitcherModalSelectList";
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectList_Props = {
-	children: ReactNode;
 	myFocusSyncKey: string;
+	children: ReactNode;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectList(props: MainAppHeaderWorkspaceSwitcherModalSelectList_Props) {
-		const { children, myFocusSyncKey } = props;
+		const { myFocusSyncKey, children } = props;
 
 		const [list, setList] = useState<HTMLUListElement | null>(null);
 		const focusRef = useRef<MyFocus | null>(null);
@@ -478,16 +455,16 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 
 // #region select pane list
 export type MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props = {
+	dialogOpen: boolean;
 	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props["items"];
 	selectedItemId: string;
-	dialogOpen: boolean;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectPaneList = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPaneList(
 		props: MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props,
 	) {
-		const { items, selectedItemId, dialogOpen } = props;
+		const { dialogOpen, items, selectedItemId } = props;
 
 		const myFocusSyncKey = `${dialogOpen}:${selectedItemId}:${items.map((item) => item.id).join(",")}`;
 
@@ -509,31 +486,31 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPaneList = memo(
 type MainAppHeaderWorkspaceSwitcherModalSelectPane_ClassNames = "MainAppHeaderWorkspaceSwitcherModalSelectPane";
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
-	icon: ReactNode;
+	dialogOpen: boolean;
 	title: string;
 	items: Omit<MainAppHeaderWorkspaceSwitcherModal_ListItem, "isCurrent">[];
 	selectedItemId: string;
-	dialogOpen: boolean;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
 	limitFraction?: string;
 	limitTooltip?: string;
 	onCreate: () => void;
+	icon: ReactNode;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPane(props: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props) {
 		const {
-			icon,
+			dialogOpen,
 			title,
 			items,
 			selectedItemId,
-			dialogOpen,
 			createDisabled,
 			createDisabledReason,
 			limitFraction,
 			limitTooltip,
 			onCreate,
+			icon,
 		} = props;
 
 		return (
@@ -543,13 +520,13 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 				)}
 			>
 				<MainAppHeaderWorkspaceSwitcherModalSelectHead
-					iconSlot={icon}
 					title={title}
 					createDisabled={createDisabled}
 					createDisabledReason={createDisabledReason}
 					limitFraction={limitFraction}
 					limitTooltip={limitTooltip}
 					onCreate={onCreate}
+					iconSlot={icon}
 				/>
 
 				<MainAppHeaderWorkspaceSwitcherModalSelectPaneList
@@ -563,11 +540,113 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 );
 // #endregion select pane
 
-// #region create modal
-const main_app_header_workspace_switcher_modal_CREATE_NAME_HELPER_TEXT =
-	"Lowercase letters and hyphens only (kebab-case).";
+// #region modal form helpers
+const main_app_header_workspace_switcher_modal_NAME_HELPER_TEXT = `Use ${workspaces_name_min_length}-${workspaces_name_max_length} characters. Lowercase letters and hyphens only (kebab-case).`;
 
-const main_app_header_workspace_switcher_modal_CREATE_DESCRIPTION_HELPER_TEXT = `Plain text, up to ${workspaces_description_max_length} characters. Leave empty if you do not need a description.`;
+const main_app_header_workspace_switcher_modal_DESCRIPTION_HELPER_TEXT = `Optional. Plain text, up to ${workspaces_description_max_length} characters.`;
+
+function should_block_name_retry(message: string) {
+	return message === "Workspace name already exists" || message === "Project name already exists";
+}
+
+type MainAppHeaderWorkspaceCreateEditFormFields_Props = {
+	nameInputRef: RefObject<HTMLInputElement | null>;
+	descriptionInputRef: RefObject<HTMLInputElement | null>;
+	kind: "project" | "workspace";
+	nameFieldLabel: string;
+	isNameValid: boolean;
+	isNameNonEmpty: boolean;
+	isDescriptionValid: boolean;
+	isSubmitting: boolean;
+	nameMessage?: string;
+	descriptionMessage?: string;
+	onNameCompositionEnd: CompositionEventHandler<HTMLInputElement>;
+	onNameInput: InputEventHandler<HTMLInputElement>;
+	onNamePaste: ClipboardEventHandler<HTMLInputElement>;
+	onDescriptionInput: InputEventHandler<HTMLInputElement>;
+};
+
+const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWorkspaceCreateEditFormFields(
+	props: MainAppHeaderWorkspaceCreateEditFormFields_Props,
+) {
+	const {
+		nameInputRef,
+		descriptionInputRef,
+		kind,
+		nameFieldLabel,
+		isNameValid,
+		isNameNonEmpty,
+		isDescriptionValid,
+		isSubmitting,
+		nameMessage,
+		descriptionMessage,
+		onNameCompositionEnd,
+		onNameInput,
+		onNamePaste,
+		onDescriptionInput,
+	} = props;
+
+	return (
+		<>
+			<MyInput variant="surface">
+				<MyInputLabel>{nameFieldLabel}</MyInputLabel>
+				<MyInputArea>
+					<MyInputBox />
+					<MyInputControl
+						ref={nameInputRef}
+						type="text"
+						autoComplete="off"
+						defaultValue=""
+						maxLength={workspaces_name_max_length}
+						placeholder={kind === "workspace" ? "acme-labs" : "my-project"}
+						aria-invalid={!isNameValid && isNameNonEmpty}
+						disabled={isSubmitting}
+						onCompositionEnd={onNameCompositionEnd}
+						onInput={onNameInput}
+						onPaste={onNamePaste}
+					/>
+				</MyInputArea>
+				<MyInputHelperText
+					className={cn(
+						nameMessage &&
+							("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
+					)}
+				>
+					{nameMessage ?? main_app_header_workspace_switcher_modal_NAME_HELPER_TEXT}
+				</MyInputHelperText>
+			</MyInput>
+
+			<MyInput variant="surface">
+				<MyInputLabel>Description</MyInputLabel>
+				<MyInputArea>
+					<MyInputBox />
+					<MyInputControl
+						ref={descriptionInputRef}
+						type="text"
+						autoComplete="off"
+						defaultValue=""
+						maxLength={workspaces_description_max_length}
+						placeholder={kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"}
+						aria-invalid={!isDescriptionValid}
+						disabled={isSubmitting}
+						onInput={onDescriptionInput}
+					/>
+				</MyInputArea>
+				<MyInputHelperText
+					className={cn(
+						descriptionMessage &&
+							("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
+					)}
+				>
+					{descriptionMessage ?? main_app_header_workspace_switcher_modal_DESCRIPTION_HELPER_TEXT}
+				</MyInputHelperText>
+			</MyInput>
+		</>
+	);
+});
+// #endregion modal form helpers
+
+// #region create modal
 
 type MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal"
@@ -582,16 +661,26 @@ type MainAppHeaderWorkspaceSwitcherModalCreateModal_Props = {
 	open: boolean;
 	setOpen: Dispatch<SetStateAction<boolean>>;
 	kind: "project" | "workspace";
-	createProject: (
-		args: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs,
-	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateProjectResult | undefined>;
+	workspaceId: FunctionArgs<typeof app_convex_api.workspaces.create_project>["workspaceId"];
+	workspaceName: string;
 	createWorkspace: (
 		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
-	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateWorkspaceResult | undefined>;
-	workspaceId: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs["workspaceId"];
-	workspaceName: string;
-	onAfterCreateProject: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
-	onAfterCreateWorkspace: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_workspace> | undefined>;
+	createProject: (
+		args: FunctionArgs<typeof app_convex_api.workspaces.create_project>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_project> | undefined>;
+	onAfterCreateWorkspace: (args: {
+		workspaceId: app_convex_Id<"workspaces">;
+		projectId: app_convex_Id<"workspaces_projects">;
+		workspaceName: string;
+		projectName: string;
+	}) => void;
+	onAfterCreateProject: (args: {
+		workspaceId: app_convex_Id<"workspaces">;
+		projectId: app_convex_Id<"workspaces_projects">;
+		workspaceName: string;
+		projectName: string;
+	}) => void;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
@@ -600,27 +689,28 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			open,
 			setOpen,
 			kind,
-			createProject,
-			createWorkspace,
 			workspaceId,
 			workspaceName,
-			onAfterCreateProject,
+			createWorkspace,
+			createProject,
 			onAfterCreateWorkspace,
+			onAfterCreateProject,
 		} = props;
 
 		const createFormDomId = `MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form-${useId().replace(/:/g, "")}`;
 
 		const nameInputRef = useRef<HTMLInputElement>(null);
-		const descriptionInputRef = useRef<HTMLTextAreaElement>(null);
-		const nameSubmitFailuresRef = useRef<Set<string>>(new Set());
+		const descriptionInputRef = useRef<HTMLInputElement>(null);
+		const nameBlockedMessagesRef = useRef<Map<string, string>>(new Map());
 		const [isNameValid, setIsNameValid] = useState(false);
 		const [isNameNonEmpty, setIsNameNonEmpty] = useState(false);
 		const [isDescriptionValid, setIsDescriptionValid] = useState(true);
+		const [nameValidationMessage, setNameValidationMessage] = useState<string | undefined>(undefined);
 		const [submitMessage, setSubmitMessage] = useState<string | undefined>(undefined);
-		const [descriptionSubmitMessage, setDescriptionSubmitMessage] = useState<string | undefined>(undefined);
+		const [descriptionMessage, setDescriptionMessage] = useState<string | undefined>(undefined);
 		const [isSubmitting, setIsSubmitting] = useState(false);
 
-		const sync_name_value_for_submit = (el: HTMLInputElement) => {
+		const syncNameValueForSubmit = useFn((el: HTMLInputElement) => {
 			const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
 			if (el.value !== normalized) {
 				el.value = normalized;
@@ -629,27 +719,29 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			setIsNameNonEmpty(normalized.length > 0);
 
 			const validated = workspaces_name_validate(normalized);
-			const blockedByFailedRetry = nameSubmitFailuresRef.current.has(normalized);
+			const blockedMessage = validated._nay ? undefined : nameBlockedMessagesRef.current.get(validated._yay);
 
-			setIsNameValid(!validated._nay && !blockedByFailedRetry);
-		};
+			setNameValidationMessage(validated._nay?.message ?? blockedMessage);
+			setIsNameValid(!validated._nay && !blockedMessage);
+		});
 
-		const apply_name_input_to_control = (el: HTMLInputElement) => {
-			sync_name_value_for_submit(el);
+		const applyNameInputToControl = useFn((el: HTMLInputElement) => {
+			syncNameValueForSubmit(el);
 			setSubmitMessage(undefined);
-		};
+		});
 
-		const sync_description_value_for_submit = (el: HTMLTextAreaElement) => {
+		const syncDescriptionValueForSubmit = useFn((el: HTMLInputElement) => {
 			const validated = workspaces_description_normalize(el.value);
+
+			setDescriptionMessage(validated._nay?.message);
 			setIsDescriptionValid(!validated._nay);
-		};
+		});
 
-		const apply_description_input_to_control = (el: HTMLTextAreaElement) => {
-			sync_description_value_for_submit(el);
-			setDescriptionSubmitMessage(undefined);
-		};
+		const applyDescriptionInputToControl = useFn((el: HTMLInputElement) => {
+			syncDescriptionValueForSubmit(el);
+		});
 
-		const handleFormSubmit: FormEventHandler<HTMLFormElement> = (event) => {
+		const handleFormSubmit = useFn<SubmitEventHandler<HTMLFormElement>>((event) => {
 			event.preventDefault();
 			if (isSubmitting) {
 				return;
@@ -665,7 +757,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				return;
 			}
 
-			sync_name_value_for_submit(el);
+			syncNameValueForSubmit(el);
 			const canonicalName = workspaces_name_autofix(el.value);
 			el.value = canonicalName;
 			const validated = workspaces_name_validate(canonicalName);
@@ -674,14 +766,14 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			}
 
 			const name = validated._yay;
-			if (nameSubmitFailuresRef.current.has(name)) {
+			if (nameBlockedMessagesRef.current.has(name)) {
 				return;
 			}
 
-			sync_description_value_for_submit(descriptionEl);
+			syncDescriptionValueForSubmit(descriptionEl);
 			const descriptionValidated = workspaces_description_normalize(descriptionEl.value);
 			if (descriptionValidated._nay) {
-				setDescriptionSubmitMessage(descriptionValidated._nay.message);
+				setDescriptionMessage(descriptionValidated._nay.message);
 				return;
 			}
 			const description = descriptionValidated._yay;
@@ -689,7 +781,6 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			void (async (/* iife */) => {
 				setIsSubmitting(true);
 				setSubmitMessage(undefined);
-				setDescriptionSubmitMessage(undefined);
 
 				if (kind === "workspace") {
 					const result = await createWorkspace({ name, description });
@@ -700,10 +791,11 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 					if (result._nay) {
 						if (result._nay.message === "Description is too long") {
-							setDescriptionSubmitMessage(result._nay.message);
+							setDescriptionMessage(result._nay.message);
+						} else if (should_block_name_retry(result._nay.message)) {
+							nameBlockedMessagesRef.current.set(name, result._nay.message);
+							syncNameValueForSubmit(el);
 						} else {
-							nameSubmitFailuresRef.current.add(name);
-							setIsNameValid(false);
 							setSubmitMessage(result._nay.message);
 						}
 						return;
@@ -729,10 +821,11 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 				if (result._nay) {
 					if (result._nay.message === "Description is too long") {
-						setDescriptionSubmitMessage(result._nay.message);
+						setDescriptionMessage(result._nay.message);
+					} else if (should_block_name_retry(result._nay.message)) {
+						nameBlockedMessagesRef.current.set(name, result._nay.message);
+						syncNameValueForSubmit(el);
 					} else {
-						nameSubmitFailuresRef.current.add(name);
-						setIsNameValid(false);
 						setSubmitMessage(result._nay.message);
 					}
 					return;
@@ -757,9 +850,9 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				.finally(() => {
 					setIsSubmitting(false);
 				});
-		};
+		});
 
-		const handleNameInput: FormEventHandler<HTMLInputElement> = (event) => {
+		const handleNameInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
 			const el = event.currentTarget;
 			const native = event.nativeEvent;
 			if ("isComposing" in native && (native as InputEvent).isComposing) {
@@ -767,10 +860,10 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			}
 
 			// Covers insertFromPaste, insertFromDrop, insertText, and delete-*: el.value already includes the edit (onPaste uses preventDefault and normalizes without relying on this).
-			apply_name_input_to_control(el);
-		};
+			applyNameInputToControl(el);
+		});
 
-		const handleNamePaste: ClipboardEventHandler<HTMLInputElement> = (event) => {
+		const handleNamePaste = useFn<ClipboardEventHandler<HTMLInputElement>>((event) => {
 			const pasted = event.clipboardData.getData("text/plain");
 			if (pasted === "") {
 				return;
@@ -781,30 +874,35 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			const start = el.selectionStart ?? el.value.length;
 			const end = el.selectionEnd ?? el.value.length;
 			el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
-			apply_name_input_to_control(el);
+			applyNameInputToControl(el);
 
 			queueMicrotask(() => {
 				const pos = el.value.length;
 				el.setSelectionRange(pos, pos);
 			});
-		};
+		});
 
-		const handleNameCompositionEnd: CompositionEventHandler<HTMLInputElement> = (event) => {
-			apply_name_input_to_control(event.currentTarget);
-		};
+		const handleNameCompositionEnd = useFn<CompositionEventHandler<HTMLInputElement>>((event) => {
+			applyNameInputToControl(event.currentTarget);
+		});
 
-		const handleDescriptionInput: FormEventHandler<HTMLTextAreaElement> = (event) => {
-			apply_description_input_to_control(event.currentTarget);
-		};
+		const handleDescriptionInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
+			applyDescriptionInputToControl(event.currentTarget);
+		});
+
+		const handleCreateModalCancel = useFn(() => {
+			setOpen(false);
+		});
 
 		useEffect(() => {
 			if (!open) {
 				return;
 			}
 
-			nameSubmitFailuresRef.current.clear();
+			nameBlockedMessagesRef.current.clear();
+			setNameValidationMessage(undefined);
 			setSubmitMessage(undefined);
-			setDescriptionSubmitMessage(undefined);
+			setDescriptionMessage(undefined);
 
 			const el = nameInputRef.current;
 			if (el) {
@@ -860,72 +958,35 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 									"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 								)}
 							>
-								<MyInput variant="surface">
-									<MyInputLabel>{nameFieldLabel}</MyInputLabel>
-									<MyInputArea>
-										<MyInputBox />
-										<MyInputControl
-											ref={nameInputRef}
-											type="text"
-											autoComplete="off"
-											defaultValue=""
-											placeholder={kind === "workspace" ? "acme-labs" : "my-project"}
-											aria-invalid={!isNameValid && isNameNonEmpty}
-											disabled={isSubmitting}
-											onCompositionEnd={handleNameCompositionEnd}
-											onInput={handleNameInput}
-											onPaste={handleNamePaste}
-										/>
-									</MyInputArea>
-									<MyInputHelperText
-										className={cn(
-											submitMessage &&
-												("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
-										)}
-									>
-										{submitMessage ?? main_app_header_workspace_switcher_modal_CREATE_NAME_HELPER_TEXT}
-									</MyInputHelperText>
-								</MyInput>
-
-								<MyInput variant="surface">
-									<MyInputLabel>Description</MyInputLabel>
-									<MyInputArea>
-										<MyInputBox />
-										<MyInputTextAreaControl
-											ref={descriptionInputRef}
-											rows={3}
-											autoComplete="off"
-											placeholder={
-												kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"
-											}
-											aria-invalid={!isDescriptionValid}
-											disabled={isSubmitting}
-											onInput={handleDescriptionInput}
-										/>
-									</MyInputArea>
-									<MyInputHelperText
-										className={cn(
-											descriptionSubmitMessage &&
-												("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
-										)}
-									>
-										{descriptionSubmitMessage ??
-											main_app_header_workspace_switcher_modal_CREATE_DESCRIPTION_HELPER_TEXT}
-									</MyInputHelperText>
-								</MyInput>
+								<MainAppHeaderWorkspaceCreateEditFormFields
+									nameInputRef={nameInputRef}
+									descriptionInputRef={descriptionInputRef}
+									kind={kind}
+									nameFieldLabel={nameFieldLabel}
+									isNameValid={isNameValid}
+									isNameNonEmpty={isNameNonEmpty}
+									isDescriptionValid={isDescriptionValid}
+									isSubmitting={isSubmitting}
+									nameMessage={submitMessage ?? nameValidationMessage}
+									descriptionMessage={descriptionMessage}
+									onNameCompositionEnd={handleNameCompositionEnd}
+									onNameInput={handleNameInput}
+									onNamePaste={handleNamePaste}
+									onDescriptionInput={handleDescriptionInput}
+								/>
 							</div>
 						</form>
 					</MyModalScrollableArea>
 
 					<MyModalFooter>
-						<MyButton type="button" disabled={isSubmitting} variant="outline" onClick={() => setOpen(false)}>
+						<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleCreateModalCancel}>
 							Cancel
 						</MyButton>
 						<MyButton
 							type="submit"
 							form={createFormDomId}
-							disabled={!isNameValid || !isDescriptionValid || isSubmitting}
 							variant="accent"
+							disabled={!isNameValid || !isDescriptionValid || isSubmitting}
 						>
 							{isSubmitting ? "Creating…" : dialogTitle}
 						</MyButton>
@@ -939,126 +1000,147 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 );
 // #endregion create modal
 
-// #region rename modal
-type MainAppHeaderWorkspaceSwitcherModalRenameModal_Props = {
-	renameProject: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.rename_project>,
-	) => Promise<MainAppHeaderWorkspaceSwitcherModal_RenameProjectResult | undefined>;
-	renameWorkspace: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.rename_workspace>,
-	) => Promise<MainAppHeaderWorkspaceSwitcherModal_RenameWorkspaceResult | undefined>;
-	setTarget: Dispatch<SetStateAction<MainAppHeaderWorkspaceSwitcherModal_RenameTarget | null>>;
-	target: MainAppHeaderWorkspaceSwitcherModal_RenameTarget | null;
-	onAfterRename: (args: MainAppHeaderWorkspaceSwitcherModal_AfterRename) => void;
+// #region edit modal
+type MainAppHeaderWorkspaceSwitcherModalEditModal_Props = {
+	target: MainAppHeaderWorkspaceSwitcherModal_EditTarget | null;
+	editWorkspace: (
+		args: FunctionArgs<typeof app_convex_api.workspaces.edit_workspace>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.edit_workspace> | undefined>;
+	editProject: (
+		args: FunctionArgs<typeof app_convex_api.workspaces.edit_project>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.edit_project> | undefined>;
+	setTarget: Dispatch<SetStateAction<MainAppHeaderWorkspaceSwitcherModal_EditTarget | null>>;
+	onAfterEdit: (args: MainAppHeaderWorkspaceSwitcherModal_AfterEdit) => void;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalRenameModal = memo(
-	function MainAppHeaderWorkspaceSwitcherModalRenameModal(props: MainAppHeaderWorkspaceSwitcherModalRenameModal_Props) {
-		const { target, setTarget, renameWorkspace, renameProject, onAfterRename } = props;
+export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAppHeaderWorkspaceSwitcherModalEditModal(
+	props: MainAppHeaderWorkspaceSwitcherModalEditModal_Props,
+) {
+	const { target, editWorkspace, editProject, setTarget, onAfterEdit } = props;
 
-		const renameFormDomId = `MainAppHeaderWorkspaceSwitcherModalRenameModal-form-${useId().replace(/:/g, "")}`;
+	const editFormDomId = `MainAppHeaderWorkspaceSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
 
-		const nameInputRef = useRef<HTMLInputElement>(null);
-		const nameSubmitFailuresRef = useRef<Set<string>>(new Set());
-		const initialCanonicalNameRef = useRef<string>("");
-		const [isNameValid, setIsNameValid] = useState(false);
-		const [isNameNonEmpty, setIsNameNonEmpty] = useState(false);
-		const [isUnchanged, setIsUnchanged] = useState(true);
-		const [submitMessage, setSubmitMessage] = useState<string | undefined>(undefined);
-		const [isSubmitting, setIsSubmitting] = useState(false);
+	const nameInputRef = useRef<HTMLInputElement>(null);
+	const descriptionInputRef = useRef<HTMLInputElement>(null);
+	const nameBlockedMessagesRef = useRef<Map<string, string>>(new Map());
+	const initialCanonicalNameRef = useRef<string>("");
+	const initialDescriptionRef = useRef<string>("");
+	const [isNameValid, setIsNameValid] = useState(false);
+	const [isNameNonEmpty, setIsNameNonEmpty] = useState(false);
+	const [isDescriptionValid, setIsDescriptionValid] = useState(true);
+	const [isUnchanged, setIsUnchanged] = useState(true);
+	const [nameValidationMessage, setNameValidationMessage] = useState<string | undefined>(undefined);
+	const [submitMessage, setSubmitMessage] = useState<string | undefined>(undefined);
+	const [descriptionMessage, setDescriptionMessage] = useState<string | undefined>(undefined);
+	const [isSubmitting, setIsSubmitting] = useState(false);
 
-		const sync_name_value_for_submit = (el: HTMLInputElement) => {
-			const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
-			if (el.value !== normalized) {
-				el.value = normalized;
-			}
+	const syncUnchangedState = useFn(() => {
+		const el = nameInputRef.current;
+		const descriptionEl = descriptionInputRef.current;
+		if (!el || !descriptionEl) {
+			return;
+		}
 
-			setIsNameNonEmpty(normalized.length > 0);
+		const canonicalName = workspaces_name_autofix(el.value);
+		const validatedName = workspaces_name_validate(canonicalName);
+		const canonicalNameForCompare = validatedName._nay ? canonicalName : validatedName._yay;
 
-			const validated = workspaces_name_validate(normalized);
-			const blockedByFailedRetry = nameSubmitFailuresRef.current.has(normalized);
+		const validatedDescription = workspaces_description_normalize(descriptionEl.value);
+		const normalizedDescription = validatedDescription._nay ? descriptionEl.value.trim() : validatedDescription._yay;
 
-			setIsNameValid(!validated._nay && !blockedByFailedRetry);
+		setIsUnchanged(
+			canonicalNameForCompare === initialCanonicalNameRef.current &&
+				normalizedDescription === initialDescriptionRef.current,
+		);
+	});
 
-			const canonicalForCompare = validated._nay ? normalized : validated._yay;
-			setIsUnchanged(canonicalForCompare === initialCanonicalNameRef.current);
-		};
+	const syncNameValueForSubmit = useFn((el: HTMLInputElement) => {
+		const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
+		if (el.value !== normalized) {
+			el.value = normalized;
+		}
 
-		const apply_name_input_to_control = (el: HTMLInputElement) => {
-			sync_name_value_for_submit(el);
+		setIsNameNonEmpty(normalized.length > 0);
+
+		const validated = workspaces_name_validate(normalized);
+		const blockedMessage = validated._nay ? undefined : nameBlockedMessagesRef.current.get(validated._yay);
+
+		setNameValidationMessage(validated._nay?.message ?? blockedMessage);
+		setIsNameValid(!validated._nay && !blockedMessage);
+		syncUnchangedState();
+	});
+
+	const applyNameInputToControl = useFn((el: HTMLInputElement) => {
+		syncNameValueForSubmit(el);
+		setSubmitMessage(undefined);
+	});
+
+	const syncDescriptionValueForSubmit = useFn((el: HTMLInputElement) => {
+		const validated = workspaces_description_normalize(el.value);
+		setDescriptionMessage(validated._nay?.message);
+		setIsDescriptionValid(!validated._nay);
+		syncUnchangedState();
+	});
+
+	const applyDescriptionInputToControl = useFn((el: HTMLInputElement) => {
+		syncDescriptionValueForSubmit(el);
+	});
+
+	const handleFormSubmit = useFn<SubmitEventHandler<HTMLFormElement>>((event) => {
+		event.preventDefault();
+		if (isSubmitting || !target) {
+			return;
+		}
+
+		const el = nameInputRef.current;
+		if (!el) {
+			return;
+		}
+
+		const descriptionEl = descriptionInputRef.current;
+		if (!descriptionEl) {
+			return;
+		}
+
+		syncNameValueForSubmit(el);
+		const canonicalName = workspaces_name_autofix(el.value);
+		el.value = canonicalName;
+		const validated = workspaces_name_validate(canonicalName);
+		if (validated._nay) {
+			return;
+		}
+
+		const name = validated._yay;
+		if (nameBlockedMessagesRef.current.has(name)) {
+			return;
+		}
+
+		syncDescriptionValueForSubmit(descriptionEl);
+		const descriptionValidated = workspaces_description_normalize(descriptionEl.value);
+		if (descriptionValidated._nay) {
+			setDescriptionMessage(descriptionValidated._nay.message);
+			return;
+		}
+
+		const description = descriptionValidated._yay;
+
+		if (name === initialCanonicalNameRef.current && description === initialDescriptionRef.current) {
+			setTarget(null);
+			return;
+		}
+
+		const activeTarget = target;
+
+		void (async (/* iife */) => {
+			setIsSubmitting(true);
 			setSubmitMessage(undefined);
-		};
 
-		const handleFormSubmit: FormEventHandler<HTMLFormElement> = (event) => {
-			event.preventDefault();
-			if (isSubmitting || !target) {
-				return;
-			}
-
-			const el = nameInputRef.current;
-			if (!el) {
-				return;
-			}
-
-			sync_name_value_for_submit(el);
-			const canonicalName = workspaces_name_autofix(el.value);
-			el.value = canonicalName;
-			const validated = workspaces_name_validate(canonicalName);
-			if (validated._nay) {
-				return;
-			}
-
-			const name = validated._yay;
-			if (nameSubmitFailuresRef.current.has(name)) {
-				return;
-			}
-
-			if (name === initialCanonicalNameRef.current) {
-				setTarget(null);
-				return;
-			}
-
-			const activeTarget = target;
-
-			void (async (/* iife */) => {
-				setIsSubmitting(true);
-				setSubmitMessage(undefined);
-
-				if (activeTarget.kind === "workspace") {
-					const result = await renameWorkspace({
-						workspaceId: activeTarget.id as app_convex_Id<"workspaces">,
-						defaultProjectId: activeTarget.defaultProjectId,
-						name,
-					});
-
-					if (result == null) {
-						return;
-					}
-
-					if (result._nay) {
-						nameSubmitFailuresRef.current.add(name);
-						setIsNameValid(false);
-						setSubmitMessage(result._nay.message);
-						return;
-					}
-
-					await app_convex.query(app_convex_api.workspaces.list, {});
-
-					setTarget(null);
-					onAfterRename({
-						kind: "workspace",
-						oldName: activeTarget.initialName,
-						newName: result._yay.name,
-						workspaceId: activeTarget.id as app_convex_Id<"workspaces">,
-					});
-					return;
-				}
-
-				const result = await renameProject({
-					workspaceId: activeTarget.workspaceId,
+			if (activeTarget.kind === "workspace") {
+				const result = await editWorkspace({
+					workspaceId: activeTarget.id as app_convex_Id<"workspaces">,
 					defaultProjectId: activeTarget.defaultProjectId,
-					projectId: activeTarget.id as app_convex_Id<"workspaces_projects">,
 					name,
+					description,
 				});
 
 				if (result == null) {
@@ -1066,182 +1148,236 @@ export const MainAppHeaderWorkspaceSwitcherModalRenameModal = memo(
 				}
 
 				if (result._nay) {
-					nameSubmitFailuresRef.current.add(name);
-					setIsNameValid(false);
-					setSubmitMessage(result._nay.message);
+					if (result._nay.message === "Description is too long") {
+						setDescriptionMessage(result._nay.message);
+					} else if (should_block_name_retry(result._nay.message)) {
+						nameBlockedMessagesRef.current.set(name, result._nay.message);
+						syncNameValueForSubmit(el);
+					} else {
+						setSubmitMessage(result._nay.message);
+					}
 					return;
 				}
 
 				await app_convex.query(app_convex_api.workspaces.list, {});
 
 				setTarget(null);
-				onAfterRename({
-					kind: "project",
+				onAfterEdit({
+					kind: "workspace",
 					oldName: activeTarget.initialName,
 					newName: result._yay.name,
-					workspaceId: result._yay.workspaceId,
-					projectId: activeTarget.id as app_convex_Id<"workspaces_projects">,
+					workspaceId: activeTarget.id as app_convex_Id<"workspaces">,
 				});
-			})()
-				.catch((error) => {
-					console.error("[MainAppHeaderWorkspaceSwitcherModalRenameModal] Unexpected rename error", {
-						error,
-						kind: activeTarget.kind,
-					});
-				})
-				.finally(() => {
-					setIsSubmitting(false);
-				});
-		};
-
-		const handleNameInput: FormEventHandler<HTMLInputElement> = (event) => {
-			const el = event.currentTarget;
-			const native = event.nativeEvent;
-			if ("isComposing" in native && (native as InputEvent).isComposing) {
 				return;
 			}
 
-			apply_name_input_to_control(el);
-		};
-
-		const handleNamePaste: ClipboardEventHandler<HTMLInputElement> = (event) => {
-			const pasted = event.clipboardData.getData("text/plain");
-			if (pasted === "") {
-				return;
-			}
-
-			event.preventDefault();
-			const el = event.currentTarget;
-			const start = el.selectionStart ?? el.value.length;
-			const end = el.selectionEnd ?? el.value.length;
-			el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
-			apply_name_input_to_control(el);
-
-			queueMicrotask(() => {
-				const pos = el.value.length;
-				el.setSelectionRange(pos, pos);
+			const result = await editProject({
+				workspaceId: activeTarget.workspaceId,
+				defaultProjectId: activeTarget.defaultProjectId,
+				projectId: activeTarget.id as app_convex_Id<"workspaces_projects">,
+				name,
+				description,
 			});
-		};
 
-		const handleNameCompositionEnd: CompositionEventHandler<HTMLInputElement> = (event) => {
-			apply_name_input_to_control(event.currentTarget);
-		};
-
-		useEffect(() => {
-			if (!target) {
+			if (result == null) {
 				return;
 			}
 
-			nameSubmitFailuresRef.current.clear();
-			setSubmitMessage(undefined);
-
-			const validatedInitial = workspaces_name_validate(workspaces_name_autofix(target.initialName));
-			initialCanonicalNameRef.current = validatedInitial._nay ? "" : validatedInitial._yay;
-
-			const el = nameInputRef.current;
-			if (el) {
-				el.value = target.initialName;
-				apply_name_input_to_control(el);
+			if (result._nay) {
+				if (result._nay.message === "Description is too long") {
+					setDescriptionMessage(result._nay.message);
+				} else if (should_block_name_retry(result._nay.message)) {
+					nameBlockedMessagesRef.current.set(name, result._nay.message);
+					syncNameValueForSubmit(el);
+				} else {
+					setSubmitMessage(result._nay.message);
+				}
+				return;
 			}
-		}, [target]);
 
-		const dialogTitle = target ? (target.kind === "workspace" ? "Rename workspace" : "Rename project") : "Rename";
-		const nameFieldLabel = target ? (target.kind === "workspace" ? "Workspace name" : "Project name") : "Name";
-		const renameOpen = target !== null;
+			await app_convex.query(app_convex_api.workspaces.list, {});
 
-		const handleRenameModalSetOpen: Dispatch<SetStateAction<boolean>> = (next) => {
-			const resolved = typeof next === "function" ? next(renameOpen) : next;
-			if (!resolved) {
-				setTarget(null);
-			}
-		};
+			setTarget(null);
+			onAfterEdit({
+				kind: "project",
+				oldName: activeTarget.initialName,
+				newName: result._yay.name,
+				workspaceId: result._yay.workspaceId,
+				projectId: activeTarget.id as app_convex_Id<"workspaces_projects">,
+			});
+		})()
+			.catch((error) => {
+				console.error("[MainAppHeaderWorkspaceSwitcherModalEditModal] Unexpected edit error", {
+					error,
+					kind: activeTarget.kind,
+				});
+			})
+			.finally(() => {
+				setIsSubmitting(false);
+			});
+	});
 
-		return (
-			<MyModal open={renameOpen} setOpen={handleRenameModalSetOpen}>
-				<MyModalPopover
-					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalCreateModal" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-					)}
-				>
-					<MyModalHeader>
-						<div
-							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-copy" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-							)}
-						>
-							<MyModalHeading>{dialogTitle}</MyModalHeading>
-						</div>
-					</MyModalHeader>
+	const handleNameInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
+		const el = event.currentTarget;
+		const native = event.nativeEvent;
+		if ("isComposing" in native && (native as InputEvent).isComposing) {
+			return;
+		}
 
-					<MyModalScrollableArea
+		applyNameInputToControl(el);
+	});
+
+	const handleNamePaste = useFn<ClipboardEventHandler<HTMLInputElement>>((event) => {
+		const pasted = event.clipboardData.getData("text/plain");
+		if (pasted === "") {
+			return;
+		}
+
+		event.preventDefault();
+		const el = event.currentTarget;
+		const start = el.selectionStart ?? el.value.length;
+		const end = el.selectionEnd ?? el.value.length;
+		el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
+		applyNameInputToControl(el);
+
+		queueMicrotask(() => {
+			const pos = el.value.length;
+			el.setSelectionRange(pos, pos);
+		});
+	});
+
+	const handleNameCompositionEnd = useFn<CompositionEventHandler<HTMLInputElement>>((event) => {
+		applyNameInputToControl(event.currentTarget);
+	});
+
+	const handleDescriptionInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
+		applyDescriptionInputToControl(event.currentTarget);
+	});
+
+	const handleEditModalCancel = useFn(() => {
+		setTarget(null);
+	});
+
+	const handleEditModalSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
+		const resolved = typeof next === "function" ? next(target !== null) : next;
+		if (!resolved) {
+			setTarget(null);
+		}
+	});
+
+	useEffect(() => {
+		if (!target) {
+			return;
+		}
+
+		nameBlockedMessagesRef.current.clear();
+		setNameValidationMessage(undefined);
+		setSubmitMessage(undefined);
+		setDescriptionMessage(undefined);
+
+		const validatedInitial = workspaces_name_validate(workspaces_name_autofix(target.initialName));
+		initialCanonicalNameRef.current = validatedInitial._nay
+			? workspaces_name_autofix(target.initialName)
+			: validatedInitial._yay;
+
+		const validatedInitialDescription = workspaces_description_normalize(target.initialDescription);
+		initialDescriptionRef.current = validatedInitialDescription._nay
+			? target.initialDescription.trim()
+			: validatedInitialDescription._yay;
+
+		const el = nameInputRef.current;
+		if (el) {
+			el.value = target.initialName;
+			applyNameInputToControl(el);
+		}
+
+		const descriptionEl = descriptionInputRef.current;
+		if (descriptionEl) {
+			descriptionEl.value = target.initialDescription;
+			applyDescriptionInputToControl(descriptionEl);
+		}
+	}, [target]);
+
+	const dialogTitle = target ? (target.kind === "workspace" ? "Edit workspace" : "Edit project") : "Edit";
+	const nameFieldLabel = target ? (target.kind === "workspace" ? "Workspace name" : "Project name") : "Name";
+	const editOpen = target !== null;
+
+	return (
+		<MyModal open={editOpen} setOpen={handleEditModalSetOpen}>
+			<MyModalPopover
+				className={cn(
+					"MainAppHeaderWorkspaceSwitcherModalCreateModal" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+					"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+				)}
+			>
+				<MyModalHeader>
+					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+							"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-copy" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 						)}
 					>
-						<form
-							id={renameFormDomId}
+						<MyModalHeading>{dialogTitle}</MyModalHeading>
+					</div>
+				</MyModalHeader>
+
+				<MyModalScrollableArea
+					className={cn(
+						"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+					)}
+				>
+					<form
+						id={editFormDomId}
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+						)}
+						noValidate
+						onSubmit={handleFormSubmit}
+					>
+						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 							)}
-							noValidate
-							onSubmit={handleFormSubmit}
 						>
-							<div
-								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-								)}
-							>
-								<MyInput variant="surface">
-									<MyInputLabel>{nameFieldLabel}</MyInputLabel>
-									<MyInputArea>
-										<MyInputBox />
-										<MyInputControl
-											ref={nameInputRef}
-											type="text"
-											autoComplete="off"
-											defaultValue=""
-											placeholder={target?.kind === "workspace" ? "acme-labs" : "my-project"}
-											aria-invalid={!isNameValid && isNameNonEmpty}
-											disabled={isSubmitting}
-											onCompositionEnd={handleNameCompositionEnd}
-											onInput={handleNameInput}
-											onPaste={handleNamePaste}
-										/>
-									</MyInputArea>
-									<MyInputHelperText
-										className={cn(
-											submitMessage &&
-												("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
-										)}
-									>
-										{submitMessage ?? main_app_header_workspace_switcher_modal_CREATE_NAME_HELPER_TEXT}
-									</MyInputHelperText>
-								</MyInput>
-							</div>
-						</form>
-					</MyModalScrollableArea>
+							<MainAppHeaderWorkspaceCreateEditFormFields
+								nameInputRef={nameInputRef}
+								descriptionInputRef={descriptionInputRef}
+								kind={target?.kind ?? "workspace"}
+								nameFieldLabel={nameFieldLabel}
+								isNameValid={isNameValid}
+								isNameNonEmpty={isNameNonEmpty}
+								isDescriptionValid={isDescriptionValid}
+								isSubmitting={isSubmitting}
+								nameMessage={submitMessage ?? nameValidationMessage}
+								descriptionMessage={descriptionMessage}
+								onNameCompositionEnd={handleNameCompositionEnd}
+								onNameInput={handleNameInput}
+								onNamePaste={handleNamePaste}
+								onDescriptionInput={handleDescriptionInput}
+							/>
+						</div>
+					</form>
+				</MyModalScrollableArea>
 
-					<MyModalFooter>
-						<MyButton type="button" disabled={isSubmitting} variant="outline" onClick={() => setTarget(null)}>
-							Cancel
-						</MyButton>
-						<MyButton
-							type="submit"
-							form={renameFormDomId}
-							disabled={!isNameValid || isSubmitting || isUnchanged}
-							variant="accent"
-						>
-							{isSubmitting ? "Saving…" : "Save"}
-						</MyButton>
-					</MyModalFooter>
+				<MyModalFooter>
+					<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleEditModalCancel}>
+						Cancel
+					</MyButton>
+					<MyButton
+						type="submit"
+						form={editFormDomId}
+						variant="accent"
+						disabled={!isNameValid || !isDescriptionValid || isSubmitting || isUnchanged}
+					>
+						{isSubmitting ? "Saving…" : "Save"}
+					</MyButton>
+				</MyModalFooter>
 
-					<MyModalCloseTrigger />
-				</MyModalPopover>
-			</MyModal>
-		);
-	},
-);
-// #endregion rename modal
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion edit modal
 
 // #region root
 type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
@@ -1256,39 +1392,49 @@ type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModal-columns"
 	| "MainAppHeaderWorkspaceSwitcherModal-footer";
 
-type MainAppHeaderWorkspaceSwitcherModal_Props = {
+export type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	dialogOpen: boolean;
-	createProject: (
-		args: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs,
-	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateProjectResult | undefined>;
-	createWorkspace: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
-	) => Promise<MainAppHeaderWorkspaceSwitcherModal_CreateWorkspaceResult | undefined>;
-	createProjectDisabled: boolean;
-	createProjectDisabledReason?: string;
-	createWorkspaceDisabled: boolean;
-	createWorkspaceDisabledReason?: string;
 	listLoaded: boolean;
 	draftProjectId: app_convex_Id<"workspaces_projects">;
-	draftWorkspaceId: MainAppHeaderWorkspaceSwitcherModal_CreateProjectArgs["workspaceId"];
+	draftWorkspaceId: FunctionArgs<typeof app_convex_api.workspaces.create_project>["workspaceId"];
+	summaryWorkspaceName: string;
+	summaryProjectName: string;
+	/** Workspace name for create-project flow (draft row), not necessarily the routed tenant. */
+	workspaceName: string;
+	workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
 	projectItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
+	createWorkspaceDisabled: boolean;
+	createWorkspaceDisabledReason?: string;
+	createProjectDisabled: boolean;
+	createProjectDisabledReason?: string;
+	workspaceLimitFraction?: string;
+	workspaceLimitTooltip?: string;
 	projectLimitFraction?: string;
 	projectLimitTooltip?: string;
 	switchDisabled: boolean;
-	summaryProjectName: string;
-	summaryWorkspaceName: string;
-	workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
-	workspaceLimitFraction?: string;
-	workspaceLimitTooltip?: string;
-	/** Workspace name for create-project flow (draft row), not necessarily the routed tenant. */
-	workspaceName: string;
-	renameProject: MainAppHeaderWorkspaceSwitcherModalRenameModal_Props["renameProject"];
-	renameTarget: MainAppHeaderWorkspaceSwitcherModal_RenameTarget | null;
-	renameWorkspace: MainAppHeaderWorkspaceSwitcherModalRenameModal_Props["renameWorkspace"];
-	setRenameTarget: MainAppHeaderWorkspaceSwitcherModalRenameModal_Props["setTarget"];
-	onAfterCreateProject: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
-	onAfterCreateWorkspace: (args: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => void;
-	onAfterRename: (args: MainAppHeaderWorkspaceSwitcherModal_AfterRename) => void;
+	editTarget: MainAppHeaderWorkspaceSwitcherModal_EditTarget | null;
+	createWorkspace: (
+		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_workspace> | undefined>;
+	createProject: (
+		args: FunctionArgs<typeof app_convex_api.workspaces.create_project>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_project> | undefined>;
+	editWorkspace: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["editWorkspace"];
+	editProject: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["editProject"];
+	setEditTarget: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["setTarget"];
+	onAfterCreateWorkspace: (args: {
+		workspaceId: app_convex_Id<"workspaces">;
+		projectId: app_convex_Id<"workspaces_projects">;
+		workspaceName: string;
+		projectName: string;
+	}) => void;
+	onAfterCreateProject: (args: {
+		workspaceId: app_convex_Id<"workspaces">;
+		projectId: app_convex_Id<"workspaces_projects">;
+		workspaceName: string;
+		projectName: string;
+	}) => void;
+	onAfterEdit: (args: MainAppHeaderWorkspaceSwitcherModal_AfterEdit) => void;
 	onCancel: () => void;
 	onSwitch: () => void;
 };
@@ -1298,32 +1444,32 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 ) {
 	const {
 		dialogOpen,
-		createProject,
-		createWorkspace,
-		createProjectDisabled,
-		createProjectDisabledReason,
-		createWorkspaceDisabled,
-		createWorkspaceDisabledReason,
 		listLoaded,
 		draftProjectId,
 		draftWorkspaceId,
+		summaryWorkspaceName,
+		summaryProjectName,
+		workspaceName,
+		workspaceItems,
 		projectItems,
+		createWorkspaceDisabled,
+		createWorkspaceDisabledReason,
+		createProjectDisabled,
+		createProjectDisabledReason,
+		workspaceLimitFraction,
+		workspaceLimitTooltip,
 		projectLimitFraction,
 		projectLimitTooltip,
 		switchDisabled,
-		summaryProjectName,
-		summaryWorkspaceName,
-		workspaceItems,
-		workspaceLimitFraction,
-		workspaceLimitTooltip,
-		workspaceName,
-		renameProject,
-		renameTarget,
-		renameWorkspace,
-		setRenameTarget,
-		onAfterCreateProject,
+		editTarget,
+		createWorkspace,
+		createProject,
+		editWorkspace,
+		editProject,
+		setEditTarget,
 		onAfterCreateWorkspace,
-		onAfterRename,
+		onAfterCreateProject,
+		onAfterEdit,
 		onCancel,
 		onSwitch,
 	} = props;
@@ -1331,10 +1477,15 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 	const [createDialogOpen, setCreateDialogOpen] = useState(false);
 	const [createDialogKind, setCreateDialogKind] = useState<"project" | "workspace">("workspace");
 
-	const openCreateDialog = (kind: "project" | "workspace") => {
-		setCreateDialogKind(kind);
+	const handleOpenCreateWorkspaceDialog = useFn(() => {
+		setCreateDialogKind("workspace");
 		setCreateDialogOpen(true);
-	};
+	});
+
+	const handleOpenCreateProjectDialog = useFn(() => {
+		setCreateDialogKind("project");
+		setCreateDialogOpen(true);
+	});
 
 	return (
 		<>
@@ -1406,7 +1557,6 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					>
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
 							dialogOpen={dialogOpen}
-							icon={<Briefcase />}
 							title="Workspaces"
 							items={workspaceItems}
 							selectedItemId={draftWorkspaceId}
@@ -1414,12 +1564,12 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							createDisabledReason={createWorkspaceDisabledReason}
 							limitFraction={workspaceLimitFraction}
 							limitTooltip={workspaceLimitTooltip}
-							onCreate={() => openCreateDialog("workspace")}
+							onCreate={handleOpenCreateWorkspaceDialog}
+							icon={<Briefcase />}
 						/>
 
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
 							dialogOpen={dialogOpen}
-							icon={<FolderKanban />}
 							title="Projects"
 							items={projectItems}
 							selectedItemId={draftProjectId}
@@ -1427,7 +1577,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							createDisabledReason={createProjectDisabledReason}
 							limitFraction={projectLimitFraction}
 							limitTooltip={projectLimitTooltip}
-							onCreate={() => openCreateDialog("project")}
+							onCreate={handleOpenCreateProjectDialog}
+							icon={<FolderKanban />}
 						/>
 					</div>
 				</div>
@@ -1440,7 +1591,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					<MyButton type="button" variant="outline" onClick={onCancel}>
 						Cancel
 					</MyButton>
-					<MyButton type="button" disabled={switchDisabled} variant="accent" onClick={onSwitch}>
+					<MyButton type="button" variant="accent" disabled={switchDisabled} onClick={onSwitch}>
 						Switch
 					</MyButton>
 				</MyModalFooter>
@@ -1450,19 +1601,19 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					open={createDialogOpen}
 					setOpen={setCreateDialogOpen}
 					kind={createDialogKind}
-					createProject={createProject}
-					createWorkspace={createWorkspace}
 					workspaceId={draftWorkspaceId}
 					workspaceName={workspaceName}
-					onAfterCreateProject={onAfterCreateProject}
+					createWorkspace={createWorkspace}
+					createProject={createProject}
 					onAfterCreateWorkspace={onAfterCreateWorkspace}
+					onAfterCreateProject={onAfterCreateProject}
 				/>
-				<MainAppHeaderWorkspaceSwitcherModalRenameModal
-					target={renameTarget}
-					setTarget={setRenameTarget}
-					renameWorkspace={renameWorkspace}
-					renameProject={renameProject}
-					onAfterRename={onAfterRename}
+				<MainAppHeaderWorkspaceSwitcherModalEditModal
+					target={editTarget}
+					editProject={editProject}
+					editWorkspace={editWorkspace}
+					setTarget={setEditTarget}
+					onAfterEdit={onAfterEdit}
 				/>
 			</MyModalPopover>
 		</>

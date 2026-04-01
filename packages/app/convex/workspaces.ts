@@ -274,6 +274,8 @@ export const create_workspace = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		const now = Date.now();
+
 		const descriptionResult = workspaces_validate_description(args.description);
 		if (descriptionResult._nay) {
 			return Result({
@@ -282,8 +284,6 @@ export const create_workspace = mutation({
 				},
 			});
 		}
-
-		const now = Date.now();
 
 		return await workspaces_db_create(ctx, {
 			userId: user.id,
@@ -310,6 +310,8 @@ export const create_project = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		const now = Date.now();
+
 		const descriptionResult = workspaces_validate_description(args.description);
 		if (descriptionResult._nay) {
 			return Result({
@@ -318,8 +320,6 @@ export const create_project = mutation({
 				},
 			});
 		}
-
-		const now = Date.now();
 
 		return await workspaces_db_create_project(ctx, {
 			userId: user.id,
@@ -418,11 +418,12 @@ export const add_user_to_workspace_project = mutation({
 	},
 });
 
-export const rename_workspace = mutation({
+export const edit_workspace = mutation({
 	args: {
 		workspaceId: v.id("workspaces"),
 		defaultProjectId: v.id("workspaces_projects"),
 		name: v.string(),
+		description: v.string(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -431,6 +432,8 @@ export const rename_workspace = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const now = Date.now();
 
 		const [workspace, defaultProject, workspaceUserLookup] = await Promise.all([
 			ctx.db.get("workspaces", args.workspaceId),
@@ -466,7 +469,16 @@ export const rename_workspace = mutation({
 		if (workspace.default) {
 			return Result({
 				_nay: {
-					message: "Cannot rename the default workspace",
+					message: "Cannot edit the default workspace",
+				},
+			});
+		}
+
+		const descriptionResult = workspaces_validate_description(args.description);
+		if (descriptionResult._nay) {
+			return Result({
+				_nay: {
+					message: descriptionResult._nay.message,
 				},
 			});
 		}
@@ -480,7 +492,7 @@ export const rename_workspace = mutation({
 			});
 		}
 		const name = nameResult._yay;
-		const now = Date.now();
+		const description = descriptionResult._yay;
 
 		const existingWorkspace = await ctx.db
 			.query("workspaces")
@@ -496,6 +508,7 @@ export const rename_workspace = mutation({
 
 		await ctx.db.patch("workspaces", args.workspaceId, {
 			name,
+			description,
 			updatedAt: now,
 		});
 
@@ -507,12 +520,13 @@ export const rename_workspace = mutation({
 	},
 });
 
-export const rename_project = mutation({
+export const edit_project = mutation({
 	args: {
 		workspaceId: v.id("workspaces"),
 		defaultProjectId: v.id("workspaces_projects"),
 		projectId: v.id("workspaces_projects"),
 		name: v.string(),
+		description: v.string(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -522,6 +536,8 @@ export const rename_project = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+
+		const now = Date.now();
 
 		const [workspace, project, defaultProject, defaultProjectMembership, projectMembership] = await Promise.all([
 			ctx.db.get("workspaces", args.workspaceId),
@@ -568,7 +584,16 @@ export const rename_project = mutation({
 		if ((workspace.defaultProjectId !== undefined && project._id === workspace.defaultProjectId) || project.default) {
 			return Result({
 				_nay: {
-					message: "Cannot rename the default project",
+					message: "Cannot edit the default project",
+				},
+			});
+		}
+
+		const descriptionResult = workspaces_validate_description(args.description);
+		if (descriptionResult._nay) {
+			return Result({
+				_nay: {
+					message: descriptionResult._nay.message,
 				},
 			});
 		}
@@ -582,7 +607,7 @@ export const rename_project = mutation({
 			});
 		}
 		const name = nameResult._yay;
-		const now = Date.now();
+		const description = descriptionResult._yay;
 
 		const [defaultProjects, nonDefaultProjects] = await Promise.all([
 			ctx.db
@@ -607,6 +632,7 @@ export const rename_project = mutation({
 
 		await ctx.db.patch("workspaces_projects", args.projectId, {
 			name,
+			description,
 			updatedAt: now,
 		});
 
@@ -775,6 +801,8 @@ export const delete_workspace = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 
+		const now = Date.now();
+
 		const [workspace, worspaceUserLookup] = await Promise.all([
 			ctx.db.get("workspaces", args.workspaceId),
 			ctx.db
@@ -846,7 +874,6 @@ export const delete_workspace = mutation({
 		);
 
 		if (workspace.ownerUserId) {
-			const now = Date.now();
 			const ownerUserId = workspace.ownerUserId;
 			const limitDefinition = user_limits.EXTRA_WORKSPACES;
 			const limit = await ctx.db

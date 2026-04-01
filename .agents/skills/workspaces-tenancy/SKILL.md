@@ -1,13 +1,13 @@
 ---
 name: workspaces-tenancy
-description: Workspaces, projects, default personal/home tenant, membership, invitations, rename/delete rules, and delayed data purge. Use when changing Convex tenancy tables, `packages/app/convex/workspaces.ts`, `packages/app/server/workspaces.ts`, user bootstrap, or URL/membership resolution tied to workspace/project scope.
+description: Workspaces, projects, default personal/home tenant, membership, invitations, edit/delete rules, and delayed data purge. Use when changing Convex tenancy tables, `packages/app/convex/workspaces.ts`, `packages/app/server/workspaces.ts`, user bootstrap, or URL/membership resolution tied to workspace/project scope.
 ---
 
 # Mental model
 
 - A **workspace** groups **projects**. Each workspace has exactly one **primary** (default) project referenced by `workspaces.defaultProjectId` and flagged `workspaces_projects.default === true` for that row.
 - **Membership** is per **project**: table `workspaces_projects_users` keys `(userId, workspaceId, projectId)`. A user “sees” a workspace in `list` if they have **any** project membership under that workspace.
-- **Product rule (workspace membership by primary project):** Workspace-level operations that mean “is this user a member of this workspace?” (e.g. `rename_workspace`) require a membership row on that workspace’s **primary/default project** (`defaultProjectId`), not merely on any project in the workspace.
+- **Product rule (workspace membership by primary project):** Workspace-level operations that mean “is this user a member of this workspace?” (e.g. `edit_workspace`) require a membership row on that workspace’s **primary/default project** (`defaultProjectId`), not merely on any project in the workspace.
 - The **public API** (`api.workspaces.*` mutations/queries and server helpers they call) is the contract. The **database schema** is wider (optional fields, flags) so migrations and edge rows can exist; do not assume “schema allows it ⇒ product allows it.” Enforce invariants in Convex handlers and in `packages/app/server/workspaces.ts`.
 
 # Default tenant (per user)
@@ -30,17 +30,17 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 - `workspaces_db_create` always inserts a default project named `home` (`default: true`) and links `workspaces.defaultProjectId`.
 - **`create_workspace`** (public) calls `workspaces_db_create` **without** `default: true`, so it creates a **non-default** workspace plus its `home` project. That workspace is not the user’s `personal` default.
 
-# Rename and delete rules
+# Edit and delete rules
 
 | Rule | Enforcement (typical) |
 |------|------------------------|
-| Cannot **rename** the default workspace (`workspaces.default === true`) | `rename_workspace` |
-| Cannot **rename** the default/primary project (`project.default` or `project._id === workspace.defaultProjectId`) | `rename_project` |
+| Cannot **edit** the default workspace (`workspaces.default === true`) | `edit_workspace` |
+| Cannot **edit** the default/primary project (`project.default` or `project._id === workspace.defaultProjectId`) | `edit_project` |
 | Cannot **delete** the default workspace | `delete_workspace` |
 | Cannot **delete** the default project | `delete_project` |
-| May rename/delete **non-default** workspaces and **non-primary** projects | Same mutations, after guards; permissions use `user_is_workspace_admin` / `user_is_project_admin` (currently stubbed to allow — replace for real RBAC) |
+| May edit/delete **non-default** workspaces and **non-primary** projects | Same mutations, after guards; permissions use `user_is_workspace_admin` / `user_is_project_admin` (currently stubbed to allow — replace for real RBAC) |
 
-**Refactoring note:** Only the **primary** default **project** is protected from rename across all workspaces. Do **not** block renaming **all** projects in the user’s default `personal` workspace based solely on `workspace.default`; only the **`home`** (primary) project is special.
+**Refactoring note:** Only the **primary** default **project** is protected from edit across all workspaces. Do **not** block editing **all** projects in the user’s default `personal` workspace based solely on `workspace.default`; only the **`home`** (primary) project is special.
 
 # Invitations / adding members
 
@@ -65,12 +65,12 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 
 # Related files
 
-- `packages/app/convex/workspaces.ts` — public API, delete/rename/purge, list, membership queries.
+- `packages/app/convex/workspaces.ts` — public API, delete/edit/purge, list, membership queries.
 - `packages/app/server/workspaces.ts` — `workspaces_db_create`, `workspaces_db_create_project`, `workspaces_db_ensure_default_workspace_and_project_for_user`, name validation.
 - `packages/app/convex/users.ts` — bootstrap calls to `ensure`.
 - `packages/app/convex/schema.ts` — `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `workspaces_data_deletion_requests`, `users.defaultWorkspaceId` / `defaultProjectId`.
 - `packages/app/shared/workspaces.ts` — name autofix/validation and list sort helpers.
-- `packages/app/convex/workspaces.test.ts` — behavioral tests for ensure, rename, delete, share restrictions.
+- `packages/app/convex/workspaces.test.ts` — behavioral tests for ensure, edit, delete, share restrictions.
 
 # Auth skill cross-link
 

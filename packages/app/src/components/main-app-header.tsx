@@ -2,18 +2,15 @@ import "./main-app-header.css";
 
 import { memo, useEffect, useState, type ComponentPropsWithRef } from "react";
 import { useQuery } from "convex/react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
 import { ChevronsUpDown } from "lucide-react";
 
-import {
-	AppAuthProvider,
-} from "@/components/app-auth.tsx";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import {
 	MainAppHeaderWorkspaceSwitcherModal,
-	type MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection,
-	type MainAppHeaderWorkspaceSwitcherModal_AfterRename,
 	type MainAppHeaderWorkspaceSwitcherModal_ListItem,
-	type MainAppHeaderWorkspaceSwitcherModal_RenameTarget,
+	type MainAppHeaderWorkspaceSwitcherModal_Props,
+	type MainAppHeaderWorkspaceSwitcherModal_EditTarget,
 } from "@/components/main-app-header-workspace-controls-modal.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
@@ -105,16 +102,19 @@ function main_app_header_workspace_controls_create_disabled_tooltip(args: {
 
 const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
 	const navigate = useNavigate();
-	const pathname = useRouterState({ select: (s) => s.location.pathname });
 	const auth = AppAuthProvider.useAuth();
 
 	const { workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
+
+	const pathname = useRouterState<RegisteredRouter, string>({
+		select: (state) => state.location.pathname,
+	});
 
 	const workspaceList = useQuery(app_convex_api.workspaces.list);
 
 	const [isOpen, setIsOpen] = useState(false);
 	const [localDraft, setLocalDraft] = useState<MainAppHeaderWorkspaceControls_LocalDraft | null>(null);
-	const [renameTarget, setRenameTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_RenameTarget | null>(null);
+	const [editTarget, setEditTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_EditTarget | null>(null);
 
 	const workspaces = workspaceList?.workspaces;
 	const projects = workspaceId ? workspaceList?.workspaceIdsProjectsDict[workspaceId] : undefined;
@@ -210,7 +210,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
 		main_app_header_workspace_controls_move_list_item_to_front_by_id(
 			(workspaces ?? []).map((w) => {
-				const renamePrimaryProject = workspaceList
+				const primaryProject = workspaceList
 					? app_tenant_primary_project_for_workspace({
 							workspace: w,
 							projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
@@ -227,14 +227,15 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 					}),
 					isDefault: w.default,
 					onEdit:
-						w.default || !renamePrimaryProject
+						w.default || !primaryProject
 							? undefined
 							: () => {
-									setRenameTarget({
+									setEditTarget({
 										kind: "workspace",
 										id: w._id,
 										initialName: w.name,
-										defaultProjectId: renamePrimaryProject._id as app_convex_Id<"workspaces_projects">,
+										initialDescription: w.description ?? "",
+										defaultProjectId: primaryProject._id as app_convex_Id<"workspaces_projects">,
 									});
 								},
 					onDelete: w.default
@@ -326,14 +327,14 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		);
 
 	const projectItemsRaw: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = (draftProjects ?? []).map((p) => {
-		const renamePrimaryProject =
+		const primaryProject =
 			draftWorkspaceRecord && workspaceList
 				? app_tenant_primary_project_for_workspace({
 						workspace: draftWorkspaceRecord,
 						projects: workspaceList.workspaceIdsProjectsDict[draftWorkspaceRecord._id] ?? [],
 					})
 				: null;
-		const projectIsPrimary = renamePrimaryProject?._id === p._id;
+		const projectIsPrimary = primaryProject?._id === p._id;
 
 		return {
 			id: p._id,
@@ -345,20 +346,21 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 			}),
 			isDefault: p.default,
 			onEdit:
-				projectIsPrimary || !renamePrimaryProject
+				projectIsPrimary || !primaryProject
 					? undefined
 					: () => {
 							if (!draftWorkspaceRecord) {
-								console.error("[MainAppHeaderWorkspaceControls] Missing draft workspace for project rename");
+								console.error("[MainAppHeaderWorkspaceControls] Missing draft workspace for project edit");
 								return;
 							}
 
-							setRenameTarget({
+							setEditTarget({
 								kind: "project",
 								id: p._id,
 								initialName: p.name,
+								initialDescription: p.description ?? "",
 								workspaceId: draftWorkspaceRecord._id,
-								defaultProjectId: renamePrimaryProject._id as app_convex_Id<"workspaces_projects">,
+								defaultProjectId: primaryProject._id as app_convex_Id<"workspaces_projects">,
 							});
 						},
 			onDelete: p.default
@@ -440,7 +442,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 			? main_app_header_workspace_controls_move_list_item_to_front_by_id(projectItemsRaw, projectId)
 			: projectItemsRaw;
 
-	const handleWorkspaceSwitcherSwitch = useFn(() => {
+	const handleWorkspaceSwitcherSwitch = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onSwitch"]>(() => {
 		if (!workspaceList || !workspaces) {
 			console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
 			return;
@@ -461,8 +463,8 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		navigateToWorkspaceProject(nextWorkspace.name, nextProject.name);
 	});
 
-	const handleWorkspaceSwitcherAfterCreate = useFn(
-		(selection: MainAppHeaderWorkspaceSwitcherModal_AfterCreateSelection) => {
+	const handleWorkspaceSwitcherAfterCreate = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onAfterCreateWorkspace"]>(
+		(selection) => {
 			setLocalDraft({
 				workspaceId: selection.workspaceId,
 				projectId: selection.projectId,
@@ -470,7 +472,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		},
 	);
 
-	const handleWorkspaceSwitcherAfterRename = useFn((args: MainAppHeaderWorkspaceSwitcherModal_AfterRename) => {
+	const handleWorkspaceSwitcherAfterEdit = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onAfterEdit"]>((args) => {
 		if (args.kind === "workspace") {
 			if (workspaceId === args.workspaceId && currentWorkspaceName === args.oldName) {
 				navigateToWorkspaceProject(args.newName, currentProjectName);
@@ -483,13 +485,35 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		}
 	});
 
-	const handleWorkspaceSwitcherCancel = useFn(() => {
+	const handleWorkspaceSwitcherCancel = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onCancel"]>(() => {
 		setIsOpen(false);
+	});
+
+	const handleWorkspaceSwitcherCreateWorkspace = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["createWorkspace"]>(
+		(args) => {
+			return app_convex.mutation(app_convex_api.workspaces.create_workspace, args);
+		},
+	);
+
+	const handleWorkspaceSwitcherCreateProject = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["createProject"]>(
+		(args) => {
+			return app_convex.mutation(app_convex_api.workspaces.create_project, args);
+		},
+	);
+
+	const handleWorkspaceSwitcherEditWorkspace = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["editWorkspace"]>(
+		(args) => {
+			return app_convex.mutation(app_convex_api.workspaces.edit_workspace, args);
+		},
+	);
+
+	const handleWorkspaceSwitcherEditProject = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["editProject"]>((args) => {
+		return app_convex.mutation(app_convex_api.workspaces.edit_project, args);
 	});
 
 	useEffect(() => {
 		if (!isOpen) {
-			setRenameTarget(null);
+			setEditTarget(null);
 			return;
 		}
 
@@ -531,32 +555,32 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 
 			<MainAppHeaderWorkspaceSwitcherModal
 				dialogOpen={isOpen}
-				createProject={(args) => app_convex.mutation(app_convex_api.workspaces.create_project, args)}
-				createWorkspace={(args) => app_convex.mutation(app_convex_api.workspaces.create_workspace, args)}
-				createProjectDisabled={createProjectDisabled}
-				createProjectDisabledReason={createProjectDisabledReason}
-				createWorkspaceDisabled={createWorkspaceDisabled}
-				createWorkspaceDisabledReason={createWorkspaceDisabledReason}
 				listLoaded={listLoaded}
 				draftProjectId={draftProjectId}
 				draftWorkspaceId={draftWorkspaceId}
-				projectItems={projectItems}
-				projectLimitFraction={projectLimitFraction}
-				projectLimitTooltip={projectLimitTooltip}
-				renameProject={(args) => app_convex.mutation(app_convex_api.workspaces.rename_project, args)}
-				renameTarget={renameTarget}
-				renameWorkspace={(args) => app_convex.mutation(app_convex_api.workspaces.rename_workspace, args)}
-				setRenameTarget={setRenameTarget}
-				switchDisabled={switchDisabled}
-				summaryProjectName={currentProjectName}
 				summaryWorkspaceName={currentWorkspaceName}
+				summaryProjectName={currentProjectName}
+				workspaceName={draftWorkspaceName}
 				workspaceItems={workspaceItems}
+				projectItems={projectItems}
+				createWorkspaceDisabled={createWorkspaceDisabled}
+				createWorkspaceDisabledReason={createWorkspaceDisabledReason}
+				createProjectDisabled={createProjectDisabled}
+				createProjectDisabledReason={createProjectDisabledReason}
 				workspaceLimitFraction={workspaceLimitFraction}
 				workspaceLimitTooltip={workspaceLimitTooltip}
-				workspaceName={draftWorkspaceName}
-				onAfterCreateProject={handleWorkspaceSwitcherAfterCreate}
+				projectLimitFraction={projectLimitFraction}
+				projectLimitTooltip={projectLimitTooltip}
+				switchDisabled={switchDisabled}
+				editTarget={editTarget}
+				createWorkspace={handleWorkspaceSwitcherCreateWorkspace}
+				createProject={handleWorkspaceSwitcherCreateProject}
+				editWorkspace={handleWorkspaceSwitcherEditWorkspace}
+				editProject={handleWorkspaceSwitcherEditProject}
+				setEditTarget={setEditTarget}
 				onAfterCreateWorkspace={handleWorkspaceSwitcherAfterCreate}
-				onAfterRename={handleWorkspaceSwitcherAfterRename}
+				onAfterCreateProject={handleWorkspaceSwitcherAfterCreate}
+				onAfterEdit={handleWorkspaceSwitcherAfterEdit}
 				onCancel={handleWorkspaceSwitcherCancel}
 				onSwitch={handleWorkspaceSwitcherSwitch}
 			/>
