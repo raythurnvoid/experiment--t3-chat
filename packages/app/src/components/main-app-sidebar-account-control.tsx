@@ -3,9 +3,10 @@ import "./main-app-sidebar-account-control.css";
 import { useClerk, useUser } from "@clerk/clerk-react";
 import { useQuery } from "convex/react";
 import { ChevronsUpDown, LogIn, LogOut, User, UserRound, UserRoundPlus } from "lucide-react";
-import { memo, type ComponentPropsWithRef } from "react";
+import { memo, useState, type ComponentPropsWithRef } from "react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { MainAppAccountManagement } from "@/components/main-app-account-management.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -79,24 +80,36 @@ const MainSidebarAccountControlMenuProfileData = memo(function MainSidebarAccoun
 	);
 
 	return (
-		<div className={"MainSidebarAccountControlMenuProfileData" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}>
+		<div
+			className={
+				"MainSidebarAccountControlMenuProfileData" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
+			}
+		>
 			<MyAvatar
 				size="32px"
-				className={"MainSidebarAccountControlMenuProfileData-avatar" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+				className={
+					"MainSidebarAccountControlMenuProfileData-avatar" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
+				}
 			>
 				<MyAvatarImage src={avatarUrl} alt={displayName} />
 				<MyAvatarFallback>{avatarFallback}</MyAvatarFallback>
 			</MyAvatar>
 			<div
-				className={"MainSidebarAccountControlMenuProfileData-copy" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+				className={
+					"MainSidebarAccountControlMenuProfileData-copy" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
+				}
 			>
 				<div
-					className={"MainSidebarAccountControlMenuProfileData-status" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+					className={
+						"MainSidebarAccountControlMenuProfileData-status" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
+					}
 				>
 					{accountStatusLabel}
 				</div>
 				<div
-					className={"MainSidebarAccountControlMenuProfileData-name" satisfies MainSidebarAccountControlMenuProfileData_ClassNames}
+					className={
+						"MainSidebarAccountControlMenuProfileData-name" satisfies MainSidebarAccountControlMenuProfileData_ClassNames
+					}
 				>
 					{displayName}
 				</div>
@@ -136,7 +149,9 @@ const MainSidebarAccountControlMenu = memo(function MainSidebarAccountControlMen
 
 	return (
 		<MyMenuPopover placement="top-start" gutter={6}>
-			<MyMenuPopoverContent className={"MainSidebarAccountControlMenu" satisfies MainSidebarAccountControlMenu_ClassNames}>
+			<MyMenuPopoverContent
+				className={"MainSidebarAccountControlMenu" satisfies MainSidebarAccountControlMenu_ClassNames}
+			>
 				<MainSidebarAccountControlMenuProfileData
 					avatarUrl={avatarUrl}
 					displayName={displayName}
@@ -146,11 +161,7 @@ const MainSidebarAccountControlMenu = memo(function MainSidebarAccountControlMen
 				{isAnonymous ? (
 					<>
 						<MainSidebarAccountControlMenuItem icon={<LogIn />} label="Log in" onClick={onOpenSignIn} />
-						<MainSidebarAccountControlMenuItem
-							icon={<UserRoundPlus />}
-							label="Sign up"
-							onClick={onOpenSignUp}
-						/>
+						<MainSidebarAccountControlMenuItem icon={<UserRoundPlus />} label="Sign up" onClick={onOpenSignUp} />
 					</>
 				) : (
 					<>
@@ -202,14 +213,20 @@ const MainAppSidebarAccountControlTrigger = memo(function MainAppSidebarAccountC
 		>
 			<MyAvatar
 				size="32px"
-				className={"MainAppSidebarAccountControlTrigger-avatar" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+				className={
+					"MainAppSidebarAccountControlTrigger-avatar" satisfies MainAppSidebarAccountControlTrigger_ClassNames
+				}
 			>
 				<MyAvatarImage src={avatarUrl} alt={displayName} />
 				<MyAvatarFallback>{avatarFallback}</MyAvatarFallback>
 			</MyAvatar>
-			<span className={"MainAppSidebarAccountControlTrigger-copy" satisfies MainAppSidebarAccountControlTrigger_ClassNames}>
+			<span
+				className={"MainAppSidebarAccountControlTrigger-copy" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+			>
 				<span
-					className={"MainAppSidebarAccountControlTrigger-name" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+					className={
+						"MainAppSidebarAccountControlTrigger-name" satisfies MainAppSidebarAccountControlTrigger_ClassNames
+					}
 				>
 					{displayName}
 				</span>
@@ -231,10 +248,11 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 	const auth = AppAuthProvider.useAuth();
 	const clerk = useClerk();
 	const { user } = useUser();
+	const [accountManagementOpen, setAccountManagementOpen] = useState(false);
 
 	const anagraphic = useQuery(
 		app_convex_api.users.get_anagraphic,
-		auth.userId
+		auth.isAuthenticated && auth.userId
 			? {
 					userId: auth.userId as app_convex_Id<"users">,
 				}
@@ -267,13 +285,15 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 			? auth.userId
 				? users_create_anonymouse_user_display_name(auth.userId)
 				: "Anonymous user"
-			: clerkDisplayName ?? "User");
+			: (clerkDisplayName ?? "User"));
 	const avatarUrl = anagraphic?.avatarUrl ?? user?.imageUrl ?? undefined;
 	const triggerAriaLabel = auth.isAnonymous ? `Anonymous account: ${displayName}` : `Account: ${displayName}`;
 	const accountStatusLabel = auth.isAnonymous ? "Not logged in" : "Signed in";
 	const avatarFallback = auth.isAnonymous ? (
 		<User
-			className={"MainAppSidebarAccountControlTrigger-avatar-icon" satisfies MainAppSidebarAccountControlTrigger_ClassNames}
+			className={
+				"MainAppSidebarAccountControlTrigger-avatar-icon" satisfies MainAppSidebarAccountControlTrigger_ClassNames
+			}
 			aria-hidden
 		/>
 	) : (
@@ -287,7 +307,7 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 		void clerk.openSignUp();
 	});
 	const handleOpenUserProfile = useFn(() => {
-		void clerk.openUserProfile();
+		setAccountManagementOpen(true);
 	});
 	const handleSignOut = useFn(() => {
 		void clerk.signOut();
@@ -316,6 +336,7 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 					onSignOut={handleSignOut}
 				/>
 			</div>
+			<MainAppAccountManagement open={accountManagementOpen} setOpen={setAccountManagementOpen} />
 		</MyMenu>
 	);
 });

@@ -1,0 +1,379 @@
+@layer components {
+	/* #region root */
+	.MainAppAccountManagement {
+		display: flex;
+		flex-direction: column;
+
+		max-width: 960px;
+		width: min(96vw, 960px);
+		height: 479px;
+		max-height: none;
+
+		background: var(--color-base-1-03);
+		border-color: var(--color-base-1-08);
+	}
+
+	.MainAppAccountManagement-header-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.MainAppAccountManagement-header-description {
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagement .MyModalHeader {
+		flex-shrink: 0;
+		flex-direction: column;
+		align-items: start;
+		justify-content: center;
+		gap: 4px;
+	}
+
+	.MainAppAccountManagement .MyModalHeader > .MyModalHeading,
+	.MainAppAccountManagement .MyModalHeader > .MyModalDescription {
+		max-width: 520px;
+	}
+
+	.MainAppAccountManagement-body {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1fr);
+		align-items: stretch;
+		align-content: start;
+
+		flex: 1;
+		min-height: 0;
+		max-height: none;
+
+		padding: 0;
+	}
+
+	.MainAppAccountManagement-body > .MyTabsList {
+		align-self: stretch;
+		flex-direction: column;
+		align-items: stretch;
+		align-content: start;
+		gap: 4px;
+		contain: content;
+
+		padding: 8px;
+	}
+
+	.MainAppAccountManagement-body .MyTabsTabSurface {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 4px;
+
+		height: auto;
+	}
+
+	.MainAppAccountManagement-body > .MyTabsPanels {
+		align-self: stretch;
+		min-width: 0;
+		min-height: 0;
+	}
+
+	.MainAppAccountManagement-side-tab {
+		display: flex;
+		align-items: center;
+		justify-content: start;
+		gap: 8px;
+		width: 100%;
+	}
+
+	.MainAppAccountManagement-panels {
+		contain: content;
+		min-height: 0;
+		padding: 20px;
+
+		overflow: auto;
+	}
+
+	.MainAppAccountManagement-panel {
+		display: block;
+	}
+
+	.MainAppAccountManagement-loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 240px;
+
+		color: var(--color-fg-08);
+	}
+
+	@media (min-width: 760px) {
+		.MainAppAccountManagement-body {
+			grid-template-columns: 180px minmax(0, 1fr);
+		}
+
+		.MainAppAccountManagement-body > .MyTabsList {
+			padding: 8px;
+			border-right: 1px solid var(--color-base-1-07);
+		}
+
+		.MainAppAccountManagement-panels {
+			padding: 20px;
+		}
+	}
+
+	.MainAppAccountManagementProfile,
+	.MainAppAccountManagementSecurity-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.MainAppAccountManagementProfile-header,
+	.MainAppAccountManagementSecurity-panel-header {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.MainAppAccountManagementProfile-title,
+	.MainAppAccountManagementSecurity-panel-title {
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementProfile-description,
+	.MainAppAccountManagementSecurity-panel-description {
+		margin: 0;
+		margin-top: 4px;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementProfile-body,
+	.MainAppAccountManagementSecurity-panel-body {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.MainAppAccountManagementSecurity-panel-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	/* #endregion root */
+
+	/* #region profile */
+	.MainAppAccountManagementProfile-summary {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		column-gap: 12px;
+		row-gap: 0;
+	}
+
+	.MainAppAccountManagementProfile-summary-avatar {
+		grid-column: 1;
+		grid-row: 1 / span 2;
+	}
+
+	.MainAppAccountManagementProfile-summary-title,
+	.MainAppAccountManagementProfile-summary-email {
+		grid-column: 2;
+		min-width: 0;
+	}
+
+	.MainAppAccountManagementProfile-summary-title {
+		margin: 0;
+		align-self: end;
+
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 16px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.MainAppAccountManagementProfile-summary-email {
+		margin: 0;
+		align-self: start;
+
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementProfile-connected-list {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		row-gap: 4px;
+
+		margin: 0;
+		margin-top: 8px;
+	}
+
+	.MainAppAccountManagementProfile-connected-title {
+		margin: 0;
+		min-width: 0;
+
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 12px;
+		font-weight: 500;
+		line-height: 1.3;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementProfile-connected-title:not(:first-of-type) {
+		margin-top: 8px;
+	}
+
+	.MainAppAccountManagementProfile-connected-meta {
+		margin: 0;
+		min-width: 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-11);
+	}
+	/* #endregion profile */
+
+	/* #region security */
+	.MainAppAccountManagementSecurity {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.MainAppAccountManagementSecurity-panel-header {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		column-gap: 12px;
+		row-gap: 4px;
+		align-items: start;
+	}
+
+	.MainAppAccountManagementSecurity-panel-title,
+	.MainAppAccountManagementSecurity-panel-description {
+		grid-column: 1;
+	}
+
+	.MainAppAccountManagementSecurity-panel-actions {
+		grid-column: 2;
+		grid-row: 1 / span 2;
+		align-self: center;
+		justify-self: end;
+	}
+
+	.MainAppAccountManagementSecurity-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		column-gap: 12px;
+		row-gap: 6px;
+		align-items: center;
+
+		padding: 12px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 10px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.MainAppAccountManagementSecurity-row-title {
+		margin: 0;
+		grid-column: 1;
+
+		min-width: 0;
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 14px;
+		font-weight: 500;
+		line-height: 1.3;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementSecurity-row-meta {
+		margin: 0;
+		grid-column: 1;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementSecurity-row-actions {
+		grid-column: 2;
+		grid-row: 1 / span 2;
+		align-self: center;
+		justify-self: end;
+	}
+	/* #endregion security */
+
+	/* #region delete account */
+	.MainAppAccountManagementDeleteAccount {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 12px;
+		border: 1px solid var(--color-red-08);
+		border-radius: 12px;
+
+		background: color-mix(in srgb, var(--color-red-03) 28%, transparent);
+	}
+
+	.MainAppAccountManagementDeleteAccount-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.MainAppAccountManagementDeleteAccount-title {
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementDeleteAccount-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementDeleteAccount-form {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 12px;
+	}
+
+	@media (min-width: 640px) {
+		.MainAppAccountManagementDeleteAccount-form {
+			grid-template-columns: minmax(0, 1fr) auto;
+			align-items: end;
+		}
+	}
+	/* #endregion delete account */
+}

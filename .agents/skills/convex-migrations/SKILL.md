@@ -19,6 +19,7 @@ Use this skill for migration tasks in `packages/app/convex`.
 
 - Convex code root: `packages/app/convex`
 - Package manager: `pnpm`
+- Prefer `pnpx convex ...` for CLI commands in this repo
 - Migration component package: `@convex-dev/migrations`
 - Convex app config file: `packages/app/convex/convex.config.ts`
 - Migration file location: `packages/app/convex/migrations.ts`
@@ -37,11 +38,13 @@ Copy this checklist and update status while working:
 
 ```md
 Migration Progress:
+
 - [ ] Confirm scope and exact field mapping
-- [ ] Add/wire `@convex-dev/migrations` component
+- [ ] Confirm whether `@convex-dev/migrations` wiring already exists
 - [ ] Add migration definition + runner in `convex/migrations.ts`
 - [ ] Update schema to compatibility state (if needed)
 - [ ] Update write paths to emit new field
+- [ ] Inspect live rows before changing/deleting data
 - [ ] Run migration
 - [ ] Verify migration result
 - [ ] Tighten schema (remove legacy field / enforce required new field)
@@ -90,66 +93,142 @@ export const run = migrations.runner();
 export const run_migrate_example = migrations.runner(internal.migrations.migrate_example);
 ```
 
+## CLI workflow
+
+From `packages/app`:
+
+```bash
+pnpx convex dev
+```
+
+- `pnpx convex dev` watches local Convex files, pushes changes to the dev deployment, refreshes `_generated`, and tails dev logs by default.
+- If you are not running `pnpx convex dev`, use `pnpx convex codegen` after schema/function changes so `_generated` stays in sync.
+
+```bash
+pnpx convex codegen
+```
+
+- Use `pnpx convex data` to inspect live rows before and after a migration:
+
+```bash
+pnpx convex data
+pnpx convex data users --limit 20 --order desc
+pnpx convex data workspaces_projects_users --limit 50 --order desc
+```
+
+- `pnpx convex data <table>` is useful for quick table scans and system tables too. The CLI supports `--limit` and `--order`; for real filtering, add a small internal query/mutation and run it with `pnpx convex run`.
+
+```bash
+pnpx convex run migrations:run_<migration_name>
+pnpx convex run migrations:preview_purge_user_data '{"clerkUserId":"user_..."}'
+pnpx convex run migrations:preview_purge_user_data '{"userId":"jh7..."}'
+```
+
+- `pnpx convex run <module:function> [jsonArgs]` accepts a JSON object for args.
+- Use `--push` when you want the CLI to push your local Convex code before running the function.
+- Use `--watch` only for queries when you want live-updating results while inspecting data.
+- Use `--prod` when you intentionally need to inspect or run against production.
+
+```bash
+pnpx convex run --push migrations:preview_purge_user_data '{"clerkUserId":"user_..."}'
+pnpx convex run --watch migrations:preview_purge_user_data '{"clerkUserId":"user_..."}'
+pnpx convex run --prod migrations:preview_purge_user_data '{"clerkUserId":"user_..."}'
+```
+
+- Use logs while iterating on one-off admin flows and migrations:
+
+```bash
+pnpx convex logs
+pnpx convex logs --prod
+```
+
+- Use `pnpx convex env` when the migration depends on secrets or deployment config. This repo already reads secrets such as Clerk and JWT keys from Convex env.
+
+```bash
+pnpx convex env list
+pnpx convex env get CLERK_SECRET_KEY
+pnpx convex env set SOME_KEY
+pnpx convex env set --from-file .env.convex
+pnpx convex env get CLERK_SECRET_KEY --prod
+```
+
+- Use export/import sparingly for destructive migration safety, not as the default rollout path. For risky cleanup work, export first so you can recover rows if needed.
+
+```bash
+pnpx convex export --path ./convex-export.zip
+pnpx convex import ./convex-export.zip
+```
+
 ## Commands
 
 From `packages/app`:
 
 ```bash
 pnpm add @convex-dev/migrations
+pnpx convex run --component migrations lib:getStatus
 pnpx convex run migrations:run_<migration_name>
 ```
 
-Optional status check:
-
-```bash
-pnpx convex run --component migrations lib:getStatus
-```
+- In this repo, `packages/app/convex/convex.config.ts` already wires `@convex-dev/migrations`, so most tasks only need migration definitions/runners in `packages/app/convex/migrations.ts`.
 
 ## Verification
 
+- Preview the live rows first with `pnpx convex data` and/or a dedicated `pnpx convex run` helper before deleting or backfilling.
 - Migration command reports finished/already done.
 - Schema compiles with tightened shape.
 - Updated write paths no longer write legacy field.
 - No diagnostics in modified files.
 - Keep migration verification separate from regular runtime coverage:
-	- Do not make normal feature tests call migration runners or `packages/app/convex/migrations.ts` APIs.
-	- Add focused migration-specific tests only when the task actually introduces or changes a migration.
+  - Do not make normal feature tests call migration runners or `packages/app/convex/migrations.ts` APIs.
+  - Add focused migration-specific tests only when the task actually introduces or changes a migration.
 
 ## Real-run lessons (important)
 
 - For field renames that affect indexes, treat index changes as first-class migration work:
-	- Add new index names for new field names.
-	- Move query callsites to new indexes.
-	- Remove old indexes only in tighten phase.
+  - Add new index names for new field names.
+  - Move query callsites to new indexes.
+  - Remove old indexes only in tighten phase.
 - Keep API contract renames explicit and separate from DB renames:
-	- DB row fields: e.g. `workspace_id` -> `workspaceId`.
-	- Convex args/returns: e.g. `workspace_id` -> `workspaceId`, `page_id` -> `pageId`.
-	- Preserve semantic distinction between client-generated id and Convex doc id.
+  - DB row fields: e.g. `workspace_id` -> `workspaceId`.
+  - Convex args/returns: e.g. `workspace_id` -> `workspaceId`, `page_id` -> `pageId`.
+  - Preserve semantic distinction between client-generated id and Convex doc id.
 - Write migrations to be idempotent and "prefer existing new value":
-	- Use `newField ?? old_field` patterns.
-	- Unset legacy field with `old_field: undefined`.
+  - Use `newField ?? old_field` patterns.
+  - Unset legacy field with `old_field: undefined`.
 - Run migration before tightening required fields, then re-check generated types:
-	- `pnpx convex run migrations:run_<name>`
-	- Expect `_generated` typings to update after schema/function changes.
+  - `pnpx convex run migrations:run_<name>`
+  - Use `pnpx convex run --push ...` if your local function changes are not already deployed.
+  - Expect `_generated` typings to update after schema/function changes.
+- Use CLI table inspection as part of the real rollout, not just code review:
+  - `pnpx convex data` to list tables before you touch anything.
+  - `pnpx convex data <table> --limit <n> --order desc` for spot checks.
+  - `pnpx convex run <module:function> '{...json args...}'` for targeted previews the dashboard/CLI cannot filter directly.
+- When a migration depends on env-backed secrets or third-party access, confirm the deployment env before running:
+  - `pnpx convex env list`
+  - `pnpx convex env get <NAME>`
+  - Use `--prod` intentionally for production secrets and runs.
+- Before destructive cleanup in production, prefer taking a Convex export snapshot first:
+  - `pnpx convex export --path ./convex-export.zip`
+  - Keep import as a recovery tool, not as the normal migration mechanism.
 - Treat table renames as full data migrations, not symbol renames:
-	- Add the new table alongside the old table in a compatibility phase.
-	- Copy legacy rows into the new table with an idempotent mapping key when needed.
-	- Remap all foreign references and pointer fields before deleting legacy rows.
-	- Switch code paths to the new table only after the copy succeeds.
+  - Add the new table alongside the old table in a compatibility phase.
+  - Copy legacy rows into the new table with an idempotent mapping key when needed.
+  - Remap all foreign references and pointer fields before deleting legacy rows.
+  - Switch code paths to the new table only after the copy succeeds.
 - For table-renamed ids stored on other tables, use temporary compatibility validators when needed:
-	- Prefer `v.union(v.id("old_table"), v.id("new_table"))` during the remap window.
-	- Tighten back to `v.id("new_table")` only after live rows are migrated.
+  - Prefer `v.union(v.id("old_table"), v.id("new_table"))` during the remap window.
+  - Tighten back to `v.id("new_table")` only after live rows are migrated.
 - If strict schema rollout happens before legacy-field cleanup, recover with a temporary compatibility schema:
-	- Reintroduce the legacy field(s) as optional in the validator.
-	- Run the cleanup mutation to unset legacy fields from live rows.
-	- Re-tighten the schema immediately after verification.
+  - Reintroduce the legacy field(s) as optional in the validator.
+  - Run the cleanup mutation to unset legacy fields from live rows.
+  - Re-tighten the schema immediately after verification.
 - Add focused runtime checks for boot-critical flows after API key renames:
-	- App boot/homepage initialization.
-	- Pages tree create/rename/archive/move.
-	- These paths can fail silently if response keys change.
+  - App boot/homepage initialization.
+  - Pages tree create/rename/archive/move.
+  - These paths can fail silently if response keys change.
 - Scope discipline prevents regressions:
-	- Migrate only the requested table.
-	- Do not opportunistically rename neighboring tables in the same pass.
+  - Migrate only the requested table.
+  - Do not opportunistically rename neighboring tables in the same pass.
 
 ## Guardrails
 

@@ -8,12 +8,15 @@
  * @module
  */
 
+import type * as account_deletion from "../account_deletion.js";
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_docs_temp from "../ai_docs_temp.js";
 import type * as chat_messages from "../chat_messages.js";
+import type * as clerk_webhooks from "../clerk_webhooks.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as limits from "../limits.js";
+import type * as migrations from "../migrations.js";
 import type * as pages_pending_edits from "../pages_pending_edits.js";
 import type * as presence from "../presence.js";
 import type * as users from "../users.js";
@@ -26,12 +29,15 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  account_deletion: typeof account_deletion;
   ai_chat: typeof ai_chat;
   ai_docs_temp: typeof ai_docs_temp;
   chat_messages: typeof chat_messages;
+  clerk_webhooks: typeof clerk_webhooks;
   crons: typeof crons;
   http: typeof http;
   limits: typeof limits;
+  migrations: typeof migrations;
   pages_pending_edits: typeof pages_pending_edits;
   presence: typeof presence;
   users: typeof users;

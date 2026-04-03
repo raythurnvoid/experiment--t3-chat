@@ -71,7 +71,9 @@ const app_convex_schema = defineSchema({
 		stagedBranchYjsUpdate: v.bytes(),
 		unstagedBranchYjsUpdate: v.bytes(),
 		updatedAt: v.number(),
-	}).index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"]),
+	})
+		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
+		.index("by_userId_pageId", ["userId", "pageId"]),
 
 	pages_pending_edits_last_sequence_saved: defineTable({
 		workspaceId: v.string(),
@@ -82,7 +84,8 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
-		.index("by_workspace_project_page_user", ["workspaceId", "projectId", "pageId", "userId"]),
+		.index("by_workspace_project_page_user", ["workspaceId", "projectId", "pageId", "userId"])
+		.index("by_userId_pageId", ["userId", "pageId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks for each pending edit row.
@@ -318,7 +321,9 @@ const app_convex_schema = defineSchema({
 		ownerUserId: v.optional(v.id("users")),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		updatedAt: v.number(),
-	}).index("by_name", ["name"]),
+	})
+		.index("by_name", ["name"])
+		.index("by_ownerUserId", ["ownerUserId"]),
 
 	workspaces_projects: defineTable({
 		workspaceId: v.id("workspaces"),
@@ -335,12 +340,18 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.optional(v.number()),
 	})
 		.index("by_projectId_userId", ["projectId", "userId"])
+		.index("by_workspaceId_projectId_userId", ["workspaceId", "projectId", "userId"])
 		.index("by_userId_workspaceId_projectId", ["userId", "workspaceId", "projectId"]),
 
 	workspaces_data_deletion_requests: defineTable({
 		workspaceId: v.id("workspaces"),
 		projectId: v.id("workspaces_projects"),
+		scope: v.optional(v.union(v.literal("project"), v.literal("workspace"), v.literal("user"))),
 	}).index("by_workspaceId_projectId", ["workspaceId", "projectId"]),
+
+	workspace_orphan_cleanup_requests: defineTable({
+		workspaceId: v.id("workspaces"),
+	}).index("by_workspaceId", ["workspaceId"]),
 
 	limits_per_user: defineTable({
 		userId: v.id("users"),
@@ -379,6 +390,7 @@ const app_convex_schema = defineSchema({
 		defaultWorkspaceId: v.optional(v.id("workspaces")),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
+		deletedAt: v.optional(v.number()),
 	}).index("by_clerk_user_id", ["clerkUserId"]),
 
 	users_anagraphics: defineTable({
@@ -387,7 +399,27 @@ const app_convex_schema = defineSchema({
 		displayName: v.string(),
 		avatarUrl: v.optional(v.string()),
 		updatedAt: v.number(),
-	}),
+	}).index("by_userId", ["userId"]),
+
+	clerk_webhook_receipts: defineTable({
+		eventId: v.string(),
+		eventType: v.string(),
+		clerkUserId: v.optional(v.string()),
+		receivedAt: v.number(),
+	}).index("by_eventId", ["eventId"]),
+
+	user_deletion_requests: defineTable({
+		clerkUserId: v.string(),
+		userId: v.optional(v.id("users")),
+		status: v.union(v.literal("queued"), v.literal("processing"), v.literal("completed"), v.literal("failed")),
+		attemptCount: v.number(),
+		lastError: v.optional(v.string()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		lastAttemptAt: v.optional(v.number()),
+	})
+		.index("by_clerkUserId", ["clerkUserId"])
+		.index("by_status_updatedAt", ["status", "updatedAt"]),
 	// #endregion users
 });
 

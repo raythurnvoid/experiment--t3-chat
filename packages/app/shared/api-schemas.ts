@@ -71,6 +71,7 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 
 import type { Promisable } from "type-fest";
 import type { ai_chat_http_routes } from "../convex/ai_chat.ts";
+import type { clerk_webhooks_http_routes } from "../convex/clerk_webhooks.ts";
 import type { pages_http_routes } from "../convex/ai_docs_temp.ts";
 import type { users_http_routes } from "../convex/users.ts";
 
@@ -112,6 +113,8 @@ export interface api_schemas_Main {
 	"/api/auth/anonymous": ReturnType<typeof users_http_routes>["/api/auth/anonymous"];
 
 	"/api/auth/resolve-user": ReturnType<typeof users_http_routes>["/api/auth/resolve-user"];
+
+	"/api/webhooks/clerk": ReturnType<typeof clerk_webhooks_http_routes>["/api/webhooks/clerk"];
 
 	"/api/chat": ReturnType<typeof ai_chat_http_routes>["/api/chat"];
 

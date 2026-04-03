@@ -263,11 +263,14 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number },
 ) {
-	const workspace = await ctx.db
-		.get("users", args.userId)
-		.then((user) => (user?.defaultWorkspaceId ? ctx.db.get("workspaces", user.defaultWorkspaceId) : null));
+	const user = await ctx.db.get("users", args.userId);
+	if (!user) {
+		return;
+	}
 
-	if (!workspace) {
+	const defaultWorkspace = user.defaultWorkspaceId ? await ctx.db.get("workspaces", user.defaultWorkspaceId) : null;
+
+	if (!defaultWorkspace) {
 		await workspaces_db_create(ctx, {
 			userId: args.userId,
 			name: DEFAULT_WORKSPACE_NAME,

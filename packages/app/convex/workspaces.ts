@@ -6,7 +6,14 @@ import { server_convex_get_user_fallback_to_anonymous, should_never_happen } fro
 import { v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { user_limits, workspace_limits } from "../shared/limits.ts";
-import { workspaces_list_sort_projects_for_workspace, workspaces_list_sort_workspaces } from "../shared/workspaces.ts";
+import {
+	user_DATA_DELETION_RETENTION_MS,
+	type user_DataDeletionRequestScope,
+} from "../server/users.ts";
+import {
+	workspaces_list_sort_projects_for_workspace,
+	workspaces_list_sort_workspaces,
+} from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
 import {
 	workspaces_db_create,
@@ -36,8 +43,31 @@ async function user_is_project_admin(
 	return true;
 }
 
-const WORKSPACE_DATA_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE = 50;
+
+async function workspaces_queue_data_deletion_request(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
+		scope: user_DataDeletionRequestScope;
+	},
+) {
+	const existing = await ctx.db
+		.query("workspaces_data_deletion_requests")
+		.withIndex("by_workspaceId_projectId", (q) => q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId))
+		.first();
+
+	if (existing) {
+		return;
+	}
+
+	await ctx.db.insert("workspaces_data_deletion_requests", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		scope: args.scope,
+	});
+}
 
 export const list = query({
 	args: {},
@@ -645,149 +675,172 @@ export const edit_project = mutation({
 	},
 });
 
+/**
+ * Process queued workspace/project content deletions whose retention window has passed.
+ */
 export const purge_data_deletion_requests = internalMutation({
 	args: {
-		nowTs: v.optional(v.number()),
-		limit: v.optional(v.number()),
+		/**
+		 * Convex tests only: simulated wall time (ms). Omit in production and cron (`Date.now()` is used).
+		 * Pass a value past the retention window (e.g. `_creationTime + user_DATA_DELETION_RETENTION_MS + 1`)
+		 * so purge eligibility runs in one step without waiting.
+		 */
+		_test_now: v.optional(v.number()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const now = args.nowTs ?? Date.now();
-
-		const cutoff = now - WORKSPACE_DATA_DELETION_RETENTION_MS;
-		const limit = args.limit ?? WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE;
-
+		const now = args._test_now ?? Date.now();
+		const purgeEligibleCutoff = now - user_DATA_DELETION_RETENTION_MS;
 		const requests = await ctx.db
 			.query("workspaces_data_deletion_requests")
-			.withIndex("by_creation_time", (q) => q.lte("_creationTime", cutoff))
+			.withIndex("by_creation_time", (q) => q.lte("_creationTime", purgeEligibleCutoff))
 			.order("asc")
-			.take(limit);
+			.take(WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE);
 
 		for (const request of requests) {
-			const workspace_id = String(request.workspaceId);
-			const project_id = String(request.projectId);
-
 			const [
-				ai_chat_threads,
-				ai_chat_threads_messages,
-				pages_pending_edits,
-				pages_pending_edits_last_sequence_saved,
-				pages,
-				pages_markdown_content,
-				pages_markdown_chunks,
-				pages_plain_text_chunks,
-				pages_yjs_snapshots,
-				pages_yjs_updates,
-				pages_yjs_docs_last_sequences,
-				pages_snapshots,
-				pages_snapshots_contents,
-				chat_messages,
+				aiChatThreads,
+				aiChatThreadsMessages,
+				pagesPendingEdits,
+				pagesPendingEditsLastSequenceSaved,
+				pagesRows,
+				pagesMarkdownContent,
+				pagesMarkdownChunks,
+				pagesPlainTextChunks,
+				pagesYjsSnapshots,
+				pagesYjsUpdates,
+				pagesYjsDocsLastSequences,
+				pagesSnapshots,
+				pagesSnapshotsContents,
+				chatMessages,
 			] = await Promise.all([
 				ctx.db
 					.query("ai_chat_threads")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("ai_chat_threads_messages_aisdk_5")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("pages_pending_edits")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("pages_pending_edits_last_sequence_saved")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("pages")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("pages_markdown_content")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspace_id === request.workspaceId && row.project_id === request.projectId),
+					),
 				ctx.db
 					.query("pages_markdown_chunks")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("pages_plain_text_chunks")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 				ctx.db
 					.query("pages_yjs_snapshots")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspace_id === request.workspaceId && row.project_id === request.projectId),
+					),
 				ctx.db
 					.query("pages_yjs_updates")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspace_id === request.workspaceId && row.project_id === request.projectId),
+					),
 				ctx.db
 					.query("pages_yjs_docs_last_sequences")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspace_id === request.workspaceId && row.project_id === request.projectId),
+					),
 				ctx.db
 					.query("pages_snapshots")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspace_id === request.workspaceId && row.project_id === request.projectId),
+					),
 				ctx.db
 					.query("pages_snapshots_contents")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspace_id === request.workspaceId && row.project_id === request.projectId),
+					),
 				ctx.db
 					.query("chat_messages")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
+					.then((rows) =>
+						rows.filter((row) => row.workspaceId === request.workspaceId && row.projectId === request.projectId),
+					),
 			]);
 
-			const pending_edit_ids = new Set(pages_pending_edits.map((row) => row._id));
-			const page_ids = new Set(pages.map((row) => row._id));
+			const pendingEditIds = new Set(pagesPendingEdits.map((row) => row._id));
+			const pageIds = new Set(pagesRows.map((row) => row._id));
 
-			const [pages_pending_edits_cleanup_tasks, pages_yjs_snapshot_schedules] = await Promise.all([
+			const [pagesPendingEditsCleanupTasks, pagesYjsSnapshotSchedules] = await Promise.all([
 				ctx.db
 					.query("pages_pending_edits_cleanup_tasks")
 					.collect()
-					.then((rows) => rows.filter((row) => pending_edit_ids.has(row.pendingEditId))),
+					.then((rows) => rows.filter((row) => pendingEditIds.has(row.pendingEditId))),
 				ctx.db
 					.query("pages_yjs_snapshot_schedules")
 					.collect()
-					.then((rows) => rows.filter((row) => page_ids.has(row.page_id))),
+					.then((rows) => rows.filter((row) => pageIds.has(row.page_id))),
 			]);
 
 			await Promise.all(
-				pages_pending_edits_cleanup_tasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)),
+				pagesPendingEditsCleanupTasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)),
 			);
+			await Promise.all(pagesYjsSnapshotSchedules.map((row) => ctx.db.delete("pages_yjs_snapshot_schedules", row._id)));
+			await Promise.all(aiChatThreadsMessages.map((row) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", row._id)));
+			await Promise.all(aiChatThreads.map((row) => ctx.db.delete("ai_chat_threads", row._id)));
+			await Promise.all(chatMessages.map((row) => ctx.db.delete("chat_messages", row._id)));
 			await Promise.all(
-				pages_yjs_snapshot_schedules.map((row) => ctx.db.delete("pages_yjs_snapshot_schedules", row._id)),
-			);
-			await Promise.all(
-				ai_chat_threads_messages.map((row) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", row._id)),
-			);
-			await Promise.all(ai_chat_threads.map((row) => ctx.db.delete("ai_chat_threads", row._id)));
-			await Promise.all(chat_messages.map((row) => ctx.db.delete("chat_messages", row._id)));
-			await Promise.all(
-				pages_pending_edits_last_sequence_saved.map((row) =>
+				pagesPendingEditsLastSequenceSaved.map((row) =>
 					ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id),
 				),
 			);
-			await Promise.all(pages_pending_edits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
-			await Promise.all(pages_plain_text_chunks.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)));
-			await Promise.all(pages_markdown_chunks.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)));
-			await Promise.all(pages_yjs_snapshots.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)));
-			await Promise.all(pages_yjs_updates.map((row) => ctx.db.delete("pages_yjs_updates", row._id)));
+			await Promise.all(pagesPendingEdits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
+			await Promise.all(pagesPlainTextChunks.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)));
+			await Promise.all(pagesMarkdownChunks.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)));
+			await Promise.all(pagesYjsSnapshots.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)));
+			await Promise.all(pagesYjsUpdates.map((row) => ctx.db.delete("pages_yjs_updates", row._id)));
 			await Promise.all(
-				pages_yjs_docs_last_sequences.map((row) => ctx.db.delete("pages_yjs_docs_last_sequences", row._id)),
+				pagesYjsDocsLastSequences.map((row) => ctx.db.delete("pages_yjs_docs_last_sequences", row._id)),
 			);
-			await Promise.all(pages_snapshots_contents.map((row) => ctx.db.delete("pages_snapshots_contents", row._id)));
-			await Promise.all(pages_snapshots.map((row) => ctx.db.delete("pages_snapshots", row._id)));
-			await Promise.all(pages_markdown_content.map((row) => ctx.db.delete("pages_markdown_content", row._id)));
-			await Promise.all(pages.map((row) => ctx.db.delete("pages", row._id)));
+			await Promise.all(pagesSnapshotsContents.map((row) => ctx.db.delete("pages_snapshots_contents", row._id)));
+			await Promise.all(pagesSnapshots.map((row) => ctx.db.delete("pages_snapshots", row._id)));
+			await Promise.all(pagesMarkdownContent.map((row) => ctx.db.delete("pages_markdown_content", row._id)));
+			await Promise.all(pagesRows.map((row) => ctx.db.delete("pages", row._id)));
 
 			await ctx.db.delete("workspaces_data_deletion_requests", request._id);
 		}
-
-		return null;
 	},
 });
 
@@ -857,9 +910,10 @@ export const delete_workspace = mutation({
 							.collect();
 
 						await Promise.all([
-							ctx.db.insert("workspaces_data_deletion_requests", {
+							workspaces_queue_data_deletion_request(ctx, {
 								workspaceId: workspace._id,
 								projectId: project._id,
+								scope: "workspace",
 							}),
 							Promise.all(
 								projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
@@ -982,9 +1036,10 @@ export const delete_project = mutation({
 
 		const affected_user_ids = new Set<Id<"users">>(projectUserLookup.map((projectUser) => projectUser.userId));
 
-		await ctx.db.insert("workspaces_data_deletion_requests", {
+		await workspaces_queue_data_deletion_request(ctx, {
 			workspaceId: workspace._id,
 			projectId: project._id,
+			scope: "project",
 		});
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db

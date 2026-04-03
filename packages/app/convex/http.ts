@@ -2,6 +2,7 @@ import { HttpRouter, httpRouter } from "convex/server";
 import { ai_chat_http_routes } from "./ai_chat.ts";
 import { httpAction } from "./_generated/server.js";
 import { pages_http_routes } from "./ai_docs_temp.ts";
+import { clerk_webhooks_http_routes } from "./clerk_webhooks.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
 
@@ -24,6 +25,7 @@ export type RouterForConvexModules = {
 };
 
 users_http_routes(appCors);
+clerk_webhooks_http_routes(appCors);
 ai_chat_http_routes(appCors);
 pages_http_routes(appCors);
 

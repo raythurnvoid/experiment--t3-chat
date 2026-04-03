@@ -227,6 +227,7 @@ You must not use `any` to bypass typescript errors unless the user is asking for
 When changing application code, default to trusting the product invariants enforced by the app's public queries, mutations, routes, and other supported entrypoints.
 
 - Do not add defensive checks, repair paths, or "self-healing" data logic just because the database schema could theoretically allow an invalid state.
+- When one supported flow produces data for a downstream flow, trust that producer/consumer contract in downstream code. Do not add fallback, repair, or self-healing logic in the consumer just because upstream data could theoretically be wrong; identify the concrete producer that can violate the invariant and fix that bug at the source.
 - If you think a corrupted state can happen, point to the exact real bug or reachable flow that would create it. Name the concrete mutation, query, route, background job, migration, or user action path.
 - If you cannot identify a real reachable corruption path, do not add extra validation or repair code for that hypothetical state.
 - Treat "the schema does not prevent it" as insufficient reasoning by itself. In this codebase, the application layer is often the real invariant boundary.
@@ -241,6 +242,14 @@ Exceptions (add an explicit return type when it helps):
 
 - Exported/public API functions where the return type is part of the contract
 - When inference is unstable/too-wide and a return annotation prevents regressions
+
+## TypeScript exports: export only public API
+
+Use `export` only when a symbol is intentionally part of the module's public API because another module imports it now or is expected to import it soon.
+
+- Keep helpers, types, constants, and other implementation details module-private when they are only used inside the same file.
+- Do not export symbols "just in case" or to make local file organization feel cleaner.
+- When in doubt, start module-private and add `export` later once there is a real cross-module use.
 
 ## Test organization
 
@@ -504,10 +513,7 @@ Use this pattern when a feature module extracts multiple concrete sibling compon
 
 ```tsx
 // #region item selected
-type FooItemSelected_ClassNames =
-	| "FooItemSelected"
-	| "FooItemSelected-label"
-	| "FooItemSelected-description";
+type FooItemSelected_ClassNames = "FooItemSelected" | "FooItemSelected-label" | "FooItemSelected-description";
 
 type FooItemSelected_Props = {
 	label: string;
@@ -521,10 +527,7 @@ const FooItemSelected = memo(function FooItemSelected(props: FooItemSelected_Pro
 // #endregion item selected
 
 // #region item selectable
-type FooItemSelectable_ClassNames =
-	| "FooItemSelectable"
-	| "FooItemSelectable-label"
-	| "FooItemSelectable-description";
+type FooItemSelectable_ClassNames = "FooItemSelectable" | "FooItemSelectable-label" | "FooItemSelectable-description";
 
 type FooItemSelectable_Props = {
 	label: string;
@@ -534,7 +537,13 @@ type FooItemSelectable_Props = {
 
 const FooItemSelectable = memo(function FooItemSelectable(props: FooItemSelectable_Props) {
 	const { label, description, onSelect } = props;
-	return <button type="button" className={cn("FooItemSelectable" satisfies FooItemSelectable_ClassNames)} onClick={onSelect} />;
+	return (
+		<button
+			type="button"
+			className={cn("FooItemSelectable" satisfies FooItemSelectable_ClassNames)}
+			onClick={onSelect}
+		/>
+	);
 });
 // #endregion item selectable
 
@@ -562,19 +571,25 @@ const FooItem = memo(function FooItem(props: FooItem_Props) {
 
 ```css
 /* #region item selected */
-.FooItemSelected {}
+.FooItemSelected {
+}
 
-.FooItemSelected-label {}
+.FooItemSelected-label {
+}
 
-.FooItemSelected-description {}
+.FooItemSelected-description {
+}
 /* #endregion item selected */
 
 /* #region item selectable */
-.FooItemSelectable {}
+.FooItemSelectable {
+}
 
-.FooItemSelectable-label {}
+.FooItemSelectable-label {
+}
 
-.FooItemSelectable-description {}
+.FooItemSelectable-description {
+}
 /* #endregion item selectable */
 
 /* #region item */
