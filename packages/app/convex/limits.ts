@@ -36,7 +36,7 @@ export const get_user_limit = query({
 		const limitDefinition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_userId_limitName", (q) => q.eq("userId", args.userId).eq("limitName", args.limitName))
+			.withIndex("by_user_limit_name", (q) => q.eq("userId", args.userId).eq("limitName", args.limitName))
 			.first();
 
 		if (!limit) {
@@ -69,8 +69,8 @@ export const get_workspace_limit = query({
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const membership = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_userId_workspaceId_projectId", (q) =>
-				q.eq("userId", user.id).eq("workspaceId", args.workspaceId),
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q.eq("active", true).eq("userId", user.id).eq("workspaceId", args.workspaceId),
 			)
 			.first();
 		if (!membership) {
@@ -80,9 +80,7 @@ export const get_workspace_limit = query({
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("by_workspaceId_limitName", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("limitName", args.limitName),
-			)
+			.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", args.workspaceId).eq("limitName", args.limitName))
 			.first();
 
 		if (!limit) {

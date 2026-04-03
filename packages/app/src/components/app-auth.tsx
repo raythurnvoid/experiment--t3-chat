@@ -7,6 +7,7 @@ import { create_deferred } from "../lib/async.ts";
 import { app_fetch_auth_anonymous, app_fetch_auth_resolve_user } from "../lib/fetch.ts";
 import { storage_local } from "../lib/storage.ts";
 import { delay } from "../lib/utils.ts";
+import { app_router } from "../lib/app-router.ts";
 import { useAsyncEffect, useFn, useStateRef } from "../hooks/utils-hooks.ts";
 
 function jwt_read_payload_claim_string(jwt: string, key: string): string | null {
@@ -148,6 +149,12 @@ export type AppAuthContextValue = {
 	getToken: (options?: { skipCache?: boolean }) => Promise<string | null>;
 	/** Same as `getToken` but in Convex auth format */
 	fetchAccessToken: (options: { forceRefreshToken: boolean }) => Promise<string | null>;
+	/**
+	 * Clear stored anonymous credentials
+	 * and mint a new anonymous user (after local anonymous account delete).
+	 * No-op when not anonymous.
+	 */
+	resetAnonymousSession: () => Promise<void>;
 };
 
 const AppAuthContext = createContext<AppAuthContextValue | null>(null);
@@ -305,6 +312,25 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 	const fetchAccessToken = useFn((options: { forceRefreshToken: boolean }) => {
 		return getToken({ skipCache: options.forceRefreshToken });
+	});
+
+	const resetAnonymousSession = useFn(async () => {
+		if (!authStatusRef.current.isAnonymous) {
+			return;
+		}
+
+		storage_clear_anonymous_token();
+		anonymousTokenDeferredRef.current = undefined;
+
+		if (auth_token_manager.value) {
+			auth_token_manager.value.lastToken = undefined;
+		}
+
+		tokenFlowAbortControllerRef.current.abort();
+		tokenFlowAbortControllerRef.current = new AbortController();
+
+		await getToken({ skipCache: true });
+		await app_router().navigate({ to: "/", replace: true });
 	});
 
 	const fetchClerkToken = async (args: { retryUntileUserIdIsSet: boolean; signal: AbortSignal }) => {
@@ -475,6 +501,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 				isAuthenticated: authStatus.isAuthenticated,
 				getToken,
 				fetchAccessToken,
+				resetAnonymousSession,
 			}}
 		>
 			{children}

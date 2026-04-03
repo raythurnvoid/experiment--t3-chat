@@ -11,6 +11,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
 	PageEditorRichTextCommentComposer,
 	type PageEditorRichTextCommentComposer_Props,
@@ -29,6 +30,8 @@ export type PageEditorRichTextToolsComment_Props = {
 
 export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsComment_Props) {
 	const { onClose } = props;
+
+	const { workspaceId, projectId } = AppTenantProvider.useContext();
 
 	const createCommentsThread = useMutation(app_convex_api.chat_messages.chat_messages_threads_create);
 

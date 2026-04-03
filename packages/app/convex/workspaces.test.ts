@@ -8,8 +8,10 @@ import {
 	workspaces_db_ensure_default_workspace_and_project_for_user,
 } from "../server/workspaces.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { user_limits } from "../shared/limits.ts";
+import { user_limits, workspace_limits } from "../shared/limits.ts";
 import { workspaces_description_max_length, workspaces_name_max_length } from "../shared/workspaces.ts";
+
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function workspaces_test_seed_default_workspace(ctx: MutationCtx, args: { userId: Id<"users">; now?: number }) {
 	await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
@@ -42,7 +44,7 @@ async function workspaces_test_bootstrap_user(t: ReturnType<typeof test_convex>,
 		const now = Date.now();
 		const userLimit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_userId_limitName", (q) =>
+			.withIndex("by_user_limit_name", (q) =>
 				q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
 			)
 			.first();
@@ -199,11 +201,11 @@ describe("create_workspace", () => {
 						ctx.db.get("workspaces_projects", result._yay!.defaultProjectId),
 						ctx.db
 							.query("limits_per_user")
-							.withIndex("by_userId_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
+							.withIndex("by_user_limit_name", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
 							.first(),
 						ctx.db
 							.query("limits_per_workspace")
-							.withIndex("by_workspaceId_limitName", (q) =>
+							.withIndex("by_workspace_limit", (q) =>
 								q.eq("workspaceId", result._yay!.workspaceId).eq("limitName", "extra_projects"),
 							)
 							.first(),
@@ -465,13 +467,13 @@ describe("create_workspace", () => {
 
 		const first = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "first-extra-workspace",
+			name: "first-extra-ws",
 		});
 		expect(first._yay).toBeTruthy();
 
 		const second = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "second-extra-workspace",
+			name: "second-extra-ws",
 		});
 		expect(second._nay?.message).toBe("You can only create 1 extra workspace in addition to your personal workspace");
 	});
@@ -498,7 +500,7 @@ describe("create_workspace", () => {
 
 		const sharedWorkspace = await owner.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "shared-extra-workspace",
+			name: "shared-extra-ws",
 		});
 		expect(sharedWorkspace._yay).toBeTruthy();
 
@@ -511,12 +513,12 @@ describe("create_workspace", () => {
 
 		const ownWorkspace = await member.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "member-owned-workspace",
+			name: "member-owned-ws",
 		});
-		expect(ownWorkspace._yay?.name).toBe("member-owned-workspace");
+		expect(ownWorkspace._yay?.name).toBe("member-owned-ws");
 	});
 
-	test("fails workspace create when the user limit doc is missing", async () => {
+	test("keeps exactly one user limit doc while creating the extra workspace", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -530,27 +532,53 @@ describe("create_workspace", () => {
 		});
 		await workspaces_test_bootstrap_user(t, { userId });
 
-		await t.run(async (ctx) => {
-			const limitDoc = await ctx.db
-				.query("limits_per_user")
-				.withIndex("by_userId_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
-				.first();
-			if (limitDoc) {
-				await ctx.db.delete("limits_per_user", limitDoc._id);
-			}
+		const before = await t.run(async (ctx) =>
+			(await ctx.db.query("limits_per_user").collect()).filter(
+				(row) => row.userId === userId && row.limitName === user_limits.EXTRA_WORKSPACES.name,
+			),
+		);
+		expect(before).toHaveLength(1);
+		expect(before[0]?.usedCount).toBe(0);
+
+		const created = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "lazy-seed-extra-ws",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const blocked = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "lazy-seed-extra-ws-2",
+		});
+		expect(blocked._nay?.message).toBe("You can only create 1 extra workspace in addition to your personal workspace");
+
+		const after = await t.run(async (ctx) => {
+			const [userLimits, workspaceLimits] = await Promise.all([
+				ctx.db.query("limits_per_user").collect(),
+				ctx.db.query("limits_per_workspace").collect(),
+			]);
+
+			return {
+				userLimits: userLimits.filter(
+					(row) => row.userId === userId && row.limitName === user_limits.EXTRA_WORKSPACES.name,
+				),
+				workspaceLimits: workspaceLimits.filter(
+					(row) =>
+						row.workspaceId === created._yay!.workspaceId && row.limitName === workspace_limits.EXTRA_PROJECTS.name,
+				),
+			};
 		});
 
-		await expect(
-			asUser.mutation(api.workspaces.create_workspace, {
-				description: "",
-				name: "lazy-seed-extra-workspace",
-			}),
-		).rejects.toThrow("[workspaces_db_create] Missing user limit doc");
+		expect(after.userLimits).toHaveLength(1);
+		expect(after.userLimits[0]?.usedCount).toBe(1);
+		expect(after.userLimits[0]?.maxCount).toBe(1);
+		expect(after.workspaceLimits).toHaveLength(1);
+		expect(after.workspaceLimits[0]?.usedCount).toBe(0);
 	});
 });
 
 describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
-	test("ensures default-workspace bootstrap also creates limits docs", async () => {
+	test("ensures default-workspace bootstrap creates workspace limits when user limits exist", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -559,9 +587,18 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 		);
 
 		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("limits_per_user", {
+				userId,
+				limitName: user_limits.EXTRA_WORKSPACES.name,
+				usedCount: 0,
+				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
+				createdAt: now,
+				updatedAt: now,
+			});
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 				userId,
-				now: Date.now(),
+				now,
 			});
 		});
 
@@ -570,14 +607,14 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const workspaceLimit = user?.defaultWorkspaceId
 				? await ctx.db
 						.query("limits_per_workspace")
-						.withIndex("by_workspaceId_limitName", (q) =>
+						.withIndex("by_workspace_limit", (q) =>
 							q.eq("workspaceId", user.defaultWorkspaceId!).eq("limitName", "extra_projects"),
 						)
 						.first()
 				: null;
 			const userLimit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("by_userId_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
+				.withIndex("by_user_limit_name", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
 				.first();
 
 			return {
@@ -608,7 +645,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const project = user?.defaultProjectId ? await ctx.db.get("workspaces_projects", user.defaultProjectId) : null;
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", userId))
+				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", userId))
 				.collect();
 
 			return {
@@ -630,7 +667,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 		expect(after.defaultPersonalMemberships).toHaveLength(1);
 	});
 
-	test("reuses an existing personal/home default instead of creating a second one", async () => {
+	test("does not create a second personal/home default when the user already has one", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -642,11 +679,6 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 		expect(seeded._yay).toBeTruthy();
 
 		await t.run(async (ctx) => {
-			await ctx.db.patch("users", userId, {
-				defaultWorkspaceId: undefined,
-				defaultProjectId: undefined,
-			});
-
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 				userId,
 				now: Date.now(),
@@ -657,7 +689,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const user = await ctx.db.get("users", userId);
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", userId))
+				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", userId))
 				.collect();
 
 			const defaultWorkspaces = (
@@ -727,11 +759,13 @@ describe("create_project", () => {
 					const [membership, workspaceLimit] = await Promise.all([
 						ctx.db
 							.query("workspaces_projects_users")
-							.withIndex("by_projectId_userId", (q) => q.eq("projectId", result._yay!.projectId).eq("userId", userId))
+							.withIndex("by_project_user_active", (q) =>
+								q.eq("projectId", result._yay!.projectId).eq("userId", userId),
+							)
 							.first(),
 						ctx.db
 							.query("limits_per_workspace")
-							.withIndex("by_workspaceId_limitName", (q) =>
+							.withIndex("by_workspace_limit", (q) =>
 								q.eq("workspaceId", wsResult._yay!.workspaceId).eq("limitName", "extra_projects"),
 							)
 							.first(),
@@ -1016,7 +1050,7 @@ describe("create_project", () => {
 		);
 	});
 
-	test("fails project create when the workspace limit doc is missing", async () => {
+	test("keeps exactly one workspace limit doc while creating the extra project", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -1032,29 +1066,47 @@ describe("create_project", () => {
 
 		const workspaceResult = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "lazy-seed-project-workspace",
+			name: "lazy-seed-proj-ws",
 		});
 		expect(workspaceResult._yay).toBeTruthy();
 
-		await t.run(async (ctx) => {
-			const limitDoc = await ctx.db
-				.query("limits_per_workspace")
-				.withIndex("by_workspaceId_limitName", (q) =>
-					q.eq("workspaceId", workspaceResult._yay!.workspaceId).eq("limitName", "extra_projects"),
-				)
-				.first();
-			if (limitDoc) {
-				await ctx.db.delete("limits_per_workspace", limitDoc._id);
-			}
-		});
+		const before = await t.run(async (ctx) =>
+			(await ctx.db.query("limits_per_workspace").collect()).filter(
+				(row) =>
+					row.workspaceId === workspaceResult._yay!.workspaceId &&
+					row.limitName === workspace_limits.EXTRA_PROJECTS.name,
+			),
+		);
+		expect(before).toHaveLength(1);
+		expect(before[0]?.usedCount).toBe(0);
 
-		await expect(
-			asUser.mutation(api.workspaces.create_project, {
-				description: "",
-				workspaceId: workspaceResult._yay!.workspaceId,
-				name: "lazy-seeded-project",
-			}),
-		).rejects.toThrow("[workspaces_db_create_project] Missing workspace limit doc");
+		const created = await asUser.mutation(api.workspaces.create_project, {
+			description: "",
+			workspaceId: workspaceResult._yay!.workspaceId,
+			name: "lazy-seeded-project",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const blocked = await asUser.mutation(api.workspaces.create_project, {
+			description: "",
+			workspaceId: workspaceResult._yay!.workspaceId,
+			name: "seeded-two",
+		});
+		expect(blocked._nay?.message).toBe(
+			"This workspace already has its extra project. Each workspace can contain only 2 projects total, including home",
+		);
+
+		const after = await t.run(async (ctx) =>
+			(await ctx.db.query("limits_per_workspace").collect()).filter(
+				(row) =>
+					row.workspaceId === workspaceResult._yay!.workspaceId &&
+					row.limitName === workspace_limits.EXTRA_PROJECTS.name,
+			),
+		);
+		expect(after).toHaveLength(1);
+		expect(after[0]?._id).toBe(before[0]?._id);
+		expect(after[0]?.usedCount).toBe(1);
+		expect(after[0]?.maxCount).toBe(1);
 	});
 });
 
@@ -1175,10 +1227,10 @@ describe("edit_workspace", () => {
 		const renamed = await asUser.mutation(api.workspaces.edit_workspace, {
 			workspaceId: wsId,
 			defaultProjectId: created._yay!.defaultProjectId,
-			name: "rename-keep-desc-ws-next",
+			name: "rename-keep-desc-2",
 			description: "Product org",
 		});
-		expect(renamed._yay?.name).toBe("rename-keep-desc-ws-next");
+		expect(renamed._yay?.name).toBe("rename-keep-desc-2");
 
 		const after = await t.run((ctx) => ctx.db.get("workspaces", wsId));
 		expect(after?.description).toBe("Product org");
@@ -1402,7 +1454,7 @@ describe("edit_project", () => {
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "rename-proj-ws-id-only",
+			name: "rename-proj-ws-id",
 		});
 		expect(wsResult._yay).toBeTruthy();
 		const workspaceId = wsResult._yay!.workspaceId;
@@ -1564,7 +1616,7 @@ describe("edit_project", () => {
 });
 
 describe("delete_project", () => {
-	test("queues tenant-scoped purge work and restores the user's personal/home default", async () => {
+	test("queues tenant-scoped purge work and keeps the user's personal/home default", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
@@ -1576,8 +1628,19 @@ describe("delete_project", () => {
 			external_id: userId,
 			name: "Test User",
 		});
-		const defaultWorkspace = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId }));
-		expect(defaultWorkspace._yay).toBeTruthy();
+		await workspaces_test_bootstrap_user(t, { userId });
+
+		const personalDefaultIds = await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", userId);
+			if (!user?.defaultWorkspaceId || !user.defaultProjectId) {
+				throw new Error("Expected default workspace pointers after bootstrap");
+			}
+
+			return {
+				workspaceId: user.defaultWorkspaceId,
+				defaultProjectId: user.defaultProjectId,
+			};
+		});
 
 		const created = await t.run(async (ctx) =>
 			workspaces_db_create(ctx, {
@@ -1598,10 +1661,6 @@ describe("delete_project", () => {
 		expect(extraProject._yay).toBeTruthy();
 
 		await t.run(async (ctx) => {
-			await ctx.db.patch("users", userId, {
-				defaultWorkspaceId: created._yay!.workspaceId,
-				defaultProjectId: extraProject._yay!.projectId,
-			});
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId,
 				workspaceId: String(created._yay!.workspaceId),
@@ -1619,11 +1678,11 @@ describe("delete_project", () => {
 			const [project, requests, user, workspaceLimit, pages, markdownContent, aiThreads, aiMessages, chatMessages] =
 				await Promise.all([
 					ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
-					ctx.db.query("workspaces_data_deletion_requests").collect(),
+					ctx.db.query("data_deletion_requests").collect(),
 					ctx.db.get("users", userId),
 					ctx.db
 						.query("limits_per_workspace")
-						.withIndex("by_workspaceId_limitName", (q) =>
+						.withIndex("by_workspace_limit", (q) =>
 							q.eq("workspaceId", created._yay!.workspaceId).eq("limitName", "extra_projects"),
 						)
 						.first(),
@@ -1671,74 +1730,34 @@ describe("delete_project", () => {
 
 		expect(after_delete.project).toBeNull();
 		expect(after_delete.requests).toHaveLength(1);
+		expect(after_delete.requests[0]?.scope).toBe("project");
 		expect(after_delete.pages).toHaveLength(1);
 		expect(after_delete.markdownContent).toHaveLength(1);
 		expect(after_delete.aiThreads).toHaveLength(1);
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
 		expect(after_delete.workspaceLimit?.usedCount).toBe(0);
-		expect(after_delete.user?.defaultWorkspaceId).toBe(defaultWorkspace._yay!.workspaceId);
-		expect(after_delete.user?.defaultProjectId).toBe(defaultWorkspace._yay!.defaultProjectId);
+		expect(after_delete.user?.defaultWorkspaceId).toBe(personalDefaultIds.workspaceId);
+		expect(after_delete.user?.defaultProjectId).toBe(personalDefaultIds.defaultProjectId);
 
 		await t.run((ctx) =>
-			ctx.runMutation(internal.workspaces.purge_data_deletion_requests, {
-				nowTs: after_delete.requests[0]!._creationTime + 7 * 24 * 60 * 60 * 1000 + 1,
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId: after_delete.requests[0]!._id,
+				_test_now: after_delete.requests[0]!._creationTime + 7 * 24 * 60 * 60 * 1000 + 1,
 			}),
 		);
 
-		const after_purge = await t.run(async (ctx) => {
-			const [requests, pages, markdownContent, aiThreads, aiMessages, chatMessages] = await Promise.all([
-				ctx.db.query("workspaces_data_deletion_requests").collect(),
-				ctx.db.query("pages").collect(),
-				ctx.db.query("pages_markdown_content").collect(),
-				ctx.db.query("ai_chat_threads").collect(),
-				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
-				ctx.db.query("chat_messages").collect(),
-			]);
-
-			return {
-				requests: requests.filter(
-					(row) => row.workspaceId === created._yay!.workspaceId && row.projectId === extraProject._yay!.projectId,
-				),
-				pages: pages.filter(
-					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
-				),
-				markdownContent: markdownContent.filter(
-					(row) =>
-						row.workspace_id === String(created._yay!.workspaceId) &&
-						row.project_id === String(extraProject._yay!.projectId),
-				),
-				aiThreads: aiThreads.filter(
-					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
-				),
-				aiMessages: aiMessages.filter(
-					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
-				),
-				chatMessages: chatMessages.filter(
-					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
-				),
-			};
-		});
-
-		expect(after_purge.requests).toHaveLength(0);
-		expect(after_purge.pages).toHaveLength(0);
-		expect(after_purge.markdownContent).toHaveLength(0);
-		expect(after_purge.aiThreads).toHaveLength(0);
-		expect(after_purge.aiMessages).toHaveLength(0);
-		expect(after_purge.chatMessages).toHaveLength(0);
+		const purgeRequestsAfter = await t.run(async (ctx) =>
+			(await ctx.db.query("data_deletion_requests").collect()).filter(
+				(row) => row.workspaceId === created._yay!.workspaceId && row.projectId === extraProject._yay!.projectId,
+			),
+		);
+		expect(purgeRequestsAfter).toHaveLength(0);
 	});
 });
 
 describe("delete_workspace", () => {
-	test("queues tenant-scoped purge work across all projects and restores the affected user's personal/home default", async () => {
+	test("queues workspace-scope purge, drops memberships immediately, keeps structure until cron, then purge removes content and structure", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -1778,10 +1797,7 @@ describe("delete_workspace", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: extraProject._yay!.projectId,
 				userId: memberId,
-			});
-			await ctx.db.patch("users", memberId, {
-				defaultWorkspaceId: created._yay!.workspaceId,
-				defaultProjectId: extraProject._yay!.projectId,
+				active: true,
 			});
 
 			await workspaces_test_seed_project_scoped_rows(ctx, {
@@ -1797,6 +1813,13 @@ describe("delete_workspace", () => {
 				tag: "delete-workspace-extra",
 			});
 		});
+
+		const limitsBeforeDelete = await t.run(async (ctx) =>
+			ctx.db
+				.query("limits_per_workspace")
+				.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+				.collect(),
+		);
 
 		const result = await owner.mutation(api.workspaces.delete_workspace, {
 			workspaceId: created._yay!.workspaceId,
@@ -1824,16 +1847,14 @@ describe("delete_workspace", () => {
 				ctx.db.get("users", memberId),
 				ctx.db
 					.query("limits_per_user")
-					.withIndex("by_userId_limitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
+					.withIndex("by_user_limit_name", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
 					.first(),
 				ctx.db
 					.query("limits_per_workspace")
-					.withIndex("by_workspaceId_limitName", (q) =>
-						q.eq("workspaceId", created._yay!.workspaceId).eq("limitName", "extra_projects"),
-					)
+					.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("workspaces_projects_users").collect(),
-				ctx.db.query("workspaces_data_deletion_requests").collect(),
+				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.query("pages").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
@@ -1856,52 +1877,267 @@ describe("delete_workspace", () => {
 			};
 		});
 
-		expect(after_delete.workspace).toBeNull();
-		expect(after_delete.defaultProject).toBeNull();
-		expect(after_delete.secondaryProject).toBeNull();
+		expect(after_delete.workspace).not.toBeNull();
+		expect(after_delete.defaultProject).not.toBeNull();
+		expect(after_delete.secondaryProject).not.toBeNull();
 		expect(after_delete.memberships).toHaveLength(0);
-		expect(after_delete.requests.map((row) => row.projectId).sort()).toEqual(
-			[created._yay!.defaultProjectId, extraProject._yay!.projectId].sort(),
-		);
+		expect(after_delete.requests).toHaveLength(1);
+		expect(after_delete.requests[0]?.scope).toBe("workspace");
 		expect(after_delete.pages).toHaveLength(2);
 		expect(after_delete.aiThreads).toHaveLength(2);
 		expect(after_delete.aiMessages).toHaveLength(2);
 		expect(after_delete.chatMessages).toHaveLength(2);
 		expect(after_delete.ownerLimit?.usedCount).toBe(0);
-		expect(after_delete.workspaceLimits).toHaveLength(0);
+		expect(after_delete.workspaceLimits.map((row) => row._id).sort()).toEqual(
+			limitsBeforeDelete.map((row) => row._id).sort(),
+		);
 		expect(after_delete.member?.defaultWorkspaceId).toBe(memberDefault._yay!.workspaceId);
 		expect(after_delete.member?.defaultProjectId).toBe(memberDefault._yay!.defaultProjectId);
 
-		const newest_request_creation_time = Math.max(...after_delete.requests.map((row) => row._creationTime));
+		const newestRequestCreationTime = Math.max(...after_delete.requests.map((row) => row._creationTime));
 		await t.run((ctx) =>
-			ctx.runMutation(internal.workspaces.purge_data_deletion_requests, {
-				nowTs: newest_request_creation_time + 7 * 24 * 60 * 60 * 1000 + 1,
+			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId: after_delete.requests[0]!._id,
+				_test_now: newestRequestCreationTime + 7 * 24 * 60 * 60 * 1000 + 1,
 			}),
 		);
 
+		const purgeRequestsAfter = await t.run(async (ctx) =>
+			(await ctx.db.query("data_deletion_requests").collect()).filter(
+				(row) => row.workspaceId === created._yay!.workspaceId,
+			),
+		);
+		expect(purgeRequestsAfter).toHaveLength(0);
+
 		const after_purge = await t.run(async (ctx) => {
-			const [requests, pages, aiThreads, aiMessages, chatMessages] = await Promise.all([
-				ctx.db.query("workspaces_data_deletion_requests").collect(),
+			const [workspace, defaultProject, secondaryProject, workspaceLimits, pages] = await Promise.all([
+				ctx.db.get("workspaces", created._yay!.workspaceId),
+				ctx.db.get("workspaces_projects", created._yay!.defaultProjectId),
+				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
+				ctx.db
+					.query("limits_per_workspace")
+					.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.collect(),
 				ctx.db.query("pages").collect(),
+			]);
+			return {
+				workspace,
+				defaultProject,
+				secondaryProject,
+				workspaceLimits,
+				pages: pages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+			};
+		});
+		expect(after_purge.workspace).toBeNull();
+		expect(after_purge.defaultProject).toBeNull();
+		expect(after_purge.secondaryProject).toBeNull();
+		expect(after_purge.workspaceLimits).toHaveLength(0);
+		expect(after_purge.pages).toHaveLength(0);
+	});
+
+	test("queues a workspace-scope purge even when the workspace already has a queued project-scope purge", async () => {
+		const t = test_convex();
+		const ownerId = await t.run(async (ctx) =>
+			ctx.db.insert("users", { clerkUserId: "clerk-user-delete-workspace-after-project-delete" }),
+		);
+		await workspaces_test_bootstrap_user(t, { userId: ownerId });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+		});
+
+		const created = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				name: "queued",
+				description: "",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const extraProject = await owner.mutation(api.workspaces.create_project, {
+			description: "",
+			workspaceId: created._yay!.workspaceId,
+			name: "scratch",
+		});
+		expect(extraProject._yay).toBeTruthy();
+
+		const deleteProjectResult = await owner.mutation(api.workspaces.delete_project, {
+			projectId: extraProject._yay!.projectId,
+		});
+		expect(deleteProjectResult._yay).toBeNull();
+
+		const deleteWorkspaceResult = await owner.mutation(api.workspaces.delete_workspace, {
+			workspaceId: created._yay!.workspaceId,
+		});
+		expect(deleteWorkspaceResult._yay).toBeNull();
+
+		const requestsAfterDeleteWorkspace = await t.run(async (ctx) =>
+			(await ctx.db.query("data_deletion_requests").collect()).filter(
+				(row) => row.workspaceId === created._yay!.workspaceId,
+			),
+		);
+
+		expect(
+			requestsAfterDeleteWorkspace.filter(
+				(row) => row.scope === "project" && row.projectId === extraProject._yay!.projectId,
+			),
+		).toHaveLength(1);
+		expect(
+			requestsAfterDeleteWorkspace.filter((row) => row.scope === "workspace" && row.projectId === undefined),
+		).toHaveLength(1);
+	});
+});
+
+describe("process_project_deletion_request", () => {
+	test("purges only the requested workspace/project scope and keeps sibling project rows", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-purge-data-deletion-requests",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Test User",
+		});
+
+		const created = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				name: "purge-requests-ws",
+				description: "",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		const victimProject = await asUser.mutation(api.workspaces.create_project, {
+			description: "",
+			workspaceId: created._yay!.workspaceId,
+			name: "scratch",
+		});
+		expect(victimProject._yay).toBeTruthy();
+
+		const purgeRequest = await t.run(async (ctx) => {
+			await workspaces_test_seed_project_scoped_rows(ctx, {
+				userId,
+				workspaceId: String(created._yay!.workspaceId),
+				projectId: String(created._yay!.defaultProjectId),
+				tag: "purge-control",
+			});
+			await workspaces_test_seed_project_scoped_rows(ctx, {
+				userId,
+				workspaceId: String(created._yay!.workspaceId),
+				projectId: String(victimProject._yay!.projectId),
+				tag: "purge-victim",
+			});
+
+			const purgeRequestId = await ctx.db.insert("data_deletion_requests", {
+				userId,
+				workspaceId: created._yay!.workspaceId,
+				projectId: victimProject._yay!.projectId,
+				scope: "project",
+			});
+			const purgeRequest = await ctx.db.get("data_deletion_requests", purgeRequestId);
+			if (!purgeRequest) {
+				throw new Error("Failed to load purge request");
+			}
+
+			return purgeRequest;
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId: purgeRequest._id,
+				_test_now: purgeRequest._creationTime + RETENTION_MS + 1,
+			}),
+		);
+
+		const afterPurge = await t.run(async (ctx) => {
+			const [requests, pages, markdownContent, aiThreads, aiMessages, chatMessages] = await Promise.all([
+				ctx.db.query("data_deletion_requests").collect(),
+				ctx.db.query("pages").collect(),
+				ctx.db.query("pages_markdown_content").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
 			]);
 
 			return {
-				requests: requests.filter((row) => row.workspaceId === created._yay!.workspaceId),
-				pages: pages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
-				aiThreads: aiThreads.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
-				aiMessages: aiMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
-				chatMessages: chatMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+				victimRequests: requests.filter(
+					(row) => row.workspaceId === created._yay!.workspaceId && row.projectId === victimProject._yay!.projectId,
+				),
+				controlPages: pages.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(created._yay!.defaultProjectId),
+				),
+				victimPages: pages.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(victimProject._yay!.projectId),
+				),
+				controlMarkdownContent: markdownContent.filter(
+					(row) =>
+						row.workspace_id === String(created._yay!.workspaceId) &&
+						row.project_id === String(created._yay!.defaultProjectId),
+				),
+				victimMarkdownContent: markdownContent.filter(
+					(row) =>
+						row.workspace_id === String(created._yay!.workspaceId) &&
+						row.project_id === String(victimProject._yay!.projectId),
+				),
+				controlAiThreads: aiThreads.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(created._yay!.defaultProjectId),
+				),
+				victimAiThreads: aiThreads.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(victimProject._yay!.projectId),
+				),
+				controlAiMessages: aiMessages.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(created._yay!.defaultProjectId),
+				),
+				victimAiMessages: aiMessages.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(victimProject._yay!.projectId),
+				),
+				controlChatMessages: chatMessages.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(created._yay!.defaultProjectId),
+				),
+				victimChatMessages: chatMessages.filter(
+					(row) =>
+						row.workspaceId === String(created._yay!.workspaceId) &&
+						row.projectId === String(victimProject._yay!.projectId),
+				),
 			};
 		});
 
-		expect(after_purge.requests).toHaveLength(0);
-		expect(after_purge.pages).toHaveLength(0);
-		expect(after_purge.aiThreads).toHaveLength(0);
-		expect(after_purge.aiMessages).toHaveLength(0);
-		expect(after_purge.chatMessages).toHaveLength(0);
+		expect(afterPurge.victimRequests).toHaveLength(0);
+		expect(afterPurge.victimPages).toHaveLength(0);
+		expect(afterPurge.victimMarkdownContent).toHaveLength(0);
+		expect(afterPurge.victimAiThreads).toHaveLength(0);
+		expect(afterPurge.victimAiMessages).toHaveLength(0);
+		expect(afterPurge.victimChatMessages).toHaveLength(0);
+		expect(afterPurge.controlPages).toHaveLength(1);
+		expect(afterPurge.controlMarkdownContent).toHaveLength(1);
+		expect(afterPurge.controlAiThreads).toHaveLength(1);
+		expect(afterPurge.controlAiMessages).toHaveLength(1);
+		expect(afterPurge.controlChatMessages).toHaveLength(1);
 	});
 });
 
@@ -2032,8 +2268,7 @@ describe("list", () => {
 			name: "Owner",
 		});
 
-		const seedResult = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId: userIds[0] }));
-		expect(seedResult._yay).toBeTruthy();
+		await workspaces_test_bootstrap_user(t, { userId: userIds[0] });
 
 		const ownedWorkspace = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
@@ -2138,6 +2373,7 @@ describe("list", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: extra._yay!.projectId,
 				userId: userIds[1],
+				active: true,
 			});
 		});
 
@@ -2255,7 +2491,7 @@ describe("get_workspace_limit", () => {
 		const extra = await owner.mutation(api.workspaces.create_project, {
 			description: "",
 			workspaceId: created._yay!.workspaceId,
-			name: "workspace-limit-project",
+			name: "workspace-limit-proj",
 		});
 		expect(extra._yay).toBeTruthy();
 
@@ -2264,6 +2500,7 @@ describe("get_workspace_limit", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: extra._yay!.projectId,
 				userId: userIds[1],
+				active: true,
 			});
 		});
 

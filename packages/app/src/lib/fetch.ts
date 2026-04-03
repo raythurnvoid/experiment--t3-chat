@@ -1,4 +1,4 @@
-import type { api_schemas_MainPaths, api_schemas_Main } from "./api-schemas.ts";
+import type { api_schemas_Main_Path, api_schemas_Main } from "./api-schemas.ts";
 import type { LiteralUnion } from "type-fest";
 import { AppAuthProvider } from "../components/app-auth.tsx";
 import { delay, should_never_happen } from "./utils.ts";
@@ -47,35 +47,38 @@ export async function app_fetch_auth_resolve_user(
 }
 
 export async function app_fetch_main_chat(
-	args: app_fetch_StreamArgs & {
+	args: Omit<app_fetch_stream_Args, "url" | "body"> & {
 		input: api_schemas_Main["/api/chat"]["POST"]["body"];
 	},
 ) {
+	const { input, ...stream_args } = args;
+
 	const url = app_fetch_main_api_url("/api/chat");
 
 	return await app_fetch_stream({
-		...args,
+		...stream_args,
 		url,
-		body: args.input,
+		body: input,
 	});
 }
 
 export async function app_fetch_stream_runs(
-	args: app_fetch_StreamArgs & {
+	args: Omit<app_fetch_stream_Args, "url" | "body"> & {
 		input: api_schemas_Main["/api/v1/runs/stream"]["POST"]["body"];
 	},
 ) {
+	const { input, ...stream_args } = args;
 	const url = app_fetch_main_api_url("/api/v1/runs/stream");
 
 	return await app_fetch_stream({
-		...args,
+		...stream_args,
 		url,
-		body: args.input,
+		body: input,
 	});
 }
 
 export async function app_fetch_ai_docs_contextual_prompt(
-	args: app_fetch_JsonArgs & {
+	args: Omit<app_fetch_json_Args, "url" | "body" | "method"> & {
 		input: {
 			prompt: string;
 			context?: any;
@@ -83,13 +86,14 @@ export async function app_fetch_ai_docs_contextual_prompt(
 		};
 	},
 ) {
+	const { input, ...json_args } = args;
 	const url = `${convex_http_url}/api/ai-docs-temp/contextual-prompt`;
 
 	return await app_fetch_json<any>({
-		...args,
+		...json_args,
 		url,
 		method: "POST",
-		body: args.input,
+		body: input,
 	});
 }
 
@@ -97,7 +101,7 @@ export async function app_fetch_ai_docs_contextual_prompt(
 const base_url_main = convex_http_url;
 
 export function app_fetch_main_api_url(
-	path: api_schemas_MainPaths,
+	path: api_schemas_Main_Path,
 	args?: {
 		search_params?: Record<string, string | number | boolean | string[] | number[] | boolean[]>;
 		path_params?: Record<string, string>;
@@ -130,22 +134,22 @@ export function app_fetch_main_api_url(
 	return url.toString();
 }
 
-export async function app_fetch_stream(args: { url: string } & app_fetch_StreamArgs) {
-	const auth = args.auth ?? true;
+export async function app_fetch_stream(args: app_fetch_stream_Args) {
 	// It's correct to default to `application/json` even in case we don't expect any response body, because in case of non-ok response it would be a json anyway.
-	const accept = args.accept ?? "text/plain";
-	const content_type = args.content_type ?? "application/json";
-	const method = args.method ?? "POST";
-	const keepalive = args.keepalive ?? false;
+	const { url, contentType, retries = 3, auth = true, accept = "text/plain", ...requestInit } = args;
 
-	const headers = new Headers(args.headers);
+	const resolvedContentType = contentType ?? "application/json";
+	const method = requestInit.method ?? "POST";
+	const keepalive = requestInit.keepalive ?? false;
+
+	const headers = new Headers(requestInit.headers);
 
 	if (!headers.has("Accept")) {
 		headers.set("Accept", accept);
 	}
 
 	if (!headers.has("Content-Type")) {
-		headers.set("Content-Type", content_type);
+		headers.set("Content-Type", resolvedContentType);
 	}
 
 	if (auth) {
@@ -162,23 +166,30 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 		}
 	}
 
-	const body = typeof args.body === "string" ? args.body : JSON.stringify(args.body);
-
-	let result;
+	const body = ((/* iife */) => {
+		const b = requestInit.body;
+		if (b === undefined || b === null) {
+			return undefined;
+		}
+		if (typeof b === "string") {
+			return b;
+		}
+		return JSON.stringify(b);
+	})();
 
 	// +1 to have a 1 based index because "attempt 1" sounds better
-	const maxAttempts = Math.max(0, args.retries ?? 3) + 1;
+	const maxAttempts = Math.max(0, retries) + 1;
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
-			const response = await fetch(args.url, {
-				...(args as RequestInit),
+			const response = await fetch(url, {
+				cache: "default",
+				credentials: "omit",
+				priority: "auto",
+				...(requestInit as RequestInit),
 				headers,
 				method,
 				body,
 				keepalive,
-				cache: "default",
-				credentials: "omit",
-				priority: "auto",
 				redirect: "error",
 			});
 
@@ -204,7 +215,7 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 			const stream_iterator_factory = new StreamIteratorFactory({
 				response,
 				first_reader: reader,
-				signal: args.signal,
+				signal: requestInit.signal == null ? undefined : requestInit.signal,
 			});
 
 			return Result({
@@ -217,60 +228,54 @@ export async function app_fetch_stream(args: { url: string } & app_fetch_StreamA
 			const error = e as Error;
 			// Handle errors as values
 			if (error.name === "AbortError") {
-				result = Result({
+				return Result({
 					_nay: {
+						name: "nay_abort",
 						message: "Request aborted",
 						cause: error,
 					},
 				});
-				break;
-			} else {
-				// Client connection error, it makes sense to retry
-
-				result = Result({
-					_nay: {
-						message: "Failed to fetch",
-						cause: error,
-					},
-				});
-
-				// Only retry on "Failed to fetch" errors if we have more attempts left
-				if (attempt < maxAttempts) {
-					await delay(1000); // 1-second delay
-					continue;
-				}
 			}
+
+			// Client connection error, it makes sense to retry
+			if (attempt < maxAttempts) {
+				await delay(1000); // 1-second delay
+				continue;
+			}
+
+			return Result({
+				_nay: {
+					message: "Failed to fetch",
+					cause: error,
+				},
+			});
 		}
 	}
 
-	if (!result) {
-		should_never_happen("`result` is always valorized");
-		return Result({
-			_nay: {
-				message: "Failed to fetch",
-			},
-		});
-	}
-
-	return result;
+	return Result({
+		_nay: {
+			message: "Failed to fetch",
+		},
+	});
 }
 
-export async function app_fetch_json<Response>(args: { url: string } & app_fetch_JsonArgs) {
-	const auth = args.auth ?? true;
+export async function app_fetch_json<Response>(args: app_fetch_json_Args) {
 	// It's correct to default to `application/json` even in case we don't expect any response body, because in case of non-ok response it would be a json anyway.
 	const accept = "application/json";
-	const content_type = args.content_type ?? "application/json";
-	const method = args.method ?? "GET";
-	const keepalive = args.keepalive ?? false;
 
-	const headers = new Headers(args.headers);
+	const { url, contentType, retries = 3, auth = true, ...requestInit } = args;
+	const resolvedContentType = contentType ?? "application/json";
+	const method = requestInit.method ?? "GET";
+	const keepalive = requestInit.keepalive ?? false;
+
+	const headers = new Headers(requestInit.headers);
 
 	if (!headers.has("Accept")) {
 		headers.set("Accept", accept);
 	}
 
 	if (!headers.has("Content-Type")) {
-		headers.set("Content-Type", content_type);
+		headers.set("Content-Type", resolvedContentType);
 	}
 
 	if (auth) {
@@ -287,23 +292,30 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 		}
 	}
 
-	const body = typeof args.body === "string" ? args.body : JSON.stringify(args.body);
-
-	let result;
+	const body = ((/* iife */) => {
+		const b = requestInit.body;
+		if (b === undefined || b === null) {
+			return undefined;
+		}
+		if (typeof b === "string") {
+			return b;
+		}
+		return JSON.stringify(b);
+	})();
 
 	// +1 to have a 1 based index because "attempt 1" sounds better
-	const maxAttempts = Math.max(0, args.retries ?? 3) + 1;
+	const maxAttempts = Math.max(0, retries) + 1;
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
-			const response = await fetch(args.url, {
-				...(args as RequestInit),
+			const response = await fetch(url, {
+				cache: "default",
+				credentials: "omit",
+				priority: "auto",
+				...(requestInit as RequestInit),
 				headers,
 				method,
 				body,
 				keepalive,
-				cache: "default",
-				credentials: "omit",
-				priority: "auto",
 				redirect: "error",
 			});
 
@@ -316,85 +328,98 @@ export async function app_fetch_json<Response>(args: { url: string } & app_fetch
 				});
 			}
 
-			const reader = response.clone().body?.getReader();
-
-			if (!reader) {
+			if (response.status === 204 || response.status === 205) {
 				return Result({
-					_nay: {
-						message: "Response body is not a stream",
+					_yay: {
+						response,
+						payload: null as unknown as Response,
 					},
 				});
 			}
 
-			let response_json;
+			const content_length_raw = response.headers.get("content-length");
+			if (content_length_raw !== null && Number(content_length_raw) === 0) {
+				return Result({
+					_yay: {
+						response,
+						payload: null as unknown as Response,
+					},
+				});
+			}
+
+			let response_text;
 			try {
-				response_json = await response.json();
-			} catch (e) {
-				const error = e as Error;
+				response_text = await response.text();
+			} catch (error) {
+				return Result({
+					_nay: {
+						message: "Failed to read response body",
+						cause: error as Error,
+					},
+				});
+			}
+
+			if (response_text.trim() === "") {
+				return Result({
+					_yay: {
+						response,
+						payload: null as unknown as Response,
+					},
+				});
+			}
+
+			try {
+				return Result({
+					_yay: {
+						response,
+						payload: JSON.parse(response_text) as Response,
+					},
+				});
+			} catch (error) {
 				return Result({
 					_nay: {
 						message: "Failed to parse response as JSON",
-						cause: error,
+						cause: error as Error,
 					},
 				});
 			}
-
-			return Result({
-				_yay: {
-					response,
-					payload: response_json as Response,
-				},
-			});
 		} catch (e) {
 			const error = e as Error;
 			// Handle errors as values
 			if (error.name === "AbortError") {
-				result = Result({
+				return Result({
 					_nay: {
 						name: "nay_abort",
 						message: "Request aborted",
 						cause: error,
 					},
 				});
-				break;
-			} else {
-				// Client connection error, it makes sense to retry
-
-				result = Result({
-					_nay: {
-						message: "Failed to fetch",
-						cause: error,
-					},
-				});
-
-				// Only retry on "Failed to fetch" errors if we have more attempts left
-				if (attempt < maxAttempts) {
-					await delay(1000); // 1-second delay
-					continue;
-				}
 			}
+
+			// Client connection error, it makes sense to retry
+			if (attempt < maxAttempts) {
+				await delay(1000); // 1-second delay
+				continue;
+			}
+
+			return Result({
+				_nay: {
+					message: "Failed to fetch",
+					cause: error,
+				},
+			});
 		}
 	}
 
-	if (!result) {
-		should_never_happen("`result` is always valorized");
-		return Result({
-			_nay: {
-				message: "Failed to fetch",
-			},
-		});
-	}
-
-	return result;
+	return Result({
+		_nay: {
+			message: "Failed to fetch",
+		},
+	});
 }
 
-type app_fetch_JsonArgs = {
-	/**
-	 * The HTTP method to use.
-	 *
-	 * @default "GET"
-	 */
-	method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+type app_fetch_json_Args = Omit<RequestInit, "body" | "headers" | "method" | "keepalive" | "signal"> & {
+	url: string;
 	headers?: Record<string, string>;
 	/**
 	 * The body of the request.
@@ -411,7 +436,19 @@ type app_fetch_JsonArgs = {
 	 *
 	 * @default "application/json"
 	 */
-	content_type?: LiteralUnion<"text/plain" | "application/json", string>;
+	contentType?: LiteralUnion<"text/plain" | "application/json", string>;
+	/**
+	 * The request is retried `retries` times if it fails.
+	 *
+	 * @default 3
+	 */
+	retries?: number;
+	/**
+	 * The HTTP method to use.
+	 *
+	 * @default "GET"
+	 */
+	method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 	/**
 	 * Keep the connection alive if the page is unloaded to complete the request and
 	 * avoid interrupting the request.
@@ -420,24 +457,13 @@ type app_fetch_JsonArgs = {
 	 */
 	keepalive?: boolean;
 	/**
-	 * The request is retried `retries` times if it fails.
-	 *
-	 * @default 3
-	 */
-	retries?: number;
-	/**
 	 * The abort signal to use to abort the request.
 	 */
 	signal?: AbortSignal | undefined;
 };
 
-type app_fetch_StreamArgs = {
-	/**
-	 * The HTTP method to use.
-	 *
-	 * @default "POST"
-	 */
-	method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+type app_fetch_stream_Args = Omit<RequestInit, "body" | "headers" | "method" | "keepalive" | "signal"> & {
+	url: string;
 	headers?: Record<string, string>;
 	/**
 	 * The body of the request.
@@ -462,7 +488,19 @@ type app_fetch_StreamArgs = {
 	 *
 	 * @default "application/json"
 	 */
-	content_type?: LiteralUnion<"text/plain" | "application/json", string>;
+	contentType?: LiteralUnion<"text/plain" | "application/json", string>;
+	/**
+	 * The request is retried `retries` times if it fails.
+	 *
+	 * @default 3
+	 */
+	retries?: number;
+	/**
+	 * The HTTP method to use.
+	 *
+	 * @default "POST"
+	 */
+	method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 	/**
 	 * Keep the connection alive if the page is unloaded to complete the request and
 	 * avoid interrupting the request.
@@ -470,12 +508,6 @@ type app_fetch_StreamArgs = {
 	 * @default false
 	 */
 	keepalive?: boolean;
-	/**
-	 * The request is retried `retries` times if it fails.
-	 *
-	 * @default 3
-	 */
-	retries?: number;
 	/**
 	 * The abort signal to use to abort the request.
 	 */

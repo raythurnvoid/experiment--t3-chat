@@ -324,6 +324,22 @@ if (!anagraphic) return null;
 
 If your code always resolves the relationship via stored ids (rather than querying by a foreign key), you often do **not** need a secondary index for that relationship.
 
+## Query cache and composition
+
+Convex query results are automatically cached by the client and kept consistent via subscriptions. In this codebase, treat query-cache reuse as a first-class design constraint when shaping public queries.
+
+- Prefer reusing an existing generic query over adding a new narrowly tailored wrapper query that returns nearly the same data.
+- Favor stable, composable query shapes that multiple screens can call with the same args and therefore share the same cache entry.
+- Do not optimize primarily for "fewer client-side requests". A few extra client-side queries are acceptable, especially when they can run in parallel or hit warm cache.
+- It is often better to compose 2-3 smaller queries in the client than to create one larger query whose cache entry is more specific and gets invalidated or busted more often.
+- Small waterfalls are acceptable when they preserve better cache reuse and query composability.
+- Only introduce a specialized combined query when the combined shape is a real shared domain API, not just a convenience for one component.
+- When the UI only needs app-owned profile fields, prefer reusing a generic profile/anagraphic query over creating a "current X view model" query just to reshape the payload.
+
+Practical implication for this repo:
+
+- If both a sidebar and a modal need the same user anagraphic, prefer both calling `users.get_anagraphic({ userId })` instead of introducing a separate `get_current_profile` wrapper just for one of them.
+
 # Migrations
 
 When the user asks for a Convex migration, you must implement it as an `internalMutation` in [../../../packages/app/convex/migrations.ts](../../../packages/app/convex/migrations.ts).

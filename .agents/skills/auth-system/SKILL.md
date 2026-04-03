@@ -1,15 +1,31 @@
 ---
 name: auth-system
-description: Auth system (Clerk + Convex + anonymous JWT) guidelines and planned permissions/upgrade behavior.
+description: Auth and account-management system (Clerk + Convex + anonymous JWT) guidelines, including Convex-authoritative account lifecycle, anagraphic-first UI profile data, and planned permissions/upgrade behavior. Use when modifying auth flows, account/profile UI, delete-account behavior, Clerk cleanup, or anonymous upgrade behavior.
 ---
 
 # Overview
 
-Auth system design + implementation notes (Clerk + Convex + anonymous JWT), including planned projects/workspaces/assets privacy model and upgrade migration behavior.
+Auth and account-management design + implementation notes (Clerk + Convex + anonymous JWT), including current delete-account authority, profile data sourcing, and planned projects/workspaces/assets privacy model and upgrade migration behavior.
 
 # Auth system (Clerk + Convex + anonymous JWT), and planned permissions model for projects/workspaces/assets.
 
 # High-level goals (product + security)
+
+## App-first account authority
+
+Account lifecycle and delete authority live in Convex first.
+
+- The app must not depend on "delete in Clerk first, then sync locally" for correctness.
+- Clerk is the auth/session provider and external identity surface, not the source of truth for whether an app account still exists.
+
+## Cache-friendly query reuse
+
+Prefer reusing existing generic Convex queries instead of creating narrowly tailored wrapper queries for each UI surface.
+
+- Convex query results are cached client-side and kept consistent via subscriptions.
+- Reusing the same query + args lets multiple UI surfaces share that cache entry.
+- In this repo, this means profile UIs should prefer `users.get_anagraphic({ userId })` when they only need anagraphic fields, instead of adding a new "current profile" wrapper query.
+- Favor generic, composable queries that can be reused in multiple places over UI-specific "view model" queries.
 
 ## Frictionless onboarding
 
@@ -125,23 +141,64 @@ The root layout waits for both:
 
 If Convex is authenticated, the main app is rendered; otherwise an unauthenticated view is shown.
 
-## Assistant UI token generation (Convex action)
+## Account management (current implementation)
 
-File: [auth.ts](../../../packages/app/convex/auth.ts)
+### Profile data in the UI
 
-The action `generate_assistant_ui_token` uses `ctx.auth.getUserIdentity()` to decide the `userId`/`workspaceId` for Assistant UI Cloud tokens:
+Signed-in account UI should reuse `users.get_anagraphic({ userId })` with `auth.userId`.
 
-- Clerk user: uses `identity.external_id` (must exist)
-- Anonymous user: detected by `identity.issuer === VITE_CONVEX_HTTP_URL`, uses `identity.subject`
-- No identity: falls back to [shared-auth-constants.ts](../../../packages/app/shared/shared-auth-constants.ts) for `anonymous`
+- This is intentional so the sidebar and account modal share the same Convex query cache entry.
+- UI fallbacks stay in the component layer:
+  - anagraphic first
+  - then Clerk display fields / image
+  - anonymous synthetic display name when needed
+
+Relevant files:
+
+- [main-app-sidebar-account-control.tsx](../../../packages/app/src/components/main-app-sidebar-account-control.tsx)
+- [main-app-account-management.tsx](../../../packages/app/src/components/main-app-account-management.tsx)
+- [users.ts](../../../packages/app/convex/users.ts)
+
+### Delete-account authority
+
+`users.delete_current_user_account` is Convex-authoritative:
+
+- apply the local app tombstone first
+- then attempt Clerk cleanup as best-effort follow-up
+- do not fail the app-local deletion just because Clerk deletion failed
+
+Related files:
+
+- [users.ts](../../../packages/app/convex/users.ts)
+- [data_deletion.ts](../../../packages/app/convex/data_deletion.ts)
+- [data_deletion.ts](../../../packages/app/server/data_deletion.ts)
+
+### Account deletion and workspace/project data cleanup
+
+User-account deletion is implemented across [users.ts](../../../packages/app/convex/users.ts) and [data_deletion.ts](../../../packages/app/convex/data_deletion.ts):
+
+- `users.delete_current_user_account` is the UI-facing entrypoint.
+- `data_deletion.init_user_deletion` creates or reuses the `scope: "user"` row in `data_deletion_requests`, tombstones the user (`users.deletedAt`), and marks memberships inactive.
+- `data_deletion.process_user_deletion_request` performs the post-retention hard delete.
+- Orphaned projects/workspaces discovered during user deletion queue `project` rows in the same shared `data_deletion_requests` table via `packages/app/server/data_deletion.ts`.
+
+For the full workspace/project deletion and purge lifecycle, use the canonical tenancy skill: [workspaces-tenancy: Workspace and project deletion and data purge](../workspaces-tenancy/SKILL.md#workspace-and-project-deletion-and-data-purge).
+
+### Clerk cleanup role
+
+There is no Clerk deletion webhook safety-net in the current architecture. Account deletion is app-driven:
+
+- apply the local Convex deletion flow first
+- attempt Clerk user deletion as best-effort follow-up
+- do not recreate an app-local delete request from external Clerk events
 
 ## Current workspace/project system
 
-**Canonical detail:** see [workspaces-tenancy skill](../workspaces-tenancy/SKILL.md) (schema vs API guards, `personal`/`home`, rename/delete, invitations, deletion queue, anonymous-upgrade tenancy continuity, and `ensure` semantics).
+**Canonical detail:** see [workspaces-tenancy skill](../workspaces-tenancy/SKILL.md) (schema vs API guards, `personal`/`home`, rename/delete, invitations, [deletion and purge](../workspaces-tenancy/SKILL.md#workspace-and-project-deletion-and-data-purge), anonymous-upgrade tenancy continuity, and `ensure` semantics).
 
 Summary:
 
-- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `workspaces_data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
+- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
 - Bootstrap: `users_create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
 - **Implementation note:** Many app surfaces may still use older hardcoded workspace/project ids outside this tenancy module—verify callsites.
 
@@ -215,6 +272,17 @@ When the user requests changes in this area, you must:
 
 - The canonical app identity is the Convex `users` document id.
 - Clerk `external_id` is used as a pointer to that Convex user id in tokens.
+- Trust Clerk session invalidation after delete. Do not add extra app-side session-state checks or deleted-user guards just to defend against a supposedly still-valid Clerk session.
+
+# Prefer cache-friendly query composition
+
+- Reuse existing generic queries before creating new wrapper queries.
+- Treat Convex query cache reuse as more important than minimizing the number of client-side query calls.
+- Multiple small queries are often better than one wide query when they can be reused across screens and remain cached independently.
+- Parallel client-side queries are fine.
+- Even 2-3 levels of UI waterfalls can be preferable to a single complex query whose cache gets busted more often.
+- Prefer narrow, stable, reusable query shapes. Add a new specialized query only when the combined server-side shape is truly the shared domain API, not just a convenience for one screen.
+- Keep provider-specific fallback logic in the client when doing so preserves reuse of generic app-owned queries.
 
 # Keep anonymous flows robust
 
@@ -225,3 +293,8 @@ When the user requests changes in this area, you must:
 
 - Do not accidentally enable public write by default.
 - When implementing the upgrade migration, ensure “everything becomes private” is enforced.
+
+# Verification touchpoints
+
+- If you change delete-account behavior, update [data_deletion.test.ts](../../../packages/app/convex/data_deletion.test.ts) and [users.test.ts](../../../packages/app/convex/users.test.ts).
+- If you change profile/anagraphic usage or fallback behavior materially, update [users.test.ts](../../../packages/app/convex/users.test.ts).

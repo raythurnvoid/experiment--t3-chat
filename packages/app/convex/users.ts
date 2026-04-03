@@ -1,9 +1,14 @@
-import { internalMutation, internalQuery, query } from "./_generated/server.js";
+import {
+	action,
+	httpAction,
+	internalMutation,
+	internalQuery,
+	query,
+	type ActionCtx,
+} from "./_generated/server.js";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
-import { httpAction } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
-import { type ActionCtx } from "./_generated/server.js";
 import { type RouteSpec } from "convex/server";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -14,10 +19,11 @@ import {
 	users_create_anonymouse_user_display_name,
 	users_create_fallback_display_name,
 } from "../shared/users.ts";
-import { user_limits } from "../shared/limits.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import { user_limits } from "../shared/limits.ts";
 import type { Id } from "./_generated/dataModel";
 import { v_result } from "../server/convex-utils.ts";
+import { server_fetch_json } from "../server/server-fetch.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
@@ -128,6 +134,15 @@ export const users_create_anonymous_user = internalMutation({
 			clerkUserId: null,
 		});
 
+		await ctx.db.insert("limits_per_user", {
+			userId,
+			limitName: user_limits.EXTRA_WORKSPACES.name,
+			usedCount: 0,
+			maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
+			createdAt: now,
+			updatedAt: now,
+		});
+
 		const [tokenId] = await Promise.all([
 			ctx.db
 				.insert("users_anon_tokens", {
@@ -142,16 +157,6 @@ export const users_create_anonymous_user = internalMutation({
 						})
 						.then(() => tokenId),
 				),
-
-			ctx.db.insert("limits_per_user", {
-				userId,
-				limitName: user_limits.EXTRA_WORKSPACES.name,
-				usedCount: 0,
-				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-				createdAt: now,
-				updatedAt: now,
-			}),
-
 			ctx.db
 				.insert("users_anagraphics", {
 					userId: userId,
@@ -218,6 +223,30 @@ export const users_clear_anonymous_auth_token = internalMutation({
 				anonymousAuthToken: undefined,
 			}),
 		]);
+
+		return null;
+	},
+});
+
+export const clear_clerk_user_id_after_clerk_delete = internalMutation({
+	args: {
+		userId: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const userId = ctx.db.normalizeId("users", args.userId);
+		if (!userId) {
+			return null;
+		}
+
+		const user = await ctx.db.get("users", userId);
+		if (!user?.deletedAt) {
+			return null;
+		}
+
+		await ctx.db.patch("users", userId, {
+			clerkUserId: null,
+		});
 
 		return null;
 	},
@@ -309,6 +338,12 @@ export const get_with_anagraphic_and_anonymous_auth_token = internalQuery({
 	},
 });
 
+/**
+ * Return a user's app-owned profile document.
+ *
+ * You can also use this for the current logged-in profile in the UI by passing
+ * the authenticated `userId` from `AppAuthProvider.useAuth()`.
+ */
 export const get_anagraphic = query({
 	args: {
 		userId: v.id("users"),
@@ -502,22 +537,95 @@ export const resolve_user = internalMutation({
 });
 
 async function clerk_set_external_id(args: { clerkUserId: string; userId: string }) {
-	const response = await fetch(`https://api.clerk.com/v1/users/${args.clerkUserId}`, {
+	return await server_fetch_json<unknown>({
+		url: `https://api.clerk.com/v1/users/${args.clerkUserId}`,
 		method: "PATCH",
 		headers: {
 			Authorization: `Bearer ${CLERK_SECRET_KEY}`,
-			"Content-Type": "application/json",
 		},
-		body: JSON.stringify({
+		body: {
 			external_id: args.userId,
-		}),
+		},
 	});
-
-	if (!response.ok) {
-		const text = await response.text().catch(() => "");
-		throw new Error(`Failed to set Clerk external_id (${response.status}): ${text}`);
-	}
 }
+
+export const delete_current_user_account = action({
+	args: {},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx) => {
+		const identity = await ctx.auth.getUserIdentity();
+		if (!identity?.subject) {
+			return Result({
+				_nay: {
+					message: "Unauthorized",
+				},
+			});
+		}
+
+		const isAnonymous = identity.issuer === ANONYMOUS_USERS_JWT_ISSUER;
+
+		const userId = isAnonymous ? identity.subject : identity.external_id;
+		if (!userId) {
+			return Result({
+				_nay: {
+					message: "Unauthorized",
+				},
+			});
+		}
+
+		const user = await ctx.runQuery(internal.users.get, {
+			userId: userId,
+		});
+		if (!user || user.deletedAt) {
+			return Result({ _yay: null });
+		}
+
+		try {
+			const requestId = await ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: user._id,
+				nowTs: Date.now(),
+			});
+			if (isAnonymous) {
+				return Result({ _yay: null });
+			}
+
+			const clerkDeleteUserResult = await server_fetch_json<null>({
+				url: `https://api.clerk.com/v1/users/${identity.subject}`,
+				method: "DELETE",
+				headers: {
+					Authorization: `Bearer ${CLERK_SECRET_KEY}`,
+				},
+			});
+
+			if (clerkDeleteUserResult._nay && clerkDeleteUserResult._nay.data?.status !== 404) {
+				console.error("Failed to clean up Clerk account after local deletion", {
+					clerkDeleteUserResult,
+					clerkUserId: identity.subject,
+					requestId,
+				});
+			} else {
+				await ctx.runMutation(internal.users.clear_clerk_user_id_after_clerk_delete, {
+					userId: userId,
+				});
+			}
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : "Failed to delete account";
+
+			console.error("Failed to delete current user account", {
+				error,
+				userId: user._id,
+			});
+
+			return Result({
+				_nay: {
+					message: errorMessage,
+				},
+			});
+		}
+
+		return Result({ _yay: null });
+	},
+});
 
 export function users_http_routes(router: RouterForConvexModules) {
 	return {
@@ -722,11 +830,17 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							// Ensure Clerk has external_id set to the Convex user id.
-							try {
-								await clerk_set_external_id({ clerkUserId, userId: resolveUserResult._yay.userId });
-							} catch (error) {
+							const clerk_set_external_id_result = await clerk_set_external_id({
+								clerkUserId,
+								userId: resolveUserResult._yay.userId,
+							});
+							if (clerk_set_external_id_result._nay) {
 								const message = "Failed to set Clerk external_id";
-								console.error(`AppAuthProvider: ${message} Failed to set Clerk external_id`, error);
+								console.error("Failed to set Clerk external_id", {
+									clerkSetExternalIdResult: clerk_set_external_id_result,
+									clerkUserId,
+									userId: resolveUserResult._yay.userId,
+								});
 								return {
 									status: 401,
 									body: Result({ _nay: { message } }),

@@ -14,6 +14,13 @@ if (!ALLOWED_ORIGINS) {
 
 type ConvexCtx = GenericMutationCtx<any> | GenericQueryCtx<any> | GenericActionCtx<any>;
 
+/**
+ * Resolve the current Convex `users` id and display name from `ctx.auth` (Clerk or anonymous JWT).
+ *
+ * Does not load the `users` table or assert the row exists: a verified token is treated as enough to trust
+ * `subject` / `external_id` as the user id. If a flow must reject soft-deleted accounts or missing profiles,
+ * query `users` in that handler and enforce `deletedAt` / presence there.
+ */
 export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCtx) {
 	const userIdentityResult = await Result_try_promise(ctx.auth.getUserIdentity());
 	if (userIdentityResult._nay) {
@@ -27,7 +34,6 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 	const isAnonymous = userIdentityResult._yay.issuer === process.env.VITE_CONVEX_HTTP_URL;
 
 	let userId;
-
 	if (isAnonymous) {
 		// For anonymous users, the subject is the Convex user id
 		userId = userIdentityResult._yay.subject as Id<"users">;

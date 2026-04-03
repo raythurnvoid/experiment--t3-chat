@@ -5,6 +5,7 @@ import type { Primitive } from "type-fest";
 import { Result } from "./errors-as-values-utils.ts";
 
 export * from "../../shared/shared-utils.ts";
+export { delay } from "../../shared/async-utils.ts";
 
 /**
  * Useful to make it easier to concat class names in react components
@@ -76,19 +77,6 @@ export function check_element_is_in_allowed_areas(
 
 	const isInAllowedAreas = options.allowedAreas.some((area) => area?.contains(elAsNode) == true);
 	return isInAllowedAreas || !restrictionScope.contains(elAsNode);
-}
-
-/**
- * Delay for a given number of milliseconds.
- *
- * @example
- *
- * ```ts
- * delay(1000); // 1 second
- * ```
- **/
-export function delay(ms: number) {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

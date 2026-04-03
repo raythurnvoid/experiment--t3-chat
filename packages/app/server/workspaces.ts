@@ -29,7 +29,7 @@ export async function workspaces_db_get_membership_for_user(
 	args: { userId: Id<"users">; membershipId: Id<"workspaces_projects_users"> },
 ) {
 	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
-	if (!membership || membership.userId !== args.userId) {
+	if (!membership || membership.userId !== args.userId || membership.active === false) {
 		return null;
 	}
 	return membership;
@@ -69,7 +69,7 @@ export async function workspaces_db_create(
 		const definition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_userId_limitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
+			.withIndex("by_user_limit_name", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
 			.first();
 		if (!limit) {
 			throw should_never_happen("[workspaces_db_create] Missing user limit doc", {
@@ -127,6 +127,7 @@ export async function workspaces_db_create(
 			workspaceId: workspaceId,
 			projectId: defaultProjectId,
 			userId: args.userId,
+			active: true,
 		}),
 	];
 
@@ -174,14 +175,16 @@ export async function workspaces_db_create_project(
 		});
 	}
 
-	const memberships = await ctx.db
-		.query("workspaces_projects_users")
-		.withIndex("by_userId_workspaceId_projectId", (q) =>
-			q.eq("userId", args.userId).eq("workspaceId", args.workspaceId),
-		)
-		.collect();
+	const hasMembership = Boolean(
+		await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q.eq("active", true).eq("userId", args.userId).eq("workspaceId", args.workspaceId),
+			)
+			.first(),
+	);
 
-	if (memberships.length === 0) {
+	if (!hasMembership) {
 		return Result({
 			_nay: {
 				message: "Workspace not found",
@@ -192,11 +195,11 @@ export async function workspaces_db_create_project(
 	const [defaultProjects, nonDefaultProjects] = await Promise.all([
 		ctx.db
 			.query("workspaces_projects")
-			.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", true))
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", true))
 			.collect(),
 		ctx.db
 			.query("workspaces_projects")
-			.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", false))
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", false))
 			.collect(),
 	]);
 
@@ -212,7 +215,7 @@ export async function workspaces_db_create_project(
 
 	const limit = await ctx.db
 		.query("limits_per_workspace")
-		.withIndex("by_workspaceId_limitName", (q) =>
+		.withIndex("by_workspace_limit", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("limitName", workspace_limits.EXTRA_PROJECTS.name),
 		)
 		.first();
@@ -248,6 +251,7 @@ export async function workspaces_db_create_project(
 		workspaceId: args.workspaceId,
 		projectId,
 		userId: args.userId,
+		active: true,
 	});
 
 	return Result({
@@ -263,11 +267,14 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number },
 ) {
-	const workspace = await ctx.db
-		.get("users", args.userId)
-		.then((user) => (user?.defaultWorkspaceId ? ctx.db.get("workspaces", user.defaultWorkspaceId) : null));
+	const user = await ctx.db.get("users", args.userId);
+	if (!user) {
+		return;
+	}
 
-	if (!workspace) {
+	const defaultWorkspace = user.defaultWorkspaceId ? await ctx.db.get("workspaces", user.defaultWorkspaceId) : null;
+
+	if (!defaultWorkspace) {
 		await workspaces_db_create(ctx, {
 			userId: args.userId,
 			name: DEFAULT_WORKSPACE_NAME,

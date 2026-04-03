@@ -53,9 +53,10 @@ description: Counter-based per-user and per-workspace creation limits for extra 
 ## User bootstrap
 
 - `workspaces_db_ensure_default_workspace_and_project_for_user` in `packages/app/server/workspaces.ts` must:
-	- ensure the user `limits_per_user` doc exists
-	- reuse an existing valid `personal`/`home` tenant if found
-	- otherwise create the default workspace/project
+	- trust `users.defaultWorkspaceId` when present
+	- create the default `personal`/`home` tenant only when no default workspace exists yet
+- It does **not** scan for or repair an existing tenant when pointers are missing.
+- It does **not** seed `limits_per_user` directly; default provisioning flows come through `workspaces_db_create(..., default: true)`, which avoids consuming the extra-workspace counter.
 - This helper is called from `packages/app/convex/users.ts` during anonymous/clerk bootstrap.
 
 ## Workspace create
@@ -79,7 +80,7 @@ description: Counter-based per-user and per-workspace creation limits for extra 
 
 - `packages/app/convex/workspaces.ts` keeps decrement logic inline.
 - `delete_project` decrements the workspace limit when deleting a non-default project.
-- `delete_workspace` decrements the owner user limit and deletes the workspace limit docs for that workspace.
+- `delete_workspace` decrements the owner user limit immediately, but defers deleting `limits_per_workspace` until `data_deletion.process_workspace_deletion_request` runs for the queued workspace-scope purge.
 
 # Shared constants
 

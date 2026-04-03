@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -15,6 +15,7 @@ import {
 	workspaces_validate_description,
 	workspaces_validate_name,
 } from "../server/workspaces.ts";
+import { data_deletion_db_request } from "../server/data_deletion.ts";
 
 /**
  * TODO: to be implemented
@@ -36,9 +37,6 @@ async function user_is_project_admin(
 	return true;
 }
 
-const WORKSPACE_DATA_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE = 50;
-
 export const list = query({
 	args: {},
 	returns: v.object({
@@ -49,7 +47,7 @@ export const list = query({
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", user.id))
+			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user.id))
 			.collect();
 
 		const projectIdsByWorkspace = new Map<Id<"workspaces">, Set<Id<"workspaces_projects">>>();
@@ -137,8 +135,8 @@ export const get_membership_for_scope = query({
 
 		const membership = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_userId_workspaceId_projectId", (q) =>
-				q.eq("userId", user.id).eq("workspaceId", workspaceId).eq("projectId", projectId),
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q.eq("active", true).eq("userId", user.id).eq("workspaceId", workspaceId).eq("projectId", projectId),
 			)
 			.first();
 
@@ -170,7 +168,7 @@ export const get_membership_by_workspace_project_name = query({
 
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_userId_workspaceId_projectId", (q) => q.eq("userId", user._id))
+			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user._id))
 			.collect();
 
 		const candidateMembershipsPromises = [];
@@ -219,7 +217,7 @@ async function db_get_membership(
 	args: { membershipId: Id<"workspaces_projects_users">; userId: Id<"users"> },
 ) {
 	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
-	if (!membership || membership.userId !== args.userId) {
+	if (!membership || membership.userId !== args.userId || membership.active === false) {
 		return null;
 	}
 	return membership;
@@ -349,11 +347,17 @@ export const add_user_to_workspace_project = mutation({
 			ctx.db.get("workspaces_projects", args.projectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.projectId).eq("userId", user.id))
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", user.id)
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId),
+				)
 				.first(),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.projectId).eq("userId", args.userIdToAdd))
+				.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId).eq("userId", args.userIdToAdd))
 				.first(),
 		]);
 
@@ -410,6 +414,7 @@ export const add_user_to_workspace_project = mutation({
 			workspaceId: workspace._id,
 			projectId: project._id,
 			userId: args.userIdToAdd,
+			active: true,
 		});
 
 		return Result({
@@ -440,7 +445,13 @@ export const edit_workspace = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.defaultProjectId).eq("userId", user.id))
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", user.id)
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.defaultProjectId),
+				)
 				.first(),
 		]);
 
@@ -545,11 +556,23 @@ export const edit_project = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.defaultProjectId).eq("userId", user.id))
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", user.id)
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.defaultProjectId),
+				)
 				.first(),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.projectId).eq("userId", user.id))
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", user.id)
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId),
+				)
 				.first(),
 		]);
 
@@ -612,11 +635,11 @@ export const edit_project = mutation({
 		const [defaultProjects, nonDefaultProjects] = await Promise.all([
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
 				.collect(),
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
 				.collect(),
 		]);
 
@@ -645,152 +668,6 @@ export const edit_project = mutation({
 	},
 });
 
-export const purge_data_deletion_requests = internalMutation({
-	args: {
-		nowTs: v.optional(v.number()),
-		limit: v.optional(v.number()),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const now = args.nowTs ?? Date.now();
-
-		const cutoff = now - WORKSPACE_DATA_DELETION_RETENTION_MS;
-		const limit = args.limit ?? WORKSPACE_DATA_DELETION_PURGE_BATCH_SIZE;
-
-		const requests = await ctx.db
-			.query("workspaces_data_deletion_requests")
-			.withIndex("by_creation_time", (q) => q.lte("_creationTime", cutoff))
-			.order("asc")
-			.take(limit);
-
-		for (const request of requests) {
-			const workspace_id = String(request.workspaceId);
-			const project_id = String(request.projectId);
-
-			const [
-				ai_chat_threads,
-				ai_chat_threads_messages,
-				pages_pending_edits,
-				pages_pending_edits_last_sequence_saved,
-				pages,
-				pages_markdown_content,
-				pages_markdown_chunks,
-				pages_plain_text_chunks,
-				pages_yjs_snapshots,
-				pages_yjs_updates,
-				pages_yjs_docs_last_sequences,
-				pages_snapshots,
-				pages_snapshots_contents,
-				chat_messages,
-			] = await Promise.all([
-				ctx.db
-					.query("ai_chat_threads")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("ai_chat_threads_messages_aisdk_5")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("pages_pending_edits")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("pages_pending_edits_last_sequence_saved")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("pages")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("pages_markdown_content")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
-				ctx.db
-					.query("pages_markdown_chunks")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("pages_plain_text_chunks")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-				ctx.db
-					.query("pages_yjs_snapshots")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
-				ctx.db
-					.query("pages_yjs_updates")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
-				ctx.db
-					.query("pages_yjs_docs_last_sequences")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
-				ctx.db
-					.query("pages_snapshots")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
-				ctx.db
-					.query("pages_snapshots_contents")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspace_id === workspace_id && row.project_id === project_id)),
-				ctx.db
-					.query("chat_messages")
-					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === workspace_id && row.projectId === project_id)),
-			]);
-
-			const pending_edit_ids = new Set(pages_pending_edits.map((row) => row._id));
-			const page_ids = new Set(pages.map((row) => row._id));
-
-			const [pages_pending_edits_cleanup_tasks, pages_yjs_snapshot_schedules] = await Promise.all([
-				ctx.db
-					.query("pages_pending_edits_cleanup_tasks")
-					.collect()
-					.then((rows) => rows.filter((row) => pending_edit_ids.has(row.pendingEditId))),
-				ctx.db
-					.query("pages_yjs_snapshot_schedules")
-					.collect()
-					.then((rows) => rows.filter((row) => page_ids.has(row.page_id))),
-			]);
-
-			await Promise.all(
-				pages_pending_edits_cleanup_tasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)),
-			);
-			await Promise.all(
-				pages_yjs_snapshot_schedules.map((row) => ctx.db.delete("pages_yjs_snapshot_schedules", row._id)),
-			);
-			await Promise.all(
-				ai_chat_threads_messages.map((row) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", row._id)),
-			);
-			await Promise.all(ai_chat_threads.map((row) => ctx.db.delete("ai_chat_threads", row._id)));
-			await Promise.all(chat_messages.map((row) => ctx.db.delete("chat_messages", row._id)));
-			await Promise.all(
-				pages_pending_edits_last_sequence_saved.map((row) =>
-					ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id),
-				),
-			);
-			await Promise.all(pages_pending_edits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
-			await Promise.all(pages_plain_text_chunks.map((row) => ctx.db.delete("pages_plain_text_chunks", row._id)));
-			await Promise.all(pages_markdown_chunks.map((row) => ctx.db.delete("pages_markdown_chunks", row._id)));
-			await Promise.all(pages_yjs_snapshots.map((row) => ctx.db.delete("pages_yjs_snapshots", row._id)));
-			await Promise.all(pages_yjs_updates.map((row) => ctx.db.delete("pages_yjs_updates", row._id)));
-			await Promise.all(
-				pages_yjs_docs_last_sequences.map((row) => ctx.db.delete("pages_yjs_docs_last_sequences", row._id)),
-			);
-			await Promise.all(pages_snapshots_contents.map((row) => ctx.db.delete("pages_snapshots_contents", row._id)));
-			await Promise.all(pages_snapshots.map((row) => ctx.db.delete("pages_snapshots", row._id)));
-			await Promise.all(pages_markdown_content.map((row) => ctx.db.delete("pages_markdown_content", row._id)));
-			await Promise.all(pages.map((row) => ctx.db.delete("pages", row._id)));
-
-			await ctx.db.delete("workspaces_data_deletion_requests", request._id);
-		}
-
-		return null;
-	},
-});
-
 export const delete_workspace = mutation({
 	args: {
 		workspaceId: v.id("workspaces"),
@@ -807,13 +684,19 @@ export const delete_workspace = mutation({
 			ctx.db.get("workspaces", args.workspaceId),
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", args.workspaceId))
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
 				.first()
 				.then(async (project) =>
 					project
 						? await ctx.db
 								.query("workspaces_projects_users")
-								.withIndex("by_projectId_userId", (q) => q.eq("projectId", project._id).eq("userId", user.id))
+								.withIndex("by_active_user_workspace_project", (q) =>
+									q
+										.eq("active", true)
+										.eq("userId", user.id)
+										.eq("workspaceId", args.workspaceId)
+										.eq("projectId", project._id),
+								)
 								.first()
 						: null,
 				),
@@ -843,42 +726,40 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		const workspace_projects = await ctx.db
+		const workspaceProjects = await ctx.db
 			.query("workspaces_projects")
-			.withIndex("by_workspaceId_default", (q) => q.eq("workspaceId", workspace._id))
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspace._id))
 			.collect();
-		const affected_user_ids = new Set<Id<"users">>(
-			(
+
+		const [, ...userIdsPerProject] = await Promise.all([
+			// Queue one delayed workspace purge row while you remove project memberships in parallel.
+			data_deletion_db_request(ctx, {
+				userId: user.id,
+				workspaceId: workspace._id,
+				scope: "workspace",
+			}),
+			...workspaceProjects.map(async (project) => {
+				const projectUsers = await ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_project_user_active", (q) => q.eq("projectId", project._id))
+					.collect();
+
 				await Promise.all(
-					workspace_projects.map(async (project) => {
-						const projectUsers = await ctx.db
-							.query("workspaces_projects_users")
-							.withIndex("by_projectId_userId", (q) => q.eq("projectId", project._id))
-							.collect();
+					projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+				);
 
-						await Promise.all([
-							ctx.db.insert("workspaces_data_deletion_requests", {
-								workspaceId: workspace._id,
-								projectId: project._id,
-							}),
-							Promise.all(
-								projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
-							),
-							ctx.db.delete("workspaces_projects", project._id),
-						]);
+				return projectUsers.map((projectUser) => projectUser.userId);
+			}),
+		]);
 
-						return projectUsers.map((projectUser) => projectUser.userId);
-					}),
-				)
-			).flat(),
-		);
+		const affectedUserIds = new Set<Id<"users">>(userIdsPerProject.flat());
 
 		if (workspace.ownerUserId) {
 			const ownerUserId = workspace.ownerUserId;
 			const limitDefinition = user_limits.EXTRA_WORKSPACES;
 			const limit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("by_userId_limitName", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
+				.withIndex("by_user_limit_name", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
 				.first();
 
 			if (limit && limit.usedCount > 0) {
@@ -889,16 +770,9 @@ export const delete_workspace = mutation({
 			}
 		}
 
-		const workspaceLimits = await ctx.db
-			.query("limits_per_workspace")
-			.withIndex("by_workspaceId_limitName", (q) => q.eq("workspaceId", workspace._id))
-			.collect();
-		await Promise.all(workspaceLimits.map((limitDoc) => ctx.db.delete("limits_per_workspace", limitDoc._id)));
-
-		await ctx.db.delete("workspaces", workspace._id);
-		for (const user_id of affected_user_ids) {
+		for (const userId of affectedUserIds) {
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
-				userId: user_id,
+				userId,
 				now: Date.now(),
 			});
 		}
@@ -938,8 +812,12 @@ export const delete_project = mutation({
 								defaultProjectId
 									? await ctx.db
 											.query("workspaces_projects_users")
-											.withIndex("by_projectId_userId", (q) =>
-												q.eq("projectId", defaultProjectId).eq("userId", user.id),
+											.withIndex("by_active_user_workspace_project", (q) =>
+												q
+													.eq("active", true)
+													.eq("userId", user.id)
+													.eq("workspaceId", project.workspaceId)
+													.eq("projectId", defaultProjectId),
 											)
 											.first()
 									: null,
@@ -949,7 +827,7 @@ export const delete_project = mutation({
 			),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_projectId_userId", (q) => q.eq("projectId", args.projectId))
+				.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId))
 				.collect(),
 		]);
 
@@ -980,18 +858,18 @@ export const delete_project = mutation({
 			});
 		}
 
-		const affected_user_ids = new Set<Id<"users">>(projectUserLookup.map((projectUser) => projectUser.userId));
+		const affectedUserIds = new Set<Id<"users">>(projectUserLookup.map((projectUser) => projectUser.userId));
 
-		await ctx.db.insert("workspaces_data_deletion_requests", {
+		await data_deletion_db_request(ctx, {
+			userId: user.id,
 			workspaceId: workspace._id,
 			projectId: project._id,
+			scope: "project",
 		});
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("by_workspaceId_limitName", (q) =>
-				q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name),
-			)
+			.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
 			.first();
 
 		if (limit && limit.usedCount > 0) {
@@ -1005,9 +883,9 @@ export const delete_project = mutation({
 		);
 
 		await ctx.db.delete("workspaces_projects", project._id);
-		for (const user_id of affected_user_ids) {
+		for (const userId of affectedUserIds) {
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
-				userId: user_id,
+				userId,
 				now: Date.now(),
 			});
 		}

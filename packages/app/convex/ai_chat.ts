@@ -1071,7 +1071,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 														title: trimmedTitle,
 													});
 													if (threadUpdateResult._nay) {
-														console.error("[ai_chat_http_routes./api/chat] Failed to persist generated title", {
+														console.error("Failed to persist generated title", {
 															threadId: thread._id,
 															result: threadUpdateResult,
 														});
@@ -1132,7 +1132,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											});
 
 											if (assistantPersistResult._nay) {
-												console.error("[ai_chat_http_routes./api/chat] Failed to persist assistant message", {
+												console.error("Failed to persist assistant message", {
 													result: assistantPersistResult,
 													threadId,
 													parentId: resolvedParentId,
@@ -1317,7 +1317,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										});
 
 										if (threadUpdateResult._nay) {
-											console.error("[ai_chat_http_routes./api/v1/runs/stream] Failed to persist generated title", {
+											console.error("Failed to persist generated title", {
 												threadId: thread_id,
 												result: threadUpdateResult,
 											});

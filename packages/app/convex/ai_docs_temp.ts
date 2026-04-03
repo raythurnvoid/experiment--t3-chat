@@ -569,7 +569,7 @@ async function do_create_page(
 
 	if (createPageRowsResult._nay) {
 		const message = "Failed to create page chunk rows" satisfies NonNullable<(typeof args)["_errors"]>["message"];
-		console.error("[ai_docs_temp.do_create_page] Failed to create page chunk rows", {
+		console.error("Failed to create page chunk rows", {
 			message,
 			createPageRowsResult,
 			workspaceId: args.workspaceId,

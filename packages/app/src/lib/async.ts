@@ -1,8 +1,7 @@
+import { delay } from "../../shared/async-utils.ts";
 import { useLayoutEffect, useMemo, useState } from "react";
 
-export function delay(timeout: number) {
-	return new Promise((resolve) => setTimeout(resolve, timeout));
-}
+export { delay };
 
 /**
  * Create a deferred object with a status property.

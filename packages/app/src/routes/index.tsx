@@ -4,12 +4,6 @@ import { memo, useEffect } from "react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { url_path_pages, app_tenant_defaults_from_workspace_list } from "@/lib/urls.ts";
 
-const Route = createFileRoute({
-	component: IndexRedirect,
-});
-
-export { Route };
-
 const IndexRedirect = memo(function IndexRedirect() {
 	const navigate = Route.useNavigate();
 	const list = useQuery(app_convex_api.workspaces.list);
@@ -37,3 +31,9 @@ const IndexRedirect = memo(function IndexRedirect() {
 
 	return <div>Redirecting…</div>;
 });
+
+const Route = createFileRoute({
+	component: IndexRedirect,
+});
+
+export { Route };
