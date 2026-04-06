@@ -2,6 +2,7 @@ import { HttpRouter, httpRouter } from "convex/server";
 import { ai_chat_http_routes } from "./ai_chat.ts";
 import { httpAction } from "./_generated/server.js";
 import { pages_http_routes } from "./ai_docs_temp.ts";
+import { billing } from "./billing.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
 
@@ -13,6 +14,8 @@ if (!process.env.ALLOWED_ORIGINS) {
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS;
 
 const http = httpRouter();
+
+billing.registerRoutes(http);
 
 const appCors = corsRouter(http, {
 	allowedOrigins: ALLOWED_ORIGINS.split(","),

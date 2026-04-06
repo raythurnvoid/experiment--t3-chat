@@ -6,6 +6,7 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
+import { billing_enqueue_page_save_event } from "./billing.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import {
@@ -872,6 +873,17 @@ export const save_pages_pending_edit = mutation({
 
 		const now = Date.now();
 		const nextBaseYjsSequence = newSequence ?? yjsContent.yjsSequence;
+
+		if (!user.isAnonymous && newSequence !== null) {
+			await billing_enqueue_page_save_event(ctx, {
+				userId: user.id,
+				pageId: args.pageId,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				newSequence,
+				now,
+			});
+		}
 
 		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([

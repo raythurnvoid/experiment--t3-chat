@@ -1,8 +1,10 @@
 import "./main-app-account-management.css";
 
+import { CheckoutLink } from "@convex-dev/polar/react";
+import { PRODUCTS } from "../../shared/billing_catalog.ts";
 import { useClerk, useUser } from "@clerk/clerk-react";
-import { useQuery } from "convex/react";
-import { Mail, RefreshCw, Shield, User, UserRound } from "lucide-react";
+import { useAction, useQuery } from "convex/react";
+import { CreditCard, Mail, RefreshCw, Shield, User, UserRound } from "lucide-react";
 import { memo, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { toast } from "sonner";
 
@@ -475,6 +477,252 @@ const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementS
 });
 // #endregion security
 
+// #region billing
+type MainAppAccountManagementBilling_ClassNames =
+	| "MainAppAccountManagementBilling"
+	| "MainAppAccountManagementBilling-header"
+	| "MainAppAccountManagementBilling-title"
+	| "MainAppAccountManagementBilling-description"
+	| "MainAppAccountManagementBilling-description-secondary"
+	| "MainAppAccountManagementBilling-body"
+	| "MainAppAccountManagementBilling-note"
+	| "MainAppAccountManagementBilling-plan"
+	| "MainAppAccountManagementBilling-plan-lead"
+	| "MainAppAccountManagementBilling-plan-covers"
+	| "MainAppAccountManagementBilling-plan-list"
+	| "MainAppAccountManagementBilling-plan-list-item"
+	| "MainAppAccountManagementBilling-actions"
+	| "MainAppAccountManagementBilling-checkout"
+	| "MainAppAccountManagementBilling-portal";
+
+type MainAppAccountManagementBilling_Props = {
+	isAnonymous: boolean;
+};
+
+const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBilling(
+	props: MainAppAccountManagementBilling_Props,
+) {
+	const { isAnonymous } = props;
+
+	const payAsYouGoProduct = useQuery(app_convex_api.billing.getPayAsYouGoProduct, isAnonymous ? "skip" : {});
+
+	const generateCustomerPortalUrl = useAction(app_convex_api.billing.generateCustomerPortalUrl);
+
+	const handleOpenCustomerPortal = useFn(() => {
+		void generateCustomerPortalUrl({})
+			.then((result) => {
+				if (result?.url) {
+					window.open(result.url, "_blank", "noopener,noreferrer");
+				} else {
+					toast.error("Could not open customer portal");
+				}
+			})
+			.catch((error) => {
+				toast.error(get_error_message(error));
+			});
+	});
+
+	const checkoutProductId = payAsYouGoProduct?.setup === "ready" ? payAsYouGoProduct.payAsYouGo.id : undefined;
+	const checkoutProductIds = checkoutProductId != null ? [checkoutProductId] : [];
+
+	if (isAnonymous) {
+		return (
+			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<header
+					className={"MainAppAccountManagementBilling-header" satisfies MainAppAccountManagementBilling_ClassNames}
+				>
+					<h2 className={"MainAppAccountManagementBilling-title" satisfies MainAppAccountManagementBilling_ClassNames}>
+						Billing
+					</h2>
+					<p
+						className={
+							"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames
+						}
+					>
+						Sign in with an email account to manage subscriptions and usage-based billing.
+					</p>
+				</header>
+			</div>
+		);
+	}
+
+	if (payAsYouGoProduct === undefined) {
+		return (
+			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<div className={"MainAppAccountManagementBilling-note" satisfies MainAppAccountManagementBilling_ClassNames}>
+					Loading billing…
+				</div>
+			</div>
+		);
+	}
+
+	if (checkoutProductIds.length === 0) {
+		const setup = payAsYouGoProduct?.setup;
+		const primaryMessage =
+			setup === "missing_prefix"
+				? "Set POLAR_PRODUCTS_PREFIX in Convex so the app can resolve the pay-as-you-go product name."
+				: setup === "duplicate_product_name"
+					? "Multiple active Polar products share the expected checkout name. Keep exactly one non-archived product with that name."
+					: setup === "product_not_in_catalog"
+						? `No matching product found in the synced catalog for name "${payAsYouGoProduct.expectedProductName}". Run pnpm exec convex run internal.billing.sync_products from packages/app after creating the product in Polar.`
+						: "Configure billing: set POLAR_PRODUCTS_PREFIX, sync the Polar catalog, and ensure the product name matches the pattern below.";
+		return (
+			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<header
+					className={"MainAppAccountManagementBilling-header" satisfies MainAppAccountManagementBilling_ClassNames}
+				>
+					<h2 className={"MainAppAccountManagementBilling-title" satisfies MainAppAccountManagementBilling_ClassNames}>
+						Billing
+					</h2>
+					<p
+						className={
+							"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames
+						}
+					>
+						{primaryMessage} Expected product name suffix:{" "}
+						<code>{PRODUCTS.PAY_AS_YOU_GO}</code> (full name is{" "}
+						<code>
+							&lt;POLAR_PRODUCTS_PREFIX&gt;-{PRODUCTS.PAY_AS_YOU_GO}
+						</code>
+						).
+					</p>
+					{payAsYouGoProduct.warnings.length > 0 ? (
+						<p
+							className={
+								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+						>
+							{payAsYouGoProduct.warnings.join(" ")}
+						</p>
+					) : (
+						<p
+							className={
+								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+						>
+							Billing products are not configured for this deployment yet. Sync the Polar catalog and confirm the
+							checkout product is available before users can subscribe.
+						</p>
+					)}
+				</header>
+			</div>
+		);
+	}
+
+	if (payAsYouGoProduct.setup !== "ready") {
+		return null;
+	}
+
+	const checkoutProduct = payAsYouGoProduct.payAsYouGo;
+	const primaryPrice =
+		checkoutProduct?.prices?.find((priceRow) => !priceRow.isArchived) ?? checkoutProduct?.prices?.[0];
+	const currencyLabel = (primaryPrice?.priceCurrency ?? "eur").toUpperCase();
+	const intervalLabel =
+		primaryPrice?.recurringInterval === "month"
+			? "monthly"
+			: primaryPrice?.recurringInterval === "year"
+				? "yearly"
+				: primaryPrice?.recurringInterval
+					? String(primaryPrice.recurringInterval)
+					: "recurring";
+	const isMetered = primaryPrice?.amountType === "metered_unit";
+	const hasIncludedMeterCredits = checkoutProduct?.benefits?.some((benefit) => benefit.type === "meter_credit");
+	const unitAmountRaw = primaryPrice?.unitAmount;
+	const unitAmountNumber =
+		typeof unitAmountRaw === "string"
+			? Number(unitAmountRaw)
+			: typeof unitAmountRaw === "number"
+				? unitAmountRaw
+				: null;
+	const formattedUnitPrice =
+		unitAmountNumber != null && !Number.isNaN(unitAmountNumber) && primaryPrice?.priceCurrency
+			? new Intl.NumberFormat(undefined, {
+					style: "currency",
+					currency: primaryPrice.priceCurrency.toUpperCase(),
+				}).format(unitAmountNumber)
+			: null;
+
+	return (
+		<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
+			<header className={"MainAppAccountManagementBilling-header" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<h2 className={"MainAppAccountManagementBilling-title" satisfies MainAppAccountManagementBilling_ClassNames}>
+					Billing
+				</h2>
+				<p className={"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames}>
+					Subscribe to enable {intervalLabel} pay-as-you-go billing in {currencyLabel}. Usage is metered automatically
+					as you consume billable units, and you can manage payment methods and invoices from the customer portal.
+				</p>
+				{payAsYouGoProduct.warnings.length > 0 ? (
+					<p
+						className={
+							"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
+						}
+					>
+						{payAsYouGoProduct.warnings.join(" ")}
+					</p>
+				) : null}
+			</header>
+			<div className={"MainAppAccountManagementBilling-plan" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<p className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}>
+					{checkoutProduct?.name ?? "Pay-as-you-go"}
+				</p>
+				<p
+					className={"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames}
+				>
+					{isMetered
+						? `Plan includes ${intervalLabel} access, metered usage billing in ${currencyLabel}, and any included credits before paid meter usage applies.`
+						: `Plan includes ${intervalLabel} access and usage billing in ${currencyLabel}.`}
+				</p>
+				<ul className={"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames}>
+					<li
+						className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+					>
+						Billed {intervalLabel} in {currencyLabel}
+					</li>
+					<li
+						className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+					>
+						{isMetered
+							? formattedUnitPrice
+								? `Usage is metered at ${formattedUnitPrice} per billable unit each ${intervalLabel} period`
+								: "Usage is charged from billable units recorded on your account"
+							: "Pricing follows the product you select at checkout"}
+					</li>
+					<li
+						className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+					>
+						{hasIncludedMeterCredits
+							? "Included meter credits apply before paid usage"
+							: "Free or promotional credits apply first when your plan includes them"}
+					</li>
+				</ul>
+			</div>
+			<div className={"MainAppAccountManagementBilling-body" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<div className={"MainAppAccountManagementBilling-actions" satisfies MainAppAccountManagementBilling_ClassNames}>
+					<CheckoutLink
+						polarApi={app_convex_api.billing}
+						productIds={checkoutProductIds}
+						embed={false}
+						lazy
+						className={"MainAppAccountManagementBilling-checkout" satisfies MainAppAccountManagementBilling_ClassNames}
+					>
+						Checkout
+					</CheckoutLink>
+					<MyButton
+						type="button"
+						variant="outline"
+						className={"MainAppAccountManagementBilling-portal" satisfies MainAppAccountManagementBilling_ClassNames}
+						onClick={handleOpenCustomerPortal}
+					>
+						Customer portal
+					</MyButton>
+				</div>
+			</div>
+		</div>
+	);
+});
+// #endregion billing
+
 // #region root
 type MainAppAccountManagement_ClassNames =
 	| "MainAppAccountManagement"
@@ -643,6 +891,13 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 											Profile
 										</MyTabsTab>
 										<MyTabsTab
+											id="billing"
+											className={"MainAppAccountManagement-side-tab" satisfies MainAppAccountManagement_ClassNames}
+										>
+											<CreditCard aria-hidden />
+											Billing
+										</MyTabsTab>
+										<MyTabsTab
 											id="security"
 											className={"MainAppAccountManagement-side-tab" satisfies MainAppAccountManagement_ClassNames}
 										>
@@ -667,6 +922,12 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 											connectedAccountEmail={connectedAccountEmail}
 											connectedAccountType={connectedAccountType}
 										/>
+									</MyTabsPanel>
+									<MyTabsPanel
+										tabId="billing"
+										className={"MainAppAccountManagement-panel" satisfies MainAppAccountManagement_ClassNames}
+									>
+										<MainAppAccountManagementBilling isAnonymous={auth.isAnonymous} />
 									</MyTabsPanel>
 									<MyTabsPanel
 										tabId="security"

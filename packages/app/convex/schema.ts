@@ -379,6 +379,23 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace_limit", ["workspaceId", "limitName"]),
 	// #endregion workspaces
 
+	// #region billing
+	/**
+	 * Queued Polar usage events (meter ingestion). Drained by `billing.drain_outbox`.
+	 */
+	polar_usage_events_outbox: defineTable({
+		dedupeKey: v.string(),
+		externalCustomerId: v.string(),
+		eventName: v.string(),
+		status: v.union(v.literal("pending"), v.literal("failed")),
+		createdAt: v.number(),
+		metadata: v.optional(v.record(v.string(), v.string())),
+		lastError: v.optional(v.string()),
+	})
+		.index("by_dedupeKey", ["dedupeKey"])
+		.index("by_status_createdAt", ["status", "createdAt"]),
+	// #endregion billing
+
 	// #region users
 	users_anon_tokens: defineTable({
 		userId: v.id("users"),

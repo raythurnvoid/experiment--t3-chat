@@ -6,6 +6,7 @@ import { make } from "../src/lib/utils.ts";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { MutationCtx } from "./_generated/server";
+import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
 import {
 	workspaces_db_create,
@@ -20,6 +21,7 @@ const convex_test_modules = import.meta.glob("./**/*.ts");
 
 export function test_convex() {
 	const t = convexTest(schema, convex_test_modules);
+	polar_test.register(t);
 	presence_test.register(t);
 	return t;
 }
