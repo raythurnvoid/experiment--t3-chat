@@ -1,12 +1,31 @@
 import { test_mocks_hardcoded } from "../convex/setup.test.ts";
 import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
+
+const exa_test = vi.hoisted(() => ({
+	searchMock: vi.fn(),
+	lastApiKey: undefined as string | undefined,
+}));
+
+vi.mock("exa-js", () => ({
+	default: class MockExa {
+		constructor(apiKey?: string) {
+			exa_test.lastApiKey = apiKey;
+		}
+
+		search = exa_test.searchMock;
+	},
+	ExaError: class ExaError extends Error {
+		override name = "ExaError";
+	},
+}));
 import {
 	ai_chat_tool_create_list_pages,
 	ai_chat_tool_create_read_page,
 	ai_chat_tool_create_text_search_pages,
 	ai_chat_tool_create_write_page,
 	ai_chat_tool_create_edit_page,
+	ai_chat_tool_create_web_search,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
@@ -452,4 +471,69 @@ test("edit_page tool preserves the baseline trailing newline shape", async () =>
 	});
 
 	expect(result.metadata.matcher).toBe("simple");
+});
+
+test("web_search tool: Exa SDK uses fast search, highlights, and returns compact output", async () => {
+	const prevKey = process.env.EXA_API_KEY;
+	process.env.EXA_API_KEY = "test-exa-key";
+
+	exa_test.searchMock.mockResolvedValue({
+		requestId: "req_test",
+		results: [
+			{
+				title: "Example",
+				url: "https://example.com/doc",
+				id: "https://example.com/doc",
+				highlights: ["First snippet.", "Second snippet."],
+			},
+		],
+	});
+
+	try {
+		const tool = ai_chat_tool_create_web_search();
+		const result = await tool.execute?.(
+			{
+				query: "convex auth",
+				numResults: 7,
+				includeDomains: ["exa.ai"],
+				excludeDomains: ["spam.test"],
+			},
+			{ toolCallId: "tool-call-1", messages: [] },
+		);
+
+		if (!result) {
+			throw new Error("`result` is undefined");
+		}
+		if (!isNotAsyncIterable(result)) {
+			throw new Error("`result` is AsyncIterable but expected sync object");
+		}
+
+		expect(exa_test.lastApiKey).toBe("test-exa-key");
+		expect(exa_test.searchMock).toHaveBeenCalledTimes(1);
+		expect(exa_test.searchMock).toHaveBeenCalledWith("convex auth", {
+			type: "fast",
+			numResults: 7,
+			includeDomains: ["exa.ai"],
+			excludeDomains: ["spam.test"],
+			contents: { highlights: { maxCharacters: 4000 } },
+		});
+
+		expect(result.title).toBe("Web search");
+		expect(result.metadata).toEqual({
+			query: "convex auth",
+			resultCount: 1,
+			requestId: "req_test",
+		});
+		expect(result.output).toContain("Example");
+		expect(result.output).toContain("https://example.com/doc");
+		expect(result.output).toContain("First snippet.");
+	} finally {
+		exa_test.searchMock.mockClear();
+		exa_test.lastApiKey = undefined;
+		if (prevKey === undefined) {
+			delete process.env.EXA_API_KEY;
+		} else {
+			process.env.EXA_API_KEY = prevKey;
+		}
+	}
 });

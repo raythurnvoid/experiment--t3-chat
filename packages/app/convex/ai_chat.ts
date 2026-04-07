@@ -39,6 +39,7 @@ import {
 	ai_chat_tool_create_text_search_pages,
 	ai_chat_tool_create_write_page,
 	ai_chat_tool_create_edit_page,
+	ai_chat_tool_create_web_search,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -62,6 +63,9 @@ const ai_chat_SYSTEM_PROMPT = [
 	"When the request depends on existing page content or paths, read or search before you write or edit.",
 	"`write_page` and `edit_page` create pending review changes for the user; they do not silently publish live content.",
 	"If a read, search, or path lookup is uncertain, say so and use the tools to clarify instead of inventing content or paths.",
+	"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when page tools are not enough.",
+	"Summarize `web_search` highlight snippets in your own words; do not paste large raw tool outputs.",
+	"If `web_search` fails, say you could not retrieve current web results and continue from workspace context only; do not ask the user to configure keys or environment variables.",
 	"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
 ].join("\n");
 
@@ -723,6 +727,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									text_search_pages: ai_chat_tool_create_text_search_pages(ctx, membership),
 									write_page: ai_chat_tool_create_write_page(ctx, ctxDataWithUser),
 									edit_page: ai_chat_tool_create_edit_page(ctx, ctxDataWithUser),
+									web_search: ai_chat_tool_create_web_search(),
 								};
 
 								// Validate the messages if they are present

@@ -15,6 +15,8 @@ import type {
 	ai_chat_tool_create_write_page_ToolOutput,
 	ai_chat_tool_create_edit_page_ToolInput,
 	ai_chat_tool_create_edit_page_ToolOutput,
+	ai_chat_tool_create_web_search_ToolInput,
+	ai_chat_tool_create_web_search_ToolOutput,
 } from "../server/server-ai-tools.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
@@ -63,6 +65,10 @@ export type ai_chat_AiSdk5UiTools = {
 	edit_page: {
 		input: ai_chat_tool_create_edit_page_ToolInput;
 		output: ai_chat_tool_create_edit_page_ToolOutput;
+	};
+	web_search: {
+		input: ai_chat_tool_create_web_search_ToolInput;
+		output: ai_chat_tool_create_web_search_ToolOutput;
 	};
 };
 

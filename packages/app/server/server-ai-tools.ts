@@ -1,4 +1,5 @@
 import { tool, type InferToolInput, type InferToolOutput } from "ai";
+import Exa, { ExaError, type RegularSearchOptions, type SearchResponse } from "exa-js";
 import z from "zod";
 import dedent from "dedent";
 import { createPatch } from "diff";
@@ -525,6 +526,7 @@ export function replace_once_or_all(
 	throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.");
 }
 
+// #region read page
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
  */
@@ -653,7 +655,9 @@ export function ai_chat_tool_create_read_page(
 type ai_chat_tool_create_read_page_Tool = ReturnType<typeof ai_chat_tool_create_read_page>;
 export type ai_chat_tool_create_read_page_ToolInput = InferToolInput<ai_chat_tool_create_read_page_Tool>;
 export type ai_chat_tool_create_read_page_ToolOutput = InferToolOutput<ai_chat_tool_create_read_page_Tool>;
+// #endregion read page
 
+// #region list pages
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
@@ -756,7 +760,9 @@ export function ai_chat_tool_create_list_pages(
 type ai_chat_tool_create_list_pages_Tool = ReturnType<typeof ai_chat_tool_create_list_pages>;
 export type ai_chat_tool_create_list_pages_ToolInput = InferToolInput<ai_chat_tool_create_list_pages_Tool>;
 export type ai_chat_tool_create_list_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_list_pages_Tool>;
+// #endregion list pages
 
+// #region glob pages
 /**
  * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
  */
@@ -829,7 +835,9 @@ export function ai_chat_tool_create_glob_pages(
 type ai_chat_tool_create_glob_pages_Tool = ReturnType<typeof ai_chat_tool_create_glob_pages>;
 export type ai_chat_tool_create_glob_pages_ToolInput = InferToolInput<ai_chat_tool_create_glob_pages_Tool>;
 export type ai_chat_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_glob_pages_Tool>;
+// #endregion glob pages
 
+// #region grep pages
 /**
  * Inspired by `opencode/packages/opencode/src/tool/grep.ts`
  *
@@ -962,7 +970,9 @@ export function ai_chat_tool_create_grep_pages(
 type ai_chat_tool_create_grep_pages_Tool = ReturnType<typeof ai_chat_tool_create_grep_pages>;
 export type ai_chat_tool_create_grep_pages_ToolInput = InferToolInput<ai_chat_tool_create_grep_pages_Tool>;
 export type ai_chat_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_pages_Tool>;
+// #endregion grep pages
 
+// #region text search pages
 export function ai_chat_tool_create_text_search_pages(
 	ctx: ActionCtx,
 	ctxData: {
@@ -1062,7 +1072,9 @@ export type ai_chat_tool_create_text_search_pages_ToolInput =
 	InferToolInput<ai_chat_tool_create_text_search_pages_Tool>;
 export type ai_chat_tool_create_text_search_pages_ToolOutput =
 	InferToolOutput<ai_chat_tool_create_text_search_pages_Tool>;
+// #endregion text search pages
 
+// #region write page
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`
  *
@@ -1176,7 +1188,9 @@ export function ai_chat_tool_create_write_page(
 type ai_chat_tool_create_write_page_Tool = ReturnType<typeof ai_chat_tool_create_write_page>;
 export type ai_chat_tool_create_write_page_ToolInput = InferToolInput<ai_chat_tool_create_write_page_Tool>;
 export type ai_chat_tool_create_write_page_ToolOutput = InferToolOutput<ai_chat_tool_create_write_page_Tool>;
+// #endregion write page
 
+// #region edit page
 /**
  * Inspired by `opencode/packages/opencode/src/tool/edit.ts`
  *
@@ -1291,3 +1305,146 @@ export function ai_chat_tool_create_edit_page(
 type ai_chat_tool_create_edit_page_Tool = ReturnType<typeof ai_chat_tool_create_edit_page>;
 export type ai_chat_tool_create_edit_page_ToolInput = InferToolInput<ai_chat_tool_create_edit_page_Tool>;
 export type ai_chat_tool_create_edit_page_ToolOutput = InferToolOutput<ai_chat_tool_create_edit_page_Tool>;
+// #endregion edit page
+
+// #region web search
+type ai_chat_tool_web_search_ExaItem = {
+	title: string | null;
+	url: string | null;
+	highlights: string[];
+};
+
+type ai_chat_tool_web_search_ContentsOptions = {
+	highlights: {
+		maxCharacters: number;
+	};
+};
+
+function ai_chat_tool_web_search_map_sdk_results(
+	result: SearchResponse<ai_chat_tool_web_search_ContentsOptions>,
+): { requestId: string | undefined; results: ai_chat_tool_web_search_ExaItem[] } {
+	const results: ai_chat_tool_web_search_ExaItem[] = [];
+
+	for (const entry of result.results) {
+		const highlights = Array.isArray(entry.highlights)
+			? entry.highlights.filter((h): h is string => typeof h === "string")
+			: [];
+
+		results.push({
+			title: entry.title,
+			url: entry.url,
+			highlights,
+		});
+	}
+
+	return { requestId: result.requestId, results };
+}
+
+function ai_chat_tool_web_search_format_output(results: ai_chat_tool_web_search_ExaItem[]) {
+	const blocks: string[] = [];
+
+	for (let i = 0; i < results.length; i++) {
+		const r = results[i];
+		const headline = r.title?.trim() || "(untitled)";
+		const link = r.url?.trim() || "";
+
+		blocks.push(`${i + 1}. ${headline}`);
+
+		if (link) {
+			blocks.push(`   ${link}`);
+		}
+
+		for (const h of r.highlights.slice(0, 3)) {
+			const snippet = h.replace(/\s+/g, " ").trim().slice(0, 500);
+			if (snippet) {
+				blocks.push(`   — ${snippet}`);
+			}
+		}
+
+		blocks.push("");
+	}
+
+	return blocks.join("\n").replace(/\n+$/u, "");
+}
+
+/**
+ * Public web search via Exa (`exa-js`).
+ *
+ * Keep `EXA_API_KEY` on the server only; never expose it to the browser.
+ */
+export function ai_chat_tool_create_web_search() {
+	return tool({
+		description: dedent`\
+			Search the public web for current facts, documentation, release notes, news, and other information outside this workspace. \
+			Returns compact highlight snippets plus titles and URLs — summarize these in your own words instead of dumping the raw tool output. \
+			Prefer workspace page tools first when the answer should come from the user's docs.`,
+
+		inputSchema: z.object({
+			query: z.string().describe("Natural language search query"),
+			numResults: z.number().int().gte(1).lte(20).describe("Number of results to return (1-20)").optional(),
+			includeDomains: z.array(z.string()).describe("Only include results from these domains").optional(),
+			excludeDomains: z.array(z.string()).describe("Exclude results from these domains").optional(),
+		}),
+
+		execute: async (args) => {
+			const apiKey = process.env.EXA_API_KEY?.trim();
+			if (!apiKey) {
+				throw new Error("Web search is unavailable.");
+			}
+
+			const numResults = Math.min(20, Math.max(1, args.numResults ?? 10));
+
+			const searchOptions: RegularSearchOptions & { contents: ai_chat_tool_web_search_ContentsOptions } = {
+				type: "fast",
+				numResults,
+				contents: {
+					highlights: {
+						maxCharacters: 4000,
+					},
+				},
+			};
+
+			if (args.includeDomains?.length) {
+				searchOptions.includeDomains = args.includeDomains;
+			}
+
+			if (args.excludeDomains?.length) {
+				searchOptions.excludeDomains = args.excludeDomains;
+			}
+
+			const exa = new Exa(apiKey);
+
+			let sdkResult: SearchResponse<ai_chat_tool_web_search_ContentsOptions>;
+			try {
+				sdkResult = await exa.search(args.query, searchOptions);
+			} catch (error) {
+				if (error instanceof ExaError) {
+					throw new Error(`Web search request failed: ${error.message}`);
+				}
+
+				throw error;
+			}
+
+			const { requestId, results } = ai_chat_tool_web_search_map_sdk_results(sdkResult);
+			const output = ai_chat_tool_web_search_format_output(results);
+
+			return {
+				title: "Web search",
+				metadata: {
+					query: args.query,
+					resultCount: results.length,
+					requestId: requestId ?? null,
+				},
+				output:
+					output.length > 0
+						? output
+						: "No web results returned for this query. Try different keywords or broader phrasing.",
+			};
+		},
+	});
+}
+
+type ai_chat_tool_create_web_search_Tool = ReturnType<typeof ai_chat_tool_create_web_search>;
+export type ai_chat_tool_create_web_search_ToolInput = InferToolInput<ai_chat_tool_create_web_search_Tool>;
+export type ai_chat_tool_create_web_search_ToolOutput = InferToolOutput<ai_chat_tool_create_web_search_Tool>;
+// #endregion web search
