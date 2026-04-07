@@ -6,7 +6,7 @@
 
 		max-width: 960px;
 		width: min(96vw, 960px);
-		height: 487px;
+		height: 546px;
 		max-height: none;
 
 		background: var(--color-base-1-03);
@@ -370,6 +370,62 @@
 		color: var(--color-fg-06);
 	}
 
+	.MainAppAccountManagementBilling-subscription {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		padding: 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+
+		background: var(--color-base-1-04);
+	}
+
+	.MainAppAccountManagementBilling-subscription-title {
+		margin: 0;
+
+		font-size: 15px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.MainAppAccountManagementBilling-subscription-badge {
+		align-self: start;
+
+		padding: 2px 8px;
+		border-radius: 999px;
+
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--color-fg-12);
+		background: color-mix(in srgb, var(--color-green-06) 22%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-green-08) 35%, transparent);
+	}
+
+	.MainAppAccountManagementBilling-subscription-meta {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.MainAppAccountManagementBilling-warning {
+		margin: 0;
+
+		padding: 10px 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-09);
+		background: color-mix(in srgb, var(--color-accent-alt-06) 14%, transparent);
+	}
+
 	.MainAppAccountManagementBilling-plan {
 		display: flex;
 		flex-direction: column;
@@ -450,7 +506,9 @@
 		line-height: 1.25;
 		text-decoration: none;
 
-		transition: background 0.15s ease, color 0.15s ease;
+		transition:
+			background 0.15s ease,
+			color 0.15s ease;
 	}
 
 	.MainAppAccountManagementBilling-checkout {

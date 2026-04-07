@@ -2,7 +2,7 @@ import { Polar } from "@convex-dev/polar";
 import { PolarCore } from "@polar-sh/sdk/core.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { v } from "convex/values";
-import { api, components, internal } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import type { DataModel, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import {
@@ -13,6 +13,7 @@ import {
 	query,
 } from "./_generated/server.js";
 import { PRODUCTS } from "../shared/billing_catalog.js";
+import { BILLING_EVENTS } from "../shared/billing_events.js";
 
 if (!process.env.VITE_CONVEX_HTTP_URL) {
 	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
@@ -22,7 +23,7 @@ const ANONYMOUS_USERS_JWT_ISSUER = process.env.VITE_CONVEX_HTTP_URL;
 
 const billing_outbox_max_drain_per_run = 24;
 
-export { PRODUCTS };
+export { BILLING_EVENTS, PRODUCTS };
 
 /**
  * Single Polar client for this app: register webhook routes on this instance only, and use
@@ -80,11 +81,6 @@ function billing_collect_config_warnings() {
 	if (!process.env.POLAR_SERVER?.trim()) {
 		warnings.push("POLAR_SERVER is unset; Polar API calls use the sandbox environment.");
 	}
-	if (!process.env.POLAR_USAGE_EVENT_NAME?.trim()) {
-		warnings.push(
-			"POLAR_USAGE_EVENT_NAME is unset; meter events use the built-in default event name (not your production meter name).",
-		);
-	}
 	return warnings;
 }
 
@@ -140,7 +136,7 @@ async function billing_try_resolve_pay_as_you_go_product(
 /**
  * Catalog + checkout setup state for the pay-as-you-go plan (and operator warnings).
  */
-export const getPayAsYouGoProduct = query({
+export const get_pay_as_you_go_product = internalQuery({
 	args: {},
 	handler: async (ctx): Promise<BillingPayAsYouGoQueryResult> => {
 		const warnings = billing_collect_config_warnings();
@@ -161,6 +157,235 @@ export const getPayAsYouGoProduct = query({
 		return {
 			setup: "duplicate_product_name",
 			expectedProductName: base.expectedProductName,
+			warnings,
+		};
+	},
+});
+
+type BillingPolarBenefit = NonNullable<BillingPayAsYouGoProductRow["benefits"]>[number];
+
+function billing_try_parse_meter_credit_included_units(
+	benefits: BillingPayAsYouGoProductRow["benefits"],
+): number | null {
+	if (!benefits) {
+		return null;
+	}
+	for (const benefit of benefits) {
+		if (benefit.type !== "meter_credit") {
+			continue;
+		}
+		const props = benefit.properties;
+		if (props == null) {
+			continue;
+		}
+		if (typeof props === "number" && Number.isFinite(props)) {
+			return props;
+		}
+		if (typeof props === "object" && !Array.isArray(props)) {
+			const record = props as Record<string, unknown>;
+			for (const key of ["amount", "credits", "quantity", "units", "meterCreditAmount"] as const) {
+				const value = record[key];
+				if (typeof value === "number" && Number.isFinite(value)) {
+					return value;
+				}
+				if (typeof value === "string" && value.trim() !== "") {
+					const parsed = Number(value);
+					if (!Number.isNaN(parsed)) {
+						return parsed;
+					}
+				}
+			}
+		}
+	}
+	return null;
+}
+
+type BillingPaygSubscriptionSelection =
+	| { kind: "none" }
+	| { kind: "ambiguous"; count: number }
+	| {
+			kind: "single";
+			subscription: Awaited<ReturnType<typeof billing.listAllUserSubscriptions>>[number];
+	  };
+
+function billing_select_payg_subscription(
+	subs: Awaited<ReturnType<typeof billing.listAllUserSubscriptions>>,
+	paygProductId: string,
+): BillingPaygSubscriptionSelection {
+	const matching = subs.filter((s) => s.productId === paygProductId);
+	const activeLike = matching.filter(
+		(s) => (s.status === "active" || s.status === "trialing") && !s.endedAt,
+	);
+	if (activeLike.length === 0) {
+		return { kind: "none" };
+	}
+	if (activeLike.length > 1) {
+		return { kind: "ambiguous", count: activeLike.length };
+	}
+	return { kind: "single", subscription: activeLike[0]! };
+}
+
+type BillingPlanDetails = {
+	productId: string;
+	productName: string;
+	description: string | null;
+	benefitDescriptions: string[];
+	recurringInterval: string | null;
+	priceCurrency: string | null;
+	isMetered: boolean;
+	unitAmount: number | null;
+	meterName: string | null;
+	meterId: string | null;
+	includedMeterCreditsUnits: number | null;
+	hasMeterCreditBenefit: boolean;
+};
+
+function billing_plan_details_from_product(product: BillingPayAsYouGoProductRow): BillingPlanDetails {
+	const primaryPrice =
+		product.prices?.find((priceRow) => !priceRow.isArchived) ?? product.prices?.[0];
+	const raw = primaryPrice?.unitAmount;
+	const unitAmountParsed =
+		typeof raw === "string"
+			? Number(raw)
+			: typeof raw === "number"
+				? raw
+				: null;
+	const unitAmount =
+		unitAmountParsed != null && Number.isFinite(unitAmountParsed) ? unitAmountParsed : null;
+	return {
+		productId: product.id,
+		productName: product.name,
+		description: product.description?.trim() || null,
+		benefitDescriptions: (product.benefits ?? [])
+			.map((benefit) => benefit.description.trim())
+			.filter((description) => description.length > 0),
+		recurringInterval: primaryPrice?.recurringInterval ?? product.recurringInterval ?? null,
+		priceCurrency: primaryPrice?.priceCurrency ?? null,
+		isMetered: primaryPrice?.amountType === "metered_unit",
+		unitAmount,
+		meterName: primaryPrice?.meter?.name ?? null,
+		meterId: primaryPrice?.meterId ?? primaryPrice?.meter?.id ?? null,
+		includedMeterCreditsUnits: billing_try_parse_meter_credit_included_units(product.benefits),
+		hasMeterCreditBenefit: Boolean(
+			product.benefits?.some((b: BillingPolarBenefit) => b.type === "meter_credit"),
+		),
+	};
+}
+
+export type BillingSignedInOverview = {
+	access: "signed_in";
+	catalog: BillingPayAsYouGoQueryResult;
+	planDetails: BillingPlanDetails | null;
+	subscription:
+		| { state: "none" }
+		| { state: "ambiguous" }
+		| {
+				state: "active" | "trialing" | "cancel_at_period_end";
+				polarStatus: string;
+				cancelAtPeriodEnd: boolean;
+				startedAt: string | null;
+				currentPeriodStart: string;
+				currentPeriodEnd: string | null;
+				productName: string;
+		  };
+	showCheckout: boolean;
+	warnings: string[];
+};
+
+export type BillingOverviewResult = { access: "anonymous" } | BillingSignedInOverview;
+
+export const get_billing_overview = query({
+	args: {},
+	handler: async (ctx): Promise<BillingOverviewResult> => {
+		const identity = await ctx.auth.getUserIdentity();
+		if (!identity) {
+			return { access: "anonymous" };
+		}
+		if (identity.issuer === ANONYMOUS_USERS_JWT_ISSUER) {
+			return { access: "anonymous" };
+		}
+		const externalUserId = identity.external_id?.trim();
+		if (!externalUserId) {
+			return { access: "anonymous" };
+		}
+
+		const warnings = billing_collect_config_warnings();
+		const catalogBase = await billing_try_resolve_pay_as_you_go_product(ctx);
+		let catalog: BillingPayAsYouGoQueryResult;
+		if (catalogBase.setup === "ready") {
+			catalog = { setup: "ready", payAsYouGo: catalogBase.payAsYouGo, warnings };
+		} else if (catalogBase.setup === "missing_prefix") {
+			catalog = { setup: "missing_prefix", warnings };
+		} else if (catalogBase.setup === "product_not_in_catalog") {
+			catalog = {
+				setup: "product_not_in_catalog",
+				expectedProductName: catalogBase.expectedProductName,
+				warnings,
+			};
+		} else {
+			catalog = {
+				setup: "duplicate_product_name",
+				expectedProductName: catalogBase.expectedProductName,
+				warnings,
+			};
+		}
+
+		const planDetails =
+			catalog.setup === "ready" ? billing_plan_details_from_product(catalog.payAsYouGo) : null;
+
+		if (catalog.setup !== "ready") {
+			return {
+				access: "signed_in",
+				catalog,
+				planDetails,
+				subscription: { state: "none" },
+				showCheckout: false,
+				warnings,
+			};
+		}
+
+		const paygId = catalog.payAsYouGo.id;
+		const subs = await billing.listAllUserSubscriptions(ctx, { userId: externalUserId });
+		const selection = billing_select_payg_subscription(subs, paygId);
+
+		let subscription: BillingSignedInOverview["subscription"];
+		let showCheckout = true;
+
+		if (selection.kind === "ambiguous") {
+			subscription = { state: "ambiguous" };
+			showCheckout = false;
+		} else if (selection.kind === "none") {
+			subscription = { state: "none" };
+			showCheckout = true;
+		} else {
+			const sub = selection.subscription;
+			const productName = sub.product?.name ?? sub.productId;
+			let state: "active" | "trialing" | "cancel_at_period_end";
+			if (sub.status === "trialing") {
+				state = "trialing";
+			} else if (sub.cancelAtPeriodEnd) {
+				state = "cancel_at_period_end";
+			} else {
+				state = "active";
+			}
+			subscription = {
+				state,
+				polarStatus: sub.status,
+				cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+				startedAt: sub.startedAt ?? null,
+				currentPeriodStart: sub.currentPeriodStart,
+				currentPeriodEnd: sub.currentPeriodEnd ?? null,
+				productName,
+			};
+			showCheckout = false;
+		}
+
+		return {
+			access: "signed_in",
+			catalog,
+			planDetails,
+			subscription,
+			showCheckout,
 			warnings,
 		};
 	},
@@ -230,7 +455,7 @@ function billing_checkout_callback_urls_allowed(origin: string, successUrl: stri
  * be purchased. {@link origin} and {@link successUrl} must match {@link process.env.ALLOWED_ORIGINS} when
  * it parses to at least one valid URL origin; a non-empty but invalid list is treated as misconfiguration.
  */
-export const generateCheckoutLink = action({
+export const generate_checkout_link = action({
 	args: {
 		productIds: v.array(v.string()),
 		origin: v.string(),
@@ -249,7 +474,7 @@ export const generateCheckoutLink = action({
 
 		const { userId, email } = await billing_get_user_info_from_auth(ctx);
 
-		const catalog = await ctx.runQuery(api.billing.getPayAsYouGoProduct, {});
+		const catalog = await ctx.runQuery(internal.billing.get_pay_as_you_go_product, {});
 		if (catalog.setup !== "ready") {
 			throw new Error("Checkout is not available for this deployment");
 		}
@@ -310,12 +535,6 @@ export const sync_products = internalAction({
 	},
 });
 
-const billing_usage_event_name_default = "billing-test-unit";
-
-function billing_usage_event_name() {
-	return process.env.POLAR_USAGE_EVENT_NAME?.trim() || billing_usage_event_name_default;
-}
-
 export async function billing_enqueue_page_save_event(
 	ctx: MutationCtx,
 	args: {
@@ -331,7 +550,7 @@ export async function billing_enqueue_page_save_event(
 		return;
 	}
 
-	const eventName = billing_usage_event_name();
+	const eventName = BILLING_EVENTS.testUnit;
 	const dedupeKey = `${eventName}:${args.userId}:${args.pageId}:${args.newSequence}`;
 	const existing = await ctx.db
 		.query("polar_usage_events_outbox")
@@ -356,7 +575,7 @@ export async function billing_enqueue_page_save_event(
 		},
 	});
 	// Skip `runAfter` in Vitest: convex-test schedules via setTimeout and completing that job can error on `_scheduled_functions` writes while draining still works via `t.action`.
-	if (process.env.POLAR_USAGE_DISABLE_SCHEDULED_DRAIN_IN_TESTS?.trim() === "1") {
+	if (process.env.BILLING_SKIP_SCHEDULED_DRAIN?.trim() === "1") {
 		return;
 	}
 	await ctx.scheduler.runAfter(0, internal.billing.drain_outbox, {});

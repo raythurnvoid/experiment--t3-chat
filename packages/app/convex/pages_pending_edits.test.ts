@@ -14,6 +14,7 @@ import {
 	pages_yjs_doc_get_markdown,
 	pages_yjs_doc_update_from_markdown,
 } from "../server/pages.ts";
+import { BILLING_EVENTS } from "../shared/billing_events.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 async function seed_page_with_markdown(args: {
@@ -2261,7 +2262,7 @@ describe("save_pages_pending_edit billing usage outbox", () => {
 		}
 		expect(saveResult._yay.newSequence).not.toBeNull();
 
-		const eventName = process.env.POLAR_USAGE_EVENT_NAME?.trim() || "billing-test-unit";
+		const eventName = BILLING_EVENTS.testUnit;
 		const dedupeKey = `${eventName}:${seeded.userId}:${seeded.pageId}:${saveResult._yay.newSequence}`;
 
 		const outboxRows = await t.run(async (ctx) =>

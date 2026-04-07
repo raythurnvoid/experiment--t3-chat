@@ -852,6 +852,16 @@ export const save_pages_pending_edit = mutation({
 			});
 
 			newSequence = result.newSequence;
+			if (!user.isAnonymous) {
+				await billing_enqueue_page_save_event(ctx, {
+					userId: user.id,
+					pageId: args.pageId,
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					newSequence: result.newSequence,
+					now: Date.now(),
+				});
+			}
 			pages_yjs_doc_apply_array_buffer_update(
 				livePageYjsDocAfterSave,
 				pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
@@ -873,17 +883,6 @@ export const save_pages_pending_edit = mutation({
 
 		const now = Date.now();
 		const nextBaseYjsSequence = newSequence ?? yjsContent.yjsSequence;
-
-		if (!user.isAnonymous && newSequence !== null) {
-			await billing_enqueue_page_save_event(ctx, {
-				userId: user.id,
-				pageId: args.pageId,
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				newSequence,
-				now,
-			});
-		}
 
 		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([

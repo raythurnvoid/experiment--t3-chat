@@ -62,6 +62,7 @@ import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
+import { billing_enqueue_page_save_event } from "./billing.ts";
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
 	if (parentPath === "/") {
@@ -2598,7 +2599,7 @@ export const yjs_push_update = mutation({
 			return null;
 		}
 
-		return pages_db_yjs_push_update(ctx, {
+		const pushResult = await pages_db_yjs_push_update(ctx, {
 			workspaceId: page.workspaceId,
 			projectId: page.projectId,
 			pageId: args.pageId,
@@ -2607,6 +2608,19 @@ export const yjs_push_update = mutation({
 			userId: user.id,
 			userName: user.name,
 		});
+
+		if (!user.isAnonymous) {
+			await billing_enqueue_page_save_event(ctx, {
+				userId: user.id,
+				pageId: args.pageId,
+				workspaceId: page.workspaceId,
+				projectId: page.projectId,
+				newSequence: pushResult.newSequence,
+				now: Date.now(),
+			});
+		}
+
+		return pushResult;
 	},
 });
 

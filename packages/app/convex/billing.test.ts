@@ -1,9 +1,10 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { PRODUCTS, billing_enqueue_page_save_event } from "./billing.ts";
+import { BILLING_EVENTS, PRODUCTS, billing_enqueue_page_save_event } from "./billing.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with, test_mocks } from "./setup.test.ts";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
+import type { Id } from "./_generated/dataModel.js";
 
 vi.mock("@polar-sh/sdk/core.js", () => ({
 	PolarCore: class PolarCoreMock {
@@ -17,7 +18,7 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 
 const eventsIngestMock = vi.mocked(eventsIngest);
 
-describe("billing getPayAsYouGoProduct", () => {
+describe("billing get_pay_as_you_go_product", () => {
 	test("returns ready when synced name matches POLAR_PRODUCTS_PREFIX pattern", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
@@ -47,12 +48,12 @@ describe("billing getPayAsYouGoProduct", () => {
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_billing_products_query",
+			external_id: "user_billing_products_query" as Id<"users">,
 			name: "Billing Products",
 			email: "billing-products@test.local",
 		});
 
-		const configured = await asUser.query(api.billing.getPayAsYouGoProduct, {});
+		const configured = await asUser.query(internal.billing.get_pay_as_you_go_product, {});
 		expect(configured.setup).toBe("ready");
 		if (configured.setup !== "ready") {
 			throw new Error("Expected ready setup");
@@ -85,7 +86,7 @@ describe("billing getPayAsYouGoProduct", () => {
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_billing_products_empty",
+			external_id: "user_billing_products_empty" as Id<"users">,
 			name: "Billing Empty",
 			email: "billing-empty@test.local",
 		});
@@ -93,7 +94,7 @@ describe("billing getPayAsYouGoProduct", () => {
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
 		const expectedName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
 
-		const configured = await asUser.query(api.billing.getPayAsYouGoProduct, {});
+		const configured = await asUser.query(internal.billing.get_pay_as_you_go_product, {});
 		expect(configured.setup).toBe("product_not_in_catalog");
 		if (configured.setup !== "product_not_in_catalog") {
 			throw new Error("Expected product_not_in_catalog");
@@ -131,12 +132,12 @@ describe("billing getPayAsYouGoProduct", () => {
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_billing_dup",
+			external_id: "user_billing_dup" as Id<"users">,
 			name: "Billing Dup",
 			email: "billing-dup@test.local",
 		});
 
-		const configured = await asUser.query(api.billing.getPayAsYouGoProduct, {});
+		const configured = await asUser.query(internal.billing.get_pay_as_you_go_product, {});
 		expect(configured.setup).toBe("duplicate_product_name");
 		if (configured.setup !== "duplicate_product_name") {
 			throw new Error("Expected duplicate_product_name");
@@ -145,7 +146,356 @@ describe("billing getPayAsYouGoProduct", () => {
 	});
 });
 
-describe("billing generateCheckoutLink auth", () => {
+describe("billing get_billing_overview", () => {
+	type PaygSeed = {
+		polarProductId: string;
+		polarProductName: string;
+	};
+
+	async function seed_pay_as_you_go_product(
+		t: ReturnType<typeof test_convex>,
+		args: {
+			polarProductId: string;
+			description?: string | null;
+			benefits?: Array<{
+				id: string;
+				createdAt: string;
+				modifiedAt: string | null;
+				type: string;
+				description: string;
+				selectable: boolean;
+				deletable: boolean;
+				organizationId: string;
+				metadata?: Record<string, unknown>;
+				properties?: unknown;
+			}>;
+		},
+	): Promise<PaygSeed> {
+		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
+		if (!prefix) {
+			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
+		}
+		const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
+		await t.mutation(components.polar.lib.createProduct, {
+			product: {
+				id: args.polarProductId,
+				organizationId: "billing_test_org",
+				name: polarProductName,
+				description: args.description ?? "A flexible pay-as-you-go plan with metered billing and included credits.",
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [
+					{
+						id: `${args.polarProductId}_price`,
+						createdAt: "2026-01-01T00:00:00.000Z",
+						modifiedAt: null,
+						amountType: "metered_unit",
+						isArchived: false,
+						productId: args.polarProductId,
+						priceCurrency: "usd",
+						unitAmount: "5",
+						recurringInterval: "month",
+						meterId: "meter_units",
+						meter: { id: "meter_units", name: "Billable units" },
+					},
+				],
+				medias: [],
+				benefits: args.benefits ?? [],
+			},
+		});
+		return { polarProductId: args.polarProductId, polarProductName };
+	}
+
+	test("returns none + showCheckout when user has no Polar customer row", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_none",
+			description: "A flexible plan for teams that want to pay only for what they use.",
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_none" as Id<"users">,
+			name: "Overview None",
+			email: "overview-none@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.catalog.setup).toBe("ready");
+		expect(overview.subscription.state).toBe("none");
+		expect(overview.showCheckout).toBe(true);
+		expect(overview.planDetails?.productId).toBe(polarProductId);
+		expect(overview.planDetails?.description).toBe("A flexible plan for teams that want to pay only for what they use.");
+		expect(overview.planDetails?.unitAmount).toBe(5);
+		expect(overview.planDetails?.meterName).toBe("Billable units");
+		expect(overview.planDetails?.benefitDescriptions).toEqual([]);
+	});
+
+	test("parses included meter credits from meter_credit benefit properties", async () => {
+		const t = test_convex();
+		await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_credits",
+			benefits: [
+				{
+					id: "ben_mc_1",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					type: "meter_credit",
+					description: "Included",
+					selectable: false,
+					deletable: false,
+					organizationId: "billing_test_org",
+					properties: { units: 250 },
+				},
+			],
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_credits" as Id<"users">,
+			name: "Overview Credits",
+			email: "overview-credits@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.planDetails?.includedMeterCreditsUnits).toBe(250);
+		expect(overview.planDetails?.hasMeterCreditBenefit).toBe(true);
+		expect(overview.planDetails?.benefitDescriptions).toContain("Included");
+	});
+
+	test("returns active subscription state and hides checkout", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_active",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_active",
+			userId: "user_billing_overview_active",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_active",
+				customerId: "cust_overview_active",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_active" as Id<"users">,
+			name: "Overview Active",
+			email: "overview-active@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.subscription.state).toBe("active");
+		if (overview.subscription.state !== "active") {
+			throw new Error("Expected active");
+		}
+		expect(overview.subscription.polarStatus).toBe("active");
+		expect(overview.subscription.startedAt).toBe("2026-01-01T00:00:00.000Z");
+		expect(overview.showCheckout).toBe(false);
+	});
+
+	test("returns cancel_at_period_end when cancelAtPeriodEnd is true", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_cancel",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_cancel",
+			userId: "user_billing_overview_cancel",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_cancel",
+				customerId: "cust_overview_cancel",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: true,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_cancel" as Id<"users">,
+			name: "Overview Cancel",
+			email: "overview-cancel@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.subscription.state).toBe("cancel_at_period_end");
+		expect(overview.showCheckout).toBe(false);
+	});
+
+	test("returns trialing when Polar status is trialing", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_trial",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_trial",
+			userId: "user_billing_overview_trial",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_trial",
+				customerId: "cust_overview_trial",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: null,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "trialing",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-01-08T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_trial" as Id<"users">,
+			name: "Overview Trial",
+			email: "overview-trial@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.subscription.state).toBe("trialing");
+		expect(overview.showCheckout).toBe(false);
+	});
+
+	test("returns ambiguous when two active PAYG subscriptions exist", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_ambiguous",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_ambiguous",
+			userId: "user_billing_overview_ambiguous",
+		});
+
+		for (const id of ["sub_overview_a", "sub_overview_b"] as const) {
+			await t.mutation(components.polar.lib.createSubscription, {
+				subscription: {
+					id,
+					customerId: "cust_overview_ambiguous",
+					productId: polarProductId,
+					checkoutId: null,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: "2026-01-02T00:00:00.000Z",
+					amount: 1000,
+					currency: "usd",
+					recurringInterval: "month",
+					status: "active",
+					currentPeriodStart: "2026-01-01T00:00:00.000Z",
+					currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+					cancelAtPeriodEnd: false,
+					startedAt: "2026-01-01T00:00:00.000Z",
+					endedAt: null,
+					metadata: {},
+				},
+			});
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_ambiguous" as Id<"users">,
+			name: "Overview Ambiguous",
+			email: "overview-ambiguous@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.subscription.state).toBe("ambiguous");
+		expect(overview.showCheckout).toBe(false);
+	});
+
+	test("hides checkout when catalog is misconfigured", async () => {
+		const t = test_convex();
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_misconfigured" as Id<"users">,
+			name: "Overview Misconfigured",
+			email: "overview-misconfigured@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.catalog.setup).toBe("product_not_in_catalog");
+		expect(overview.planDetails).toBeNull();
+		expect(overview.showCheckout).toBe(false);
+	});
+});
+
+describe("billing generate_checkout_link auth", () => {
 	test("rejects anonymous identity before Polar SDK", async () => {
 		const t = test_convex();
 		const asAnonymous = t.withIdentity({
@@ -155,7 +505,7 @@ describe("billing generateCheckoutLink auth", () => {
 		});
 
 		await expect(
-			asAnonymous.action(api.billing.generateCheckoutLink, {
+			asAnonymous.action(api.billing.generate_checkout_link, {
 				productIds: ["prod_x"],
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
@@ -167,12 +517,12 @@ describe("billing generateCheckoutLink auth", () => {
 		const t = test_convex();
 		const asUserNoEmail = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_no_email_checkout",
+			external_id: "user_no_email_checkout" as Id<"users">,
 			name: "No Email",
 		});
 
 		await expect(
-			asUserNoEmail.action(api.billing.generateCheckoutLink, {
+			asUserNoEmail.action(api.billing.generate_checkout_link, {
 				productIds: ["prod_x"],
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
@@ -181,7 +531,7 @@ describe("billing generateCheckoutLink auth", () => {
 	});
 });
 
-describe("billing generateCheckoutLink curated product", () => {
+describe("billing generate_checkout_link curated product", () => {
 	test("rejects productIds that do not match the curated pay-as-you-go product", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
@@ -208,13 +558,13 @@ describe("billing generateCheckoutLink curated product", () => {
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_curated_checkout",
+			external_id: "user_curated_checkout" as Id<"users">,
 			name: "Curated Checkout",
 			email: "curated-checkout@test.local",
 		});
 
 		await expect(
-			asUser.action(api.billing.generateCheckoutLink, {
+			asUser.action(api.billing.generate_checkout_link, {
 				productIds: ["some_other_product_id"],
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
@@ -222,7 +572,7 @@ describe("billing generateCheckoutLink curated product", () => {
 		).rejects.toThrow("Invalid checkout product");
 
 		await expect(
-			asUser.action(api.billing.generateCheckoutLink, {
+			asUser.action(api.billing.generate_checkout_link, {
 				productIds: [polarProductId, polarProductId],
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
@@ -236,7 +586,7 @@ describe("billing changeCurrentSubscription", () => {
 		const t = test_convex();
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_no_plan_change",
+			external_id: "user_no_plan_change" as Id<"users">,
 			name: "No Plan Change",
 			email: "no-plan-change@test.local",
 		});
@@ -247,14 +597,14 @@ describe("billing changeCurrentSubscription", () => {
 	});
 });
 
-describe("billing generateCheckoutLink ALLOWED_ORIGINS", () => {
+describe("billing generate_checkout_link ALLOWED_ORIGINS", () => {
 	test("rejects misconfigured non-empty ALLOWED_ORIGINS before other checks", async () => {
 		const t = test_convex();
 		const previous = process.env.ALLOWED_ORIGINS;
 		process.env.ALLOWED_ORIGINS = "not-a-url,, , also-invalid";
 		try {
 			await expect(
-				t.action(api.billing.generateCheckoutLink, {
+				t.action(api.billing.generate_checkout_link, {
 					productIds: ["any"],
 					origin: "https://app.test",
 					successUrl: "https://app.test/ok",
@@ -327,7 +677,7 @@ describe("billing_enqueue_page_save_event", () => {
 			});
 		});
 
-		const eventName = process.env.POLAR_USAGE_EVENT_NAME?.trim() || "billing-test-unit";
+		const eventName = BILLING_EVENTS.testUnit;
 		const dedupeKey = `${eventName}:${seeded.userId}:${seeded.pageId}:${newSequence}`;
 
 		const rows = await t.run(async (ctx) => ctx.db.query("polar_usage_events_outbox").collect());
@@ -410,9 +760,9 @@ describe("drain_outbox", () => {
 		const rowId = await t.run(async (ctx) => {
 			const createdAt = 1_700_000_000_001;
 			return await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:1",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:1`,
 				externalCustomerId: "user_drain_ok",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt,
 				metadata: {
@@ -436,9 +786,9 @@ describe("drain_outbox", () => {
 			events: Array<{ externalId: string; externalCustomerId: string; name: string }>;
 		};
 		expect(ingestPayload.events).toHaveLength(1);
-		expect(ingestPayload.events[0]!.externalId).toBe("billing-test-unit:u:test-page:1");
+		expect(ingestPayload.events[0]!.externalId).toBe(`${BILLING_EVENTS.testUnit}:u:test-page:1`);
 		expect(ingestPayload.events[0]!.externalCustomerId).toBe("user_drain_ok");
-		expect(ingestPayload.events[0]!.name).toBe("billing-test-unit");
+		expect(ingestPayload.events[0]!.name).toBe(BILLING_EVENTS.testUnit);
 	});
 
 	test("marks row failed when eventsIngest returns an error result", async () => {
@@ -450,9 +800,9 @@ describe("drain_outbox", () => {
 		const t = test_convex();
 		const rowId = await t.run(async (ctx) => {
 			return await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:2",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:2`,
 				externalCustomerId: "user_drain_fail",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt: 1_700_000_000_002,
 				metadata: {},
@@ -473,9 +823,9 @@ describe("drain_outbox", () => {
 		const t = test_convex();
 		const rowId = await t.run(async (ctx) => {
 			return await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:throw",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:throw`,
 				externalCustomerId: "user_drain_throw",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt: 1_700_000_000_003,
 				metadata: {},
@@ -497,9 +847,9 @@ describe("drain_outbox", () => {
 		const t = test_convex();
 		const rowId = await t.run(async (ctx) => {
 			return await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:3",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:3`,
 				externalCustomerId: "user_no_token",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt: 1_700_000_000_004,
 			});
@@ -522,16 +872,16 @@ describe("drain_outbox", () => {
 		const t = test_convex();
 		await t.run(async (ctx) => {
 			await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:older",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:older`,
 				externalCustomerId: "user_older",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt: 1_700_000_000_010,
 			});
 			await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:newer",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:newer`,
 				externalCustomerId: "user_newer",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt: 1_700_000_000_011,
 			});
@@ -545,8 +895,8 @@ describe("drain_outbox", () => {
 		const secondPayload = eventsIngestMock.mock.calls[1]![1] as {
 			events: Array<{ externalId: string }>;
 		};
-		expect(firstPayload.events[0]!.externalId).toBe("billing-test-unit:u:test-page:older");
-		expect(secondPayload.events[0]!.externalId).toBe("billing-test-unit:u:test-page:newer");
+		expect(firstPayload.events[0]!.externalId).toBe(`${BILLING_EVENTS.testUnit}:u:test-page:older`);
+		expect(secondPayload.events[0]!.externalId).toBe(`${BILLING_EVENTS.testUnit}:u:test-page:newer`);
 	});
 
 	test("respects the drain batch size", async () => {
@@ -559,9 +909,9 @@ describe("drain_outbox", () => {
 		await t.run(async (ctx) => {
 			for (let i = 0; i < 25; i++) {
 				await ctx.db.insert("polar_usage_events_outbox", {
-					dedupeKey: `billing-test-unit:u:test-page:batch:${i}`,
+					dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:batch:${i}`,
 					externalCustomerId: `user_batch_${i}`,
-					eventName: "billing-test-unit",
+					eventName: BILLING_EVENTS.testUnit,
 					status: "pending",
 					createdAt: 1_700_000_001_000 + i,
 				});
@@ -578,7 +928,7 @@ describe("drain_outbox", () => {
 		);
 		expect(eventsIngestMock).toHaveBeenCalledTimes(24);
 		expect(rowsAfter).toHaveLength(1);
-		expect(rowsAfter[0]!.dedupeKey).toBe("billing-test-unit:u:test-page:batch:24");
+		expect(rowsAfter[0]!.dedupeKey).toBe(`${BILLING_EVENTS.testUnit}:u:test-page:batch:24`);
 	});
 
 	test("ignores already failed rows", async () => {
@@ -590,17 +940,17 @@ describe("drain_outbox", () => {
 		const t = test_convex();
 		const failedRowId = await t.run(async (ctx) => {
 			await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:failed",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:failed`,
 				externalCustomerId: "user_failed",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "failed",
 				createdAt: 1_700_000_002_000,
 				lastError: "previous failure",
 			});
 			return await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: "billing-test-unit:u:test-page:pending",
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:pending`,
 				externalCustomerId: "user_pending",
-				eventName: "billing-test-unit",
+				eventName: BILLING_EVENTS.testUnit,
 				status: "pending",
 				createdAt: 1_700_000_002_001,
 			});

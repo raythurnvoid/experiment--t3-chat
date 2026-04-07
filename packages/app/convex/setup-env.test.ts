@@ -1,4 +1,4 @@
-// CORS / checkout allowlist: use a real URL so `generateCheckoutLink` URL checks and server helpers stay consistent.
+// CORS / checkout allowlist: use a real URL so `generate_checkout_link` URL checks and server helpers stay consistent.
 if (!process.env.ALLOWED_ORIGINS) {
 	process.env.ALLOWED_ORIGINS = "https://app.test";
 }
@@ -35,6 +35,6 @@ if (!process.env.POLAR_PRODUCTS_PREFIX) {
 // convex-test runs `ctx.scheduler.runAfter` via setTimeout; draining Polar from that path can throw
 // on `_scheduled_functions` writes. Keep scheduled drain disabled by default in Vitest and call
 // `drain_outbox` explicitly in dedicated drain tests via `t.action`.
-if (!process.env.POLAR_USAGE_DISABLE_SCHEDULED_DRAIN_IN_TESTS) {
-	process.env.POLAR_USAGE_DISABLE_SCHEDULED_DRAIN_IN_TESTS = "1";
+if (!process.env.BILLING_SKIP_SCHEDULED_DRAIN) {
+	process.env.BILLING_SKIP_SCHEDULED_DRAIN = "1";
 }
