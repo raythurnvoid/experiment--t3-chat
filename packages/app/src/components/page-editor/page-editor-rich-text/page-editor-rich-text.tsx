@@ -42,6 +42,7 @@ import { PageEditorRichTextToolsComment } from "./page-editor-rich-text-tools-co
 import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { PageEditorRichTextDragHandle } from "./page-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
+import { bubbleMenuReevaluateVisibility } from "../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
 import { useFn, useRenderPromise } from "../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { usePagesYjs, type pages_Yjs } from "@/hooks/pages-hooks.ts";
@@ -334,6 +335,8 @@ export type PageEditorRichTextBubble_Props = {
  * - The user interacts outside the editor/bubble (global `pointerdown`)
  * - The current selection is collapsed / empty (TipTap/Novel `shouldShow`)
  * - The user presses Escape while no bubble popover is open (Escape handlers hide the bubble)
+ * - A primary pointer selection gesture is still active on the editor (after `pointerdown` on the
+ *   editor surface until `pointerup` / `pointercancel`, or until `window` `blur` clears the gate)
  *
  * It prevents the default behavior from closing when:
  * - Focus moves inside the bubble itself (TipTap `isChildOfMenu`)
@@ -345,6 +348,10 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
 	const isShownRef = useRef(false);
+	/**
+	 * Keep this true until the current editor pointer gesture ends.
+	 */
+	const isPointerSelectingRef = useRef(false);
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 	const [rendered, setRendered] = useState(true);
@@ -369,7 +376,7 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 	});
 
 	const shouldShow = useFn<NonNullable<EditorBubbleProps["shouldShow"]>>((params) => {
-		// If nothing is in focus we can close the bubble
+		// Close the bubble if nothing is focused.
 		if (document.activeElement === document.body) {
 			return false;
 		}
@@ -389,6 +396,11 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 			})
 		) {
 			return true;
+		}
+
+		// Keep the bubble hidden until pointerup ends the gesture.
+		if (isPointerSelectingRef.current) {
+			return false;
 		}
 
 		const novelResult = EditorBubble.novelShouldShowImpl(params);
@@ -414,7 +426,7 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 		editor.commands.setDecorationHighlight();
 	});
 
-	// handle the escape key when the bubble menu or its descendants are focused
+	// Handle Escape while focus stays inside the bubble.
 	const handleKeyDown = useFn<EditorBubbleProps["onKeyDown"]>((event) => {
 		if (event.key === "Escape" && event.currentTarget.contains(event.target as HTMLElement)) {
 			setRendered(false);
@@ -463,13 +475,13 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 		setPortalElement(inst);
 	});
 
-	// On mount
+	// Set up bubble-menu listeners on mount.
 	useEffect(() => {
-		// Ensure the mount happens only once otherwise it might create unexpected issues with tiptap
+		// Mount once to avoid duplicate TipTap plugin setup.
 		const mountTask = () => {
 			const rootElement = document.getElementById("root" satisfies AppElementId);
 
-			// Register a plugin to handle the escape key to hide the bubble menu while the focus is on the editor
+			// Register Escape handling for the editor bubble.
 			const bubbleEscPluginKey = new PluginKey("PageEditorRichTextBubble_escape_key_handler");
 			const plugin = new Plugin({
 				props: {
@@ -488,7 +500,7 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 
 			editor.registerPlugin(plugin);
 
-			// Listen for selection updates and reapply the decoration highlight if the bubble menu is shown
+			// Reapply the highlight when the bubble is shown.
 			const handleSelectionUpdate = () => {
 				if (
 					isShownRef.current &&
@@ -502,11 +514,38 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 			};
 			editor.on("selectionUpdate", handleSelectionUpdate);
 
-			// Global event listeners
+			// Clear the pointer gate on lift, cancel, or blur.
+			const clearPointerSelectingEndListeners = global_event_listen_all(["pointerup", "pointercancel", "blur"], () => {
+				const wasSelecting = isPointerSelectingRef.current;
+				isPointerSelectingRef.current = false;
 
+				// Re-check bubble visibility on pointerup so it can show after the gesture ends.
+				if (wasSelecting) {
+					bubbleMenuReevaluateVisibility(editor);
+				}
+			});
+
+			// Track editor pointer gestures.
 			const clearEventListeners = global_event_listen_all(
 				["keydown", "pointerdown"],
 				(event) => {
+					if (
+						event.type === "pointerdown" &&
+						event instanceof PointerEvent &&
+						event.isPrimary &&
+						(event.pointerType !== "mouse" || event.button === 0)
+					) {
+						const target = event.target;
+						if (
+							target instanceof Node &&
+							editor.view.dom.contains(target) &&
+							!bubbleSurfaceRef.current?.contains(target)
+						) {
+							isPointerSelectingRef.current = true;
+						}
+					}
+
+					// Dismiss only while the bubble is visible.
 					if (!isShownRef.current) {
 						return;
 					}
@@ -545,6 +584,8 @@ export const PageEditorRichTextBubble = memo(function PageEditorRichTextBubble(p
 			);
 
 			return () => {
+				clearPointerSelectingEndListeners();
+
 				editor.unregisterPlugin(bubbleEscPluginKey);
 				editor.off("selectionUpdate", handleSelectionUpdate);
 				clearEventListeners();
