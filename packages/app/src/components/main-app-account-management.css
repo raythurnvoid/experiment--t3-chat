@@ -370,28 +370,19 @@
 		color: var(--color-fg-06);
 	}
 
-	.MainAppAccountManagementBilling-subscription {
+	.MainAppAccountManagementBilling-active-plan {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 8px;
 
 		padding: 12px;
 		border: 1px solid var(--color-base-1-06);
 		border-radius: 8px;
 
-		background: var(--color-base-1-04);
+		background: var(--color-base-1-03);
 	}
 
-	.MainAppAccountManagementBilling-subscription-title {
-		margin: 0;
-
-		font-size: 15px;
-		font-weight: 600;
-		line-height: 1.3;
-		color: var(--color-fg-12);
-	}
-
-	.MainAppAccountManagementBilling-subscription-badge {
+	.MainAppAccountManagementBilling-active-plan-badge {
 		align-self: start;
 
 		padding: 2px 8px;
@@ -405,12 +396,39 @@
 		border: 1px solid color-mix(in srgb, var(--color-green-08) 35%, transparent);
 	}
 
-	.MainAppAccountManagementBilling-subscription-meta {
+	.MainAppAccountManagementBilling-active-plan-title {
+		margin: 0;
+
+		font-size: 15px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.MainAppAccountManagementBilling-active-plan-renewal {
 		margin: 0;
 
 		font-size: 13px;
 		line-height: 1.45;
 		color: var(--color-fg-08);
+	}
+
+	.MainAppAccountManagementBilling-active-plan-started {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementBilling-active-plan-details {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		margin-top: 2px;
+		padding-top: 10px;
+		border-top: 1px solid var(--color-base-1-06);
 	}
 
 	.MainAppAccountManagementBilling-warning {
@@ -492,7 +510,7 @@
 	}
 
 	.MainAppAccountManagementBilling-checkout,
-	.MainAppAccountManagementBilling-portal {
+	.MainAppAccountManagementBilling-manage-subscription {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -522,14 +540,14 @@
 		background: var(--color-accent-07);
 	}
 
-	.MainAppAccountManagementBilling-portal {
+	.MainAppAccountManagementBilling-manage-subscription {
 		border: 1px solid var(--color-base-1-06);
 
 		background: var(--color-base-1-04);
 		color: var(--color-fg-11);
 	}
 
-	.MainAppAccountManagementBilling-portal:hover {
+	.MainAppAccountManagementBilling-manage-subscription:hover {
 		background: var(--color-base-1-05);
 	}
 	/* #endregion billing */

@@ -31,10 +31,3 @@ if (!process.env.CLERK_SECRET_KEY) {
 if (!process.env.POLAR_PRODUCTS_PREFIX) {
 	process.env.POLAR_PRODUCTS_PREFIX = "test";
 }
-
-// convex-test runs `ctx.scheduler.runAfter` via setTimeout; draining Polar from that path can throw
-// on `_scheduled_functions` writes. Keep scheduled drain disabled by default in Vitest and call
-// `drain_outbox` explicitly in dedicated drain tests via `t.action`.
-if (!process.env.BILLING_SKIP_SCHEDULED_DRAIN) {
-	process.env.BILLING_SKIP_SCHEDULED_DRAIN = "1";
-}

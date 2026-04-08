@@ -99,26 +99,21 @@ function main_app_account_management_billing_subscription_status_label(
 	return "Active";
 }
 
-function main_app_account_management_billing_subscription_meta(subscription: {
+function main_app_account_management_billing_subscription_renewal_line(subscription: {
 	state: "active" | "trialing" | "cancel_at_period_end";
 	currentPeriodEnd: string | null;
-	startedAt: string | null;
 }) {
-	const parts: string[] = [];
-	if (subscription.currentPeriodEnd) {
-		const periodEnd = main_app_account_management_billing_format_iso_date(subscription.currentPeriodEnd);
-		if (subscription.state === "trialing") {
-			parts.push(`Trial ends on ${periodEnd}`);
-		} else if (subscription.state === "cancel_at_period_end") {
-			parts.push(`Cancels on ${periodEnd}`);
-		} else {
-			parts.push(`Renews on ${periodEnd}`);
-		}
+	if (!subscription.currentPeriodEnd) {
+		return null;
 	}
-	if (subscription.startedAt) {
-		parts.push(`Started ${main_app_account_management_billing_format_iso_date(subscription.startedAt)}`);
+	const periodEnd = main_app_account_management_billing_format_iso_date(subscription.currentPeriodEnd);
+	if (subscription.state === "trialing") {
+		return `Trial ends on ${periodEnd}`;
 	}
-	return parts.join(" · ");
+	if (subscription.state === "cancel_at_period_end") {
+		return `Cancels on ${periodEnd}`;
+	}
+	return `Renews on ${periodEnd}`;
 }
 
 function get_session_label(
@@ -550,11 +545,13 @@ type MainAppAccountManagementBilling_ClassNames =
 	| "MainAppAccountManagementBilling-plan-list-item"
 	| "MainAppAccountManagementBilling-actions"
 	| "MainAppAccountManagementBilling-checkout"
-	| "MainAppAccountManagementBilling-portal"
-	| "MainAppAccountManagementBilling-subscription"
-	| "MainAppAccountManagementBilling-subscription-title"
-	| "MainAppAccountManagementBilling-subscription-badge"
-	| "MainAppAccountManagementBilling-subscription-meta"
+	| "MainAppAccountManagementBilling-manage-subscription"
+	| "MainAppAccountManagementBilling-active-plan"
+	| "MainAppAccountManagementBilling-active-plan-badge"
+	| "MainAppAccountManagementBilling-active-plan-title"
+	| "MainAppAccountManagementBilling-active-plan-renewal"
+	| "MainAppAccountManagementBilling-active-plan-started"
+	| "MainAppAccountManagementBilling-active-plan-details"
 	| "MainAppAccountManagementBilling-warning";
 
 type MainAppAccountManagementBilling_Props = {
@@ -570,13 +567,13 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 
 	const generateCustomerPortalUrl = useAction(app_convex_api.billing.generateCustomerPortalUrl);
 
-	const handleOpenCustomerPortal = useFn(() => {
+	const handleManageSubscription = useFn(() => {
 		void generateCustomerPortalUrl({})
 			.then((result) => {
 				if (result?.url) {
 					window.open(result.url, "_blank", "noopener,noreferrer");
 				} else {
-					toast.error("Could not open customer portal");
+					toast.error("Could not open subscription management");
 				}
 			})
 			.catch((error) => {
@@ -759,14 +756,27 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 
 	const headerDescription = ((/* iife */) => {
 		if (subscription.state === "ambiguous") {
-			return "We found more than one active subscription for this plan. Open the customer portal to review them, then refresh this page.";
+			return "We found more than one active subscription for this plan. Use Manage subscription to review them, then refresh this page.";
 		}
 		if (subscription.state !== "none" && "productName" in subscription) {
-			const subscriptionMeta = main_app_account_management_billing_subscription_meta(subscription);
-			return `You’re on the ${subscription.productName} plan.${subscriptionMeta ? ` ${subscriptionMeta}.` : ""} Manage payment methods and invoices in the customer portal.`;
+			return "Your subscription is active. Check the plan information below or click Manage subscription to review the details.";
 		}
-		return `Choose the pay-as-you-go plan to see your included credits, unit price, and billing cadence before you subscribe.`;
+		return "Read the information about the available plan below and click Checkout to proceed with your subscription.";
 	})();
+
+	const showActivePlanCard =
+		subscription.state !== "none" &&
+		subscription.state !== "ambiguous" &&
+		subscriptionStatusBadge != null &&
+		"productName" in subscription;
+
+	const subscriptionRenewalLine = showActivePlanCard
+		? main_app_account_management_billing_subscription_renewal_line(subscription)
+		: null;
+	const subscriptionStartedLine =
+		showActivePlanCard && subscription.startedAt
+			? `Started ${main_app_account_management_billing_format_iso_date(subscription.startedAt)}`
+			: null;
 
 	return (
 		<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
@@ -792,86 +802,164 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 					Resolve duplicate active subscriptions in Polar, then refresh this page.
 				</p>
 			) : null}
-			{subscription.state !== "none" && subscription.state !== "ambiguous" && subscriptionStatusBadge ? (
+			{showActivePlanCard ? (
 				<div
-					className={"MainAppAccountManagementBilling-subscription" satisfies MainAppAccountManagementBilling_ClassNames}
+					className={"MainAppAccountManagementBilling-active-plan" satisfies MainAppAccountManagementBilling_ClassNames}
 				>
 					<div
 						className={
-							"MainAppAccountManagementBilling-subscription-title" satisfies MainAppAccountManagementBilling_ClassNames
+							"MainAppAccountManagementBilling-active-plan-badge" satisfies MainAppAccountManagementBilling_ClassNames
+						}
+					>
+						Active plan
+					</div>
+					<div
+						className={
+							"MainAppAccountManagementBilling-active-plan-title" satisfies MainAppAccountManagementBilling_ClassNames
 						}
 					>
 						{subscription.productName}
 					</div>
-					<div
-						className={
-							"MainAppAccountManagementBilling-subscription-badge" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						{subscriptionStatusBadge}
-					</div>
-					<p
-						className={
-							"MainAppAccountManagementBilling-subscription-meta" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						{main_app_account_management_billing_subscription_meta(subscription)}
-					</p>
-				</div>
-			) : null}
-			<div className={"MainAppAccountManagementBilling-plan" satisfies MainAppAccountManagementBilling_ClassNames}>
-				<p className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}>
-					{checkoutProduct?.name ?? "Pay-as-you-go"}
-				</p>
-				<p
-					className={"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames}
-				>
-					{planSummary}
-				</p>
-				{planDetails?.benefitDescriptions.length ? (
-					<p
-						className={
-							"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						{planDetails.benefitDescriptions.join(" · ")}
-					</p>
-				) : null}
-				<ul className={"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames}>
-					<li
-						className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
-					>
-						Billed {intervalLabel} in {currencyLabel}
-					</li>
-					{meterName ? (
-						<li
+					{subscriptionRenewalLine ? (
+						<p
 							className={
-								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+								"MainAppAccountManagementBilling-active-plan-renewal" satisfies MainAppAccountManagementBilling_ClassNames
 							}
 						>
-							Meter: {meterName}
-						</li>
+							{subscriptionRenewalLine}
+						</p>
 					) : null}
-					<li
-						className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+					{subscriptionStartedLine ? (
+						<p
+							className={
+								"MainAppAccountManagementBilling-active-plan-started" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+						>
+							{subscriptionStartedLine}
+						</p>
+					) : null}
+					<div
+						className={
+							"MainAppAccountManagementBilling-active-plan-details" satisfies MainAppAccountManagementBilling_ClassNames
+						}
 					>
-						{isMetered
-							? formattedUnitPrice
-								? `Metered unit price: ${formattedUnitPrice} per usage unit`
-								: "Usage is billed from metered units"
-							: "Pricing follows the product you choose at checkout"}
-					</li>
-					<li
-						className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+						<p
+							className={
+								"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+						>
+							{planSummary}
+						</p>
+						{planDetails?.benefitDescriptions.length ? (
+							<p
+								className={
+									"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
+								}
+							>
+								{planDetails.benefitDescriptions.join(" · ")}
+							</p>
+						) : null}
+						<ul
+							className={
+								"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+						>
+							<li
+								className={
+									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+								}
+							>
+								Billed {intervalLabel} in {currencyLabel}
+							</li>
+							{meterName ? (
+								<li
+									className={
+										"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+									}
+								>
+									Meter: {meterName}
+								</li>
+							) : null}
+							<li
+								className={
+									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+								}
+							>
+								{isMetered
+									? formattedUnitPrice
+										? `Metered unit price: ${formattedUnitPrice} per usage unit`
+										: "Usage is billed from metered units"
+									: "Pricing follows the product you choose at checkout"}
+							</li>
+							<li
+								className={
+									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+								}
+							>
+								{includedUnits != null
+									? `Included credits: ${includedUnits} units`
+									: hasIncludedMeterCredits
+										? "Includes meter credits before paid usage applies"
+										: "No included credits are configured on this plan"}
+							</li>
+						</ul>
+					</div>
+				</div>
+			) : (
+				<div className={"MainAppAccountManagementBilling-plan" satisfies MainAppAccountManagementBilling_ClassNames}>
+					<p className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}>
+						{checkoutProduct?.name ?? "Pay-as-you-go"}
+					</p>
+					<p
+						className={"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames}
 					>
-						{includedUnits != null
-							? `Included credits: ${includedUnits} units`
-							: hasIncludedMeterCredits
-								? "Includes meter credits before paid usage applies"
-								: "No included credits are configured on this plan"}
-					</li>
-				</ul>
-			</div>
+						{planSummary}
+					</p>
+					{planDetails?.benefitDescriptions.length ? (
+						<p
+							className={
+								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+						>
+							{planDetails.benefitDescriptions.join(" · ")}
+						</p>
+					) : null}
+					<ul className={"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames}>
+						<li
+							className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+						>
+							Billed {intervalLabel} in {currencyLabel}
+						</li>
+						{meterName ? (
+							<li
+								className={
+									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+								}
+							>
+								Meter: {meterName}
+							</li>
+						) : null}
+						<li
+							className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+						>
+							{isMetered
+								? formattedUnitPrice
+									? `Metered unit price: ${formattedUnitPrice} per usage unit`
+									: "Usage is billed from metered units"
+								: "Pricing follows the product you choose at checkout"}
+						</li>
+						<li
+							className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+						>
+							{includedUnits != null
+								? `Included credits: ${includedUnits} units`
+								: hasIncludedMeterCredits
+									? "Includes meter credits before paid usage applies"
+									: "No included credits are configured on this plan"}
+						</li>
+					</ul>
+				</div>
+			)}
 			<div className={"MainAppAccountManagementBilling-body" satisfies MainAppAccountManagementBilling_ClassNames}>
 				<div className={"MainAppAccountManagementBilling-actions" satisfies MainAppAccountManagementBilling_ClassNames}>
 					{checkoutReady ? (
@@ -884,17 +972,21 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 								"MainAppAccountManagementBilling-checkout" satisfies MainAppAccountManagementBilling_ClassNames
 							}
 						>
-							Subscribe
+							Checkout
 						</CheckoutLink>
 					) : null}
-					<MyButton
-						type="button"
-						variant="outline"
-						className={"MainAppAccountManagementBilling-portal" satisfies MainAppAccountManagementBilling_ClassNames}
-						onClick={handleOpenCustomerPortal}
-					>
-						Open customer portal
-					</MyButton>
+					{subscription.state !== "none" ? (
+						<MyButton
+							type="button"
+							variant="outline"
+							className={
+								"MainAppAccountManagementBilling-manage-subscription" satisfies MainAppAccountManagementBilling_ClassNames
+							}
+							onClick={handleManageSubscription}
+						>
+							Manage subscription
+						</MyButton>
+					) : null}
 				</div>
 			</div>
 		</div>

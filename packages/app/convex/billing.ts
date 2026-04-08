@@ -574,11 +574,6 @@ export async function billing_enqueue_page_save_event(
 			source: "page-save",
 		},
 	});
-	// Skip `runAfter` in Vitest: convex-test schedules via setTimeout and completing that job can error on `_scheduled_functions` writes while draining still works via `t.action`.
-	if (process.env.BILLING_SKIP_SCHEDULED_DRAIN?.trim() === "1") {
-		return;
-	}
-	await ctx.scheduler.runAfter(0, internal.billing.drain_outbox, {});
 }
 
 export const list_pending_outbox_rows = internalQuery({
