@@ -447,9 +447,13 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 
 			const metadata = options.requestMetadata as ChatRequestMetadata;
 
+			const modelForRequest: ai_chat_MainModelId = ai_chat_is_main_model_id(selectedModelId)
+				? selectedModelId
+				: ai_chat_DEFAULT_MAIN_MODEL_ID;
+
 			const requestBody = {
 				...options.body,
-				model: selectedModelId,
+				model: modelForRequest,
 				threadId: metadata.isOptimistic ? undefined : options.id,
 				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
 

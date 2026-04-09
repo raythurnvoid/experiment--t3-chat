@@ -1,9 +1,5 @@
 import { omit_properties, should_never_happen } from "../shared/shared-utils.ts";
-import {
-	ai_chat_DEFAULT_MAIN_MODEL_ID,
-	ai_chat_MAIN_MODEL_IDS,
-	type ai_chat_AiSdk5UiMessage,
-} from "../shared/ai-chat.ts";
+import { ai_chat_MAIN_MODEL_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
@@ -641,9 +637,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 							 */
 							messages: z.array(z.any()),
 							/**
-							 * Optional server-allowlisted model.
+							 * Server-allowlisted model.
 							 */
-							model: z.enum(ai_chat_MAIN_MODEL_IDS).optional(),
+							model: z.enum(ai_chat_MAIN_MODEL_IDS),
 							trigger: z.enum(["submit-message", "regenerate-message"]),
 							/**
 							 * The id of the message to which the new message should be appended.
@@ -761,8 +757,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								const now = Date.now();
-
-								const selectedModelId = body.model ?? ai_chat_DEFAULT_MAIN_MODEL_ID;
 
 								let threadId = null;
 								let createdThreadId = null;
@@ -964,23 +958,14 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										});
 
-										const providerOptions =
-											selectedModelId === "gpt-5-nano"
-												? {
-														openai: {
-															reasoningEffort: "low" as const,
-														},
-													}
-												: undefined;
 										const activeTools = Object.keys(tools) as Array<keyof typeof tools>;
 
 										const result1 = streamText({
-											model: openai(selectedModelId),
+											model: openai(body.model),
 											system: ai_chat_SYSTEM_PROMPT,
 											messages: modelMessages,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,
-											...(providerOptions ? { providerOptions } : {}),
 											activeTools,
 											experimental_repairToolCall: async (failed) => {
 												const lowerToolName = failed.toolCall.toolName.toLowerCase();

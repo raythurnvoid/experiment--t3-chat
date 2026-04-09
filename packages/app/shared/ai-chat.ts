@@ -23,10 +23,23 @@ export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
 export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
-export const ai_chat_MAIN_MODEL_IDS = ["gpt-5-nano", "gpt-4.1-mini"] as const;
+export const ai_chat_MAIN_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
 export type ai_chat_MainModelId = (typeof ai_chat_MAIN_MODEL_IDS)[number];
 
-export const ai_chat_DEFAULT_MAIN_MODEL_ID = "gpt-5-nano" as const satisfies ai_chat_MainModelId;
+type AiChatMainModelMetadata = {
+	label: string;
+};
+
+export const ai_chat_DEFAULT_MAIN_MODEL_ID = "gpt-5.4-nano" as const satisfies ai_chat_MainModelId;
+
+export const ai_chat_MAIN_MODEL_METADATA = {
+	"gpt-5.4-nano": {
+		label: "GPT-5.4 Nano",
+	},
+	"gpt-5.4-mini": {
+		label: "GPT-5.4 Mini",
+	},
+} as const satisfies Record<ai_chat_MainModelId, AiChatMainModelMetadata>;
 
 export type ai_chat_AiSdk5UiTools = {
 	weather: {

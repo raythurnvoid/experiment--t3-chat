@@ -49,7 +49,7 @@ import {
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
-import type { ai_chat_MainModelId } from "@/lib/ai-chat.ts";
+import { ai_chat_MAIN_MODEL_METADATA, type ai_chat_MainModelId } from "@/lib/ai-chat.ts";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"
@@ -125,9 +125,13 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 
 	const [modelFilter, setModelFilter] = useState("");
 	const modelFilterValue = modelFilter.trim().toLowerCase();
+	const selectedModelLabel = ai_chat_MAIN_MODEL_METADATA[selectedModelId].label;
 	const filteredModels = modelFilterValue
 		? modelOptions.filter((modelItem) => {
-				return modelItem.toLowerCase().includes(modelFilterValue);
+				const modelLabel = ai_chat_MAIN_MODEL_METADATA[modelItem].label;
+				return (
+					modelItem.toLowerCase().includes(modelFilterValue) || modelLabel.toLowerCase().includes(modelFilterValue)
+				);
 			})
 		: modelOptions;
 
@@ -427,7 +431,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				>
 					<MySearchSelectTrigger>
 						<MyButton type="button" variant="outline">
-							{selectedModelId}
+							{selectedModelLabel}
 							<MySelectOpenIndicator />
 						</MyButton>
 					</MySearchSelectTrigger>
@@ -440,9 +444,10 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 								) : (
 									<MySearchSelectList>
 										{filteredModels.map((modelItem) => {
+											const modelLabel = ai_chat_MAIN_MODEL_METADATA[modelItem].label;
 											return (
 												<MySearchSelectItem key={modelItem} value={modelItem}>
-													{modelItem}
+													{modelLabel}
 													{selectedModelId === modelItem && <MySelectItemIndicator />}
 												</MySearchSelectItem>
 											);
