@@ -401,6 +401,9 @@ export const get_tree_items_list = query({
 	returns: get_tree_items_list_validator,
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -462,6 +465,9 @@ async function do_create_page(
 	},
 ) {
 	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!user) {
+		throw new ConvexError("Unauthenticated");
+	}
 	const now = Date.now();
 	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
 		workspaceId: args.workspaceId,
@@ -604,6 +610,9 @@ export const create_page = mutation({
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -640,6 +649,9 @@ export const create_page_quick = mutation({
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -709,6 +721,9 @@ export const rename_page = mutation({
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -783,6 +798,9 @@ export const move_pages = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -878,6 +896,9 @@ export const archive_pages = mutation({
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -971,6 +992,9 @@ export const unarchive_pages = mutation({
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -1265,6 +1289,9 @@ export const get = query({
 	returns: v.union(doc(app_convex_schema, "pages"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -1301,6 +1328,9 @@ export const get_page_by_path = query({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -1542,6 +1572,9 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const convexId = await resolve_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
@@ -1618,6 +1651,9 @@ export const get_plain_text = query({
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -1673,6 +1709,9 @@ export const get_page_last_yjs_sequence = query({
 	returns: v.union(v.object({ lastSequence: v.number() }), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -1933,6 +1972,9 @@ export const get_home_page = query({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -1963,6 +2005,9 @@ export const create_home_page = mutation({
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2017,6 +2062,9 @@ export const get_page_snapshots_list = query({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2057,6 +2105,9 @@ export const get_page_snapshot = query({
 	returns: v.union(doc(app_convex_schema, "pages_snapshots"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2127,6 +2178,9 @@ export const get_page_snapshot_content = query({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2152,6 +2206,9 @@ export const archive_snapshot = mutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2181,6 +2238,9 @@ export const unarchive_snapshot = mutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2322,6 +2382,9 @@ export const yjs_get_doc_last_snapshot = query({
 	returns: v.union(doc(app_convex_schema, "pages_yjs_snapshots"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2586,6 +2649,9 @@ export const yjs_push_update = mutation({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2637,6 +2703,9 @@ export const yjs_get_incremental_updates = query({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -2699,6 +2768,9 @@ export const restore_snapshot = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,

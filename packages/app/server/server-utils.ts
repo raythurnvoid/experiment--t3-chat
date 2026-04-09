@@ -15,43 +15,54 @@ if (!ALLOWED_ORIGINS) {
 type ConvexCtx = GenericMutationCtx<any> | GenericQueryCtx<any> | GenericActionCtx<any>;
 
 /**
- * Resolve the current Convex `users` id and display name from `ctx.auth` (Clerk or anonymous JWT).
+ * Resolve the current auth state from `ctx.auth.getUserIdentity()`.
+ *
+ * - Return `null` when Convex reports no identity or when `getUserIdentity()` throws in an HTTP action.
+ * - Return `kind: "anonymous"` for authenticated anonymous JWTs. `id` and `subject` are both the Convex
+ *   `users` id in that branch.
+ * - Return `kind: "signed_in"` for authenticated Clerk users only when the JWT includes a valid `external_id`.
+ *   `subject` is the Clerk user id and `id` is the Convex `users` id from `external_id`.
  *
  * Does not load the `users` table or assert the row exists: a verified token is treated as enough to trust
- * `subject` / `external_id` as the user id. If a flow must reject soft-deleted accounts or missing profiles,
- * query `users` in that handler and enforce `deletedAt` / presence there.
+ * `subject` / `external_id`. If a signed-in token is missing `external_id`, treat it as unauthenticated. If a
+ * flow must reject soft-deleted accounts or missing profiles, query `users` in that handler and enforce
+ * `deletedAt` / presence there.
  */
 export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCtx) {
 	const userIdentityResult = await Result_try_promise(ctx.auth.getUserIdentity());
-	if (userIdentityResult._nay) {
-		throw new Error("Failed to get user identity", { cause: userIdentityResult._nay });
+	if (userIdentityResult._nay || !userIdentityResult._yay) {
+		return null;
 	}
 
-	if (!userIdentityResult._yay) {
-		throw new Error("Unauthenticated");
-	}
+	const identity = userIdentityResult._yay;
 
-	const isAnonymous = userIdentityResult._yay.issuer === process.env.VITE_CONVEX_HTTP_URL;
+	const isAnonymous = identity.issuer === process.env.VITE_CONVEX_HTTP_URL;
 
-	let userId;
 	if (isAnonymous) {
-		// For anonymous users, the subject is the Convex user id
-		userId = userIdentityResult._yay.subject as Id<"users">;
-	} else {
-		// For Clerk users, the external_id is the Clerk user id
-		userId = userIdentityResult._yay["external_id"] as Id<"users">;
-		if (!userId) {
-			throw new Error("Missing `external_id` in signed-in user JWT");
-		}
+		const userId = identity.subject as Id<"users">;
+		return {
+			kind: "anonymous",
+			isAnonymous: true,
+			id: userId,
+			subject: userId,
+			name: users_create_anonymouse_user_display_name(userId),
+			email: null,
+		} as const;
+	}
+
+	const userId = (identity["external_id"] as Id<"users"> | undefined) ?? null;
+	if (!userId) {
+		return null;
 	}
 
 	return {
-		isAnonymous,
+		kind: "signed_in",
+		isAnonymous: false,
 		id: userId,
-		name: isAnonymous
-			? users_create_anonymouse_user_display_name(userId)
-			: userIdentityResult._yay.name || users_create_fallback_display_name(userId),
-	};
+		subject: identity.subject,
+		name: identity.name || identity.nickname || users_create_fallback_display_name(userId ?? identity.subject),
+		email: identity.email ?? null,
+	} as const;
 }
 
 export function server_path_normalize(path: string): string {

@@ -8,4 +8,5 @@ packages:
   - "packages/app/vendor/tiptap/packages/*"
   - "packages/app/vendor/tiptap/packages-deprecated/*"
   - "packages/app/vendor/mastra/packages/rag"
+  - "packages/app/vendor/polar"
   - "packages/app/vendor/presence"

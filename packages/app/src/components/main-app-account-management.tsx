@@ -1,7 +1,7 @@
 import "./main-app-account-management.css";
 
 import { CheckoutLink } from "@convex-dev/polar/react";
-import { PRODUCTS } from "../../shared/billing_catalog.ts";
+import { PRODUCTS } from "../../shared/billing.ts";
 import { useClerk, useUser } from "@clerk/clerk-react";
 import { useAction, useQuery } from "convex/react";
 import { CreditCard, Mail, RefreshCw, Shield, User, UserRound } from "lucide-react";
@@ -24,6 +24,7 @@ import {
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab, MyTabsTabSurface } from "@/components/my-tabs.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { BillingPlanDetails, BillingSignedInOverview, BillingUsageOverview } from "../../convex/billing.js";
 import { users_create_anonymouse_user_display_name } from "../../shared/users.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import { compute_fallback_user_name } from "@/lib/utils.ts";
@@ -85,6 +86,34 @@ function main_app_account_management_billing_format_iso_date(iso: string) {
 		return iso;
 	}
 	return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(ms);
+}
+
+function main_app_account_management_billing_format_minor_currency(amountCents: number, currency: string) {
+	const code = currency.trim().toUpperCase();
+	if (!code) {
+		return String(amountCents / 100);
+	}
+	return new Intl.NumberFormat(undefined, {
+		style: "currency",
+		currency: code,
+	}).format(amountCents / 100);
+}
+
+function main_app_account_management_billing_format_major_currency(amountMajor: number, currency: string) {
+	const code = currency.trim().toUpperCase();
+	if (!code) {
+		return String(amountMajor);
+	}
+	return new Intl.NumberFormat(undefined, {
+		style: "currency",
+		currency: code,
+	}).format(amountMajor);
+}
+
+function main_app_account_management_billing_overview_catalog_is_ready(
+	overview: BillingSignedInOverview,
+): overview is Extract<BillingSignedInOverview, { catalog: { setup: "ready" } }> {
+	return overview.catalog.setup === "ready";
 }
 
 function main_app_account_management_billing_subscription_status_label(
@@ -524,6 +553,456 @@ const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementS
 });
 // #endregion security
 
+// #region billing active plan skeleton
+type MainAppAccountManagementBillingActivePlanSkeleton_ClassNames =
+	| "MainAppAccountManagementBillingActivePlanSkeleton"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-badge"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-title"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-usage"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-renewal"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-started"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-details"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-covers"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-list"
+	| "MainAppAccountManagementBillingActivePlanSkeleton-list-item";
+
+const MainAppAccountManagementBillingActivePlanSkeleton = memo(
+	function MainAppAccountManagementBillingActivePlanSkeleton() {
+		return (
+			<div
+				className={
+					"MainAppAccountManagementBillingActivePlanSkeleton" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+				}
+				aria-busy="true"
+				aria-label="Loading active plan"
+			>
+				<div
+					className={
+						"MainAppAccountManagementBillingActivePlanSkeleton-badge" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+					}
+					aria-hidden
+				/>
+				<div
+					className={
+						"MainAppAccountManagementBillingActivePlanSkeleton-title" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+					}
+					aria-hidden
+				/>
+				<div
+					className={
+						"MainAppAccountManagementBillingActivePlanSkeleton-usage" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+					}
+					aria-hidden
+				/>
+				<div
+					className={
+						"MainAppAccountManagementBillingActivePlanSkeleton-renewal" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+					}
+					aria-hidden
+				/>
+				<div
+					className={
+						"MainAppAccountManagementBillingActivePlanSkeleton-started" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+					}
+					aria-hidden
+				/>
+				<div
+					className={
+						"MainAppAccountManagementBillingActivePlanSkeleton-details" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+					}
+					aria-hidden
+				>
+					<div
+						className={
+							"MainAppAccountManagementBillingActivePlanSkeleton-covers" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+						}
+					/>
+					<ul
+						className={
+							"MainAppAccountManagementBillingActivePlanSkeleton-list" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+						}
+					>
+						<li
+							className={
+								"MainAppAccountManagementBillingActivePlanSkeleton-list-item" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+							}
+						/>
+						<li
+							className={
+								"MainAppAccountManagementBillingActivePlanSkeleton-list-item" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+							}
+						/>
+						<li
+							className={
+								"MainAppAccountManagementBillingActivePlanSkeleton-list-item" satisfies MainAppAccountManagementBillingActivePlanSkeleton_ClassNames
+							}
+						/>
+					</ul>
+				</div>
+			</div>
+		);
+	},
+);
+// #endregion billing active plan skeleton
+
+// #region billing active plan error
+type MainAppAccountManagementBillingActivePlanError_ClassNames =
+	| "MainAppAccountManagementBillingActivePlanError"
+	| "MainAppAccountManagementBillingActivePlanError-message"
+	| "MainAppAccountManagementBillingActivePlanError-detail";
+
+type MainAppAccountManagementBillingActivePlanError_Props = {
+	message: string;
+	detail?: string | null;
+};
+
+const MainAppAccountManagementBillingActivePlanError = memo(function MainAppAccountManagementBillingActivePlanError(
+	props: MainAppAccountManagementBillingActivePlanError_Props,
+) {
+	const { message, detail } = props;
+
+	return (
+		<div
+			className={
+				"MainAppAccountManagementBillingActivePlanError" satisfies MainAppAccountManagementBillingActivePlanError_ClassNames
+			}
+			role="alert"
+		>
+			<p
+				className={
+					"MainAppAccountManagementBillingActivePlanError-message" satisfies MainAppAccountManagementBillingActivePlanError_ClassNames
+				}
+			>
+				{message}
+			</p>
+			{detail ? (
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlanError-detail" satisfies MainAppAccountManagementBillingActivePlanError_ClassNames
+					}
+				>
+					{detail}
+				</p>
+			) : null}
+		</div>
+	);
+});
+// #endregion billing active plan error
+
+// #region billing active plan
+type MainAppAccountManagementBillingActivePlanUsage_ClassNames =
+	| "MainAppAccountManagementBillingActivePlanUsage"
+	| "MainAppAccountManagementBillingActivePlanUsage-line"
+	| "MainAppAccountManagementBillingActivePlanUsage-sep"
+	| "MainAppAccountManagementBillingActivePlanUsage-label"
+	| "MainAppAccountManagementBillingActivePlanUsage-value"
+	| "MainAppAccountManagementBillingActivePlanUsage-meta"
+	| "MainAppAccountManagementBillingActivePlanUsage-error"
+	| "MainAppAccountManagementBillingActivePlanUsage-warning";
+
+type MainAppAccountManagementBillingActivePlanUsage_MeteredLine =
+	| { kind: "loading" }
+	| { kind: "error"; message: string; at: number }
+	| {
+			kind: "ready";
+			due: string;
+			creditsLeft: string;
+			lastError: string | null;
+	  };
+
+type MainAppAccountManagementBillingActivePlanUsage_Props = {
+	meteredLine: MainAppAccountManagementBillingActivePlanUsage_MeteredLine | null;
+};
+
+const MainAppAccountManagementBillingActivePlanUsage = memo(function MainAppAccountManagementBillingActivePlanUsage(
+	props: MainAppAccountManagementBillingActivePlanUsage_Props,
+) {
+	const { meteredLine } = props;
+
+	if (!meteredLine) {
+		return null;
+	}
+
+	if (meteredLine.kind === "loading") {
+		return (
+			<div
+				className={
+					"MainAppAccountManagementBillingActivePlanUsage" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+				}
+			>
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-meta" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					Syncing usage…
+				</p>
+			</div>
+		);
+	}
+
+	if (meteredLine.kind === "error") {
+		return (
+			<div
+				className={
+					"MainAppAccountManagementBillingActivePlanUsage" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+				}
+			>
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-error" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					Usage could not be loaded: {meteredLine.message} ({format_relative_time(meteredLine.at)})
+				</p>
+			</div>
+		);
+	}
+
+	return (
+		<div
+			className={
+				"MainAppAccountManagementBillingActivePlanUsage" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+			}
+		>
+			<p
+				className={
+					"MainAppAccountManagementBillingActivePlanUsage-line" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+				}
+			>
+				<span
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-label" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					Due
+				</span>{" "}
+				<span
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-value" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					{meteredLine.due}
+				</span>
+				<span
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-sep" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					{" "}
+					·{" "}
+				</span>
+				<span
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-label" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					Remaining credits
+				</span>{" "}
+				<span
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-value" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					{meteredLine.creditsLeft}
+				</span>
+			</p>
+			{meteredLine.lastError ? (
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlanUsage-warning" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
+					}
+				>
+					Usage sync warning: {meteredLine.lastError}
+				</p>
+			) : null}
+		</div>
+	);
+});
+
+type MainAppAccountManagementBillingActivePlan_ClassNames =
+	| "MainAppAccountManagementBillingActivePlan"
+	| "MainAppAccountManagementBillingActivePlan-badge"
+	| "MainAppAccountManagementBillingActivePlan-title"
+	| "MainAppAccountManagementBillingActivePlan-renewal"
+	| "MainAppAccountManagementBillingActivePlan-started"
+	| "MainAppAccountManagementBillingActivePlan-details"
+	| "MainAppAccountManagementBillingActivePlan-covers"
+	| "MainAppAccountManagementBillingActivePlan-description-secondary"
+	| "MainAppAccountManagementBillingActivePlan-list"
+	| "MainAppAccountManagementBillingActivePlan-list-item";
+
+type MainAppAccountManagementBillingActivePlan_Subscription = Exclude<
+	BillingSignedInOverview["subscription"],
+	{ state: "none" | "ambiguous" }
+>;
+
+type MainAppAccountManagementBillingActivePlan_Props = {
+	planDetails: BillingPlanDetails;
+	subscription: MainAppAccountManagementBillingActivePlan_Subscription;
+	usage: BillingUsageOverview;
+};
+
+const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountManagementBillingActivePlan(
+	props: MainAppAccountManagementBillingActivePlan_Props,
+) {
+	const { planDetails, subscription, usage } = props;
+
+	const currencyLabel = (planDetails.priceCurrency ?? "eur").toUpperCase();
+	const intervalLabel = main_app_account_management_billing_interval_label(planDetails.recurringInterval);
+	const isMetered = planDetails.isMetered;
+	const meterName = planDetails.meterName;
+	const includedUnits = planDetails.includedMeterCreditsUnits;
+	const hasIncludedMeterCredits = planDetails.hasMeterCreditBenefit;
+	const unitAmountNumber = planDetails.unitAmount;
+	const formattedUnitPrice =
+		planDetails.unitAmount != null && planDetails.priceCurrency != null
+			? new Intl.NumberFormat(undefined, {
+					style: "currency",
+					currency: planDetails.priceCurrency.toUpperCase(),
+				}).format(planDetails.unitAmount)
+			: null;
+	const planSummary = ((/* iife */) => {
+		const description = planDetails.description?.trim();
+		if (description) {
+			return description;
+		}
+		const benefitDescription = planDetails.benefitDescriptions[0]?.trim();
+		if (benefitDescription) {
+			return benefitDescription;
+		}
+		return `A flexible ${intervalLabel} plan with metered usage in ${currencyLabel} and included credits.`;
+	})();
+
+	const subscriptionRenewalLine = main_app_account_management_billing_subscription_renewal_line(subscription);
+	const subscriptionStartedLine = subscription.startedAt
+		? `Started ${main_app_account_management_billing_format_iso_date(subscription.startedAt)}`
+		: null;
+
+	const showMeteredSummaryInActivePlan = planDetails.isMetered;
+
+	const meteredDueAndCreditsLine =
+		showMeteredSummaryInActivePlan && usage.state !== "unavailable"
+			? usage.state === "loading"
+				? { kind: "loading" as const }
+				: usage.state === "error"
+					? { kind: "error" as const, message: usage.message, at: usage.at }
+					: {
+							kind: "ready" as const,
+							due: main_app_account_management_billing_format_minor_currency(usage.amountDueCents, usage.currency),
+							creditsLeft:
+								unitAmountNumber != null
+									? main_app_account_management_billing_format_major_currency(
+											Math.max(0, usage.balance) * unitAmountNumber,
+											usage.currency,
+										)
+									: `${usage.balance} units`,
+							lastError: usage.lastError,
+						}
+			: null;
+
+	return (
+		<div
+			className={
+				"MainAppAccountManagementBillingActivePlan" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+			}
+		>
+			<div
+				className={
+					"MainAppAccountManagementBillingActivePlan-badge" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+				}
+			>
+				Active plan
+			</div>
+			<div
+				className={
+					"MainAppAccountManagementBillingActivePlan-title" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+				}
+			>
+				{subscription.productName}
+			</div>
+			<MainAppAccountManagementBillingActivePlanUsage meteredLine={meteredDueAndCreditsLine} />
+			{subscriptionRenewalLine ? (
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlan-renewal" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+					}
+				>
+					{subscriptionRenewalLine}
+				</p>
+			) : null}
+			{subscriptionStartedLine ? (
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlan-started" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+					}
+				>
+					{subscriptionStartedLine}
+				</p>
+			) : null}
+			<div
+				className={
+					"MainAppAccountManagementBillingActivePlan-details" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+				}
+			>
+				<p
+					className={
+						"MainAppAccountManagementBillingActivePlan-covers" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+					}
+				>
+					{planSummary}
+				</p>
+				{planDetails.benefitDescriptions.length ? (
+					<p
+						className={
+							"MainAppAccountManagementBillingActivePlan-description-secondary" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+						}
+					>
+						{planDetails.benefitDescriptions.join(" · ")}
+					</p>
+				) : null}
+				<ul
+					className={
+						"MainAppAccountManagementBillingActivePlan-list" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+					}
+				>
+					<li
+						className={
+							"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+						}
+					>
+						Billed {intervalLabel} in {currencyLabel}
+						{meterName ? ` · ${meterName}` : ""}
+					</li>
+					<li
+						className={
+							"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+						}
+					>
+						{isMetered
+							? formattedUnitPrice
+								? `${formattedUnitPrice} per usage unit`
+								: "Usage is billed from metered units"
+							: "Pricing follows the product you choose at checkout"}
+					</li>
+					<li
+						className={
+							"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+						}
+					>
+						{includedUnits != null
+							? `Included credits: ${includedUnits} units`
+							: hasIncludedMeterCredits
+								? "Includes meter credits before paid usage applies"
+								: "No included credits are configured on this plan"}
+					</li>
+				</ul>
+			</div>
+		</div>
+	);
+});
+// #endregion billing active plan
+
 // #region billing
 // Keep CheckoutLink's camelCase prop while the Convex export stays snake_case.
 const main_app_account_management_billing_checkout_api = {
@@ -546,12 +1025,6 @@ type MainAppAccountManagementBilling_ClassNames =
 	| "MainAppAccountManagementBilling-actions"
 	| "MainAppAccountManagementBilling-checkout"
 	| "MainAppAccountManagementBilling-manage-subscription"
-	| "MainAppAccountManagementBilling-active-plan"
-	| "MainAppAccountManagementBilling-active-plan-badge"
-	| "MainAppAccountManagementBilling-active-plan-title"
-	| "MainAppAccountManagementBilling-active-plan-renewal"
-	| "MainAppAccountManagementBilling-active-plan-started"
-	| "MainAppAccountManagementBilling-active-plan-details"
 	| "MainAppAccountManagementBilling-warning";
 
 type MainAppAccountManagementBilling_Props = {
@@ -614,9 +1087,21 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 	if (billingOverview === undefined) {
 		return (
 			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
-				<div className={"MainAppAccountManagementBilling-note" satisfies MainAppAccountManagementBilling_ClassNames}>
-					Loading your billing details…
-				</div>
+				<header
+					className={"MainAppAccountManagementBilling-header" satisfies MainAppAccountManagementBilling_ClassNames}
+				>
+					<h2 className={"MainAppAccountManagementBilling-title" satisfies MainAppAccountManagementBilling_ClassNames}>
+						Billing
+					</h2>
+					<p
+						className={
+							"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames
+						}
+					>
+						Loading your billing details…
+					</p>
+				</header>
+				<MainAppAccountManagementBillingActivePlanSkeleton />
 			</div>
 		);
 	}
@@ -642,28 +1127,17 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 		);
 	}
 
-	const { catalog, planDetails, subscription, warnings } = billingOverview;
-	const catalogReady = catalog.setup === "ready";
+	const catalogReady = billingOverview.catalog.setup === "ready";
 	const checkoutReady = catalogReady && checkoutProductIds.length > 0;
 
-	if (!catalogReady) {
+	if (!main_app_account_management_billing_overview_catalog_is_ready(billingOverview)) {
+		const { catalog } = billingOverview;
 		const setup = catalog.setup;
-		const primaryMessage =
-			setup === "missing_prefix"
-				? "Billing isn’t ready yet."
-				: setup === "duplicate_product_name"
-					? "Billing needs attention."
-					: setup === "product_not_in_catalog"
-						? "Billing isn’t ready yet."
-						: "Billing setup is incomplete.";
+		const primaryMessage = setup === "duplicate_product_name" ? "Billing needs attention." : "Billing isn’t ready yet.";
 		const secondaryMessage =
-			setup === "missing_prefix"
-				? "Set POLAR_PRODUCTS_PREFIX so the app can find the pay-as-you-go product in the synced Polar catalog."
-				: setup === "duplicate_product_name"
-					? `Keep exactly one active product named "${catalog.expectedProductName}" in the synced Polar catalog.`
-					: setup === "product_not_in_catalog"
-						? `Create the pay-as-you-go product in Polar, then sync the catalog so Convex can see "${catalog.expectedProductName}".`
-						: "Set the Polar product prefix, sync the catalog, and confirm the checkout product is available.";
+			setup === "duplicate_product_name"
+				? `Keep exactly one active product named "${catalog.expectedProductName}" in the synced Polar catalog.`
+				: `Create the pay-as-you-go product in Polar, then sync the catalog so Convex can see "${catalog.expectedProductName}".`;
 		return (
 			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
 				<header
@@ -686,61 +1160,45 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 					>
 						{secondaryMessage}
 					</p>
-					{warnings.length > 0 ? (
-						<p
-							className={
-								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							{warnings.join(" ")}
-						</p>
-					) : (
-						<p
-							className={
-								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							Billing products are not configured for this deployment yet. Sync the Polar catalog and confirm the
-							checkout product is available before users can subscribe.
-						</p>
-					)}
+					<p
+						className={
+							"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
+						}
+					>
+						Billing products are not configured for this deployment yet. Sync the Polar catalog and confirm the checkout
+						product is available before users can subscribe.
+					</p>
 				</header>
 			</div>
 		);
 	}
 
+	const { catalog, planDetails, subscription, usage } = billingOverview;
+
 	const checkoutProduct = catalog.payAsYouGo;
 	const primaryPrice =
 		checkoutProduct?.prices?.find((priceRow) => !priceRow.isArchived) ?? checkoutProduct?.prices?.[0];
-	const currencyLabel = (planDetails?.priceCurrency ?? primaryPrice?.priceCurrency ?? "eur").toUpperCase();
+	const currencyLabel = (planDetails.priceCurrency ?? primaryPrice?.priceCurrency ?? "eur").toUpperCase();
 	const intervalLabel = main_app_account_management_billing_interval_label(
-		planDetails?.recurringInterval ?? primaryPrice?.recurringInterval ?? checkoutProduct?.recurringInterval ?? null,
+		planDetails.recurringInterval ?? primaryPrice?.recurringInterval ?? checkoutProduct?.recurringInterval ?? null,
 	);
-	const isMetered = planDetails?.isMetered ?? primaryPrice?.amountType === "metered_unit";
-	const meterName = planDetails?.meterName ?? primaryPrice?.meter?.name ?? null;
-	const includedUnits = planDetails?.includedMeterCreditsUnits ?? null;
-	const hasIncludedMeterCredits = planDetails?.hasMeterCreditBenefit ?? false;
-	const unitAmountNumber = planDetails?.unitAmount ?? null;
+	const isMetered = planDetails.isMetered || primaryPrice?.amountType === "metered_unit";
+	const meterName = planDetails.meterName ?? primaryPrice?.meter?.name ?? null;
+	const includedUnits = planDetails.includedMeterCreditsUnits;
+	const hasIncludedMeterCredits = planDetails.hasMeterCreditBenefit;
 	const formattedUnitPrice =
-		unitAmountNumber != null && !Number.isNaN(unitAmountNumber) && planDetails?.priceCurrency
+		planDetails.unitAmount != null && planDetails.priceCurrency != null
 			? new Intl.NumberFormat(undefined, {
 					style: "currency",
 					currency: planDetails.priceCurrency.toUpperCase(),
-				}).format(unitAmountNumber)
-			: primaryPrice?.priceCurrency &&
-				  typeof primaryPrice.unitAmount === "string" &&
-				  Number.isFinite(Number(primaryPrice.unitAmount))
-				? new Intl.NumberFormat(undefined, {
-						style: "currency",
-						currency: primaryPrice.priceCurrency.toUpperCase(),
-					}).format(Number(primaryPrice.unitAmount))
-				: null;
+				}).format(planDetails.unitAmount)
+			: null;
 	const planSummary = ((/* iife */) => {
-		const description = planDetails?.description?.trim();
+		const description = planDetails.description?.trim();
 		if (description) {
 			return description;
 		}
-		const benefitDescription = planDetails?.benefitDescriptions[0]?.trim();
+		const benefitDescription = planDetails.benefitDescriptions[0]?.trim();
 		if (benefitDescription) {
 			return benefitDescription;
 		}
@@ -770,152 +1228,46 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 		subscriptionStatusBadge != null &&
 		"productName" in subscription;
 
-	const subscriptionRenewalLine = showActivePlanCard
-		? main_app_account_management_billing_subscription_renewal_line(subscription)
-		: null;
-	const subscriptionStartedLine =
-		showActivePlanCard && subscription.startedAt
-			? `Started ${main_app_account_management_billing_format_iso_date(subscription.startedAt)}`
-			: null;
-
 	return (
 		<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
 			<header className={"MainAppAccountManagementBilling-header" satisfies MainAppAccountManagementBilling_ClassNames}>
 				<h2 className={"MainAppAccountManagementBilling-title" satisfies MainAppAccountManagementBilling_ClassNames}>
 					Billing
 				</h2>
-				<p className={"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames}>
+				<p
+					className={"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames}
+				>
 					{headerDescription}
 				</p>
-				{warnings.length > 0 ? (
-					<p
-						className={
-							"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						{warnings.join(" ")}
-					</p>
-				) : null}
 			</header>
 			{subscription.state === "ambiguous" ? (
-				<p className={"MainAppAccountManagementBilling-warning" satisfies MainAppAccountManagementBilling_ClassNames}>
-					Resolve duplicate active subscriptions in Polar, then refresh this page.
-				</p>
+				<MainAppAccountManagementBillingActivePlanError
+					message="Could not show your active plan."
+					detail="Resolve duplicate active subscriptions in Polar, then refresh this page."
+				/>
 			) : null}
 			{showActivePlanCard ? (
-				<div
-					className={"MainAppAccountManagementBilling-active-plan" satisfies MainAppAccountManagementBilling_ClassNames}
-				>
-					<div
-						className={
-							"MainAppAccountManagementBilling-active-plan-badge" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						Active plan
-					</div>
-					<div
-						className={
-							"MainAppAccountManagementBilling-active-plan-title" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						{subscription.productName}
-					</div>
-					{subscriptionRenewalLine ? (
-						<p
-							className={
-								"MainAppAccountManagementBilling-active-plan-renewal" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							{subscriptionRenewalLine}
-						</p>
-					) : null}
-					{subscriptionStartedLine ? (
-						<p
-							className={
-								"MainAppAccountManagementBilling-active-plan-started" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							{subscriptionStartedLine}
-						</p>
-					) : null}
-					<div
-						className={
-							"MainAppAccountManagementBilling-active-plan-details" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						<p
-							className={
-								"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							{planSummary}
-						</p>
-						{planDetails?.benefitDescriptions.length ? (
-							<p
-								className={
-									"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
-								}
-							>
-								{planDetails.benefitDescriptions.join(" · ")}
-							</p>
-						) : null}
-						<ul
-							className={
-								"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							<li
-								className={
-									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
-								}
-							>
-								Billed {intervalLabel} in {currencyLabel}
-							</li>
-							{meterName ? (
-								<li
-									className={
-										"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
-									}
-								>
-									Meter: {meterName}
-								</li>
-							) : null}
-							<li
-								className={
-									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
-								}
-							>
-								{isMetered
-									? formattedUnitPrice
-										? `Metered unit price: ${formattedUnitPrice} per usage unit`
-										: "Usage is billed from metered units"
-									: "Pricing follows the product you choose at checkout"}
-							</li>
-							<li
-								className={
-									"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
-								}
-							>
-								{includedUnits != null
-									? `Included credits: ${includedUnits} units`
-									: hasIncludedMeterCredits
-										? "Includes meter credits before paid usage applies"
-										: "No included credits are configured on this plan"}
-							</li>
-						</ul>
-					</div>
-				</div>
-			) : (
+				<MainAppAccountManagementBillingActivePlan
+					planDetails={planDetails}
+					subscription={subscription}
+					usage={usage}
+				/>
+			) : null}
+			{!showActivePlanCard ? (
 				<div className={"MainAppAccountManagementBilling-plan" satisfies MainAppAccountManagementBilling_ClassNames}>
-					<p className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}>
+					<p
+						className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}
+					>
 						{checkoutProduct?.name ?? "Pay-as-you-go"}
 					</p>
 					<p
-						className={"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames}
+						className={
+							"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames
+						}
 					>
 						{planSummary}
 					</p>
-					{planDetails?.benefitDescriptions.length ? (
+					{planDetails.benefitDescriptions.length ? (
 						<p
 							className={
 								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
@@ -924,9 +1276,13 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 							{planDetails.benefitDescriptions.join(" · ")}
 						</p>
 					) : null}
-					<ul className={"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames}>
+					<ul
+						className={"MainAppAccountManagementBilling-plan-list" satisfies MainAppAccountManagementBilling_ClassNames}
+					>
 						<li
-							className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+							className={
+								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+							}
 						>
 							Billed {intervalLabel} in {currencyLabel}
 						</li>
@@ -940,7 +1296,9 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 							</li>
 						) : null}
 						<li
-							className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+							className={
+								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+							}
 						>
 							{isMetered
 								? formattedUnitPrice
@@ -949,7 +1307,9 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 								: "Pricing follows the product you choose at checkout"}
 						</li>
 						<li
-							className={"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames}
+							className={
+								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
+							}
 						>
 							{includedUnits != null
 								? `Included credits: ${includedUnits} units`
@@ -959,7 +1319,7 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 						</li>
 					</ul>
 				</div>
-			)}
+			) : null}
 			<div className={"MainAppAccountManagementBilling-body" satisfies MainAppAccountManagementBilling_ClassNames}>
 				<div className={"MainAppAccountManagementBilling-actions" satisfies MainAppAccountManagementBilling_ClassNames}>
 					{checkoutReady ? (

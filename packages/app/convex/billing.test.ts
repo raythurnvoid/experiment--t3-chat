@@ -1,7 +1,14 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { BILLING_EVENTS, PRODUCTS, billing_enqueue_page_save_event } from "./billing.ts";
+import type { CustomerState } from "@polar-sh/sdk/models/components/customerstate.js";
+import { BILLING_EVENTS, PRODUCTS } from "../shared/billing.ts";
+import {
+	billing_enqueue_page_save_event,
+	billing_usage_snapshot_fields_from_customer_state,
+	BILLING_USAGE_SNAPSHOT_STALE_AFTER_MS,
+} from "./billing.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with, test_mocks } from "./setup.test.ts";
+import { customersGetState } from "@polar-sh/sdk/funcs/customersGetState.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { Id } from "./_generated/dataModel.js";
@@ -16,7 +23,208 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 	eventsIngest: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/customersGetState.js", () => ({
+	customersGetState: vi.fn(),
+}));
+
 const eventsIngestMock = vi.mocked(eventsIngest);
+const customersGetStateMock = vi.mocked(customersGetState);
+
+describe("billing_usage_snapshot_fields_from_customer_state", () => {
+	test("maps the pay-as-you-go subscription meter and prefers Polar active meter balance", () => {
+		const paygProductId = "payg_product_1";
+		const now = 1_700_000_000_000;
+		const subscriptionMeter = {
+			createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			modifiedAt: null as Date | null,
+			id: "sub_meter_1",
+			consumedUnits: 12,
+			creditedUnits: 2000,
+			amount: 750,
+			meterId: "meter_units",
+		};
+		const state = {
+			type: "individual",
+			id: "polar_customer_1",
+			createdAt: new Date("2025-12-01T00:00:00.000Z"),
+			modifiedAt: null,
+			metadata: {},
+			email: "u@test.local",
+			emailVerified: true,
+			name: null,
+			billingAddress: null,
+			taxId: null,
+			organizationId: "org",
+			deletedAt: null,
+			avatarUrl: "",
+			activeSubscriptions: [
+				{
+					id: "sub_1",
+					createdAt: new Date("2026-01-01T00:00:00.000Z"),
+					modifiedAt: null,
+					metadata: {},
+					status: "active",
+					amount: 1000,
+					currency: "usd",
+					recurringInterval: "month",
+					currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
+					currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
+					trialStart: null,
+					trialEnd: null,
+					cancelAtPeriodEnd: false,
+					canceledAt: null,
+					startedAt: new Date("2026-01-01T00:00:00.000Z"),
+					endsAt: null,
+					productId: paygProductId,
+					discountId: null,
+					meters: [subscriptionMeter],
+				},
+			],
+			grantedBenefits: [],
+			activeMeters: [
+				{
+					id: "am_1",
+					createdAt: new Date("2026-01-01T00:00:00.000Z"),
+					modifiedAt: null,
+					meterId: "meter_units",
+					consumedUnits: 12,
+					creditedUnits: 2000,
+					balance: 1988,
+				},
+			],
+		} as unknown as CustomerState;
+
+		const fields = billing_usage_snapshot_fields_from_customer_state({
+			customerState: state,
+			paygProductId,
+			preferredMeterId: "meter_units",
+			preferredMeterName: "Billable units",
+			userId: "user_mapper_test",
+			polarCustomerId: state.id,
+			now,
+			reason: "unit_test",
+		});
+
+		expect(fields).not.toBeNull();
+		if (!fields) {
+			throw new Error("expected fields");
+		}
+		expect(fields.userId).toBe("user_mapper_test");
+		expect(fields.polarCustomerId).toBe("polar_customer_1");
+		expect(fields.subscriptionId).toBe("sub_1");
+		expect(fields.productId).toBe(paygProductId);
+		expect(fields.meterId).toBe("meter_units");
+		expect(fields.meterName).toBe("Billable units");
+		expect(fields.consumedUnits).toBe(12);
+		expect(fields.creditedUnits).toBe(2000);
+		expect(fields.balance).toBe(1988);
+		expect(fields.amountDueCents).toBe(750);
+		expect(fields.currency).toBe("usd");
+		expect(fields.currentPeriodStart).toBe("2026-01-01T00:00:00.000Z");
+		expect(fields.currentPeriodEnd).toBe("2026-02-01T00:00:00.000Z");
+		expect(fields.lastSyncedAt).toBe(now);
+		expect(fields.lastRefreshReason).toBe("unit_test");
+	});
+
+	test("returns null when there is no subscription for the pay-as-you-go product", () => {
+		const state = {
+			type: "individual",
+			id: "c2",
+			createdAt: new Date(),
+			modifiedAt: null,
+			metadata: {},
+			email: "x@test",
+			emailVerified: true,
+			name: null,
+			billingAddress: null,
+			taxId: null,
+			organizationId: "org_v2",
+			deletedAt: null,
+			avatarUrl: "",
+			activeSubscriptions: [],
+			grantedBenefits: [],
+			activeMeters: [],
+		} as unknown as CustomerState;
+
+		const fields = billing_usage_snapshot_fields_from_customer_state({
+			customerState: state,
+			paygProductId: "missing_product",
+			preferredMeterId: null,
+			preferredMeterName: null,
+			userId: "u1",
+			polarCustomerId: "c2",
+			now: Date.now(),
+		});
+		expect(fields).toBeNull();
+	});
+
+	test("returns null when more than one PAYG subscription exists in customer state", () => {
+		const paygProductId = "payg_product_dup";
+		const now = 1_700_000_000_000;
+		const subShape = {
+			createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			modifiedAt: null as Date | null,
+			metadata: {},
+			status: "active" as const,
+			amount: 1000,
+			currency: "usd",
+			recurringInterval: "month" as const,
+			currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
+			currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
+			trialStart: null,
+			trialEnd: null,
+			cancelAtPeriodEnd: false,
+			canceledAt: null,
+			startedAt: new Date("2026-01-01T00:00:00.000Z"),
+			endsAt: null,
+			productId: paygProductId,
+			discountId: null,
+			meters: [
+				{
+					createdAt: new Date("2026-01-01T00:00:00.000Z"),
+					modifiedAt: null as Date | null,
+					id: "sm_1",
+					consumedUnits: 1,
+					creditedUnits: 10,
+					amount: 0,
+					meterId: "meter_units",
+				},
+			],
+		};
+		const state = {
+			type: "individual",
+			id: "polar_customer_dup",
+			createdAt: new Date("2025-12-01T00:00:00.000Z"),
+			modifiedAt: null,
+			metadata: {},
+			email: "dup@test.local",
+			emailVerified: true,
+			name: null,
+			billingAddress: null,
+			taxId: null,
+			organizationId: "org",
+			deletedAt: null,
+			avatarUrl: "",
+			activeSubscriptions: [
+				{ ...subShape, id: "sub_a" },
+				{ ...subShape, id: "sub_b" },
+			],
+			grantedBenefits: [],
+			activeMeters: [],
+		} as unknown as CustomerState;
+
+		const fields = billing_usage_snapshot_fields_from_customer_state({
+			customerState: state,
+			paygProductId,
+			preferredMeterId: "meter_units",
+			preferredMeterName: "Units",
+			userId: "user_dup",
+			polarCustomerId: state.id,
+			now,
+		});
+		expect(fields).toBeNull();
+	});
+});
 
 describe("billing get_pay_as_you_go_product", () => {
 	test("returns ready when synced name matches POLAR_PRODUCTS_PREFIX pattern", async () => {
@@ -60,7 +268,6 @@ describe("billing get_pay_as_you_go_product", () => {
 		}
 		expect(configured.payAsYouGo.id).toBe(polarProductId);
 		expect(configured.payAsYouGo.name).toBe(polarProductName);
-		expect(Array.isArray(configured.warnings)).toBe(true);
 	});
 
 	test("returns product_not_in_catalog when no product name matches", async () => {
@@ -210,6 +417,41 @@ describe("billing get_billing_overview", () => {
 		return { polarProductId: args.polarProductId, polarProductName };
 	}
 
+	test("returns anonymous access when unauthenticated", async () => {
+		const t = test_convex();
+
+		const overview = await t.query(api.billing.get_billing_overview, {});
+
+		expect(overview).toEqual({ access: "anonymous" });
+	});
+
+	test("returns anonymous access for anonymous JWT users", async () => {
+		const t = test_convex();
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: "user_billing_overview_anonymous" as Id<"users">,
+			name: "Overview Anonymous",
+		});
+
+		const overview = await asAnonymous.query(api.billing.get_billing_overview, {});
+
+		expect(overview).toEqual({ access: "anonymous" });
+	});
+
+	test("returns anonymous access when Clerk external_id is not set yet", async () => {
+		const t = test_convex();
+		const asSignedInWithoutExternalId = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-without-external-id",
+			name: "Overview No External Id",
+			email: "overview-no-external-id@test.local",
+		});
+
+		const overview = await asSignedInWithoutExternalId.query(api.billing.get_billing_overview, {});
+
+		expect(overview).toEqual({ access: "anonymous" });
+	});
+
 	test("returns none + showCheckout when user has no Polar customer row", async () => {
 		const t = test_convex();
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -233,10 +475,13 @@ describe("billing get_billing_overview", () => {
 		expect(overview.subscription.state).toBe("none");
 		expect(overview.showCheckout).toBe(true);
 		expect(overview.planDetails?.productId).toBe(polarProductId);
-		expect(overview.planDetails?.description).toBe("A flexible plan for teams that want to pay only for what they use.");
+		expect(overview.planDetails?.description).toBe(
+			"A flexible plan for teams that want to pay only for what they use.",
+		);
 		expect(overview.planDetails?.unitAmount).toBe(5);
 		expect(overview.planDetails?.meterName).toBe("Billable units");
 		expect(overview.planDetails?.benefitDescriptions).toEqual([]);
+		expect(overview.usage.state).toBe("unavailable");
 	});
 
 	test("parses included meter credits from meter_credit benefit properties", async () => {
@@ -273,6 +518,7 @@ describe("billing get_billing_overview", () => {
 		expect(overview.planDetails?.includedMeterCreditsUnits).toBe(250);
 		expect(overview.planDetails?.hasMeterCreditBenefit).toBe(true);
 		expect(overview.planDetails?.benefitDescriptions).toContain("Included");
+		expect(overview.usage.state).toBe("unavailable");
 	});
 
 	test("returns active subscription state and hides checkout", async () => {
@@ -326,6 +572,7 @@ describe("billing get_billing_overview", () => {
 		expect(overview.subscription.polarStatus).toBe("active");
 		expect(overview.subscription.startedAt).toBe("2026-01-01T00:00:00.000Z");
 		expect(overview.showCheckout).toBe(false);
+		expect(overview.usage.state).toBe("loading");
 	});
 
 	test("returns cancel_at_period_end when cancelAtPeriodEnd is true", async () => {
@@ -374,6 +621,7 @@ describe("billing get_billing_overview", () => {
 		}
 		expect(overview.subscription.state).toBe("cancel_at_period_end");
 		expect(overview.showCheckout).toBe(false);
+		expect(overview.usage.state).toBe("loading");
 	});
 
 	test("returns trialing when Polar status is trialing", async () => {
@@ -422,6 +670,134 @@ describe("billing get_billing_overview", () => {
 		}
 		expect(overview.subscription.state).toBe("trialing");
 		expect(overview.showCheckout).toBe(false);
+		expect(overview.usage.state).toBe("loading");
+	});
+
+	test("returns usage error when sync failure row exists and snapshot is absent", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_usage_err",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_usage_err",
+			userId: "user_billing_overview_usage_err",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_usage_err",
+				customerId: "cust_overview_usage_err",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const failedAt = 1_700_000_000_000;
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_sync_failures", {
+				userId: "user_billing_overview_usage_err",
+				message: "Polar unreachable (test)",
+				at: failedAt,
+			});
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_usage_err" as Id<"users">,
+			name: "Overview Usage Err",
+			email: "overview-usage-err@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.usage.state).toBe("error");
+		if (overview.usage.state !== "error") {
+			throw new Error("Expected error usage");
+		}
+		expect(overview.usage.message).toContain("Polar unreachable");
+		expect(overview.usage.at).toBe(failedAt);
+	});
+
+	test("returns loading after clear_usage_sync_failure when snapshot is still absent", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_usage_recover",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_usage_recover",
+			userId: "user_billing_overview_usage_recover",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_usage_recover",
+				customerId: "cust_overview_usage_recover",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_sync_failures", {
+				userId: "user_billing_overview_usage_recover",
+				message: "Stale transient failure",
+				at: Date.now(),
+			});
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_usage_recover" as Id<"users">,
+			name: "Overview Usage Recover",
+			email: "overview-usage-recover@test.local",
+		});
+
+		const before = await asUser.query(api.billing.get_billing_overview, {});
+		expect(before.access).toBe("signed_in");
+		if (before.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(before.usage.state).toBe("error");
+
+		await t.mutation(internal.billing.clear_usage_sync_failure, {
+			userId: "user_billing_overview_usage_recover",
+		});
+
+		const after = await asUser.query(api.billing.get_billing_overview, {});
+		expect(after.access).toBe("signed_in");
+		if (after.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(after.usage.state).toBe("loading");
 	});
 
 	test("returns ambiguous when two active PAYG subscriptions exist", async () => {
@@ -472,6 +848,150 @@ describe("billing get_billing_overview", () => {
 		}
 		expect(overview.subscription.state).toBe("ambiguous");
 		expect(overview.showCheckout).toBe(false);
+		expect(overview.usage.state).toBe("unavailable");
+	});
+
+	test("returns ready usage when a billing_usage_snapshots row exists", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_usage_ready",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_usage_ready",
+			userId: "user_billing_overview_usage_ready",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_usage_ready",
+				customerId: "cust_overview_usage_ready",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const syncedAt = Date.now();
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_snapshots", {
+				userId: "user_billing_overview_usage_ready",
+				polarCustomerId: "cust_overview_usage_ready",
+				subscriptionId: "sub_overview_usage_ready",
+				productId: polarProductId,
+				meterId: "meter_units",
+				meterName: "Billable units",
+				consumedUnits: 4,
+				creditedUnits: 100,
+				balance: 96,
+				amountDueCents: 250,
+				currency: "usd",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				lastSyncedAt: syncedAt,
+				lastError: null,
+			});
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_usage_ready" as Id<"users">,
+			name: "Overview Usage",
+			email: "overview-usage@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.usage.state).toBe("ready");
+		if (overview.usage.state !== "ready") {
+			throw new Error("Expected ready usage");
+		}
+		expect(overview.usage.consumedUnits).toBe(4);
+		expect(overview.usage.amountDueCents).toBe(250);
+		expect(overview.usage.balance).toBe(96);
+		expect(overview.usage.lastSyncedAt).toBe(syncedAt);
+	});
+
+	test("returns stale usage when the snapshot is older than the stale window", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_usage_stale",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_overview_usage_stale",
+			userId: "user_billing_overview_usage_stale",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_overview_usage_stale",
+				customerId: "cust_overview_usage_stale",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const oldSync = Date.now() - BILLING_USAGE_SNAPSHOT_STALE_AFTER_MS - 1;
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_snapshots", {
+				userId: "user_billing_overview_usage_stale",
+				polarCustomerId: "cust_overview_usage_stale",
+				subscriptionId: "sub_overview_usage_stale",
+				productId: polarProductId,
+				meterId: "meter_units",
+				meterName: null,
+				consumedUnits: 1,
+				creditedUnits: 2,
+				balance: 1,
+				amountDueCents: 0,
+				currency: "usd",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				lastSyncedAt: oldSync,
+				lastError: null,
+			});
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_usage_stale" as Id<"users">,
+			name: "Overview Stale",
+			email: "overview-stale-usage@test.local",
+		});
+
+		const overview = await asUser.query(api.billing.get_billing_overview, {});
+		expect(overview.access).toBe("signed_in");
+		if (overview.access !== "signed_in") {
+			throw new Error("Expected signed_in");
+		}
+		expect(overview.usage.state).toBe("stale");
 	});
 
 	test("hides checkout when catalog is misconfigured", async () => {
@@ -492,6 +1012,7 @@ describe("billing get_billing_overview", () => {
 		expect(overview.catalog.setup).toBe("product_not_in_catalog");
 		expect(overview.planDetails).toBeNull();
 		expect(overview.showCheckout).toBe(false);
+		expect(overview.usage.state).toBe("unavailable");
 	});
 });
 
@@ -528,6 +1049,160 @@ describe("billing generate_checkout_link auth", () => {
 				successUrl: "https://app.test/ok",
 			}),
 		).rejects.toThrow("Email required for billing");
+	});
+});
+
+describe("refresh_usage_snapshot", () => {
+	beforeEach(() => {
+		customersGetStateMock.mockReset();
+	});
+
+	test("syncs usage from Polar state and clears prior failures", async () => {
+		const t = test_convex();
+		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
+		if (!prefix) {
+			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
+		}
+		const polarProductId = "billing_refresh_snapshot_product";
+		const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
+		await t.mutation(components.polar.lib.createProduct, {
+			product: {
+				id: polarProductId,
+				organizationId: "billing_test_org",
+				name: polarProductName,
+				description: "Metered plan used for refresh tests.",
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [
+					{
+						id: "price_refresh_snapshot",
+						createdAt: "2026-01-01T00:00:00.000Z",
+						modifiedAt: null,
+						amountType: "metered_unit",
+						isArchived: false,
+						productId: polarProductId,
+						priceCurrency: "eur",
+						unitAmount: "1",
+						recurringInterval: "month",
+						meterId: "meter_units",
+						meter: { id: "meter_units", name: "Billable units" },
+					},
+				],
+				medias: [],
+				benefits: [],
+			},
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_refresh_snapshot",
+			userId: "user_refresh_snapshot",
+		});
+
+		const now = Date.now();
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_sync_failures", {
+				userId: "user_refresh_snapshot",
+				message: "previous transient error",
+				at: now - 1,
+			});
+		});
+
+		customersGetStateMock.mockResolvedValue({
+			ok: true,
+			value: {
+				type: "individual",
+				id: "cust_refresh_snapshot",
+				createdAt: new Date("2026-01-01T00:00:00.000Z"),
+				modifiedAt: null,
+				metadata: {},
+				email: "refresh-snapshot@test.local",
+				emailVerified: true,
+				name: null,
+				billingAddress: null,
+				taxId: null,
+				organizationId: "billing_test_org",
+				deletedAt: null,
+				avatarUrl: "",
+				activeSubscriptions: [
+					{
+						id: "sub_refresh_snapshot",
+						createdAt: new Date("2026-01-01T00:00:00.000Z"),
+						modifiedAt: null,
+						metadata: {},
+						status: "active",
+						amount: 1000,
+						currency: "eur",
+						recurringInterval: "month",
+						currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
+						currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
+						trialStart: null,
+						trialEnd: null,
+						cancelAtPeriodEnd: false,
+						canceledAt: null,
+						startedAt: new Date("2026-01-01T00:00:00.000Z"),
+						endsAt: null,
+						productId: polarProductId,
+						discountId: null,
+						meters: [
+							{
+								createdAt: new Date("2026-01-01T00:00:00.000Z"),
+								modifiedAt: null,
+								id: "meter_sub_refresh_snapshot",
+								consumedUnits: 7,
+								creditedUnits: 2000,
+								amount: 700,
+								meterId: "meter_units",
+							},
+						],
+					},
+				],
+				grantedBenefits: [],
+				activeMeters: [
+					{
+						id: "active_meter_refresh_snapshot",
+						createdAt: new Date("2026-01-01T00:00:00.000Z"),
+						modifiedAt: null,
+						meterId: "meter_units",
+						consumedUnits: 7,
+						creditedUnits: 2000,
+						balance: 1993,
+					},
+				],
+			} as CustomerState,
+		});
+
+		await t.action(internal.billing.refresh_usage_snapshot, {
+			userId: "user_refresh_snapshot",
+			reason: "unit_test",
+		});
+
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", "user_refresh_snapshot"))
+				.unique(),
+		);
+		expect(snapshot).not.toBeNull();
+		expect(snapshot!.polarCustomerId).toBe("cust_refresh_snapshot");
+		expect(snapshot!.amountDueCents).toBe(700);
+		expect(snapshot!.balance).toBe(1993);
+		expect(snapshot!.lastError).toBeNull();
+
+		const failure = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_sync_failures")
+				.withIndex("by_userId", (q) => q.eq("userId", "user_refresh_snapshot"))
+				.unique(),
+		);
+		expect(failure).toBeNull();
+		expect(customersGetStateMock).toHaveBeenCalledTimes(1);
+		expect(customersGetStateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "cust_refresh_snapshot",
+		});
 	});
 });
 
@@ -597,46 +1272,12 @@ describe("billing changeCurrentSubscription", () => {
 	});
 });
 
-describe("billing generate_checkout_link ALLOWED_ORIGINS", () => {
-	test("rejects misconfigured non-empty ALLOWED_ORIGINS before other checks", async () => {
-		const t = test_convex();
-		const previous = process.env.ALLOWED_ORIGINS;
-		process.env.ALLOWED_ORIGINS = "not-a-url,, , also-invalid";
-		try {
-			await expect(
-				t.action(api.billing.generate_checkout_link, {
-					productIds: ["any"],
-					origin: "https://app.test",
-					successUrl: "https://app.test/ok",
-				}),
-			).rejects.toThrow("ALLOWED_ORIGINS is misconfigured");
-		} finally {
-			if (previous === undefined) {
-				delete process.env.ALLOWED_ORIGINS;
-			} else {
-				process.env.ALLOWED_ORIGINS = previous;
-			}
-		}
-	});
-});
-
 describe("billing_enqueue_page_save_event", () => {
-	const polar_token_previous = process.env.POLAR_ORGANIZATION_TOKEN;
-
-	beforeEach(() => {
-		process.env.POLAR_ORGANIZATION_TOKEN = "test_polar_org_token_enqueue";
-	});
-
 	afterEach(() => {
 		eventsIngestMock.mockReset();
-		if (polar_token_previous === undefined) {
-			delete process.env.POLAR_ORGANIZATION_TOKEN;
-		} else {
-			process.env.POLAR_ORGANIZATION_TOKEN = polar_token_previous;
-		}
 	});
 
-	test("inserts polar_usage_events_outbox when org token is set and dedupes by key", async () => {
+	test("inserts polar_usage_events_outbox and dedupes by key", async () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) => {
 			const membership = await test_mocks_fill_db_with.membership(ctx);
@@ -694,60 +1335,15 @@ describe("billing_enqueue_page_save_event", () => {
 			source: "page-save",
 		});
 	});
-
-	test("does not insert when POLAR_ORGANIZATION_TOKEN is unset", async () => {
-		delete process.env.POLAR_ORGANIZATION_TOKEN;
-
-		const t = test_convex();
-		const seeded = await t.run(async (ctx) => {
-			const membership = await test_mocks_fill_db_with.membership(ctx);
-			const pageId = await ctx.db.insert("pages", {
-				...test_mocks.pages.base(),
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				createdBy: membership.userId,
-				updatedBy: String(membership.userId),
-				name: "polar-usage-page-no-token",
-				path: "/polar-usage-page-no-token",
-				parentId: pages_ROOT_ID,
-				version: pages_FIRST_VERSION,
-				archiveOperationId: undefined,
-			});
-
-			return { ...membership, pageId };
-		});
-
-		await t.run(async (ctx) => {
-			await billing_enqueue_page_save_event(ctx, {
-				userId: seeded.userId,
-				pageId: seeded.pageId,
-				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
-				newSequence: 1,
-				now: Date.now(),
-			});
-		});
-
-		const rows = await t.run(async (ctx) => ctx.db.query("polar_usage_events_outbox").collect());
-		expect(rows).toHaveLength(0);
-	});
 });
 
 describe("drain_outbox", () => {
-	const polar_token_previous = process.env.POLAR_ORGANIZATION_TOKEN;
-
 	beforeEach(() => {
-		process.env.POLAR_ORGANIZATION_TOKEN = "test_polar_org_token_drain";
 		eventsIngestMock.mockReset();
 	});
 
 	afterEach(() => {
 		eventsIngestMock.mockReset();
-		if (polar_token_previous === undefined) {
-			delete process.env.POLAR_ORGANIZATION_TOKEN;
-		} else {
-			process.env.POLAR_ORGANIZATION_TOKEN = polar_token_previous;
-		}
 	});
 
 	test("deletes rows when eventsIngest succeeds", async () => {
@@ -788,7 +1384,47 @@ describe("drain_outbox", () => {
 		expect(ingestPayload.events).toHaveLength(1);
 		expect(ingestPayload.events[0]!.externalId).toBe(`${BILLING_EVENTS.testUnit}:u:test-page:1`);
 		expect(ingestPayload.events[0]!.externalCustomerId).toBe("user_drain_ok");
+		expect("customerId" in ingestPayload.events[0]! && ingestPayload.events[0]!.customerId).toBeFalsy();
 		expect(ingestPayload.events[0]!.name).toBe(BILLING_EVENTS.testUnit);
+	});
+
+	test("sends customerId when polar customer mapping exists", async () => {
+		eventsIngestMock.mockResolvedValue({
+			ok: true,
+			value: {} as never,
+		});
+
+		const t = test_convex();
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "polar_cust_drain_mapped",
+			userId: "user_drain_mapped",
+		});
+
+		const rowId = await t.run(async (ctx) => {
+			return await ctx.db.insert("polar_usage_events_outbox", {
+				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:mapped`,
+				externalCustomerId: "user_drain_mapped",
+				eventName: BILLING_EVENTS.testUnit,
+				status: "pending",
+				createdAt: 1_700_000_000_050,
+				metadata: { source: "page-save" },
+			});
+		});
+
+		await t.action(internal.billing.drain_outbox, {});
+
+		const rowAfter = await t.run(async (ctx) => ctx.db.get("polar_usage_events_outbox", rowId));
+		expect(rowAfter).toBeNull();
+		const ingestCall = eventsIngestMock.mock.calls[0];
+		expect(ingestCall).toBeDefined();
+		const ingestPayload = ingestCall![1] as {
+			events: Array<{ name: string; externalId?: string; externalCustomerId?: string; customerId?: string }>;
+		};
+		expect(ingestPayload.events).toHaveLength(1);
+		expect(ingestPayload.events[0]!.name).toBe(BILLING_EVENTS.testUnit);
+		expect(ingestPayload.events[0]!.customerId).toBe("polar_cust_drain_mapped");
+		expect(ingestPayload.events[0]!.externalId).toBe(`${BILLING_EVENTS.testUnit}:u:test-page:mapped`);
+		expect(ingestPayload.events[0]!.externalCustomerId).toBeUndefined();
 	});
 
 	test("marks row failed when eventsIngest returns an error result", async () => {
@@ -838,29 +1474,6 @@ describe("drain_outbox", () => {
 		expect(rowAfter).not.toBeNull();
 		expect(rowAfter!.status).toBe("failed");
 		expect(rowAfter!.lastError).toContain("ingest_threw_test");
-	});
-
-	test("does not process rows when POLAR_ORGANIZATION_TOKEN is unset", async () => {
-		delete process.env.POLAR_ORGANIZATION_TOKEN;
-		eventsIngestMock.mockResolvedValue({ ok: true, value: {} as never });
-
-		const t = test_convex();
-		const rowId = await t.run(async (ctx) => {
-			return await ctx.db.insert("polar_usage_events_outbox", {
-				dedupeKey: `${BILLING_EVENTS.testUnit}:u:test-page:3`,
-				externalCustomerId: "user_no_token",
-				eventName: BILLING_EVENTS.testUnit,
-				status: "pending",
-				createdAt: 1_700_000_000_004,
-			});
-		});
-
-		await t.action(internal.billing.drain_outbox, {});
-
-		const rowAfter = await t.run(async (ctx) => ctx.db.get("polar_usage_events_outbox", rowId));
-		expect(rowAfter).not.toBeNull();
-		expect(rowAfter!.status).toBe("pending");
-		expect(eventsIngestMock).not.toHaveBeenCalled();
 	});
 
 	test("processes rows oldest-first", async () => {
@@ -963,5 +1576,32 @@ describe("drain_outbox", () => {
 		expect(remainingRows).toHaveLength(1);
 		expect(remainingRows[0]!.status).toBe("failed");
 		expect(remainingRows[0]!._id).not.toBe(failedRowId);
+	});
+});
+
+describe("refresh_usage_snapshot catalog guard", () => {
+	test("clears usage sync failure when pay-as-you-go catalog is not ready", async () => {
+		const t = test_convex();
+		const userId = "user_refresh_catalog_not_ready";
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_sync_failures", {
+				userId,
+				message: "previous polar error",
+				at: Date.now(),
+			});
+		});
+
+		await t.action(internal.billing.refresh_usage_snapshot, {
+			userId,
+			reason: "unit_test_catalog",
+		});
+
+		const failure = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_sync_failures")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(failure).toBeNull();
 	});
 });

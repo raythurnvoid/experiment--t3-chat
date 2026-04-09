@@ -44,6 +44,7 @@ export default defineConfig({
 								return (
 									filename.startsWith(path.resolve(__dirname, "src")) ||
 									filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
+									filename.startsWith(path.resolve(__dirname, "vendor/polar")) ||
 									filename.startsWith(path.resolve(__dirname, "vendor/tiptap")) ||
 									filename.includes(`${path.sep}node_modules${path.sep}@ariakit${path.sep}`) ||
 									filename.includes(`${path.sep}.pnpm${path.sep}@ariakit+`)
@@ -77,6 +78,7 @@ export default defineConfig({
 		exclude: [
 			// Exclude vendored packages from pre-bundling so they're treated as source files
 			"@convex-dev/presence",
+			"@convex-dev/polar",
 			"@ariakit/react",
 			"@ariakit/react-core",
 

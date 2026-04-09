@@ -79,3 +79,7 @@
 [submodule "references-submodules/agent"]
 	path = references-submodules/agent
 	url = https://github.com/get-convex/agent.git
+[submodule "packages/app/vendor/polar"]
+	path = packages/app/vendor/polar
+	url = https://github.com/raythurnvoid/polar
+	branch = rt0-updates

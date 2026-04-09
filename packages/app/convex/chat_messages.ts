@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 
@@ -15,6 +15,9 @@ export const chat_messages_threads_create = mutation({
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const threadId = await ctx.db.insert("chat_messages", {
 			workspaceId: args.workspaceId,
@@ -42,6 +45,9 @@ export const chat_messages_add = mutation({
 	},
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const root = await ctx.db.get("chat_messages", args.rootId);
 		if (!root) {

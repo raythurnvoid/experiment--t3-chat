@@ -394,6 +394,43 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_dedupeKey", ["dedupeKey"])
 		.index("by_status_createdAt", ["status", "createdAt"]),
+
+	/**
+	 * Last failed Polar usage-snapshot refresh for a user when no snapshot row exists yet.
+	 * Cleared on successful snapshot upsert.
+	 */
+	billing_usage_sync_failures: defineTable({
+		userId: v.string(),
+		message: v.string(),
+		at: v.number(),
+	})
+		.index("by_userId", ["userId"])
+		.index("by_at", ["at"]),
+
+	/**
+	 * Cached Polar meter / spend snapshot per app user (Clerk external_id / users id string).
+	 * Refreshed after usage ingest, periodically when stale, and on relevant Polar webhooks.
+	 */
+	billing_usage_snapshots: defineTable({
+		userId: v.string(),
+		polarCustomerId: v.string(),
+		subscriptionId: v.string(),
+		productId: v.string(),
+		meterId: v.string(),
+		meterName: v.union(v.string(), v.null()),
+		consumedUnits: v.number(),
+		creditedUnits: v.number(),
+		balance: v.number(),
+		amountDueCents: v.number(),
+		currency: v.string(),
+		currentPeriodStart: v.string(),
+		currentPeriodEnd: v.string(),
+		lastSyncedAt: v.number(),
+		lastRefreshReason: v.optional(v.string()),
+		lastError: v.union(v.string(), v.null()),
+	})
+		.index("by_userId", ["userId"])
+		.index("by_lastSyncedAt", ["lastSyncedAt"]),
 	// #endregion billing
 
 	// #region users

@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
@@ -45,6 +45,9 @@ export const list = query({
 	}),
 	handler: async (ctx) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
 			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user.id))
@@ -127,6 +130,9 @@ export const get_membership_for_scope = query({
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const workspaceId = ctx.db.normalizeId("workspaces", args.workspaceId);
 		const projectId = ctx.db.normalizeId("workspaces_projects", args.projectId);
 		if (!workspaceId || !projectId) {
@@ -151,7 +157,11 @@ export const get_membership_by_workspace_project_name = query({
 	},
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => ctx.db.get("users", user.id));
+		const userFromAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userFromAuth) {
+			throw new ConvexError("Unauthenticated");
+		}
+		const user = await ctx.db.get("users", userFromAuth.id);
 		if (!user) {
 			return null;
 		}
@@ -235,6 +245,9 @@ export const get_membership = query({
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		return await db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
 	},
 });
@@ -246,6 +259,9 @@ export const get_membership_from_string = query({
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const membershipId = ctx.db.normalizeId("workspaces_projects_users", args.membershipId.trim());
 		if (!membershipId) {
@@ -271,6 +287,9 @@ export const create_workspace = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const now = Date.now();
 
@@ -307,6 +326,9 @@ export const create_project = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const now = Date.now();
 
@@ -340,6 +362,9 @@ export const add_user_to_workspace_project = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const [userToAdd, workspace, project, projectCurrentUserLookup, projectUserToAddLookup] = await Promise.all([
 			ctx.db.get("users", args.userIdToAdd),
@@ -437,6 +462,9 @@ export const edit_workspace = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const now = Date.now();
 
@@ -547,6 +575,9 @@ export const edit_project = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const now = Date.now();
 
@@ -677,6 +708,9 @@ export const delete_workspace = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const now = Date.now();
 
@@ -792,6 +826,9 @@ export const delete_project = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const now = Date.now();
 

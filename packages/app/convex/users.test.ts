@@ -102,6 +102,29 @@ async function users_test_bootstrap_anonymous_user(ctx: MutationCtx, args: { dis
 }
 
 describe("delete_current_user_account", () => {
+	test("returns Unauthorized when no authenticated identity is present", async () => {
+		const t = test_convex();
+
+		const result = await t.action(api.users.delete_current_user_account, {});
+
+		expect(result._yay).toBeUndefined();
+		expect(result._nay?.message).toBe("Unauthorized");
+	});
+
+	test("returns Unauthorized when Clerk external_id is not set yet", async () => {
+		const t = test_convex();
+		const asSignedInWithoutExternalId = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-without-external-id",
+			name: "Delete Unresolved Clerk User",
+		});
+
+		const result = await asSignedInWithoutExternalId.action(api.users.delete_current_user_account, {});
+
+		expect(result._yay).toBeUndefined();
+		expect(result._nay?.message).toBe("Unauthorized");
+	});
+
 	test("deletes the Clerk user and processes the local tombstone flow", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>

@@ -5,7 +5,7 @@ import { query, mutation, httpAction, type ActionCtx } from "./_generated/server
 import { api } from "./_generated/api.js";
 import { paginationOptsValidator, paginationResultValidator, type RouteSpec } from "convex/server";
 import { doc } from "convex-helpers/validators";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import {
 	streamText,
@@ -80,6 +80,9 @@ export const threads_list = query({
 	returns: paginationResultValidator(doc(app_convex_schema, "ai_chat_threads")),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -125,6 +128,9 @@ export const thread_get = query({
 	returns: v.union(doc(app_convex_schema, "ai_chat_threads"), v.null()),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -166,6 +172,9 @@ export const thread_create = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -215,6 +224,9 @@ export const thread_branch = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -405,6 +417,9 @@ export const thread_update = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -468,6 +483,9 @@ export const thread_archive = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -515,6 +533,9 @@ export const thread_messages_list = query({
 	),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
@@ -570,6 +591,9 @@ export const thread_messages_add = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user) {
+			throw new ConvexError("Unauthenticated");
+		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,

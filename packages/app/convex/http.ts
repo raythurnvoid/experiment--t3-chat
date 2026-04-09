@@ -1,5 +1,6 @@
 import { HttpRouter, httpRouter } from "convex/server";
 import { ai_chat_http_routes } from "./ai_chat.ts";
+import { internal, components } from "./_generated/api.js";
 import { httpAction } from "./_generated/server.js";
 import { pages_http_routes } from "./ai_docs_temp.ts";
 import { billing } from "./billing.ts";
@@ -15,7 +16,23 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS;
 
 const http = httpRouter();
 
-billing.registerRoutes(http);
+billing.registerRoutes(http, {
+	events: {
+		"customer.state_changed": async (ctx, event) => {
+			const polarCustomerId = event.data.id;
+			const mapped = await ctx.runQuery(components.polar.lib.getUserIdByPolarCustomerId, {
+				polarCustomerId,
+			});
+			if (!mapped) {
+				return;
+			}
+			await ctx.scheduler.runAfter(0, internal.billing.refresh_usage_snapshot, {
+				userId: mapped.userId,
+				reason: "polar_webhook_customer_state_changed",
+			});
+		},
+	},
+});
 
 const appCors = corsRouter(http, {
 	allowedOrigins: ALLOWED_ORIGINS.split(","),

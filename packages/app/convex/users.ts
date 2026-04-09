@@ -1,11 +1,4 @@
-import {
-	action,
-	httpAction,
-	internalMutation,
-	internalQuery,
-	query,
-	type ActionCtx,
-} from "./_generated/server.js";
+import { action, httpAction, internalMutation, internalQuery, query, type ActionCtx } from "./_generated/server.js";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
@@ -24,6 +17,7 @@ import { user_limits } from "../shared/limits.ts";
 import type { Id } from "./_generated/dataModel";
 import { v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
@@ -553,8 +547,8 @@ export const delete_current_user_account = action({
 	args: {},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx) => {
-		const identity = await ctx.auth.getUserIdentity();
-		if (!identity?.subject) {
+		const userFromAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userFromAuth) {
 			return Result({
 				_nay: {
 					message: "Unauthorized",
@@ -562,16 +556,8 @@ export const delete_current_user_account = action({
 			});
 		}
 
-		const isAnonymous = identity.issuer === ANONYMOUS_USERS_JWT_ISSUER;
-
-		const userId = isAnonymous ? identity.subject : identity.external_id;
-		if (!userId) {
-			return Result({
-				_nay: {
-					message: "Unauthorized",
-				},
-			});
-		}
+		const isAnonymous = userFromAuth.isAnonymous;
+		const userId = userFromAuth.id;
 
 		const user = await ctx.runQuery(internal.users.get, {
 			userId: userId,
@@ -590,7 +576,7 @@ export const delete_current_user_account = action({
 			}
 
 			const clerkDeleteUserResult = await server_fetch_json<null>({
-				url: `https://api.clerk.com/v1/users/${identity.subject}`,
+				url: `https://api.clerk.com/v1/users/${userFromAuth.subject}`,
 				method: "DELETE",
 				headers: {
 					Authorization: `Bearer ${CLERK_SECRET_KEY}`,
@@ -600,7 +586,7 @@ export const delete_current_user_account = action({
 			if (clerkDeleteUserResult._nay && clerkDeleteUserResult._nay.data?.status !== 404) {
 				console.error("Failed to clean up Clerk account after local deletion", {
 					clerkDeleteUserResult,
-					clerkUserId: identity.subject,
+					clerkUserId: userFromAuth.subject,
 					requestId,
 				});
 			} else {
@@ -795,11 +781,11 @@ export function users_http_routes(router: RouterForConvexModules) {
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							const body = (await request.json().catch(() => null)) as null | Body;
 
-							const identity = await ctx.auth.getUserIdentity();
+							const identity = await ctx.auth.getUserIdentity().catch(() => null);
 							if (!identity) {
 								return {
 									status: 401,
-									body: Result({ _nay: { message: "Unauthorized: Clerk authentication required" } }),
+									body: Result({ _nay: { message: "Unauthorized" } }),
 								} as const;
 							}
 

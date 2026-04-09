@@ -14,7 +14,7 @@ import {
 	pages_yjs_doc_get_markdown,
 	pages_yjs_doc_update_from_markdown,
 } from "../server/pages.ts";
-import { BILLING_EVENTS } from "../shared/billing_events.ts";
+import { BILLING_EVENTS } from "../shared/billing.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 async function seed_page_with_markdown(args: {
@@ -2209,22 +2209,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 });
 
 describe("save_pages_pending_edit billing usage outbox", () => {
-	const polar_token_previous = process.env.POLAR_ORGANIZATION_TOKEN;
-
-	afterEach(() => {
-		if (polar_token_previous === undefined) {
-			delete process.env.POLAR_ORGANIZATION_TOKEN;
-		} else {
-			process.env.POLAR_ORGANIZATION_TOKEN = polar_token_previous;
-		}
-	});
-
-	describe("with POLAR_ORGANIZATION_TOKEN", () => {
-		beforeEach(() => {
-			process.env.POLAR_ORGANIZATION_TOKEN = "test_polar_org_token_save_pending_edit";
-		});
-
-	test("enqueues polar_usage_events_outbox after save for Clerk users when org token is set", async () => {
+	test("enqueues polar_usage_events_outbox after save for Clerk users", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -2275,7 +2260,7 @@ describe("save_pages_pending_edit billing usage outbox", () => {
 		expect(outboxRows[0]!.status).toBe("pending");
 	});
 
-	test("does not enqueue polar_usage_events_outbox for anonymous users when org token is set", async () => {
+	test("does not enqueue polar_usage_events_outbox for anonymous users", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -2357,56 +2342,6 @@ describe("save_pages_pending_edit billing usage outbox", () => {
 
 		const allOutbox = await t.run(async (ctx) => ctx.db.query("polar_usage_events_outbox").collect());
 		expect(allOutbox).toHaveLength(0);
-	});
-	});
-
-	describe("without POLAR_ORGANIZATION_TOKEN", () => {
-		beforeEach(() => {
-			delete process.env.POLAR_ORGANIZATION_TOKEN;
-		});
-
-		test("does not enqueue polar_usage_events_outbox when org token is unset", async () => {
-			const t = test_convex();
-
-			const seeded = await t.run(async (ctx) =>
-				seed_page_with_markdown({
-					ctx,
-					path: "/pending-edits-polar-no-token",
-					name: "pending-edits-polar-no-token",
-					markdown: "# Polar no token base",
-				}),
-			);
-			const asUser = t.withIdentity({
-				issuer: "https://clerk.test",
-				external_id: seeded.userId,
-				name: "Test User",
-				email: "no-token@test.local",
-			});
-
-			const stagedMarkdown = `${seeded.baseMarkdown}\n\nNo token chunk`;
-			const unstagedMarkdown = `${stagedMarkdown}\n\nNo token unstaged`;
-			await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-				membershipId: seeded.membershipId,
-				pageId: seeded.pageId,
-				stagedMarkdown,
-				unstagedMarkdown,
-			});
-
-			const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-				membershipId: seeded.membershipId,
-				pageId: seeded.pageId,
-			});
-			if (saveResult._nay) {
-				throw new Error(saveResult._nay.message);
-			}
-			if (!saveResult._yay) {
-				throw new Error("Missing save result _yay while testing missing token");
-			}
-			expect(saveResult._yay.newSequence).not.toBeNull();
-
-			const allOutbox = await t.run(async (ctx) => ctx.db.query("polar_usage_events_outbox").collect());
-			expect(allOutbox).toHaveLength(0);
-		});
 	});
 });
 
