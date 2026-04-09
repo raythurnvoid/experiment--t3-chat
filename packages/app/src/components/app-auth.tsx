@@ -137,7 +137,11 @@ let auth_token_manager = init_auth_token_manager();
 /**
  * Auth surface for the SPA after Clerk vs anonymous resolution.
  *
- * Keep `isLoaded` / `isAuthenticated` consistent with packages/app/src/routes/__root.tsx: once `isLoaded` is true, the root route expects anonymous or signed-in identity together with a Convex-authenticated client; any other post-bootstrap outcome is treated there as a fatal bootstrap error.
+ * Keep `isLoaded` / `isAuthenticated` consistent with
+ * packages/app/src/routes/__root.tsx: once `isLoaded` is true,
+ * the root route expects anonymous or signed-in identity
+ * together with a Convex-authenticated client; any other
+ * post-bootstrap outcome throws and is handled by the root route error boundary.
  */
 export type AppAuthContextValue = {
 	/** Either the Clerk user ID if signed in, or the anonymous user ID from the anonymous token */

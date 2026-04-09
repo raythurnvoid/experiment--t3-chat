@@ -1,16 +1,27 @@
 @layer components {
-	.PageEditorError {
+	.AppRouteError {
 		display: flex;
 		align-items: center;
 		justify-content: center;
 
-		height: 100%;
-		width: 100%;
-
 		padding: 16px;
 	}
 
-	.PageEditorError-content {
+	.AppRouteError-layout-embedded {
+		height: 100%;
+		width: 100%;
+	}
+
+	.AppRouteError-layout-fullscreen {
+		min-height: 100dvh;
+		width: 100%;
+
+		padding: 24px;
+
+		background: var(--color-base-1-02);
+	}
+
+	.AppRouteError-content {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
@@ -29,30 +40,30 @@
 		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
 	}
 
-	.PageEditorError-title {
+	.AppRouteError-title {
 		font-size: 1.125rem;
 		font-weight: 600;
 		line-height: 1.25;
 		color: var(--color-fg-12);
 	}
 
-	.PageEditorError-description {
+	.AppRouteError-description {
 		color: var(--color-fg-09);
 		margin-bottom: 20px;
 	}
 
-	.PageEditorError-actions {
+	.AppRouteError-actions {
 		display: flex;
 		align-items: center;
 		align-self: center;
 		margin-bottom: 20px;
 	}
 
-	.PageEditorError-technical-details {
+	.AppRouteError-technical-details {
 		width: 100%;
 	}
 
-	.PageEditorError-technical-details-toggle {
+	.AppRouteError-technical-details-toggle {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -69,23 +80,23 @@
 		}
 	}
 
-	.PageEditorError-technical-details-toggle-icon {
+	.AppRouteError-technical-details-toggle-icon {
 		flex-shrink: 0;
 		color: inherit;
 	}
 
-	.PageEditorError-technical-details[open] .PageEditorError-technical-details-toggle-icon {
+	.AppRouteError-technical-details[open] .AppRouteError-technical-details-toggle-icon {
 		transform: rotate(90deg);
 	}
 
-	.PageEditorError-technical-details-pre {
+	.AppRouteError-technical-details-pre {
 		font-size: 0.75rem;
 		line-height: 1.5;
 
 		color: var(--color-fg-09);
 	}
 
-	.PageEditorError-technical-details-textarea {
+	.AppRouteError-technical-details-textarea {
 		padding: 12px;
 
 		width: 100%;
