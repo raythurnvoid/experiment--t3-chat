@@ -1,7 +1,8 @@
 import { mutation, query } from "./_generated/server.js";
 import { components } from "./_generated/api.js";
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { Presence } from "@convex-dev/presence";
+import { convex_error } from "../server/convex-utils.ts";
 import { pages_db_reschedule_pending_edit_cleanup_for_user } from "../server/pages.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -21,7 +22,7 @@ export const heartbeat = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw new ConvexError("Unauthenticated");
+			throw convex_error({ message: "Unauthenticated" });
 		}
 
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
@@ -239,7 +240,7 @@ export const disconnect = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw new ConvexError("Unauthenticated");
+			throw convex_error({ message: "Unauthenticated" });
 		}
 		const result = await presence.disconnect(ctx, args.sessionToken);
 		const onlineRooms = await ctx.runQuery(components.presence.public.listUser, {

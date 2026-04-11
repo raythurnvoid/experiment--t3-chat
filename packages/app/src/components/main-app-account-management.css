@@ -562,17 +562,10 @@
 		color: var(--color-fg-08);
 	}
 
-	.MainAppAccountManagementBillingActivePlan-description-secondary {
-		margin: 0;
-
-		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-06);
-	}
-
 	.MainAppAccountManagementBillingActivePlan-list {
 		margin: 0;
-		padding-inline-start: 18px;
+		padding-inline-start: 0;
+		list-style: none;
 
 		display: flex;
 		flex-direction: column;
@@ -584,7 +577,7 @@
 	}
 
 	.MainAppAccountManagementBillingActivePlan-list-item {
-		padding-inline-start: 2px;
+		padding-inline-start: 0;
 	}
 	/* #endregion billing active plan */
 

@@ -75,5 +75,4 @@ export declare const components: {
   presence: import("@convex-dev/presence/_generated/component.js").ComponentApi<"presence">;
   migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
   billingUsageEventWorkpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billingUsageEventWorkpool">;
-  billingRefreshWorkpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billingRefreshWorkpool">;
 };

@@ -1,11 +1,18 @@
+type BillingMonetaryAmount = {
+	amount: number;
+	currency: "eur";
+};
+
 type BillingProductBenefit = {
 	description: string;
 	displayDescription: string;
+	includedUsage?: BillingMonetaryAmount;
 };
 
 type BillingProductMeter = {
 	name: string;
 	displayName: string;
+	unitPrice?: BillingMonetaryAmount;
 };
 
 type BillingProduct = {
@@ -23,11 +30,19 @@ export const BILLING_PRODUCTS = {
 		meter: {
 			name: "Press app usage",
 			displayName: "Press app usage",
+			unitPrice: {
+				amount: 0.01,
+				currency: "eur",
+			},
 		},
 		benefits: {
 			"Free usage": {
 				description: "Free usage",
 				displayDescription: "Free usage granted on subscription",
+				includedUsage: {
+					amount: 20,
+					currency: "eur",
+				},
 			},
 		},
 	},

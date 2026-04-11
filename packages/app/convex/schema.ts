@@ -387,20 +387,28 @@ const app_convex_schema = defineSchema({
 	billing_usage_snapshots: defineTable({
 		userId: v.id("users"),
 		polarCustomerId: v.string(),
-		subscriptionId: v.string(),
-		productId: v.string(),
-		meterId: v.string(),
-		meterName: v.union(v.string(), v.null()),
-		consumedUnits: v.number(),
-		creditedUnits: v.number(),
-		balance: v.number(),
-		amountDueCents: v.number(),
-		currency: v.string(),
-		currentPeriodStart: v.string(),
-		currentPeriodEnd: v.string(),
+		subscription: v.union(
+			v.object({
+				id: v.string(),
+				productId: v.string(),
+				currency: v.string(),
+				currentPeriodStart: v.string(),
+				currentPeriodEnd: v.string(),
+			}),
+			v.null(),
+		),
+		meter: v.union(
+			v.object({
+				id: v.string(),
+				consumedUnits: v.number(),
+				creditedUnits: v.number(),
+				balance: v.number(),
+				amountDueCents: v.number(),
+			}),
+			v.null(),
+		),
 		lastSyncedAt: v.number(),
 		lastRefreshReason: v.optional(v.string()),
-		lastError: v.union(v.string(), v.null()),
 	})
 		.index("by_userId", ["userId"])
 		.index("by_lastSyncedAt", ["lastSyncedAt"]),

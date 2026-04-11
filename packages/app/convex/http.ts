@@ -3,35 +3,25 @@ import { ai_chat_http_routes } from "./ai_chat.ts";
 import { internal } from "./_generated/api.js";
 import { httpAction } from "./_generated/server.js";
 import { pages_http_routes } from "./ai_docs_temp.ts";
-import { billing, billing_refresh_workpool } from "./billing.ts";
+import { billing } from "./billing.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
-
-if (!process.env.ALLOWED_ORIGINS) {
-	throw new Error("`ALLOWED_ORIGINS` env var is not set in Convex env");
-}
-
-/** Comma separated list of allowed origins for CORS */
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS;
+import { allowed_origins } from "../server/server-utils.ts";
 
 const http = httpRouter();
 
 billing.registerRoutes(http, {
 	events: {
-		"customer.state_changed": async (ctx, event) => {
-			const userId = event.data.externalId;
-			if (!userId) {
-				return;
-			}
-			await billing_refresh_workpool.enqueueAction(ctx, internal.billing.refresh_usage_snapshot, {
-				userId,
+		"customer.state_changed": async (ctx, _event, rawPayload) => {
+			await ctx.runMutation(internal.billing.handle_polar_customer_state_update, {
+				payload: rawPayload as any,
 			});
 		},
 	},
 });
 
 const appCors = corsRouter(http, {
-	allowedOrigins: ALLOWED_ORIGINS.split(","),
+	allowedOrigins: allowed_origins(),
 	allowedHeaders: ["Authorization", "Content-Type"],
 });
 

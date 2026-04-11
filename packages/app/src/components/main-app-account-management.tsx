@@ -28,11 +28,24 @@ import {
 } from "@/components/my-modal.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab, MyTabsTabSurface } from "@/components/my-tabs.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import type { BillingProductRow, BillingSubscriptionRow, BillingUsageOverview } from "../../convex/billing.js";
+import {
+	app_convex,
+	app_convex_api,
+	type app_convex_FunctionReturnType,
+	type app_convex_Id,
+} from "@/lib/app-convex-client.ts";
 import { users_create_anonymouse_user_display_name } from "../../shared/users.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import { compute_fallback_user_name } from "@/lib/utils.ts";
+
+type MainAppAccountManagementBillingProductRow =
+	app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
+
+type MainAppAccountManagementBillingSubscriptionRow =
+	app_convex_FunctionReturnType<typeof app_convex_api.billing.list_subscriptions>[number];
+
+type MainAppAccountManagementBillingUsageSnapshot =
+	app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
 
 function get_display_name(user: NonNullable<ReturnType<typeof useUser>["user"]>) {
 	if (user.fullName?.trim()) {
@@ -115,13 +128,34 @@ function main_app_account_management_billing_format_major_currency(amountMajor: 
 	}).format(amountMajor);
 }
 
-function main_app_account_management_billing_select_active_subscription(subscriptions: BillingSubscriptionRow[]) {
+function main_app_account_management_billing_included_usage_line(args: {
+	hasIncludedMeterCredits: boolean;
+	includedUsage:
+		| (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS]["benefits"][keyof (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS]["benefits"]]["includedUsage"]
+		| null
+		| undefined;
+}) {
+	const { hasIncludedMeterCredits, includedUsage } = args;
+	if (hasIncludedMeterCredits && includedUsage) {
+		return `Included usage: ${main_app_account_management_billing_format_major_currency(includedUsage.amount, includedUsage.currency)}`;
+	}
+	if (hasIncludedMeterCredits) {
+		return "Includes meter credits before paid usage applies";
+	}
+	return "No included credits are configured on this plan";
+}
+
+function main_app_account_management_billing_select_active_subscription(
+	subscriptions: MainAppAccountManagementBillingSubscriptionRow[],
+) {
 	return subscriptions.find((subscription) => {
 		return (subscription.status === "active" || subscription.status === "trialing") && !subscription.endedAt;
 	});
 }
 
-function main_app_account_management_billing_subscription_status_label(subscription: BillingSubscriptionRow) {
+function main_app_account_management_billing_subscription_status_label(
+	subscription: MainAppAccountManagementBillingSubscriptionRow,
+) {
 	if (subscription.status === "trialing") {
 		return "In trial";
 	}
@@ -131,7 +165,9 @@ function main_app_account_management_billing_subscription_status_label(subscript
 	return "Active";
 }
 
-function main_app_account_management_billing_subscription_renewal_line(subscription: BillingSubscriptionRow) {
+function main_app_account_management_billing_subscription_renewal_line(
+	subscription: MainAppAccountManagementBillingSubscriptionRow,
+) {
 	if (!subscription.currentPeriodEnd) {
 		return null;
 	}
@@ -147,7 +183,7 @@ function main_app_account_management_billing_subscription_renewal_line(subscript
 
 function main_app_account_management_billing_benefit_descriptions(
 	product: (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS],
-	benefits: BillingProductRow["benefits"] | null | undefined,
+	benefits: MainAppAccountManagementBillingProductRow["benefits"] | null | undefined,
 ) {
 	return (benefits ?? [])
 		.map((benefit) => {
@@ -161,7 +197,7 @@ function main_app_account_management_billing_benefit_descriptions(
 
 function main_app_account_management_billing_find_benefit(
 	product: (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS],
-	benefits: BillingProductRow["benefits"] | null | undefined,
+	benefits: MainAppAccountManagementBillingProductRow["benefits"] | null | undefined,
 	benefit: (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS]["benefits"][keyof (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS]["benefits"]],
 ) {
 	return (benefits ?? []).find((productBenefit) => {
@@ -777,16 +813,15 @@ type MainAppAccountManagementBillingActivePlan_ClassNames =
 	| "MainAppAccountManagementBillingActivePlan-started"
 	| "MainAppAccountManagementBillingActivePlan-details"
 	| "MainAppAccountManagementBillingActivePlan-covers"
-	| "MainAppAccountManagementBillingActivePlan-description-secondary"
 	| "MainAppAccountManagementBillingActivePlan-list"
 	| "MainAppAccountManagementBillingActivePlan-list-item";
 
-type MainAppAccountManagementBillingActivePlan_Subscription = BillingSubscriptionRow;
+type MainAppAccountManagementBillingActivePlan_Subscription = MainAppAccountManagementBillingSubscriptionRow;
 
 type MainAppAccountManagementBillingActivePlan_Props = {
-	catalog: BillingProductRow;
+	catalog: MainAppAccountManagementBillingProductRow;
 	subscription: MainAppAccountManagementBillingActivePlan_Subscription;
-	usage: BillingUsageOverview;
+	usage: MainAppAccountManagementBillingUsageSnapshot;
 };
 
 const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountManagementBillingActivePlan(
@@ -796,7 +831,6 @@ const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountMa
 	const billingProduct = BILLING_PRODUCTS["Pay As You Go"];
 	const primaryPrice = catalog.prices?.find((priceRow) => !priceRow.isArchived) ?? catalog.prices?.[0];
 	const benefitDescriptions = main_app_account_management_billing_benefit_descriptions(billingProduct, catalog.benefits);
-	const currencyLabel = (primaryPrice?.priceCurrency ?? "eur").toUpperCase();
 	const intervalLabel = main_app_account_management_billing_interval_label(
 		primaryPrice?.recurringInterval ?? catalog.recurringInterval ?? null,
 	);
@@ -807,43 +841,54 @@ const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountMa
 		catalog.benefits,
 		billingProduct.benefits["Free usage"],
 	);
-	const includedUnits = freeUsageBenefit?.properties?.units ?? null;
-	const hasIncludedMeterCredits = freeUsageBenefit != null;
-	const unitAmountNumber =
-		primaryPrice?.unitAmount === undefined || primaryPrice?.unitAmount === null
+	const includedUsage = freeUsageBenefit ? billingProduct.benefits["Free usage"].includedUsage : null;
+	const freeUsageBenefitDescription = billingProduct.benefits["Free usage"].displayDescription;
+	const includedUsageValue = includedUsage
+		? main_app_account_management_billing_format_major_currency(includedUsage.amount, includedUsage.currency)
+		: null;
+	const benefitDescriptionsLine = benefitDescriptions
+		.map((description) => {
+			if (description === freeUsageBenefitDescription && includedUsageValue) {
+				return `${description} ${includedUsageValue}`;
+			}
+
+			return description;
+		})
+		.join(" · ");
+	const unitPriceAmount =
+		billingProduct.meter.unitPrice?.amount ??
+		(primaryPrice?.unitAmount === undefined || primaryPrice?.unitAmount === null
 			? null
 			: typeof primaryPrice.unitAmount === "number"
 				? primaryPrice.unitAmount
-				: Number(primaryPrice.unitAmount);
-	const formattedUnitPrice =
-		unitAmountNumber != null && primaryPrice?.priceCurrency != null
-			? new Intl.NumberFormat(undefined, {
-					style: "currency",
-					currency: primaryPrice.priceCurrency.toUpperCase(),
-				}).format(unitAmountNumber)
-			: null;
+				: Number(primaryPrice.unitAmount));
 
 	const subscriptionRenewalLine = main_app_account_management_billing_subscription_renewal_line(subscription);
 	const subscriptionStartedLine = subscription.startedAt
 		? `Started ${main_app_account_management_billing_format_iso_date(subscription.startedAt)}`
 		: null;
+	const showStandaloneIncludedUsageValue =
+		includedUsageValue != null && !benefitDescriptions.includes(freeUsageBenefitDescription);
 
 	const showMeteredSummaryInActivePlan = isMetered;
 
 	const meteredDueAndCreditsLine =
 		showMeteredSummaryInActivePlan
-			? usage == null
+			? usage?.meter == null || usage.subscription == null
 				? { kind: "loading" as const }
 				: {
 						kind: "ready" as const,
-						due: main_app_account_management_billing_format_minor_currency(usage.amountDueCents, usage.currency),
+						due: main_app_account_management_billing_format_minor_currency(
+							usage.meter.amountDueCents,
+							usage.subscription.currency,
+						),
 						creditsLeft:
-							unitAmountNumber != null
+							unitPriceAmount != null
 								? main_app_account_management_billing_format_major_currency(
-										Math.max(0, usage.balance) * unitAmountNumber,
-										usage.currency,
+										Math.max(0, usage.meter.balance) * unitPriceAmount,
+										usage.subscription.currency,
 									)
-								: `${usage.balance} units`,
+								: `${usage.meter.balance} units`,
 					}
 			: null;
 
@@ -891,50 +936,37 @@ const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountMa
 					"MainAppAccountManagementBillingActivePlan-details" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
 				}
 			>
-				{benefitDescriptions.length ? (
-					<p
-						className={
-							"MainAppAccountManagementBillingActivePlan-description-secondary" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
-						}
-					>
-						{benefitDescriptions.join(" · ")}
-					</p>
-				) : null}
 				<ul
 					className={
 						"MainAppAccountManagementBillingActivePlan-list" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
 					}
 				>
+					{benefitDescriptions.length ? (
+						<li
+							className={
+								"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+							}
+						>
+							{benefitDescriptionsLine}
+						</li>
+					) : null}
 					<li
 						className={
 							"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
 						}
 					>
-						Billed {intervalLabel} in {currencyLabel}
+						Billed {intervalLabel}
 						{meterName ? ` · ${meterName}` : ""}
 					</li>
-					<li
-						className={
-							"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
-						}
-					>
-						{isMetered
-							? formattedUnitPrice
-								? `${formattedUnitPrice} per usage unit`
-								: "Usage is billed from metered units"
-							: "Pricing follows the product you choose at checkout"}
-					</li>
-					<li
-						className={
-							"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
-						}
-					>
-						{includedUnits != null
-							? `Included credits: ${includedUnits} units`
-							: hasIncludedMeterCredits
-								? "Includes meter credits before paid usage applies"
-								: "No included credits are configured on this plan"}
-					</li>
+					{showStandaloneIncludedUsageValue ? (
+						<li
+							className={
+								"MainAppAccountManagementBillingActivePlan-list-item" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
+							}
+						>
+							{includedUsageValue}
+						</li>
+					) : null}
 				</ul>
 			</div>
 		</div>
@@ -976,8 +1008,8 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 	const { isAnonymous } = props;
 
 	const billingProducts = useQuery(app_convex_api.billing.list_products, isAnonymous ? "skip" : {});
-	const billingSubscriptions = useQuery(app_convex_api.billing.list_all_subscriptions, isAnonymous ? "skip" : {});
-	const billingUsage = useQuery(app_convex_api.billing.get_usage, isAnonymous ? "skip" : {});
+	const billingSubscriptions = useQuery(app_convex_api.billing.list_subscriptions, isAnonymous ? "skip" : {});
+	const billingUsage = useQuery(app_convex_api.billing.get_usage_snapshot, isAnonymous ? "skip" : {});
 
 	const generateCustomerPortalUrl = useAction(app_convex_api.billing.generate_customer_portal_url);
 
@@ -1082,36 +1114,21 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 	}
 
 	const subscription = activeSubscription;
-	const usage: BillingUsageOverview = billingUsage;
+	const usage: MainAppAccountManagementBillingUsageSnapshot = billingUsage;
 	const primaryPrice =
 		checkoutProduct?.prices?.find((priceRow) => !priceRow.isArchived) ?? checkoutProduct?.prices?.[0];
 	const benefitDescriptions = main_app_account_management_billing_benefit_descriptions(billingProduct, checkoutProduct.benefits);
-	const currencyLabel = (primaryPrice?.priceCurrency ?? "eur").toUpperCase();
 	const intervalLabel = main_app_account_management_billing_interval_label(
 		primaryPrice?.recurringInterval ?? checkoutProduct?.recurringInterval ?? null,
 	);
-	const isMetered = primaryPrice?.amountType === "metered_unit";
 	const meterName = primaryPrice?.meter?.name ?? null;
 	const freeUsageBenefit = main_app_account_management_billing_find_benefit(
 		billingProduct,
 		checkoutProduct.benefits,
 		billingProduct.benefits["Free usage"],
 	);
-	const includedUnits = freeUsageBenefit?.properties?.units ?? null;
 	const hasIncludedMeterCredits = freeUsageBenefit != null;
-	const unitAmountNumber =
-		primaryPrice?.unitAmount === undefined || primaryPrice?.unitAmount === null
-			? null
-			: typeof primaryPrice.unitAmount === "number"
-				? primaryPrice.unitAmount
-				: Number(primaryPrice.unitAmount);
-	const formattedUnitPrice =
-		unitAmountNumber != null && primaryPrice?.priceCurrency != null
-			? new Intl.NumberFormat(undefined, {
-					style: "currency",
-					currency: primaryPrice.priceCurrency.toUpperCase(),
-				}).format(unitAmountNumber)
-			: null;
+	const includedUsage = freeUsageBenefit ? billingProduct.benefits["Free usage"].includedUsage : null;
 
 	const subscriptionStatusBadge =
 		subscription != null ? main_app_account_management_billing_subscription_status_label(subscription) : null;
@@ -1166,7 +1183,7 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
 							}
 						>
-							Billed {intervalLabel} in {currencyLabel}
+							Billed {intervalLabel}
 						</li>
 						{meterName ? (
 							<li
@@ -1182,22 +1199,10 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
 							}
 						>
-							{isMetered
-								? formattedUnitPrice
-									? `Metered unit price: ${formattedUnitPrice} per usage unit`
-									: "Usage is billed from metered units"
-								: "Pricing follows the product you choose at checkout"}
-						</li>
-						<li
-							className={
-								"MainAppAccountManagementBilling-plan-list-item" satisfies MainAppAccountManagementBilling_ClassNames
-							}
-						>
-							{includedUnits != null
-								? `Included credits: ${includedUnits} units`
-								: hasIncludedMeterCredits
-									? "Includes meter credits before paid usage applies"
-									: "No included credits are configured on this plan"}
+							{main_app_account_management_billing_included_usage_line({
+								hasIncludedMeterCredits,
+								includedUsage,
+							})}
 						</li>
 					</ul>
 				</div>

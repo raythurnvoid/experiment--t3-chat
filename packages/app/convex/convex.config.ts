@@ -10,6 +10,5 @@ app.use(polar);
 app.use(presence);
 app.use(migrations);
 app.use(workpool, { name: "billingUsageEventWorkpool" });
-app.use(workpool, { name: "billingRefreshWorkpool" });
 
 export default app;

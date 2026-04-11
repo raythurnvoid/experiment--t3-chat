@@ -1,5 +1,6 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { query } from "./_generated/server.js";
+import { convex_error } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { user_limits, workspace_limits } from "../shared/limits.ts";
 
@@ -30,7 +31,7 @@ export const get_user_limit = query({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw new ConvexError("Unauthenticated");
+			throw convex_error({ message: "Unauthenticated" });
 		}
 		if (user.id !== args.userId) {
 			return null;
@@ -71,7 +72,7 @@ export const get_workspace_limit = query({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw new ConvexError("Unauthenticated");
+			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await ctx.db
 			.query("workspaces_projects_users")

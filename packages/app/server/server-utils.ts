@@ -14,6 +14,26 @@ if (!ALLOWED_ORIGINS) {
 
 type ConvexCtx = GenericMutationCtx<any> | GenericQueryCtx<any> | GenericActionCtx<any>;
 
+export const allowed_origins = ((/* iife */) => {
+	function value() {
+		const allowedOrigins: string[] = [];
+
+		for (const part of ALLOWED_ORIGINS.split(",")) {
+			try {
+				allowedOrigins.push(new URL(part).origin);
+			} catch {}
+		}
+
+		return allowedOrigins;
+	}
+
+	let cache: ReturnType<typeof value> | undefined;
+
+	return function allowed_origins() {
+		return (cache ??= value());
+	};
+})();
+
 /**
  * Resolve the current auth state from `ctx.auth.getUserIdentity()`.
  *

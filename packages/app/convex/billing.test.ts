@@ -1,11 +1,8 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import type { CustomerState } from "@polar-sh/sdk/models/components/customerstate.js";
 import { BILLING_PRODUCTS, PRODUCTS } from "../shared/billing.ts";
 import { billing_EVENTS } from "../server/billing.ts";
-import { billing_usage_snapshot_fields_from_customer_state } from "./billing.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex } from "./setup.test.ts";
-import { customersGetState } from "@polar-sh/sdk/funcs/customersGetState.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import type { Id } from "./_generated/dataModel.js";
 
@@ -19,313 +16,7 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 	eventsIngest: vi.fn(),
 }));
 
-vi.mock("@polar-sh/sdk/funcs/customersGetState.js", () => ({
-	customersGetState: vi.fn(),
-}));
-
 const eventsIngestMock = vi.mocked(eventsIngest);
-const customersGetStateMock = vi.mocked(customersGetState);
-
-describe("billing_usage_snapshot_fields_from_customer_state", () => {
-	test("maps the pay-as-you-go subscription meter and prefers Polar active meter balance", () => {
-		const paygProductId = "payg_product_1";
-		const now = 1_700_000_000_000;
-		const subscriptionMeter = {
-			createdAt: new Date("2026-01-01T00:00:00.000Z"),
-			modifiedAt: null as Date | null,
-			id: "sub_meter_1",
-			consumedUnits: 12,
-			creditedUnits: 2000,
-			amount: 750,
-			meterId: "meter_units",
-		};
-		const state = {
-			type: "individual",
-			id: "polar_customer_1",
-			createdAt: new Date("2025-12-01T00:00:00.000Z"),
-			modifiedAt: null,
-			metadata: {},
-			email: "u@test.local",
-			emailVerified: true,
-			name: null,
-			billingAddress: null,
-			taxId: null,
-			organizationId: "org",
-			deletedAt: null,
-			avatarUrl: "",
-			activeSubscriptions: [
-				{
-					id: "sub_1",
-					createdAt: new Date("2026-01-01T00:00:00.000Z"),
-					modifiedAt: null,
-					metadata: {},
-					status: "active",
-					amount: 1000,
-					currency: "usd",
-					recurringInterval: "month",
-					currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
-					currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
-					trialStart: null,
-					trialEnd: null,
-					cancelAtPeriodEnd: false,
-					canceledAt: null,
-					startedAt: new Date("2026-01-01T00:00:00.000Z"),
-					endsAt: null,
-					productId: paygProductId,
-					discountId: null,
-					meters: [subscriptionMeter],
-				},
-			],
-			grantedBenefits: [],
-			activeMeters: [
-				{
-					id: "am_1",
-					createdAt: new Date("2026-01-01T00:00:00.000Z"),
-					modifiedAt: null,
-					meterId: "meter_units",
-					consumedUnits: 12,
-					creditedUnits: 2000,
-					balance: 1988,
-				},
-			],
-		} as unknown as CustomerState;
-
-		const fields = billing_usage_snapshot_fields_from_customer_state({
-			customerState: state,
-			paygProductId,
-			preferredMeterId: "meter_units",
-			preferredMeterName: "Billable units",
-			userId: "user_mapper_test" as Id<"users">,
-			polarCustomerId: state.id,
-			now,
-		});
-
-		expect(fields).not.toBeNull();
-		if (!fields) {
-			throw new Error("expected fields");
-		}
-		expect(fields.userId).toBe("user_mapper_test");
-		expect(fields.polarCustomerId).toBe("polar_customer_1");
-		expect(fields.subscriptionId).toBe("sub_1");
-		expect(fields.productId).toBe(paygProductId);
-		expect(fields.meterId).toBe("meter_units");
-		expect(fields.meterName).toBe("Billable units");
-		expect(fields.consumedUnits).toBe(12);
-		expect(fields.creditedUnits).toBe(2000);
-		expect(fields.balance).toBe(1988);
-		expect(fields.amountDueCents).toBe(750);
-		expect(fields.currency).toBe("usd");
-		expect(fields.currentPeriodStart).toBe("2026-01-01T00:00:00.000Z");
-		expect(fields.currentPeriodEnd).toBe("2026-02-01T00:00:00.000Z");
-		expect(fields.lastSyncedAt).toBe(now);
-	});
-
-	test("returns null when there is no subscription for the pay-as-you-go product", () => {
-		const state = {
-			type: "individual",
-			id: "c2",
-			createdAt: new Date(),
-			modifiedAt: null,
-			metadata: {},
-			email: "x@test",
-			emailVerified: true,
-			name: null,
-			billingAddress: null,
-			taxId: null,
-			organizationId: "org_v2",
-			deletedAt: null,
-			avatarUrl: "",
-			activeSubscriptions: [],
-			grantedBenefits: [],
-			activeMeters: [],
-		} as unknown as CustomerState;
-
-		const fields = billing_usage_snapshot_fields_from_customer_state({
-			customerState: state,
-			paygProductId: "missing_product",
-			preferredMeterId: null,
-			preferredMeterName: null,
-			userId: "u1" as Id<"users">,
-			polarCustomerId: "c2",
-			now: Date.now(),
-		});
-		expect(fields).toBeNull();
-	});
-
-	test("returns null when more than one PAYG subscription exists in customer state", () => {
-		const paygProductId = "payg_product_dup";
-		const now = 1_700_000_000_000;
-		const subShape = {
-			createdAt: new Date("2026-01-01T00:00:00.000Z"),
-			modifiedAt: null as Date | null,
-			metadata: {},
-			status: "active" as const,
-			amount: 1000,
-			currency: "usd",
-			recurringInterval: "month" as const,
-			currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
-			currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
-			trialStart: null,
-			trialEnd: null,
-			cancelAtPeriodEnd: false,
-			canceledAt: null,
-			startedAt: new Date("2026-01-01T00:00:00.000Z"),
-			endsAt: null,
-			productId: paygProductId,
-			discountId: null,
-			meters: [
-				{
-					createdAt: new Date("2026-01-01T00:00:00.000Z"),
-					modifiedAt: null as Date | null,
-					id: "sm_1",
-					consumedUnits: 1,
-					creditedUnits: 10,
-					amount: 0,
-					meterId: "meter_units",
-				},
-			],
-		};
-		const state = {
-			type: "individual",
-			id: "polar_customer_dup",
-			createdAt: new Date("2025-12-01T00:00:00.000Z"),
-			modifiedAt: null,
-			metadata: {},
-			email: "dup@test.local",
-			emailVerified: true,
-			name: null,
-			billingAddress: null,
-			taxId: null,
-			organizationId: "org",
-			deletedAt: null,
-			avatarUrl: "",
-			activeSubscriptions: [
-				{ ...subShape, id: "sub_a" },
-				{ ...subShape, id: "sub_b" },
-			],
-			grantedBenefits: [],
-			activeMeters: [],
-		} as unknown as CustomerState;
-
-		const fields = billing_usage_snapshot_fields_from_customer_state({
-			customerState: state,
-			paygProductId,
-			preferredMeterId: "meter_units",
-			preferredMeterName: "Units",
-			userId: "user_dup" as Id<"users">,
-			polarCustomerId: state.id,
-			now,
-		});
-		expect(fields).toBeNull();
-	});
-});
-
-describe("billing get_pay_as_you_go_product", () => {
-	test("returns ready when synced name matches POLAR_PRODUCTS_PREFIX pattern", async () => {
-		const t = test_convex();
-		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
-		if (!prefix) {
-			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
-		}
-		const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
-		const polarProductId = "billing_test_checkout_product_id";
-
-		await t.mutation(components.polar.lib.createProduct, {
-			product: {
-				id: polarProductId,
-				organizationId: "billing_test_org",
-				name: polarProductName,
-				description: null,
-				isRecurring: true,
-				isArchived: false,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: null,
-				recurringInterval: "month",
-				metadata: {},
-				prices: [],
-				medias: [],
-				benefits: [],
-			},
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_billing_products_query" as Id<"users">,
-			name: "Billing Products",
-			email: "billing-products@test.local",
-		});
-
-		const configured = await asUser.query(internal.billing.get_pay_as_you_go_product, {});
-		expect(configured?.id).toBe(polarProductId);
-		expect(configured?.name).toBe(polarProductName);
-	});
-
-	test("returns ready when synced name matches the human-readable billing label", async () => {
-		const t = test_convex();
-		const polarProductId = "billing_test_checkout_product_label";
-
-		await t.mutation(components.polar.lib.createProduct, {
-			product: {
-				id: polarProductId,
-				organizationId: "billing_test_org",
-				name: BILLING_PRODUCTS["Pay As You Go"].displayName,
-				description: null,
-				isRecurring: true,
-				isArchived: false,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: null,
-				recurringInterval: "month",
-				metadata: {},
-				prices: [],
-				medias: [],
-				benefits: [],
-			},
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_billing_products_query_label" as Id<"users">,
-			name: "Billing Products Label",
-			email: "billing-products-label@test.local",
-		});
-
-		const configured = await asUser.query(internal.billing.get_pay_as_you_go_product, {});
-		expect(configured?.id).toBe(polarProductId);
-		expect(configured?.name).toBe(BILLING_PRODUCTS["Pay As You Go"].displayName);
-	});
-
-	test("returns null when no product name matches", async () => {
-		const t = test_convex();
-
-		await t.mutation(components.polar.lib.createProduct, {
-			product: {
-				id: "billing_other_product",
-				organizationId: "billing_test_org",
-				name: "some-unrelated-product-name",
-				description: null,
-				isRecurring: true,
-				isArchived: false,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				modifiedAt: null,
-				recurringInterval: "month",
-				metadata: {},
-				prices: [],
-				medias: [],
-				benefits: [],
-			},
-		});
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: "user_billing_products_empty" as Id<"users">,
-			name: "Billing Empty",
-			email: "billing-empty@test.local",
-		});
-
-		const configured = await asUser.query(internal.billing.get_pay_as_you_go_product, {});
-		expect(configured).toBeNull();
-	});
-});
 
 type PaygSeed = {
 	polarProductId: string;
@@ -630,11 +321,11 @@ describe("billing list_products", () => {
 	});
 });
 
-describe("billing list_all_subscriptions", () => {
+describe("billing list_subscriptions", () => {
 	test("returns empty array when unauthenticated", async () => {
 		const t = test_convex();
 
-		const subscriptions = await t.query(api.billing.list_all_subscriptions, {});
+		const subscriptions = await t.query(api.billing.list_subscriptions, {});
 
 		expect(subscriptions).toEqual([]);
 	});
@@ -648,7 +339,7 @@ describe("billing list_all_subscriptions", () => {
 			email: "subscription-empty@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_all_subscriptions, {});
+		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
 
 		expect(subscriptions).toEqual([]);
 	});
@@ -692,7 +383,7 @@ describe("billing list_all_subscriptions", () => {
 			email: "subscription-active@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_all_subscriptions, {});
+		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
 		expect(subscriptions).toHaveLength(1);
 		expect(subscriptions[0]?.productId).toBe(polarProductId);
 		expect(subscriptions[0]?.status).toBe("active");
@@ -738,7 +429,7 @@ describe("billing list_all_subscriptions", () => {
 			email: "subscription-cancel@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_all_subscriptions, {});
+		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
 		expect(subscriptions).toHaveLength(1);
 		expect(subscriptions[0]?.productId).toBe(polarProductId);
 		expect(subscriptions[0]?.status).toBe("active");
@@ -784,18 +475,18 @@ describe("billing list_all_subscriptions", () => {
 			email: "subscription-trial@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_all_subscriptions, {});
+		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
 		expect(subscriptions).toHaveLength(1);
 		expect(subscriptions[0]?.productId).toBe(polarProductId);
 		expect(subscriptions[0]?.status).toBe("trialing");
 	});
 });
 
-describe("billing get_usage", () => {
+describe("billing get_usage_snapshot", () => {
 	test("returns null when unauthenticated", async () => {
 		const t = test_convex();
 
-		const usage = await t.query(api.billing.get_usage, {});
+		const usage = await t.query(api.billing.get_usage_snapshot, {});
 
 		expect(usage).toBeNull();
 	});
@@ -809,7 +500,7 @@ describe("billing get_usage", () => {
 			email: "usage-empty@test.local",
 		});
 
-		const usage = await asUser.query(api.billing.get_usage, {});
+		const usage = await asUser.query(api.billing.get_usage_snapshot, {});
 
 		expect(usage).toBeNull();
 	});
@@ -851,19 +542,21 @@ describe("billing get_usage", () => {
 			await ctx.db.insert("billing_usage_snapshots", {
 				userId: "user_billing_usage_ready" as Id<"users">,
 				polarCustomerId: "cust_usage_ready",
-				subscriptionId: "sub_usage_ready",
-				productId: polarProductId,
-				meterId: "meter_units",
-				meterName: "Billable units",
-				consumedUnits: 4,
-				creditedUnits: 100,
-				balance: 96,
-				amountDueCents: 250,
-				currency: "usd",
-				currentPeriodStart: "2026-01-01T00:00:00.000Z",
-				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				subscription: {
+					id: "sub_usage_ready",
+					productId: polarProductId,
+					currency: "usd",
+					currentPeriodStart: "2026-01-01T00:00:00.000Z",
+					currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				},
+				meter: {
+					id: "meter_units",
+					consumedUnits: 4,
+					creditedUnits: 100,
+					balance: 96,
+					amountDueCents: 250,
+				},
 				lastSyncedAt: syncedAt,
-				lastError: null,
 			});
 		});
 
@@ -874,14 +567,15 @@ describe("billing get_usage", () => {
 			email: "usage-ready@test.local",
 		});
 
-		const usage = await asUser.query(api.billing.get_usage, {});
+		const usage = await asUser.query(api.billing.get_usage_snapshot, {});
 		expect(usage).not.toBeNull();
 		if (!usage) {
 			throw new Error("Expected usage snapshot");
 		}
-		expect(usage.consumedUnits).toBe(4);
-		expect(usage.amountDueCents).toBe(250);
-		expect(usage.balance).toBe(96);
+		expect(usage.subscription?.productId).toBe(polarProductId);
+		expect(usage.meter?.consumedUnits).toBe(4);
+		expect(usage.meter?.amountDueCents).toBe(250);
+		expect(usage.meter?.balance).toBe(96);
 		expect(usage.lastSyncedAt).toBe(syncedAt);
 	});
 });
@@ -922,25 +616,22 @@ describe("billing generate_checkout_link auth", () => {
 	});
 });
 
-describe("refresh_usage_snapshot", () => {
-	beforeEach(() => {
-		customersGetStateMock.mockReset();
-	});
-
-	test("syncs usage from Polar state and clears prior failures", async () => {
+describe("handle_polar_customer_state_update", () => {
+	test("writes the usage snapshot directly from the first active subscription meter in the webhook payload", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
 		if (!prefix) {
 			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
 		}
-		const polarProductId = "billing_refresh_snapshot_product";
+		const polarProductId = "billing_refresh_snapshot_webhook_product";
 		const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
+
 		await t.mutation(components.polar.lib.createProduct, {
 			product: {
 				id: polarProductId,
 				organizationId: "billing_test_org",
 				name: polarProductName,
-				description: "Metered plan used for refresh tests.",
+				description: null,
 				isRecurring: true,
 				isArchived: false,
 				createdAt: "2026-01-01T00:00:00.000Z",
@@ -949,7 +640,20 @@ describe("refresh_usage_snapshot", () => {
 				metadata: {},
 				prices: [
 					{
-						id: "price_refresh_snapshot",
+						id: "price_old_webhook_meter",
+						createdAt: "2025-12-01T00:00:00.000Z",
+						modifiedAt: null,
+						amountType: "metered_unit",
+						isArchived: false,
+						productId: polarProductId,
+						priceCurrency: "eur",
+						unitAmount: "1",
+						recurringInterval: "month",
+						meterId: "meter_old_webhook",
+						meter: { id: "meter_old_webhook", name: "Legacy usage" },
+					},
+					{
+						id: "price_new_webhook_meter",
 						createdAt: "2026-01-01T00:00:00.000Z",
 						modifiedAt: null,
 						amountType: "metered_unit",
@@ -958,8 +662,8 @@ describe("refresh_usage_snapshot", () => {
 						priceCurrency: "eur",
 						unitAmount: "1",
 						recurringInterval: "month",
-						meterId: "meter_units",
-						meter: { id: "meter_units", name: "Billable units" },
+						meterId: "meter_new_webhook",
+						meter: { id: "meter_new_webhook", name: "Press usage" },
 					},
 				],
 				medias: [],
@@ -967,94 +671,111 @@ describe("refresh_usage_snapshot", () => {
 			},
 		});
 
-		await t.mutation(components.polar.lib.insertCustomer, {
-			id: "cust_refresh_snapshot",
-			userId: "user_refresh_snapshot" as Id<"users">,
-		});
-
-		customersGetStateMock.mockResolvedValue({
-			ok: true,
-			value: {
-				type: "individual",
-				id: "cust_refresh_snapshot",
-				createdAt: new Date("2026-01-01T00:00:00.000Z"),
-				modifiedAt: null,
-				metadata: {},
-				email: "refresh-snapshot@test.local",
-				emailVerified: true,
-				name: null,
-				billingAddress: null,
-				taxId: null,
-				organizationId: "billing_test_org",
-				deletedAt: null,
-				avatarUrl: "",
-				activeSubscriptions: [
-					{
-						id: "sub_refresh_snapshot",
-						createdAt: new Date("2026-01-01T00:00:00.000Z"),
-						modifiedAt: null,
-						metadata: {},
-						status: "active",
-						amount: 1000,
-						currency: "eur",
-						recurringInterval: "month",
-						currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
-						currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
-						trialStart: null,
-						trialEnd: null,
-						cancelAtPeriodEnd: false,
-						canceledAt: null,
-						startedAt: new Date("2026-01-01T00:00:00.000Z"),
-						endsAt: null,
-						productId: polarProductId,
-						discountId: null,
-						meters: [
-							{
-								createdAt: new Date("2026-01-01T00:00:00.000Z"),
-								modifiedAt: null,
-								id: "meter_sub_refresh_snapshot",
-								consumedUnits: 7,
-								creditedUnits: 2000,
-								amount: 700,
-								meterId: "meter_units",
-							},
-						],
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-11T05:30:11.300891Z",
+				data: {
+					id: "cust_refresh_snapshot_webhook",
+					created_at: "2026-04-07T12:47:35.912837Z",
+					modified_at: "2026-04-11T04:53:38.614819Z",
+					metadata: {
+						userId: "user_refresh_snapshot_webhook",
 					},
-				],
-				grantedBenefits: [],
-				activeMeters: [
-					{
-						id: "active_meter_refresh_snapshot",
-						createdAt: new Date("2026-01-01T00:00:00.000Z"),
-						modifiedAt: null,
-						meterId: "meter_units",
-						consumedUnits: 7,
-						creditedUnits: 2000,
-						balance: 1993,
+					external_id: "user_refresh_snapshot_webhook" as Id<"users">,
+					email: "billing@example.com",
+					email_verified: false,
+					type: "individual",
+					name: "Billing Test",
+					billing_address: {
+						line1: null,
+						line2: null,
+						postal_code: null,
+						city: null,
+						state: null,
+						country: "PT",
 					},
-				],
-			} as CustomerState,
+					tax_id: null,
+					locale: "en-US",
+					organization_id: "billing_test_org",
+					deleted_at: null,
+					active_subscriptions: [
+						{
+							id: "sub_refresh_snapshot_webhook",
+							created_at: "2026-04-07T12:51:57.218982Z",
+							modified_at: null,
+							metadata: {},
+							status: "active",
+							amount: 0,
+							product_id: polarProductId,
+							price_id: "price_new_webhook_meter",
+							currency: "eur",
+							recurring_interval: "month",
+							current_period_start: "2026-04-07T12:51:57.211492Z",
+							current_period_end: "2026-05-07T12:51:57.211492Z",
+							trial_start: null,
+							trial_end: null,
+							cancel_at_period_end: false,
+							canceled_at: null,
+							started_at: "2026-04-07T12:51:57.211492Z",
+							ends_at: null,
+							discount_id: null,
+							custom_field_data: {},
+							meters: [
+								{
+									id: "sub_meter_refresh_snapshot_webhook",
+									created_at: "2026-04-07T12:47:51.954545Z",
+									modified_at: "2026-04-09T03:59:32.439531Z",
+									meter_id: "meter_new_webhook",
+									consumed_units: 6,
+									credited_units: 0,
+									amount: 6,
+								},
+							],
+						},
+					],
+					granted_benefits: [
+						{
+							id: "benefit_refresh_snapshot_webhook",
+							created_at: "2026-04-07T12:51:58.518748Z",
+							modified_at: "2026-04-07T12:51:58.603084Z",
+							granted_at: "2026-04-07T12:51:58.602025Z",
+							benefit_id: "benefit_meter_credit_refresh_snapshot",
+							benefit_type: "meter_credit",
+							benefit_metadata: {},
+							properties: {},
+						},
+					],
+					active_meters: [
+						{
+							id: "customer_meter_refresh_snapshot_webhook",
+							created_at: "2026-04-07T12:47:51.954545Z",
+							modified_at: "2026-04-09T03:59:32.439531Z",
+							meter_id: "meter_new_webhook",
+							consumed_units: 6,
+							credited_units: 2178,
+							balance: 2172,
+						},
+					],
+					avatar_url: "https://example.com/avatar.png",
+				},
+			},
 		});
-
-		const refreshResult = await t.action(internal.billing.refresh_usage_snapshot, {
-			userId: "user_refresh_snapshot" as Id<"users">,
-		});
-		expect(refreshResult).toBeNull();
 
 		const snapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", "user_refresh_snapshot" as Id<"users">))
+				.withIndex("by_userId", (q) =>
+					q.eq("userId", "user_refresh_snapshot_webhook" as Id<"users">),
+				)
 				.unique(),
 		);
+
 		expect(snapshot).not.toBeNull();
-		expect(snapshot!.polarCustomerId).toBe("cust_refresh_snapshot");
-		expect(snapshot!.amountDueCents).toBe(700);
-		expect(snapshot!.balance).toBe(1993);
-		expect(customersGetStateMock).toHaveBeenCalledTimes(1);
-		expect(customersGetStateMock).toHaveBeenCalledWith(expect.anything(), {
-			id: "cust_refresh_snapshot",
-		});
+		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_webhook");
+		expect(snapshot!.meter?.id).toBe("meter_new_webhook");
+		expect(snapshot!.meter?.amountDueCents).toBe(6);
+		expect(snapshot!.meter?.balance).toBe(2172);
 	});
 });
 
@@ -1180,44 +901,5 @@ describe("ingest_usage_event", () => {
 				metadata: {},
 			}),
 		).rejects.toThrow("ingest_failed_test");
-	});
-});
-
-describe("refresh_usage_snapshot catalog guard", () => {
-	test("clears the cached snapshot when pay-as-you-go catalog is not ready", async () => {
-		const t = test_convex();
-		const userId = "user_refresh_catalog_not_ready" as Id<"users">;
-		await t.run(async (ctx) => {
-			await ctx.db.insert("billing_usage_snapshots", {
-				userId,
-				polarCustomerId: "cust_catalog_guard",
-				subscriptionId: "sub_catalog_guard",
-				productId: "prod_catalog_guard",
-				meterId: "meter_catalog_guard",
-				meterName: "Catalog guard meter",
-				consumedUnits: 3,
-				creditedUnits: 2000,
-				balance: 1997,
-				amountDueCents: 300,
-				currency: "eur",
-				currentPeriodStart: "2026-01-01T00:00:00.000Z",
-				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-				lastSyncedAt: Date.now(),
-				lastError: null,
-			});
-		});
-
-		const refreshResult = await t.action(internal.billing.refresh_usage_snapshot, {
-			userId,
-		});
-		expect(refreshResult).toBeNull();
-
-		const snapshot = await t.run(async (ctx) =>
-			ctx.db
-				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", userId))
-				.unique(),
-		);
-		expect(snapshot).toBeNull();
 	});
 });
