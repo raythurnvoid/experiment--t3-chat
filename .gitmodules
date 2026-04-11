@@ -83,3 +83,6 @@
 	path = packages/app/vendor/polar
 	url = https://github.com/raythurnvoid/polar
 	branch = rt0-updates
+[submodule "references-submodules/workpool"]
+	path = references-submodules/workpool
+	url = https://github.com/get-convex/workpool.git

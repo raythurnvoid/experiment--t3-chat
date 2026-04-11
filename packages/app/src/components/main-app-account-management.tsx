@@ -1,7 +1,12 @@
 import "./main-app-account-management.css";
 
 import { CheckoutLink } from "@convex-dev/polar/react";
-import { PRODUCTS } from "../../shared/billing.ts";
+import {
+	BILLING_PRODUCTS,
+	PRODUCTS,
+	billing_product_benefit_matches_polar_description,
+	billing_product_matches_polar_name,
+} from "../../shared/billing.ts";
 import { useClerk, useUser } from "@clerk/clerk-react";
 import { useAction, useQuery } from "convex/react";
 import { CreditCard, Mail, RefreshCw, Shield, User, UserRound } from "lucide-react";
@@ -24,7 +29,7 @@ import {
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab, MyTabsTabSurface } from "@/components/my-tabs.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import type { BillingPlanDetails, BillingSignedInOverview, BillingUsageOverview } from "../../convex/billing.js";
+import type { BillingProductRow, BillingSubscriptionRow, BillingUsageOverview } from "../../convex/billing.js";
 import { users_create_anonymouse_user_display_name } from "../../shared/users.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import { compute_fallback_user_name } from "@/lib/utils.ts";
@@ -110,39 +115,58 @@ function main_app_account_management_billing_format_major_currency(amountMajor: 
 	}).format(amountMajor);
 }
 
-function main_app_account_management_billing_overview_catalog_is_ready(
-	overview: BillingSignedInOverview,
-): overview is Extract<BillingSignedInOverview, { catalog: { setup: "ready" } }> {
-	return overview.catalog.setup === "ready";
+function main_app_account_management_billing_select_active_subscription(subscriptions: BillingSubscriptionRow[]) {
+	return subscriptions.find((subscription) => {
+		return (subscription.status === "active" || subscription.status === "trialing") && !subscription.endedAt;
+	});
 }
 
-function main_app_account_management_billing_subscription_status_label(
-	state: "active" | "trialing" | "cancel_at_period_end",
-) {
-	if (state === "trialing") {
+function main_app_account_management_billing_subscription_status_label(subscription: BillingSubscriptionRow) {
+	if (subscription.status === "trialing") {
 		return "In trial";
 	}
-	if (state === "cancel_at_period_end") {
+	if (subscription.cancelAtPeriodEnd) {
 		return "Cancels on renewal";
 	}
 	return "Active";
 }
 
-function main_app_account_management_billing_subscription_renewal_line(subscription: {
-	state: "active" | "trialing" | "cancel_at_period_end";
-	currentPeriodEnd: string | null;
-}) {
+function main_app_account_management_billing_subscription_renewal_line(subscription: BillingSubscriptionRow) {
 	if (!subscription.currentPeriodEnd) {
 		return null;
 	}
 	const periodEnd = main_app_account_management_billing_format_iso_date(subscription.currentPeriodEnd);
-	if (subscription.state === "trialing") {
+	if (subscription.status === "trialing") {
 		return `Trial ends on ${periodEnd}`;
 	}
-	if (subscription.state === "cancel_at_period_end") {
+	if (subscription.cancelAtPeriodEnd) {
 		return `Cancels on ${periodEnd}`;
 	}
 	return `Renews on ${periodEnd}`;
+}
+
+function main_app_account_management_billing_benefit_descriptions(
+	product: (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS],
+	benefits: BillingProductRow["benefits"] | null | undefined,
+) {
+	return (benefits ?? [])
+		.map((benefit) => {
+			const matchingBenefit = Object.values(product.benefits).find((productBenefit) => {
+				return billing_product_benefit_matches_polar_description(benefit.description, productBenefit);
+			});
+			return matchingBenefit?.displayDescription.trim() ?? null;
+		})
+		.filter((description): description is string => description != null);
+}
+
+function main_app_account_management_billing_find_benefit(
+	product: (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS],
+	benefits: BillingProductRow["benefits"] | null | undefined,
+	benefit: (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS]["benefits"][keyof (typeof BILLING_PRODUCTS)[keyof typeof BILLING_PRODUCTS]["benefits"]],
+) {
+	return (benefits ?? []).find((productBenefit) => {
+		return billing_product_benefit_matches_polar_description(productBenefit.description, benefit);
+	});
 }
 
 function get_session_label(
@@ -645,50 +669,6 @@ const MainAppAccountManagementBillingActivePlanSkeleton = memo(
 );
 // #endregion billing active plan skeleton
 
-// #region billing active plan error
-type MainAppAccountManagementBillingActivePlanError_ClassNames =
-	| "MainAppAccountManagementBillingActivePlanError"
-	| "MainAppAccountManagementBillingActivePlanError-message"
-	| "MainAppAccountManagementBillingActivePlanError-detail";
-
-type MainAppAccountManagementBillingActivePlanError_Props = {
-	message: string;
-	detail?: string | null;
-};
-
-const MainAppAccountManagementBillingActivePlanError = memo(function MainAppAccountManagementBillingActivePlanError(
-	props: MainAppAccountManagementBillingActivePlanError_Props,
-) {
-	const { message, detail } = props;
-
-	return (
-		<div
-			className={
-				"MainAppAccountManagementBillingActivePlanError" satisfies MainAppAccountManagementBillingActivePlanError_ClassNames
-			}
-			role="alert"
-		>
-			<p
-				className={
-					"MainAppAccountManagementBillingActivePlanError-message" satisfies MainAppAccountManagementBillingActivePlanError_ClassNames
-				}
-			>
-				{message}
-			</p>
-			{detail ? (
-				<p
-					className={
-						"MainAppAccountManagementBillingActivePlanError-detail" satisfies MainAppAccountManagementBillingActivePlanError_ClassNames
-					}
-				>
-					{detail}
-				</p>
-			) : null}
-		</div>
-	);
-});
-// #endregion billing active plan error
-
 // #region billing active plan
 type MainAppAccountManagementBillingActivePlanUsage_ClassNames =
 	| "MainAppAccountManagementBillingActivePlanUsage"
@@ -696,18 +676,14 @@ type MainAppAccountManagementBillingActivePlanUsage_ClassNames =
 	| "MainAppAccountManagementBillingActivePlanUsage-sep"
 	| "MainAppAccountManagementBillingActivePlanUsage-label"
 	| "MainAppAccountManagementBillingActivePlanUsage-value"
-	| "MainAppAccountManagementBillingActivePlanUsage-meta"
-	| "MainAppAccountManagementBillingActivePlanUsage-error"
-	| "MainAppAccountManagementBillingActivePlanUsage-warning";
+	| "MainAppAccountManagementBillingActivePlanUsage-meta";
 
 type MainAppAccountManagementBillingActivePlanUsage_MeteredLine =
 	| { kind: "loading" }
-	| { kind: "error"; message: string; at: number }
 	| {
 			kind: "ready";
 			due: string;
 			creditsLeft: string;
-			lastError: string | null;
 	  };
 
 type MainAppAccountManagementBillingActivePlanUsage_Props = {
@@ -736,24 +712,6 @@ const MainAppAccountManagementBillingActivePlanUsage = memo(function MainAppAcco
 					}
 				>
 					Syncing usage…
-				</p>
-			</div>
-		);
-	}
-
-	if (meteredLine.kind === "error") {
-		return (
-			<div
-				className={
-					"MainAppAccountManagementBillingActivePlanUsage" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
-				}
-			>
-				<p
-					className={
-						"MainAppAccountManagementBillingActivePlanUsage-error" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
-					}
-				>
-					Usage could not be loaded: {meteredLine.message} ({format_relative_time(meteredLine.at)})
 				</p>
 			</div>
 		);
@@ -807,15 +765,6 @@ const MainAppAccountManagementBillingActivePlanUsage = memo(function MainAppAcco
 					{meteredLine.creditsLeft}
 				</span>
 			</p>
-			{meteredLine.lastError ? (
-				<p
-					className={
-						"MainAppAccountManagementBillingActivePlanUsage-warning" satisfies MainAppAccountManagementBillingActivePlanUsage_ClassNames
-					}
-				>
-					Usage sync warning: {meteredLine.lastError}
-				</p>
-			) : null}
 		</div>
 	);
 });
@@ -832,13 +781,10 @@ type MainAppAccountManagementBillingActivePlan_ClassNames =
 	| "MainAppAccountManagementBillingActivePlan-list"
 	| "MainAppAccountManagementBillingActivePlan-list-item";
 
-type MainAppAccountManagementBillingActivePlan_Subscription = Exclude<
-	BillingSignedInOverview["subscription"],
-	{ state: "none" | "ambiguous" }
->;
+type MainAppAccountManagementBillingActivePlan_Subscription = BillingSubscriptionRow;
 
 type MainAppAccountManagementBillingActivePlan_Props = {
-	planDetails: BillingPlanDetails;
+	catalog: BillingProductRow;
 	subscription: MainAppAccountManagementBillingActivePlan_Subscription;
 	usage: BillingUsageOverview;
 };
@@ -846,59 +792,59 @@ type MainAppAccountManagementBillingActivePlan_Props = {
 const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountManagementBillingActivePlan(
 	props: MainAppAccountManagementBillingActivePlan_Props,
 ) {
-	const { planDetails, subscription, usage } = props;
-
-	const currencyLabel = (planDetails.priceCurrency ?? "eur").toUpperCase();
-	const intervalLabel = main_app_account_management_billing_interval_label(planDetails.recurringInterval);
-	const isMetered = planDetails.isMetered;
-	const meterName = planDetails.meterName;
-	const includedUnits = planDetails.includedMeterCreditsUnits;
-	const hasIncludedMeterCredits = planDetails.hasMeterCreditBenefit;
-	const unitAmountNumber = planDetails.unitAmount;
+	const { catalog, subscription, usage } = props;
+	const billingProduct = BILLING_PRODUCTS["Pay As You Go"];
+	const primaryPrice = catalog.prices?.find((priceRow) => !priceRow.isArchived) ?? catalog.prices?.[0];
+	const benefitDescriptions = main_app_account_management_billing_benefit_descriptions(billingProduct, catalog.benefits);
+	const currencyLabel = (primaryPrice?.priceCurrency ?? "eur").toUpperCase();
+	const intervalLabel = main_app_account_management_billing_interval_label(
+		primaryPrice?.recurringInterval ?? catalog.recurringInterval ?? null,
+	);
+	const isMetered = primaryPrice?.amountType === "metered_unit";
+	const meterName = primaryPrice?.meter?.name ?? null;
+	const freeUsageBenefit = main_app_account_management_billing_find_benefit(
+		billingProduct,
+		catalog.benefits,
+		billingProduct.benefits["Free usage"],
+	);
+	const includedUnits = freeUsageBenefit?.properties?.units ?? null;
+	const hasIncludedMeterCredits = freeUsageBenefit != null;
+	const unitAmountNumber =
+		primaryPrice?.unitAmount === undefined || primaryPrice?.unitAmount === null
+			? null
+			: typeof primaryPrice.unitAmount === "number"
+				? primaryPrice.unitAmount
+				: Number(primaryPrice.unitAmount);
 	const formattedUnitPrice =
-		planDetails.unitAmount != null && planDetails.priceCurrency != null
+		unitAmountNumber != null && primaryPrice?.priceCurrency != null
 			? new Intl.NumberFormat(undefined, {
 					style: "currency",
-					currency: planDetails.priceCurrency.toUpperCase(),
-				}).format(planDetails.unitAmount)
+					currency: primaryPrice.priceCurrency.toUpperCase(),
+				}).format(unitAmountNumber)
 			: null;
-	const planSummary = ((/* iife */) => {
-		const description = planDetails.description?.trim();
-		if (description) {
-			return description;
-		}
-		const benefitDescription = planDetails.benefitDescriptions[0]?.trim();
-		if (benefitDescription) {
-			return benefitDescription;
-		}
-		return `A flexible ${intervalLabel} plan with metered usage in ${currencyLabel} and included credits.`;
-	})();
 
 	const subscriptionRenewalLine = main_app_account_management_billing_subscription_renewal_line(subscription);
 	const subscriptionStartedLine = subscription.startedAt
 		? `Started ${main_app_account_management_billing_format_iso_date(subscription.startedAt)}`
 		: null;
 
-	const showMeteredSummaryInActivePlan = planDetails.isMetered;
+	const showMeteredSummaryInActivePlan = isMetered;
 
 	const meteredDueAndCreditsLine =
-		showMeteredSummaryInActivePlan && usage.state !== "unavailable"
-			? usage.state === "loading"
+		showMeteredSummaryInActivePlan
+			? usage == null
 				? { kind: "loading" as const }
-				: usage.state === "error"
-					? { kind: "error" as const, message: usage.message, at: usage.at }
-					: {
-							kind: "ready" as const,
-							due: main_app_account_management_billing_format_minor_currency(usage.amountDueCents, usage.currency),
-							creditsLeft:
-								unitAmountNumber != null
-									? main_app_account_management_billing_format_major_currency(
-											Math.max(0, usage.balance) * unitAmountNumber,
-											usage.currency,
-										)
-									: `${usage.balance} units`,
-							lastError: usage.lastError,
-						}
+				: {
+						kind: "ready" as const,
+						due: main_app_account_management_billing_format_minor_currency(usage.amountDueCents, usage.currency),
+						creditsLeft:
+							unitAmountNumber != null
+								? main_app_account_management_billing_format_major_currency(
+										Math.max(0, usage.balance) * unitAmountNumber,
+										usage.currency,
+									)
+								: `${usage.balance} units`,
+					}
 			: null;
 
 	return (
@@ -919,7 +865,7 @@ const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountMa
 					"MainAppAccountManagementBillingActivePlan-title" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
 				}
 			>
-				{subscription.productName}
+				{billingProduct.displayName}
 			</div>
 			<MainAppAccountManagementBillingActivePlanUsage meteredLine={meteredDueAndCreditsLine} />
 			{subscriptionRenewalLine ? (
@@ -945,20 +891,13 @@ const MainAppAccountManagementBillingActivePlan = memo(function MainAppAccountMa
 					"MainAppAccountManagementBillingActivePlan-details" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
 				}
 			>
-				<p
-					className={
-						"MainAppAccountManagementBillingActivePlan-covers" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
-					}
-				>
-					{planSummary}
-				</p>
-				{planDetails.benefitDescriptions.length ? (
+				{benefitDescriptions.length ? (
 					<p
 						className={
 							"MainAppAccountManagementBillingActivePlan-description-secondary" satisfies MainAppAccountManagementBillingActivePlan_ClassNames
 						}
 					>
-						{planDetails.benefitDescriptions.join(" · ")}
+						{benefitDescriptions.join(" · ")}
 					</p>
 				) : null}
 				<ul
@@ -1036,9 +975,11 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 ) {
 	const { isAnonymous } = props;
 
-	const billingOverview = useQuery(app_convex_api.billing.get_billing_overview, isAnonymous ? "skip" : {});
+	const billingProducts = useQuery(app_convex_api.billing.list_products, isAnonymous ? "skip" : {});
+	const billingSubscriptions = useQuery(app_convex_api.billing.list_all_subscriptions, isAnonymous ? "skip" : {});
+	const billingUsage = useQuery(app_convex_api.billing.get_usage, isAnonymous ? "skip" : {});
 
-	const generateCustomerPortalUrl = useAction(app_convex_api.billing.generateCustomerPortalUrl);
+	const generateCustomerPortalUrl = useAction(app_convex_api.billing.generate_customer_portal_url);
 
 	const handleManageSubscription = useFn(() => {
 		void generateCustomerPortalUrl({})
@@ -1053,15 +994,6 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 				toast.error(get_error_message(error));
 			});
 	});
-
-	const checkoutProductId =
-		billingOverview?.access === "signed_in" && billingOverview.catalog.setup === "ready"
-			? billingOverview.catalog.payAsYouGo.id
-			: undefined;
-	const checkoutProductIds =
-		checkoutProductId != null && billingOverview?.access === "signed_in" && billingOverview.showCheckout
-			? [checkoutProductId]
-			: [];
 
 	if (isAnonymous) {
 		return (
@@ -1084,7 +1016,7 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 		);
 	}
 
-	if (billingOverview === undefined) {
+	if (billingProducts === undefined || billingSubscriptions === undefined || billingUsage === undefined) {
 		return (
 			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
 				<header
@@ -1106,38 +1038,22 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 		);
 	}
 
-	if (billingOverview.access === "anonymous") {
-		return (
-			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
-				<header
-					className={"MainAppAccountManagementBilling-header" satisfies MainAppAccountManagementBilling_ClassNames}
-				>
-					<h2 className={"MainAppAccountManagementBilling-title" satisfies MainAppAccountManagementBilling_ClassNames}>
-						Billing
-					</h2>
-					<p
-						className={
-							"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						Sign in to manage your plan, billing, and invoices.
-					</p>
-				</header>
-			</div>
-		);
-	}
-
-	const catalogReady = billingOverview.catalog.setup === "ready";
+	const activeSubscription = main_app_account_management_billing_select_active_subscription(billingSubscriptions) ?? null;
+	const billingProduct = BILLING_PRODUCTS["Pay As You Go"];
+	const checkoutProductId =
+		activeSubscription == null
+			? (billingProducts.find((product) => billing_product_matches_polar_name(product.name, billingProduct) && !product.isArchived)?.id ??
+				undefined)
+			: undefined;
+	const checkoutProductIds = checkoutProductId != null && activeSubscription == null ? [checkoutProductId] : [];
+	const activeProduct = activeSubscription ? (billingProducts.find((product) => product.id === activeSubscription.productId) ?? null) : null;
+	const paygProduct =
+		billingProducts.find((product) => billing_product_matches_polar_name(product.name, billingProduct) && !product.isArchived) ?? null;
+	const checkoutProduct = activeSubscription ? activeProduct : paygProduct;
+	const catalogReady = checkoutProduct !== null;
 	const checkoutReady = catalogReady && checkoutProductIds.length > 0;
 
-	if (!main_app_account_management_billing_overview_catalog_is_ready(billingOverview)) {
-		const { catalog } = billingOverview;
-		const setup = catalog.setup;
-		const primaryMessage = setup === "duplicate_product_name" ? "Billing needs attention." : "Billing isn’t ready yet.";
-		const secondaryMessage =
-			setup === "duplicate_product_name"
-				? `Keep exactly one active product named "${catalog.expectedProductName}" in the synced Polar catalog.`
-				: `Create the pay-as-you-go product in Polar, then sync the catalog so Convex can see "${catalog.expectedProductName}".`;
+	if (!checkoutProduct) {
 		return (
 			<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
 				<header
@@ -1151,82 +1067,63 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 							"MainAppAccountManagementBilling-description" satisfies MainAppAccountManagementBilling_ClassNames
 						}
 					>
-						{primaryMessage} Expected product name suffix: <code>{PRODUCTS.PAY_AS_YOU_GO}</code>
+						Billing isn’t ready yet. Expected product name <code>{PRODUCTS.PAY_AS_YOU_GO}</code>.
 					</p>
 					<p
 						className={
 							"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
 						}
 					>
-						{secondaryMessage}
-					</p>
-					<p
-						className={
-							"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						Billing products are not configured for this deployment yet. Sync the Polar catalog and confirm the checkout
-						product is available before users can subscribe.
+						Create the pay-as-you-go product in Polar, then sync the catalog so Convex can see it.
 					</p>
 				</header>
 			</div>
 		);
 	}
 
-	const { catalog, planDetails, subscription, usage } = billingOverview;
-
-	const checkoutProduct = catalog.payAsYouGo;
+	const subscription = activeSubscription;
+	const usage: BillingUsageOverview = billingUsage;
 	const primaryPrice =
 		checkoutProduct?.prices?.find((priceRow) => !priceRow.isArchived) ?? checkoutProduct?.prices?.[0];
-	const currencyLabel = (planDetails.priceCurrency ?? primaryPrice?.priceCurrency ?? "eur").toUpperCase();
+	const benefitDescriptions = main_app_account_management_billing_benefit_descriptions(billingProduct, checkoutProduct.benefits);
+	const currencyLabel = (primaryPrice?.priceCurrency ?? "eur").toUpperCase();
 	const intervalLabel = main_app_account_management_billing_interval_label(
-		planDetails.recurringInterval ?? primaryPrice?.recurringInterval ?? checkoutProduct?.recurringInterval ?? null,
+		primaryPrice?.recurringInterval ?? checkoutProduct?.recurringInterval ?? null,
 	);
-	const isMetered = planDetails.isMetered || primaryPrice?.amountType === "metered_unit";
-	const meterName = planDetails.meterName ?? primaryPrice?.meter?.name ?? null;
-	const includedUnits = planDetails.includedMeterCreditsUnits;
-	const hasIncludedMeterCredits = planDetails.hasMeterCreditBenefit;
+	const isMetered = primaryPrice?.amountType === "metered_unit";
+	const meterName = primaryPrice?.meter?.name ?? null;
+	const freeUsageBenefit = main_app_account_management_billing_find_benefit(
+		billingProduct,
+		checkoutProduct.benefits,
+		billingProduct.benefits["Free usage"],
+	);
+	const includedUnits = freeUsageBenefit?.properties?.units ?? null;
+	const hasIncludedMeterCredits = freeUsageBenefit != null;
+	const unitAmountNumber =
+		primaryPrice?.unitAmount === undefined || primaryPrice?.unitAmount === null
+			? null
+			: typeof primaryPrice.unitAmount === "number"
+				? primaryPrice.unitAmount
+				: Number(primaryPrice.unitAmount);
 	const formattedUnitPrice =
-		planDetails.unitAmount != null && planDetails.priceCurrency != null
+		unitAmountNumber != null && primaryPrice?.priceCurrency != null
 			? new Intl.NumberFormat(undefined, {
 					style: "currency",
-					currency: planDetails.priceCurrency.toUpperCase(),
-				}).format(planDetails.unitAmount)
+					currency: primaryPrice.priceCurrency.toUpperCase(),
+				}).format(unitAmountNumber)
 			: null;
-	const planSummary = ((/* iife */) => {
-		const description = planDetails.description?.trim();
-		if (description) {
-			return description;
-		}
-		const benefitDescription = planDetails.benefitDescriptions[0]?.trim();
-		if (benefitDescription) {
-			return benefitDescription;
-		}
-		return `A flexible ${intervalLabel} plan with metered usage in ${currencyLabel} and included credits.`;
-	})();
 
 	const subscriptionStatusBadge =
-		subscription.state === "active" ||
-		subscription.state === "trialing" ||
-		subscription.state === "cancel_at_period_end"
-			? main_app_account_management_billing_subscription_status_label(subscription.state)
-			: null;
+		subscription != null ? main_app_account_management_billing_subscription_status_label(subscription) : null;
 
 	const headerDescription = ((/* iife */) => {
-		if (subscription.state === "ambiguous") {
-			return "We found more than one active subscription for this plan. Use Manage subscription to review them, then refresh this page.";
-		}
-		if (subscription.state !== "none" && "productName" in subscription) {
+		if (subscription != null) {
 			return "Your subscription is active. Check the plan information below or click Manage subscription to review the details.";
 		}
 		return "Read the information about the available plan below and click Checkout to proceed with your subscription.";
 	})();
 
-	const showActivePlanCard =
-		subscription.state !== "none" &&
-		subscription.state !== "ambiguous" &&
-		subscriptionStatusBadge != null &&
-		"productName" in subscription;
+	const showActivePlanCard = subscription != null && subscriptionStatusBadge != null;
 
 	return (
 		<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
@@ -1240,40 +1137,25 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 					{headerDescription}
 				</p>
 			</header>
-			{subscription.state === "ambiguous" ? (
-				<MainAppAccountManagementBillingActivePlanError
-					message="Could not show your active plan."
-					detail="Resolve duplicate active subscriptions in Polar, then refresh this page."
-				/>
-			) : null}
 			{showActivePlanCard ? (
 				<MainAppAccountManagementBillingActivePlan
-					planDetails={planDetails}
+					catalog={checkoutProduct}
 					subscription={subscription}
 					usage={usage}
 				/>
 			) : null}
 			{!showActivePlanCard ? (
 				<div className={"MainAppAccountManagementBilling-plan" satisfies MainAppAccountManagementBilling_ClassNames}>
-					<p
-						className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}
-					>
-						{checkoutProduct?.name ?? "Pay-as-you-go"}
+					<p className={"MainAppAccountManagementBilling-plan-lead" satisfies MainAppAccountManagementBilling_ClassNames}>
+						{billingProduct.displayName}
 					</p>
-					<p
-						className={
-							"MainAppAccountManagementBilling-plan-covers" satisfies MainAppAccountManagementBilling_ClassNames
-						}
-					>
-						{planSummary}
-					</p>
-					{planDetails.benefitDescriptions.length ? (
+					{benefitDescriptions.length ? (
 						<p
 							className={
 								"MainAppAccountManagementBilling-description-secondary" satisfies MainAppAccountManagementBilling_ClassNames
 							}
 						>
-							{planDetails.benefitDescriptions.join(" · ")}
+							{benefitDescriptions.join(" · ")}
 						</p>
 					) : null}
 					<ul
@@ -1335,7 +1217,7 @@ const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBi
 							Checkout
 						</CheckoutLink>
 					) : null}
-					{subscription.state !== "none" ? (
+					{subscription != null ? (
 						<MyButton
 							type="button"
 							variant="outline"

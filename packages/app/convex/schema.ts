@@ -381,38 +381,11 @@ const app_convex_schema = defineSchema({
 
 	// #region billing
 	/**
-	 * Queued Polar usage events (meter ingestion). Drained by `billing.drain_outbox`.
-	 */
-	polar_usage_events_outbox: defineTable({
-		dedupeKey: v.string(),
-		externalCustomerId: v.string(),
-		eventName: v.string(),
-		status: v.union(v.literal("pending"), v.literal("failed")),
-		createdAt: v.number(),
-		metadata: v.optional(v.record(v.string(), v.string())),
-		lastError: v.optional(v.string()),
-	})
-		.index("by_dedupeKey", ["dedupeKey"])
-		.index("by_status_createdAt", ["status", "createdAt"]),
-
-	/**
-	 * Last failed Polar usage-snapshot refresh for a user when no snapshot row exists yet.
-	 * Cleared on successful snapshot upsert.
-	 */
-	billing_usage_sync_failures: defineTable({
-		userId: v.string(),
-		message: v.string(),
-		at: v.number(),
-	})
-		.index("by_userId", ["userId"])
-		.index("by_at", ["at"]),
-
-	/**
-	 * Cached Polar meter / spend snapshot per app user (Clerk external_id / users id string).
+	 * Cached Polar meter / spend snapshot per app user.
 	 * Refreshed after usage ingest, periodically when stale, and on relevant Polar webhooks.
 	 */
 	billing_usage_snapshots: defineTable({
-		userId: v.string(),
+		userId: v.id("users"),
 		polarCustomerId: v.string(),
 		subscriptionId: v.string(),
 		productId: v.string(),

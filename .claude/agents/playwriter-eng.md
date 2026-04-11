@@ -1,0 +1,1 @@
+../../.cursor/agents/playwriter-eng.md

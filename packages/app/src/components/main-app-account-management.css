@@ -440,37 +440,6 @@
 	}
 	/* #endregion billing active plan skeleton */
 
-	/* #region billing active plan error */
-	.MainAppAccountManagementBillingActivePlanError {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-
-		padding: 12px;
-		border: 1px solid color-mix(in srgb, var(--color-red-08) 38%, var(--color-base-1-06));
-		border-radius: 8px;
-
-		background: color-mix(in srgb, var(--color-red-06) 12%, var(--color-base-1-03));
-	}
-
-	.MainAppAccountManagementBillingActivePlanError-message {
-		margin: 0;
-
-		font-size: 14px;
-		font-weight: 600;
-		line-height: 1.4;
-		color: var(--color-fg-11);
-	}
-
-	.MainAppAccountManagementBillingActivePlanError-detail {
-		margin: 0;
-
-		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
-	}
-	/* #endregion billing active plan error */
-
 	/* #region billing active plan */
 	.MainAppAccountManagementBillingActivePlan {
 		display: flex;

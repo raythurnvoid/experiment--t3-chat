@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "vitest";
+import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
@@ -14,7 +14,6 @@ import {
 	pages_yjs_doc_get_markdown,
 	pages_yjs_doc_update_from_markdown,
 } from "../server/pages.ts";
-import { BILLING_EVENTS } from "../shared/billing.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 async function seed_page_with_markdown(args: {
@@ -2205,143 +2204,6 @@ describe("remove_pages_pending_edit_if_expired", () => {
 			}),
 		);
 		expect(cleanupTasksAfterCleanup).toHaveLength(0);
-	});
-});
-
-describe("save_pages_pending_edit billing usage outbox", () => {
-	test("enqueues polar_usage_events_outbox after save for Clerk users", async () => {
-		const t = test_convex();
-
-		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
-				ctx,
-				path: "/pending-edits-polar-enqueue",
-				name: "pending-edits-polar-enqueue",
-				markdown: "# Polar enqueue base",
-			}),
-		);
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: seeded.userId,
-			name: "Test User",
-		});
-
-		const stagedMarkdown = `${seeded.baseMarkdown}\n\nPolar enqueue chunk`;
-		const unstagedMarkdown = `${stagedMarkdown}\n\nPolar enqueue unstaged`;
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
-			pageId: seeded.pageId,
-			stagedMarkdown,
-			unstagedMarkdown,
-		});
-
-		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-			membershipId: seeded.membershipId,
-			pageId: seeded.pageId,
-		});
-		if (saveResult._nay) {
-			throw new Error(saveResult._nay.message);
-		}
-		if (!saveResult._yay) {
-			throw new Error("Missing save result _yay while testing polar enqueue");
-		}
-		expect(saveResult._yay.newSequence).not.toBeNull();
-
-		const eventName = BILLING_EVENTS.testUnit;
-		const dedupeKey = `${eventName}:${seeded.userId}:${seeded.pageId}:${saveResult._yay.newSequence}`;
-
-		const outboxRows = await t.run(async (ctx) =>
-			ctx.db
-				.query("polar_usage_events_outbox")
-				.withIndex("by_dedupeKey", (q) => q.eq("dedupeKey", dedupeKey))
-				.collect(),
-		);
-		expect(outboxRows).toHaveLength(1);
-		expect(outboxRows[0]!.status).toBe("pending");
-	});
-
-	test("does not enqueue polar_usage_events_outbox for anonymous users", async () => {
-		const t = test_convex();
-
-		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
-				ctx,
-				path: "/pending-edits-polar-anon",
-				name: "pending-edits-polar-anon",
-				markdown: "# Polar anon base",
-			}),
-		);
-		const asAnonymous = t.withIdentity({
-			issuer: process.env.VITE_CONVEX_HTTP_URL!,
-			subject: seeded.userId,
-			name: "Anonymous Polar User",
-		});
-
-		const stagedMarkdown = `${seeded.baseMarkdown}\n\nAnon chunk`;
-		await asAnonymous.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
-			pageId: seeded.pageId,
-			stagedMarkdown,
-			unstagedMarkdown: stagedMarkdown,
-		});
-
-		const saveResult = await asAnonymous.mutation(api.ai_chat.save_pages_pending_edit, {
-			membershipId: seeded.membershipId,
-			pageId: seeded.pageId,
-		});
-		if (saveResult._nay) {
-			throw new Error(saveResult._nay.message);
-		}
-		if (!saveResult._yay) {
-			throw new Error("Missing save result _yay while testing anonymous polar skip");
-		}
-		expect(saveResult._yay.newSequence).not.toBeNull();
-
-		const allOutbox = await t.run(async (ctx) => ctx.db.query("polar_usage_events_outbox").collect());
-		expect(allOutbox).toHaveLength(0);
-	});
-
-	test("does not enqueue when save yields newSequence null (no Yjs diff to push)", async () => {
-		const t = test_convex();
-
-		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
-				ctx,
-				path: "/pending-edits-polar-no-diff",
-				name: "pending-edits-polar-no-diff",
-				markdown: "# Same base",
-			}),
-		);
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: seeded.userId,
-			name: "Test User",
-			email: "no-diff@test.local",
-		});
-
-		const sameAsBase = seeded.baseMarkdown;
-		const withUnresolved = `${sameAsBase}\n\nUnresolved only`;
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
-			pageId: seeded.pageId,
-			stagedMarkdown: sameAsBase,
-			unstagedMarkdown: withUnresolved,
-		});
-
-		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
-			membershipId: seeded.membershipId,
-			pageId: seeded.pageId,
-		});
-		if (saveResult._nay) {
-			throw new Error(saveResult._nay.message);
-		}
-		if (!saveResult._yay) {
-			throw new Error("Missing save result _yay while testing null sequence polar skip");
-		}
-		expect(saveResult._yay.newSequence).toBeNull();
-
-		const allOutbox = await t.run(async (ctx) => ctx.db.query("polar_usage_events_outbox").collect());
-		expect(allOutbox).toHaveLength(0);
 	});
 });
 

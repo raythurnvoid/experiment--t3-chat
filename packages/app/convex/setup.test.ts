@@ -21,7 +21,11 @@ const convex_test_modules = import.meta.glob("./**/*.ts");
 
 export function test_convex() {
 	const t = convexTest(schema, convex_test_modules);
-	polar_test.register(t);
+	t.registerComponent(
+		"polar",
+		polar_test.schema as unknown as Parameters<typeof t.registerComponent>[1],
+		polar_test.modules as unknown as Parameters<typeof t.registerComponent>[2],
+	);
 	presence_test.register(t);
 	return t;
 }

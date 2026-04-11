@@ -1,9 +1,9 @@
 import { HttpRouter, httpRouter } from "convex/server";
 import { ai_chat_http_routes } from "./ai_chat.ts";
-import { internal, components } from "./_generated/api.js";
+import { internal } from "./_generated/api.js";
 import { httpAction } from "./_generated/server.js";
 import { pages_http_routes } from "./ai_docs_temp.ts";
-import { billing } from "./billing.ts";
+import { billing, billing_refresh_workpool } from "./billing.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
 
@@ -19,16 +19,12 @@ const http = httpRouter();
 billing.registerRoutes(http, {
 	events: {
 		"customer.state_changed": async (ctx, event) => {
-			const polarCustomerId = event.data.id;
-			const mapped = await ctx.runQuery(components.polar.lib.getUserIdByPolarCustomerId, {
-				polarCustomerId,
-			});
-			if (!mapped) {
+			const userId = event.data.externalId;
+			if (!userId) {
 				return;
 			}
-			await ctx.scheduler.runAfter(0, internal.billing.refresh_usage_snapshot, {
-				userId: mapped.userId,
-				reason: "polar_webhook_customer_state_changed",
+			await billing_refresh_workpool.enqueueAction(ctx, internal.billing.refresh_usage_snapshot, {
+				userId,
 			});
 		},
 	},
