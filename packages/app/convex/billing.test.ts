@@ -4,6 +4,9 @@ import { billing_EVENTS } from "../server/billing.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex } from "./setup.test.ts";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
+import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
+import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import type { Id } from "./_generated/dataModel.js";
 
 vi.mock("@polar-sh/sdk/core.js", () => ({
@@ -16,7 +19,12 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 	eventsIngest: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/subscriptionsRevoke.js", () => ({
+	subscriptionsRevoke: vi.fn(),
+}));
+
 const eventsIngestMock = vi.mocked(eventsIngest);
+const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
 
 type BillingSeed = {
 	polarProductId: string;
@@ -151,6 +159,14 @@ async function seed_pro_product(
 		},
 	});
 	return { polarProductId: args.polarProductId, polarProductName };
+}
+
+async function seed_user_id(t: ReturnType<typeof test_convex>) {
+	return await t.run(async (ctx) => {
+		return await ctx.db.insert("users", {
+			clerkUserId: null,
+		});
+	});
 }
 
 describe("billing list_products", () => {
@@ -889,8 +905,8 @@ describe("handle_polar_customer_state_update", () => {
 	});
 });
 
-describe("billing generate_checkout_link curated product", () => {
-	test("rejects productIds that do not match the curated pay-as-you-go product", async () => {
+describe("billing generate_checkout_link product id", () => {
+	test("rejects productIds that do not match a synced non-archived Polar product", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
 		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
@@ -952,6 +968,231 @@ describe("billing change_current_subscription", () => {
 		await expect(asUser.action(api.billing.change_current_subscription, { productId: "any_product" })).rejects.toThrow(
 			"Plan changes are not supported",
 		);
+	});
+});
+
+describe("billing revoke_current_subscription_for_user", () => {
+	beforeEach(() => {
+		subscriptionsRevokeMock.mockReset();
+	});
+
+	afterEach(() => {
+		subscriptionsRevokeMock.mockReset();
+	});
+
+	test("returns not found when the user has no current subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+			userId,
+		});
+
+		expect(result._nay?.message).toBe("Subscription not found");
+	});
+
+	test("revokes the current subscription for the target user", async () => {
+		subscriptionsRevokeMock.mockResolvedValue({
+			ok: true,
+			value: {} as never,
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_revoke_prod_active",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_billing_revoke_active",
+			userId,
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_billing_revoke_active",
+				customerId: "cust_billing_revoke_active",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+			userId,
+		});
+
+		expect(result).toEqual({ _yay: null });
+		expect(subscriptionsRevokeMock).toHaveBeenCalledTimes(1);
+		expect(subscriptionsRevokeMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_billing_revoke_active",
+		});
+	});
+
+	test("returns already canceled when Polar reports an already canceled subscription", async () => {
+		subscriptionsRevokeMock.mockResolvedValue({
+			ok: false,
+			error: new AlreadyCanceledSubscription(
+				{
+					error: "AlreadyCanceledSubscription",
+					detail: "Subscription already canceled",
+				},
+				{
+					request: new Request("https://polar.test/v1/subscriptions/sub_billing_revoke_already_canceled"),
+					response: new Response(JSON.stringify({ error: "AlreadyCanceledSubscription" }), { status: 403 }),
+					body: JSON.stringify({ error: "AlreadyCanceledSubscription" }),
+				},
+			),
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_revoke_prod_already_canceled",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_billing_revoke_already_canceled",
+			userId,
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_billing_revoke_already_canceled",
+				customerId: "cust_billing_revoke_already_canceled",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+			userId,
+		});
+
+		expect(result._nay?.message).toBe("Subscription already canceled");
+	});
+
+	test("returns not found when Polar reports the subscription is missing", async () => {
+		subscriptionsRevokeMock.mockResolvedValue({
+			ok: false,
+			error: new ResourceNotFound(
+				{
+					error: "ResourceNotFound",
+					detail: "Subscription not found",
+				},
+				{
+					request: new Request("https://polar.test/v1/subscriptions/sub_billing_revoke_resource_not_found"),
+					response: new Response(JSON.stringify({ error: "ResourceNotFound" }), { status: 404 }),
+					body: JSON.stringify({ error: "ResourceNotFound" }),
+				},
+			),
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_revoke_prod_resource_not_found",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_billing_revoke_resource_not_found",
+			userId,
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_billing_revoke_resource_not_found",
+				customerId: "cust_billing_revoke_resource_not_found",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+			userId,
+		});
+
+		expect(result._nay?.message).toBe("Subscription not found");
+	});
+
+	test("throws when Polar returns an unexpected revoke error", async () => {
+		subscriptionsRevokeMock.mockResolvedValue({
+			ok: false,
+			error: new Error("polar revoke exploded"),
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_revoke_prod_unexpected_error",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_billing_revoke_unexpected_error",
+			userId,
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_billing_revoke_unexpected_error",
+				customerId: "cust_billing_revoke_unexpected_error",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		await expect(
+			t.action(internal.billing.revoke_current_subscription_for_user, {
+				userId,
+			}),
+		).rejects.toThrow("Failed to revoke subscription");
 	});
 });
 

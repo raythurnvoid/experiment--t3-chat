@@ -968,6 +968,7 @@ When reviewing or proposing changes, you must question any newly introduced:
 
 - **Prefer explicit events over sync effects**: update state as a direct result of user/actions/events (e.g. `onSubmit`, `onSelect`, `onToggle`) rather than `useEffect`-based syncing.
 - **Centralize side effects and integrations**: keep data fetching, mutations, and other side-effectful work in a stable “owner” layer (route/container/controller hook). Leaf components should be mostly presentational.
+- **Prefer `useConvex()` for imperative writes**: in React components, do not use Convex `useMutation` or `useAction` hooks for imperative write calls. Use `const convex = useConvex()` and call `convex.mutation(...)` or `convex.action(...)` directly so writes follow the existing client-call pattern.
 - **Prop-drill state + handlers**: children receive derived values and callbacks; avoid reintroducing contexts/hooks in leaves that duplicate wiring and hide dependencies.
 - **Don’t leak query arguments to leaves**: for Convex (and similar), prefer that leaf components receive _data_, not the parameters used to fetch it; this reduces surprising cache/lifecycle issues when leaves unmount.
 - **Prefer reset via re-mount over effect syncing**: when a leaf needs to “reset” on a key change (e.g. thread switch), prefer keying/remounting or passing an `initialValue`, not a store→leaf `useEffect` sync.

@@ -2,15 +2,18 @@ import { Polar } from "@convex-dev/polar";
 import { Workpool } from "@convex-dev/workpool";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
+import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
+import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, query } from "./_generated/server.js";
-import { billing_PRODUCTS, billing_product_matches_polar_name } from "../shared/billing.js";
+import { Result } from "../shared/errors-as-values-utils.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
-import { convex_error } from "../server/convex-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
 import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import app_convex_schema from "./schema.ts";
 
@@ -170,8 +173,8 @@ export const handle_polar_customer_state_update = internalMutation({
 });
 
 /**
- * Server-curated checkout: only the pay-as-you-go product from the shared billing registry may be purchased.
- * {@link origin} and {@link successUrl} are checked against {@link allowed_origins}.
+ * Checkout for a single Polar product id synced into this deployment. The product must exist in {@link billing.listProducts} and
+ * must not be archived. {@link origin} and {@link successUrl} are checked against {@link allowed_origins}.
  */
 export const generate_checkout_link = action({
 	args: {
@@ -223,22 +226,21 @@ export const generate_checkout_link = action({
 			throw convex_error({ message: "Email required for billing" });
 		}
 
-		const catalog =
-			(await billing.listProducts(ctx)).find((product) => {
-				return (
-					billing_product_matches_polar_name(product.name, billing_PRODUCTS["Pay As You Go"]) && !product.isArchived
-				);
-			}) ?? null;
-		if (!catalog) {
-			throw convex_error({ message: "Checkout is not available for this deployment" });
-		}
-
-		const curatedId = catalog.id;
-		if (args.productIds.length !== 1 || args.productIds[0] !== curatedId) {
+		const requestedProductId = args.productIds[0];
+		if (args.productIds.length !== 1 || requestedProductId == null || requestedProductId === "") {
 			throw convex_error({ message: "Invalid checkout product" });
 		}
+
+		const catalog =
+			(await billing.listProducts(ctx)).find((product) => {
+				return product.id === requestedProductId && !product.isArchived;
+			}) ?? null;
+		if (!catalog) {
+			throw convex_error({ message: "Invalid checkout product" });
+		}
+
 		const { url: baseUrl } = await billing.createCheckoutSession(ctx, {
-			productIds: [curatedId],
+			productIds: [catalog.id],
 			userId: user.id,
 			email: user.email,
 			subscriptionId: args.subscriptionId,
@@ -383,6 +385,38 @@ export const grant_credit = internalAction({
 			throw new Error(JSON.stringify(ingestResult.error));
 		}
 		return null;
+	},
+});
+
+export const revoke_subscription = internalAction({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const subscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+			userId: args.userId,
+		});
+		if (!subscription) {
+			return Result({ _nay: { message: "Subscription not found" } });
+		}
+
+		const revokeResult = await subscriptionsRevoke(billing.polar, {
+			id: subscription.id,
+		});
+		if (!revokeResult.ok) {
+			if (revokeResult.error instanceof AlreadyCanceledSubscription) {
+				return Result({ _nay: { message: "Subscription already canceled" } });
+			}
+			if (revokeResult.error instanceof ResourceNotFound) {
+				return Result({ _nay: { message: "Subscription not found" } });
+			}
+			throw new Error("Failed to revoke subscription", {
+				cause: revokeResult.error,
+			});
+		}
+
+		return Result({ _yay: null });
 	},
 });
 // #endregion admin

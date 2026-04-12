@@ -1,13 +1,12 @@
 import "./billing-account-management-panel.css";
 
-import { CheckoutLink } from "@convex-dev/polar/react";
-import { billing_PRODUCTS, billing_product_matches_polar_name } from "../../../shared/billing.ts";
-import { useAction, useQuery } from "convex/react";
+import { useConvex, useQuery } from "convex/react";
 import { memo, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import type { AppAuthContextValue } from "@/components/app-auth.tsx";
 import { BillingActivePlan, BillingActivePlanSkeleton } from "@/components/billing/billing-active-plan.tsx";
+import { BillingCheckoutButton } from "@/components/billing/billing-checkout-button.tsx";
 import { BillingProductCard, BillingProductCardSkeleton } from "@/components/billing/billing-product-card.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -38,13 +37,9 @@ const BillingAccountManagementPanelHeader = memo(function BillingAccountManageme
 	const { children } = props;
 
 	return (
-		<header
-			className={"BillingAccountManagementPanelHeader" satisfies BillingAccountManagementPanelHeader_ClassNames}
-		>
+		<header className={"BillingAccountManagementPanelHeader" satisfies BillingAccountManagementPanelHeader_ClassNames}>
 			<h2
-				className={
-					"BillingAccountManagementPanelHeader-title" satisfies BillingAccountManagementPanelHeader_ClassNames
-				}
+				className={"BillingAccountManagementPanelHeader-title" satisfies BillingAccountManagementPanelHeader_ClassNames}
 			>
 				Billing
 			</h2>
@@ -77,20 +72,14 @@ const BillingAccountManagementPanelPlans = memo(function BillingAccountManagemen
 	const { title, children } = props;
 
 	return (
-		<section
-			className={"BillingAccountManagementPanelPlans" satisfies BillingAccountManagementPanelPlans_ClassNames}
-		>
+		<section className={"BillingAccountManagementPanelPlans" satisfies BillingAccountManagementPanelPlans_ClassNames}>
 			<h3
-				className={
-					"BillingAccountManagementPanelPlans-title" satisfies BillingAccountManagementPanelPlans_ClassNames
-				}
+				className={"BillingAccountManagementPanelPlans-title" satisfies BillingAccountManagementPanelPlans_ClassNames}
 			>
 				{title}
 			</h3>
 			<div
-				className={
-					"BillingAccountManagementPanelPlans-list" satisfies BillingAccountManagementPanelPlans_ClassNames
-				}
+				className={"BillingAccountManagementPanelPlans-list" satisfies BillingAccountManagementPanelPlans_ClassNames}
 			>
 				{children}
 			</div>
@@ -112,9 +101,7 @@ const BillingAccountManagementPanelPlanItem = memo(function BillingAccountManage
 	const { children } = props;
 
 	return (
-		<div
-			className={"BillingAccountManagementPanelPlanItem" satisfies BillingAccountManagementPanelPlanItem_ClassNames}
-		>
+		<div className={"BillingAccountManagementPanelPlanItem" satisfies BillingAccountManagementPanelPlanItem_ClassNames}>
 			{children}
 		</div>
 	);
@@ -134,9 +121,7 @@ const BillingAccountManagementPanelActions = memo(function BillingAccountManagem
 	const { children } = props;
 
 	return (
-		<div
-			className={"BillingAccountManagementPanelActions" satisfies BillingAccountManagementPanelActions_ClassNames}
-		>
+		<div className={"BillingAccountManagementPanelActions" satisfies BillingAccountManagementPanelActions_ClassNames}>
 			{children}
 		</div>
 	);
@@ -146,7 +131,6 @@ const BillingAccountManagementPanelActions = memo(function BillingAccountManagem
 // #region root
 type BillingAccountManagementPanel_ClassNames =
 	| "BillingAccountManagementPanel"
-	| "BillingAccountManagementPanel-checkout"
 	| "BillingAccountManagementPanel-manage-subscription";
 
 type BillingAccountManagementPanel_Props = {
@@ -161,11 +145,11 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 	const billingProducts = useQuery(app_convex_api.billing.list_products, isAnonymous ? "skip" : {});
 	const billingSubscriptions = useQuery(app_convex_api.billing.list_subscriptions, isAnonymous ? "skip" : {});
 	const billingUsage = useQuery(app_convex_api.billing.get_usage_snapshot, isAnonymous ? "skip" : {});
-
-	const generateCustomerPortalUrl = useAction(app_convex_api.billing.generate_customer_portal_url);
+	const convex = useConvex();
 
 	const handleManageSubscription = useFn(() => {
-		void generateCustomerPortalUrl({})
+		void convex
+			.action(app_convex_api.billing.generate_customer_portal_url, {})
 			.then((result) => {
 				if (result?.url) {
 					window.open(result.url, "_blank", "noopener,noreferrer");
@@ -192,12 +176,6 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 				return product.id !== activeSubscription?.productId;
 			})
 		: null;
-	const curatedCheckoutCatalog = billingProducts
-		? (billingProducts.find((product) => {
-				return billing_product_matches_polar_name(product.name, billing_PRODUCTS["Pay As You Go"]);
-			}) ?? null)
-		: null;
-
 	const headerDescription = ((/* iife */) => {
 		if (activeSubscription?.cancelAtPeriodEnd) {
 			const endsAt = activeSubscription.endsAt ?? activeSubscription.currentPeriodEnd;
@@ -258,7 +236,10 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 								<BillingAccountManagementPanelPlans title="Other plans">
 									{otherCatalogs.map((product) => (
 										<BillingAccountManagementPanelPlanItem key={product.id}>
-											<BillingProductCard product={product} />
+											<BillingProductCard
+												product={product}
+												selectPlanSlot={<BillingCheckoutButton productId={product.id} />}
+											/>
 										</BillingAccountManagementPanelPlanItem>
 									))}
 								</BillingAccountManagementPanelPlans>
@@ -267,28 +248,9 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 					) : (
 						<BillingAccountManagementPanelPlans title="Available plans">
 							{billingProducts.map((product) => {
-								const showCheckout = curatedCheckoutCatalog != null && product.id === curatedCheckoutCatalog.id;
-
 								return (
 									<BillingAccountManagementPanelPlanItem key={product.id}>
-										<BillingProductCard product={product} />
-										{showCheckout ? (
-											<BillingAccountManagementPanelActions>
-												<CheckoutLink
-													polarApi={{
-														generateCheckoutLink: app_convex_api.billing.generate_checkout_link,
-													}}
-													productIds={[product.id]}
-													embed={false}
-													lazy
-													className={
-														"BillingAccountManagementPanel-checkout" satisfies BillingAccountManagementPanel_ClassNames
-													}
-												>
-													Checkout
-												</CheckoutLink>
-											</BillingAccountManagementPanelActions>
-										) : null}
+										<BillingProductCard product={product} selectPlanSlot={<BillingCheckoutButton productId={product.id} />} />
 									</BillingAccountManagementPanelPlanItem>
 								);
 							})}

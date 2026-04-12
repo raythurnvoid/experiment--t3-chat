@@ -71,7 +71,6 @@
 		gap: 12px;
 	}
 
-	.BillingAccountManagementPanel-checkout,
 	.BillingAccountManagementPanel-manage-subscription {
 		display: inline-flex;
 		align-items: center;
@@ -80,37 +79,23 @@
 		min-height: 40px;
 		padding: 8px 16px;
 		border-radius: 8px;
+		border: 1px solid var(--color-base-1-06);
 
 		font-size: 14px;
 		font-weight: 500;
 		line-height: 1.25;
 		text-decoration: none;
 
+		background: var(--color-base-1-04);
+		color: var(--color-fg-11);
+
 		transition:
 			background 0.15s ease,
 			color 0.15s ease;
-	}
 
-	.BillingAccountManagementPanel-checkout {
-		border: 1px solid transparent;
-
-		background: var(--color-accent-06);
-		color: var(--color-fg-12);
-	}
-
-	.BillingAccountManagementPanel-checkout:hover {
-		background: var(--color-accent-07);
-	}
-
-	.BillingAccountManagementPanel-manage-subscription {
-		border: 1px solid var(--color-base-1-06);
-
-		background: var(--color-base-1-04);
-		color: var(--color-fg-11);
-	}
-
-	.BillingAccountManagementPanel-manage-subscription:hover {
-		background: var(--color-base-1-05);
+		&:hover {
+			background: var(--color-base-1-05);
+		}
 	}
 	/* #endregion root */
 }
