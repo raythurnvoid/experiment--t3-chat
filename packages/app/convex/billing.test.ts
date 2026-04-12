@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { BILLING_PRODUCTS, PRODUCTS } from "../shared/billing.ts";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 import { billing_EVENTS } from "../server/billing.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex } from "./setup.test.ts";
@@ -18,9 +18,22 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 
 const eventsIngestMock = vi.mocked(eventsIngest);
 
-type PaygSeed = {
+type BillingSeed = {
 	polarProductId: string;
 	polarProductName: string;
+};
+
+type BillingSeedBenefit = {
+	id: string;
+	createdAt: string;
+	modifiedAt: string | null;
+	type: string;
+	description: string;
+	selectable: boolean;
+	deletable: boolean;
+	organizationId: string;
+	metadata?: Record<string, unknown>;
+	properties?: unknown;
 };
 
 async function seed_pay_as_you_go_product(
@@ -28,25 +41,14 @@ async function seed_pay_as_you_go_product(
 	args: {
 		polarProductId: string;
 		description?: string | null;
-		benefits?: Array<{
-			id: string;
-			createdAt: string;
-			modifiedAt: string | null;
-			type: string;
-			description: string;
-			selectable: boolean;
-			deletable: boolean;
-			organizationId: string;
-			metadata?: Record<string, unknown>;
-			properties?: unknown;
-		}>;
+		benefits?: BillingSeedBenefit[];
 	},
-): Promise<PaygSeed> {
+): Promise<BillingSeed> {
 	const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
 	if (!prefix) {
 		throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
 	}
-	const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
+	const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
 	await t.mutation(components.polar.lib.createProduct, {
 		product: {
 			id: args.polarProductId,
@@ -76,6 +78,76 @@ async function seed_pay_as_you_go_product(
 			],
 			medias: [],
 			benefits: args.benefits ?? [],
+		},
+	});
+	return { polarProductId: args.polarProductId, polarProductName };
+}
+
+async function seed_pro_product(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		polarProductId: string;
+		description?: string | null;
+		benefits?: BillingSeedBenefit[];
+	},
+): Promise<BillingSeed> {
+	const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
+	if (!prefix) {
+		throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
+	}
+	const polarProductName = `${prefix}-${billing_PRODUCTS.Pro.name}`;
+	await t.mutation(components.polar.lib.createProduct, {
+		product: {
+			id: args.polarProductId,
+			organizationId: "billing_test_org",
+			name: polarProductName,
+			description: args.description ?? null,
+			isRecurring: true,
+			isArchived: false,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			modifiedAt: null,
+			recurringInterval: "month",
+			metadata: {},
+			prices: [
+				{
+					id: `${args.polarProductId}_fixed_price`,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					amountType: "fixed",
+					isArchived: false,
+					productId: args.polarProductId,
+					priceCurrency: "eur",
+					priceAmount: 4000,
+					recurringInterval: "month",
+				},
+				{
+					id: `${args.polarProductId}_metered_price`,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					amountType: "metered_unit",
+					isArchived: false,
+					productId: args.polarProductId,
+					priceCurrency: "eur",
+					unitAmount: "1",
+					recurringInterval: "month",
+					meterId: "meter_press_usage",
+					meter: { id: "meter_press_usage", name: "Press app usage" },
+				},
+			],
+			medias: [],
+			benefits: args.benefits ?? [
+				{
+					id: "benefit_pro_meter_credit",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					type: "meter_credit",
+					description: billing_PRODUCTS.Pro.benefits["Pro Included Usage"].description,
+					selectable: false,
+					deletable: false,
+					organizationId: "billing_test_org",
+					properties: { units: 5000 },
+				},
+			],
 		},
 	});
 	return { polarProductId: args.polarProductId, polarProductName };
@@ -140,6 +212,42 @@ describe("billing list_products", () => {
 		expect(products.find((product) => product.id === polarProductId)?.benefits).toEqual([]);
 	});
 
+	test("returns both known products from the catalog", async () => {
+		const t = test_convex();
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_overview_prod_pro",
+		});
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_overview_prod_payg",
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_overview_known_products" as Id<"users">,
+			name: "Overview Known Products",
+			email: "overview-known-products@test.local",
+		});
+
+		const products = await asUser.query(api.billing.list_products, {});
+
+		expect(products.some((product) => product.id === polarProProductId)).toBe(true);
+		expect(products.some((product) => product.id === polarPaygProductId)).toBe(true);
+		expect(
+			products
+				.find((product) => product.id === polarProProductId)
+				?.prices?.some((price) => {
+					return price.amountType === "fixed" && price.priceAmount === 4000;
+				}),
+		).toBe(true);
+		expect(
+			products
+				.find((product) => product.id === polarProProductId)
+				?.benefits?.some((benefit) => {
+					return benefit.description === billing_PRODUCTS.Pro.benefits["Pro Included Usage"].description;
+				}),
+		).toBe(true);
+	});
+
 	test("parses included meter credits from meter_credit benefit properties", async () => {
 		const t = test_convex();
 		await seed_pay_as_you_go_product(t, {
@@ -150,7 +258,7 @@ describe("billing list_products", () => {
 					createdAt: "2026-01-01T00:00:00.000Z",
 					modifiedAt: null,
 					type: "meter_credit",
-					description: BILLING_PRODUCTS["Pay As You Go"].benefits["Free usage"].description,
+					description: billing_PRODUCTS["Pay As You Go"].benefits["Free usage"].description,
 					selectable: false,
 					deletable: false,
 					organizationId: "billing_test_org",
@@ -173,7 +281,7 @@ describe("billing list_products", () => {
 		});
 		expect(paygProduct?.benefits?.some((benefit) => benefit.type === "meter_credit")).toBe(true);
 		expect(paygProduct?.benefits?.map((benefit) => benefit.description)).toContain(
-			BILLING_PRODUCTS["Pay As You Go"].benefits["Free usage"].description,
+			billing_PRODUCTS["Pay As You Go"].benefits["Free usage"].description,
 		);
 	});
 
@@ -416,7 +524,9 @@ describe("billing list_subscriptions", () => {
 				currentPeriodStart: "2026-01-01T00:00:00.000Z",
 				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
 				cancelAtPeriodEnd: true,
+				canceledAt: "2026-01-15T00:00:00.000Z",
 				startedAt: "2026-01-01T00:00:00.000Z",
+				endsAt: "2026-02-01T00:00:00.000Z",
 				endedAt: null,
 				metadata: {},
 			},
@@ -434,6 +544,8 @@ describe("billing list_subscriptions", () => {
 		expect(subscriptions[0]?.productId).toBe(polarProductId);
 		expect(subscriptions[0]?.status).toBe("active");
 		expect(subscriptions[0]?.cancelAtPeriodEnd).toBe(true);
+		expect(subscriptions[0]?.canceledAt).toBe("2026-01-15T00:00:00.000Z");
+		expect(subscriptions[0]?.endsAt).toBe("2026-02-01T00:00:00.000Z");
 	});
 
 	test("returns raw trialing subscriptions", async () => {
@@ -624,7 +736,7 @@ describe("handle_polar_customer_state_update", () => {
 			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
 		}
 		const polarProductId = "billing_refresh_snapshot_webhook_product";
-		const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
+		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
 
 		await t.mutation(components.polar.lib.createProduct, {
 			product: {
@@ -765,9 +877,7 @@ describe("handle_polar_customer_state_update", () => {
 		const snapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) =>
-					q.eq("userId", "user_refresh_snapshot_webhook" as Id<"users">),
-				)
+				.withIndex("by_userId", (q) => q.eq("userId", "user_refresh_snapshot_webhook" as Id<"users">))
 				.unique(),
 		);
 
@@ -783,7 +893,7 @@ describe("billing generate_checkout_link curated product", () => {
 	test("rejects productIds that do not match the curated pay-as-you-go product", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
-		const polarProductName = `${prefix}-${PRODUCTS.PAY_AS_YOU_GO}`;
+		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
 		const polarProductId = "billing_curated_checkout_id";
 
 		await t.mutation(components.polar.lib.createProduct, {

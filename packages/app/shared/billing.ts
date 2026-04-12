@@ -5,8 +5,6 @@ type BillingMonetaryAmount = {
 
 type BillingProductBenefit = {
 	description: string;
-	displayDescription: string;
-	includedUsage?: BillingMonetaryAmount;
 };
 
 type BillingProductMeter = {
@@ -23,7 +21,25 @@ type BillingProduct = {
 };
 
 /** Keep human-readable billing copy in code and match Polar rows by stable ids or equivalent normalized names. */
-export const BILLING_PRODUCTS = {
+export const billing_PRODUCTS = {
+	Pro: {
+		name: "Pro",
+		displayName: "Pro",
+		meter: {
+			name: "Press app usage",
+			displayName: "Press app usage",
+			unitPrice: {
+				amount: 0.01,
+				currency: "eur",
+			},
+		},
+		benefits: {
+			"Pro Included Usage": {
+				description: "Pro Included Usage",
+				displaySuffixText: "usage per month",
+			},
+		},
+	},
 	"Pay As You Go": {
 		name: "Pay As You Go",
 		displayName: "Pay As You Go",
@@ -38,19 +54,10 @@ export const BILLING_PRODUCTS = {
 		benefits: {
 			"Free usage": {
 				description: "Free usage",
-				displayDescription: "Free usage granted on subscription",
-				includedUsage: {
-					amount: 20,
-					currency: "eur",
-				},
+				displaySuffixText: "usage",
 			},
 		},
 	},
-} as const satisfies Record<string, BillingProduct>;
-
-/** Keep the canonical pay-as-you-go product name used across the app. */
-export const PRODUCTS = {
-	PAY_AS_YOU_GO: BILLING_PRODUCTS["Pay As You Go"].name,
 } as const;
 
 function billing_normalize_polar_identifier(value: string) {

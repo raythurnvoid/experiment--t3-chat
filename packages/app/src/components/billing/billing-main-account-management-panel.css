@@ -1,0 +1,116 @@
+@layer components {
+	/* #region header */
+	.MainAppAccountManagementBillingHeader {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.MainAppAccountManagementBillingHeader-title {
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementBillingHeader-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
+	}
+	/* #endregion header */
+
+	/* #region plans */
+	.MainAppAccountManagementBillingPlans {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.MainAppAccountManagementBillingPlans-title {
+		margin: 0;
+
+		font-size: 13px;
+		font-weight: 600;
+		line-height: 1.35;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementBillingPlans-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	/* #endregion plans */
+
+	/* #region plan item */
+	.MainAppAccountManagementBillingPlanItem {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	/* #endregion plan item */
+
+	/* #region actions */
+	.MainAppAccountManagementBillingActions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 12px;
+	}
+	/* #endregion actions */
+
+	/* #region root */
+	.MainAppAccountManagementBilling {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.MainAppAccountManagementBilling-checkout,
+	.MainAppAccountManagementBilling-manage-subscription {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		min-height: 40px;
+		padding: 8px 16px;
+		border-radius: 8px;
+
+		font-size: 14px;
+		font-weight: 500;
+		line-height: 1.25;
+		text-decoration: none;
+
+		transition:
+			background 0.15s ease,
+			color 0.15s ease;
+	}
+
+	.MainAppAccountManagementBilling-checkout {
+		border: 1px solid transparent;
+
+		background: var(--color-accent-06);
+		color: var(--color-fg-12);
+	}
+
+	.MainAppAccountManagementBilling-checkout:hover {
+		background: var(--color-accent-07);
+	}
+
+	.MainAppAccountManagementBilling-manage-subscription {
+		border: 1px solid var(--color-base-1-06);
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementBilling-manage-subscription:hover {
+		background: var(--color-base-1-05);
+	}
+	/* #endregion root */
+}

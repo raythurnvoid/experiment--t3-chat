@@ -9,9 +9,7 @@ type ConvexError_Data<
 	data?: TData;
 };
 
-export function convex_error(
-	args: ConvexError_Data,
-): ConvexError<ConvexError_Data> {
+export function convex_error(args: ConvexError_Data): ConvexError<ConvexError_Data> {
 	return new ConvexError({
 		message: args.message,
 		cause: args.cause,

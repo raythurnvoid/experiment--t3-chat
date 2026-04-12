@@ -8,6 +8,17 @@ import { string_optional } from "./utils.ts";
  * This would prevent to show invalid dates in the UI.
  */
 const PAST_TIME_TOLERANCE = 5000;
+const FORMAT_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+	dateStyle: "medium",
+});
+
+export function format_time(timestamp: number) {
+	if (!Number.isFinite(timestamp)) {
+		return "Unknown";
+	}
+
+	return FORMAT_TIME_FORMATTER.format(timestamp);
+}
 
 /**
  * Format a timestamp as a relative time string

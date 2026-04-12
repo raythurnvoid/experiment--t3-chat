@@ -8,7 +8,7 @@ import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, query } from "./_generated/server.js";
-import { BILLING_PRODUCTS, billing_product_matches_polar_name } from "../shared/billing.js";
+import { billing_PRODUCTS, billing_product_matches_polar_name } from "../shared/billing.js";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -226,7 +226,7 @@ export const generate_checkout_link = action({
 		const catalog =
 			(await billing.listProducts(ctx)).find((product) => {
 				return (
-					billing_product_matches_polar_name(product.name, BILLING_PRODUCTS["Pay As You Go"]) && !product.isArchived
+					billing_product_matches_polar_name(product.name, billing_PRODUCTS["Pay As You Go"]) && !product.isArchived
 				);
 			}) ?? null;
 		if (!catalog) {
