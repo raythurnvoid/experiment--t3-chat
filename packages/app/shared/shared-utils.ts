@@ -1,4 +1,5 @@
 import { createIdGenerator } from "ai";
+import { ConvexError } from "convex/values";
 import type { KeysOfUnion, LiteralUnion } from "type-fest";
 
 export const is_browser = ((/* iife */) => {
@@ -70,6 +71,19 @@ export function math_clamp(value: number, min: number, max: number) {
 	return Math.min(Math.max(value, min), max);
 }
 
+function is_convex_runtime() {
+	if (is_browser()) {
+		return false;
+	}
+
+	return Boolean(
+		process.env.CONVEX_CLOUD_URL ||
+			process.env.CONVEX_SITE_URL ||
+			process.env.CONVEX_URL ||
+			process.env.VITE_CONVEX_HTTP_URL,
+	);
+}
+
 export function should_never_happen(message: LiteralUnion<"Missing deps", string>, data: Record<string, any> = {}) {
 	console.error("[should_never_happen]", message, data);
 
@@ -90,6 +104,19 @@ export function should_never_happen(message: LiteralUnion<"Missing deps", string
 		// eslint-disable-next-line no-debugger
 		debugger;
 	}
+
+	if (is_convex_runtime()) {
+		let convexData = data;
+		try {
+			convexData = structuredClone(data);
+		} catch {}
+
+		return new ConvexError({
+			message: `[should_never_happen] ${message}`,
+			data: convexData as any,
+		});
+	}
+
 	return new Error(
 		"[should_never_happen] " +
 			message +

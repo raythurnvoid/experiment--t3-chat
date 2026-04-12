@@ -7,6 +7,7 @@ import { test_convex } from "./setup.test.ts";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import type { Id } from "./_generated/dataModel.js";
 
@@ -765,7 +766,7 @@ describe("billing generate_checkout_link auth", () => {
 		expect(result._nay?.message).toBe("A signed-in account is required for checkout");
 	});
 
-	test("throws should_never_happen for Clerk identity without email", async () => {
+	test("throws a Convex impossible-state error for Clerk identity without email", async () => {
 		const t = test_convex();
 		const asUserNoEmail = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -945,7 +946,7 @@ describe("handle_polar_customer_state_update", () => {
 });
 
 describe("billing generate_checkout_link product id", () => {
-	test("throws should_never_happen when productId does not match a synced non-archived Polar product", async () => {
+	test("throws a Convex impossible-state error when productId does not match a synced non-archived Polar product", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
 		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
@@ -1059,7 +1060,7 @@ describe("billing change_current_subscription", () => {
 	});
 });
 
-describe("billing revoke_current_subscription_for_user", () => {
+describe("billing revoke_subscription", () => {
 	beforeEach(() => {
 		subscriptionsRevokeMock.mockReset();
 	});
@@ -1072,7 +1073,7 @@ describe("billing revoke_current_subscription_for_user", () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 
-		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+		const result = await t.action(internal.billing.revoke_subscription, {
 			userId,
 		});
 
@@ -1117,7 +1118,7 @@ describe("billing revoke_current_subscription_for_user", () => {
 			},
 		});
 
-		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+		const result = await t.action(internal.billing.revoke_subscription, {
 			userId,
 		});
 
@@ -1176,7 +1177,7 @@ describe("billing revoke_current_subscription_for_user", () => {
 			},
 		});
 
-		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+		const result = await t.action(internal.billing.revoke_subscription, {
 			userId,
 		});
 
@@ -1231,7 +1232,7 @@ describe("billing revoke_current_subscription_for_user", () => {
 			},
 		});
 
-		const result = await t.action(internal.billing.revoke_current_subscription_for_user, {
+		const result = await t.action(internal.billing.revoke_subscription, {
 			userId,
 		});
 
@@ -1241,7 +1242,7 @@ describe("billing revoke_current_subscription_for_user", () => {
 	test("throws when Polar returns an unexpected revoke error", async () => {
 		subscriptionsRevokeMock.mockResolvedValue({
 			ok: false,
-			error: new Error("polar revoke exploded"),
+			error: new UnexpectedClientError("polar revoke exploded"),
 		});
 
 		const t = test_convex();
@@ -1277,7 +1278,7 @@ describe("billing revoke_current_subscription_for_user", () => {
 		});
 
 		await expect(
-			t.action(internal.billing.revoke_current_subscription_for_user, {
+			t.action(internal.billing.revoke_subscription, {
 				userId,
 			}),
 		).rejects.toThrow("Failed to revoke subscription");

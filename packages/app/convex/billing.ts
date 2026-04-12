@@ -14,11 +14,7 @@ import { action, internalAction, internalMutation, query } from "./_generated/se
 import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import {
-	allowed_origins,
-	server_convex_get_user_fallback_to_anonymous,
-	should_never_happen,
-} from "../server/server-utils.ts";
+import { allowed_origins, server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import app_convex_schema from "./schema.ts";
 
 if (!process.env.POLAR_SERVER) {
@@ -242,6 +238,9 @@ export const generate_checkout_link = action({
 			}),
 		);
 		if (checkoutSessionResult._nay) {
+			return Result({ _nay: { message: "Error while creating a checkout link", cause: checkoutSessionResult._nay } });
+		}
+		if (!checkoutSessionResult._yay) {
 			return Result({ _nay: { message: "Failed to create a checkout link" } });
 		}
 		const checkoutSession = checkoutSessionResult._yay;
