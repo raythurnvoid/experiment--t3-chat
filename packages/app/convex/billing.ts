@@ -3,8 +3,11 @@ import { Workpool } from "@convex-dev/workpool";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
+import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
+import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
@@ -12,9 +15,11 @@ import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, query } from "./_generated/server.js";
 import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
+import { billing_PRODUCTS, billing_get_plan_change_kind } from "../shared/billing.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
 import app_convex_schema from "./schema.ts";
 
 if (!process.env.POLAR_SERVER) {
@@ -291,8 +296,93 @@ export const change_current_subscription = action({
 	args: {
 		productId: v.string(),
 	},
-	handler: async () => {
-		throw new Error("Plan changes are not supported");
+	returns: v_result({
+		_yay: v.object({
+			changeKind: v.union(v.literal("upgrade"), v.literal("downgrade")),
+			prorationBehavior: v.union(v.literal("invoice"), v.literal("next_period")),
+			targetProductId: v.string(),
+			pendingUpdateAppliesAt: v.union(v.string(), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user || user.kind !== "signed_in") {
+			return Result({ _nay: { message: "A signed-in account is required for billing" } });
+		}
+
+		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+			userId: user.id,
+		});
+		if (!currentSubscription || (currentSubscription.status !== "active" && currentSubscription.status !== "trialing")) {
+			return Result({ _nay: { message: "No active subscription found" } });
+		}
+
+		const targetProduct =
+			(await billing.listProducts(ctx)).find((product) => {
+				return product.id === args.productId && !product.isArchived;
+			}) ?? null;
+		if (!targetProduct) {
+			return Result({ _nay: { message: "Invalid target plan" } });
+		}
+		if (currentSubscription.productId === targetProduct.id) {
+			return Result({ _nay: { message: "You're already on this plan" } });
+		}
+
+		const currentBillingProduct =
+			billing_PRODUCTS[currentSubscription.product.name as keyof typeof billing_PRODUCTS] ?? null;
+		const targetBillingProduct = billing_PRODUCTS[targetProduct.name as keyof typeof billing_PRODUCTS] ?? null;
+		if (!currentBillingProduct || !targetBillingProduct) {
+			return Result({ _nay: { message: "Unsupported plan change" } });
+		}
+
+		const changeKind = billing_get_plan_change_kind(currentBillingProduct.name, targetBillingProduct.name);
+		if (!changeKind) {
+			return Result({ _nay: { message: "Plan changes between equivalent tiers are not supported" } });
+		}
+
+		const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
+		const updateResult = await subscriptionsUpdate(billing.polar, {
+			id: currentSubscription.id,
+			subscriptionUpdate: {
+				productId: targetProduct.id,
+				prorationBehavior,
+			},
+		});
+		if (!updateResult.ok) {
+			if (updateResult.error instanceof PaymentFailed) {
+				return Result({ _nay: { message: "Payment failed while updating the subscription" } });
+			}
+			if (updateResult.error instanceof SubscriptionLocked) {
+				return Result({ _nay: { message: "Subscription is locked and cannot be changed right now" } });
+			}
+			if (updateResult.error instanceof ResourceNotFound) {
+				return Result({ _nay: { message: "Subscription not found" } });
+			}
+
+			console.error("[billing.change_current_subscription] Failed to change the subscription", {
+				error: updateResult.error,
+				subscriptionId: currentSubscription.id,
+				targetProductId: targetProduct.id,
+			});
+			return Result({
+				_nay: {
+					message: "Failed to change the subscription",
+				},
+			});
+		}
+
+		await ctx.runMutation(components.polar.lib.updateSubscription, {
+			subscription: convertToDatabaseSubscription(updateResult.value),
+		});
+
+		return Result({
+			_yay: {
+				changeKind,
+				prorationBehavior,
+				targetProductId: targetProduct.id,
+				pendingUpdateAppliesAt: updateResult.value.pendingUpdate?.appliesAt.toISOString() ?? null,
+			},
+		});
 	},
 });
 

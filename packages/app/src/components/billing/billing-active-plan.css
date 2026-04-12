@@ -29,6 +29,14 @@
 		color: var(--color-fg-08);
 	}
 
+	.BillingActivePlan-pending-update {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-accent-alt-11);
+	}
+
 	.BillingActivePlan-started {
 		margin: 0;
 

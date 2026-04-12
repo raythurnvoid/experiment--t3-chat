@@ -6,12 +6,14 @@ import { toast } from "sonner";
 
 import type { AppAuthContextValue } from "@/components/app-auth.tsx";
 import { BillingActivePlan, BillingActivePlanSkeleton } from "@/components/billing/billing-active-plan.tsx";
+import { BillingChangePlanButton } from "@/components/billing/billing-change-plan-button.tsx";
 import { BillingCheckoutButton } from "@/components/billing/billing-checkout-button.tsx";
 import { BillingProductCard, BillingProductCardSkeleton } from "@/components/billing/billing-product-card.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { format_time } from "@/lib/date.ts";
+import { billing_get_plan_change_kind, billing_get_product_display_name } from "../../../shared/billing.ts";
 
 function find_active_subscription(
 	subscriptions: app_convex_FunctionReturnType<typeof app_convex_api.billing.list_subscriptions>,
@@ -19,6 +21,23 @@ function find_active_subscription(
 	return subscriptions.find((subscription) => {
 		return (subscription.status === "active" || subscription.status === "trialing") && !subscription.endedAt;
 	});
+}
+
+function get_plan_change_button_data(currentProductName: string, targetProductName: string) {
+	const changeKind = billing_get_plan_change_kind(currentProductName, targetProductName);
+	if (!changeKind) {
+		return null;
+	}
+
+	return changeKind === "upgrade"
+		? {
+				label: "Upgrade",
+				variant: "accent" as const,
+			}
+		: {
+				label: "Downgrade at renewal",
+				variant: "outline" as const,
+			};
 }
 
 // #region header
@@ -170,6 +189,10 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 		activeSubscription && billingProducts
 			? (billingProducts.find((product) => product.id === activeSubscription.productId) ?? null)
 			: null;
+	const pendingUpdateProduct =
+		activeSubscription?.pendingUpdate?.productId && billingProducts
+			? (billingProducts.find((product) => product.id === activeSubscription.pendingUpdate?.productId) ?? null)
+			: null;
 	const otherCatalogs = billingProducts
 		? billingProducts.filter((product) => {
 				return product.id !== activeSubscription?.productId;
@@ -182,6 +205,12 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 				return `Your subscription remains active until ${format_time(Date.parse(endsAt))}. Click Manage subscription to review the scheduled cancellation.`;
 			}
 			return "Your subscription is cancelled. Click Manage subscription to review the details.";
+		}
+		if (activeSubscription?.pendingUpdate?.appliesAt) {
+			const pendingPlanText = pendingUpdateProduct
+				? ` to ${billing_get_product_display_name(pendingUpdateProduct.name)}`
+				: "";
+			return `Your subscription is active. It changes${pendingPlanText} on ${format_time(Date.parse(activeSubscription.pendingUpdate.appliesAt))}.`;
 		}
 		if (activeSubscription != null) {
 			return "Your subscription is active. Check the plan information below or click Manage subscription to review the details.";
@@ -218,7 +247,14 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 
 					{activeSubscription != null && activeCatalog != null && otherCatalogs != null ? (
 						<>
-							<BillingActivePlan product={activeCatalog} subscription={activeSubscription} usage={billingUsage} />
+							<BillingActivePlan
+								product={activeCatalog}
+								subscription={activeSubscription}
+								usage={billingUsage}
+								scheduledChangeProductName={
+									pendingUpdateProduct ? billing_get_product_display_name(pendingUpdateProduct.name) : null
+								}
+							/>
 							<BillingAccountManagementPanelActions>
 								<MyButton
 									type="button"
@@ -237,7 +273,14 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 										<BillingAccountManagementPanelPlanItem key={product.id}>
 											<BillingProductCard
 												product={product}
-												selectPlanSlot={<BillingCheckoutButton productId={product.id} />}
+												selectPlanSlot={((/* iife */) => {
+													const planChangeButtonData = get_plan_change_button_data(activeCatalog.name, product.name);
+													return planChangeButtonData ? (
+														<BillingChangePlanButton productId={product.id} variant={planChangeButtonData.variant}>
+															{planChangeButtonData.label}
+														</BillingChangePlanButton>
+													) : undefined;
+												})()}
 											/>
 										</BillingAccountManagementPanelPlanItem>
 									))}

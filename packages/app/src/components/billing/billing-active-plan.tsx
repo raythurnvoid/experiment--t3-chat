@@ -11,7 +11,7 @@ import { format_cents, type Currency } from "../../lib/currency.ts";
 import {
 	billing_get_product_benefit_display_suffix_text,
 	billing_get_product_display_name,
-} from "../../lib/billing.ts";
+} from "../../../shared/billing.ts";
 
 // #region skeleton
 type BillingActivePlanSkeleton_ClassNames =
@@ -280,10 +280,23 @@ function get_subscription_times_texts(subscription: SubscriptionDoc) {
 	};
 }
 
+function get_pending_update_text(
+	subscription: SubscriptionDoc,
+	scheduledChangeProductName: string | null | undefined,
+) {
+	if (subscription.cancelAtPeriodEnd || !subscription.pendingUpdate?.appliesAt) {
+		return null;
+	}
+
+	const targetPlanText = scheduledChangeProductName ? ` to ${scheduledChangeProductName}` : "";
+	return `Changes${targetPlanText} on ${format_time(Date.parse(subscription.pendingUpdate.appliesAt))}`;
+}
+
 type BillingActivePlan_ClassNames =
 	| "BillingActivePlan"
 	| "BillingActivePlan-title"
 	| "BillingActivePlan-renewal"
+	| "BillingActivePlan-pending-update"
 	| "BillingActivePlan-started"
 	| "BillingActivePlan-details"
 	| "BillingActivePlan-list"
@@ -293,10 +306,11 @@ export type BillingActivePlan_Props = {
 	product: ProductDoc;
 	subscription: SubscriptionDoc;
 	usage: UsageSnapshotDoc;
+	scheduledChangeProductName?: string | null;
 };
 
 export const BillingActivePlan = memo(function BillingActivePlan(props: BillingActivePlan_Props) {
-	const { product, subscription, usage } = props;
+	const { product, subscription, usage, scheduledChangeProductName } = props;
 
 	const recurringPrice =
 		product.prices?.find((priceDoc) => !priceDoc.isArchived && priceDoc.amountType === "fixed") ??
@@ -313,6 +327,7 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 
 	const badgeData = get_subscription_badge_data(subscription);
 	const subscriptionTimesTexts = get_subscription_times_texts(subscription);
+	const pendingUpdateText = get_pending_update_text(subscription, scheduledChangeProductName);
 	const title = billing_get_product_display_name(product.name);
 
 	const meteredUsageSnapshot =
@@ -347,6 +362,11 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 			{subscriptionTimesTexts.primaryLine ? (
 				<p className={"BillingActivePlan-renewal" satisfies BillingActivePlan_ClassNames}>
 					{subscriptionTimesTexts.primaryLine}
+				</p>
+			) : null}
+			{pendingUpdateText ? (
+				<p className={"BillingActivePlan-pending-update" satisfies BillingActivePlan_ClassNames}>
+					{pendingUpdateText}
 				</p>
 			) : null}
 			{subscriptionTimesTexts.secondaryLine ? (

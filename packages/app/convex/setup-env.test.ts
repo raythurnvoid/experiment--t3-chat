@@ -28,10 +28,6 @@ if (!process.env.CLERK_SECRET_KEY) {
 	process.env.CLERK_SECRET_KEY = "CLERK_SECRET_KEY";
 }
 
-if (!process.env.POLAR_PRODUCTS_PREFIX) {
-	process.env.POLAR_PRODUCTS_PREFIX = "test";
-}
-
 if (!process.env.POLAR_SERVER) {
 	process.env.POLAR_SERVER = "sandbox";
 }

@@ -1,26 +1,6 @@
-type BillingMonetaryAmount = {
-	amount: number;
-	currency: "eur";
-};
+import type { UnionToIntersection } from "type-fest";
 
-type BillingProductBenefit = {
-	description: string;
-};
-
-type BillingProductMeter = {
-	name: string;
-	displayName: string;
-	unitPrice?: BillingMonetaryAmount;
-};
-
-type BillingProduct = {
-	name: string;
-	displayName: string;
-	meter: BillingProductMeter;
-	benefits: Record<string, BillingProductBenefit>;
-};
-
-/** Keep human-readable billing copy in code and match Polar rows by stable ids or equivalent normalized names. */
+/** Keep human-readable billing copy in code and look up products by their exact Polar names. */
 export const billing_PRODUCTS = {
 	Pro: {
 		name: "Pro",
@@ -60,35 +40,34 @@ export const billing_PRODUCTS = {
 	},
 } as const;
 
-function billing_normalize_polar_identifier(value: string) {
-	return value
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "");
+const billing_plan_order = ["Pay As You Go", "Pro"] as const;
+
+export function billing_get_product_benefit_display_suffix_text(productName: string, benefitDescription: string) {
+	const product = billing_PRODUCTS[productName as keyof typeof billing_PRODUCTS];
+	type BillingProductBenefits = UnionToIntersection<NonNullable<typeof product>["benefits"]>;
+	const benefits = product?.benefits as BillingProductBenefits | undefined;
+	return benefits?.[benefitDescription as keyof BillingProductBenefits]?.displaySuffixText ?? null;
 }
 
-export function billing_product_matches_polar_name(productName: string, product: BillingProduct) {
-	const normalizedProductName = billing_normalize_polar_identifier(productName);
-	const normalizedProductId = billing_normalize_polar_identifier(product.name);
-	return (
-		productName === product.name ||
-		productName.endsWith(`-${product.name}`) ||
-		normalizedProductName === normalizedProductId ||
-		normalizedProductName.endsWith(`_${normalizedProductId}`)
-	);
+export function billing_get_product_display_name(productName: string) {
+	return billing_PRODUCTS[productName as keyof typeof billing_PRODUCTS]?.displayName ?? productName;
 }
 
-export function billing_product_benefit_matches_polar_description(
-	polarBenefitDescription: string,
-	benefit: BillingProductBenefit,
-) {
-	const normalizedBenefitDescription = billing_normalize_polar_identifier(polarBenefitDescription);
-	const normalizedBenefitDescriptionId = billing_normalize_polar_identifier(benefit.description);
-	return (
-		polarBenefitDescription === benefit.description ||
-		polarBenefitDescription.endsWith(`-${benefit.description}`) ||
-		normalizedBenefitDescription === normalizedBenefitDescriptionId ||
-		normalizedBenefitDescription.endsWith(`_${normalizedBenefitDescriptionId}`)
-	);
+export function billing_get_plan_change_kind(currentProductName: string, targetProductName: string) {
+	const currentProduct = billing_PRODUCTS[currentProductName as keyof typeof billing_PRODUCTS] ?? null;
+	const targetProduct = billing_PRODUCTS[targetProductName as keyof typeof billing_PRODUCTS] ?? null;
+	const currentProductOrder = billing_plan_order.indexOf(currentProductName as (typeof billing_plan_order)[number]);
+	const targetProductOrder = billing_plan_order.indexOf(targetProductName as (typeof billing_plan_order)[number]);
+
+	if (
+		!currentProduct ||
+		!targetProduct ||
+		currentProductOrder === -1 ||
+		targetProductOrder === -1 ||
+		currentProductOrder === targetProductOrder
+	) {
+		return null;
+	}
+
+	return currentProductOrder < targetProductOrder ? ("upgrade" as const) : ("downgrade" as const);
 }

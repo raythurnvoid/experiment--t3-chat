@@ -6,9 +6,12 @@ import { billing } from "./billing.ts";
 import { test_convex } from "./setup.test.ts";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
+import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
+import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
+import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
 import type { Id } from "./_generated/dataModel.js";
 
 vi.mock("@polar-sh/sdk/core.js", () => ({
@@ -25,8 +28,13 @@ vi.mock("@polar-sh/sdk/funcs/subscriptionsRevoke.js", () => ({
 	subscriptionsRevoke: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/subscriptionsUpdate.js", () => ({
+	subscriptionsUpdate: vi.fn(),
+}));
+
 const eventsIngestMock = vi.mocked(eventsIngest);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
+const subscriptionsUpdateMock = vi.mocked(subscriptionsUpdate);
 
 type BillingSeed = {
 	polarProductId: string;
@@ -54,11 +62,7 @@ async function seed_pay_as_you_go_product(
 		benefits?: BillingSeedBenefit[];
 	},
 ): Promise<BillingSeed> {
-	const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
-	if (!prefix) {
-		throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
-	}
-	const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
+	const polarProductName = billing_PRODUCTS["Pay As You Go"].name;
 	await t.mutation(components.polar.lib.createProduct, {
 		product: {
 			id: args.polarProductId,
@@ -101,11 +105,7 @@ async function seed_pro_product(
 		benefits?: BillingSeedBenefit[];
 	},
 ): Promise<BillingSeed> {
-	const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
-	if (!prefix) {
-		throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
-	}
-	const polarProductName = `${prefix}-${billing_PRODUCTS.Pro.name}`;
+	const polarProductName = billing_PRODUCTS.Pro.name;
 	await t.mutation(components.polar.lib.createProduct, {
 		product: {
 			id: args.polarProductId,
@@ -169,6 +169,101 @@ async function seed_user_id(t: ReturnType<typeof test_convex>) {
 			clerkUserId: null,
 		});
 	});
+}
+
+async function seed_subscription(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: string;
+		customerId: string;
+		subscriptionId: string;
+		polarProductId: string;
+		status?: "active" | "trialing";
+		pendingUpdate?: {
+			id: string;
+			appliesAt: string;
+			productId: string | null;
+			seats: number | null;
+		} | null;
+	},
+) {
+	await t.mutation(components.polar.lib.insertCustomer, {
+		id: args.customerId,
+		userId: args.userId,
+	});
+
+	await t.mutation(components.polar.lib.createSubscription, {
+		subscription: {
+			id: args.subscriptionId,
+			customerId: args.customerId,
+			productId: args.polarProductId,
+			checkoutId: null,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			modifiedAt: "2026-01-02T00:00:00.000Z",
+			amount: 1000,
+			currency: "eur",
+			recurringInterval: "month",
+			status: args.status ?? "active",
+			currentPeriodStart: "2026-01-01T00:00:00.000Z",
+			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+			cancelAtPeriodEnd: false,
+			startedAt: "2026-01-01T00:00:00.000Z",
+			endedAt: null,
+			metadata: {},
+			pendingUpdate: args.pendingUpdate ?? null,
+		},
+	});
+}
+
+function create_updated_polar_subscription(args: {
+	subscriptionId: string;
+	customerId: string;
+	productId: string;
+	pendingUpdate?: {
+		id: string;
+		appliesAt: string;
+		productId: string | null;
+		seats: number | null;
+	} | null;
+}) {
+	return {
+		id: args.subscriptionId,
+		customerId: args.customerId,
+		productId: args.productId,
+		checkoutId: null,
+		createdAt: new Date("2026-01-01T00:00:00.000Z"),
+		modifiedAt: new Date("2026-01-03T00:00:00.000Z"),
+		amount: 1000,
+		currency: "eur",
+		recurringInterval: "month",
+		recurringIntervalCount: 1,
+		status: "active",
+		currentPeriodStart: new Date("2026-01-01T00:00:00.000Z"),
+		currentPeriodEnd: new Date("2026-02-01T00:00:00.000Z"),
+		trialStart: null,
+		trialEnd: null,
+		cancelAtPeriodEnd: false,
+		canceledAt: null,
+		startedAt: new Date("2026-01-01T00:00:00.000Z"),
+		endsAt: null,
+		endedAt: null,
+		discountId: null,
+		seats: null,
+		customerCancellationReason: null,
+		customerCancellationComment: null,
+		metadata: {},
+		customFieldData: {},
+		pendingUpdate: args.pendingUpdate
+			? {
+					id: args.pendingUpdate.id,
+					createdAt: new Date("2026-01-03T00:00:00.000Z"),
+					modifiedAt: null,
+					appliesAt: new Date(args.pendingUpdate.appliesAt),
+					productId: args.pendingUpdate.productId,
+					seats: args.pendingUpdate.seats,
+				}
+			: null,
+	};
 }
 
 describe("billing list_products", () => {
@@ -789,12 +884,8 @@ describe("handle_polar_customer_state_update", () => {
 	test("writes the usage snapshot directly from the first active subscription meter in the webhook payload", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
-		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
-		if (!prefix) {
-			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
-		}
 		const polarProductId = "billing_refresh_snapshot_webhook_product";
-		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
+		const polarProductName = billing_PRODUCTS["Pay As You Go"].name;
 
 		await t.mutation(components.polar.lib.createProduct, {
 			product: {
@@ -950,8 +1041,7 @@ describe("handle_polar_customer_state_update", () => {
 describe("billing generate_checkout_link product id", () => {
 	test("returns nay when productId does not match a synced non-archived Polar product", async () => {
 		const t = test_convex();
-		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
-		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
+		const polarProductName = billing_PRODUCTS["Pay As You Go"].name;
 		const polarProductId = "billing_curated_checkout_id";
 
 		await t.mutation(components.polar.lib.createProduct, {
@@ -1047,18 +1137,355 @@ describe("billing generate_checkout_link create session", () => {
 });
 
 describe("billing change_current_subscription", () => {
-	test("rejects plan changes", async () => {
+	beforeEach(() => {
+		subscriptionsUpdateMock.mockReset();
+	});
+
+	afterEach(() => {
+		subscriptionsUpdateMock.mockReset();
+	});
+
+	test("upgrades immediately with invoice proration and updates the stored subscription", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_payg_upgrade",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_pro_upgrade",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_upgrade_plan",
+			customerId: "cust_upgrade_plan",
+			subscriptionId: "sub_upgrade_plan",
+			polarProductId: polarPaygProductId,
+		});
+
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_upgrade_plan",
+				customerId: "cust_upgrade_plan",
+				productId: polarProProductId,
+			}) as never,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_upgrade_plan" as Id<"users">,
+			name: "Upgrade Plan",
+			email: "upgrade-plan@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result).toEqual({
+			_yay: {
+				changeKind: "upgrade",
+				prorationBehavior: "invoice",
+				targetProductId: polarProProductId,
+				pendingUpdateAppliesAt: null,
+			},
+		});
+		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_upgrade_plan",
+			subscriptionUpdate: {
+				productId: polarProProductId,
+				prorationBehavior: "invoice",
+			},
+		});
+
+		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
+			id: "sub_upgrade_plan",
+		});
+		expect(storedSubscription?.productId).toBe(polarProProductId);
+		expect(storedSubscription?.pendingUpdate).toBeNull();
+	});
+
+	test("schedules downgrades for the next period and stores pendingUpdate", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_payg_downgrade",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_pro_downgrade",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_downgrade_plan",
+			customerId: "cust_downgrade_plan",
+			subscriptionId: "sub_downgrade_plan",
+			polarProductId: polarProProductId,
+		});
+
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_downgrade_plan",
+				customerId: "cust_downgrade_plan",
+				productId: polarProProductId,
+				pendingUpdate: {
+					id: "pending_downgrade_plan",
+					appliesAt: "2026-02-01T00:00:00.000Z",
+					productId: polarPaygProductId,
+					seats: null,
+				},
+			}) as never,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_downgrade_plan" as Id<"users">,
+			name: "Downgrade Plan",
+			email: "downgrade-plan@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarPaygProductId,
+		});
+
+		expect(result).toEqual({
+			_yay: {
+				changeKind: "downgrade",
+				prorationBehavior: "next_period",
+				targetProductId: polarPaygProductId,
+				pendingUpdateAppliesAt: "2026-02-01T00:00:00.000Z",
+			},
+		});
+		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_downgrade_plan",
+			subscriptionUpdate: {
+				productId: polarPaygProductId,
+				prorationBehavior: "next_period",
+			},
+		});
+
+		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
+			id: "sub_downgrade_plan",
+		});
+		expect(storedSubscription?.productId).toBe(polarProProductId);
+		expect(storedSubscription?.pendingUpdate).toEqual({
+			id: "pending_downgrade_plan",
+			appliesAt: "2026-02-01T00:00:00.000Z",
+			productId: polarPaygProductId,
+			seats: null,
+		});
+	});
+
+	test("returns nay when the user selects the current product", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_same_plan",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_same_plan",
+			customerId: "cust_same_plan",
+			subscriptionId: "sub_same_plan",
+			polarProductId: polarPaygProductId,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_same_plan" as Id<"users">,
+			name: "Same Plan",
+			email: "same-plan@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarPaygProductId,
+		});
+
+		expect(result._nay?.message).toBe("You're already on this plan");
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+	});
+
+	test("returns nay when the target product is unknown", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_unknown_current",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_unknown_target",
+			customerId: "cust_unknown_target",
+			subscriptionId: "sub_unknown_target",
+			polarProductId: polarPaygProductId,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_unknown_target" as Id<"users">,
+			name: "Unknown Target",
+			email: "unknown-target@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: "missing_product",
+		});
+
+		expect(result._nay?.message).toBe("Invalid target plan");
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+	});
+
+	test("returns nay for anonymous users", async () => {
+		const t = test_convex();
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: "user_change_subscription_anonymous",
+			name: "Anonymous Plan Change",
+		});
+
+		const result = await asAnonymous.action(api.billing.change_current_subscription, {
+			productId: "any_product",
+		});
+
+		expect(result._nay?.message).toBe("A signed-in account is required for billing");
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+	});
+
+	test("returns nay when the user has no current subscription", async () => {
 		const t = test_convex();
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_no_plan_change" as Id<"users">,
-			name: "No Plan Change",
-			email: "no-plan-change@test.local",
+			external_id: "user_without_subscription" as Id<"users">,
+			name: "No Current Subscription",
+			email: "no-current-subscription@test.local",
 		});
 
-		await expect(asUser.action(api.billing.change_current_subscription, { productId: "any_product" })).rejects.toThrow(
-			"Plan changes are not supported",
-		);
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: "any_product",
+		});
+
+		expect(result._nay?.message).toBe("No active subscription found");
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+	});
+
+	test("returns a payment failure as a user-safe nay", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_payment_failed_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_payment_failed_target",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_payment_failed",
+			customerId: "cust_payment_failed",
+			subscriptionId: "sub_payment_failed",
+			polarProductId: polarPaygProductId,
+		});
+
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: false,
+			error: new PaymentFailed(
+				{
+					error: "PaymentFailed",
+					detail: "Card was declined",
+				},
+				{
+					request: new Request("https://polar.test/v1/subscriptions/sub_payment_failed"),
+					response: new Response(JSON.stringify({ error: "PaymentFailed" }), { status: 402 }),
+					body: JSON.stringify({ error: "PaymentFailed" }),
+				},
+			),
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_payment_failed" as Id<"users">,
+			name: "Payment Failed",
+			email: "payment-failed@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result._nay?.message).toBe("Payment failed while updating the subscription");
+	});
+
+	test("returns a subscription lock as a user-safe nay", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_locked_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_locked_target",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_subscription_locked",
+			customerId: "cust_subscription_locked",
+			subscriptionId: "sub_subscription_locked",
+			polarProductId: polarPaygProductId,
+		});
+
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: false,
+			error: new SubscriptionLocked(
+				{
+					error: "SubscriptionLocked",
+					detail: "Subscription is locked",
+				},
+				{
+					request: new Request("https://polar.test/v1/subscriptions/sub_subscription_locked"),
+					response: new Response(JSON.stringify({ error: "SubscriptionLocked" }), { status: 409 }),
+					body: JSON.stringify({ error: "SubscriptionLocked" }),
+				},
+			),
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_subscription_locked" as Id<"users">,
+			name: "Subscription Locked",
+			email: "subscription-locked@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result._nay?.message).toBe("Subscription is locked and cannot be changed right now");
+	});
+
+	test("returns a generic nay for unexpected Polar errors", async () => {
+		const t = test_convex();
+		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_change_generic_error_current",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_generic_error_target",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_generic_plan_change_error",
+			customerId: "cust_generic_plan_change_error",
+			subscriptionId: "sub_generic_plan_change_error",
+			polarProductId: polarPaygProductId,
+		});
+
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: false,
+			error: new UnexpectedClientError("polar change exploded"),
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_generic_plan_change_error" as Id<"users">,
+			name: "Generic Plan Change Error",
+			email: "generic-plan-change-error@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result._nay?.message).toBe("Failed to change the subscription");
 	});
 });
 

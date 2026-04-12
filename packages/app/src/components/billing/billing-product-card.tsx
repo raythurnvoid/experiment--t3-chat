@@ -9,8 +9,7 @@ import { should_never_happen } from "../../lib/utils.ts";
 import {
 	billing_get_product_benefit_display_suffix_text,
 	billing_get_product_display_name,
-} from "../../lib/billing.ts";
-import { billing_PRODUCTS, billing_product_matches_polar_name } from "../../../shared/billing.ts";
+} from "../../../shared/billing.ts";
 
 type BillingProductCard_ProductDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
 
@@ -205,11 +204,7 @@ export type BillingProductCard_Props = {
 export const BillingProductCard = memo(function BillingProductCard(props: BillingProductCard_Props) {
 	const { product, selectPlanSlot } = props;
 
-	const matched_product_key = (Object.keys(billing_PRODUCTS) as (keyof typeof billing_PRODUCTS)[]).find((key) =>
-		billing_product_matches_polar_name(product.name, billing_PRODUCTS[key]),
-	);
-
-	switch (matched_product_key) {
+	switch (product.name) {
 		case "Pay As You Go":
 			return <BillingProductCardPayAsYouGo product={product} selectPlanSlot={selectPlanSlot} />;
 		case "Pro":
