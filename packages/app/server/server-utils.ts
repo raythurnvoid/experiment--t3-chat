@@ -40,14 +40,13 @@ export const allowed_origins = ((/* iife */) => {
  * - Return `null` when Convex reports no identity or when `getUserIdentity()` throws in an HTTP action.
  * - Return `kind: "anonymous"` for authenticated anonymous JWTs. `id` and `subject` are both the Convex
  *   `users` id in that branch.
- * - Return `kind: "signed_in"` for authenticated Clerk users only when the JWT includes a valid `external_id`.
- *   `subject` is the Clerk user id and `id` is the Convex `users` id from `external_id`. Signed-in identities
- *   must also include an email; if not, treat that as an application invariant violation.
+ * - Return `kind: "signed_in"` for authenticated Clerk users only when the JWT includes a valid `external_id`
+ *   and email. `subject` is the Clerk user id and `id` is the Convex `users` id from `external_id`.
  *
  * Does not load the `users` table or assert the row exists: a verified token is treated as enough to trust
  * `subject` / `external_id`. If a signed-in token is missing `external_id`, treat it as unauthenticated. If a
- * flow must reject soft-deleted accounts or missing profiles, query `users` in that handler and enforce
- * `deletedAt` / presence there.
+ * signed-in token is missing email, throw because that auth state should never happen. If a flow must reject
+ * soft-deleted accounts or missing profiles, query `users` in that handler and enforce `deletedAt` / presence there.
  */
 export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCtx) {
 	const userIdentityResult = await Result_try_promise(ctx.auth.getUserIdentity());
@@ -75,8 +74,11 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 	if (!userId) {
 		return null;
 	}
-	if (!identity.email) {
-		throw should_never_happen("Email required for billing", { identity, userId });
+	if (identity.email == null) {
+		throw should_never_happen("Email required for signed-in users", {
+			userId,
+			subject: identity.subject,
+		});
 	}
 
 	return {

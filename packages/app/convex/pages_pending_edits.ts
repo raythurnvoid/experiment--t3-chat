@@ -452,7 +452,7 @@ export const upsert_pages_pending_edit_updates = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -510,7 +510,7 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -791,7 +791,7 @@ export const save_pages_pending_edit = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,

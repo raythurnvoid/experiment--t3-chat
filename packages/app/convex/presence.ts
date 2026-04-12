@@ -22,7 +22,13 @@ export const heartbeat = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			throw convex_error({
+				message: "Presence heartbeat requires an authenticated user",
+				data: {
+					roomId: args.roomId,
+					sessionId: args.sessionId,
+				},
+			});
 		}
 
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
@@ -240,9 +246,10 @@ export const disconnect = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			await presence.disconnect(ctx, args.sessionToken);
+			return null;
 		}
-		const result = await presence.disconnect(ctx, args.sessionToken);
+		await presence.disconnect(ctx, args.sessionToken);
 		const onlineRooms = await ctx.runQuery(components.presence.public.listUser, {
 			userId: user.id,
 			onlineOnly: true,
@@ -252,7 +259,7 @@ export const disconnect = mutation({
 		// Keep the long-lived fallback TTL in `ai_chat` because presence is optional, but
 		// only shorten cleanup when the user is now fully offline across presence sessions.
 		if (onlineRooms.length > 0) {
-			return result;
+			return null;
 		}
 
 		const memberships = await ctx.db
@@ -271,6 +278,6 @@ export const disconnect = mutation({
 			}),
 		);
 
-		return result;
+		return null;
 	},
 });

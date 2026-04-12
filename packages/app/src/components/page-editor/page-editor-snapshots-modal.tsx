@@ -2,6 +2,7 @@ import "./page-editor-snapshots-modal.css";
 
 import { memo, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
 import { useMutation, useQueries, useQuery } from "convex/react";
+import { toast } from "sonner";
 import { Archive, ArchiveRestore, ChevronLeft, ChevronRight, Clock, FileText } from "lucide-react";
 import { diffWordsWithSpace } from "diff";
 
@@ -815,13 +816,19 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 
 		setIsRestoring(true);
 		Promise.try(async () => {
-			await restoreSnapshot({
+			const restoreResult = await restoreSnapshot({
 				membershipId,
 				pageSnapshotId: selectedSnapshotId,
 				pageId: pageId,
 				sessionId: sessionId,
 				currentMarkdownContent: getCurrentMarkdown(),
 			});
+			if (restoreResult._nay) {
+				console.error("Failed to restore snapshot:", restoreResult._nay);
+				toast.error(restoreResult._nay.message ?? "Failed to restore snapshot");
+				return;
+			}
+
 			console.debug("Snapshot restored:", selectedSnapshotId);
 
 			onApplySnapshotMarkdown?.(selectedSnapshotMarkdown);
@@ -878,10 +885,13 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 	const handleClickArchive = useFn<PageEditorSnapshotsModalList_Props["onClickArchive"]>(
 		async (snapshotId, isArchived) => {
 			const mutation = isArchived ? unarchiveSnapshot : archiveSnapshot;
-			await mutation({
+			const archiveResult = await mutation({
 				membershipId,
 				pageSnapshotId: snapshotId,
 			});
+			if (archiveResult._nay) {
+				toast.error(archiveResult._nay.message ?? "Failed to update snapshot");
+			}
 		},
 	);
 

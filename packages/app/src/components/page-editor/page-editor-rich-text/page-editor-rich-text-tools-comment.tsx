@@ -83,7 +83,12 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 			content: markdownContent.trim(),
 		})
 			.then((result) => {
-				editor.chain().focus().addComment(result.threadId).run();
+				if (result._nay) {
+					toast.error(result._nay.message ?? "Failed to create comment");
+					return;
+				}
+
+				editor.chain().focus().addComment(result._yay.threadId).run();
 
 				composerRef.current?.clear();
 				setIsEmpty(true);

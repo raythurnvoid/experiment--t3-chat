@@ -235,8 +235,12 @@ function PageEditorCommentsThreadForm(props: PageEditorCommentsThreadForm_Props)
 			rootId: threadId,
 			content: markdownContent.trim(),
 		})
-			// Clear the composer
-			.then(() => {
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message ?? "Failed to add comment");
+					return;
+				}
+
 				composerRef.current?.clear();
 				setIsEmpty(true);
 				onSubmit?.();

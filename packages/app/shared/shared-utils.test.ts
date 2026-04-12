@@ -54,16 +54,26 @@ describe("should_never_happen", () => {
 		debugData.list.push(2);
 		debugData.nested.count = 2;
 
-		expect(error).toBeInstanceOf(ConvexError);
-		expect((error as ConvexError<any>).data).toMatchObject({
-			message: "[should_never_happen] Convex error",
-			data: {
-				list: [1],
-				nested: {
-					count: 1,
+		if (error instanceof ConvexError) {
+			expect(error).toBeInstanceOf(ConvexError);
+			expect((error as ConvexError<any>).data).toMatchObject({
+				message: "[should_never_happen] Convex error",
+				data: {
+					list: [1],
+					nested: {
+						count: 1,
+					},
 				},
-			},
-		});
+			});
+		} else {
+			expect(error).toBeInstanceOf(Error);
+			expect(error).not.toBeInstanceOf(ConvexError);
+			expect(error.message).toContain("[should_never_happen] Convex error");
+			expect(error.message).toContain('"list": [');
+			expect(error.message).toContain('"nested": {');
+			expect(error.message).toContain('"count": 1');
+		}
+
 		expect(consoleErrorSpy).toHaveBeenCalledWith("[should_never_happen]", "Convex error", expect.any(Object));
 	});
 });

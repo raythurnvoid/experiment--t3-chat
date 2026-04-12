@@ -8,6 +8,7 @@ import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
 import type { MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
+import workpool_test from "@convex-dev/workpool/test";
 import {
 	workspaces_db_create,
 	workspaces_db_create_project,
@@ -27,6 +28,7 @@ export function test_convex() {
 		polar_test.modules as unknown as Parameters<typeof t.registerComponent>[2],
 	);
 	presence_test.register(t);
+	workpool_test.register(t, "billingUsageEventWorkpool");
 	return t;
 }
 

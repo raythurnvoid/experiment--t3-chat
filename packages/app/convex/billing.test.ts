@@ -637,13 +637,14 @@ describe("billing get_usage_snapshot", () => {
 
 	test("returns snapshot fields when a billing_usage_snapshots row exists", async () => {
 		const t = test_convex();
+		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_usage_prod_ready",
 		});
 
 		await t.mutation(components.polar.lib.insertCustomer, {
 			id: "cust_usage_ready",
-			userId: "user_billing_usage_ready",
+			userId,
 		});
 
 		await t.mutation(components.polar.lib.createSubscription, {
@@ -670,7 +671,7 @@ describe("billing get_usage_snapshot", () => {
 		const syncedAt = Date.now();
 		await t.run(async (ctx) => {
 			await ctx.db.insert("billing_usage_snapshots", {
-				userId: "user_billing_usage_ready" as Id<"users">,
+				userId,
 				polarCustomerId: "cust_usage_ready",
 				subscription: {
 					id: "sub_usage_ready",
@@ -692,7 +693,7 @@ describe("billing get_usage_snapshot", () => {
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
-			external_id: "user_billing_usage_ready" as Id<"users">,
+			external_id: userId,
 			name: "Usage Ready",
 			email: "usage-ready@test.local",
 		});
@@ -780,13 +781,14 @@ describe("billing generate_checkout_link auth", () => {
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
 			}),
-		).rejects.toThrow("Email required for billing");
+		).rejects.toThrow("Email required for signed-in users");
 	});
 });
 
 describe("handle_polar_customer_state_update", () => {
 	test("writes the usage snapshot directly from the first active subscription meter in the webhook payload", async () => {
 		const t = test_convex();
+		const userId = await seed_user_id(t);
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim();
 		if (!prefix) {
 			throw new Error("Expected POLAR_PRODUCTS_PREFIX from setup-env.test.ts");
@@ -848,9 +850,9 @@ describe("handle_polar_customer_state_update", () => {
 					created_at: "2026-04-07T12:47:35.912837Z",
 					modified_at: "2026-04-11T04:53:38.614819Z",
 					metadata: {
-						userId: "user_refresh_snapshot_webhook",
+						userId,
 					},
-					external_id: "user_refresh_snapshot_webhook" as Id<"users">,
+					external_id: userId,
 					email: "billing@example.com",
 					email_verified: false,
 					type: "individual",
@@ -933,7 +935,7 @@ describe("handle_polar_customer_state_update", () => {
 		const snapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", "user_refresh_snapshot_webhook" as Id<"users">))
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -946,7 +948,7 @@ describe("handle_polar_customer_state_update", () => {
 });
 
 describe("billing generate_checkout_link product id", () => {
-	test("throws a Convex impossible-state error when productId does not match a synced non-archived Polar product", async () => {
+	test("returns nay when productId does not match a synced non-archived Polar product", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
 		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
@@ -977,13 +979,13 @@ describe("billing generate_checkout_link product id", () => {
 			email: "curated-checkout@test.local",
 		});
 
-		await expect(
-			asUser.action(api.billing.generate_checkout_link, {
-				productId: "some_other_product_id",
-				origin: "https://app.test",
-				successUrl: "https://app.test/ok",
-			}),
-		).rejects.toThrow("Invalid checkout product");
+		const result = await asUser.action(api.billing.generate_checkout_link, {
+			productId: "some_other_product_id",
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+
+		expect(result._nay?.message).toBe("Invalid checkout product");
 	});
 });
 
@@ -1301,8 +1303,9 @@ describe("ingest_usage_event", () => {
 		});
 
 		const t = test_convex();
+		const userId = await seed_user_id(t);
 		await t.action(internal.billing.ingest_usage_event, {
-			userId: "user_drain_ok" as Id<"users">,
+			userId,
 			eventId: `${billing_EVENTS.pressUsage}:u:test-page:1`,
 			metadata: {
 				amount: 1,
@@ -1322,7 +1325,7 @@ describe("ingest_usage_event", () => {
 		};
 		expect(ingestPayload.events).toHaveLength(1);
 		expect(ingestPayload.events[0]!.externalId).toBe(`${billing_EVENTS.pressUsage}:u:test-page:1`);
-		expect(ingestPayload.events[0]!.externalCustomerId).toBe("user_drain_ok" as Id<"users">);
+		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
 		expect("customerId" in ingestPayload.events[0]! && ingestPayload.events[0]!.customerId).toBeFalsy();
 		expect(ingestPayload.events[0]!.name).toBe(billing_EVENTS.pressUsage);
 	});
@@ -1334,9 +1337,10 @@ describe("ingest_usage_event", () => {
 		});
 
 		const t = test_convex();
+		const userId = await seed_user_id(t);
 		await expect(
 			t.action(internal.billing.ingest_usage_event, {
-				userId: "user_drain_fail" as Id<"users">,
+				userId,
 				eventId: `${billing_EVENTS.pressUsage}:u:test-page:2`,
 				metadata: {},
 			}),

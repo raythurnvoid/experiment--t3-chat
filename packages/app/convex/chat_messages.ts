@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
-import { convex_error } from "../server/convex-utils.ts";
+import { Result } from "../shared/errors-as-values-utils.ts";
+import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 
 /**
@@ -14,10 +15,11 @@ export const chat_messages_threads_create = mutation({
 		projectId: v.string(),
 		content: v.string(),
 	},
+	returns: v_result({ _yay: v.object({ threadId: v.id("chat_messages") }) }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const threadId = await ctx.db.insert("chat_messages", {
@@ -30,7 +32,7 @@ export const chat_messages_threads_create = mutation({
 			content: args.content,
 		});
 
-		return { threadId };
+		return Result({ _yay: { threadId } });
 	},
 });
 
@@ -44,15 +46,16 @@ export const chat_messages_add = mutation({
 		rootId: v.id("chat_messages"),
 		content: v.string(),
 	},
+	returns: v_result({ _yay: v.object({ messageId: v.id("chat_messages") }) }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const root = await ctx.db.get("chat_messages", args.rootId);
 		if (!root) {
-			throw new Error("Root message not found");
+			return Result({ _nay: { message: "Root message not found" } });
 		}
 
 		const messageId = await ctx.db.insert("chat_messages", {
@@ -65,7 +68,7 @@ export const chat_messages_add = mutation({
 			content: args.content,
 		});
 
-		return { messageId };
+		return Result({ _yay: { messageId } });
 	},
 });
 

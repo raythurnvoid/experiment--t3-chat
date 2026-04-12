@@ -151,13 +151,12 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 		void convex
 			.action(app_convex_api.billing.generate_customer_portal_url, {})
 			.then((result) => {
-				if (result?.url) {
-					window.open(result.url, "_blank", "noopener,noreferrer");
-				} else {
-					const message = "Could not open subscription management";
-					console.error(message, { result });
-					toast.error(message);
+				if (result._nay) {
+					toast.error(result._nay.message ?? "Could not open subscription management");
+					return;
 				}
+
+				window.open(result._yay.url, "_blank", "noopener,noreferrer");
 			})
 			.catch((e) => {
 				const error = e as Error;

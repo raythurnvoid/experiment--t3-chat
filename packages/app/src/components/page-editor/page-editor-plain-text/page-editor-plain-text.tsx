@@ -384,6 +384,11 @@ function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 					sessionId: presenceStore.localSessionId,
 				});
 
+				if (result._nay) {
+					toast.error(result._nay.message ?? "Failed to save");
+					return;
+				}
+
 				// Update baseline yjs doc
 				applyUpdate(baselineYjsDoc, diffUpdate);
 
@@ -391,8 +396,14 @@ function PageEditorPlainTextInner(props: PageEditorPlainTextInner_Props) {
 				// If the returned remote sequence is `workingYjsDocSequence` + 1, we can safely update
 				// because it means no other updates happened between our save and the server response.
 				// Otherwise, keep `workingYjsDocSequence` unchanged so the user knows he has to sync.
-				if (result && result.newSequence === workingYjsDocSequence + 1) {
-					setWorkingYjsSequence(result.newSequence);
+				const pushPayload = result._yay;
+				if (
+					pushPayload &&
+					typeof pushPayload === "object" &&
+					"newSequence" in pushPayload &&
+					pushPayload.newSequence === workingYjsDocSequence + 1
+				) {
+					setWorkingYjsSequence(pushPayload.newSequence);
 				}
 			}
 

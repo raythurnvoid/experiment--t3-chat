@@ -173,7 +173,7 @@ export const thread_create = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
@@ -225,7 +225,7 @@ export const thread_branch = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
@@ -418,7 +418,7 @@ export const thread_update = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
@@ -480,11 +480,11 @@ export const thread_archive = mutation({
 		membershipId: v.id("workspaces_projects_users"),
 		threadId: v.id("ai_chat_threads"),
 	},
-	returns: v_result({ _yay: v.null() }),
+	returns: v_result({ _yay: v.null() 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
@@ -592,7 +592,7 @@ export const thread_messages_add = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,

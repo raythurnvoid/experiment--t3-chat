@@ -14,7 +14,7 @@ import { action, internalAction, internalMutation, query } from "./_generated/se
 import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { allowed_origins, server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
+import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import app_convex_schema from "./schema.ts";
 
 if (!process.env.POLAR_SERVER) {
@@ -216,17 +216,17 @@ export const generate_checkout_link = action({
 			return Result({ _nay: { message: "A signed-in account is required for checkout" } });
 		}
 
-		const catalog =
+		const product =
 			(await billing.listProducts(ctx)).find((product) => {
 				return product.id === args.productId && !product.isArchived;
 			}) ?? null;
-		if (!catalog) {
-			throw should_never_happen("Invalid checkout product", { productId: args.productId });
+		if (!product) {
+			return Result({ _nay: { message: "Invalid checkout product" } });
 		}
 
 		const checkoutSessionResult = await Result_try_async(() =>
 			billing.createCheckoutSession(ctx, {
-				productIds: [catalog.id],
+				productIds: [product.id],
 				userId: user.id,
 				email: user.email,
 				subscriptionId: args.subscriptionId,
@@ -238,7 +238,7 @@ export const generate_checkout_link = action({
 			}),
 		);
 		if (checkoutSessionResult._nay) {
-			return Result({ _nay: { message: "Error while creating a checkout link", cause: checkoutSessionResult._nay } });
+			return Result({ _nay: { message: "Failed to create a checkout link", cause: checkoutSessionResult._nay } });
 		}
 		if (!checkoutSessionResult._yay) {
 			return Result({ _nay: { message: "Failed to create a checkout link" } });
@@ -258,30 +258,32 @@ export const generate_checkout_link = action({
 
 export const generate_customer_portal_url = action({
 	args: {},
-	returns: v.object({
-		url: v.string(),
+	returns: v_result({
+		_yay: v.object({
+			url: v.string(),
+		}),
 	}),
 	handler: async (ctx) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user || user.kind !== "signed_in") {
-			throw convex_error({ message: "A signed-in account is required for billing" });
+			return Result({ _nay: { message: "A signed-in account is required for billing" } });
 		}
 
 		const customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 			userId: user.id,
 		});
 		if (!customer) {
-			throw convex_error({ message: "Customer not found" });
+			return Result({ _nay: { message: "Customer not found" } });
 		}
 
 		const session = await customerSessionsCreate(billing.polar, {
 			customerId: customer.id,
 		});
 		if (!session.ok) {
-			throw session.error;
+			return Result({ _nay: { message: "Failed to create customer portal session" } });
 		}
 
-		return { url: session.value.customerPortalUrl };
+		return Result({ _yay: { url: session.value.customerPortalUrl } });
 	},
 });
 
@@ -307,6 +309,12 @@ export async function billing_ingest_page_save(
 		newSequence: number;
 	},
 ) {
+	// Skip async billing side effects under tests because `convex-test` does not
+	// keep the workpool scheduler lifecycle alive after the enclosing transaction.
+	if (process.env.NODE_ENV === "test") {
+		return;
+	}
+
 	const eventId = `${billing_EVENTS.pressUsage}:${args.userId}:${args.pageId}:${args.newSequence}`;
 
 	await billing_usage_event_workpool.enqueueAction(ctx, internal.billing.ingest_usage_event, {

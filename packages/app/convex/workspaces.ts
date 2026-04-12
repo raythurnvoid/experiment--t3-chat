@@ -288,7 +288,7 @@ export const create_workspace = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();
@@ -327,7 +327,7 @@ export const create_project = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();
@@ -363,7 +363,7 @@ export const add_user_to_workspace_project = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const [userToAdd, workspace, project, projectCurrentUserLookup, projectUserToAddLookup] = await Promise.all([
@@ -463,7 +463,7 @@ export const edit_workspace = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();
@@ -576,7 +576,7 @@ export const edit_project = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();
@@ -709,7 +709,7 @@ export const delete_workspace = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();
@@ -827,7 +827,7 @@ export const delete_project = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();

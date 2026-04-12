@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -11,11 +11,16 @@ const { actionMock, toastErrorMock } = vi.hoisted(() => {
 
 type MockButton_Props = ComponentProps<"button">;
 
-vi.mock("convex/react", () => ({
-	useConvex: () => ({
-		action: actionMock,
-	}),
-}));
+vi.mock("convex/react", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("convex/react")>();
+
+	return {
+		...actual,
+		useConvex: () => ({
+			action: actionMock,
+		}),
+	};
+});
 
 vi.mock("sonner", () => ({
 	toast: {
@@ -39,6 +44,7 @@ describe("BillingCheckoutButton", () => {
 	});
 
 	afterEach(() => {
+		cleanup();
 		vi.restoreAllMocks();
 	});
 

@@ -466,7 +466,7 @@ async function do_create_page(
 ) {
 	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 	if (!user) {
-		throw convex_error({ message: "Unauthenticated" });
+		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 	const now = Date.now();
 	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
@@ -585,8 +585,11 @@ async function do_create_page(
 			pageId,
 			yjsSequence: initialYjsSequence,
 		});
-		throw convex_error({
-			message,
+		return Result({
+			_nay: {
+				name: "nay",
+				message,
+			},
 		});
 	}
 
@@ -611,7 +614,7 @@ export const create_page = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -650,7 +653,7 @@ export const create_page_quick = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -722,7 +725,7 @@ export const rename_page = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -799,7 +802,7 @@ export const move_pages = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -897,7 +900,7 @@ export const archive_pages = mutation({
 		const now = Date.now();
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -993,7 +996,7 @@ export const unarchive_pages = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -2006,7 +2009,7 @@ export const create_home_page = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -2203,30 +2206,30 @@ export const archive_snapshot = mutation({
 		membershipId: v.id("workspaces_projects_users"),
 		pageSnapshotId: v.id("pages_snapshots"),
 	},
-	returns: v.null(),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
-			return null;
+			return Result({ _yay: null });
 		}
 
 		const snapshot = await ctx.db.get("pages_snapshots", args.pageSnapshotId);
 		if (!snapshot || snapshot.workspace_id !== membership.workspaceId || snapshot.project_id !== membership.projectId) {
-			return null;
+			return Result({ _yay: null });
 		}
 
 		await ctx.db.patch("pages_snapshots", args.pageSnapshotId, {
 			archived_at: Date.now(),
 		});
 
-		return null;
+		return Result({ _yay: null });
 	},
 });
 
@@ -2235,29 +2238,29 @@ export const unarchive_snapshot = mutation({
 		membershipId: v.id("workspaces_projects_users"),
 		pageSnapshotId: v.id("pages_snapshots"),
 	},
-	returns: v.null(),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
-			return null;
+			return Result({ _yay: null });
 		}
 
 		const snapshot = await ctx.db.get("pages_snapshots", args.pageSnapshotId);
 		if (!snapshot || snapshot.workspace_id !== membership.workspaceId || snapshot.project_id !== membership.projectId) {
-			return null;
+			return Result({ _yay: null });
 		}
 
 		await ctx.db.patch("pages_snapshots", args.pageSnapshotId, {
 			archived_at: 0,
 		});
-		return null;
+		return Result({ _yay: null });
 	},
 });
 
@@ -2532,8 +2535,11 @@ export const update_snapshots = internalMutation({
 				console.error(message, {
 					dbWriteResult,
 				});
-				throw convex_error({
-					message,
+				return Result({
+					_nay: {
+						name: "nay",
+						message,
+					},
 				});
 			}
 
@@ -2641,28 +2647,30 @@ export const yjs_push_update = mutation({
 		update: v.bytes(),
 		sessionId: v.string(),
 	},
-	returns: v.union(
-		v.null(),
-		v.object({
-			newSequence: v.number(),
-		}),
-	),
+	returns: v_result({
+		_yay: v.union(
+			v.null(),
+			v.object({
+				newSequence: v.number(),
+			}),
+		),
+	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
-			return null;
+			return Result({ _yay: null });
 		}
 
 		const page = await ctx.db.get("pages", args.pageId);
 		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
-			return null;
+			return Result({ _yay: null });
 		}
 
 		const pushResult = await pages_db_yjs_push_update(ctx, {
@@ -2685,7 +2693,7 @@ export const yjs_push_update = mutation({
 			});
 		}
 
-		return pushResult;
+		return Result({ _yay: pushResult });
 	},
 });
 
@@ -2768,7 +2776,7 @@ export const restore_snapshot = mutation({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: user.id,
@@ -2899,8 +2907,11 @@ export const restore_snapshot = mutation({
 			console.error(message, {
 				restorePageResult,
 			});
-			throw convex_error({
-				message,
+			return Result({
+				_nay: {
+					name: "nay",
+					message,
+				},
 			});
 		}
 
