@@ -1,11 +1,6 @@
 @layer components {
-	@keyframes MainAppAccountManagementBillingActivePlanSkeleton-pulse {
-		50% {
-			opacity: 0.42;
-		}
-	}
-
-	.MainAppAccountManagementBillingActivePlanSkeleton {
+	/* #region root */
+	.BillingActivePlan {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -17,47 +12,32 @@
 		background: var(--color-base-1-03);
 	}
 
-	.MainAppAccountManagementBillingActivePlanSkeleton-badge,
-	.MainAppAccountManagementBillingActivePlanSkeleton-title,
-	.MainAppAccountManagementBillingActivePlanSkeleton-usage,
-	.MainAppAccountManagementBillingActivePlanSkeleton-renewal,
-	.MainAppAccountManagementBillingActivePlanSkeleton-started,
-	.MainAppAccountManagementBillingActivePlanSkeleton-covers {
-		border-radius: 6px;
-		background: var(--color-base-1-06);
+	.BillingActivePlan-title {
+		margin: 0;
 
-		animation: MainAppAccountManagementBillingActivePlanSkeleton-pulse 1.1s ease-in-out infinite;
+		font-size: 15px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
 	}
 
-	.MainAppAccountManagementBillingActivePlanSkeleton-badge {
-		align-self: start;
+	.BillingActivePlan-renewal {
+		margin: 0;
 
-		width: 88px;
-		height: 22px;
-		border-radius: 999px;
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
 	}
 
-	.MainAppAccountManagementBillingActivePlanSkeleton-title {
-		width: min(100%, 360px);
-		height: 20px;
+	.BillingActivePlan-started {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
 	}
 
-	.MainAppAccountManagementBillingActivePlanSkeleton-usage {
-		width: min(100%, 320px);
-		height: 18px;
-	}
-
-	.MainAppAccountManagementBillingActivePlanSkeleton-renewal {
-		width: min(100%, 260px);
-		height: 16px;
-	}
-
-	.MainAppAccountManagementBillingActivePlanSkeleton-started {
-		width: min(100%, 200px);
-		height: 16px;
-	}
-
-	.MainAppAccountManagementBillingActivePlanSkeleton-details {
+	.BillingActivePlan-details {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -67,12 +47,160 @@
 		border-top: 1px solid var(--color-base-1-06);
 	}
 
-	.MainAppAccountManagementBillingActivePlanSkeleton-covers {
+	.BillingActivePlan-list {
+		margin: 0;
+		padding-inline-start: 0;
+		list-style: none;
+
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.BillingActivePlan-list-item {
+		padding-inline-start: 0;
+	}
+	/* #endregion root */
+
+	/* #region active plan badge */
+	.BillingActivePlanBadge {
+		align-self: start;
+		color: var(--color-fg-12);
+
+		&.BillingActivePlanBadge-variant-active {
+			background: var(--color-green-03);
+			border-color: var(--color-green-07);
+		}
+
+		&.BillingActivePlanBadge-variant-trialing {
+			background: var(--color-base-1-04);
+			border-color: var(--color-base-1-07);
+		}
+
+		&.BillingActivePlanBadge-variant-ending {
+			background: var(--color-accent-alt-01);
+			border-color: var(--color-accent-alt-07);
+		}
+	}
+	/* #endregion active plan badge */
+
+	/* #region plan usage */
+	.BillingActivePlanUsage {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.BillingActivePlanUsage-line {
+		margin: 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-11);
+	}
+
+	.BillingActivePlanUsage-sep {
+		color: var(--color-fg-06);
+	}
+
+	.BillingActivePlanUsage-label {
+		font-weight: 500;
+		color: var(--color-fg-08);
+	}
+
+	.BillingActivePlanUsage-value {
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.BillingActivePlanUsage-meta {
+		margin: 0;
+
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-fg-07);
+	}
+	/* #endregion plan usage */
+
+	/* #region skeleton */
+	@keyframes BillingActivePlanSkeleton-pulse {
+		50% {
+			opacity: 0.42;
+		}
+	}
+
+	.BillingActivePlanSkeleton {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		padding: 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.BillingActivePlanSkeleton-badge,
+	.BillingActivePlanSkeleton-title,
+	.BillingActivePlanSkeleton-usage,
+	.BillingActivePlanSkeleton-renewal,
+	.BillingActivePlanSkeleton-started,
+	.BillingActivePlanSkeleton-covers {
+		border-radius: 6px;
+		background: var(--color-base-1-06);
+
+		animation: BillingActivePlanSkeleton-pulse 1.1s ease-in-out infinite;
+	}
+
+	.BillingActivePlanSkeleton-badge {
+		align-self: start;
+
+		width: 88px;
+		height: 22px;
+		border-radius: 999px;
+	}
+
+	.BillingActivePlanSkeleton-title {
+		width: min(100%, 360px);
+		height: 20px;
+	}
+
+	.BillingActivePlanSkeleton-usage {
+		width: min(100%, 320px);
+		height: 18px;
+	}
+
+	.BillingActivePlanSkeleton-renewal {
+		width: min(100%, 260px);
+		height: 16px;
+	}
+
+	.BillingActivePlanSkeleton-started {
+		width: min(100%, 200px);
+		height: 16px;
+	}
+
+	.BillingActivePlanSkeleton-details {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		margin-top: 2px;
+		padding-top: 10px;
+		border-top: 1px solid var(--color-base-1-06);
+	}
+
+	.BillingActivePlanSkeleton-covers {
 		width: 100%;
 		height: 42px;
 	}
 
-	.MainAppAccountManagementBillingActivePlanSkeleton-list {
+	.BillingActivePlanSkeleton-list {
 		margin: 0;
 		padding: 0;
 
@@ -82,14 +210,14 @@
 
 		list-style: none;
 
-		& .MainAppAccountManagementBillingActivePlanSkeleton-list-item {
+		& .BillingActivePlanSkeleton-list-item {
 			width: 100%;
 			height: 16px;
 
 			border-radius: 6px;
 			background: var(--color-base-1-06);
 
-			animation: MainAppAccountManagementBillingActivePlanSkeleton-pulse 1.1s ease-in-out infinite;
+			animation: BillingActivePlanSkeleton-pulse 1.1s ease-in-out infinite;
 
 			&:nth-child(1) {
 				width: 92%;
@@ -104,132 +232,5 @@
 			}
 		}
 	}
-
-	.MainAppAccountManagementBillingActivePlan {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-
-		padding: 12px;
-		border: 1px solid var(--color-base-1-06);
-		border-radius: 8px;
-
-		background: var(--color-base-1-03);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-badge {
-		align-self: start;
-
-		padding: 2px 8px;
-		border-radius: 999px;
-
-		font-size: 12px;
-		font-weight: 600;
-		line-height: 1.35;
-		color: var(--color-fg-12);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-badge-active {
-		background: color-mix(in srgb, var(--color-green-06) 22%, transparent);
-		border: 1px solid color-mix(in srgb, var(--color-green-08) 35%, transparent);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-badge-trialing {
-		background: color-mix(in srgb, var(--color-base-1-06) 72%, transparent);
-		border: 1px solid var(--color-base-1-07);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-badge-ending {
-		background: color-mix(in srgb, var(--color-accent-alt-06) 20%, transparent);
-		border: 1px solid color-mix(in srgb, var(--color-accent-alt-08) 30%, transparent);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-title {
-		margin: 0;
-
-		font-size: 15px;
-		font-weight: 600;
-		line-height: 1.3;
-		color: var(--color-fg-12);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-renewal {
-		margin: 0;
-
-		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-started {
-		margin: 0;
-
-		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-07);
-	}
-
-	.MainAppAccountManagementBillingActivePlanUsage {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.MainAppAccountManagementBillingActivePlanUsage-line {
-		margin: 0;
-
-		font-size: 14px;
-		line-height: 1.45;
-		color: var(--color-fg-11);
-	}
-
-	.MainAppAccountManagementBillingActivePlanUsage-sep {
-		color: var(--color-fg-06);
-	}
-
-	.MainAppAccountManagementBillingActivePlanUsage-label {
-		font-weight: 500;
-		color: var(--color-fg-08);
-	}
-
-	.MainAppAccountManagementBillingActivePlanUsage-value {
-		font-weight: 600;
-		color: var(--color-fg-12);
-	}
-
-	.MainAppAccountManagementBillingActivePlanUsage-meta {
-		margin: 0;
-
-		font-size: 12px;
-		line-height: 1.45;
-		color: var(--color-fg-07);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-details {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-
-		margin-top: 2px;
-		padding-top: 10px;
-		border-top: 1px solid var(--color-base-1-06);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-list {
-		margin: 0;
-		padding-inline-start: 0;
-		list-style: none;
-
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-
-		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
-	}
-
-	.MainAppAccountManagementBillingActivePlan-list-item {
-		padding-inline-start: 0;
-	}
+	/* #endregion skeleton */
 }

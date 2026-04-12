@@ -1,12 +1,12 @@
 @layer components {
 	/* #region header */
-	.MainAppAccountManagementBillingHeader {
+	.BillingAccountManagementPanelHeader {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 	}
 
-	.MainAppAccountManagementBillingHeader-title {
+	.BillingAccountManagementPanelHeader-title {
 		margin: 0;
 
 		font-size: 14px;
@@ -15,7 +15,7 @@
 		color: var(--color-fg-11);
 	}
 
-	.MainAppAccountManagementBillingHeader-description {
+	.BillingAccountManagementPanelHeader-description {
 		margin: 0;
 
 		font-size: 13px;
@@ -25,13 +25,13 @@
 	/* #endregion header */
 
 	/* #region plans */
-	.MainAppAccountManagementBillingPlans {
+	.BillingAccountManagementPanelPlans {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 	}
 
-	.MainAppAccountManagementBillingPlans-title {
+	.BillingAccountManagementPanelPlans-title {
 		margin: 0;
 
 		font-size: 13px;
@@ -40,7 +40,7 @@
 		color: var(--color-fg-11);
 	}
 
-	.MainAppAccountManagementBillingPlans-list {
+	.BillingAccountManagementPanelPlans-list {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
@@ -48,7 +48,7 @@
 	/* #endregion plans */
 
 	/* #region plan item */
-	.MainAppAccountManagementBillingPlanItem {
+	.BillingAccountManagementPanelPlanItem {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -56,7 +56,7 @@
 	/* #endregion plan item */
 
 	/* #region actions */
-	.MainAppAccountManagementBillingActions {
+	.BillingAccountManagementPanelActions {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -65,14 +65,14 @@
 	/* #endregion actions */
 
 	/* #region root */
-	.MainAppAccountManagementBilling {
+	.BillingAccountManagementPanel {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
 	}
 
-	.MainAppAccountManagementBilling-checkout,
-	.MainAppAccountManagementBilling-manage-subscription {
+	.BillingAccountManagementPanel-checkout,
+	.BillingAccountManagementPanel-manage-subscription {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -91,25 +91,25 @@
 			color 0.15s ease;
 	}
 
-	.MainAppAccountManagementBilling-checkout {
+	.BillingAccountManagementPanel-checkout {
 		border: 1px solid transparent;
 
 		background: var(--color-accent-06);
 		color: var(--color-fg-12);
 	}
 
-	.MainAppAccountManagementBilling-checkout:hover {
+	.BillingAccountManagementPanel-checkout:hover {
 		background: var(--color-accent-07);
 	}
 
-	.MainAppAccountManagementBilling-manage-subscription {
+	.BillingAccountManagementPanel-manage-subscription {
 		border: 1px solid var(--color-base-1-06);
 
 		background: var(--color-base-1-04);
 		color: var(--color-fg-11);
 	}
 
-	.MainAppAccountManagementBilling-manage-subscription:hover {
+	.BillingAccountManagementPanel-manage-subscription:hover {
 		background: var(--color-base-1-05);
 	}
 	/* #endregion root */

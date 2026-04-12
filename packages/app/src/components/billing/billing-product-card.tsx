@@ -1,71 +1,73 @@
 import "./billing-product-card.css";
 
-import { billing_PRODUCTS } from "../../../shared/billing.ts";
 import { memo } from "react";
 
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { format_cents, type Currency } from "@/lib/currency.ts";
-import type { LiteralUnion, UnionToIntersection } from "type-fest";
+import type { LiteralUnion } from "type-fest";
 import { should_never_happen } from "../../lib/utils.ts";
-import { billing_get_product_benefit_display_suffix_text } from "../../lib/billing.ts";
+import {
+	billing_get_product_benefit_display_suffix_text,
+	billing_get_product_display_name,
+} from "../../lib/billing.ts";
 
 // #region skeleton
-type MainAppAccountManagementBillingProductCardSkeleton_ClassNames =
-	| "MainAppAccountManagementBillingProductCardSkeleton"
-	| "MainAppAccountManagementBillingProductCardSkeleton-title"
-	| "MainAppAccountManagementBillingProductCardSkeleton-price"
-	| "MainAppAccountManagementBillingProductCardSkeleton-secondary"
-	| "MainAppAccountManagementBillingProductCardSkeleton-included"
-	| "MainAppAccountManagementBillingProductCardSkeleton-list"
-	| "MainAppAccountManagementBillingProductCardSkeleton-list-item";
+type BillingProductCardSkeleton_ClassNames =
+	| "BillingProductCardSkeleton"
+	| "BillingProductCardSkeleton-title"
+	| "BillingProductCardSkeleton-price"
+	| "BillingProductCardSkeleton-secondary"
+	| "BillingProductCardSkeleton-included"
+	| "BillingProductCardSkeleton-list"
+	| "BillingProductCardSkeleton-list-item";
 
-export const MainAppAccountManagementBillingProductCardSkeleton = memo(
-	function MainAppAccountManagementBillingProductCardSkeleton() {
+export const BillingProductCardSkeleton = memo(
+	function BillingProductCardSkeleton() {
 		return (
 			<div
 				className={
-					"MainAppAccountManagementBillingProductCardSkeleton" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+					"BillingProductCardSkeleton" satisfies BillingProductCardSkeleton_ClassNames
 				}
 				aria-busy="true"
 				aria-label="Loading product"
 			>
 				<div
 					className={
-						"MainAppAccountManagementBillingProductCardSkeleton-title" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+						"BillingProductCardSkeleton-title" satisfies BillingProductCardSkeleton_ClassNames
 					}
 					aria-hidden
 				/>
 				<div
 					className={
-						"MainAppAccountManagementBillingProductCardSkeleton-price" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+						"BillingProductCardSkeleton-price" satisfies BillingProductCardSkeleton_ClassNames
 					}
 					aria-hidden
 				/>
 				<div
 					className={
-						"MainAppAccountManagementBillingProductCardSkeleton-secondary" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+						"BillingProductCardSkeleton-secondary" satisfies BillingProductCardSkeleton_ClassNames
 					}
 					aria-hidden
 				/>
 				<div
 					className={
-						"MainAppAccountManagementBillingProductCardSkeleton-included" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+						"BillingProductCardSkeleton-included" satisfies BillingProductCardSkeleton_ClassNames
 					}
 					aria-hidden
 				/>
 				<ul
 					className={
-						"MainAppAccountManagementBillingProductCardSkeleton-list" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+						"BillingProductCardSkeleton-list" satisfies BillingProductCardSkeleton_ClassNames
 					}
 				>
 					<li
 						className={
-							"MainAppAccountManagementBillingProductCardSkeleton-list-item" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+							"BillingProductCardSkeleton-list-item" satisfies BillingProductCardSkeleton_ClassNames
 						}
 					/>
 					<li
 						className={
-							"MainAppAccountManagementBillingProductCardSkeleton-list-item" satisfies MainAppAccountManagementBillingProductCardSkeleton_ClassNames
+							"BillingProductCardSkeleton-list-item" satisfies BillingProductCardSkeleton_ClassNames
 						}
 					/>
 				</ul>
@@ -76,12 +78,12 @@ export const MainAppAccountManagementBillingProductCardSkeleton = memo(
 // #endregion skeleton
 
 // #region root
-type MainAppAccountManagementBillingProductCard_ProductDoc = app_convex_FunctionReturnType<
+type BillingProductCard_ProductDoc = app_convex_FunctionReturnType<
 	typeof app_convex_api.billing.list_products
 >[number];
 
 function included_usage_text(
-	product: MainAppAccountManagementBillingProductCard_ProductDoc,
+	product: BillingProductCard_ProductDoc,
 	currency: LiteralUnion<Currency, string>,
 ) {
 	const benefit = product.benefits?.find((benefit) => {
@@ -106,22 +108,22 @@ function included_usage_text(
 	return `Includes ${format_cents(includedUsageAmount, currency)} of ${suffixText}`;
 }
 
-type MainAppAccountManagementBillingProductCard_ClassNames =
-	| "MainAppAccountManagementBillingProductCard"
-	| "MainAppAccountManagementBillingProductCard-title"
-	| "MainAppAccountManagementBillingProductCard-price"
-	| "MainAppAccountManagementBillingProductCard-included";
+type BillingProductCard_ClassNames =
+	| "BillingProductCard"
+	| "BillingProductCard-title"
+	| "BillingProductCard-price"
+	| "BillingProductCard-included";
 
-export type MainAppAccountManagementBillingProductCard_Props = {
-	product: MainAppAccountManagementBillingProductCard_ProductDoc;
+export type BillingProductCard_Props = {
+	product: BillingProductCard_ProductDoc;
 };
 
-export const MainAppAccountManagementBillingProductCard = memo(function MainAppAccountManagementBillingProductCard(
-	props: MainAppAccountManagementBillingProductCard_Props,
+export const BillingProductCard = memo(function BillingProductCard(
+	props: BillingProductCard_Props,
 ) {
 	const { product } = props;
 
-	const displayName = billing_PRODUCTS[product.name as keyof typeof billing_PRODUCTS]?.displayName ?? product.name;
+	const displayName = billing_get_product_display_name(product.name);
 
 	const fixedPrice =
 		product.prices?.find((priceDoc) => !priceDoc.isArchived && priceDoc.amountType === "fixed") ?? null;
@@ -143,26 +145,26 @@ export const MainAppAccountManagementBillingProductCard = memo(function MainAppA
 	return (
 		<div
 			className={
-				"MainAppAccountManagementBillingProductCard" satisfies MainAppAccountManagementBillingProductCard_ClassNames
+				"BillingProductCard" satisfies BillingProductCard_ClassNames
 			}
 		>
 			<h3
 				className={
-					"MainAppAccountManagementBillingProductCard-title" satisfies MainAppAccountManagementBillingProductCard_ClassNames
+					"BillingProductCard-title" satisfies BillingProductCard_ClassNames
 				}
 			>
 				{displayName}
 			</h3>
 			<p
 				className={
-					"MainAppAccountManagementBillingProductCard-price" satisfies MainAppAccountManagementBillingProductCard_ClassNames
+					"BillingProductCard-price" satisfies BillingProductCard_ClassNames
 				}
 			>
 				{primaryPriceText ?? "Pricing unavailable"}
 			</p>
 			<p
 				className={
-					"MainAppAccountManagementBillingProductCard-included" satisfies MainAppAccountManagementBillingProductCard_ClassNames
+					"BillingProductCard-included" satisfies BillingProductCard_ClassNames
 				}
 			>
 				{includedUsageText}

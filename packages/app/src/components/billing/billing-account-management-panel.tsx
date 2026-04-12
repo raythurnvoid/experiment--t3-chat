@@ -1,4 +1,4 @@
-import "./billing-main-account-management-panel.css";
+import "./billing-account-management-panel.css";
 
 import { CheckoutLink } from "@convex-dev/polar/react";
 import { billing_PRODUCTS, billing_product_matches_polar_name } from "../../../shared/billing.ts";
@@ -7,14 +7,8 @@ import { memo, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import type { AppAuthContextValue } from "@/components/app-auth.tsx";
-import {
-	MainAppAccountManagementBillingActivePlan,
-	MainAppAccountManagementBillingActivePlanSkeleton,
-} from "@/components/billing/billing-active-plan.tsx";
-import {
-	MainAppAccountManagementBillingProductCard,
-	MainAppAccountManagementBillingProductCardSkeleton,
-} from "@/components/billing/billing-product-card.tsx";
+import { BillingActivePlan, BillingActivePlanSkeleton } from "@/components/billing/billing-active-plan.tsx";
+import { BillingProductCard, BillingProductCardSkeleton } from "@/components/billing/billing-product-card.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
@@ -29,34 +23,34 @@ function find_active_subscription(
 }
 
 // #region header
-type MainAppAccountManagementBillingHeader_ClassNames =
-	| "MainAppAccountManagementBillingHeader"
-	| "MainAppAccountManagementBillingHeader-title"
-	| "MainAppAccountManagementBillingHeader-description";
+type BillingAccountManagementPanelHeader_ClassNames =
+	| "BillingAccountManagementPanelHeader"
+	| "BillingAccountManagementPanelHeader-title"
+	| "BillingAccountManagementPanelHeader-description";
 
-type MainAppAccountManagementBillingHeader_Props = {
+type BillingAccountManagementPanelHeader_Props = {
 	children: ReactNode;
 };
 
-const MainAppAccountManagementBillingHeader = memo(function MainAppAccountManagementBillingHeader(
-	props: MainAppAccountManagementBillingHeader_Props,
+const BillingAccountManagementPanelHeader = memo(function BillingAccountManagementPanelHeader(
+	props: BillingAccountManagementPanelHeader_Props,
 ) {
 	const { children } = props;
 
 	return (
 		<header
-			className={"MainAppAccountManagementBillingHeader" satisfies MainAppAccountManagementBillingHeader_ClassNames}
+			className={"BillingAccountManagementPanelHeader" satisfies BillingAccountManagementPanelHeader_ClassNames}
 		>
 			<h2
 				className={
-					"MainAppAccountManagementBillingHeader-title" satisfies MainAppAccountManagementBillingHeader_ClassNames
+					"BillingAccountManagementPanelHeader-title" satisfies BillingAccountManagementPanelHeader_ClassNames
 				}
 			>
 				Billing
 			</h2>
 			<p
 				className={
-					"MainAppAccountManagementBillingHeader-description" satisfies MainAppAccountManagementBillingHeader_ClassNames
+					"BillingAccountManagementPanelHeader-description" satisfies BillingAccountManagementPanelHeader_ClassNames
 				}
 			>
 				{children}
@@ -67,35 +61,35 @@ const MainAppAccountManagementBillingHeader = memo(function MainAppAccountManage
 // #endregion header
 
 // #region plans
-type MainAppAccountManagementBillingPlans_ClassNames =
-	| "MainAppAccountManagementBillingPlans"
-	| "MainAppAccountManagementBillingPlans-title"
-	| "MainAppAccountManagementBillingPlans-list";
+type BillingAccountManagementPanelPlans_ClassNames =
+	| "BillingAccountManagementPanelPlans"
+	| "BillingAccountManagementPanelPlans-title"
+	| "BillingAccountManagementPanelPlans-list";
 
-type MainAppAccountManagementBillingPlans_Props = {
+type BillingAccountManagementPanelPlans_Props = {
 	title: ReactNode;
 	children: ReactNode;
 };
 
-const MainAppAccountManagementBillingPlans = memo(function MainAppAccountManagementBillingPlans(
-	props: MainAppAccountManagementBillingPlans_Props,
+const BillingAccountManagementPanelPlans = memo(function BillingAccountManagementPanelPlans(
+	props: BillingAccountManagementPanelPlans_Props,
 ) {
 	const { title, children } = props;
 
 	return (
 		<section
-			className={"MainAppAccountManagementBillingPlans" satisfies MainAppAccountManagementBillingPlans_ClassNames}
+			className={"BillingAccountManagementPanelPlans" satisfies BillingAccountManagementPanelPlans_ClassNames}
 		>
 			<h3
 				className={
-					"MainAppAccountManagementBillingPlans-title" satisfies MainAppAccountManagementBillingPlans_ClassNames
+					"BillingAccountManagementPanelPlans-title" satisfies BillingAccountManagementPanelPlans_ClassNames
 				}
 			>
 				{title}
 			</h3>
 			<div
 				className={
-					"MainAppAccountManagementBillingPlans-list" satisfies MainAppAccountManagementBillingPlans_ClassNames
+					"BillingAccountManagementPanelPlans-list" satisfies BillingAccountManagementPanelPlans_ClassNames
 				}
 			>
 				{children}
@@ -106,20 +100,20 @@ const MainAppAccountManagementBillingPlans = memo(function MainAppAccountManagem
 // #endregion plans
 
 // #region plan item
-type MainAppAccountManagementBillingPlanItem_ClassNames = "MainAppAccountManagementBillingPlanItem";
+type BillingAccountManagementPanelPlanItem_ClassNames = "BillingAccountManagementPanelPlanItem";
 
-type MainAppAccountManagementBillingPlanItem_Props = {
+type BillingAccountManagementPanelPlanItem_Props = {
 	children: ReactNode;
 };
 
-const MainAppAccountManagementBillingPlanItem = memo(function MainAppAccountManagementBillingPlanItem(
-	props: MainAppAccountManagementBillingPlanItem_Props,
+const BillingAccountManagementPanelPlanItem = memo(function BillingAccountManagementPanelPlanItem(
+	props: BillingAccountManagementPanelPlanItem_Props,
 ) {
 	const { children } = props;
 
 	return (
 		<div
-			className={"MainAppAccountManagementBillingPlanItem" satisfies MainAppAccountManagementBillingPlanItem_ClassNames}
+			className={"BillingAccountManagementPanelPlanItem" satisfies BillingAccountManagementPanelPlanItem_ClassNames}
 		>
 			{children}
 		</div>
@@ -128,20 +122,20 @@ const MainAppAccountManagementBillingPlanItem = memo(function MainAppAccountMana
 // #endregion plan item
 
 // #region actions
-type MainAppAccountManagementBillingActions_ClassNames = "MainAppAccountManagementBillingActions";
+type BillingAccountManagementPanelActions_ClassNames = "BillingAccountManagementPanelActions";
 
-type MainAppAccountManagementBillingActions_Props = {
+type BillingAccountManagementPanelActions_Props = {
 	children: ReactNode;
 };
 
-const MainAppAccountManagementBillingActions = memo(function MainAppAccountManagementBillingActions(
-	props: MainAppAccountManagementBillingActions_Props,
+const BillingAccountManagementPanelActions = memo(function BillingAccountManagementPanelActions(
+	props: BillingAccountManagementPanelActions_Props,
 ) {
 	const { children } = props;
 
 	return (
 		<div
-			className={"MainAppAccountManagementBillingActions" satisfies MainAppAccountManagementBillingActions_ClassNames}
+			className={"BillingAccountManagementPanelActions" satisfies BillingAccountManagementPanelActions_ClassNames}
 		>
 			{children}
 		</div>
@@ -150,17 +144,17 @@ const MainAppAccountManagementBillingActions = memo(function MainAppAccountManag
 // #endregion actions
 
 // #region root
-type MainAppAccountManagementBilling_ClassNames =
-	| "MainAppAccountManagementBilling"
-	| "MainAppAccountManagementBilling-checkout"
-	| "MainAppAccountManagementBilling-manage-subscription";
+type BillingAccountManagementPanel_ClassNames =
+	| "BillingAccountManagementPanel"
+	| "BillingAccountManagementPanel-checkout"
+	| "BillingAccountManagementPanel-manage-subscription";
 
-type MainAppAccountManagementBilling_Props = {
+type BillingAccountManagementPanel_Props = {
 	isAnonymous: NonNullable<AppAuthContextValue["isAnonymous"]>;
 };
 
-export const MainAppAccountManagementBilling = memo(function MainAppAccountManagementBilling(
-	props: MainAppAccountManagementBilling_Props,
+export const BillingAccountManagementPanel = memo(function BillingAccountManagementPanel(
+	props: BillingAccountManagementPanel_Props,
 ) {
 	const { isAnonymous } = props;
 
@@ -219,71 +213,67 @@ export const MainAppAccountManagementBilling = memo(function MainAppAccountManag
 	})();
 
 	return (
-		<div className={"MainAppAccountManagementBilling" satisfies MainAppAccountManagementBilling_ClassNames}>
+		<div className={"BillingAccountManagementPanel" satisfies BillingAccountManagementPanel_ClassNames}>
 			{isAnonymous ? (
-				<MainAppAccountManagementBillingHeader>
+				<BillingAccountManagementPanelHeader>
 					Sign in to manage your plan, billing, and invoices.
-				</MainAppAccountManagementBillingHeader>
+				</BillingAccountManagementPanelHeader>
 			) : billingProducts === undefined || billingSubscriptions === undefined || billingUsage === undefined ? (
 				<>
-					<MainAppAccountManagementBillingHeader>Loading your billing details...</MainAppAccountManagementBillingHeader>
-					<MainAppAccountManagementBillingPlans title="Plans">
-						<MainAppAccountManagementBillingActivePlanSkeleton />
-						<MainAppAccountManagementBillingProductCardSkeleton />
-						<MainAppAccountManagementBillingProductCardSkeleton />
-					</MainAppAccountManagementBillingPlans>
+					<BillingAccountManagementPanelHeader>Loading your billing details...</BillingAccountManagementPanelHeader>
+					<BillingAccountManagementPanelPlans title="Plans">
+						<BillingActivePlanSkeleton />
+						<BillingProductCardSkeleton />
+						<BillingProductCardSkeleton />
+					</BillingAccountManagementPanelPlans>
 				</>
 			) : activeSubscription != null && activeCatalog == null ? (
-				<MainAppAccountManagementBillingHeader>
+				<BillingAccountManagementPanelHeader>
 					Failed to load product detail for the subscription.
-				</MainAppAccountManagementBillingHeader>
+				</BillingAccountManagementPanelHeader>
 			) : activeSubscription == null && billingProducts.length === 0 ? (
-				<MainAppAccountManagementBillingHeader>
+				<BillingAccountManagementPanelHeader>
 					Billing plans aren't available right now. Please check back soon.
-				</MainAppAccountManagementBillingHeader>
+				</BillingAccountManagementPanelHeader>
 			) : (
 				<>
-					<MainAppAccountManagementBillingHeader>{headerDescription}</MainAppAccountManagementBillingHeader>
+					<BillingAccountManagementPanelHeader>{headerDescription}</BillingAccountManagementPanelHeader>
 
 					{activeSubscription != null && activeCatalog != null && otherCatalogs != null ? (
 						<>
-							<MainAppAccountManagementBillingActivePlan
-								catalog={activeCatalog}
-								subscription={activeSubscription}
-								usage={billingUsage}
-							/>
-							<MainAppAccountManagementBillingActions>
+							<BillingActivePlan product={activeCatalog} subscription={activeSubscription} usage={billingUsage} />
+							<BillingAccountManagementPanelActions>
 								<MyButton
 									type="button"
 									variant="outline"
 									className={
-										"MainAppAccountManagementBilling-manage-subscription" satisfies MainAppAccountManagementBilling_ClassNames
+										"BillingAccountManagementPanel-manage-subscription" satisfies BillingAccountManagementPanel_ClassNames
 									}
 									onClick={handleManageSubscription}
 								>
 									Manage subscription
 								</MyButton>
-							</MainAppAccountManagementBillingActions>
+							</BillingAccountManagementPanelActions>
 							{otherCatalogs.length ? (
-								<MainAppAccountManagementBillingPlans title="Other plans">
+								<BillingAccountManagementPanelPlans title="Other plans">
 									{otherCatalogs.map((product) => (
-										<MainAppAccountManagementBillingPlanItem key={product.id}>
-											<MainAppAccountManagementBillingProductCard product={product} />
-										</MainAppAccountManagementBillingPlanItem>
+										<BillingAccountManagementPanelPlanItem key={product.id}>
+											<BillingProductCard product={product} />
+										</BillingAccountManagementPanelPlanItem>
 									))}
-								</MainAppAccountManagementBillingPlans>
+								</BillingAccountManagementPanelPlans>
 							) : null}
 						</>
 					) : (
-						<MainAppAccountManagementBillingPlans title="Available plans">
+						<BillingAccountManagementPanelPlans title="Available plans">
 							{billingProducts.map((product) => {
 								const showCheckout = curatedCheckoutCatalog != null && product.id === curatedCheckoutCatalog.id;
 
 								return (
-									<MainAppAccountManagementBillingPlanItem key={product.id}>
-										<MainAppAccountManagementBillingProductCard product={product} />
+									<BillingAccountManagementPanelPlanItem key={product.id}>
+										<BillingProductCard product={product} />
 										{showCheckout ? (
-											<MainAppAccountManagementBillingActions>
+											<BillingAccountManagementPanelActions>
 												<CheckoutLink
 													polarApi={{
 														generateCheckoutLink: app_convex_api.billing.generate_checkout_link,
@@ -292,17 +282,17 @@ export const MainAppAccountManagementBilling = memo(function MainAppAccountManag
 													embed={false}
 													lazy
 													className={
-														"MainAppAccountManagementBilling-checkout" satisfies MainAppAccountManagementBilling_ClassNames
+														"BillingAccountManagementPanel-checkout" satisfies BillingAccountManagementPanel_ClassNames
 													}
 												>
 													Checkout
 												</CheckoutLink>
-											</MainAppAccountManagementBillingActions>
+											</BillingAccountManagementPanelActions>
 										) : null}
-									</MainAppAccountManagementBillingPlanItem>
+									</BillingAccountManagementPanelPlanItem>
 								);
 							})}
-						</MainAppAccountManagementBillingPlans>
+						</BillingAccountManagementPanelPlans>
 					)}
 				</>
 			)}

@@ -258,7 +258,7 @@ describe("billing list_products", () => {
 					createdAt: "2026-01-01T00:00:00.000Z",
 					modifiedAt: null,
 					type: "meter_credit",
-					description: billing_PRODUCTS["Pay As You Go"].benefits["Free usage"].description,
+					description: billing_PRODUCTS["Pay As You Go"].benefits["Free Usage"].description,
 					selectable: false,
 					deletable: false,
 					organizationId: "billing_test_org",
@@ -281,7 +281,7 @@ describe("billing list_products", () => {
 		});
 		expect(paygProduct?.benefits?.some((benefit) => benefit.type === "meter_credit")).toBe(true);
 		expect(paygProduct?.benefits?.map((benefit) => benefit.description)).toContain(
-			billing_PRODUCTS["Pay As You Go"].benefits["Free usage"].description,
+			billing_PRODUCTS["Pay As You Go"].benefits["Free Usage"].description,
 		);
 	});
 

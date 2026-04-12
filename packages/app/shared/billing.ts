@@ -52,8 +52,8 @@ export const billing_PRODUCTS = {
 			},
 		},
 		benefits: {
-			"Free usage": {
-				description: "Free usage",
+			"Free Usage": {
+				description: "Free Usage",
 				displaySuffixText: "usage",
 			},
 		},

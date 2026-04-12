@@ -7,7 +7,7 @@ import { memo, useEffect, useState, type Dispatch, type SetStateAction } from "r
 import { toast } from "sonner";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { MainAppAccountManagementBilling } from "@/components/billing/billing-main-account-management-panel.tsx";
+import { BillingAccountManagementPanel } from "@/components/billing/billing-account-management-panel.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
@@ -680,7 +680,7 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 										tabId="billing"
 										className={"MainAppAccountManagement-panel" satisfies MainAppAccountManagement_ClassNames}
 									>
-										<MainAppAccountManagementBilling isAnonymous={auth.isAnonymous} />
+										<BillingAccountManagementPanel isAnonymous={auth.isAnonymous} />
 									</MyTabsPanel>
 									<MyTabsPanel
 										tabId="security"
