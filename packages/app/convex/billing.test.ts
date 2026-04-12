@@ -2,6 +2,7 @@ import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { billing_EVENTS } from "../server/billing.ts";
 import { api, components, internal } from "./_generated/api.js";
+import { billing } from "./billing.ts";
 import { test_convex } from "./setup.test.ts";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
@@ -708,8 +709,46 @@ describe("billing get_usage_snapshot", () => {
 	});
 });
 
+describe("billing generate_checkout_link url validation", () => {
+	test("returns nay for invalid checkout URLs", async () => {
+		const t = test_convex();
+
+		const result = await t.action(api.billing.generate_checkout_link, {
+			productId: "prod_x",
+			origin: "not-a-url",
+			successUrl: "https://app.test/ok",
+		});
+
+		expect(result._nay?.message).toBe("Invalid checkout URL");
+	});
+
+	test("returns nay when origin is not allowed", async () => {
+		const t = test_convex();
+
+		const result = await t.action(api.billing.generate_checkout_link, {
+			productId: "prod_x",
+			origin: "https://evil.test",
+			successUrl: "https://app.test/ok",
+		});
+
+		expect(result._nay?.message).toBe("Origin is not allowed for checkout");
+	});
+
+	test("returns nay when success URL is not allowed", async () => {
+		const t = test_convex();
+
+		const result = await t.action(api.billing.generate_checkout_link, {
+			productId: "prod_x",
+			origin: "https://app.test",
+			successUrl: "https://evil.test/ok",
+		});
+
+		expect(result._nay?.message).toBe("Success URL is not allowed for checkout");
+	});
+});
+
 describe("billing generate_checkout_link auth", () => {
-	test("rejects anonymous identity before Polar SDK", async () => {
+	test("returns nay for anonymous identity before Polar SDK", async () => {
 		const t = test_convex();
 		const asAnonymous = t.withIdentity({
 			issuer: process.env.VITE_CONVEX_HTTP_URL!,
@@ -717,16 +756,16 @@ describe("billing generate_checkout_link auth", () => {
 			name: "Anon Checkout",
 		});
 
-		await expect(
-			asAnonymous.action(api.billing.generate_checkout_link, {
-				productIds: ["prod_x"],
-				origin: "https://app.test",
-				successUrl: "https://app.test/ok",
-			}),
-		).rejects.toThrow("Billing requires a signed-in account");
+		const result = await asAnonymous.action(api.billing.generate_checkout_link, {
+			productId: "prod_x",
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+
+		expect(result._nay?.message).toBe("A signed-in account is required for checkout");
 	});
 
-	test("rejects Clerk identity without email before Polar SDK", async () => {
+	test("throws should_never_happen for Clerk identity without email", async () => {
 		const t = test_convex();
 		const asUserNoEmail = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -736,7 +775,7 @@ describe("billing generate_checkout_link auth", () => {
 
 		await expect(
 			asUserNoEmail.action(api.billing.generate_checkout_link, {
-				productIds: ["prod_x"],
+				productId: "prod_x",
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
 			}),
@@ -906,7 +945,7 @@ describe("handle_polar_customer_state_update", () => {
 });
 
 describe("billing generate_checkout_link product id", () => {
-	test("rejects productIds that do not match a synced non-archived Polar product", async () => {
+	test("throws should_never_happen when productId does not match a synced non-archived Polar product", async () => {
 		const t = test_convex();
 		const prefix = process.env.POLAR_PRODUCTS_PREFIX?.trim()!;
 		const polarProductName = `${prefix}-${billing_PRODUCTS["Pay As You Go"].name}`;
@@ -939,19 +978,68 @@ describe("billing generate_checkout_link product id", () => {
 
 		await expect(
 			asUser.action(api.billing.generate_checkout_link, {
-				productIds: ["some_other_product_id"],
+				productId: "some_other_product_id",
 				origin: "https://app.test",
 				successUrl: "https://app.test/ok",
 			}),
 		).rejects.toThrow("Invalid checkout product");
+	});
+});
 
-		await expect(
-			asUser.action(api.billing.generate_checkout_link, {
-				productIds: [polarProductId, polarProductId],
-				origin: "https://app.test",
-				successUrl: "https://app.test/ok",
-			}),
-		).rejects.toThrow("Invalid checkout product");
+describe("billing generate_checkout_link create session", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("returns nay when Polar checkout session creation fails", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_checkout_session_fail",
+		});
+
+		vi.spyOn(billing, "createCheckoutSession").mockRejectedValue(new Error("polar checkout exploded"));
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_checkout_session_fail" as Id<"users">,
+			name: "Checkout Session Fail",
+			email: "checkout-session-fail@test.local",
+		});
+
+		const result = await asUser.action(api.billing.generate_checkout_link, {
+			productId: polarProductId,
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+
+		expect(result._nay?.message).toBe("Failed to create a checkout link");
+	});
+
+	test("returns yay with the checkout URL", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_checkout_session_success",
+		});
+
+		vi.spyOn(billing, "createCheckoutSession").mockResolvedValue({
+			url: "https://checkout.test/session",
+		} as never);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_checkout_session_success" as Id<"users">,
+			name: "Checkout Session Success",
+			email: "checkout-session-success@test.local",
+		});
+
+		const result = await asUser.action(api.billing.generate_checkout_link, {
+			productId: polarProductId,
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+			locale: "it",
+		});
+
+		expect(result._yay?.url).toBe("https://checkout.test/session?locale=it");
 	});
 });
 

@@ -11,10 +11,14 @@ import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, query } from "./_generated/server.js";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import {
+	allowed_origins,
+	server_convex_get_user_fallback_to_anonymous,
+	should_never_happen,
+} from "../server/server-utils.ts";
 import app_convex_schema from "./schema.ts";
 
 if (!process.env.POLAR_SERVER) {
@@ -33,10 +37,6 @@ export const billing = new Polar<DataModel>(components.polar, {
 
 		if (!user || user.kind !== "signed_in") {
 			throw convex_error({ message: "Billing requires a signed-in account" });
-		}
-
-		if (!user.email) {
-			throw convex_error({ message: "Email required for billing" });
 		}
 
 		return { userId: user.id, email: user.email };
@@ -178,7 +178,7 @@ export const handle_polar_customer_state_update = internalMutation({
  */
 export const generate_checkout_link = action({
 	args: {
-		productIds: v.array(v.string()),
+		productId: v.string(),
 		origin: v.string(),
 		successUrl: v.string(),
 		subscriptionId: v.optional(v.string()),
@@ -187,8 +187,10 @@ export const generate_checkout_link = action({
 		trialIntervalCount: v.optional(v.union(v.number(), v.null())),
 		locale: v.optional(v.string()),
 	},
-	returns: v.object({
-		url: v.string(),
+	returns: v_result({
+		_yay: v.object({
+			url: v.string(),
+		}),
 	}),
 	handler: async (ctx, args) => {
 		let originParsed: URL;
@@ -196,69 +198,62 @@ export const generate_checkout_link = action({
 		try {
 			originParsed = new URL(args.origin);
 			successParsed = new URL(args.successUrl);
-		} catch (e) {
-			throw convex_error({
-				message: "Invalid checkout URL",
-				cause: {
-					message: (e as Error).message,
-				},
-			});
+		} catch {
+			return Result({ _nay: { message: "Invalid checkout URL" } });
 		}
 
 		const allowedOrigins = allowed_origins();
 
 		if (!allowedOrigins.includes(originParsed.origin)) {
-			throw convex_error({ message: "Origin is not allowed for checkout" });
+			return Result({ _nay: { message: "Origin is not allowed for checkout" } });
 		}
 
 		const successOk = allowedOrigins.some(
 			(allowedOrigin) => successParsed.origin === allowedOrigin || successParsed.href.startsWith(`${allowedOrigin}/`),
 		);
 		if (!successOk) {
-			throw convex_error({ message: "Success URL is not allowed for checkout" });
+			return Result({ _nay: { message: "Success URL is not allowed for checkout" } });
 		}
 
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user || user.kind !== "signed_in") {
-			throw convex_error({ message: "A signed-in account is required for checkout" });
-		}
-		if (!user.email) {
-			throw convex_error({ message: "Email required for billing" });
-		}
-
-		const requestedProductId = args.productIds[0];
-		if (args.productIds.length !== 1 || requestedProductId == null || requestedProductId === "") {
-			throw convex_error({ message: "Invalid checkout product" });
+			return Result({ _nay: { message: "A signed-in account is required for checkout" } });
 		}
 
 		const catalog =
 			(await billing.listProducts(ctx)).find((product) => {
-				return product.id === requestedProductId && !product.isArchived;
+				return product.id === args.productId && !product.isArchived;
 			}) ?? null;
 		if (!catalog) {
-			throw convex_error({ message: "Invalid checkout product" });
+			throw should_never_happen("Invalid checkout product", { productId: args.productId });
 		}
 
-		const { url: baseUrl } = await billing.createCheckoutSession(ctx, {
-			productIds: [catalog.id],
-			userId: user.id,
-			email: user.email,
-			subscriptionId: args.subscriptionId,
-			origin: args.origin,
-			successUrl: args.successUrl,
-			metadata: args.metadata,
-			trialInterval: args.trialInterval as "day" | "week" | "month" | "year" | null | undefined,
-			trialIntervalCount: args.trialIntervalCount,
-		});
+		const checkoutSessionResult = await Result_try_async(() =>
+			billing.createCheckoutSession(ctx, {
+				productIds: [catalog.id],
+				userId: user.id,
+				email: user.email,
+				subscriptionId: args.subscriptionId,
+				origin: args.origin,
+				successUrl: args.successUrl,
+				metadata: args.metadata,
+				trialInterval: args.trialInterval as "day" | "week" | "month" | "year" | null | undefined,
+				trialIntervalCount: args.trialIntervalCount,
+			}),
+		);
+		if (checkoutSessionResult._nay) {
+			return Result({ _nay: { message: "Failed to create a checkout link" } });
+		}
+		const checkoutSession = checkoutSessionResult._yay;
 
-		let url = baseUrl;
+		let url = checkoutSession.url;
 		if (args.locale) {
 			const localeUrl = new URL(url);
 			localeUrl.searchParams.set("locale", args.locale);
 			url = localeUrl.toString();
 		}
 
-		return { url };
+		return Result({ _yay: { url } });
 	},
 });
 

@@ -3,7 +3,7 @@ import { Result, Result_try_promise } from "../shared/errors-as-values-utils.ts"
 import type z from "zod";
 import type { Id } from "../convex/_generated/dataModel";
 import { users_create_anonymouse_user_display_name, users_create_fallback_display_name } from "../shared/users.ts";
-import { path_extract_segments_from } from "../shared/shared-utils.ts";
+import { path_extract_segments_from, should_never_happen } from "../shared/shared-utils.ts";
 
 export * from "../shared/shared-utils.ts";
 
@@ -41,7 +41,8 @@ export const allowed_origins = ((/* iife */) => {
  * - Return `kind: "anonymous"` for authenticated anonymous JWTs. `id` and `subject` are both the Convex
  *   `users` id in that branch.
  * - Return `kind: "signed_in"` for authenticated Clerk users only when the JWT includes a valid `external_id`.
- *   `subject` is the Clerk user id and `id` is the Convex `users` id from `external_id`.
+ *   `subject` is the Clerk user id and `id` is the Convex `users` id from `external_id`. Signed-in identities
+ *   must also include an email; if not, treat that as an application invariant violation.
  *
  * Does not load the `users` table or assert the row exists: a verified token is treated as enough to trust
  * `subject` / `external_id`. If a signed-in token is missing `external_id`, treat it as unauthenticated. If a
@@ -74,6 +75,9 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 	if (!userId) {
 		return null;
 	}
+	if (!identity.email) {
+		throw should_never_happen("Email required for billing", { identity, userId });
+	}
 
 	return {
 		kind: "signed_in",
@@ -81,7 +85,7 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 		id: userId,
 		subject: identity.subject,
 		name: identity.name || identity.nickname || users_create_fallback_display_name(userId ?? identity.subject),
-		email: identity.email ?? null,
+		email: identity.email,
 	} as const;
 }
 

@@ -24,12 +24,21 @@ export const BillingCheckoutButton = memo(function BillingCheckoutButton(props: 
 
 		void convex
 			.action(app_convex_api.billing.generate_checkout_link, {
-				productIds: [productId],
+				productId,
 				origin: window.location.origin,
 				successUrl: window.location.href,
 			})
 			.then((result) => {
-				window.open(result.url, "_blank", "noopener,noreferrer");
+				if (result._nay) {
+					console.error("[BillingCheckoutButton] Failed to generate checkout link", {
+						result,
+						productId,
+					});
+					toast.error(result._nay.message ?? "Could not start checkout");
+					return;
+				}
+
+				window.open(result._yay.url, "_blank", "noopener,noreferrer");
 			})
 			.catch((error: unknown) => {
 				console.error("[BillingCheckoutButton] Failed to generate checkout link", { error, productId });
