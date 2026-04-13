@@ -37,8 +37,8 @@ vi.mock("@/components/billing/billing-active-plan.tsx", () => ({
 }));
 
 vi.mock("@/components/billing/billing-checkout-button.tsx", () => ({
-	BillingCheckoutButton: function BillingCheckoutButton(props: { productId: string }) {
-		return <button type="button">{`checkout:${props.productId}`}</button>;
+	BillingCheckoutButton: function BillingCheckoutButton(props: { productId: string; subscriptionId?: string }) {
+		return <button type="button">{`checkout:${props.productId}:${props.subscriptionId ?? "none"}`}</button>;
 	},
 }));
 
@@ -121,8 +121,9 @@ describe("BillingAccountManagementPanel", () => {
 	test("keeps checkout buttons when there is no active subscription", () => {
 		mockQueryResults.push(
 			[
-				createProduct("dev-Pay As You Go", "prod_payg"),
-				createProduct("dev-Pro", "prod_pro"),
+				createProduct("Pro", "prod_pro"),
+				createProduct("Free", "prod_free"),
+				createProduct("Pay As You Go", "prod_payg"),
 			],
 			[],
 			null,
@@ -131,15 +132,22 @@ describe("BillingAccountManagementPanel", () => {
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
 		expect(screen.getByText("Available plans")).not.toBeNull();
-		expect(screen.getByRole("button", { name: "checkout:prod_payg" })).not.toBeNull();
-		expect(screen.getByRole("button", { name: "checkout:prod_pro" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_free:none" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_payg:none" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_pro:none" })).not.toBeNull();
+		expect(screen.getAllByText(/^(Free|Pay As You Go|Pro)$/).map((element) => element.textContent)).toEqual([
+			"Free",
+			"Pay As You Go",
+			"Pro",
+		]);
 	});
 
 	test("shows an upgrade action for higher-ranked plans when the user already has a subscription", () => {
 		mockQueryResults.push(
 			[
-				createProduct("dev-Pay As You Go", "prod_payg"),
-				createProduct("dev-Pro", "prod_pro"),
+				createProduct("Pay As You Go", "prod_payg"),
+				createProduct("Pro", "prod_pro"),
+				createProduct("Free", "prod_free"),
 			],
 			[
 				createSubscription({
@@ -154,14 +162,39 @@ describe("BillingAccountManagementPanel", () => {
 
 		expect(screen.getByText("Other plans")).not.toBeNull();
 		expect(screen.getByRole("button", { name: "change:prod_pro:Upgrade" })).not.toBeNull();
-		expect(screen.queryByRole("button", { name: "checkout:prod_pro" })).toBeNull();
+		expect(screen.getByRole("button", { name: "change:prod_free:Downgrade at renewal" })).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "checkout:prod_pro:none" })).toBeNull();
+	});
+
+	test("shows checkout upgrades with the active Free subscription id", () => {
+		mockQueryResults.push(
+			[
+				createProduct("Pay As You Go", "prod_payg"),
+				createProduct("Free", "prod_free"),
+				createProduct("Pro", "prod_pro"),
+			],
+			[
+				createSubscription({
+					id: "sub_free",
+					productId: "prod_free",
+				}),
+			],
+			null,
+		);
+
+		render(<BillingAccountManagementPanel isAnonymous={false} />);
+
+		expect(screen.getByRole("button", { name: "checkout:prod_payg:sub_free" })).not.toBeNull();
+		expect(screen.getByRole("button", { name: "checkout:prod_pro:sub_free" })).not.toBeNull();
+		expect(screen.queryByText("change:prod_payg:Upgrade")).toBeNull();
 	});
 
 	test("shows scheduled downgrade messaging when a lower-tier change is pending", () => {
 		mockQueryResults.push(
 			[
-				createProduct("dev-Pay As You Go", "prod_payg"),
-				createProduct("dev-Pro", "prod_pro"),
+				createProduct("Free", "prod_free"),
+				createProduct("Pay As You Go", "prod_payg"),
+				createProduct("Pro", "prod_pro"),
 			],
 			[
 				createSubscription({

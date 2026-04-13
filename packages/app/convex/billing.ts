@@ -1,7 +1,9 @@
 import { Polar } from "@convex-dev/polar";
 import { Workpool } from "@convex-dev/workpool";
+import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
+import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
@@ -18,7 +20,7 @@ import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
 import { billing_PRODUCTS, billing_get_plan_change_kind } from "../shared/billing.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { allowed_origins, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { allowed_origins, server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
 import app_convex_schema from "./schema.ts";
 
@@ -292,6 +294,102 @@ export const generate_customer_portal_url = action({
 	},
 });
 
+// #region bootstrap
+const billing_bootstrap_workpool = new Workpool(components.billingBootstrapWorkpool, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+});
+
+export async function billing_enqueue_free_subscription_bootstrap(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		email: string;
+	},
+) {
+	return await billing_bootstrap_workpool.enqueueAction(ctx, internal.billing.bootstrap_free_subscription, args);
+}
+
+export const bootstrap_free_subscription = internalAction({
+	args: {
+		userId: v.id("users"),
+		email: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const bootstrapResult = await Result_try_async(async () => {
+			let customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+				userId: args.userId,
+			});
+
+			if (!customer) {
+				const createCustomerResult = await customersCreate(billing.polar, {
+					externalId: args.userId,
+					email: args.email,
+				});
+				if (!createCustomerResult.ok) {
+					throw convex_error({ message: "Failed to create Polar customer" });
+				}
+
+				await ctx.runMutation(components.polar.lib.insertCustomer, {
+					id: createCustomerResult.value.id,
+					userId: args.userId,
+				});
+
+				customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+					userId: args.userId,
+				});
+			}
+
+			if (!customer) {
+				throw should_never_happen("Failed to persist Polar customer", {
+					userId: args.userId,
+				});
+			}
+
+			const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+				userId: args.userId,
+			});
+			if (currentSubscription) {
+				return;
+			}
+
+			const freeProduct =
+				(await billing.listProducts(ctx)).find((product) => {
+					return product.name === billing_PRODUCTS.Free.name && !product.isArchived;
+				}) ?? null;
+			if (!freeProduct) {
+				throw should_never_happen("Free product not found among synced Polar products", {
+					productName: billing_PRODUCTS.Free.name,
+					userId: args.userId,
+				});
+			}
+
+			const createSubscriptionResult = await subscriptionsCreate(billing.polar, {
+				customerId: customer.id,
+				productId: freeProduct.id,
+			});
+			if (!createSubscriptionResult.ok) {
+				throw convex_error({ message: "Failed to create Free subscription" });
+			}
+
+			await ctx.runMutation(components.polar.lib.createSubscription, {
+				subscription: convertToDatabaseSubscription(createSubscriptionResult.value),
+			});
+		});
+		if (bootstrapResult._nay) {
+			console.error("[billing.bootstrap_free_subscription] Failed to bootstrap Free subscription", {
+				error: bootstrapResult._nay,
+				userId: args.userId,
+			});
+			throw convex_error({ message: "Failed to bootstrap Free subscription" });
+		}
+
+		return null;
+	},
+});
+// #endregion bootstrap
+
 export const change_current_subscription = action({
 	args: {
 		productId: v.string(),
@@ -333,6 +431,9 @@ export const change_current_subscription = action({
 		const targetBillingProduct = billing_PRODUCTS[targetProduct.name as keyof typeof billing_PRODUCTS] ?? null;
 		if (!currentBillingProduct || !targetBillingProduct) {
 			return Result({ _nay: { message: "Unsupported plan change" } });
+		}
+		if (currentBillingProduct.name === billing_PRODUCTS.Free.name) {
+			return Result({ _nay: { message: "Use checkout to upgrade from Free" } });
 		}
 
 		const changeKind = billing_get_plan_change_kind(currentBillingProduct.name, targetBillingProduct.name);

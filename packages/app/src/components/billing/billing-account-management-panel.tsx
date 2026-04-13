@@ -13,7 +13,12 @@ import { MyButton } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { format_time } from "@/lib/date.ts";
-import { billing_get_plan_change_kind, billing_get_product_display_name } from "../../../shared/billing.ts";
+import {
+	billing_compare_product_order,
+	billing_get_plan_change_kind,
+	billing_get_product_display_name,
+	billing_PRODUCTS,
+} from "../../../shared/billing.ts";
 
 function find_active_subscription(
 	subscriptions: app_convex_FunctionReturnType<typeof app_convex_api.billing.list_subscriptions>,
@@ -23,22 +28,49 @@ function find_active_subscription(
 	});
 }
 
-function get_plan_change_button_data(currentProductName: string, targetProductName: string) {
-	const changeKind = billing_get_plan_change_kind(currentProductName, targetProductName);
-	if (!changeKind) {
+// #region product card plan action
+type BillingAccountManagementCardPlanAction_ProductDoc =
+	app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
+
+type BillingAccountManagementCardPlanAction_Props = {
+	product: BillingAccountManagementCardPlanAction_ProductDoc;
+	currentProductName: string;
+	activeSubscriptionId: string;
+};
+
+const BillingAccountManagementCardPlanAction = memo(function BillingAccountManagementCardPlanAction(props: BillingAccountManagementCardPlanAction_Props) {
+	const { product, currentProductName, activeSubscriptionId } = props;
+
+	const planChangeKind = billing_get_plan_change_kind(currentProductName, product.name);
+	if (!planChangeKind) {
 		return null;
 	}
 
-	return changeKind === "upgrade"
-		? {
-				label: "Upgrade",
-				variant: "accent" as const,
-			}
-		: {
-				label: "Downgrade at renewal",
-				variant: "outline" as const,
-			};
-}
+	if (
+		billing_get_product_display_name(currentProductName) === billing_PRODUCTS["Free"].name &&
+		planChangeKind === "upgrade"
+	) {
+		return <BillingCheckoutButton productId={product.id} subscriptionId={activeSubscriptionId} />;
+	}
+
+	const planChangeButtonData =
+		planChangeKind === "upgrade"
+			? {
+					label: "Upgrade",
+					variant: "accent" as const,
+				}
+			: {
+					label: "Downgrade at renewal",
+					variant: "outline" as const,
+				};
+
+	return (
+		<BillingChangePlanButton productId={product.id} variant={planChangeButtonData.variant}>
+			{planChangeButtonData.label}
+		</BillingChangePlanButton>
+	);
+});
+// #endregion product card plan action
 
 // #region header
 type BillingAccountManagementPanelHeader_ClassNames =
@@ -185,16 +217,21 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 	});
 
 	const activeSubscription = billingSubscriptions ? (find_active_subscription(billingSubscriptions) ?? null) : null;
-	const activeCatalog =
-		activeSubscription && billingProducts
-			? (billingProducts.find((product) => product.id === activeSubscription.productId) ?? null)
+	const sortedBillingProducts = billingProducts
+		? [...billingProducts].sort((leftProduct, rightProduct) => {
+				return billing_compare_product_order(leftProduct.name, rightProduct.name);
+			})
+		: null;
+	const activeProduct =
+		activeSubscription && sortedBillingProducts
+			? (sortedBillingProducts.find((product) => product.id === activeSubscription.productId) ?? null)
 			: null;
 	const pendingUpdateProduct =
-		activeSubscription?.pendingUpdate?.productId && billingProducts
-			? (billingProducts.find((product) => product.id === activeSubscription.pendingUpdate?.productId) ?? null)
+		activeSubscription?.pendingUpdate?.productId && sortedBillingProducts
+			? (sortedBillingProducts.find((product) => product.id === activeSubscription.pendingUpdate?.productId) ?? null)
 			: null;
-	const otherCatalogs = billingProducts
-		? billingProducts.filter((product) => {
+	const otherProducts = sortedBillingProducts
+		? sortedBillingProducts.filter((product) => {
 				return product.id !== activeSubscription?.productId;
 			})
 		: null;
@@ -231,9 +268,10 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 						<BillingActivePlanSkeleton />
 						<BillingProductCardSkeleton />
 						<BillingProductCardSkeleton />
+						<BillingProductCardSkeleton />
 					</BillingAccountManagementPanelPlans>
 				</>
-			) : activeSubscription != null && activeCatalog == null ? (
+			) : activeSubscription != null && activeProduct == null ? (
 				<BillingAccountManagementPanelHeader>
 					Failed to load product detail for the subscription.
 				</BillingAccountManagementPanelHeader>
@@ -245,10 +283,10 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 				<>
 					<BillingAccountManagementPanelHeader>{headerDescription}</BillingAccountManagementPanelHeader>
 
-					{activeSubscription != null && activeCatalog != null && otherCatalogs != null ? (
+					{activeSubscription != null && activeProduct != null && otherProducts != null ? (
 						<>
 							<BillingActivePlan
-								product={activeCatalog}
+								product={activeProduct}
 								subscription={activeSubscription}
 								usage={billingUsage}
 								scheduledChangeProductName={
@@ -267,20 +305,19 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 									Manage subscription
 								</MyButton>
 							</BillingAccountManagementPanelActions>
-							{otherCatalogs.length ? (
+							{otherProducts.length ? (
 								<BillingAccountManagementPanelPlans title="Other plans">
-									{otherCatalogs.map((product) => (
+									{otherProducts.map((product) => (
 										<BillingAccountManagementPanelPlanItem key={product.id}>
 											<BillingProductCard
 												product={product}
-												selectPlanSlot={((/* iife */) => {
-													const planChangeButtonData = get_plan_change_button_data(activeCatalog.name, product.name);
-													return planChangeButtonData ? (
-														<BillingChangePlanButton productId={product.id} variant={planChangeButtonData.variant}>
-															{planChangeButtonData.label}
-														</BillingChangePlanButton>
-													) : undefined;
-												})()}
+												selectPlanSlot={
+													<BillingAccountManagementCardPlanAction
+														product={product}
+														currentProductName={activeProduct.name}
+														activeSubscriptionId={activeSubscription.id}
+													/>
+												}
 											/>
 										</BillingAccountManagementPanelPlanItem>
 									))}
@@ -289,7 +326,7 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 						</>
 					) : (
 						<BillingAccountManagementPanelPlans title="Available plans">
-							{billingProducts.map((product) => {
+							{sortedBillingProducts?.map((product) => {
 								return (
 									<BillingAccountManagementPanelPlanItem key={product.id}>
 										<BillingProductCard product={product} selectPlanSlot={<BillingCheckoutButton productId={product.id} />} />

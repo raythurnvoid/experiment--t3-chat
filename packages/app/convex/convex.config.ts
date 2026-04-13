@@ -9,6 +9,7 @@ const app = defineApp();
 app.use(polar);
 app.use(presence);
 app.use(migrations);
+app.use(workpool, { name: "billingBootstrapWorkpool" });
 app.use(workpool, { name: "billingUsageEventWorkpool" });
 
 export default app;

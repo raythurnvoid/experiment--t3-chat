@@ -19,6 +19,7 @@ import { v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
+import { billing_enqueue_free_subscription_bootstrap } from "./billing.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
 	throw new Error("ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env");
@@ -832,6 +833,28 @@ export function users_http_routes(router: RouterForConvexModules) {
 									body: Result({ _nay: { message } }),
 								} as const;
 							}
+
+							if (!identity.email) {
+								console.error("[users.resolve_user_http] Missing Clerk email for billing bootstrap", {
+									clerkUserId,
+									userId: resolveUserResult._yay.userId,
+								});
+								return {
+									status: 200,
+									body: resolveUserResult,
+								} as const;
+							}
+
+							await billing_enqueue_free_subscription_bootstrap(ctx, {
+								userId: resolveUserResult._yay.userId,
+								email: identity.email,
+							}).catch((error) => {
+								console.error("[users.resolve_user_http] Failed to enqueue Free subscription bootstrap", {
+									error,
+									clerkUserId,
+									userId: resolveUserResult._yay.userId,
+								});
+							});
 
 							return {
 								status: 200,

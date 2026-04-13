@@ -4,7 +4,9 @@ import { billing_EVENTS } from "../server/billing.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { billing } from "./billing.ts";
 import { test_convex } from "./setup.test.ts";
+import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
+import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
@@ -24,6 +26,14 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 	eventsIngest: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/customersCreate.js", () => ({
+	customersCreate: vi.fn(),
+}));
+
+vi.mock("@polar-sh/sdk/funcs/subscriptionsCreate.js", () => ({
+	subscriptionsCreate: vi.fn(),
+}));
+
 vi.mock("@polar-sh/sdk/funcs/subscriptionsRevoke.js", () => ({
 	subscriptionsRevoke: vi.fn(),
 }));
@@ -32,7 +42,9 @@ vi.mock("@polar-sh/sdk/funcs/subscriptionsUpdate.js", () => ({
 	subscriptionsUpdate: vi.fn(),
 }));
 
+const customersCreateMock = vi.mocked(customersCreate);
 const eventsIngestMock = vi.mocked(eventsIngest);
+const subscriptionsCreateMock = vi.mocked(subscriptionsCreate);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
 const subscriptionsUpdateMock = vi.mocked(subscriptionsUpdate);
 
@@ -92,6 +104,58 @@ async function seed_pay_as_you_go_product(
 			],
 			medias: [],
 			benefits: args.benefits ?? [],
+		},
+	});
+	return { polarProductId: args.polarProductId, polarProductName };
+}
+
+async function seed_free_product(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		polarProductId: string;
+		description?: string | null;
+		benefits?: BillingSeedBenefit[];
+	},
+): Promise<BillingSeed> {
+	const polarProductName = billing_PRODUCTS.Free.name;
+	await t.mutation(components.polar.lib.createProduct, {
+		product: {
+			id: args.polarProductId,
+			organizationId: "billing_test_org",
+			name: polarProductName,
+			description: args.description ?? null,
+			isRecurring: true,
+			isArchived: false,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			modifiedAt: null,
+			recurringInterval: "month",
+			metadata: {},
+			prices: [
+				{
+					id: `${args.polarProductId}_price`,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					amountType: "free",
+					isArchived: false,
+					productId: args.polarProductId,
+					priceCurrency: "eur",
+					recurringInterval: "month",
+				},
+			],
+			medias: [],
+			benefits: args.benefits ?? [
+				{
+					id: "benefit_free_meter_credit",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					modifiedAt: null,
+					type: "meter_credit",
+					description: billing_PRODUCTS.Free.benefits["Free Included Usage"].description,
+					selectable: false,
+					deletable: false,
+					organizationId: "billing_test_org",
+					properties: { units: 1000, rollover: true, meterId: "meter_press_usage" },
+				},
+			],
 		},
 	});
 	return { polarProductId: args.polarProductId, polarProductName };
@@ -266,6 +330,18 @@ function create_updated_polar_subscription(args: {
 	};
 }
 
+beforeEach(() => {
+	customersCreateMock.mockReset();
+	eventsIngestMock.mockReset();
+	subscriptionsCreateMock.mockReset();
+	subscriptionsRevokeMock.mockReset();
+	subscriptionsUpdateMock.mockReset();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 describe("billing list_products", () => {
 	test("returns empty array when unauthenticated", async () => {
 		const t = test_convex();
@@ -325,7 +401,7 @@ describe("billing list_products", () => {
 		expect(products.find((product) => product.id === polarProductId)?.benefits).toEqual([]);
 	});
 
-	test("returns both known products from the catalog", async () => {
+	test("returns both known products from list_products", async () => {
 		const t = test_convex();
 		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
 			polarProductId: "billing_overview_prod_pro",
@@ -806,6 +882,109 @@ describe("billing get_usage_snapshot", () => {
 	});
 });
 
+describe("billing bootstrap_free_subscription", () => {
+	test("creates a Polar customer and Free subscription for a newly resolved user", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_free_product",
+		});
+
+		customersCreateMock.mockResolvedValue({
+			ok: true,
+			value: {
+				id: "cust_bootstrap_free",
+			},
+		} as never);
+		subscriptionsCreateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_bootstrap_free",
+				customerId: "cust_bootstrap_free",
+				productId: polarProductId,
+			}),
+		} as never);
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-free@test.local",
+		});
+
+		expect(result).toBeNull();
+		expect(customersCreateMock).toHaveBeenCalledWith(expect.anything(), {
+			externalId: userId,
+			email: "bootstrap-free@test.local",
+		});
+		expect(subscriptionsCreateMock).toHaveBeenCalledWith(expect.anything(), {
+			customerId: "cust_bootstrap_free",
+			productId: polarProductId,
+		});
+
+		const [customer, subscription] = await Promise.all([
+			t.query(components.polar.lib.getCustomerByUserId, { userId }),
+			t.query(components.polar.lib.getCurrentSubscription, { userId }),
+		]);
+		expect(customer?.id).toBe("cust_bootstrap_free");
+		expect(subscription?.id).toBe("sub_bootstrap_free");
+		expect(subscription?.productId).toBe(polarProductId);
+	});
+
+	test("skips bootstrap when the user already has a current subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_existing_free_product",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_bootstrap_existing_pro_product",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_bootstrap_existing",
+			subscriptionId: "sub_bootstrap_existing",
+			polarProductId: polarProProductId,
+		});
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-existing@test.local",
+		});
+
+		expect(result).toBeNull();
+		expect(customersCreateMock).not.toHaveBeenCalled();
+		expect(subscriptionsCreateMock).not.toHaveBeenCalled();
+	});
+
+	test("throws when bootstrap fails so the workpool can retry it", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_retry_free_product",
+		});
+
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		customersCreateMock.mockResolvedValue({
+			ok: false,
+			error: new UnexpectedClientError("bootstrap customer exploded"),
+		} as never);
+
+		await expect(
+			t.action(internal.billing.bootstrap_free_subscription, {
+				userId,
+				email: "bootstrap-retry@test.local",
+			}),
+		).rejects.toThrow("Failed to bootstrap Free subscription");
+		expect(consoleErrorSpy).toHaveBeenCalledWith(
+			"[billing.bootstrap_free_subscription] Failed to bootstrap Free subscription",
+			expect.objectContaining({
+				userId,
+			}),
+		);
+	});
+});
+
 describe("billing generate_checkout_link url validation", () => {
 	test("returns nay for invalid checkout URLs", async () => {
 		const t = test_convex();
@@ -1134,6 +1313,40 @@ describe("billing generate_checkout_link create session", () => {
 
 		expect(result._yay?.url).toBe("https://checkout.test/session?locale=it");
 	});
+
+	test("forwards subscriptionId to checkout creation", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_checkout_session_upgrade_from_free",
+		});
+
+		const createCheckoutSessionSpy = vi.spyOn(billing, "createCheckoutSession").mockResolvedValue({
+			url: "https://checkout.test/session",
+		} as never);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_checkout_session_upgrade_from_free" as Id<"users">,
+			name: "Checkout Session Upgrade From Free",
+			email: "checkout-session-upgrade-from-free@test.local",
+		});
+
+		const result = await asUser.action(api.billing.generate_checkout_link, {
+			productId: polarProductId,
+			subscriptionId: "sub_free_upgrade",
+			origin: "https://app.test",
+			successUrl: "https://app.test/ok",
+		});
+
+		expect(result._yay?.url).toBe("https://checkout.test/session");
+		expect(createCheckoutSessionSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				productIds: [polarProductId],
+				subscriptionId: "sub_free_upgrade",
+			}),
+		);
+	});
 });
 
 describe("billing change_current_subscription", () => {
@@ -1272,6 +1485,96 @@ describe("billing change_current_subscription", () => {
 			productId: polarPaygProductId,
 			seats: null,
 		});
+	});
+
+	test("schedules paid to Free downgrades for the next period", async () => {
+		const t = test_convex();
+		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
+			polarProductId: "billing_change_free_downgrade",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_pro_to_free",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_downgrade_free_plan",
+			customerId: "cust_downgrade_free_plan",
+			subscriptionId: "sub_downgrade_free_plan",
+			polarProductId: polarProProductId,
+		});
+
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_downgrade_free_plan",
+				customerId: "cust_downgrade_free_plan",
+				productId: polarProProductId,
+				pendingUpdate: {
+					id: "pending_downgrade_free_plan",
+					appliesAt: "2026-02-01T00:00:00.000Z",
+					productId: polarFreeProductId,
+					seats: null,
+				},
+			}) as never,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_downgrade_free_plan" as Id<"users">,
+			name: "Downgrade Free Plan",
+			email: "downgrade-free-plan@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarFreeProductId,
+		});
+
+		expect(result).toEqual({
+			_yay: {
+				changeKind: "downgrade",
+				prorationBehavior: "next_period",
+				targetProductId: polarFreeProductId,
+				pendingUpdateAppliesAt: "2026-02-01T00:00:00.000Z",
+			},
+		});
+		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_downgrade_free_plan",
+			subscriptionUpdate: {
+				productId: polarFreeProductId,
+				prorationBehavior: "next_period",
+			},
+		});
+	});
+
+	test("returns nay when upgrading from Free", async () => {
+		const t = test_convex();
+		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
+			polarProductId: "billing_change_current_free",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_change_target_pro_from_free",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_current_free",
+			customerId: "cust_current_free",
+			subscriptionId: "sub_current_free",
+			polarProductId: polarFreeProductId,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_current_free" as Id<"users">,
+			name: "Current Free",
+			email: "current-free@test.local",
+		});
+
+		const result = await asUser.action(api.billing.change_current_subscription, {
+			productId: polarProProductId,
+		});
+
+		expect(result._nay?.message).toBe("Use checkout to upgrade from Free");
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
 	});
 
 	test("returns nay when the user selects the current product", async () => {

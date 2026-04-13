@@ -7,10 +7,11 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 
 export type BillingCheckoutButton_Props = {
 	productId: string;
+	subscriptionId?: string;
 };
 
 export const BillingCheckoutButton = memo(function BillingCheckoutButton(props: BillingCheckoutButton_Props) {
-	const { productId } = props;
+	const { productId, subscriptionId } = props;
 
 	const convex = useConvex();
 	const [isLoading, setIsLoading] = useState(false);
@@ -27,6 +28,7 @@ export const BillingCheckoutButton = memo(function BillingCheckoutButton(props: 
 				productId,
 				origin: window.location.origin,
 				successUrl: window.location.href,
+				subscriptionId,
 			})
 			.then((result) => {
 				if (result._nay) {

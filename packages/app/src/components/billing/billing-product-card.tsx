@@ -5,7 +5,7 @@ import { memo, type ReactNode } from "react";
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { format_cents, type Currency } from "@/lib/currency.ts";
 import type { LiteralUnion } from "type-fest";
-import { should_never_happen } from "../../lib/utils.ts";
+import { cn, should_never_happen } from "../../lib/utils.ts";
 import {
 	billing_get_product_benefit_display_suffix_text,
 	billing_get_product_display_name,
@@ -40,6 +40,11 @@ function metered_price_currency(product: BillingProductCard_ProductDoc) {
 	const meteredPrice =
 		product.prices?.find((priceDoc) => !priceDoc.isArchived && priceDoc.amountType === "metered_unit") ?? null;
 	return meteredPrice?.priceCurrency ?? null;
+}
+
+function product_price_currency(product: BillingProductCard_ProductDoc) {
+	const price = product.prices?.find((priceDoc) => !priceDoc.isArchived) ?? null;
+	return price?.priceCurrency ?? null;
 }
 
 function fixed_price_text(product: BillingProductCard_ProductDoc) {
@@ -99,6 +104,7 @@ type BillingProductCardSurface_ClassNames =
 	| "BillingProductCardSurface-select-plan";
 
 type BillingProductCardSurface_Props = {
+	className?: string;
 	title: string;
 	priceText: string;
 	selectPlanSlot?: ReactNode;
@@ -106,10 +112,10 @@ type BillingProductCardSurface_Props = {
 };
 
 const BillingProductCardSurface = memo(function BillingProductCardSurface(props: BillingProductCardSurface_Props) {
-	const { title, priceText, selectPlanSlot, children } = props;
+	const { className, title, priceText, selectPlanSlot, children } = props;
 
 	return (
-		<div className={"BillingProductCardSurface" satisfies BillingProductCardSurface_ClassNames}>
+		<div className={cn("BillingProductCardSurface" satisfies BillingProductCardSurface_ClassNames, className)}>
 			<h3 className={"BillingProductCardSurface-title" satisfies BillingProductCardSurface_ClassNames}>{title}</h3>
 			<p className={"BillingProductCardSurface-price" satisfies BillingProductCardSurface_ClassNames}>{priceText}</p>
 			{children ? (
@@ -145,7 +151,7 @@ const BillingProductCardPayAsYouGo = memo(function BillingProductCardPayAsYouGo(
 	const includedUsageText = currency != null ? included_usage_text(product, currency) : null;
 
 	return (
-		<BillingProductCardSurface title={displayName} priceText="Only pay for what you use" selectPlanSlot={selectPlanSlot}>
+		<BillingProductCardSurface className={"BillingProductCardPayAsYouGo" satisfies BillingProductCardPayAsYouGo_ClassNames} title={displayName} priceText="Only pay for what you use" selectPlanSlot={selectPlanSlot}>
 			{includedUsageText ? (
 				<li className={"BillingProductCardPayAsYouGo-detail" satisfies BillingProductCardPayAsYouGo_ClassNames}>
 					{includedUsageText}
@@ -155,6 +161,32 @@ const BillingProductCardPayAsYouGo = memo(function BillingProductCardPayAsYouGo(
 	);
 });
 // #endregion pay-as-you-go
+
+// #region free
+type BillingProductCardFree_ClassNames = "BillingProductCardFree";
+
+type BillingProductCardFree_Props = {
+	product: BillingProductCard_ProductDoc;
+	selectPlanSlot?: ReactNode;
+};
+
+const BillingProductCardFree = memo(function BillingProductCardFree(props: BillingProductCardFree_Props) {
+	const { product, selectPlanSlot } = props;
+
+	const displayName = billing_get_product_display_name(product.name);
+	const currency = product_price_currency(product) ?? "eur";
+	const includedUsageText = included_usage_text(product, currency);
+
+	return (
+		<BillingProductCardSurface
+			className={"BillingProductCardFree" satisfies BillingProductCardFree_ClassNames}
+			title={displayName}
+			priceText={includedUsageText ?? "Free"}
+			selectPlanSlot={selectPlanSlot}
+		/>
+	);
+});
+// #endregion free
 
 // #region pro
 type BillingProductCardPro_ClassNames = "BillingProductCardPro" | "BillingProductCardPro-detail";
@@ -178,6 +210,7 @@ const BillingProductCardPro = memo(function BillingProductCardPro(props: Billing
 
 	return (
 		<BillingProductCardSurface
+			className={"BillingProductCardPro" satisfies BillingProductCardPro_ClassNames}
 			title={displayName}
 			priceText={primaryPriceText}
 			selectPlanSlot={selectPlanSlot}
@@ -205,6 +238,8 @@ export const BillingProductCard = memo(function BillingProductCard(props: Billin
 	const { product, selectPlanSlot } = props;
 
 	switch (product.name) {
+		case "Free":
+			return <BillingProductCardFree product={product} selectPlanSlot={selectPlanSlot} />;
 		case "Pay As You Go":
 			return <BillingProductCardPayAsYouGo product={product} selectPlanSlot={selectPlanSlot} />;
 		case "Pro":

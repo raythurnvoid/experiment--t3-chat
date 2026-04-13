@@ -1,9 +1,20 @@
-import { describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { Workpool } from "@convex-dev/workpool";
+import { api, components, internal } from "./_generated/api.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex } from "./setup.test.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 import { user_limits } from "../shared/limits.ts";
+
+vi.mock("@polar-sh/sdk/core.js", () => ({
+	PolarCore: class PolarCoreMock {
+		constructor(_args: unknown) {}
+	},
+}));
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 async function users_test_bootstrap_user(
 	ctx: MutationCtx,
@@ -101,6 +112,129 @@ async function users_test_bootstrap_anonymous_user(ctx: MutationCtx, args: { dis
 	} as const;
 }
 
+describe("/api/auth/resolve-user", () => {
+	test("sets Clerk external_id before enqueueing the Free subscription bootstrap", async () => {
+		const t = test_convex();
+
+		const sequence: string[] = [];
+		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async () => {
+			sequence.push("enqueue");
+			return "work_resolve_free" as never;
+		});
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			sequence.push("clerk");
+			return new Response(JSON.stringify({ id: "clerk-user-resolve-free" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			});
+		});
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-free",
+				name: "Resolve Free User",
+				email: "resolve-free-user@test.local",
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(200);
+			expect(body._yay?.userId).toBeDefined();
+			expect(sequence).toEqual(["clerk", "enqueue"]);
+			expect(enqueueActionSpy).toHaveBeenCalledWith(
+				expect.anything(),
+				internal.billing.bootstrap_free_subscription,
+				{
+					userId: body._yay.userId,
+					email: "resolve-free-user@test.local",
+				},
+			);
+
+			const [customer, subscription] = await Promise.all([
+				t.query(components.polar.lib.getCustomerByUserId, {
+					userId: body._yay.userId,
+				}),
+				t.query(components.polar.lib.getCurrentSubscription, {
+					userId: body._yay.userId,
+				}),
+			]);
+
+			expect(customer).toBeNull();
+			expect(subscription).toBeNull();
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://api.clerk.com/v1/users/clerk-user-resolve-free",
+				expect.objectContaining({
+					method: "PATCH",
+				}),
+			);
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	test("keeps sign-in successful when enqueueing Free bootstrap fails", async () => {
+		const t = test_convex();
+
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockRejectedValue(new Error("enqueue free bootstrap exploded"));
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ id: "clerk-user-resolve-free-failure" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}),
+		);
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-free-failure",
+				name: "Resolve Free Failure User",
+				email: "resolve-free-failure-user@test.local",
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(200);
+			expect(body._yay?.userId).toBeDefined();
+			expect(consoleErrorSpy).toHaveBeenCalledWith(
+				"[users.resolve_user_http] Failed to enqueue Free subscription bootstrap",
+				expect.objectContaining({
+					clerkUserId: "clerk-user-resolve-free-failure",
+				}),
+			);
+			expect(enqueueActionSpy).toHaveBeenCalled();
+
+			const subscription = await t.query(components.polar.lib.getCurrentSubscription, {
+				userId: body._yay.userId,
+			});
+			expect(subscription).toBeNull();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+});
+
 describe("delete_current_user_account", () => {
 	test("returns Unauthorized when no authenticated identity is present", async () => {
 		const t = test_convex();
@@ -139,6 +273,7 @@ describe("delete_current_user_account", () => {
 			subject: "clerk-user-account-delete",
 			external_id: seeded.userId,
 			name: "Delete Action User",
+			email: "delete-action-user@test.local",
 		});
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -213,6 +348,7 @@ describe("delete_current_user_account", () => {
 			subject: "clerk-user-account-delete-404",
 			external_id: seeded.userId,
 			name: "Delete Missing Clerk User",
+			email: "delete-missing-clerk-user@test.local",
 		});
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -288,6 +424,7 @@ describe("delete_current_user_account", () => {
 			subject: "clerk-user-account-delete-failure",
 			external_id: seeded.userId,
 			name: "Delete Clerk Failure User",
+			email: "delete-clerk-failure-user@test.local",
 		});
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(

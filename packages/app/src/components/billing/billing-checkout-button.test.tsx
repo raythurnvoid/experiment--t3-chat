@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+
 const { actionMock, toastErrorMock } = vi.hoisted(() => {
 	return {
 		actionMock: vi.fn(),
@@ -61,6 +63,27 @@ describe("BillingCheckoutButton", () => {
 
 		await waitFor(() => {
 			expect(window.open).toHaveBeenCalledWith("https://checkout.test/session", "_blank", "noopener,noreferrer");
+		});
+	});
+
+	test("passes subscriptionId when provided", async () => {
+		actionMock.mockResolvedValue({
+			_yay: {
+				url: "https://checkout.test/session",
+			},
+		});
+
+		render(<BillingCheckoutButton productId="prod_checkout" subscriptionId="sub_free" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Select plan" }));
+
+		await waitFor(() => {
+			expect(actionMock).toHaveBeenCalledWith(app_convex_api.billing.generate_checkout_link, {
+				productId: "prod_checkout",
+				origin: window.location.origin,
+				successUrl: window.location.href,
+				subscriptionId: "sub_free",
+			});
 		});
 	});
 

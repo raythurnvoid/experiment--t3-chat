@@ -28,6 +28,7 @@ export function test_convex() {
 		polar_test.modules as unknown as Parameters<typeof t.registerComponent>[2],
 	);
 	presence_test.register(t);
+	workpool_test.register(t, "billingBootstrapWorkpool");
 	workpool_test.register(t, "billingUsageEventWorkpool");
 	return t;
 }

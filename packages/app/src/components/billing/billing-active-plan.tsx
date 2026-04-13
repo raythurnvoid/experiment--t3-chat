@@ -226,6 +226,11 @@ function included_usage_text(product: ProductDoc, currency: LiteralUnion<Currenc
 	return `Includes ${format_cents(includedUsageAmount, currency)} of ${suffixText}`;
 }
 
+function product_price_currency(product: ProductDoc) {
+	const price = product.prices?.find((priceDoc) => !priceDoc.isArchived) ?? null;
+	return price?.priceCurrency ?? null;
+}
+
 function get_subscription_badge_data(subscription: SubscriptionDoc) {
 	if (subscription.status === "trialing") {
 		return {
@@ -320,8 +325,8 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const meteredPrice =
 		product.prices?.find((priceDoc) => !priceDoc.isArchived && priceDoc.amountType === "metered_unit") ?? null;
 
-	const includedUsageText =
-		meteredPrice?.priceCurrency != null ? included_usage_text(product, meteredPrice.priceCurrency) : null;
+	const usageCurrency = meteredPrice?.priceCurrency ?? product_price_currency(product);
+	const includedUsageText = usageCurrency != null ? included_usage_text(product, usageCurrency) : null;
 
 	const intervalLabel = plan_interval_label(recurringPrice?.recurringInterval ?? product.recurringInterval ?? "month");
 
@@ -337,6 +342,7 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 					creditsLeft: format_cents(usage.meter.balance, usage.subscription.currency),
 				}
 			: null;
+	const shouldShowUsage = meteredPrice != null || product.name === "Free";
 
 	return (
 		<div className={"BillingActivePlan" satisfies BillingActivePlan_ClassNames}>
@@ -344,7 +350,7 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 			<div className={"BillingActivePlan-title" satisfies BillingActivePlan_ClassNames}>
 				{title}
 			</div>
-			{meteredPrice ? (
+			{shouldShowUsage ? (
 				meteredUsageSnapshot ? (
 					<BillingActivePlanUsage due={meteredUsageSnapshot.due} creditsLeft={meteredUsageSnapshot.creditsLeft} />
 				) : (
@@ -359,14 +365,13 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 					</div>
 				)
 			) : null}
-			{subscriptionTimesTexts.primaryLine ? (
-				<p className={"BillingActivePlan-renewal" satisfies BillingActivePlan_ClassNames}>
-					{subscriptionTimesTexts.primaryLine}
-				</p>
-			) : null}
 			{pendingUpdateText ? (
 				<p className={"BillingActivePlan-pending-update" satisfies BillingActivePlan_ClassNames}>
 					{pendingUpdateText}
+				</p>
+			) : subscriptionTimesTexts.primaryLine ? (
+				<p className={"BillingActivePlan-renewal" satisfies BillingActivePlan_ClassNames}>
+					{subscriptionTimesTexts.primaryLine}
 				</p>
 			) : null}
 			{subscriptionTimesTexts.secondaryLine ? (

@@ -6,7 +6,8 @@
 
 		max-width: 960px;
 		width: min(96vw, 960px);
-		height: 546px;
+		height: 846px;
+		max-height: calc(100dvh - 100px);
 		max-height: none;
 
 		background: var(--color-base-1-03);
