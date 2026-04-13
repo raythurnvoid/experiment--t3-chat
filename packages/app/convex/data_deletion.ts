@@ -1,9 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import { internalAction, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
-import type { Id } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
-import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { workspace_limits } from "../shared/limits.ts";
 
@@ -207,123 +206,341 @@ async function db_purge_workspace_project_content(
 	await Promise.all(pageIds.map((id) => ctx.db.delete("pages", id)));
 }
 
+async function db_delete_data_deletion_requests(
+	ctx: MutationCtx,
+	args:
+		| { scope: "user"; userId: Id<"users"> }
+		| { scope: "workspace"; workspaceId: Id<"workspaces"> }
+		| { scope: "project"; workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects"> },
+) {
+	if (args.scope === "user") {
+		const rows = await ctx.db
+			.query("data_deletion_requests")
+			.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+			.collect();
+
+		await Promise.all(
+			rows.filter((row) => row.scope === "user").map((row) => ctx.db.delete("data_deletion_requests", row._id)),
+		);
+
+		return;
+	}
+
+	const rows = await ctx.db
+		.query("data_deletion_requests")
+		.withIndex(
+			"by_workspace_project",
+			args.scope === "project"
+				? (q) => q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId)
+				: (q) => q.eq("workspaceId", args.workspaceId),
+		)
+		.collect();
+
+	await Promise.all(
+		rows
+			.filter((row) =>
+				args.scope === "project" ? row.scope === "project" : row.scope === "workspace" && row.projectId === undefined,
+			)
+			.map((row) => ctx.db.delete("data_deletion_requests", row._id)),
+	);
+}
+
+async function db_delete_workspace(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: Id<"workspaces">;
+	},
+) {
+	const projects = await ctx.db
+		.query("workspaces_projects")
+		.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+		.collect();
+
+	const projectRequestsToDelete = [];
+
+	// Purge every project's tenant-scoped content before deleting the workspace
+	// shell. Keep this layered on `db_purge_workspace_project_content` so
+	// workspace teardown and standalone project requests share the same
+	// project-content cleanup. Return the project ids afterward so the caller
+	// can clear only the matching queued project requests it actually consumed.
+	for (const project of projects) {
+		await db_purge_workspace_project_content(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: project._id,
+		});
+
+		projectRequestsToDelete.push({
+			workspaceId: project.workspaceId,
+			projectId: project._id,
+		});
+	}
+
+	const workspaceStill = await ctx.db.get("workspaces", args.workspaceId);
+	if (workspaceStill) {
+		const [remainingProjects, limitsPerWorkspaceDocs] = await Promise.all([
+			ctx.db
+				.query("workspaces_projects")
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+				.collect(),
+			ctx.db
+				.query("limits_per_workspace")
+				.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", args.workspaceId))
+				.collect(),
+		]);
+
+		await Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id)));
+		await Promise.all(limitsPerWorkspaceDocs.map((doc) => ctx.db.delete("limits_per_workspace", doc._id)));
+		await ctx.db.delete("workspaces", args.workspaceId);
+	}
+
+	return {
+		projectRequestsToDelete,
+	};
+}
+
+async function db_prepare_user_for_deletion(
+	ctx: MutationCtx,
+	args: {
+		user: Doc<"users">;
+		now: number;
+	},
+) {
+	// Clear billing snapshots during phase 1 so both scheduled and direct
+	// deletion paths stop surfacing billing state immediately.
+	const billingUsageSnapshots = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", args.user._id))
+		.collect();
+
+	await Promise.all(billingUsageSnapshots.map((row) => ctx.db.delete("billing_usage_snapshots", row._id)));
+
+	const memberships = await ctx.db
+		.query("workspaces_projects_users")
+		.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.user._id))
+		.collect();
+
+	if (args.user.deletedAt == null) {
+		// Tombstone the user and deactivate memberships first so later checks can
+		// tell which projects and workspaces became orphaned because of this user.
+		await Promise.all(
+			memberships.map((membership) =>
+				ctx.db.patch("workspaces_projects_users", membership._id, {
+					active: false,
+					updatedAt: args.now,
+				}),
+			),
+		);
+
+		await ctx.db.patch("users", args.user._id, {
+			deletedAt: args.now,
+		});
+	}
+
+	const projectsToDelete = [];
+
+	const candidateProjectWorkspaceIds = new Map(
+		memberships.map((membership) => [membership.projectId, membership.workspaceId]),
+	);
+	// Detect orphaned non-default projects that lost their last active member but
+	// still belong to a live shared workspace. Keep doing this even for an
+	// already-tombstoned user so the direct hard-delete path can finish phase-1
+	// orphan cleanup after an earlier scheduled init.
+	for (const [projectId, workspaceId] of candidateProjectWorkspaceIds) {
+		const activeMemberStillOnProject = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_workspace_project_user", (q) =>
+				q.eq("active", true).eq("workspaceId", workspaceId).eq("projectId", projectId),
+			)
+			.first();
+		if (activeMemberStillOnProject) {
+			continue;
+		}
+
+		const project = await ctx.db.get("workspaces_projects", projectId);
+		if (!project) {
+			continue;
+		}
+
+		const activeMemberStillInWorkspace = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_workspace_project_user", (q) => q.eq("active", true).eq("workspaceId", project.workspaceId))
+			.first();
+		if (!activeMemberStillInWorkspace || project.default) {
+			continue;
+		}
+
+		const workspace = await ctx.db.get("workspaces", project.workspaceId);
+		if (!workspace) {
+			continue;
+		}
+
+		const projectUserLookup = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_project_user_active", (q) => q.eq("projectId", projectId))
+			.collect();
+
+		projectsToDelete.push({
+			workspaceId: workspace._id,
+			projectId: project._id,
+		});
+
+		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
+		const limit = await ctx.db
+			.query("limits_per_workspace")
+			.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
+			.first();
+
+		if (limit) {
+			if (limit.usedCount <= 0) {
+				console.error("Trying to reduce a limit used count that is less than or equal to 0", limit);
+			} else {
+				await ctx.db.patch("limits_per_workspace", limit._id, {
+					usedCount: limit.usedCount - 1,
+					updatedAt: args.now,
+				});
+			}
+		}
+
+		await Promise.all(
+			projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+		);
+		await ctx.db.delete("workspaces_projects", project._id);
+	}
+
+	return projectsToDelete;
+}
+
+async function db_finalize_deleted_user(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		now: number;
+	},
+) {
+	const user = await ctx.db.get("users", args.userId);
+	if (!user || user.deletedAt == null) {
+		return;
+	}
+
+	const userIdString = String(user._id);
+	const [membershipsAll, anonymousAuthTokens, userLimits, pendingEdits, lastSequenceSaved] = await Promise.all([
+		ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("users_anon_tokens")
+			.withIndex("by_userId", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("limits_per_user")
+			.withIndex("by_user_limit_name", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
+			.collect(),
+		ctx.db
+			.query("pages_pending_edits_last_sequence_saved")
+			.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
+			.collect(),
+	]);
+
+	const pendingEditCleanupTasks = (
+		await Promise.all(
+			pendingEdits.map((row) =>
+				ctx.db
+					.query("pages_pending_edits_cleanup_tasks")
+					.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", row._id))
+					.collect(),
+			),
+		)
+	).flat();
+
+	// Keep the affected workspace ids before deleting memberships so you can
+	// later detect which workspaces became fully empty after the user is gone.
+	const affectedWorkspaceIds = new Set<Id<"workspaces">>();
+	if (user.defaultWorkspaceId) {
+		affectedWorkspaceIds.add(user.defaultWorkspaceId);
+	}
+	for (const membership of membershipsAll) {
+		affectedWorkspaceIds.add(membership.workspaceId);
+	}
+
+	await Promise.all(pendingEditCleanupTasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)));
+	await Promise.all(lastSequenceSaved.map((row) => ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id)));
+	await Promise.all(pendingEdits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
+	await Promise.all(membershipsAll.map((row) => ctx.db.delete("workspaces_projects_users", row._id)));
+	await Promise.all(anonymousAuthTokens.map((row) => ctx.db.delete("users_anon_tokens", row._id)));
+	await Promise.all(userLimits.map((row) => ctx.db.delete("limits_per_user", row._id)));
+
+	await ctx.db.patch("users", user._id, {
+		clerkUserId: null,
+		anonymousAuthToken: undefined,
+		defaultWorkspaceId: undefined,
+		defaultProjectId: undefined,
+		deletedAt: user.deletedAt ?? args.now,
+	});
+
+	const workspacesToDelete = [];
+
+	// Return only fully empty workspaces here. Let the caller own the actual
+	// workspace purge so it can keep the surrounding request bookkeeping local.
+	for (const workspaceId of affectedWorkspaceIds) {
+		const workspace = await ctx.db.get("workspaces", workspaceId);
+		if (!workspace) {
+			continue;
+		}
+
+		const remainingMemberships = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_workspace_project_user", (q) => q.eq("active", true).eq("workspaceId", workspaceId))
+			.first();
+		if (remainingMemberships) {
+			continue;
+		}
+
+		workspacesToDelete.push({
+			workspaceId: workspace._id,
+		});
+	}
+	return { workspacesToDelete };
+}
+
 export const init_user_deletion = internalMutation({
 	args: {
 		userId: v.id("users"),
 		nowTs: v.optional(v.number()),
 	},
-	returns: v.id("data_deletion_requests"),
+	returns: v.union(v.id("data_deletion_requests"), v.null()),
 	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return null;
+		}
+
 		const now = args.nowTs ?? Date.now();
 		const requestId = await data_deletion_db_request(ctx, {
 			userId: args.userId,
 			scope: "user",
 		});
 
-		const user = await ctx.db.get("users", args.userId);
-		if (!user || user.deletedAt != null) {
-			return requestId;
-		}
-
-		const memberships = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
-			.collect();
-
-		// Soft-delete the user immediately and deactivate their memberships during retention.
-		await Promise.all(
-			memberships.map((m) =>
-				ctx.db.patch("workspaces_projects_users", m._id, {
-					active: false,
-					updatedAt: now,
-				}),
-			),
-		);
-
-		await ctx.db.patch("users", user._id, {
-			deletedAt: now,
+		// Run phase 1 immediately so the user is tombstoned now and orphaned
+		// projects are discovered while the original memberships still exist.
+		const projectsToDelete = await db_prepare_user_for_deletion(ctx, {
+			user,
+			now,
 		});
 
-		const candidateProjectWorkspaceIds = new Map(memberships.map((m) => [m.projectId, m.workspaceId]));
-		for (const [projectId, workspaceId] of candidateProjectWorkspaceIds) {
-			const activeMemberStillOnProject = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_workspace_project_user", (q) =>
-					q.eq("active", true).eq("workspaceId", workspaceId).eq("projectId", projectId),
-				)
-				.first();
-			if (activeMemberStillOnProject) {
-				continue;
-			}
-
-			const project = await ctx.db.get("workspaces_projects", projectId);
-			if (!project) {
-				continue;
-			}
-
-			const activeMemberStillInWorkspace = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_workspace_project_user", (q) =>
-					q.eq("active", true).eq("workspaceId", project.workspaceId),
-				)
-				.first();
-			if (!activeMemberStillInWorkspace) {
-				continue;
-			}
-
-			if (project.default) {
-				continue;
-			}
-
-			// Remove non-default projects that became empty, but keep shared workspaces intact.
-			// Queue the delayed project-content purge before you remove the project doc.
-			// Keep the workspace itself because it still has active members elsewhere.
-			// After removing project memberships and the project doc, repair default
-			// workspace/project pointers for every user that was attached to this project.
-			const workspace = await ctx.db.get("workspaces", project.workspaceId);
-			if (!workspace) {
-				continue;
-			}
-
-			const projectUserLookup = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_project_user_active", (q) => q.eq("projectId", projectId))
-				.collect();
-
+		// Queue these orphaned project purges now so they age alongside the user
+		// request instead of adding a second retention window later.
+		for (const project of projectsToDelete) {
 			await data_deletion_db_request(ctx, {
 				userId: user._id,
-				workspaceId: workspace._id,
-				projectId: project._id,
+				workspaceId: project.workspaceId,
+				projectId: project.projectId,
 				scope: "project",
 			});
-
-			const limitDefinition = workspace_limits.EXTRA_PROJECTS;
-			const limit = await ctx.db
-				.query("limits_per_workspace")
-				.withIndex("by_workspace_limit", (q) =>
-					q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name),
-				)
-				.first();
-
-			if (limit && limit.usedCount > 0) {
-				await ctx.db.patch("limits_per_workspace", limit._id, {
-					usedCount: limit.usedCount - 1,
-					updatedAt: now,
-				});
-			}
-
-			await Promise.all(
-				projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
-			);
-
-			await ctx.db.delete("workspaces_projects", project._id);
-
-			for (const user_id of new Set(projectUserLookup.map((projectUser) => projectUser.userId))) {
-				await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
-					userId: user_id,
-					now,
-				});
-			}
 		}
 
 		return requestId;
@@ -364,7 +581,9 @@ export const process_user_deletion_request = internalMutation({
 	args: {
 		requestId: v.id("data_deletion_requests"),
 		/**
-		 * Convex tests only: simulated wall time (ms). Omit in production (`Date.now()` is used).
+		 * Internal simulated wall time (ms) used by tests to bypass retention.
+		 *
+		 * Omit in normal production flows (`Date.now()` is used).
 		 */
 		_test_now: v.optional(v.number()),
 	},
@@ -373,6 +592,10 @@ export const process_user_deletion_request = internalMutation({
 		const now = args._test_now ?? Date.now();
 		const request = await ctx.db.get("data_deletion_requests", args.requestId);
 		if (!request) {
+			return null;
+		}
+
+		if (request.scope !== "user") {
 			return null;
 		}
 
@@ -391,112 +614,38 @@ export const process_user_deletion_request = internalMutation({
 			return null;
 		}
 
-		const userIdString = String(user._id);
-		const [membershipsAll, anonymousAuthTokens, userLimits, pendingEdits, lastSequenceSaved] = await Promise.all([
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
-				.collect(),
-			ctx.db
-				.query("users_anon_tokens")
-				.withIndex("by_userId", (q) => q.eq("userId", user._id))
-				.collect(),
-			ctx.db
-				.query("limits_per_user")
-				.withIndex("by_user_limit_name", (q) => q.eq("userId", user._id))
-				.collect(),
-			ctx.db
-				.query("pages_pending_edits")
-				.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
-				.collect(),
-			ctx.db
-				.query("pages_pending_edits_last_sequence_saved")
-				.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
-				.collect(),
-		]);
-
-		const pendingEditCleanupTasks = (
-			await Promise.all(
-				pendingEdits.map((row) =>
-					ctx.db
-						.query("pages_pending_edits_cleanup_tasks")
-						.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", row._id))
-						.collect(),
-				),
-			)
-		).flat();
-
-		const affectedWorkspaceIds = new Set<Id<"workspaces">>();
-		if (user.defaultWorkspaceId) {
-			affectedWorkspaceIds.add(user.defaultWorkspaceId);
-		}
-		for (const membership of membershipsAll) {
-			affectedWorkspaceIds.add(membership.workspaceId);
-		}
-
-		// Hard-delete user-owned docs after the retention window has passed.
-		await Promise.all(
-			pendingEditCleanupTasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)),
-		);
-		await Promise.all(
-			lastSequenceSaved.map((row) => ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id)),
-		);
-		await Promise.all(pendingEdits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
-		await Promise.all(membershipsAll.map((row) => ctx.db.delete("workspaces_projects_users", row._id)));
-		await Promise.all(anonymousAuthTokens.map((row) => ctx.db.delete("users_anon_tokens", row._id)));
-		await Promise.all(userLimits.map((row) => ctx.db.delete("limits_per_user", row._id)));
-
-		await ctx.db.patch("users", user._id, {
-			clerkUserId: null,
-			anonymousAuthToken: undefined,
-			defaultWorkspaceId: undefined,
-			defaultProjectId: undefined,
-			deletedAt: user.deletedAt ?? now,
+		// Finalize the user first to delete the remaining user-owned rows and to
+		// compute which workspaces became fully empty at the retention boundary.
+		const deleteUserRes = await db_finalize_deleted_user(ctx, {
+			userId: user._id,
+			now: now,
 		});
 
-		// Remove workspaces that no longer have any active memberships after this user is fully deleted.
-		for (const workspaceId of affectedWorkspaceIds) {
-			// Queue delayed project-content purges for every project in this workspace.
-			// Once the workspace has no active memberships left, remove its limits,
-			// its project docs, and the workspace doc itself.
-			const workspace = await ctx.db.get("workspaces", workspaceId);
-			if (!workspace) {
-				continue;
-			}
-
-			const remainingMemberships = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_workspace_project_user", (q) =>
-					q.eq("active", true).eq("workspaceId", workspaceId),
-				)
-				.first();
-			if (remainingMemberships) {
-				continue;
-			}
-
-			const [projects, workspaceLimits] = await Promise.all([
-				ctx.db
-					.query("workspaces_projects")
-					.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspaceId))
-					.collect(),
-				ctx.db
-					.query("limits_per_workspace")
-					.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", workspaceId))
-					.collect(),
-			]);
-
-			for (const project of projects) {
-				await data_deletion_db_request(ctx, {
-					userId: user._id,
-					workspaceId,
-					projectId: project._id,
-					scope: "project",
+		if (deleteUserRes?.workspacesToDelete) {
+			// Delete whole workspaces here, not individual projects, because by
+			// this point these workspaces have no active members left and should be
+			// torn down in one pass. Clear the matching workspace/project request
+			// rows here too, because `db_delete_workspace` only purges data and
+			// returns the exact targets it consumed.
+			for (const workspace of deleteUserRes.workspacesToDelete) {
+				const { projectRequestsToDelete } = await db_delete_workspace(ctx, {
+					workspaceId: workspace.workspaceId,
 				});
-			}
 
-			await Promise.all(workspaceLimits.map((row) => ctx.db.delete("limits_per_workspace", row._id)));
-			await Promise.all(projects.map((row) => ctx.db.delete("workspaces_projects", row._id)));
-			await ctx.db.delete("workspaces", workspaceId);
+				await Promise.all([
+					db_delete_data_deletion_requests(ctx, {
+						scope: "workspace",
+						workspaceId: workspace.workspaceId,
+					}),
+					...projectRequestsToDelete.map((projectRequest) =>
+						db_delete_data_deletion_requests(ctx, {
+							scope: "project",
+							workspaceId: projectRequest.workspaceId,
+							projectId: projectRequest.projectId,
+						}),
+					),
+				]);
+			}
 		}
 
 		await ctx.db.delete("data_deletion_requests", request._id);
@@ -512,7 +661,10 @@ export const process_workspace_deletion_request = internalMutation({
 	args: {
 		requestId: v.id("data_deletion_requests"),
 		/**
-		 * Convex tests only: simulated wall time (ms). Omit in production and cron (`Date.now()` is used).
+		 * Internal simulated wall time (ms) used by tests to bypass retention.
+		 *
+		 * Omit in normal production and cron flows (`Date.now()` is used).
+		 *
 		 * Pass a value past the retention window (e.g. `_creationTime + RETENTION_MS + 1`)
 		 * so purge eligibility runs in one step without waiting.
 		 */
@@ -540,37 +692,21 @@ export const process_workspace_deletion_request = internalMutation({
 			return null;
 		}
 
-		const workspaceId = request.workspaceId;
-		const projects = await ctx.db
-			.query("workspaces_projects")
-			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspaceId))
-			.collect();
-		const projectIdsToPurge = projects.map((p) => p._id);
+		const { projectRequestsToDelete } = await db_delete_workspace(ctx, {
+			workspaceId: request.workspaceId,
+		});
 
-		// Purge heavy project-scoped content before you remove structural workspace docs.
-		if (projectIdsToPurge.length) {
-			for (const projectId of projectIdsToPurge) {
-				await db_purge_workspace_project_content(ctx, { workspaceId, projectId });
-			}
-		}
-
-		// Remove the remaining workspace structure after every project purge finishes.
-		const workspaceStill = await ctx.db.get("workspaces", workspaceId);
-		if (workspaceStill) {
-			const remainingProjects = await ctx.db
-				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspaceId))
-				.collect();
-			await Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id)));
-
-			const limitsPerWorkspaceDocs = await ctx.db
-				.query("limits_per_workspace")
-				.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", workspaceId))
-				.collect();
-			await Promise.all(limitsPerWorkspaceDocs.map((doc) => ctx.db.delete("limits_per_workspace", doc._id)));
-
-			await ctx.db.delete("workspaces", workspaceId);
-		}
+		// Clear the matching queued project requests here too, because deleting
+		// the whole workspace already consumed those project purge targets.
+		await Promise.all(
+			projectRequestsToDelete.map((projectRequest) =>
+				db_delete_data_deletion_requests(ctx, {
+					scope: "project",
+					workspaceId: projectRequest.workspaceId,
+					projectId: projectRequest.projectId,
+				}),
+			),
+		);
 
 		await ctx.db.delete("data_deletion_requests", request._id);
 
@@ -585,7 +721,10 @@ export const process_project_deletion_request = internalMutation({
 	args: {
 		requestId: v.id("data_deletion_requests"),
 		/**
-		 * Convex tests only: simulated wall time (ms). Omit in production and cron (`Date.now()` is used).
+		 * Internal simulated wall time (ms) used by tests to bypass retention.
+		 *
+		 * Omit in normal production and cron flows (`Date.now()` is used).
+		 *
 		 * Pass a value past the retention window (e.g. `_creationTime + RETENTION_MS + 1`)
 		 * so purge eligibility runs in one step without waiting.
 		 */
@@ -624,11 +763,122 @@ export const process_project_deletion_request = internalMutation({
 	},
 });
 
+export const hard_delete_user_data = internalMutation({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return null;
+		}
+
+		const now = Date.now();
+
+		// Run the same phase-1 tombstone and orphan discovery inline because the
+		// admin hard-delete path does not wait for the delayed request pipeline.
+		const projectsToDelete = await db_prepare_user_for_deletion(ctx, {
+			user,
+			now: now,
+		});
+
+		// Delete these projects one-by-one here because their workspaces are
+		// still alive for other members; only the projects themselves became
+		// orphaned during phase 1. Clear any matching queued project request too
+		// so this direct path does not leave delayed follow-up work behind.
+		for (const project of projectsToDelete) {
+			await db_purge_workspace_project_content(ctx, {
+				workspaceId: project.workspaceId,
+				projectId: project.projectId,
+			});
+
+			await db_delete_data_deletion_requests(ctx, {
+				scope: "project",
+				workspaceId: project.workspaceId,
+				projectId: project.projectId,
+			});
+		}
+
+		// Drain any orphan project requests left by an earlier scheduled phase-1
+		// run. Those projects already lost their shell rows, so phase-1 discovery
+		// cannot find them again from memberships, but their content still needs
+		// to be purged before the admin hard delete finishes.
+		const queuedProjectRequests = await ctx.db
+			.query("data_deletion_requests")
+			.withIndex("by_userId", (q) => q.eq("userId", user._id))
+			.collect();
+
+		for (const request of queuedProjectRequests) {
+			if (request.scope !== "project" || !request.workspaceId || !request.projectId) {
+				continue;
+			}
+
+			const projectStillExists = await ctx.db.get("workspaces_projects", request.projectId);
+			if (projectStillExists) {
+				continue;
+			}
+
+			await db_purge_workspace_project_content(ctx, {
+				workspaceId: request.workspaceId,
+				projectId: request.projectId,
+			});
+
+			await db_delete_data_deletion_requests(ctx, {
+				scope: "project",
+				workspaceId: request.workspaceId,
+				projectId: request.projectId,
+			});
+		}
+
+		// Finalize the user only after the phase-1 project split above, then use
+		// the remaining empty workspaces as the full-workspace teardown targets.
+		const deleteUserRes = await db_finalize_deleted_user(ctx, {
+			userId: user._id,
+			now: now,
+		});
+
+		if (deleteUserRes?.workspacesToDelete) {
+			// Delete whole workspaces here, not individual projects, because these
+			// workspaces now have no active members left at all. Clear the matching
+			// workspace/project request rows here too, because `db_delete_workspace`
+			// only purges data and returns the exact targets it consumed.
+			for (const workspace of deleteUserRes.workspacesToDelete) {
+				const { projectRequestsToDelete } = await db_delete_workspace(ctx, {
+					workspaceId: workspace.workspaceId,
+				});
+
+				await Promise.all([
+					db_delete_data_deletion_requests(ctx, {
+						scope: "workspace",
+						workspaceId: workspace.workspaceId,
+					}),
+					...projectRequestsToDelete.map((projectRequest) =>
+						db_delete_data_deletion_requests(ctx, {
+							scope: "project",
+							workspaceId: projectRequest.workspaceId,
+							projectId: projectRequest.projectId,
+						}),
+					),
+				]);
+			}
+		}
+
+		await db_delete_data_deletion_requests(ctx, {
+			scope: "user",
+			userId: user._id,
+		});
+
+		return null;
+	},
+});
+
 export const process_deletion_requests = internalAction({
 	args: {
 		/**
-		 * Convex tests only: simulated wall time (ms) for listing and per-request mutations.
-		 * Omit in production (`Date.now()` is used via optional chaining at each call site).
+		 * Internal simulated wall time (ms) for listing and per-request mutations used by tests.
+		 *
+		 * Omit in normal production flows (`Date.now()` is used via optional chaining at each call site).
 		 */
 		_test_now: v.optional(v.number()),
 	},

@@ -335,14 +335,23 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const pendingUpdateText = get_pending_update_text(subscription, scheduledChangeProductName);
 	const title = billing_get_product_display_name(product.name);
 
-	const meteredUsageSnapshot =
-		usage?.meter != null && usage.subscription != null
-			? {
+	const shouldShowUsage = meteredPrice != null || product.name === "Free";
+	const meteredUsageSnapshot = shouldShowUsage
+		? ((/* iife */) => {
+				if (!usage || !usage.subscription || !usage.meter || usage.subscription.productId !== product.id) {
+					throw should_never_happen("Missing usage snapshot for active billing plan", {
+						productId: product.id,
+						productName: product.name,
+						usage,
+					});
+				}
+
+				return {
 					due: format_cents(usage.meter.amountDueCents, usage.subscription.currency),
 					creditsLeft: format_cents(usage.meter.balance, usage.subscription.currency),
-				}
-			: null;
-	const shouldShowUsage = meteredPrice != null || product.name === "Free";
+				};
+			})()
+		: null;
 
 	return (
 		<div className={"BillingActivePlan" satisfies BillingActivePlan_ClassNames}>
@@ -350,20 +359,8 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 			<div className={"BillingActivePlan-title" satisfies BillingActivePlan_ClassNames}>
 				{title}
 			</div>
-			{shouldShowUsage ? (
-				meteredUsageSnapshot ? (
-					<BillingActivePlanUsage due={meteredUsageSnapshot.due} creditsLeft={meteredUsageSnapshot.creditsLeft} />
-				) : (
-					<div className={"BillingActivePlanUsage" satisfies BillingActivePlanUsage_ClassNames}>
-						<p
-							className={
-								"BillingActivePlanUsage-meta" satisfies BillingActivePlanUsage_ClassNames
-							}
-						>
-							Syncing usage...
-						</p>
-					</div>
-				)
+			{meteredUsageSnapshot ? (
+				<BillingActivePlanUsage due={meteredUsageSnapshot.due} creditsLeft={meteredUsageSnapshot.creditsLeft} />
 			) : null}
 			{pendingUpdateText ? (
 				<p className={"BillingActivePlan-pending-update" satisfies BillingActivePlan_ClassNames}>

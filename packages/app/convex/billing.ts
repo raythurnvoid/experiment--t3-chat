@@ -20,7 +20,11 @@ import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
 import { billing_PRODUCTS, billing_get_plan_change_kind } from "../shared/billing.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { allowed_origins, server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
+import {
+	allowed_origins,
+	server_convex_get_user_fallback_to_anonymous,
+	should_never_happen,
+} from "../server/server-utils.ts";
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
 import app_convex_schema from "./schema.ts";
 
@@ -53,6 +57,37 @@ const billing_usage_event_workpool = new Workpool(components.billingUsageEventWo
 	maxParallelism: 1,
 	retryActionsByDefault: true,
 });
+
+export async function billing_action_clear_subscriptions_by_user_id(
+	ctx: ActionCtx | MutationCtx,
+	args: {
+		userId: Id<"users">;
+	},
+) {
+	await ctx.runMutation(components.polar.lib.clearSubscriptionsByUserId, {
+		userId: args.userId,
+	});
+}
+
+export async function billing_action_revoke_polar_subscription(args: { subscriptionId: string }) {
+	const revokeResult = await subscriptionsRevoke(billing_polar_client(), {
+		id: args.subscriptionId,
+	});
+	if (
+		!revokeResult.ok &&
+		!(revokeResult.error instanceof AlreadyCanceledSubscription) &&
+		!(revokeResult.error instanceof ResourceNotFound)
+	) {
+		return Result({
+			_nay: {
+				message: "Failed to revoke Polar subscription",
+				cause: revokeResult.error,
+			},
+		});
+	}
+
+	return Result({ _yay: null });
+}
 
 export const get_usage_snapshot = query({
 	args: {},
@@ -126,16 +161,69 @@ export const handle_polar_customer_state_update = internalMutation({
 				}>;
 				active_meters: Array<{
 					meter_id: string;
+					consumed_units: number;
+					credited_units: number;
 					balance: number;
 				}>;
 			};
 		};
 		const userId = payload.data.external_id as Id<"users">;
 		const subscription = payload.data.active_subscriptions[0];
-		const meterRow = subscription?.meters[0];
-		const activeMeter = meterRow
-			? payload.data.active_meters.find((meter) => meter.meter_id === meterRow.meter_id)
+		const product = subscription
+			? await ctx.runQuery(components.polar.lib.getProduct, {
+					id: subscription.product_id,
+				})
 			: null;
+		const meteredPrice =
+			product?.prices?.find((price) => {
+				return !price.isArchived && price.amountType === "metered_unit";
+			}) ?? null;
+		const creditBenefit =
+			meteredPrice == null
+				? (product?.benefits?.find((benefit) => {
+						return benefit.type === "meter_credit";
+					}) ?? null)
+				: null;
+		const creditBenefitMeterId =
+			typeof creditBenefit?.properties === "object" &&
+			creditBenefit.properties !== null &&
+			"meterId" in creditBenefit.properties &&
+			typeof creditBenefit.properties.meterId === "string"
+				? creditBenefit.properties.meterId
+				: null;
+		const meterRow = subscription?.meters[0] ?? null;
+		const activeMeter = meterRow
+			? (payload.data.active_meters.find((meter) => meter.meter_id === meterRow.meter_id) ?? null)
+			: creditBenefitMeterId
+				? (payload.data.active_meters.find((meter) => meter.meter_id === creditBenefitMeterId) ?? null)
+				: null;
+		const usageMeter = meterRow
+			? {
+					id: meterRow.meter_id,
+					consumedUnits: meterRow.consumed_units,
+					creditedUnits: meterRow.credited_units,
+					balance: activeMeter?.balance ?? meterRow.credited_units - meterRow.consumed_units,
+					amountDueCents: meterRow.amount,
+				}
+			: creditBenefitMeterId && activeMeter
+				? {
+						id: creditBenefitMeterId,
+						consumedUnits: activeMeter.consumed_units,
+						creditedUnits: activeMeter.credited_units,
+						balance: activeMeter.balance,
+						amountDueCents: 0,
+					}
+				: null;
+
+		if (subscription && usageMeter == null) {
+			throw should_never_happen("Failed to resolve usage meter for active subscription", {
+				activeMeters: payload.data.active_meters,
+				customerId: payload.data.id,
+				product,
+				subscription,
+				userId,
+			});
+		}
 
 		const usageSnapshot = {
 			userId,
@@ -149,15 +237,7 @@ export const handle_polar_customer_state_update = internalMutation({
 						currentPeriodEnd: subscription.current_period_end,
 					}
 				: null,
-			meter: meterRow
-				? {
-						id: meterRow.meter_id,
-						consumedUnits: meterRow.consumed_units,
-						creditedUnits: meterRow.credited_units,
-						balance: activeMeter?.balance ?? meterRow.credited_units - meterRow.consumed_units,
-						amountDueCents: meterRow.amount,
-					}
-				: null,
+			meter: usageMeter,
 			lastSyncedAt: Date.parse(payload.timestamp),
 		} satisfies Omit<Doc<"billing_usage_snapshots">, "_id" | "_creationTime">;
 
@@ -328,7 +408,14 @@ export const bootstrap_free_subscription = internalAction({
 					email: args.email,
 				});
 				if (!createCustomerResult.ok) {
-					throw convex_error({ message: "Failed to create Polar customer" });
+					throw convex_error({
+						message: "Failed to create Polar customer",
+						cause: createCustomerResult.error,
+						data: {
+							email: args.email,
+							userId: args.userId,
+						},
+					});
 				}
 
 				await ctx.runMutation(components.polar.lib.insertCustomer, {
@@ -370,7 +457,15 @@ export const bootstrap_free_subscription = internalAction({
 				productId: freeProduct.id,
 			});
 			if (!createSubscriptionResult.ok) {
-				throw convex_error({ message: "Failed to create Free subscription" });
+				throw convex_error({
+					message: "Failed to create Free subscription",
+					cause: createSubscriptionResult.error,
+					data: {
+						customerId: customer.id,
+						productId: freeProduct.id,
+						userId: args.userId,
+					},
+				});
 			}
 
 			await ctx.runMutation(components.polar.lib.createSubscription, {
@@ -382,7 +477,14 @@ export const bootstrap_free_subscription = internalAction({
 				error: bootstrapResult._nay,
 				userId: args.userId,
 			});
-			throw convex_error({ message: "Failed to bootstrap Free subscription" });
+			throw convex_error({
+				message: "Failed to bootstrap Free subscription",
+				cause: bootstrapResult._nay,
+				data: {
+					email: args.email,
+					userId: args.userId,
+				},
+			});
 		}
 
 		return null;
@@ -411,7 +513,10 @@ export const change_current_subscription = action({
 		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
 			userId: user.id,
 		});
-		if (!currentSubscription || (currentSubscription.status !== "active" && currentSubscription.status !== "trialing")) {
+		if (
+			!currentSubscription ||
+			(currentSubscription.status !== "active" && currentSubscription.status !== "trialing")
+		) {
 			return Result({ _nay: { message: "No active subscription found" } });
 		}
 

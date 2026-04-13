@@ -979,6 +979,19 @@ describe("billing bootstrap_free_subscription", () => {
 		expect(consoleErrorSpy).toHaveBeenCalledWith(
 			"[billing.bootstrap_free_subscription] Failed to bootstrap Free subscription",
 			expect.objectContaining({
+				error: expect.objectContaining({
+					data: expect.objectContaining({
+						message: "Failed to create Polar customer",
+						cause: expect.objectContaining({
+							message: "bootstrap customer exploded",
+							name: "UnexpectedClientError",
+						}),
+						data: expect.objectContaining({
+							email: "bootstrap-retry@test.local",
+							userId,
+						}),
+					}),
+				}),
 				userId,
 			}),
 		);
@@ -1214,6 +1227,100 @@ describe("handle_polar_customer_state_update", () => {
 		expect(snapshot!.meter?.id).toBe("meter_new_webhook");
 		expect(snapshot!.meter?.amountDueCents).toBe(6);
 		expect(snapshot!.meter?.balance).toBe(2172);
+	});
+
+	test("writes the usage snapshot from the active customer meter for credits-only Free plans", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_refresh_snapshot_free_product",
+		});
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-13T03:20:41.064Z",
+				data: {
+					id: "cust_refresh_snapshot_free",
+					external_id: userId,
+					active_subscriptions: [
+						{
+							id: "sub_refresh_snapshot_free",
+							product_id: polarProductId,
+							currency: "eur",
+							current_period_start: "2026-04-13T03:20:38.364476Z",
+							current_period_end: "2026-05-13T03:20:38.364476Z",
+							meters: [],
+						},
+					],
+					active_meters: [
+						{
+							meter_id: "meter_press_usage",
+							consumed_units: 240,
+							credited_units: 1000,
+							balance: 760,
+						},
+					],
+				},
+			},
+		});
+
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		expect(snapshot).not.toBeNull();
+		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_free");
+		expect(snapshot!.meter).toEqual({
+			id: "meter_press_usage",
+			consumedUnits: 240,
+			creditedUnits: 1000,
+			balance: 760,
+			amountDueCents: 0,
+		});
+	});
+
+	test("throws when an active subscription has no resolvable usage meter", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_refresh_snapshot_missing_meter_product",
+		});
+
+		await expect(
+			t.mutation(internal.billing.handle_polar_customer_state_update, {
+				payload: {
+					type: "customer.state_changed",
+					timestamp: "2026-04-13T03:20:41.064Z",
+					data: {
+						id: "cust_refresh_snapshot_missing_meter",
+						external_id: userId,
+						active_subscriptions: [
+							{
+								id: "sub_refresh_snapshot_missing_meter",
+								product_id: polarProductId,
+								currency: "eur",
+								current_period_start: "2026-04-13T03:20:38.364476Z",
+								current_period_end: "2026-05-13T03:20:38.364476Z",
+								meters: [],
+							},
+						],
+						active_meters: [],
+					},
+				},
+			}),
+		).rejects.toThrow("Failed to resolve usage meter for active subscription");
+
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(snapshot).toBeNull();
 	});
 });
 

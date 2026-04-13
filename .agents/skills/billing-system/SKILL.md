@@ -68,6 +68,18 @@ The auth-side trigger lives in [users.ts](../../../packages/app/convex/users.ts)
 - `/api/auth/resolve-user` resolves or creates the Convex user, writes Clerk `external_id`, then enqueues the `Free` subscription bootstrap.
 - Because bootstrap is enqueued through the workpool, a newly resolved signed-in user can briefly exist before the `Free` subscription appears locally.
 
+## Testing Clerk + Polar signup
+
+When you test signup flows that must also create a Polar customer, do not use Clerk's `example.com` sample addresses. Use a real email domain that accepts mail, such as `gmail.com`, while still keeping Clerk's test suffix.
+
+> Clerk docs: "Any email with the `+clerk_test` subaddress is a test email address. No emails will be sent ... code `424242`."
+
+- Use addresses like `yourname+clerk_test@gmail.com` or `yourname+clerk_test@outlook.com`.
+- Use Clerk's verification code `424242`.
+- Keep the `+clerk_test` suffix so Clerk stays in test-email mode.
+- Keep the domain valid for Polar customer creation. `example.com` can be rejected by Polar validation.
+- Source: <https://clerk.com/docs/guides/development/testing/test-emails-and-phones>
+
 ## Billing UI
 
 The main billing UI lives in [billing-account-management-panel.tsx](../../../packages/app/src/components/billing/billing-account-management-panel.tsx).

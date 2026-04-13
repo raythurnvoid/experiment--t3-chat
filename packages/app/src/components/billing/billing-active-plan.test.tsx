@@ -80,7 +80,7 @@ describe("BillingActivePlan", () => {
 							consumedUnits: 1250,
 							creditedUnits: 1000,
 							balance: -250,
-							amountDueCents: 125,
+							amountDueCents: 0,
 						},
 						lastSyncedAt: Date.parse("2026-01-15T00:00:00.000Z"),
 					} as app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>
@@ -89,7 +89,23 @@ describe("BillingActivePlan", () => {
 		);
 
 		expect(screen.getByText("Due")).not.toBeNull();
-		expect(screen.getByText(/€1\.25/)).not.toBeNull();
+		expect(screen.getByText(/€0\.00/)).not.toBeNull();
 		expect(screen.getByText(/-€2\.50|€-2\.50/)).not.toBeNull();
+	});
+
+	test("throws when the active plan is missing a matching usage snapshot", () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		expect(() => {
+			render(
+				<BillingActivePlan
+					product={createFreeProduct()}
+					subscription={createSubscription()}
+					usage={null}
+				/>,
+			);
+		}).toThrow("Missing usage snapshot for active billing plan");
+
+		consoleErrorSpy.mockRestore();
 	});
 });

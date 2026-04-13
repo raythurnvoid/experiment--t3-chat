@@ -1,7 +1,15 @@
-import { action, httpAction, internalMutation, internalQuery, query, type ActionCtx } from "./_generated/server.js";
+import {
+	action,
+	httpAction,
+	internalAction,
+	internalMutation,
+	internalQuery,
+	query,
+	type ActionCtx,
+} from "./_generated/server.js";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
-import { internal } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import { type RouteSpec } from "convex/server";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -19,7 +27,11 @@ import { v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
-import { billing_enqueue_free_subscription_bootstrap } from "./billing.ts";
+import {
+	billing_action_revoke_polar_subscription,
+	billing_action_clear_subscriptions_by_user_id,
+	billing_enqueue_free_subscription_bootstrap,
+} from "./billing.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
 	throw new Error("ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env");
@@ -242,6 +254,122 @@ export const clear_clerk_user_id_after_clerk_delete = internalMutation({
 		await ctx.db.patch("users", userId, {
 			clerkUserId: null,
 		});
+
+		return null;
+	},
+});
+
+export const purge_deleted_user_tombstone = internalMutation({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return null;
+		}
+
+		if (user.deletedAt == null) {
+			throw new Error("Cannot purge tombstone for a non-deleted user");
+		}
+
+		const [
+			memberships,
+			deletionRequests,
+			userLimits,
+			anonymousAuthTokens,
+			billingUsageSnapshots,
+			ownedWorkspaces,
+			aiChatThreads,
+			aiChatThreadMessages,
+			pages,
+			pageSnapshots,
+		] = await Promise.all([
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.userId))
+				.collect(),
+			ctx.db
+				.query("data_deletion_requests")
+				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+				.collect(),
+			ctx.db
+				.query("limits_per_user")
+				.withIndex("by_user_limit_name", (q) => q.eq("userId", args.userId))
+				.collect(),
+			ctx.db
+				.query("users_anon_tokens")
+				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+				.collect(),
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+				.collect(),
+			ctx.db
+				.query("workspaces")
+				.collect()
+				.then((rows) => rows.filter((row) => row.ownerUserId === args.userId)),
+			ctx.db
+				.query("ai_chat_threads")
+				.collect()
+				.then((rows) => rows.filter((row) => row.createdBy === args.userId || row.updatedBy === args.userId)),
+			ctx.db
+				.query("ai_chat_threads_messages_aisdk_5")
+				.collect()
+				.then((rows) => rows.filter((row) => row.createdBy === args.userId)),
+			ctx.db
+				.query("pages")
+				.collect()
+				.then((rows) => rows.filter((row) => row.createdBy === args.userId)),
+			ctx.db
+				.query("pages_snapshots")
+				.collect()
+				.then((rows) => rows.filter((row) => row.created_by === args.userId)),
+		]);
+
+		if (
+			user.defaultWorkspaceId ||
+			user.defaultProjectId ||
+			user.clerkUserId != null ||
+			user.anonymousAuthToken ||
+			memberships.length > 0 ||
+			deletionRequests.length > 0 ||
+			userLimits.length > 0 ||
+			anonymousAuthTokens.length > 0 ||
+			billingUsageSnapshots.length > 0 ||
+			ownedWorkspaces.length > 0 ||
+			aiChatThreads.length > 0 ||
+			aiChatThreadMessages.length > 0 ||
+			pages.length > 0 ||
+			pageSnapshots.length > 0
+		) {
+			throw new Error("Cannot purge deleted user tombstone while dependent state remains", {
+				cause: {
+					userId: args.userId,
+					defaultWorkspaceId: user.defaultWorkspaceId,
+					defaultProjectId: user.defaultProjectId,
+					clerkUserId: user.clerkUserId,
+					hasAnonymousAuthToken: Boolean(user.anonymousAuthToken),
+					memberships: memberships.length,
+					deletionRequests: deletionRequests.length,
+					userLimits: userLimits.length,
+					anonymousAuthTokens: anonymousAuthTokens.length,
+					billingUsageSnapshots: billingUsageSnapshots.length,
+					ownedWorkspaces: ownedWorkspaces.length,
+					aiChatThreads: aiChatThreads.length,
+					aiChatThreadMessages: aiChatThreadMessages.length,
+					pages: pages.length,
+					pageSnapshots: pageSnapshots.length,
+				},
+			});
+		}
+
+		if (user.anagraphic) {
+			await ctx.db.delete("users_anagraphics", user.anagraphic);
+		}
+
+		await ctx.db.delete("users", args.userId);
 
 		return null;
 	},
@@ -544,6 +672,26 @@ async function clerk_set_external_id(args: { clerkUserId: string; userId: string
 	});
 }
 
+async function delete_clerk_account(args: { clerkUserId: string }) {
+	const clerkDeleteUserResult = await server_fetch_json<null>({
+		url: `https://api.clerk.com/v1/users/${args.clerkUserId}`,
+		method: "DELETE",
+		headers: {
+			Authorization: `Bearer ${CLERK_SECRET_KEY}`,
+		},
+	});
+	if (clerkDeleteUserResult._nay && clerkDeleteUserResult._nay.data?.status !== 404) {
+		return Result({
+			_nay: {
+				message: "Failed to delete Clerk user",
+				cause: clerkDeleteUserResult._nay,
+			},
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
 export const delete_current_user_account = action({
 	args: {},
 	returns: v_result({ _yay: v.null() }),
@@ -557,56 +705,61 @@ export const delete_current_user_account = action({
 			});
 		}
 
-		const isAnonymous = userFromAuth.isAnonymous;
-		const userId = userFromAuth.id;
-
 		const user = await ctx.runQuery(internal.users.get, {
-			userId: userId,
+			userId: userFromAuth.id,
 		});
 		if (!user || user.deletedAt) {
 			return Result({ _yay: null });
 		}
 
-		try {
-			const requestId = await ctx.runMutation(internal.data_deletion.init_user_deletion, {
-				userId: user._id,
-				nowTs: Date.now(),
-			});
-			if (isAnonymous) {
-				return Result({ _yay: null });
-			}
+		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+			userId: user._id,
+		});
 
-			const clerkDeleteUserResult = await server_fetch_json<null>({
-				url: `https://api.clerk.com/v1/users/${userFromAuth.subject}`,
-				method: "DELETE",
-				headers: {
-					Authorization: `Bearer ${CLERK_SECRET_KEY}`,
-				},
-			});
+		const requestId = await ctx.runMutation(internal.data_deletion.init_user_deletion, {
+			userId: user._id,
+			nowTs: Date.now(),
+		});
 
-			if (clerkDeleteUserResult._nay && clerkDeleteUserResult._nay.data?.status !== 404) {
-				console.error("Failed to clean up Clerk account after local deletion", {
+		let shouldClearClerkUserId = false;
+
+		if (user.clerkUserId) {
+			const clerkDeleteUserResult = await delete_clerk_account({
+				clerkUserId: user.clerkUserId,
+			});
+			if (clerkDeleteUserResult._nay) {
+				console.error("[users.delete_current_user_account] Failed to clean up Clerk account after local deletion", {
 					clerkDeleteUserResult,
-					clerkUserId: userFromAuth.subject,
+					clerkUserId: user.clerkUserId,
 					requestId,
+					userId: user._id,
 				});
 			} else {
-				await ctx.runMutation(internal.users.clear_clerk_user_id_after_clerk_delete, {
-					userId: userId,
+				shouldClearClerkUserId = true;
+			}
+		}
+
+		if (currentSubscription) {
+			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
+				subscriptionId: currentSubscription.id,
+			});
+			if (revokeSubscriptionResult._nay) {
+				console.error("[users.delete_current_user_account] Failed to revoke Polar subscription after local deletion", {
+					revokeSubscriptionResult,
+					requestId,
+					subscriptionId: currentSubscription.id,
+					userId: user._id,
 				});
 			}
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Failed to delete account";
+		}
 
-			console.error("Failed to delete current user account", {
-				error,
+		await billing_action_clear_subscriptions_by_user_id(ctx, {
+			userId: user._id,
+		});
+
+		if (shouldClearClerkUserId) {
+			await ctx.runMutation(internal.users.clear_clerk_user_id_after_clerk_delete, {
 				userId: user._id,
-			});
-
-			return Result({
-				_nay: {
-					message: errorMessage,
-				},
 			});
 		}
 
@@ -896,3 +1049,74 @@ declare module "convex/server" {
 		external_id?: Id<"users">;
 	}
 }
+
+// #region admin
+export const hard_delete_user_now = internalAction({
+	args: {
+		userId: v.id("users"),
+		purgeTombstone: v.optional(v.boolean()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await ctx.runQuery(internal.users.get, {
+			userId: args.userId,
+		});
+		if (!user) {
+			return null;
+		}
+
+		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+			userId: user._id,
+		});
+
+		let shouldClearClerkUserId = false;
+
+		if (user.clerkUserId) {
+			const clerkDeleteUserResult = await delete_clerk_account({
+				clerkUserId: user.clerkUserId,
+			});
+			if (clerkDeleteUserResult._nay) {
+				throw new Error("Failed to delete Clerk user", {
+					cause: clerkDeleteUserResult._nay,
+				});
+			}
+
+			shouldClearClerkUserId = true;
+		}
+
+		if (currentSubscription) {
+			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
+				subscriptionId: currentSubscription.id,
+			});
+			if (revokeSubscriptionResult._nay) {
+				throw new Error("Failed to revoke Polar subscription", {
+					cause: revokeSubscriptionResult._nay,
+				});
+			}
+		}
+
+		billing_action_clear_subscriptions_by_user_id;
+		await billing_action_clear_subscriptions_by_user_id(ctx, {
+			userId: user._id,
+		});
+
+		await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+			userId: user._id,
+		});
+
+		if (shouldClearClerkUserId) {
+			await ctx.runMutation(internal.users.clear_clerk_user_id_after_clerk_delete, {
+				userId: user._id,
+			});
+		}
+
+		if (args.purgeTombstone) {
+			await ctx.runMutation(internal.users.purge_deleted_user_tombstone, {
+				userId: args.userId,
+			});
+		}
+
+		return null;
+	},
+});
+// #endregion

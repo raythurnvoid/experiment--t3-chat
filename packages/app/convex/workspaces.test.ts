@@ -161,6 +161,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -183,6 +184,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -241,6 +243,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const invalidNames = ["", "!!!", "---", "   ", "\t\t", "ab", "a", "12"];
@@ -267,6 +270,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -289,6 +293,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -311,6 +316,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -339,11 +345,13 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[0],
 			name: "First User",
+			email: "workspaces-test-user@test.local",
 		});
 		const secondUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Second User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const firstResult = await firstUser.mutation(api.workspaces.create_workspace, {
@@ -392,6 +400,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -418,6 +427,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -442,6 +452,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
@@ -463,6 +474,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const first = await asUser.mutation(api.workspaces.create_workspace, {
@@ -491,11 +503,13 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: ownerId,
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: memberId,
 			name: "Member",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const sharedWorkspace = await owner.mutation(api.workspaces.create_workspace, {
@@ -529,6 +543,7 @@ describe("create_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 		await workspaces_test_bootstrap_user(t, { userId });
 
@@ -738,6 +753,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -793,6 +809,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -824,6 +841,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -859,6 +877,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -888,6 +907,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -919,6 +939,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[0],
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await owner.mutation(api.workspaces.create_workspace, {
@@ -931,6 +952,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Stranger",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await stranger.mutation(api.workspaces.create_project, {
@@ -952,6 +974,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId }));
@@ -978,6 +1001,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId }));
@@ -1013,11 +1037,13 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: ownerId,
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: memberId,
 			name: "Member",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const sharedWorkspace = await owner.mutation(api.workspaces.create_workspace, {
@@ -1061,6 +1087,7 @@ describe("create_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 		await workspaces_test_bootstrap_user(t, { userId });
 
@@ -1123,6 +1150,7 @@ describe("add_user_to_workspace_project", () => {
 			issuer: "https://clerk.test",
 			external_id: ownerId,
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId: ownerId }));
@@ -1150,6 +1178,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId }));
@@ -1177,6 +1206,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run(async (ctx) =>
@@ -1212,6 +1242,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1248,6 +1279,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1280,6 +1312,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1309,6 +1342,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1338,6 +1372,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run(async (ctx) =>
@@ -1393,6 +1428,7 @@ describe("edit_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Stranger",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await stranger.mutation(api.workspaces.edit_workspace, {
@@ -1419,6 +1455,7 @@ describe("edit_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1450,6 +1487,7 @@ describe("edit_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1504,6 +1542,7 @@ describe("edit_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1542,6 +1581,7 @@ describe("edit_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1586,6 +1626,7 @@ describe("edit_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1627,6 +1668,7 @@ describe("delete_project", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 		await workspaces_test_bootstrap_user(t, { userId });
 
@@ -1770,6 +1812,7 @@ describe("delete_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: ownerId,
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 		const memberDefault = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId: memberId }));
 		expect(memberDefault._yay).toBeTruthy();
@@ -1945,6 +1988,7 @@ describe("delete_workspace", () => {
 			issuer: "https://clerk.test",
 			external_id: ownerId,
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run(async (ctx) =>
@@ -2005,6 +2049,7 @@ describe("process_project_deletion_request", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run(async (ctx) =>
@@ -2154,6 +2199,7 @@ describe("get_membership_by_workspace_project_name", () => {
 			issuer: "https://clerk.test",
 			external_id: db.userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 		const membership = await t.run(async (ctx) => ctx.db.get("workspaces_projects_users", db.membershipId));
 
@@ -2182,6 +2228,7 @@ describe("get_membership_by_workspace_project_name", () => {
 			issuer: "https://clerk.test",
 			external_id: otherUserId,
 			name: "Other User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const result = await asOtherUser.query(api.workspaces.get_membership_by_workspace_project_name, {
@@ -2212,11 +2259,13 @@ describe("list", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[0],
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 		const owner = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const wsZ = await asUser.mutation(api.workspaces.create_workspace, {
@@ -2261,11 +2310,13 @@ describe("list", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[0],
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 		const owner = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 
 		await workspaces_test_bootstrap_user(t, { userId: userIds[0] });
@@ -2306,6 +2357,7 @@ describe("list", () => {
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const ws = await asUser.mutation(api.workspaces.create_workspace, {
@@ -2354,11 +2406,13 @@ describe("list", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[0],
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Member",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const extra = await owner.mutation(api.workspaces.create_project, {
@@ -2401,11 +2455,13 @@ describe("get_user_limit", () => {
 			issuer: "https://clerk.test",
 			external_id: ownerId,
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: memberId,
 			name: "Member",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const sharedWorkspace = await owner.mutation(api.workspaces.create_workspace, {
@@ -2470,11 +2526,13 @@ describe("get_workspace_limit", () => {
 			issuer: "https://clerk.test",
 			external_id: userIds[0],
 			name: "Owner",
+			email: "workspaces-test-user@test.local",
 		});
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: userIds[1],
 			name: "Member",
+			email: "workspaces-test-user@test.local",
 		});
 
 		const created = await t.run(async (ctx) =>

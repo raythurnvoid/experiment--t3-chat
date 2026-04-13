@@ -1,19 +1,15 @@
-import { ConvexError, v, type GenericValidator, type Value } from "convex/values";
+import { ConvexError, v, type GenericValidator } from "convex/values";
 
-type ConvexError_Data<
-	TCause extends Value | undefined = Value | undefined,
-	TData extends Value | undefined = Value | undefined,
-> = {
+export function convex_error<Cause, Data>(args: {
 	message: string;
-	cause?: TCause;
-	data?: TData;
-};
-
-export function convex_error(args: ConvexError_Data): ConvexError<ConvexError_Data> {
+	cause?: Cause;
+	data?: Data;
+}): // @ts-expect-error
+ConvexError<{ message: string; cause?: Cause; data?: Data }> {
 	return new ConvexError({
 		message: args.message,
-		cause: args.cause,
-		data: args.data,
+		...((args.cause !== undefined && { cause: args.cause }) as any),
+		...((args.data !== undefined && { data: args.data }) as any),
 	});
 }
 
