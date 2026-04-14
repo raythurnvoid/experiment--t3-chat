@@ -189,7 +189,7 @@ const BillingActivePlanBadge = memo(function BillingActivePlanBadge(props: Billi
 
 // #region root
 type ProductDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
-type SubscriptionDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.list_subscriptions>[number];
+type SubscriptionDoc = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>>;
 type UsageSnapshotDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
 
 function plan_interval_label(interval: string) {
@@ -338,10 +338,16 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const shouldShowUsage = meteredPrice != null || product.name === "Free";
 	const meteredUsageSnapshot = shouldShowUsage
 		? ((/* iife */) => {
-				if (!usage || !usage.subscription || !usage.meter || usage.subscription.productId !== product.id) {
+				if (
+					!usage?.subscription ||
+					!usage.meter ||
+					usage.subscription.id !== subscription.id ||
+					usage.subscription.productId !== subscription.productId
+				) {
 					throw should_never_happen("Missing usage snapshot for active billing plan", {
 						productId: product.id,
 						productName: product.name,
+						subscriptionId: subscription.id,
 						usage,
 					});
 				}

@@ -20,14 +20,6 @@ import {
 	billing_PRODUCTS,
 } from "../../../shared/billing.ts";
 
-function find_active_subscription(
-	subscriptions: app_convex_FunctionReturnType<typeof app_convex_api.billing.list_subscriptions>,
-) {
-	return subscriptions.find((subscription) => {
-		return (subscription.status === "active" || subscription.status === "trialing") && !subscription.endedAt;
-	});
-}
-
 // #region product card plan action
 type BillingAccountManagementCardPlanAction_ProductDoc =
 	app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
@@ -35,11 +27,11 @@ type BillingAccountManagementCardPlanAction_ProductDoc =
 type BillingAccountManagementCardPlanAction_Props = {
 	product: BillingAccountManagementCardPlanAction_ProductDoc;
 	currentProductName: string;
-	activeSubscriptionId: string;
+	currentSubscriptionId: string;
 };
 
 const BillingAccountManagementCardPlanAction = memo(function BillingAccountManagementCardPlanAction(props: BillingAccountManagementCardPlanAction_Props) {
-	const { product, currentProductName, activeSubscriptionId } = props;
+	const { product, currentProductName, currentSubscriptionId } = props;
 
 	const planChangeKind = billing_get_plan_change_kind(currentProductName, product.name);
 	if (!planChangeKind) {
@@ -50,7 +42,7 @@ const BillingAccountManagementCardPlanAction = memo(function BillingAccountManag
 		billing_get_product_display_name(currentProductName) === billing_PRODUCTS["Free"].name &&
 		planChangeKind === "upgrade"
 	) {
-		return <BillingCheckoutButton productId={product.id} subscriptionId={activeSubscriptionId} />;
+		return <BillingCheckoutButton productId={product.id} subscriptionId={currentSubscriptionId} />;
 	}
 
 	const planChangeButtonData =
@@ -194,7 +186,7 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 	const { isAnonymous } = props;
 
 	const billingProducts = useQuery(app_convex_api.billing.list_products, isAnonymous ? "skip" : {});
-	const billingSubscriptions = useQuery(app_convex_api.billing.list_subscriptions, isAnonymous ? "skip" : {});
+	const currentSubscription = useQuery(app_convex_api.billing.get_current_user_subscription, isAnonymous ? "skip" : {});
 	const billingUsage = useQuery(app_convex_api.billing.get_usage_snapshot, isAnonymous ? "skip" : {});
 	const convex = useConvex();
 
@@ -216,40 +208,39 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 			});
 	});
 
-	const activeSubscription = billingSubscriptions ? (find_active_subscription(billingSubscriptions) ?? null) : null;
 	const sortedBillingProducts = billingProducts
 		? [...billingProducts].sort((leftProduct, rightProduct) => {
 				return billing_compare_product_order(leftProduct.name, rightProduct.name);
 			})
 		: null;
 	const activeProduct =
-		activeSubscription && sortedBillingProducts
-			? (sortedBillingProducts.find((product) => product.id === activeSubscription.productId) ?? null)
+		currentSubscription && sortedBillingProducts
+			? (sortedBillingProducts.find((product) => product.id === currentSubscription.productId) ?? null)
 			: null;
 	const pendingUpdateProduct =
-		activeSubscription?.pendingUpdate?.productId && sortedBillingProducts
-			? (sortedBillingProducts.find((product) => product.id === activeSubscription.pendingUpdate?.productId) ?? null)
+		currentSubscription?.pendingUpdate?.productId && sortedBillingProducts
+			? (sortedBillingProducts.find((product) => product.id === currentSubscription.pendingUpdate?.productId) ?? null)
 			: null;
 	const otherProducts = sortedBillingProducts
 		? sortedBillingProducts.filter((product) => {
-				return product.id !== activeSubscription?.productId;
+				return product.id !== currentSubscription?.productId;
 			})
 		: null;
 	const headerDescription = ((/* iife */) => {
-		if (activeSubscription?.cancelAtPeriodEnd) {
-			const endsAt = activeSubscription.endsAt ?? activeSubscription.currentPeriodEnd;
+		if (currentSubscription?.cancelAtPeriodEnd) {
+			const endsAt = currentSubscription.endsAt ?? currentSubscription.currentPeriodEnd;
 			if (endsAt) {
 				return `Your subscription remains active until ${format_time(Date.parse(endsAt))}. Click Manage subscription to review the scheduled cancellation.`;
 			}
 			return "Your subscription is cancelled. Click Manage subscription to review the details.";
 		}
-		if (activeSubscription?.pendingUpdate?.appliesAt) {
+		if (currentSubscription?.pendingUpdate?.appliesAt) {
 			const pendingPlanText = pendingUpdateProduct
 				? ` to ${billing_get_product_display_name(pendingUpdateProduct.name)}`
 				: "";
-			return `Your subscription is active. It changes${pendingPlanText} on ${format_time(Date.parse(activeSubscription.pendingUpdate.appliesAt))}.`;
+			return `Your subscription is active. It changes${pendingPlanText} on ${format_time(Date.parse(currentSubscription.pendingUpdate.appliesAt))}.`;
 		}
-		if (activeSubscription != null) {
+		if (currentSubscription != null) {
 			return "Your subscription is active. Check the plan information below or click Manage subscription to review the details.";
 		}
 		return "Review the available plans below and choose the option that fits how you want to use the app.";
@@ -261,7 +252,7 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 				<BillingAccountManagementPanelHeader>
 					Sign in to manage your plan, billing, and invoices.
 				</BillingAccountManagementPanelHeader>
-			) : billingProducts === undefined || billingSubscriptions === undefined || billingUsage === undefined ? (
+			) : billingProducts === undefined || currentSubscription === undefined ? (
 				<>
 					<BillingAccountManagementPanelHeader>Loading your billing details...</BillingAccountManagementPanelHeader>
 					<BillingAccountManagementPanelPlans title="Plans">
@@ -271,11 +262,11 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 						<BillingProductCardSkeleton />
 					</BillingAccountManagementPanelPlans>
 				</>
-			) : activeSubscription != null && activeProduct == null ? (
+			) : currentSubscription != null && activeProduct == null ? (
 				<BillingAccountManagementPanelHeader>
 					Failed to load product detail for the subscription.
 				</BillingAccountManagementPanelHeader>
-			) : activeSubscription == null && billingProducts.length === 0 ? (
+			) : currentSubscription == null && billingProducts.length === 0 ? (
 				<BillingAccountManagementPanelHeader>
 					Billing plans aren't available right now. Please check back soon.
 				</BillingAccountManagementPanelHeader>
@@ -283,11 +274,11 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 				<>
 					<BillingAccountManagementPanelHeader>{headerDescription}</BillingAccountManagementPanelHeader>
 
-					{activeSubscription != null && activeProduct != null && otherProducts != null ? (
+					{currentSubscription != null && activeProduct != null && otherProducts != null ? (
 						<>
 							<BillingActivePlan
 								product={activeProduct}
-								subscription={activeSubscription}
+								subscription={currentSubscription}
 								usage={billingUsage}
 								scheduledChangeProductName={
 									pendingUpdateProduct ? billing_get_product_display_name(pendingUpdateProduct.name) : null
@@ -315,7 +306,7 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 													<BillingAccountManagementCardPlanAction
 														product={product}
 														currentProductName={activeProduct.name}
-														activeSubscriptionId={activeSubscription.id}
+														currentSubscriptionId={currentSubscription.id}
 													/>
 												}
 											/>

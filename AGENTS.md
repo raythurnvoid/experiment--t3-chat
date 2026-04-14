@@ -261,6 +261,18 @@ When you add or reorganize tests in an existing `.test.ts` file, group related c
 - Do not make regular runtime tests depend on Convex migration functions or `packages/app/convex/migrations.ts` entrypoints.
 - If you need to verify a migration, add a focused migration-specific test for that migration instead of routing normal feature tests through migration APIs.
 
+## Test design
+
+Avoid test-induced design damage. Do not reshape production code primarily to satisfy a testing style when that reshape makes the code less natural, more fragmented, or expands the module's public surface without a real product need.
+
+- Do not extract a helper, create a new module, add dependency injection, or export a symbol only so a test can reach it in isolation.
+- Let production design drive the test strategy. If a few lines of logic belong inline inside a single function or module, keep them there unless extracting them improves the production code on its own merits.
+- Prefer testing through the public entrypoint or observable behavior of the owning module/component instead of reaching into implementation details.
+- Use focused unit tests when the logic is already naturally separable, stable, and meaningfully reusable. Do not force separability just because a testing pattern prefers it.
+- When isolated unit coverage would require unnatural seams, prefer a broader integration-style test that exercises the real code path.
+- Treat exports as public API, not as test hooks. Keep implementation details private unless another production module genuinely needs them.
+- Extract or modularize only when it improves readability, reuse, ownership boundaries, or domain clarity in the production code even if no test existed.
+
 Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 ## Comments that explain code

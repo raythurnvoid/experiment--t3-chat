@@ -298,3 +298,7 @@ When the user requests changes in this area, you must:
 
 - If you change delete-account behavior, update [data_deletion.test.ts](../../../packages/app/convex/data_deletion.test.ts) and [users.test.ts](../../../packages/app/convex/users.test.ts).
 - If you change profile/anagraphic usage or fallback behavior materially, update [users.test.ts](../../../packages/app/convex/users.test.ts).
+
+# TODO / known gaps
+
+- Reconcile repeat sign-up back onto the same Convex user when someone returns with the same email after deleting an account. Today `POST /api/auth/resolve-user` only reuses the prior record when Clerk already carries the matching `external_id` or when the client upgrades an anonymous user in place. A fresh sign-up after prior deletion still creates a new `users` row, so account-history, Polar linkage, and any future recovery flow are not yet reconciled onto the original account. This needs a deliberate app-owned lookup/rebind path before production.

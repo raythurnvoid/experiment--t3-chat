@@ -1,6 +1,7 @@
 import { Polar } from "@convex-dev/polar";
 import { Workpool } from "@convex-dev/workpool";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
+import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
@@ -69,6 +70,39 @@ export async function billing_action_clear_subscriptions_by_user_id(
 	});
 }
 
+export async function billing_action_delete_polar_customer_by_user_id(
+	ctx: ActionCtx | MutationCtx,
+	args: {
+		userId: Id<"users">;
+	},
+) {
+	const customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+		userId: args.userId,
+	});
+	if (!customer) {
+		return Result({ _yay: null });
+	}
+
+	const deleteResult = await customersDelete(billing_polar_client(), {
+		id: customer.id,
+		anonymize: true,
+	});
+	if (!deleteResult.ok && !(deleteResult.error instanceof ResourceNotFound)) {
+		return Result({
+			_nay: {
+				message: "Failed to delete Polar customer",
+				cause: deleteResult.error,
+			},
+		});
+	}
+
+	await ctx.runMutation(components.polar.lib.deleteCustomerByUserId, {
+		userId: args.userId,
+	});
+
+	return Result({ _yay: null });
+}
+
 export async function billing_action_revoke_polar_subscription(args: { subscriptionId: string }) {
 	const revokeResult = await subscriptionsRevoke(billing_polar_client(), {
 		id: args.subscriptionId,
@@ -119,15 +153,23 @@ export const list_products = query({
 	},
 });
 
-export const list_subscriptions = query({
+export const get_current_user_subscription = query({
 	args: {},
 	handler: async (ctx) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user || user.kind !== "signed_in") {
-			return [];
+			return null;
 		}
 
-		return await billing.listAllUserSubscriptions(ctx, { userId: user.id });
+		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+			userId: user.id,
+		});
+		if (!currentSubscription) {
+			return null;
+		}
+
+		const { product, ...subscription } = currentSubscription;
+		return subscription;
 	},
 });
 
@@ -168,6 +210,14 @@ export const handle_polar_customer_state_update = internalMutation({
 			};
 		};
 		const userId = payload.data.external_id as Id<"users">;
+		if (payload.data.active_subscriptions.length > 1) {
+			throw should_never_happen("Multiple active subscriptions are not supported", {
+				activeSubscriptions: payload.data.active_subscriptions,
+				customerId: payload.data.id,
+				userId,
+			});
+		}
+
 		const subscription = payload.data.active_subscriptions[0];
 		const product = subscription
 			? await ctx.runQuery(components.polar.lib.getProduct, {

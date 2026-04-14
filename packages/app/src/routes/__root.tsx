@@ -1,14 +1,16 @@
 import "./__root.css";
 import { createRootRoute, Outlet, type ErrorComponentProps } from "@tanstack/react-router";
 import { memo, useEffect } from "react";
+import { useConvexAuth, useQuery } from "convex/react";
+
+import { AppAuthProvider } from "../components/app-auth.tsx";
 import { Logo } from "../components/logo.tsx";
 import { MySpinner } from "../components/my-spinner.tsx";
-import { AppAuthProvider } from "../components/app-auth.tsx";
 import { AppTanStackRouterDevTools } from "../components/app-tanstack-router-dev-tools.tsx";
 import { AppRouteError } from "../components/app-route-error.tsx";
+import { app_convex_api, type app_convex_FunctionReturnType } from "../lib/app-convex-client.ts";
 import { cn, valorize_scrollbar_width_px_css_var } from "../lib/utils.ts";
 import type { AppElementId } from "../lib/dom-utils.ts";
-import { useConvexAuth } from "convex/react";
 
 export type RootLayout_ClassNames =
 	| "RootLayout"
@@ -23,6 +25,35 @@ export type RootLayout_ClassNames =
 const RootRouteError = memo(function RootRouteError(props: ErrorComponentProps) {
 	return <AppRouteError {...props} layout="fullscreen" />;
 });
+
+type RootLayout_CurrentSubscription = app_convex_FunctionReturnType<
+	typeof app_convex_api.billing.get_current_user_subscription
+>;
+type RootLayout_UsageSnapshot = app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
+
+function billing_is_loading(args: {
+	subscription: RootLayout_CurrentSubscription | undefined;
+	usage: RootLayout_UsageSnapshot | undefined;
+}) {
+	if (args.subscription === undefined) {
+		return true;
+	}
+
+	if (!args.subscription) {
+		return false;
+	}
+
+	if (args.usage === undefined) {
+		return true;
+	}
+
+	return (
+		!args.usage?.subscription ||
+		!args.usage.meter ||
+		args.usage.subscription.id !== args.subscription.id ||
+		args.usage.subscription.productId !== args.subscription.productId
+	);
+}
 
 function RootLayoutInner() {
 	useEffect(() => {
@@ -53,7 +84,7 @@ function RootLayoutAuthState() {
 				/>
 				<div className={"RootLayoutAuthState-title" satisfies RootLayout_ClassNames}>Preparing workspace</div>
 				<div className={"RootLayoutAuthState-description" satisfies RootLayout_ClassNames}>
-					Finish loading authentication and workspace access.
+					Finish loading authentication, workspace access, and billing setup.
 				</div>
 			</div>
 		</div>
@@ -63,8 +94,18 @@ function RootLayoutAuthState() {
 function RootLayout() {
 	const auth = AppAuthProvider.useAuth();
 	const convexAuth = useConvexAuth();
+	const shouldWaitForBillingBootstrap =
+		auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
+	const billingSubscription = useQuery(app_convex_api.billing.get_current_user_subscription, shouldWaitForBillingBootstrap ? {} : "skip");
+	const billingUsage = useQuery(app_convex_api.billing.get_usage_snapshot, shouldWaitForBillingBootstrap ? {} : "skip");
+	const isBillingBootstrapLoading =
+		shouldWaitForBillingBootstrap &&
+		billing_is_loading({
+			subscription: billingSubscription,
+			usage: billingUsage,
+		});
 
-	const isLoading = convexAuth.isLoading || !auth.isLoaded;
+	const isLoading = convexAuth.isLoading || !auth.isLoaded || isBillingBootstrapLoading;
 	const isHealthy = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated;
 
 	if (isLoading) {

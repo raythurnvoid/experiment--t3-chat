@@ -51,7 +51,7 @@ function createSubscription() {
 		startedAt: "2026-01-01T00:00:00.000Z",
 		endedAt: null,
 		pendingUpdate: null,
-	} as app_convex_FunctionReturnType<typeof app_convex_api.billing.list_subscriptions>[number];
+	} as NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>>;
 }
 
 describe("BillingActivePlan", () => {

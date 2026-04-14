@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { Workpool } from "@convex-dev/workpool";
+import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
@@ -21,10 +22,16 @@ vi.mock("@polar-sh/sdk/funcs/subscriptionsRevoke.js", () => ({
 	subscriptionsRevoke: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/customersDelete.js", () => ({
+	customersDelete: vi.fn(),
+}));
+
+const customersDeleteMock = vi.mocked(customersDelete);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	customersDeleteMock.mockReset();
 	subscriptionsRevokeMock.mockReset();
 });
 
@@ -999,6 +1006,74 @@ describe("hard_delete_user", () => {
 		}
 	});
 
+	test("optionally deletes the Polar customer for testing sign-up resets", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-delete-polar",
+				displayName: "Hard Delete Delete Polar User",
+			}),
+		);
+		await users_test_seed_product(t, {
+			polarProductId: "users_hard_delete_delete_polar_product",
+		});
+		await users_test_seed_subscription(t, {
+			userId: seeded.userId,
+			customerId: "cust_users_hard_delete_delete_polar",
+			subscriptionId: "sub_users_hard_delete_delete_polar",
+			polarProductId: "users_hard_delete_delete_polar_product",
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, {
+				status: 200,
+			}),
+		);
+		subscriptionsRevokeMock.mockResolvedValue({
+			ok: true,
+			value: undefined as never,
+		});
+		customersDeleteMock.mockResolvedValue({
+			ok: true,
+			value: undefined as never,
+		});
+
+		try {
+			await t.action(internal.users.hard_delete_user, {
+				userId: seeded.userId,
+				delete_polar_customer: true,
+			});
+
+			const after = await t.run(async (ctx) => {
+				const [user, customer, subscriptions] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+				]);
+
+				return {
+					user,
+					customer,
+					subscriptions,
+				};
+			});
+
+			expect(customersDeleteMock).toHaveBeenCalledWith(expect.anything(), {
+				id: "cust_users_hard_delete_delete_polar",
+				anonymize: true,
+			});
+			expect(after.user?.deletedAt).toBeTypeOf("number");
+			expect(after.customer).toBeNull();
+			expect(after.subscriptions).toEqual([]);
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
 	test("purges the final user tombstone when requested", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
@@ -1368,6 +1443,72 @@ describe("hard_delete_user", () => {
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_polar_failure");
 			expect(after.subscriptions).toHaveLength(1);
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	test("throws before local deletion starts when requested Polar customer deletion fails", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-delete-polar-failure",
+				displayName: "Hard Delete Delete Polar Failure User",
+			}),
+		);
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_users_hard_delete_delete_polar_failure",
+			userId: seeded.userId,
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, {
+				status: 200,
+			}),
+		);
+		customersDeleteMock.mockResolvedValue({
+			ok: false,
+			error: new UnexpectedClientError("polar customer delete exploded"),
+		});
+
+		try {
+			await expect(
+				t.action(internal.users.hard_delete_user, {
+					userId: seeded.userId,
+					delete_polar_customer: true,
+				}),
+			).rejects.toThrow("Failed to delete Polar customer");
+
+			const after = await t.run(async (ctx) => {
+				const [user, requests, workspace, project, customer] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db.query("data_deletion_requests").collect(),
+					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+				]);
+
+				return {
+					user,
+					requests,
+					workspace,
+					project,
+					customer,
+				};
+			});
+
+			expect(fetchSpy).toHaveBeenCalledTimes(1);
+			expect(customersDeleteMock).toHaveBeenCalledWith(expect.anything(), {
+				id: "cust_users_hard_delete_delete_polar_failure",
+				anonymize: true,
+			});
+			expect(after.user?.deletedAt).toBeUndefined();
+			expect(after.requests).toHaveLength(0);
+			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
+			expect(after.project?._id).toBe(seeded.defaultProjectId);
+			expect(after.customer?.id).toBe("cust_users_hard_delete_delete_polar_failure");
 		} finally {
 			fetchSpy.mockRestore();
 		}

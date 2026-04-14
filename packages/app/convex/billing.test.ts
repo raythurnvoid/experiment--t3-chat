@@ -618,16 +618,16 @@ describe("billing list_products", () => {
 	});
 });
 
-describe("billing list_subscriptions", () => {
-	test("returns empty array when unauthenticated", async () => {
+describe("billing get_current_user_subscription", () => {
+	test("returns null when unauthenticated", async () => {
 		const t = test_convex();
 
-		const subscriptions = await t.query(api.billing.list_subscriptions, {});
+		const subscription = await t.query(api.billing.get_current_user_subscription, {});
 
-		expect(subscriptions).toEqual([]);
+		expect(subscription).toBeNull();
 	});
 
-	test("returns empty array when the user has no subscriptions", async () => {
+	test("returns null when the user has no subscriptions", async () => {
 		const t = test_convex();
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -636,12 +636,56 @@ describe("billing list_subscriptions", () => {
 			email: "subscription-empty@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
+		const subscription = await asUser.query(api.billing.get_current_user_subscription, {});
 
-		expect(subscriptions).toEqual([]);
+		expect(subscription).toBeNull();
 	});
 
-	test("returns raw active subscription rows", async () => {
+	test("returns null when the user only has ended subscriptions", async () => {
+		const t = test_convex();
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_current_subscription_prod_ended",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_current_subscription_ended",
+			userId: "user_billing_current_subscription_ended",
+		});
+
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_current_subscription_ended",
+				customerId: "cust_current_subscription_ended",
+				productId: polarProductId,
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "usd",
+				recurringInterval: "month",
+				status: "canceled",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: false,
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: "2026-02-01T00:00:00.000Z",
+				metadata: {},
+			},
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_billing_current_subscription_ended" as Id<"users">,
+			name: "Current Subscription Ended",
+			email: "current-subscription-ended@test.local",
+		});
+
+		const subscription = await asUser.query(api.billing.get_current_user_subscription, {});
+
+		expect(subscription).toBeNull();
+	});
+
+	test("returns the current active subscription", async () => {
 		const t = test_convex();
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_subscription_prod_active",
@@ -680,14 +724,14 @@ describe("billing list_subscriptions", () => {
 			email: "subscription-active@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
-		expect(subscriptions).toHaveLength(1);
-		expect(subscriptions[0]?.productId).toBe(polarProductId);
-		expect(subscriptions[0]?.status).toBe("active");
-		expect(subscriptions[0]?.startedAt).toBe("2026-01-01T00:00:00.000Z");
+		const subscription = await asUser.query(api.billing.get_current_user_subscription, {});
+		expect(subscription?.productId).toBe(polarProductId);
+		expect(subscription?.status).toBe("active");
+		expect(subscription?.startedAt).toBe("2026-01-01T00:00:00.000Z");
+		expect("product" in (subscription ?? {})).toBe(false);
 	});
 
-	test("returns raw cancel_at_period_end subscriptions", async () => {
+	test("returns the current cancel_at_period_end subscription", async () => {
 		const t = test_convex();
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_subscription_prod_cancel",
@@ -728,16 +772,15 @@ describe("billing list_subscriptions", () => {
 			email: "subscription-cancel@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
-		expect(subscriptions).toHaveLength(1);
-		expect(subscriptions[0]?.productId).toBe(polarProductId);
-		expect(subscriptions[0]?.status).toBe("active");
-		expect(subscriptions[0]?.cancelAtPeriodEnd).toBe(true);
-		expect(subscriptions[0]?.canceledAt).toBe("2026-01-15T00:00:00.000Z");
-		expect(subscriptions[0]?.endsAt).toBe("2026-02-01T00:00:00.000Z");
+		const subscription = await asUser.query(api.billing.get_current_user_subscription, {});
+		expect(subscription?.productId).toBe(polarProductId);
+		expect(subscription?.status).toBe("active");
+		expect(subscription?.cancelAtPeriodEnd).toBe(true);
+		expect(subscription?.canceledAt).toBe("2026-01-15T00:00:00.000Z");
+		expect(subscription?.endsAt).toBe("2026-02-01T00:00:00.000Z");
 	});
 
-	test("returns raw trialing subscriptions", async () => {
+	test("returns the current trialing subscription", async () => {
 		const t = test_convex();
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_subscription_prod_trial",
@@ -776,10 +819,9 @@ describe("billing list_subscriptions", () => {
 			email: "subscription-trial@test.local",
 		});
 
-		const subscriptions = await asUser.query(api.billing.list_subscriptions, {});
-		expect(subscriptions).toHaveLength(1);
-		expect(subscriptions[0]?.productId).toBe(polarProductId);
-		expect(subscriptions[0]?.status).toBe("trialing");
+		const subscription = await asUser.query(api.billing.get_current_user_subscription, {});
+		expect(subscription?.productId).toBe(polarProductId);
+		expect(subscription?.status).toBe("trialing");
 	});
 });
 
@@ -1073,7 +1115,7 @@ describe("billing generate_checkout_link auth", () => {
 });
 
 describe("handle_polar_customer_state_update", () => {
-	test("writes the usage snapshot directly from the first active subscription meter in the webhook payload", async () => {
+	test("writes the usage snapshot directly from the active subscription meter in the webhook payload", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const polarProductId = "billing_refresh_snapshot_webhook_product";
@@ -1227,6 +1269,54 @@ describe("handle_polar_customer_state_update", () => {
 		expect(snapshot!.meter?.id).toBe("meter_new_webhook");
 		expect(snapshot!.meter?.amountDueCents).toBe(6);
 		expect(snapshot!.meter?.balance).toBe(2172);
+	});
+
+	test("throws when the webhook payload contains multiple active subscriptions", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_refresh_snapshot_multiple_active_product",
+		});
+
+		await expect(
+			t.mutation(internal.billing.handle_polar_customer_state_update, {
+				payload: {
+					type: "customer.state_changed",
+					timestamp: "2026-04-13T03:20:41.064Z",
+					data: {
+						id: "cust_refresh_snapshot_multiple_active",
+						external_id: userId,
+						active_subscriptions: [
+							{
+								id: "sub_refresh_snapshot_multiple_active_1",
+								product_id: polarProductId,
+								currency: "eur",
+								current_period_start: "2026-04-13T03:20:38.364476Z",
+								current_period_end: "2026-05-13T03:20:38.364476Z",
+								meters: [],
+							},
+							{
+								id: "sub_refresh_snapshot_multiple_active_2",
+								product_id: polarProductId,
+								currency: "eur",
+								current_period_start: "2026-04-13T03:20:38.364476Z",
+								current_period_end: "2026-05-13T03:20:38.364476Z",
+								meters: [],
+							},
+						],
+						active_meters: [],
+					},
+				},
+			}),
+		).rejects.toThrow("Multiple active subscriptions are not supported");
+
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(snapshot).toBeNull();
 	});
 
 	test("writes the usage snapshot from the active customer meter for credits-only Free plans", async () => {

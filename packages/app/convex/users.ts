@@ -28,6 +28,7 @@ import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 import {
+	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
 	billing_action_clear_subscriptions_by_user_id,
 	billing_enqueue_free_subscription_bootstrap,
@@ -1027,6 +1028,7 @@ export const hard_delete_user_now = internalAction({
 	args: {
 		userId: v.id("users"),
 		purgeTombstone: v.optional(v.boolean()),
+		deletePolarCustomer: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1071,6 +1073,17 @@ export const hard_delete_user_now = internalAction({
 		await billing_action_clear_subscriptions_by_user_id(ctx, {
 			userId: user._id,
 		});
+
+		if (args.deletePolarCustomer) {
+			const deletePolarCustomerResult = await billing_action_delete_polar_customer_by_user_id(ctx, {
+				userId: user._id,
+			});
+			if (deletePolarCustomerResult._nay) {
+				throw new Error("Failed to delete Polar customer", {
+					cause: deletePolarCustomerResult._nay,
+				});
+			}
+		}
 
 		await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
 			userId: user._id,
