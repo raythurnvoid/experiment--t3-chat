@@ -128,7 +128,7 @@ async function sign_anonymous_users_jwt(args: {
 		.sign(key);
 }
 
-export const users_create_anonymous_user = internalMutation({
+export const create_anonymous_user = internalMutation({
 	args: {},
 	returns: v.object({
 		userId: v.id("users"),
@@ -191,7 +191,7 @@ export const users_create_anonymous_user = internalMutation({
 	},
 });
 
-export const users_set_anonymous_auth_token = internalMutation({
+export const set_anonymous_auth_token = internalMutation({
 	args: {
 		tokenId: v.id("users_anon_tokens"),
 		token: v.string(),
@@ -202,34 +202,6 @@ export const users_set_anonymous_auth_token = internalMutation({
 			token: args.token,
 			updatedAt: Date.now(),
 		});
-
-		return null;
-	},
-});
-
-export const users_clear_anonymous_auth_token = internalMutation({
-	args: {
-		userId: v.id("users"),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const user = await ctx.db.get("users", args.userId);
-		if (!user) {
-			return null;
-		}
-
-		await Promise.all([
-			ctx.db
-				.query("users_anon_tokens")
-				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
-				.first()
-				.then((anonymousAuthToken) =>
-					anonymousAuthToken ? ctx.db.delete("users_anon_tokens", anonymousAuthToken._id) : undefined,
-				),
-			ctx.db.patch("users", args.userId, {
-				anonymousAuthToken: undefined,
-			}),
-		]);
 
 		return null;
 	},
@@ -482,8 +454,8 @@ export const get_anagraphic = query({
 	},
 });
 
-async function users_mint_anonymous_jwt(ctx: ActionCtx) {
-	const { userId, tokenId } = await ctx.runMutation(internal.users.users_create_anonymous_user);
+async function mint_anonymous_jwt(ctx: ActionCtx) {
+	const { userId, tokenId } = await ctx.runMutation(internal.users.create_anonymous_user);
 
 	// Keep JWT signing in the action because Convex queries/mutations cannot use crypto randomness.
 	const jwt = await sign_anonymous_users_jwt({
@@ -492,7 +464,7 @@ async function users_mint_anonymous_jwt(ctx: ActionCtx) {
 		name: users_create_anonymouse_user_display_name(userId),
 	});
 
-	await ctx.runMutation(internal.users.users_set_anonymous_auth_token, {
+	await ctx.runMutation(internal.users.set_anonymous_auth_token, {
 		tokenId,
 		token: jwt,
 	});
@@ -880,7 +852,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 										users_create_anonymouse_user_display_name(userWithAnagraphicAndAnonToken.user._id),
 								});
 
-								await ctx.runMutation(internal.users.users_set_anonymous_auth_token, {
+								await ctx.runMutation(internal.users.set_anonymous_auth_token, {
 									tokenId: userWithAnagraphicAndAnonToken.anonymousAuthToken._id,
 									token: newJwt,
 								});
@@ -892,7 +864,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							// Create path: no token provided, create new anonymous user
-							const { jwt, userId } = await users_mint_anonymous_jwt(ctx);
+							const { jwt, userId } = await mint_anonymous_jwt(ctx);
 							return {
 								status: 200,
 								body: {

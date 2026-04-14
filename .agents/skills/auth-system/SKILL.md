@@ -199,7 +199,7 @@ There is no Clerk deletion webhook safety-net in the current architecture. Accou
 Summary:
 
 - Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
-- Bootstrap: `users_create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
+- Bootstrap: `create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
 - **Implementation note:** Many app surfaces may still use older hardcoded workspace/project ids outside this tenancy module—verify callsites.
 
 Authorization stubs in `workspaces.ts` (`user_is_workspace_admin`, `user_is_project_admin`) are temporary; replace for real RBAC.
