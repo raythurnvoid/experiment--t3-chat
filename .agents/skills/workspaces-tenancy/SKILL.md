@@ -65,7 +65,7 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 |------------|---------|-----------|---------|
 | `workspaces.delete_project` | Queue purge + delete all memberships on that project + delete `workspaces_projects` row + decrement `limits_per_workspace` | One `data_deletion_requests` row with `scope: "project"` plus `userId`, `workspaceId`, `projectId` | `process_project_deletion_request` wipes tenant-scoped tables for that `(workspaceId, projectId)`, then deletes the queue doc |
 | `workspaces.delete_workspace` | Queue one row (`scope: "workspace"`, `workspaceId` only); delete all **memberships** immediately; decrement owner `extra_workspaces` limit; **defer** deleting `workspaces`, `workspaces_projects`, and `limits_per_workspace` until cron | One `data_deletion_requests` row with `scope: "workspace"` plus `userId`, `workspaceId` | `process_workspace_deletion_request` resolves project ids from `workspaces_projects`, purges tenant content per project, then deletes projects + `limits_per_workspace` + workspace and removes the queue doc |
-| `users.delete_current_user_account` | `init_user_deletion`: creates/reuses one `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, sets `active: false` on all of the user’s memberships; may **auto-delete** a **non-default** project that has **zero active members** while the **workspace still has an active member elsewhere** | One `scope: "user"` row for the user; orphan **project** cleanup may add `scope: "project"` rows | Eligible only after `_creationTime + RETENTION_MS`: `process_user_deletion_request` hard-deletes membership rows, clears user pointers (including `clerkUserId: null`), final tombstone, and directly purges any now-empty workspaces/projects discovered in that step |
+| `users.delete_current_user_account` | `init_user_deletion`: creates/reuses one `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, and sets `active: false` on all of the user’s memberships; schedule any paid subscription to end at period close and clear the local subscription mirror immediately | One `scope: "user"` row for the user | Eligible only after `_creationTime + RETENTION_MS`: `process_user_deletion_request` hard-deletes user-owned state, then deletes an entire workspace only when it has no active users left; shared workspaces and their projects remain untouched when active users still exist |
 
 **Unified cron:** [crons.ts](../../../packages/app/convex/crons.ts) runs **`data_deletion.process_deletion_requests`** daily: eligible `user` requests (batch), then `workspace` requests (batch), then `project` requests (batch), each with its own per-run limit.
 
@@ -83,7 +83,7 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 
 | Table | Purpose |
 |-------|---------|
-| `data_deletion_requests` | Shared delayed deletion queue. `scope` means what is being deleted: `project` \| `workspace` \| `user`. `userId` is always required; `workspaceId`/`projectId` are present for workspace/project rows. Retention is based on `_creationTime + RETENTION_MS`. |
+| `data_deletion_requests` | Shared delayed deletion queue. `scope` means what is being deleted: `project` \| `workspace` \| `user`. `userId` is always required; `workspaceId`/`projectId` are present for workspace/project rows. Retention is based on `_creationTime + RETENTION_MS`. Account deletion uses only the `user` scope row. |
 
 # Resolution helpers
 
@@ -96,7 +96,7 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 - `packages/app/server/workspaces.ts` — `workspaces_db_create`, `workspaces_db_create_project`, `workspaces_db_ensure_default_workspace_and_project_for_user`, name validation.
 - `packages/app/server/data_deletion.ts` — shared `data_deletion_db_request` helper and `data_deletion_RequestScope`.
 - `packages/app/convex/users.ts` — bootstrap calls to `ensure`.
-- `packages/app/convex/data_deletion.ts` — `init_user_deletion`, `process_user_deletion_request`, `process_workspace_deletion_request`, `process_project_deletion_request`, `process_deletion_requests`, `list_deletion_request_ids_by_scope`, orphan cleanup helpers.
+- `packages/app/convex/data_deletion.ts` — `init_user_deletion`, `process_user_deletion_request`, `process_workspace_deletion_request`, `process_project_deletion_request`, `process_deletion_requests`, `list_deletion_request_ids_by_scope`.
 - `packages/app/convex/schema.ts` — `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `data_deletion_requests`, `users.defaultWorkspaceId` / `defaultProjectId`.
 - `packages/app/shared/workspaces.ts` — name autofix/validation and list sort helpers.
 - `packages/app/convex/workspaces.test.ts` — behavioral tests for ensure, edit, delete, share restrictions.
@@ -106,6 +106,11 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 ## Purge worker index TODO
 
 - Prefer **narrow index reads** per `(workspaceId, projectId)` (and eligible queue rows by due time) instead of whole-table scans where tables may grow; project/workspace purge still does some full-table scans and in-memory filtering today.
+
+## Account-deletion retention TODO
+
+- Today, phase 2 still runs after the fixed retention window even if a paid subscription was only scheduled to end at billing-period close.
+- In the future, once long-running plans such as yearly subscriptions exist, phase 2 should wait until subscription end when that is later than retention so paid users do not lose their data before the paid term finishes.
 
 # Auth skill cross-link
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { Workpool } from "@convex-dev/workpool";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
+import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
@@ -22,22 +23,28 @@ vi.mock("@polar-sh/sdk/funcs/subscriptionsRevoke.js", () => ({
 	subscriptionsRevoke: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/subscriptionsUpdate.js", () => ({
+	subscriptionsUpdate: vi.fn(),
+}));
+
 vi.mock("@polar-sh/sdk/funcs/customersDelete.js", () => ({
 	customersDelete: vi.fn(),
 }));
 
 const customersDeleteMock = vi.mocked(customersDelete);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
+const subscriptionsUpdateMock = vi.mocked(subscriptionsUpdate);
 
 afterEach(() => {
 	vi.restoreAllMocks();
 	customersDeleteMock.mockReset();
 	subscriptionsRevokeMock.mockReset();
+	subscriptionsUpdateMock.mockReset();
 });
 
 async function users_test_bootstrap_user(
 	ctx: MutationCtx,
-	args: { clerkUserId: string; displayName: string; avatarUrl?: string },
+	args: { clerkUserId: string; displayName: string; avatarUrl?: string; email?: string },
 ) {
 	const now = Date.now();
 	const userId = await ctx.db.insert("users", {
@@ -58,6 +65,7 @@ async function users_test_bootstrap_user(
 				userId,
 				displayName: args.displayName,
 				avatarUrl: args.avatarUrl,
+				...(args.email ? { email: args.email } : {}),
 				updatedAt: now,
 			})
 			.then((anagraphicId) =>
@@ -274,17 +282,20 @@ describe("/api/auth/resolve-user", () => {
 				email: "resolve-free-user@test.local",
 			});
 
-			const [customer, subscription] = await Promise.all([
+			const [customer, subscription, user] = await Promise.all([
 				t.query(components.polar.lib.getCustomerByUserId, {
 					userId: body._yay.userId,
 				}),
 				t.query(components.polar.lib.getCurrentSubscription, {
 					userId: body._yay.userId,
 				}),
+				t.run((ctx) => ctx.db.get("users", body._yay.userId)),
 			]);
+			const anagraphic = user?.anagraphic ? await t.run((ctx) => ctx.db.get("users_anagraphics", user.anagraphic!)) : null;
 
 			expect(customer).toBeNull();
 			expect(subscription).toBeNull();
+			expect(anagraphic?.email).toBe("resolve-free-user@test.local");
 			expect(fetchSpy).toHaveBeenCalledWith(
 				"https://api.clerk.com/v1/users/clerk-user-resolve-free",
 				expect.objectContaining({
@@ -347,6 +358,253 @@ describe("/api/auth/resolve-user", () => {
 			fetchSpy.mockRestore();
 		}
 	});
+
+	test("returns 400 when the Clerk identity has no email", async () => {
+		const t = test_convex();
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ id: "clerk-user-resolve-missing-email" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}),
+		);
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-missing-email",
+				name: "Resolve Missing Email User",
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(400);
+			expect(body._nay?.message).toBe("Signed-in user email is required");
+
+			const user = await t.run((ctx) =>
+				ctx.db
+					.query("users")
+					.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", "clerk-user-resolve-missing-email"))
+					.first(),
+			);
+
+			expect(user).toBeNull();
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	test("returns 400 when a different live user already owns the email", async () => {
+		const t = test_convex();
+		const existingUser = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-resolve-email-owner",
+				displayName: "Existing Email Owner",
+				email: "resolve-email-conflict@test.local",
+			}),
+		);
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ id: "clerk-user-resolve-email-conflict" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}),
+		);
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-email-conflict",
+				name: "Resolve Email Conflict User",
+				email: "Resolve-Email-Conflict@Test.Local",
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(400);
+			expect(body._nay?.message).toBe("Email is already linked to another user");
+
+			const after = await t.run(async (ctx) => {
+				const [ownerUser, conflictingUser, anagraphic] = await Promise.all([
+					ctx.db.get("users", existingUser.userId),
+					ctx.db
+						.query("users")
+						.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", "clerk-user-resolve-email-conflict"))
+						.first(),
+					ctx.db.get("users_anagraphics", existingUser.anagraphicId),
+				]);
+
+				return {
+					ownerUser,
+					conflictingUser,
+					anagraphic,
+				};
+			});
+
+			expect(after.ownerUser?.clerkUserId).toBe("clerk-user-resolve-email-owner");
+			expect(after.conflictingUser).toBeNull();
+			expect(after.anagraphic?.email).toBe("resolve-email-conflict@test.local");
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+});
+
+describe("resolve_user", () => {
+	test("stores the normalized email on the existing live Clerk-linked user", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-existing-live-email",
+				displayName: "Existing Live User",
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-existing-live-email",
+				email: " Existing-Live-Email@Test.Local ",
+				displayName: "Existing Live User Updated",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [user, anagraphic] = await Promise.all([
+				ctx.db.get("users", seeded.userId),
+				ctx.db.get("users_anagraphics", seeded.anagraphicId),
+			]);
+
+			return {
+				user,
+				anagraphic,
+			};
+		});
+
+		expect(result._yay.userId).toBe(seeded.userId);
+		expect(after.user?.clerkUserId).toBe("clerk-user-existing-live-email");
+		expect(after.anagraphic?.displayName).toBe("Existing Live User Updated");
+		expect(after.anagraphic?.email).toBe("existing-live-email@test.local");
+	});
+
+	test("upgrades the anonymous user in place and stores the normalized email", async () => {
+		const t = test_convex();
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-resolve-anonymous-email",
+				email: " Resolve-Anonymous-Email@Test.Local ",
+				anonymousUserToken: anonymousPayload.token,
+				displayName: "Resolved Anonymous User",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", anonymousPayload.userId);
+			const anagraphic = user?.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
+
+			return {
+				user,
+				anagraphic,
+			};
+		});
+
+		expect(result._yay.userId).toBe(anonymousPayload.userId);
+		expect(after.user?.clerkUserId).toBe("clerk-user-resolve-anonymous-email");
+		expect(after.user?.anonymousAuthToken).toBeUndefined();
+		expect(after.anagraphic?.displayName).toBe("Resolved Anonymous User");
+		expect(after.anagraphic?.email).toBe("resolve-anonymous-email@test.local");
+	});
+
+	test("returns a conflict when another live user already owns the email and leaves the anonymous user untouched", async () => {
+		const t = test_convex();
+		const existingUser = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-resolve-conflict-owner",
+				displayName: "Resolve Conflict Owner",
+				email: "resolve-internal-conflict@test.local",
+			}),
+		);
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-resolve-conflict",
+				email: " Resolve-Internal-Conflict@Test.Local ",
+				anonymousUserToken: anonymousPayload.token,
+				displayName: "Resolve Conflict User",
+			}),
+		);
+
+		expect(result._yay).toBeUndefined();
+		expect(result._nay?.message).toBe("Email is already linked to another user");
+
+		const after = await t.run(async (ctx) => {
+			const [ownerUser, anonymousUser, conflictingUser, ownerAnagraphic] = await Promise.all([
+				ctx.db.get("users", existingUser.userId),
+				ctx.db.get("users", anonymousPayload.userId),
+				ctx.db
+					.query("users")
+					.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", "clerk-user-resolve-conflict"))
+					.first(),
+				ctx.db.get("users_anagraphics", existingUser.anagraphicId),
+			]);
+
+			return {
+				ownerUser,
+				anonymousUser,
+				conflictingUser,
+				ownerAnagraphic,
+			};
+		});
+
+		expect(after.ownerUser?.clerkUserId).toBe("clerk-user-resolve-conflict-owner");
+		expect(after.ownerAnagraphic?.email).toBe("resolve-internal-conflict@test.local");
+		expect(after.anonymousUser?._id).toBe(anonymousPayload.userId);
+		expect(after.anonymousUser?.clerkUserId).toBeNull();
+		expect(after.anonymousUser?.anonymousAuthToken).toBeDefined();
+		expect(after.conflictingUser).toBeNull();
+	});
 });
 
 describe("delete_current_user_account", () => {
@@ -373,12 +631,13 @@ describe("delete_current_user_account", () => {
 		expect(result._nay?.message).toBe("Unauthorized");
 	});
 
-	test("deletes the Clerk user, revokes the current subscription, and processes the local tombstone flow", async () => {
+	test("deletes the Clerk user, schedules the current subscription to end at period close, and processes the local tombstone flow", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
 				clerkUserId: "clerk-user-account-delete",
 				displayName: "Delete Action User",
+				email: "delete-action-user@test.local",
 			}),
 		);
 		await users_test_seed_product(t, {
@@ -413,16 +672,18 @@ describe("delete_current_user_account", () => {
 				status: 200,
 			}),
 		);
-		subscriptionsRevokeMock.mockResolvedValue({
+		subscriptionsUpdateMock.mockResolvedValue({
 			ok: true,
-			value: undefined as never,
+			value: {
+				id: "sub_users_delete_account",
+			} as never,
 		});
 
 		try {
 			const result = await asUser.action(api.users.delete_current_user_account, {});
 
 			const after = await t.run(async (ctx) => {
-				const [user, request, purgeRequests, memberships, workspace, project, snapshots, customer, subscriptions] =
+				const [user, request, purgeRequests, memberships, workspace, project, snapshots, customer, subscriptions, anagraphic] =
 					await Promise.all([
 						ctx.db.get("users", seeded.userId),
 						ctx.db
@@ -449,6 +710,7 @@ describe("delete_current_user_account", () => {
 						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
 							userId: seeded.userId,
 						}),
+						ctx.db.get("users_anagraphics", seeded.anagraphicId),
 					]);
 
 				return {
@@ -461,6 +723,7 @@ describe("delete_current_user_account", () => {
 					snapshots,
 					customer,
 					subscriptions,
+					anagraphic,
 				};
 			});
 
@@ -473,17 +736,21 @@ describe("delete_current_user_account", () => {
 			expect(after.purgeRequests).toHaveLength(0);
 			expect(after.memberships.length).toBeGreaterThan(0);
 			expect(after.memberships.every((m) => m.active === false)).toBe(true);
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account");
 			expect(after.subscriptions).toEqual([]);
+			expect(after.anagraphic?.email).toBe("delete-action-user@test.local");
 			expect(fetchSpy).toHaveBeenCalledWith(
 				"https://api.clerk.com/v1/users/clerk-user-account-delete",
 				expect.objectContaining({
 					method: "DELETE",
 				}),
 			);
-			expect(subscriptionsRevokeMock).toHaveBeenCalledWith(expect.anything(), {
+			expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 				id: "sub_users_delete_account",
+				subscriptionUpdate: {
+					cancelAtPeriodEnd: true,
+				},
 			});
 		} finally {
 			fetchSpy.mockRestore();
@@ -531,7 +798,7 @@ describe("delete_current_user_account", () => {
 				statusText: "Not Found",
 			}),
 		);
-		subscriptionsRevokeMock.mockResolvedValue({
+		subscriptionsUpdateMock.mockResolvedValue({
 			ok: false,
 			error: new ResourceNotFound(
 				{
@@ -601,7 +868,7 @@ describe("delete_current_user_account", () => {
 			expect(after.purgeRequests).toHaveLength(0);
 			expect(after.memberships.length).toBeGreaterThan(0);
 			expect(after.memberships.every((m) => m.active === false)).toBe(true);
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account_404");
 			expect(after.subscriptions).toEqual([]);
 			expect(fetchSpy).toHaveBeenCalledWith(
@@ -610,8 +877,11 @@ describe("delete_current_user_account", () => {
 					method: "DELETE",
 				}),
 			);
-			expect(subscriptionsRevokeMock).toHaveBeenCalledWith(expect.anything(), {
+			expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 				id: "sub_users_delete_account_404",
+				subscriptionUpdate: {
+					cancelAtPeriodEnd: true,
+				},
 			});
 		} finally {
 			fetchSpy.mockRestore();
@@ -690,7 +960,7 @@ describe("delete_current_user_account", () => {
 		}
 	});
 
-	test("keeps the local tombstone and clears local billing state when Polar cleanup fails", async () => {
+	test("keeps the local tombstone and clears local subscription state when Polar cleanup fails", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -730,7 +1000,7 @@ describe("delete_current_user_account", () => {
 				status: 200,
 			}),
 		);
-		subscriptionsRevokeMock.mockResolvedValue({
+		subscriptionsUpdateMock.mockResolvedValue({
 			ok: false,
 			error: new UnexpectedClientError("polar revoke exploded"),
 		});
@@ -770,19 +1040,22 @@ describe("delete_current_user_account", () => {
 			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.user?.clerkUserId).toBeNull();
 			expect(after.request).not.toBeNull();
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account_polar_failure");
 			expect(after.subscriptions).toEqual([]);
 			expect(fetchSpy).toHaveBeenCalledTimes(1);
-			expect(subscriptionsRevokeMock).toHaveBeenCalledWith(expect.anything(), {
+			expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 				id: "sub_users_delete_account_polar_failure",
+				subscriptionUpdate: {
+					cancelAtPeriodEnd: true,
+				},
 			});
 		} finally {
 			fetchSpy.mockRestore();
 		}
 	});
 
-	test("runs local tombstone flow for anonymous JWT, skips Clerk delete, and clears local billing state", async () => {
+	test("runs local tombstone flow for anonymous JWT, skips Clerk delete, and clears local subscription state", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_anonymous_user(ctx, {
@@ -819,9 +1092,11 @@ describe("delete_current_user_account", () => {
 				status: 200,
 			}),
 		);
-		subscriptionsRevokeMock.mockResolvedValue({
+		subscriptionsUpdateMock.mockResolvedValue({
 			ok: true,
-			value: undefined as never,
+			value: {
+				id: "sub_users_delete_account_anonymous",
+			} as never,
 		});
 
 		try {
@@ -879,20 +1154,109 @@ describe("delete_current_user_account", () => {
 			expect(after.purgeRequests).toHaveLength(0);
 			expect(after.memberships.length).toBeGreaterThan(0);
 			expect(after.memberships.every((m) => m.active === false)).toBe(true);
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account_anonymous");
 			expect(after.subscriptions).toEqual([]);
 			expect(fetchSpy).not.toHaveBeenCalled();
-			expect(subscriptionsRevokeMock).toHaveBeenCalledWith(expect.anything(), {
+			expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 				id: "sub_users_delete_account_anonymous",
+				subscriptionUpdate: {
+					cancelAtPeriodEnd: true,
+				},
 			});
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	test("reclaims the tombstoned user without scheduling a second subscription cancellation", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-restore",
+				displayName: "Delete Restore User",
+				email: "delete-restore-user@test.local",
+			}),
+		);
+		await users_test_seed_product(t, {
+			polarProductId: "users_delete_account_restore_product",
+		});
+		await users_test_seed_subscription(t, {
+			userId: seeded.userId,
+			customerId: "cust_users_delete_account_restore",
+			subscriptionId: "sub_users_delete_account_restore",
+			polarProductId: "users_delete_account_restore_product",
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-account-delete-restore",
+			external_id: seeded.userId,
+			name: "Delete Restore User",
+			email: "delete-restore-user@test.local",
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, {
+				status: 200,
+			}),
+		);
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: {
+				id: "sub_users_delete_account_restore",
+			} as never,
+		});
+
+		try {
+			const deleteResult = await asUser.action(api.users.delete_current_user_account, {});
+			expect(deleteResult._nay).toBeUndefined();
+
+			const restoreResult = await t.run((ctx) =>
+				ctx.runMutation(internal.users.resolve_user, {
+					clerkUserId: "clerk-user-account-delete-restore-again",
+					email: "delete-restore-user@test.local",
+					displayName: "Delete Restore User Again",
+				}),
+			);
+			if (restoreResult._nay) {
+				throw new Error(restoreResult._nay.message);
+			}
+
+			const after = await t.run(async (ctx) => {
+				const [user, request, memberships] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_userId", (q) => q.eq("userId", seeded.userId))
+						.first(),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+				]);
+
+				return {
+					user,
+					request,
+					memberships,
+				};
+			});
+
+			expect(restoreResult._yay.userId).toBe(seeded.userId);
+			expect(after.user?.deletedAt).toBeUndefined();
+			expect(after.user?.clerkUserId).toBe("clerk-user-account-delete-restore-again");
+			expect(after.request).toBeNull();
+			expect(after.memberships.every((membership) => membership.active !== false)).toBe(true);
+			expect(subscriptionsUpdateMock).toHaveBeenCalledTimes(1);
+			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 		} finally {
 			fetchSpy.mockRestore();
 		}
 	});
 });
 
-describe("hard_delete_user", () => {
+describe("hard_delete_user_now", () => {
 	test("hard-deletes local user data immediately after Clerk and Polar cleanup", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
@@ -939,7 +1303,7 @@ describe("hard_delete_user", () => {
 		});
 
 		try {
-			await t.action(internal.users.hard_delete_user, {
+			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 			});
 
@@ -1039,7 +1403,7 @@ describe("hard_delete_user", () => {
 		});
 
 		try {
-			await t.action(internal.users.hard_delete_user, {
+			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 				delete_polar_customer: true,
 			});
@@ -1120,7 +1484,7 @@ describe("hard_delete_user", () => {
 		});
 
 		try {
-			await t.action(internal.users.hard_delete_user, {
+			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 				purgeTombstone: true,
 			});
@@ -1228,7 +1592,7 @@ describe("hard_delete_user", () => {
 		});
 
 		try {
-			await t.action(internal.users.hard_delete_user, {
+			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 			});
 
@@ -1314,7 +1678,7 @@ describe("hard_delete_user", () => {
 
 		try {
 			await expect(
-				t.action(internal.users.hard_delete_user, {
+				t.action(internal.users.hard_delete_user_now, {
 					userId: seeded.userId,
 				}),
 			).rejects.toThrow("Failed to delete Clerk user");
@@ -1400,7 +1764,7 @@ describe("hard_delete_user", () => {
 
 		try {
 			await expect(
-				t.action(internal.users.hard_delete_user, {
+				t.action(internal.users.hard_delete_user_now, {
 					userId: seeded.userId,
 				}),
 			).rejects.toThrow("Failed to revoke Polar subscription");
@@ -1473,7 +1837,7 @@ describe("hard_delete_user", () => {
 
 		try {
 			await expect(
-				t.action(internal.users.hard_delete_user, {
+				t.action(internal.users.hard_delete_user_now, {
 					userId: seeded.userId,
 					delete_polar_customer: true,
 				}),
@@ -1565,7 +1929,7 @@ describe("hard_delete_user", () => {
 		});
 
 		try {
-			await t.action(internal.users.hard_delete_user, {
+			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 			});
 
@@ -1636,11 +2000,11 @@ describe("hard_delete_user", () => {
 			}),
 		);
 
-		await t.action(internal.users.hard_delete_user, {
+		await t.action(internal.users.hard_delete_user_now, {
 			userId: seeded.userId,
 			purgeTombstone: true,
 		});
-		await t.action(internal.users.hard_delete_user, {
+		await t.action(internal.users.hard_delete_user_now, {
 			userId: seeded.userId,
 			purgeTombstone: true,
 		});
@@ -1791,7 +2155,7 @@ describe("hard_delete_user", () => {
 		});
 
 		try {
-			await t.action(internal.users.hard_delete_user, {
+			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 			});
 

@@ -95,6 +95,14 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - [billing-active-plan.tsx](../../../packages/app/src/components/billing/billing-active-plan.tsx) renders due amount and remaining credits from the local usage snapshot.
 - The billing panel uses the local usage snapshot populated from `customer.state_changed` to show current due amount, remaining credits, renewal timing, and pending downgrade timing.
 
+## Account deletion billing behavior
+
+- Normal user-facing account deletion schedules the current paid subscription to end at the close of the current billing period instead of revoking it immediately.
+- The delete flow clears the local subscription mirror immediately after scheduling that cancellation so the deleted account no longer presents an active local billing state.
+- `billing_usage_snapshots` are mirrored local billing state, not billing authority. Keep them through phase 1 and delete them only during phase 2 of account deletion.
+- Restoring the account during retention does not undo the scheduled cancellation.
+- Direct admin hard delete remains fully destructive and still revokes the subscription immediately.
+
 # Operational billing rules
 
 - Treat Polar product names as exact identifiers in app code: `Free`, `Pay As You Go`, and `Pro`.

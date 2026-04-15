@@ -123,6 +123,18 @@ Purpose: ensure a Clerk identity is linked to a Convex user id, and ensure Clerk
 
 Internal mutation behavior:
 
+- Signed-in `resolve_user` requires a non-empty Clerk email.
+- Successful signed-in `resolve_user` paths persist the normalized email on the user anagraphic.
+- If a tombstoned user exists for the same verified email:
+  - the recovery key is the normalized signed-in email stored on the user anagraphic
+  - reclaim that same Convex user row instead of creating a new one
+  - clear `deletedAt`
+  - re-link the new Clerk user id
+  - reactivate memberships
+  - remove the user-scope deletion request
+- If a different live user already owns the same normalized email:
+  - return a recoverable conflict from `internal.users.resolve_user`
+  - the HTTP route surfaces that conflict as `400`
 - If `anonymousUserToken` is provided:
   - validates token and finds the anonymous user
   - links that same user record to the Clerk user (canonicalize anonymous into signed-in in place)
@@ -178,9 +190,12 @@ Related files:
 User-account deletion is implemented across [users.ts](../../../packages/app/convex/users.ts) and [data_deletion.ts](../../../packages/app/convex/data_deletion.ts):
 
 - `users.delete_current_user_account` is the UI-facing entrypoint.
-- `data_deletion.init_user_deletion` creates or reuses the `scope: "user"` row in `data_deletion_requests`, tombstones the user (`users.deletedAt`), and marks memberships inactive.
-- `data_deletion.process_user_deletion_request` performs the post-retention hard delete.
-- Orphaned projects/workspaces discovered during user deletion queue `project` rows in the same shared `data_deletion_requests` table via `packages/app/server/data_deletion.ts`.
+- `data_deletion.init_user_deletion` is the reversible phase 1 step: it creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, and marks memberships inactive.
+- Phase 1 does not delete projects, workspaces, pages, or billing usage snapshots.
+- Phase 1 also does not backfill or repair missing anagraphic email; deleted-account recovery only works for users whose normalized email was already stored before deletion.
+- `users.delete_current_user_account` also schedules any paid Polar subscription to end at the close of the current billing period, then clears the local subscription mirror immediately.
+- `data_deletion.process_user_deletion_request` is the destructive phase 2 step that runs after the fixed retention period and performs the hard delete.
+- Restoring a deleted account during retention reclaims the same Convex user row, removes the user deletion request, reactivates memberships, and keeps the already scheduled subscription cancellation in place.
 
 For the full workspace/project deletion and purge lifecycle, use the canonical tenancy skill: [workspaces-tenancy: Workspace and project deletion and data purge](../workspaces-tenancy/SKILL.md#workspace-and-project-deletion-and-data-purge).
 
@@ -301,4 +316,4 @@ When the user requests changes in this area, you must:
 
 # TODO / known gaps
 
-- Reconcile repeat sign-up back onto the same Convex user when someone returns with the same email after deleting an account. Today `POST /api/auth/resolve-user` only reuses the prior record when Clerk already carries the matching `external_id` or when the client upgrades an anonymous user in place. A fresh sign-up after prior deletion still creates a new `users` row, so account-history, Polar linkage, and any future recovery flow are not yet reconciled onto the original account. This needs a deliberate app-owned lookup/rebind path before production.
+- Deleted-account recovery currently supports only the same verified email path. Changed-email recovery or manual account merge is not implemented.

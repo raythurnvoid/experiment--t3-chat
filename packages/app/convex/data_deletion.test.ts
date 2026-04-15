@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex } from "./setup.test.ts";
@@ -15,7 +15,7 @@ const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function data_deletion_test_bootstrap_user(
 	ctx: MutationCtx,
-	args: { clerkUserId: string; displayName: string; avatarUrl?: string },
+	args: { clerkUserId: string; displayName: string; avatarUrl?: string; email?: string },
 ) {
 	const now = Date.now();
 	const userId = await ctx.db.insert("users", {
@@ -36,6 +36,7 @@ async function data_deletion_test_bootstrap_user(
 				userId,
 				displayName: args.displayName,
 				avatarUrl: args.avatarUrl,
+				...(args.email ? { email: args.email } : {}),
 				updatedAt: now,
 			})
 			.then((anagraphicId) =>
@@ -169,12 +170,18 @@ describe("data_deletion_db_request", () => {
 				projectId: extraProject._yay.projectId,
 				scope: "project",
 			});
+			const workspaceRequestIdAfterProject = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				scope: "workspace",
+			});
 
 			return {
 				userRequestId,
 				userRequestIdAgain,
 				workspaceRequestId,
 				workspaceRequestIdAgain,
+				workspaceRequestIdAfterProject,
 				projectRequestId,
 				projectRequestIdAgain,
 				rows: await ctx.db.query("data_deletion_requests").collect(),
@@ -183,6 +190,7 @@ describe("data_deletion_db_request", () => {
 
 		expect(requests.userRequestId).toBe(requests.userRequestIdAgain);
 		expect(requests.workspaceRequestId).toBe(requests.workspaceRequestIdAgain);
+		expect(requests.workspaceRequestId).toBe(requests.workspaceRequestIdAfterProject);
 		expect(requests.projectRequestId).toBe(requests.projectRequestIdAgain);
 		expect(requests.rows).toHaveLength(3);
 		expect(requests.rows.filter((row) => row.scope === "user")).toHaveLength(1);
@@ -197,6 +205,163 @@ describe("data_deletion_db_request", () => {
 					row.projectId === extraProject._yay.projectId,
 			),
 		).toHaveLength(1);
+	});
+});
+
+describe("init_user_deletion", () => {
+	test("only tombstones the user and deactivates memberships during phase 1", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-phase-one",
+				displayName: "Phase One User",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-phase-one-collaborator",
+				displayName: "Phase One Collaborator",
+			}),
+		);
+
+		const sharedWorkspace = await t.run(async (ctx) => {
+			const created = await workspaces_db_create(ctx, {
+				userId: deletedUser.userId,
+				name: "phase-one-shared",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay.workspaceId,
+				projectId: created._yay.defaultProjectId,
+				userId: collaborator.userId,
+				active: true,
+			});
+
+			const extraProject = await workspaces_db_create_project(ctx, {
+				userId: deletedUser.userId,
+				workspaceId: created._yay.workspaceId,
+				name: "p1-shared-extra",
+				description: "",
+				now: Date.now(),
+			});
+			if (extraProject._nay) {
+				throw new Error(extraProject._nay.message);
+			}
+
+			return {
+				workspaceId: created._yay.workspaceId,
+				defaultProjectId: created._yay.defaultProjectId,
+				extraProjectId: extraProject._yay.projectId,
+			} as const;
+		});
+
+		await t.run(async (ctx) => {
+			await Promise.all([
+				data_deletion_test_seed_page(ctx, {
+					userId: deletedUser.userId,
+					workspaceId: String(deletedUser.defaultWorkspaceId),
+					projectId: String(deletedUser.defaultProjectId),
+					tag: "phase-one-personal-page",
+				}),
+				data_deletion_test_seed_page(ctx, {
+					userId: deletedUser.userId,
+					workspaceId: String(sharedWorkspace.workspaceId),
+					projectId: String(sharedWorkspace.extraProjectId),
+					tag: "phase-one-shared-extra-page",
+				}),
+				ctx.db.insert("billing_usage_snapshots", {
+					userId: deletedUser.userId,
+					polarCustomerId: "cust_phase_one",
+					subscription: null,
+					meter: null,
+					lastSyncedAt: 11_111,
+				}),
+			]);
+		});
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 10_001,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [
+				user,
+				request,
+				requests,
+				memberships,
+				personalWorkspace,
+				personalProject,
+				sharedWorkspaceDoc,
+				sharedExtraProject,
+				personalPages,
+				sharedExtraPages,
+				snapshots,
+			] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.query("data_deletion_requests").collect(),
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
+				ctx.db.get("workspaces_projects", deletedUser.defaultProjectId),
+				ctx.db.get("workspaces", sharedWorkspace.workspaceId),
+				ctx.db.get("workspaces_projects", sharedWorkspace.extraProjectId),
+				ctx.db
+					.query("pages")
+					.collect()
+					.then((rows) => rows.filter((row) => row.projectId === String(deletedUser.defaultProjectId))),
+				ctx.db
+					.query("pages")
+					.collect()
+					.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
+				ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_userId", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+			]);
+
+			return {
+				user,
+				request,
+				requests,
+				memberships,
+				personalWorkspace,
+				personalProject,
+				sharedWorkspaceDoc,
+				sharedExtraProject,
+				personalPages,
+				sharedExtraPages,
+				snapshots,
+			};
+		});
+
+		expect(after.user?.deletedAt).toBe(10_001);
+		expect(after.user?.clerkUserId).toBe("clerk-user-delete-phase-one");
+		expect(after.user?.defaultWorkspaceId).toBe(deletedUser.defaultWorkspaceId);
+		expect(after.user?.defaultProjectId).toBe(deletedUser.defaultProjectId);
+		expect(after.request?._id).toBe(requestId);
+		expect(after.requests).toHaveLength(1);
+		expect(after.requests[0]?.scope).toBe("user");
+		expect(after.memberships.length).toBeGreaterThan(0);
+		expect(after.memberships.every((membership) => membership.active === false)).toBe(true);
+		expect(after.personalWorkspace?._id).toBe(deletedUser.defaultWorkspaceId);
+		expect(after.personalProject?._id).toBe(deletedUser.defaultProjectId);
+		expect(after.sharedWorkspaceDoc?._id).toBe(sharedWorkspace.workspaceId);
+		expect(after.sharedExtraProject?._id).toBe(sharedWorkspace.extraProjectId);
+		expect(after.personalPages).toHaveLength(1);
+		expect(after.sharedExtraPages).toHaveLength(1);
+		expect(after.snapshots).toHaveLength(1);
 	});
 });
 
@@ -390,6 +555,121 @@ describe("process_user_deletion_request", () => {
 		expect(afterUserDeletion.sharedWorkspaceDoc?._id).toBe(sharedWorkspace.workspaceId);
 		expect(afterUserDeletion.purgeRequests).toHaveLength(0);
 		expect(afterUserDeletion.sharedPages).toHaveLength(1);
+	});
+
+	test("keeps shared orphaned projects after retention when the workspace still has active users", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-shared-orphan",
+				displayName: "Deleted Shared Orphan User",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-shared-orphan-collaborator",
+				displayName: "Shared Orphan Collaborator",
+			}),
+		);
+
+		const sharedWorkspace = await t.run(async (ctx) => {
+			const created = await workspaces_db_create(ctx, {
+				userId: deletedUser.userId,
+				name: "shared-orphan-space",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay.workspaceId,
+				projectId: created._yay.defaultProjectId,
+				userId: collaborator.userId,
+				active: true,
+			});
+
+			const extraProject = await workspaces_db_create_project(ctx, {
+				userId: deletedUser.userId,
+				workspaceId: created._yay.workspaceId,
+				name: "shared-orphan-extra",
+				description: "",
+				now: Date.now(),
+			});
+			if (extraProject._nay) {
+				throw new Error(extraProject._nay.message);
+			}
+
+			return {
+				workspaceId: created._yay.workspaceId,
+				defaultProjectId: created._yay.defaultProjectId,
+				extraProjectId: extraProject._yay.projectId,
+			} as const;
+		});
+
+		await t.run((ctx) =>
+			data_deletion_test_seed_page(ctx, {
+				userId: deletedUser.userId,
+				workspaceId: String(sharedWorkspace.workspaceId),
+				projectId: String(sharedWorkspace.extraProjectId),
+				tag: "shared-orphan-retained-page",
+			}),
+		);
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 20_001,
+			}),
+		);
+		const requestCreationTime = await t.run(async (ctx) => {
+			const request = await ctx.db.get("data_deletion_requests", requestId);
+			return request!._creationTime;
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+				requestId,
+				_test_now: requestCreationTime + RETENTION_MS + 1,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [user, sharedWorkspaceDoc, sharedDefaultProject, sharedExtraProject, sharedExtraPages, memberships] =
+				await Promise.all([
+					ctx.db.get("users", deletedUser.userId),
+					ctx.db.get("workspaces", sharedWorkspace.workspaceId),
+					ctx.db.get("workspaces_projects", sharedWorkspace.defaultProjectId),
+					ctx.db.get("workspaces_projects", sharedWorkspace.extraProjectId),
+					ctx.db
+						.query("pages")
+						.collect()
+						.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+						.collect(),
+				]);
+
+			return {
+				user,
+				sharedWorkspaceDoc,
+				sharedDefaultProject,
+				sharedExtraProject,
+				sharedExtraPages,
+				memberships,
+			};
+		});
+
+		expect(after.user?.deletedAt).toBe(20_001);
+		expect(after.user?.defaultWorkspaceId).toBeUndefined();
+		expect(after.sharedWorkspaceDoc?._id).toBe(sharedWorkspace.workspaceId);
+		expect(after.sharedDefaultProject?._id).toBe(sharedWorkspace.defaultProjectId);
+		expect(after.sharedExtraProject?._id).toBe(sharedWorkspace.extraProjectId);
+		expect(after.sharedExtraPages).toHaveLength(1);
+		expect(after.memberships).toHaveLength(0);
 	});
 });
 
@@ -705,7 +985,7 @@ describe("hard_delete_user_data", () => {
 		expect(after.snapshots).toHaveLength(0);
 	});
 
-	test("clears queued orphan project requests while keeping the shared workspace alive", async () => {
+	test("keeps shared orphaned projects while deleting the user data directly", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -766,25 +1046,6 @@ describe("hard_delete_user_data", () => {
 			}),
 		);
 
-		const queuedProjectRequestId = await t.run(async (ctx) => {
-			await ctx.runMutation(internal.data_deletion.init_user_deletion, {
-				userId: deletedUser.userId,
-				nowTs: 90_001,
-			});
-
-			const queuedProjectRequest = await ctx.db
-				.query("data_deletion_requests")
-				.withIndex("by_workspace_project", (q) =>
-					q.eq("workspaceId", sharedWorkspace.workspaceId).eq("projectId", sharedWorkspace.extraProjectId),
-				)
-				.first();
-			if (!queuedProjectRequest) {
-				throw new Error("Expected queued orphan project deletion request");
-			}
-
-			return queuedProjectRequest._id;
-		});
-
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
 				userId: deletedUser.userId,
@@ -792,10 +1053,12 @@ describe("hard_delete_user_data", () => {
 		);
 
 		const after = await t.run(async (ctx) => {
-			const [queuedProjectRequest, sharedWorkspaceDoc, sharedDefaultProject, extraProjectPages] = await Promise.all([
-				ctx.db.get("data_deletion_requests", queuedProjectRequestId),
+			const [user, requests, sharedWorkspaceDoc, sharedDefaultProject, sharedExtraProject, extraProjectPages] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.get("workspaces", sharedWorkspace.workspaceId),
 				ctx.db.get("workspaces_projects", sharedWorkspace.defaultProjectId),
+				ctx.db.get("workspaces_projects", sharedWorkspace.extraProjectId),
 				ctx.db
 					.query("pages")
 					.collect()
@@ -803,17 +1066,21 @@ describe("hard_delete_user_data", () => {
 			]);
 
 			return {
-				queuedProjectRequest,
+				user,
+				requests,
 				sharedWorkspaceDoc,
 				sharedDefaultProject,
+				sharedExtraProject,
 				extraProjectPages,
 			};
 		});
 
-		expect(after.queuedProjectRequest).toBeNull();
+		expect(after.user?.deletedAt).toBeTypeOf("number");
+		expect(after.requests).toHaveLength(0);
 		expect(after.sharedWorkspaceDoc?._id).toBe(sharedWorkspace.workspaceId);
 		expect(after.sharedDefaultProject?._id).toBe(sharedWorkspace.defaultProjectId);
-		expect(after.extraProjectPages).toHaveLength(0);
+		expect(after.sharedExtraProject?._id).toBe(sharedWorkspace.extraProjectId);
+		expect(after.extraProjectPages).toHaveLength(1);
 	});
 
 });
@@ -1036,14 +1303,187 @@ describe("process_deletion_requests", () => {
 });
 
 describe("resolve_user after tombstone", () => {
-	test("creates a fresh user row for a future sign-up", async () => {
+	test("reclaims the same user row during retention and preserves default content", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-return-retention",
+				displayName: "Returning User",
+				email: "returning-user-retention@test.local",
+			}),
+		);
+		const recoveryEmail = "returning-user-retention@test.local";
+
+		await t.run((ctx) =>
+			data_deletion_test_seed_page(ctx, {
+				userId: deletedUser.userId,
+				workspaceId: String(deletedUser.defaultWorkspaceId),
+				projectId: String(deletedUser.defaultProjectId),
+				tag: "retained-personal-page",
+			}),
+		);
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 30_101,
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-delete-return-retention-again",
+				email: recoveryEmail,
+				displayName: "Returning User Again",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [user, request, memberships, anagraphic, pages] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
+				ctx.db
+					.query("pages")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+			]);
+
+			return {
+				user,
+				request,
+				memberships,
+				anagraphic,
+				pages,
+			};
+		});
+
+		expect(result._yay.userId).toBe(deletedUser.userId);
+		expect(after.user?.deletedAt).toBeUndefined();
+		expect(after.user?.clerkUserId).toBe("clerk-user-delete-return-retention-again");
+		expect(after.user?.defaultWorkspaceId).toBe(deletedUser.defaultWorkspaceId);
+		expect(after.user?.defaultProjectId).toBe(deletedUser.defaultProjectId);
+		expect(after.request).toBeNull();
+		expect(after.memberships.length).toBeGreaterThan(0);
+		expect(after.memberships.every((membership) => membership.active !== false)).toBe(true);
+		expect(after.anagraphic?.email).toBe(recoveryEmail);
+		expect(after.pages).toHaveLength(1);
+	});
+
+	test("reclaims the same user row during retention without removing a scheduled subscription cancellation", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-return-billing",
+				displayName: "Returning Billing User",
+				email: "returning-billing-user@test.local",
+			}),
+		);
+		const recoveryEmail = "returning-billing-user@test.local";
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_returning_billing_user",
+			userId: deletedUser.userId,
+		});
+		await t.mutation(components.polar.lib.createProduct, {
+			product: {
+				id: "prod_returning_billing_user",
+				organizationId: "returning_billing_org",
+				name: "Returning Billing Product",
+				description: "Returning billing product",
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [],
+				medias: [],
+				benefits: [],
+			},
+		});
+		await t.mutation(components.polar.lib.createSubscription, {
+			subscription: {
+				id: "sub_returning_billing_user",
+				customerId: "cust_returning_billing_user",
+				productId: "prod_returning_billing_user",
+				checkoutId: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: "2026-01-02T00:00:00.000Z",
+				amount: 1000,
+				currency: "eur",
+				recurringInterval: "month",
+				status: "active",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+				cancelAtPeriodEnd: true,
+				canceledAt: "2026-01-15T00:00:00.000Z",
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endsAt: "2026-02-01T00:00:00.000Z",
+				endedAt: null,
+				metadata: {},
+			},
+		});
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 30_201,
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-delete-return-billing-again",
+				email: recoveryEmail,
+				displayName: "Returning Billing User Again",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [request, subscription] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.runQuery(components.polar.lib.getCurrentSubscription, {
+					userId: deletedUser.userId,
+				}),
+			]);
+
+			return {
+				request,
+				subscription,
+			};
+		});
+
+		expect(after.request).toBeNull();
+		expect(after.subscription?.id).toBe("sub_returning_billing_user");
+		expect(after.subscription?.cancelAtPeriodEnd).toBe(true);
+	});
+
+	test("reclaims the same user row after retention purge and recreates default tenant state", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
 				clerkUserId: "clerk-user-delete-return",
 				displayName: "Returning User",
+				email: "returning-user@test.local",
 			}),
 		);
+		const recoveryEmail = "returning-user@test.local";
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_returning_user",
+			userId: deletedUser.userId,
+		});
 
 		const requestId = await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.init_user_deletion, {
@@ -1065,6 +1505,91 @@ describe("resolve_user after tombstone", () => {
 		const result = await t.run((ctx) =>
 			ctx.runMutation(internal.users.resolve_user, {
 				clerkUserId: "clerk-user-delete-return",
+				email: recoveryEmail,
+				displayName: "Returning User Again",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [user, customer, limit, anagraphic] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+					userId: deletedUser.userId,
+				}),
+				ctx.db
+					.query("limits_per_user")
+					.withIndex("by_user_limit_name", (q) =>
+						q.eq("userId", deletedUser.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+					)
+					.first(),
+				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
+			]);
+
+			const [workspace, project] = user?.defaultWorkspaceId && user.defaultProjectId
+				? await Promise.all([
+						ctx.db.get("workspaces", user.defaultWorkspaceId),
+						ctx.db.get("workspaces_projects", user.defaultProjectId),
+					])
+				: [null, null];
+
+			return {
+				user,
+				customer,
+				limit,
+				anagraphic,
+				workspace,
+				project,
+			};
+		});
+
+		expect(result._yay.userId).toBe(deletedUser.userId);
+		expect(after.user?.deletedAt).toBeUndefined();
+		expect(after.user?.clerkUserId).toBe("clerk-user-delete-return");
+		expect(after.user?.defaultWorkspaceId).toBeDefined();
+		expect(after.user?.defaultWorkspaceId).not.toBe(deletedUser.defaultWorkspaceId);
+		expect(after.user?.defaultProjectId).toBeDefined();
+		expect(after.user?.defaultProjectId).not.toBe(deletedUser.defaultProjectId);
+		expect(after.workspace?._id).toBe(after.user?.defaultWorkspaceId);
+		expect(after.project?._id).toBe(after.user?.defaultProjectId);
+		expect(after.customer?.id).toBe("cust_returning_user");
+		expect(after.limit).not.toBeNull();
+		expect(after.anagraphic?.email).toBe(recoveryEmail);
+	});
+
+	test("creates a fresh user row when the returning email does not match", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-return-non-match",
+				displayName: "Returning User",
+				email: "returning-user-non-match@test.local",
+			}),
+		);
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 30_001,
+			}),
+		);
+		const requestCreationTime = await t.run(async (ctx) => {
+			const request = await ctx.db.get("data_deletion_requests", requestId);
+			return request!._creationTime;
+		});
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+				requestId,
+				_test_now: requestCreationTime + RETENTION_MS + 1,
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-delete-return-non-match-again",
+				email: "somebody-else@test.local",
 				displayName: "Returning User Again",
 			}),
 		);
@@ -1087,7 +1612,193 @@ describe("resolve_user after tombstone", () => {
 		expect(result._yay.userId).not.toBe(deletedUser.userId);
 		expect(after.oldUser?.deletedAt).toBe(30_001);
 		expect(after.oldUser?.clerkUserId).toBeNull();
-		expect(after.newUser?.clerkUserId).toBe("clerk-user-delete-return");
+		expect(after.newUser?.clerkUserId).toBe("clerk-user-delete-return-non-match-again");
 		expect(after.newUser?.deletedAt).toBeUndefined();
+	});
+
+	test("prefers the deleted account over an anonymous session during reclaim", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-return-anon",
+				displayName: "Returning User",
+				email: "returning-user-anon@test.local",
+			}),
+		);
+		const recoveryEmail = "returning-user-anon@test.local";
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 30_301,
+			}),
+		);
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-delete-return-anon-again",
+				email: recoveryEmail,
+				anonymousUserToken: anonymousPayload.token,
+				displayName: "Returning User Again",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [reclaimedUser, anonymousUser] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.get("users", anonymousPayload.userId),
+			]);
+
+			return {
+				reclaimedUser,
+				anonymousUser,
+			};
+		});
+
+		expect(result._yay.userId).toBe(deletedUser.userId);
+		expect(after.reclaimedUser?.deletedAt).toBeUndefined();
+		expect(after.reclaimedUser?.clerkUserId).toBe("clerk-user-delete-return-anon-again");
+		expect(after.anonymousUser?._id).toBe(anonymousPayload.userId);
+		expect(after.anonymousUser?.clerkUserId).toBeNull();
+	});
+
+	test("removes only the user deletion request while leaving resource delete requests intact", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-return-resource-request",
+				displayName: "Returning User",
+				email: "returning-user-resource-request@test.local",
+			}),
+		);
+		const recoveryEmail = "returning-user-resource-request@test.local";
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 30_401,
+			}),
+		);
+		const resourceDeleteProjectRequestId = await t.run(async (ctx) => {
+			const workspace = await workspaces_db_create(ctx, {
+				userId: deletedUser.userId,
+				name: "restore-req-ws",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+
+			const project = await workspaces_db_create_project(ctx, {
+				userId: deletedUser.userId,
+				workspaceId: workspace._yay.workspaceId,
+				name: "restore-req-proj",
+				description: "",
+				now: Date.now(),
+			});
+			if (project._nay) {
+				throw new Error(project._nay.message);
+			}
+
+			return await data_deletion_db_request(ctx, {
+				userId: deletedUser.userId,
+				workspaceId: workspace._yay.workspaceId,
+				projectId: project._yay.projectId,
+				scope: "project",
+			});
+		});
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-delete-return-resource-request-again",
+				email: recoveryEmail,
+				displayName: "Returning User Again",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [userRequest, resourceDeleteProjectRequest] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("data_deletion_requests", resourceDeleteProjectRequestId),
+			]);
+
+			return {
+				userRequest,
+				resourceDeleteProjectRequest,
+			};
+		});
+
+		expect(after.userRequest).toBeNull();
+		expect(after.resourceDeleteProjectRequest?._id).toBe(resourceDeleteProjectRequestId);
+	});
+
+	test("purges the stored recovery email after hard delete and falls back to a fresh user later", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-return-purge",
+				displayName: "Returning User",
+				email: "returning-user-purge@test.local",
+			}),
+		);
+		const recoveryEmail = "returning-user-purge@test.local";
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: deletedUser.userId,
+			}),
+		);
+		await t.run((ctx) =>
+			ctx.runMutation(internal.users.purge_deleted_user_tombstone, {
+				userId: deletedUser.userId,
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-delete-return-purge-again",
+				email: recoveryEmail,
+				displayName: "Returning User Again",
+			}),
+		);
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const after = await t.run(async (ctx) => {
+			const [oldUser, newUser, oldAnagraphic] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.get("users", result._yay.userId),
+				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
+			]);
+
+			return {
+				oldUser,
+				newUser,
+				oldAnagraphic,
+			};
+		});
+
+		expect(after.oldUser).toBeNull();
+		expect(result._yay.userId).not.toBe(deletedUser.userId);
+		expect(after.newUser?.clerkUserId).toBe("clerk-user-delete-return-purge-again");
+		expect(after.oldAnagraphic).toBeNull();
 	});
 });

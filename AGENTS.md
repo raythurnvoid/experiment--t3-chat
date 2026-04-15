@@ -210,6 +210,25 @@ Research Process
 
 Quality Standard: Understanding should be deep enough to explain concepts confidently and implement solutions without guessing. If uncertain, keep researching until clear.
 
+## System Spec Skills
+
+Treat the core business-logic skill files under `.agents/skills/` as maintained system-spec documents for the product behavior they describe.
+
+Current spec-style skills include:
+
+- `.agents/skills/auth-system/SKILL.md`
+- `.agents/skills/billing-system/SKILL.md`
+- `.agents/skills/workspaces-tenancy/SKILL.md`
+- `.agents/skills/workspaces-limits/SKILL.md`
+- `.agents/skills/ai-chat-agent/SKILL.md`
+- `.agents/skills/pages-agent-pending-edits/SKILL.md`
+
+When product requirements or business logic change, update the relevant spec skills in the same pass as the implementation so those files stay accurate.
+
+- Do not leave a skill file describing stale behavior after you change the code or the intended product rules.
+- If a change affects multiple domains, update every relevant spec skill, not just the first file you touched.
+- Treat these skill files as the maintained description of how the system is supposed to work, not as optional follow-up documentation.
+
 ### Configuration Files
 
 - [packages/app/convex.json](packages/app/convex.json) - Convex configuration
@@ -282,6 +301,11 @@ When comments explain what code does (usually `//` comments, including consecuti
 - Prefer "Keep...", "Use...", "Reset...", "Return...", "Guard..." over descriptive narration like "Keeps...", "Uses...", "Resets...", "Returns...", "Guards...".
 - Apply this rule to comments that explain behavior or intent near the code.
 - Skip this rule for doc-style prose where imperative wording would be unnatural.
+- Use two comment types intentionally:
+  - Product-requirement comments: keep these for medium/high-level business rules, lifecycle constraints, precedence rules, and other non-obvious product behavior encoded in the code.
+  - Low-level comments: use these only when the local implementation is genuinely convoluted or non-obvious.
+- Do not remove useful product-requirement comments just because you refactored the code around them. Rewrite them so they still describe the current behavior.
+- When a function is long or encodes multiple business-rule branches, add short high-signal comments at the branch boundaries instead of narrating every line.
 
 ```ts
 // ✅ Good

@@ -6,6 +6,7 @@ import {
 	internalQuery,
 	query,
 	type ActionCtx,
+	type MutationCtx,
 } from "./_generated/server.js";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
@@ -28,6 +29,7 @@ import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 import {
+	billing_action_cancel_polar_subscription_at_period_end,
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
 	billing_action_clear_subscriptions_by_user_id,
@@ -72,6 +74,11 @@ const ANONYMOUS_USERS_JWT_KID_LIST = ["anonymous-user-jwt-2025-12"];
  * Refresh tokens that are 7 days away from expiry.
  */
 const ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+const USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES = [
+	"Signed-in user email is required",
+	"Email is already linked to another user",
+] as const;
 
 /**
  * Returns the public JWK `x` and `y` coordinates for the configured PEM key.
@@ -231,6 +238,68 @@ export const clear_clerk_user_id_after_clerk_delete = internalMutation({
 		return null;
 	},
 });
+
+async function db_ensure_default_user_limit(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		now: number;
+	},
+) {
+	const existingLimit = await ctx.db
+		.query("limits_per_user")
+		.withIndex("by_user_limit_name", (q) =>
+			q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+		)
+		.first();
+	if (existingLimit) {
+		return;
+	}
+
+	await ctx.db.insert("limits_per_user", {
+		userId: args.userId,
+		limitName: user_limits.EXTRA_WORKSPACES.name,
+		usedCount: 0,
+		maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
+		createdAt: args.now,
+		updatedAt: args.now,
+	});
+}
+
+async function db_upsert_anagraphic(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		anagraphicId: Id<"users_anagraphics"> | undefined;
+		displayName: string;
+		email: string;
+		now: number;
+	},
+) {
+	if (args.anagraphicId) {
+		await ctx.db.patch("users_anagraphics", args.anagraphicId, {
+			displayName: args.displayName,
+			email: args.email,
+			updatedAt: args.now,
+		});
+		return;
+	}
+
+	const anagraphicId = await ctx.db.insert("users_anagraphics", {
+		userId: args.userId,
+		displayName: args.displayName,
+		email: args.email,
+		updatedAt: args.now,
+	});
+
+	await ctx.db.patch("users", args.userId, {
+		anagraphic: anagraphicId,
+	});
+}
+
+function users_resolve_user_is_bad_request_message(message: string) {
+	return USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES.some((value) => value === message);
+}
 
 export const purge_deleted_user_tombstone = internalMutation({
 	args: {
@@ -476,16 +545,111 @@ async function mint_anonymous_jwt(ctx: ActionCtx) {
 export const resolve_user = internalMutation({
 	args: {
 		clerkUserId: v.string(),
+		email: v.string(),
 		anonymousUserToken: v.optional(v.string()),
 		displayName: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ userId: v.id("users") }) }),
 	handler: async (ctx, args) => {
-		let resultUserId: Id<"users"> | undefined;
-
+		// Resolve Clerk sign-in in product-precedence order:
+		// 1. Reuse the existing live Clerk-linked user.
+		// 2. Reclaim a tombstoned signed-in user by verified email.
+		// 3. Upgrade the anonymous user in place when the client sends an anonymous token.
+		// 4. Create a brand new user only when every reuse path misses.
 		const now = Date.now();
+		const email = args.email.trim().toLowerCase();
+		if (!email) {
+			return Result({ _nay: { message: "Signed-in user email is required" } });
+		}
 
-		// Case 1: Token provided - link anonymous user to Clerk
+		const existingUsersForClerk = await ctx.db
+			.query("users")
+			.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", args.clerkUserId))
+			.collect();
+		const existingLiveUser = existingUsersForClerk.find((user) => user.deletedAt == null) ?? null;
+
+		// Reuse the live Clerk-linked user before you attempt recovery or upgrade logic.
+		if (existingLiveUser) {
+			await db_upsert_anagraphic(ctx, {
+				userId: existingLiveUser._id,
+				anagraphicId: existingLiveUser.anagraphic,
+				displayName: args.displayName,
+				email,
+				now,
+			});
+
+			return Result({ _yay: { userId: existingLiveUser._id } });
+		}
+
+		const anagraphicByEmail = await ctx.db
+			.query("users_anagraphics")
+			.withIndex("by_email", (q) => q.eq("email", email))
+			.unique()
+			.catch(() => "duplicate_email" as const);
+		if (anagraphicByEmail === "duplicate_email") {
+			return Result({ _nay: { message: "Email is already linked to another user" } });
+		}
+
+		const userByEmail = anagraphicByEmail ? await ctx.db.get("users", anagraphicByEmail.userId) : null;
+
+		// Reclaim the deleted signed-in account before you process anonymous upgrade.
+		// Keep this branch ahead of the anonymous-token path so a returning deleted user
+		// wins over any temporary anonymous session created before sign-in.
+		const deletedUser = userByEmail?.deletedAt != null ? userByEmail : null;
+		if (userByEmail && !deletedUser) {
+			return Result({ _nay: { message: "Email is already linked to another user" } });
+		}
+
+		if (deletedUser) {
+			const [memberships, deletionRequests] = await Promise.all([
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser._id))
+					.collect(),
+				ctx.db
+					.query("data_deletion_requests")
+					.withIndex("by_userId", (q) => q.eq("userId", deletedUser._id))
+					.collect(),
+			]);
+
+			await Promise.all([
+				ctx.db.patch("users", deletedUser._id, {
+					clerkUserId: args.clerkUserId,
+					deletedAt: undefined,
+				}),
+				db_upsert_anagraphic(ctx, {
+					userId: deletedUser._id,
+					anagraphicId: deletedUser.anagraphic,
+					displayName: args.displayName,
+					email,
+					now,
+				}),
+				db_ensure_default_user_limit(ctx, {
+					userId: deletedUser._id,
+					now,
+				}),
+				...memberships
+					.filter((membership) => membership.active === false)
+					.map((membership) =>
+						ctx.db.patch("workspaces_projects_users", membership._id, {
+							active: true,
+							updatedAt: now,
+						}),
+					),
+				...deletionRequests
+					.filter((row) => row.scope === "user")
+					.map((row) => ctx.db.delete("data_deletion_requests", row._id)),
+			]);
+
+			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				userId: deletedUser._id,
+				now,
+			});
+
+			return Result({ _yay: { userId: deletedUser._id } });
+		}
+
+		// Upgrade the anonymous user in place only after live-user reuse and deleted-account reclaim miss.
 		if (args.anonymousUserToken) {
 			let authFromToken: ReturnType<typeof users_get_user_id_from_jwt>;
 			try {
@@ -530,7 +694,7 @@ export const resolve_user = internalMutation({
 						.then((existingClerkUsers) =>
 							Promise.all(
 								existingClerkUsers.map(async (existingUser) => {
-									if (existingUser._id !== user._id) {
+									if (existingUser._id !== user._id && existingUser.deletedAt == null) {
 										await Promise.all([
 											existingUser.anagraphic ? ctx.db.delete("users_anagraphics", existingUser.anagraphic) : undefined,
 											ctx.db.delete("users", existingUser._id),
@@ -547,20 +711,12 @@ export const resolve_user = internalMutation({
 
 					anonymousAuthTokenDoc && ctx.db.delete("users_anon_tokens", anonymousAuthTokenDoc._id),
 
-					Promise.try(async () => {
-						if (user.anagraphic) {
-							await ctx.db.patch("users_anagraphics", user.anagraphic, {
-								displayName: args.displayName,
-								updatedAt: now,
-							});
-						} else {
-							const anagraphicId = await ctx.db.insert("users_anagraphics", {
-								userId: user._id,
-								displayName: args.displayName,
-								updatedAt: now,
-							});
-							await ctx.db.patch("users", user._id, { anagraphic: anagraphicId });
-						}
+					db_upsert_anagraphic(ctx, {
+						userId: user._id,
+						anagraphicId: user.anagraphic,
+						displayName: args.displayName,
+						email,
+						now,
 					}),
 
 					workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
@@ -568,67 +724,55 @@ export const resolve_user = internalMutation({
 						now,
 					}),
 				]);
-			} else {
-				// The user is already linked to another Clerk account, this should never happen
-				if (user.clerkUserId !== args.clerkUserId) {
-					return Result({ _nay: { message: "User already linked to different Clerk account" } });
-				}
 
-				await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				return Result({ _yay: { userId: user._id } });
+			}
+
+			if (user.clerkUserId !== args.clerkUserId) {
+				return Result({ _nay: { message: "User already linked to different Clerk account" } });
+			}
+
+			await Promise.all([
+				db_upsert_anagraphic(ctx, {
+					userId: user._id,
+					anagraphicId: user.anagraphic,
+					displayName: args.displayName,
+					email,
+					now,
+				}),
+				workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 					userId,
 					now,
-				});
-			}
+				}),
+			]);
 
-			resultUserId = user._id;
-		}
-		// Case 2: No token provided - create new user
-		else {
-			const user = await ctx.db
-				.query("users")
-				.withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", args.clerkUserId))
-				.first();
-
-			// If we realize that the user already exists, we can use the existing user
-			// but this should never happen.
-			if (user) {
-				resultUserId = user._id;
-			}
-			// Create new user for this Clerk account if none exists
-			else {
-				const userId = await ctx.db.insert("users", {
-					clerkUserId: args.clerkUserId,
-				});
-
-				await Promise.all([
-					ctx.db.insert("limits_per_user", {
-						userId,
-						limitName: user_limits.EXTRA_WORKSPACES.name,
-						usedCount: 0,
-						maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-						createdAt: now,
-						updatedAt: now,
-					}),
-					ctx.db
-						.insert("users_anagraphics", {
-							userId: userId,
-							displayName: args.displayName,
-							updatedAt: Date.now(),
-						})
-						.then((anagraphicId) =>
-							ctx.db.patch("users", userId, { anagraphic: anagraphicId }).then(() => anagraphicId),
-						),
-					workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
-						userId,
-						now,
-					}),
-				]);
-
-				resultUserId = userId;
-			}
+			return Result({ _yay: { userId: user._id } });
 		}
 
-		return Result({ _yay: { userId: resultUserId } });
+		// Create a brand new signed-in user only when no existing live, deleted, or anonymous identity matches.
+		const userId = await ctx.db.insert("users", {
+			clerkUserId: args.clerkUserId,
+		});
+
+		await Promise.all([
+			db_ensure_default_user_limit(ctx, {
+				userId,
+				now,
+			}),
+			db_upsert_anagraphic(ctx, {
+				userId,
+				anagraphicId: undefined,
+				displayName: args.displayName,
+				email,
+				now,
+			}),
+			workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				userId,
+				now,
+			}),
+		]);
+
+		return Result({ _yay: { userId } });
 	},
 });
 
@@ -713,16 +857,19 @@ export const delete_current_user_account = action({
 		}
 
 		if (currentSubscription) {
-			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
+			const cancelSubscriptionResult = await billing_action_cancel_polar_subscription_at_period_end({
 				subscriptionId: currentSubscription.id,
 			});
-			if (revokeSubscriptionResult._nay) {
-				console.error("[users.delete_current_user_account] Failed to revoke Polar subscription after local deletion", {
-					revokeSubscriptionResult,
-					requestId,
-					subscriptionId: currentSubscription.id,
-					userId: user._id,
-				});
+			if (cancelSubscriptionResult._nay) {
+				console.error(
+					"[users.delete_current_user_account] Failed to cancel Polar subscription at period end after local deletion",
+					{
+						cancelSubscriptionResult,
+						requestId,
+						subscriptionId: currentSubscription.id,
+						userId: user._id,
+					},
+				);
 			}
 		}
 
@@ -931,13 +1078,14 @@ export function users_http_routes(router: RouterForConvexModules) {
 
 							const resolveUserResult = await ctx.runMutation(internal.users.resolve_user, {
 								clerkUserId: clerkUserId,
+								email: identity.email ?? "",
 								anonymousUserToken: body?.anonymousUserToken,
 								displayName: identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId),
 							});
 
 							if (resolveUserResult._nay) {
 								return {
-									status: 401,
+									status: users_resolve_user_is_bad_request_message(resolveUserResult._nay.message) ? 400 : 401,
 									body: resolveUserResult,
 								} as const;
 							}
@@ -1029,6 +1177,7 @@ export const hard_delete_user_now = internalAction({
 		userId: v.id("users"),
 		purgeTombstone: v.optional(v.boolean()),
 		deletePolarCustomer: v.optional(v.boolean()),
+		delete_polar_customer: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1074,7 +1223,7 @@ export const hard_delete_user_now = internalAction({
 			userId: user._id,
 		});
 
-		if (args.deletePolarCustomer) {
+		if (args.deletePolarCustomer ?? args.delete_polar_customer) {
 			const deletePolarCustomerResult = await billing_action_delete_polar_customer_by_user_id(ctx, {
 				userId: user._id,
 			});

@@ -4,7 +4,6 @@ import { internalAction, internalMutation, internalQuery, type MutationCtx } fro
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
-import { workspace_limits } from "../shared/limits.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const USER_DELETION_REQUEST_BATCH_SIZE = 20;
@@ -305,23 +304,14 @@ async function db_prepare_user_for_deletion(
 		now: number;
 	},
 ) {
-	// Clear billing snapshots during phase 1 so both scheduled and direct
-	// deletion paths stop surfacing billing state immediately.
-	const billingUsageSnapshots = await ctx.db
-		.query("billing_usage_snapshots")
-		.withIndex("by_userId", (q) => q.eq("userId", args.user._id))
-		.collect();
-
-	await Promise.all(billingUsageSnapshots.map((row) => ctx.db.delete("billing_usage_snapshots", row._id)));
-
 	const memberships = await ctx.db
 		.query("workspaces_projects_users")
 		.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.user._id))
 		.collect();
 
 	if (args.user.deletedAt == null) {
-		// Tombstone the user and deactivate memberships first so later checks can
-		// tell which projects and workspaces became orphaned because of this user.
+		// Tombstone the user and deactivate memberships so phase 1 stays
+		// reversible while phase 2 still has the affected tenants available.
 		await Promise.all(
 			memberships.map((membership) =>
 				ctx.db.patch("workspaces_projects_users", membership._id, {
@@ -335,79 +325,6 @@ async function db_prepare_user_for_deletion(
 			deletedAt: args.now,
 		});
 	}
-
-	const projectsToDelete = [];
-
-	const candidateProjectWorkspaceIds = new Map(
-		memberships.map((membership) => [membership.projectId, membership.workspaceId]),
-	);
-	// Detect orphaned non-default projects that lost their last active member but
-	// still belong to a live shared workspace. Keep doing this even for an
-	// already-tombstoned user so the direct hard-delete path can finish phase-1
-	// orphan cleanup after an earlier scheduled init.
-	for (const [projectId, workspaceId] of candidateProjectWorkspaceIds) {
-		const activeMemberStillOnProject = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_active_workspace_project_user", (q) =>
-				q.eq("active", true).eq("workspaceId", workspaceId).eq("projectId", projectId),
-			)
-			.first();
-		if (activeMemberStillOnProject) {
-			continue;
-		}
-
-		const project = await ctx.db.get("workspaces_projects", projectId);
-		if (!project) {
-			continue;
-		}
-
-		const activeMemberStillInWorkspace = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_active_workspace_project_user", (q) => q.eq("active", true).eq("workspaceId", project.workspaceId))
-			.first();
-		if (!activeMemberStillInWorkspace || project.default) {
-			continue;
-		}
-
-		const workspace = await ctx.db.get("workspaces", project.workspaceId);
-		if (!workspace) {
-			continue;
-		}
-
-		const projectUserLookup = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_project_user_active", (q) => q.eq("projectId", projectId))
-			.collect();
-
-		projectsToDelete.push({
-			workspaceId: workspace._id,
-			projectId: project._id,
-		});
-
-		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
-		const limit = await ctx.db
-			.query("limits_per_workspace")
-			.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
-			.first();
-
-		if (limit) {
-			if (limit.usedCount <= 0) {
-				console.error("Trying to reduce a limit used count that is less than or equal to 0", limit);
-			} else {
-				await ctx.db.patch("limits_per_workspace", limit._id, {
-					usedCount: limit.usedCount - 1,
-					updatedAt: args.now,
-				});
-			}
-		}
-
-		await Promise.all(
-			projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
-		);
-		await ctx.db.delete("workspaces_projects", project._id);
-	}
-
-	return projectsToDelete;
 }
 
 async function db_finalize_deleted_user(
@@ -423,28 +340,33 @@ async function db_finalize_deleted_user(
 	}
 
 	const userIdString = String(user._id);
-	const [membershipsAll, anonymousAuthTokens, userLimits, pendingEdits, lastSequenceSaved] = await Promise.all([
-		ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("users_anon_tokens")
-			.withIndex("by_userId", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("limits_per_user")
-			.withIndex("by_user_limit_name", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("pages_pending_edits")
-			.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
-			.collect(),
-		ctx.db
-			.query("pages_pending_edits_last_sequence_saved")
-			.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
-			.collect(),
-	]);
+	const [membershipsAll, anonymousAuthTokens, userLimits, pendingEdits, lastSequenceSaved, billingUsageSnapshots] =
+		await Promise.all([
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+				.collect(),
+			ctx.db
+				.query("users_anon_tokens")
+				.withIndex("by_userId", (q) => q.eq("userId", user._id))
+				.collect(),
+			ctx.db
+				.query("limits_per_user")
+				.withIndex("by_user_limit_name", (q) => q.eq("userId", user._id))
+				.collect(),
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
+				.collect(),
+			ctx.db
+				.query("pages_pending_edits_last_sequence_saved")
+				.withIndex("by_userId_pageId", (q) => q.eq("userId", userIdString))
+				.collect(),
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", user._id))
+				.collect(),
+		]);
 
 	const pendingEditCleanupTasks = (
 		await Promise.all(
@@ -473,6 +395,7 @@ async function db_finalize_deleted_user(
 	await Promise.all(membershipsAll.map((row) => ctx.db.delete("workspaces_projects_users", row._id)));
 	await Promise.all(anonymousAuthTokens.map((row) => ctx.db.delete("users_anon_tokens", row._id)));
 	await Promise.all(userLimits.map((row) => ctx.db.delete("limits_per_user", row._id)));
+	await Promise.all(billingUsageSnapshots.map((row) => ctx.db.delete("billing_usage_snapshots", row._id)));
 
 	await ctx.db.patch("users", user._id, {
 		clerkUserId: null,
@@ -520,28 +443,17 @@ export const init_user_deletion = internalMutation({
 		}
 
 		const now = args.nowTs ?? Date.now();
-		const requestId = await data_deletion_db_request(ctx, {
-			userId: args.userId,
-			scope: "user",
-		});
-
-		// Run phase 1 immediately so the user is tombstoned now and orphaned
-		// projects are discovered while the original memberships still exist.
-		const projectsToDelete = await db_prepare_user_for_deletion(ctx, {
+		// Keep phase 1 reversible by only tombstoning the user and deactivating
+		// memberships. Leave all destructive cleanup for phase 2.
+		await db_prepare_user_for_deletion(ctx, {
 			user,
 			now,
 		});
 
-		// Queue these orphaned project purges now so they age alongside the user
-		// request instead of adding a second retention window later.
-		for (const project of projectsToDelete) {
-			await data_deletion_db_request(ctx, {
-				userId: user._id,
-				workspaceId: project.workspaceId,
-				projectId: project.projectId,
-				scope: "project",
-			});
-		}
+		const requestId = await data_deletion_db_request(ctx, {
+			userId: args.userId,
+			scope: "user",
+		});
 
 		return requestId;
 	},
@@ -776,63 +688,12 @@ export const hard_delete_user_data = internalMutation({
 
 		const now = Date.now();
 
-		// Run the same phase-1 tombstone and orphan discovery inline because the
-		// admin hard-delete path does not wait for the delayed request pipeline.
-		const projectsToDelete = await db_prepare_user_for_deletion(ctx, {
+		// Run the reversible phase-1 tombstone inline because the admin path
+		// does not wait for the delayed user deletion request.
+		await db_prepare_user_for_deletion(ctx, {
 			user,
 			now: now,
 		});
-
-		// Delete these projects one-by-one here because their workspaces are
-		// still alive for other members; only the projects themselves became
-		// orphaned during phase 1. Clear any matching queued project request too
-		// so this direct path does not leave delayed follow-up work behind.
-		for (const project of projectsToDelete) {
-			await db_purge_workspace_project_content(ctx, {
-				workspaceId: project.workspaceId,
-				projectId: project.projectId,
-			});
-
-			await db_delete_data_deletion_requests(ctx, {
-				scope: "project",
-				workspaceId: project.workspaceId,
-				projectId: project.projectId,
-			});
-		}
-
-		// Drain any orphan project requests left by an earlier scheduled phase-1
-		// run. Those projects already lost their shell rows, so phase-1 discovery
-		// cannot find them again from memberships, but their content still needs
-		// to be purged before the admin hard delete finishes.
-		const queuedProjectRequests = await ctx.db
-			.query("data_deletion_requests")
-			.withIndex("by_userId", (q) => q.eq("userId", user._id))
-			.collect();
-
-		for (const request of queuedProjectRequests) {
-			if (request.scope !== "project" || !request.workspaceId || !request.projectId) {
-				continue;
-			}
-
-			const projectStillExists = await ctx.db.get("workspaces_projects", request.projectId);
-			if (projectStillExists) {
-				continue;
-			}
-
-			await db_purge_workspace_project_content(ctx, {
-				workspaceId: request.workspaceId,
-				projectId: request.projectId,
-			});
-
-			await db_delete_data_deletion_requests(ctx, {
-				scope: "project",
-				workspaceId: request.workspaceId,
-				projectId: request.projectId,
-			});
-		}
-
-		// Finalize the user only after the phase-1 project split above, then use
-		// the remaining empty workspaces as the full-workspace teardown targets.
 		const deleteUserRes = await db_finalize_deleted_user(ctx, {
 			userId: user._id,
 			now: now,

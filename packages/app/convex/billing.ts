@@ -123,6 +123,29 @@ export async function billing_action_revoke_polar_subscription(args: { subscript
 	return Result({ _yay: null });
 }
 
+export async function billing_action_cancel_polar_subscription_at_period_end(args: { subscriptionId: string }) {
+	const cancelResult = await subscriptionsUpdate(billing_polar_client(), {
+		id: args.subscriptionId,
+		subscriptionUpdate: {
+			cancelAtPeriodEnd: true,
+		},
+	});
+	if (
+		!cancelResult.ok &&
+		!(cancelResult.error instanceof AlreadyCanceledSubscription) &&
+		!(cancelResult.error instanceof ResourceNotFound)
+	) {
+		return Result({
+			_nay: {
+				message: "Failed to cancel Polar subscription at period end",
+				cause: cancelResult.error,
+			},
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
 export const get_usage_snapshot = query({
 	args: {},
 	returns: v.union(v.null(), doc(app_convex_schema, "billing_usage_snapshots")),

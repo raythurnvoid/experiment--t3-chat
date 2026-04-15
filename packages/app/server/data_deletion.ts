@@ -19,8 +19,7 @@ export async function data_deletion_db_request(
 	if (args.scope === "user") {
 		const existing = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("by_userId", (q) => q.eq("userId", args.userId))
-			.filter((q) => q.eq(q.field("scope"), "user"))
+			.withIndex("by_user_and_scope", (q) => q.eq("userId", args.userId).eq("scope", "user"))
 			.first();
 
 		if (existing) {
@@ -42,13 +41,15 @@ export async function data_deletion_db_request(
 			throw new Error("Project id is required for project deletion requests");
 		}
 
-		const existing = await ctx.db
+		const existingProjectRequests = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("by_workspace_project", (q) => q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId))
+			.withIndex("by_workspace_and_project_and_scope", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("scope", "project"),
+			)
 			.first();
 
-		if (existing) {
-			return existing._id;
+		if (existingProjectRequests) {
+			return existingProjectRequests._id;
 		}
 
 		return await ctx.db.insert("data_deletion_requests", {
@@ -59,14 +60,10 @@ export async function data_deletion_db_request(
 		});
 	}
 
-	const existingRequests = await ctx.db
+	const existingWorkspaceRequest = await ctx.db
 		.query("data_deletion_requests")
-		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", args.workspaceId))
-		.collect();
-
-	const existingWorkspaceRequest = existingRequests.find(
-		(row) => row.scope === "workspace" && row.projectId === undefined,
-	);
+		.withIndex("by_workspace_and_scope", (q) => q.eq("workspaceId", args.workspaceId).eq("scope", "workspace"))
+		.first();
 
 	if (existingWorkspaceRequest) {
 		return existingWorkspaceRequest._id;

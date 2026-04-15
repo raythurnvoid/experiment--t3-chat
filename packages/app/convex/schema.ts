@@ -321,6 +321,9 @@ const app_convex_schema = defineSchema({
 		scope: v.union(v.literal("project"), v.literal("workspace"), v.literal("user")),
 	})
 		.index("by_workspace_project", ["workspaceId", "projectId"])
+		.index("by_user_and_scope", ["userId", "scope"])
+		.index("by_workspace_and_scope", ["workspaceId", "scope"])
+		.index("by_workspace_and_project_and_scope", ["workspaceId", "projectId", "scope"])
 		.index("by_userId", ["userId"]),
 	// #endregion data deletion
 
@@ -436,8 +439,12 @@ const app_convex_schema = defineSchema({
 		/** Display name, e.g. "Anonymous user <id>" for anonymous users */
 		displayName: v.string(),
 		avatarUrl: v.optional(v.string()),
+		/** Normalized signed-in email kept for deleted-account recovery after Clerk deletion. */
+		email: v.optional(v.string()),
 		updatedAt: v.number(),
-	}).index("by_userId", ["userId"]),
+	})
+		.index("by_userId", ["userId"])
+		.index("by_email", ["email"]),
 
 	clerk_webhook_receipts: defineTable({
 		eventId: v.string(),
