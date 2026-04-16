@@ -415,6 +415,16 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_userId", ["userId"])
 		.index("by_lastSyncedAt", ["lastSyncedAt"]),
+
+	/**
+	 * Keep one billing-owned scheduler row per user so you can cancel or replace
+	 * the current Workpool job without mixing Workpool ids into unrelated tables.
+	 */
+	billing_cancel_polar_subscription_jobs: defineTable({
+		userId: v.id("users"),
+		jobId: v.string(),
+		updatedAt: v.number(),
+	}).index("by_userId", ["userId"]),
 	// #endregion billing
 
 	// #region users
@@ -440,7 +450,7 @@ const app_convex_schema = defineSchema({
 		displayName: v.string(),
 		avatarUrl: v.optional(v.string()),
 		/** Normalized signed-in email kept for deleted-account recovery after Clerk deletion. */
-		email: v.optional(v.string()),
+		email: v.string(),
 		updatedAt: v.number(),
 	})
 		.index("by_userId", ["userId"])

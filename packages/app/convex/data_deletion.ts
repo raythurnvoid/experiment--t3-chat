@@ -759,7 +759,7 @@ export const process_deletion_requests = internalAction({
 					_test_now: test_now,
 				});
 			} catch (error) {
-				console.error("[data_deletion.process_deletion_requests] Failed to process user deletion request", {
+				console.error("Failed to process user deletion request", {
 					error,
 					requestId,
 				});
@@ -782,7 +782,7 @@ export const process_deletion_requests = internalAction({
 					_test_now: test_now,
 				});
 			} catch (error) {
-				console.error("[data_deletion.process_deletion_requests] Failed to process workspace deletion request", {
+				console.error("Failed to process workspace deletion request", {
 					error,
 					requestId,
 				});
@@ -801,7 +801,7 @@ export const process_deletion_requests = internalAction({
 					_test_now: test_now,
 				});
 			} catch (error) {
-				console.error("[data_deletion.process_deletion_requests] Failed to process project deletion request", {
+				console.error("Failed to process project deletion request", {
 					error,
 					requestId,
 				});

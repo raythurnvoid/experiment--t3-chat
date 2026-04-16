@@ -33,67 +33,17 @@ export const BillingActivePlanSkeleton = memo(function BillingActivePlanSkeleton
 			aria-busy="true"
 			aria-label="Loading active plan"
 		>
-			<div
-				className={
-					"BillingActivePlanSkeleton-badge" satisfies BillingActivePlanSkeleton_ClassNames
-				}
-				aria-hidden
-			/>
-			<div
-				className={
-					"BillingActivePlanSkeleton-title" satisfies BillingActivePlanSkeleton_ClassNames
-				}
-				aria-hidden
-			/>
-			<div
-				className={
-					"BillingActivePlanSkeleton-usage" satisfies BillingActivePlanSkeleton_ClassNames
-				}
-				aria-hidden
-			/>
-			<div
-				className={
-					"BillingActivePlanSkeleton-renewal" satisfies BillingActivePlanSkeleton_ClassNames
-				}
-				aria-hidden
-			/>
-			<div
-				className={
-					"BillingActivePlanSkeleton-started" satisfies BillingActivePlanSkeleton_ClassNames
-				}
-				aria-hidden
-			/>
-			<div
-				className={
-					"BillingActivePlanSkeleton-details" satisfies BillingActivePlanSkeleton_ClassNames
-				}
-				aria-hidden
-			>
-				<div
-					className={
-						"BillingActivePlanSkeleton-covers" satisfies BillingActivePlanSkeleton_ClassNames
-					}
-				/>
-				<ul
-					className={
-						"BillingActivePlanSkeleton-list" satisfies BillingActivePlanSkeleton_ClassNames
-					}
-				>
-					<li
-						className={
-							"BillingActivePlanSkeleton-list-item" satisfies BillingActivePlanSkeleton_ClassNames
-						}
-					/>
-					<li
-						className={
-							"BillingActivePlanSkeleton-list-item" satisfies BillingActivePlanSkeleton_ClassNames
-						}
-					/>
-					<li
-						className={
-							"BillingActivePlanSkeleton-list-item" satisfies BillingActivePlanSkeleton_ClassNames
-						}
-					/>
+			<div className={"BillingActivePlanSkeleton-badge" satisfies BillingActivePlanSkeleton_ClassNames} aria-hidden />
+			<div className={"BillingActivePlanSkeleton-title" satisfies BillingActivePlanSkeleton_ClassNames} aria-hidden />
+			<div className={"BillingActivePlanSkeleton-usage" satisfies BillingActivePlanSkeleton_ClassNames} aria-hidden />
+			<div className={"BillingActivePlanSkeleton-renewal" satisfies BillingActivePlanSkeleton_ClassNames} aria-hidden />
+			<div className={"BillingActivePlanSkeleton-started" satisfies BillingActivePlanSkeleton_ClassNames} aria-hidden />
+			<div className={"BillingActivePlanSkeleton-details" satisfies BillingActivePlanSkeleton_ClassNames} aria-hidden>
+				<div className={"BillingActivePlanSkeleton-covers" satisfies BillingActivePlanSkeleton_ClassNames} />
+				<ul className={"BillingActivePlanSkeleton-list" satisfies BillingActivePlanSkeleton_ClassNames}>
+					<li className={"BillingActivePlanSkeleton-list-item" satisfies BillingActivePlanSkeleton_ClassNames} />
+					<li className={"BillingActivePlanSkeleton-list-item" satisfies BillingActivePlanSkeleton_ClassNames} />
+					<li className={"BillingActivePlanSkeleton-list-item" satisfies BillingActivePlanSkeleton_ClassNames} />
 				</ul>
 			</div>
 		</div>
@@ -121,30 +71,13 @@ const BillingActivePlanUsage = memo(function BillingActivePlanUsage(props: Billi
 	return (
 		<div className={"BillingActivePlanUsage" satisfies BillingActivePlanUsage_ClassNames}>
 			<p className={"BillingActivePlanUsage-line" satisfies BillingActivePlanUsage_ClassNames}>
-				<span
-					className={"BillingActivePlanUsage-label" satisfies BillingActivePlanUsage_ClassNames}
-				>
-					Due
-				</span>{" "}
-				<span
-					className={"BillingActivePlanUsage-value" satisfies BillingActivePlanUsage_ClassNames}
-				>
-					{due}
-				</span>
-				<span
-					className={"BillingActivePlanUsage-sep" satisfies BillingActivePlanUsage_ClassNames}
-				>
-					{" "}
-					|{" "}
-				</span>
-				<span
-					className={"BillingActivePlanUsage-label" satisfies BillingActivePlanUsage_ClassNames}
-				>
+				<span className={"BillingActivePlanUsage-label" satisfies BillingActivePlanUsage_ClassNames}>Due</span>{" "}
+				<span className={"BillingActivePlanUsage-value" satisfies BillingActivePlanUsage_ClassNames}>{due}</span>
+				<span className={"BillingActivePlanUsage-sep" satisfies BillingActivePlanUsage_ClassNames}> | </span>
+				<span className={"BillingActivePlanUsage-label" satisfies BillingActivePlanUsage_ClassNames}>
 					Remaining credits
 				</span>{" "}
-				<span
-					className={"BillingActivePlanUsage-value" satisfies BillingActivePlanUsage_ClassNames}
-				>
+				<span className={"BillingActivePlanUsage-value" satisfies BillingActivePlanUsage_ClassNames}>
 					{creditsLeft}
 				</span>
 			</p>
@@ -173,12 +106,10 @@ const BillingActivePlanBadge = memo(function BillingActivePlanBadge(props: Billi
 			variant="outline"
 			className={cn(
 				"BillingActivePlanBadge" satisfies BillingActivePlanBadge_ClassNames,
-				variant === "active" &&
-					("BillingActivePlanBadge-variant-active" satisfies BillingActivePlanBadge_ClassNames),
+				variant === "active" && ("BillingActivePlanBadge-variant-active" satisfies BillingActivePlanBadge_ClassNames),
 				variant === "trialing" &&
 					("BillingActivePlanBadge-variant-trialing" satisfies BillingActivePlanBadge_ClassNames),
-				variant === "ending" &&
-					("BillingActivePlanBadge-variant-ending" satisfies BillingActivePlanBadge_ClassNames),
+				variant === "ending" && ("BillingActivePlanBadge-variant-ending" satisfies BillingActivePlanBadge_ClassNames),
 			)}
 		>
 			{children}
@@ -189,7 +120,9 @@ const BillingActivePlanBadge = memo(function BillingActivePlanBadge(props: Billi
 
 // #region root
 type ProductDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
-type SubscriptionDoc = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>>;
+type SubscriptionDoc = NonNullable<
+	app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>
+>;
 type UsageSnapshotDoc = app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
 
 function plan_interval_label(interval: string) {
@@ -285,10 +218,7 @@ function get_subscription_times_texts(subscription: SubscriptionDoc) {
 	};
 }
 
-function get_pending_update_text(
-	subscription: SubscriptionDoc,
-	scheduledChangeProductName: string | null | undefined,
-) {
+function get_pending_update_text(subscription: SubscriptionDoc, scheduledChangeProductName: string | null | undefined) {
 	if (subscription.cancelAtPeriodEnd || !subscription.pendingUpdate?.appliesAt) {
 		return null;
 	}
@@ -310,7 +240,7 @@ type BillingActivePlan_ClassNames =
 export type BillingActivePlan_Props = {
 	product: ProductDoc;
 	subscription: SubscriptionDoc;
-	usage: UsageSnapshotDoc;
+	usage: UsageSnapshotDoc | undefined;
 	scheduledChangeProductName?: string | null;
 };
 
@@ -362,16 +292,12 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	return (
 		<div className={"BillingActivePlan" satisfies BillingActivePlan_ClassNames}>
 			<BillingActivePlanBadge variant={badgeData.badgeVariant}>{badgeData.badgeLabel}</BillingActivePlanBadge>
-			<div className={"BillingActivePlan-title" satisfies BillingActivePlan_ClassNames}>
-				{title}
-			</div>
+			<div className={"BillingActivePlan-title" satisfies BillingActivePlan_ClassNames}>{title}</div>
 			{meteredUsageSnapshot ? (
 				<BillingActivePlanUsage due={meteredUsageSnapshot.due} creditsLeft={meteredUsageSnapshot.creditsLeft} />
 			) : null}
 			{pendingUpdateText ? (
-				<p className={"BillingActivePlan-pending-update" satisfies BillingActivePlan_ClassNames}>
-					{pendingUpdateText}
-				</p>
+				<p className={"BillingActivePlan-pending-update" satisfies BillingActivePlan_ClassNames}>{pendingUpdateText}</p>
 			) : subscriptionTimesTexts.primaryLine ? (
 				<p className={"BillingActivePlan-renewal" satisfies BillingActivePlan_ClassNames}>
 					{subscriptionTimesTexts.primaryLine}
@@ -385,9 +311,7 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 			<div className={"BillingActivePlan-details" satisfies BillingActivePlan_ClassNames}>
 				<ul className={"BillingActivePlan-list" satisfies BillingActivePlan_ClassNames}>
 					{includedUsageText ? (
-						<li
-							className={"BillingActivePlan-list-item" satisfies BillingActivePlan_ClassNames}
-						>
+						<li className={"BillingActivePlan-list-item" satisfies BillingActivePlan_ClassNames}>
 							{includedUsageText}
 						</li>
 					) : null}

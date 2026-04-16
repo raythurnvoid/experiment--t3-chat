@@ -21,8 +21,9 @@ import {
 } from "../../../shared/billing.ts";
 
 // #region product card plan action
-type BillingAccountManagementCardPlanAction_ProductDoc =
-	app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
+type BillingAccountManagementCardPlanAction_ProductDoc = app_convex_FunctionReturnType<
+	typeof app_convex_api.billing.list_products
+>[number];
 
 type BillingAccountManagementCardPlanAction_Props = {
 	product: BillingAccountManagementCardPlanAction_ProductDoc;
@@ -30,7 +31,9 @@ type BillingAccountManagementCardPlanAction_Props = {
 	currentSubscriptionId: string;
 };
 
-const BillingAccountManagementCardPlanAction = memo(function BillingAccountManagementCardPlanAction(props: BillingAccountManagementCardPlanAction_Props) {
+const BillingAccountManagementCardPlanAction = memo(function BillingAccountManagementCardPlanAction(
+	props: BillingAccountManagementCardPlanAction_Props,
+) {
 	const { product, currentProductName, currentSubscriptionId } = props;
 
 	const planChangeKind = billing_get_plan_change_kind(currentProductName, product.name);
@@ -320,7 +323,10 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 							{sortedBillingProducts?.map((product) => {
 								return (
 									<BillingAccountManagementPanelPlanItem key={product.id}>
-										<BillingProductCard product={product} selectPlanSlot={<BillingCheckoutButton productId={product.id} />} />
+										<BillingProductCard
+											product={product}
+											selectPlanSlot={<BillingCheckoutButton productId={product.id} />}
+										/>
 									</BillingAccountManagementPanelPlanItem>
 								);
 							})}

@@ -1,5 +1,5 @@
 import { Polar } from "@convex-dev/polar";
-import { Workpool } from "@convex-dev/workpool";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
@@ -16,7 +16,7 @@ import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
-import { action, internalAction, internalMutation, query } from "./_generated/server.js";
+import { action, internalAction, internalMutation, internalQuery, query } from "./_generated/server.js";
 import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
 import { billing_PRODUCTS, billing_get_plan_change_kind } from "../shared/billing.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
@@ -54,7 +54,7 @@ export const billing = new Polar<DataModel>(components.polar, {
 
 const billing_api = billing.api();
 
-const billing_usage_event_workpool = new Workpool(components.billingUsageEventWorkpool, {
+const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
 });
@@ -447,8 +447,217 @@ export const generate_customer_portal_url = action({
 	},
 });
 
+// #region cancellation
+const billing_workpool_cancellation = new Workpool(components.billing_workpool_cancellation, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 10 * 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
+});
+
+export const get_cancel_polar_subscription_job_by_user_id = internalQuery({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.union(v.null(), doc(app_convex_schema, "billing_cancel_polar_subscription_jobs")),
+	handler: async (ctx, args) => {
+		return (
+			(await ctx.db
+				.query("billing_cancel_polar_subscription_jobs")
+				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+				.first()) ?? null
+		);
+	},
+});
+
+export const upsert_cancel_polar_subscription_job = internalMutation({
+	args: {
+		userId: v.id("users"),
+		jobId: v.string(),
+		updatedAt: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const existingRows = await ctx.db
+			.query("billing_cancel_polar_subscription_jobs")
+			.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+			.collect();
+		const [currentRow, ...staleRows] = existingRows;
+
+		await Promise.all(staleRows.map((row) => ctx.db.delete("billing_cancel_polar_subscription_jobs", row._id)));
+
+		if (currentRow) {
+			await ctx.db.patch("billing_cancel_polar_subscription_jobs", currentRow._id, {
+				jobId: args.jobId,
+				updatedAt: args.updatedAt,
+			});
+
+			return null;
+		}
+
+		await ctx.db.insert("billing_cancel_polar_subscription_jobs", args);
+
+		return null;
+	},
+});
+
+export const delete_cancel_polar_subscription_job = internalMutation({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const rows = await ctx.db
+			.query("billing_cancel_polar_subscription_jobs")
+			.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+			.collect();
+
+		await Promise.all(rows.map((row) => ctx.db.delete("billing_cancel_polar_subscription_jobs", row._id)));
+
+		return null;
+	},
+});
+
+export const complete_polar_subscription_period_end_cancellation = billing_workpool_cancellation.defineOnComplete({
+	context: v.object({
+		userId: v.id("users"),
+	}),
+	handler: async (ctx, args) => {
+		const userId = args.context.userId as Id<"users">;
+		const row = await ctx.db
+			.query("billing_cancel_polar_subscription_jobs")
+			.withIndex("by_userId", (q) => q.eq("userId", userId))
+			.first();
+		if (!row || row.jobId !== args.workId) {
+			return;
+		}
+
+		if (args.result.kind === "success") {
+			await ctx.db.delete(
+				"billing_cancel_polar_subscription_jobs",
+				row._id as Id<"billing_cancel_polar_subscription_jobs">,
+			);
+		}
+
+		return;
+	},
+});
+
+export async function billing_schedule_polar_subscription_period_end_cancellation(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		subscriptionId: string;
+	},
+) {
+	const existingRow = await ctx.runQuery(internal.billing.get_cancel_polar_subscription_job_by_user_id, {
+		userId: args.userId,
+	});
+	if (existingRow) {
+		await billing_workpool_cancellation.cancel(ctx, existingRow.jobId as WorkId);
+	}
+
+	const jobId = await billing_workpool_cancellation.enqueueAction(
+		ctx,
+		internal.billing.cancel_polar_subscription_at_period_end,
+		args,
+		{
+			context: {
+				userId: args.userId,
+			},
+			onComplete: internal.billing.complete_polar_subscription_period_end_cancellation,
+		},
+	);
+
+	await ctx.runMutation(internal.billing.upsert_cancel_polar_subscription_job, {
+		userId: args.userId,
+		jobId,
+		updatedAt: Date.now(),
+	});
+
+	return jobId;
+}
+
+export async function billing_cancel_scheduled_polar_subscription_period_end_cancellation(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+	},
+) {
+	const existingRow = await ctx.runQuery(internal.billing.get_cancel_polar_subscription_job_by_user_id, {
+		userId: args.userId,
+	});
+	if (!existingRow) {
+		return null;
+	}
+
+	await billing_workpool_cancellation.cancel(ctx, existingRow.jobId as WorkId);
+	await ctx.runMutation(internal.billing.delete_cancel_polar_subscription_job, {
+		userId: args.userId,
+	});
+
+	return null;
+}
+
+export const schedule_polar_subscription_period_end_cancellation = internalAction({
+	args: {
+		userId: v.id("users"),
+		subscriptionId: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await billing_schedule_polar_subscription_period_end_cancellation(ctx, args);
+
+		return null;
+	},
+});
+
+export const cancel_scheduled_polar_subscription_period_end_cancellation = internalAction({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		return await billing_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, args);
+	},
+});
+
+export const cancel_polar_subscription_at_period_end = internalAction({
+	args: {
+		userId: v.id("users"),
+		subscriptionId: v.string(),
+	},
+	returns: v.null(),
+	handler: async (_ctx, args) => {
+		const cancelSubscriptionResult = await billing_action_cancel_polar_subscription_at_period_end({
+			subscriptionId: args.subscriptionId,
+		});
+		if (cancelSubscriptionResult._nay) {
+			console.error("Failed to cancel Polar subscription at period end", {
+				cancelSubscriptionResult,
+				subscriptionId: args.subscriptionId,
+				userId: args.userId,
+			});
+			throw convex_error({
+				message: "Failed to cancel Polar subscription at period end",
+				cause: cancelSubscriptionResult._nay,
+				data: {
+					subscriptionId: args.subscriptionId,
+					userId: args.userId,
+				},
+			});
+		}
+
+		return null;
+	},
+});
+// #endregion cancellation
+
 // #region bootstrap
-const billing_bootstrap_workpool = new Workpool(components.billingBootstrapWorkpool, {
+const billing_workpool_bootstrap = new Workpool(components.billing_workpool_bootstrap, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
 });
@@ -460,7 +669,7 @@ export async function billing_enqueue_free_subscription_bootstrap(
 		email: string;
 	},
 ) {
-	return await billing_bootstrap_workpool.enqueueAction(ctx, internal.billing.bootstrap_free_subscription, args);
+	return await billing_workpool_bootstrap.enqueueAction(ctx, internal.billing.bootstrap_free_subscription, args);
 }
 
 export const bootstrap_free_subscription = internalAction({
@@ -546,7 +755,7 @@ export const bootstrap_free_subscription = internalAction({
 			});
 		});
 		if (bootstrapResult._nay) {
-			console.error("[billing.bootstrap_free_subscription] Failed to bootstrap Free subscription", {
+			console.error("Failed to bootstrap Free subscription", {
 				error: bootstrapResult._nay,
 				userId: args.userId,
 			});
@@ -638,7 +847,7 @@ export const change_current_subscription = action({
 				return Result({ _nay: { message: "Subscription not found" } });
 			}
 
-			console.error("[billing.change_current_subscription] Failed to change the subscription", {
+			console.error("Failed to change the subscription", {
 				error: updateResult.error,
 				subscriptionId: currentSubscription.id,
 				targetProductId: targetProduct.id,
@@ -686,7 +895,7 @@ export async function billing_ingest_page_save(
 
 	const eventId = `${billing_EVENTS.pressUsage}:${args.userId}:${args.pageId}:${args.newSequence}`;
 
-	await billing_usage_event_workpool.enqueueAction(ctx, internal.billing.ingest_usage_event, {
+	await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_usage_event, {
 		userId: args.userId,
 		eventId,
 		metadata: {

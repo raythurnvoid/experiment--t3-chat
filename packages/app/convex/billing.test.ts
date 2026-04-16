@@ -1,6 +1,7 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { billing_EVENTS } from "../server/billing.ts";
+import { Workpool } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import { billing } from "./billing.ts";
 import { test_convex } from "./setup.test.ts";
@@ -233,6 +234,18 @@ async function seed_user_id(t: ReturnType<typeof test_convex>) {
 			clerkUserId: null,
 		});
 	});
+}
+
+async function get_cancel_polar_subscription_job(
+	t: ReturnType<typeof test_convex>,
+	userId: Id<"users">,
+) {
+	return await t.run((ctx) =>
+		ctx.db
+			.query("billing_cancel_polar_subscription_jobs")
+			.withIndex("by_userId", (q) => q.eq("userId", userId))
+			.first(),
+	);
 }
 
 async function seed_subscription(
@@ -1019,7 +1032,7 @@ describe("billing bootstrap_free_subscription", () => {
 			}),
 		).rejects.toThrow("Failed to bootstrap Free subscription");
 		expect(consoleErrorSpy).toHaveBeenCalledWith(
-			"[billing.bootstrap_free_subscription] Failed to bootstrap Free subscription",
+			"Failed to bootstrap Free subscription",
 			expect.objectContaining({
 				error: expect.objectContaining({
 					data: expect.objectContaining({
@@ -2211,6 +2224,285 @@ describe("billing revoke_subscription", () => {
 				userId,
 			}),
 		).rejects.toThrow("Failed to revoke subscription");
+	});
+});
+
+describe("billing schedule_polar_subscription_period_end_cancellation", () => {
+	test("schedules a billing-owned row and enqueues the retryable cancellation with the configured backoff", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockImplementation(async function (this: Workpool, _ctx, fn, fnArgs, options) {
+				expect(this.options.defaultRetryBehavior).toEqual({
+					initialBackoffMs: 10 * 60 * 1000,
+					base: 1.2,
+					maxAttempts: Number.POSITIVE_INFINITY,
+				});
+				expect(fn).toBeDefined();
+				expect(fnArgs).toEqual({
+					userId,
+					subscriptionId: "sub_schedule_initial",
+				});
+				expect(options?.context).toEqual({
+					userId,
+				});
+				expect(options?.onComplete).toBeDefined();
+
+				return "work_schedule_initial" as never;
+			});
+
+		await t.action(internal.billing.schedule_polar_subscription_period_end_cancellation, {
+			userId,
+			subscriptionId: "sub_schedule_initial",
+		});
+
+		const row = await get_cancel_polar_subscription_job(t, userId);
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(row?.jobId).toBe("work_schedule_initial");
+		expect(row?.updatedAt).toBeTypeOf("number");
+	});
+
+	test("cancels the previous work and overwrites the row when scheduling again for the same user", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValueOnce("work_schedule_old" as never)
+			.mockResolvedValueOnce("work_schedule_new" as never);
+
+		await t.action(internal.billing.schedule_polar_subscription_period_end_cancellation, {
+			userId,
+			subscriptionId: "sub_schedule_old",
+		});
+		await t.action(internal.billing.schedule_polar_subscription_period_end_cancellation, {
+			userId,
+			subscriptionId: "sub_schedule_new",
+		});
+
+		const row = await get_cancel_polar_subscription_job(t, userId);
+		const rowCount = await t.run((ctx) =>
+			ctx.db
+				.query("billing_cancel_polar_subscription_jobs")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.collect()
+				.then((rows) => rows.length),
+		);
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(2);
+		expect(cancelSpy).toHaveBeenCalledTimes(1);
+		expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), "work_schedule_old");
+		expect(rowCount).toBe(1);
+		expect(row?.jobId).toBe("work_schedule_new");
+	});
+
+	test("cancels and deletes the row when the scheduler is cleared explicitly", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_schedule_delete" as never);
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
+
+		await t.action(internal.billing.schedule_polar_subscription_period_end_cancellation, {
+			userId,
+			subscriptionId: "sub_schedule_delete",
+		});
+		await t.action(internal.billing.cancel_scheduled_polar_subscription_period_end_cancellation, {
+			userId,
+		});
+
+		const row = await get_cancel_polar_subscription_job(t, userId);
+
+		expect(cancelSpy).toHaveBeenCalledTimes(1);
+		expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), "work_schedule_delete");
+		expect(row).toBeNull();
+	});
+
+	test("clears the matching row when the work completes successfully", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId,
+			jobId: "work_complete_success",
+			updatedAt: 12_345,
+		});
+
+		await t.mutation(internal.billing.complete_polar_subscription_period_end_cancellation, {
+			workId: "work_complete_success",
+			context: {
+				userId,
+			},
+			result: {
+				kind: "success",
+				returnValue: null,
+			},
+		});
+
+		const row = await get_cancel_polar_subscription_job(t, userId);
+
+		expect(row).toBeNull();
+	});
+
+	test("keeps the row when the work fails", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId,
+			jobId: "work_complete_failed",
+			updatedAt: 22_345,
+		});
+
+		await t.mutation(internal.billing.complete_polar_subscription_period_end_cancellation, {
+			workId: "work_complete_failed",
+			context: {
+				userId,
+			},
+			result: {
+				kind: "failed",
+				error: "polar down",
+			},
+		});
+
+		const row = await get_cancel_polar_subscription_job(t, userId);
+
+		expect(row?.jobId).toBe("work_complete_failed");
+	});
+
+	test("ignores completion from an older replaced job", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId,
+			jobId: "work_complete_new",
+			updatedAt: 32_345,
+		});
+
+		await t.mutation(internal.billing.complete_polar_subscription_period_end_cancellation, {
+			workId: "work_complete_old",
+			context: {
+				userId,
+			},
+			result: {
+				kind: "canceled",
+			},
+		});
+
+		const row = await get_cancel_polar_subscription_job(t, userId);
+
+		expect(row?.jobId).toBe("work_complete_new");
+	});
+});
+
+describe("billing cancel_polar_subscription_at_period_end", () => {
+	beforeEach(() => {
+		subscriptionsUpdateMock.mockReset();
+	});
+
+	afterEach(() => {
+		subscriptionsUpdateMock.mockReset();
+	});
+
+	test("cancels the captured subscription id without requiring a local subscription mirror", async () => {
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: {
+				id: "sub_billing_cancel_period_end",
+			} as never,
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.cancel_polar_subscription_at_period_end, {
+			userId,
+			subscriptionId: "sub_billing_cancel_period_end",
+		});
+
+		expect(result).toBeNull();
+		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_billing_cancel_period_end",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: true,
+			},
+		});
+	});
+
+	test("treats an already canceled subscription as success", async () => {
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: false,
+			error: new AlreadyCanceledSubscription(
+				{
+					error: "AlreadyCanceledSubscription",
+					detail: "Subscription already canceled",
+				},
+				{
+					request: new Request("https://polar.test/v1/subscriptions/sub_billing_cancel_period_end_already_canceled"),
+					response: new Response(JSON.stringify({ error: "AlreadyCanceledSubscription" }), { status: 403 }),
+					body: JSON.stringify({ error: "AlreadyCanceledSubscription" }),
+				},
+			),
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.cancel_polar_subscription_at_period_end, {
+			userId,
+			subscriptionId: "sub_billing_cancel_period_end_already_canceled",
+		});
+
+		expect(result).toBeNull();
+	});
+
+	test("treats a missing subscription as success", async () => {
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: false,
+			error: new ResourceNotFound(
+				{
+					error: "ResourceNotFound",
+					detail: "Subscription not found",
+				},
+				{
+					request: new Request("https://polar.test/v1/subscriptions/sub_billing_cancel_period_end_missing"),
+					response: new Response(JSON.stringify({ error: "ResourceNotFound" }), { status: 404 }),
+					body: JSON.stringify({ error: "ResourceNotFound" }),
+				},
+			),
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.cancel_polar_subscription_at_period_end, {
+			userId,
+			subscriptionId: "sub_billing_cancel_period_end_missing",
+		});
+
+		expect(result).toBeNull();
+	});
+
+	test("throws when Polar returns an unexpected cancel-at-period-end error", async () => {
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: false,
+			error: new UnexpectedClientError("polar cancel-at-period-end exploded"),
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		await expect(
+			t.action(internal.billing.cancel_polar_subscription_at_period_end, {
+				userId,
+				subscriptionId: "sub_billing_cancel_period_end_error",
+			}),
+		).rejects.toThrow("Failed to cancel Polar subscription at period end");
 	});
 });
 

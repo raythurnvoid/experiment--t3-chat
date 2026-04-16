@@ -24,41 +24,42 @@ import {
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { user_limits } from "../shared/limits.ts";
 import type { Id } from "./_generated/dataModel";
-import { v_result } from "../server/convex-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 import {
-	billing_action_cancel_polar_subscription_at_period_end,
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
 	billing_action_clear_subscriptions_by_user_id,
+	billing_cancel_scheduled_polar_subscription_period_end_cancellation,
 	billing_enqueue_free_subscription_bootstrap,
+	billing_schedule_polar_subscription_period_end_cancellation,
 } from "./billing.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
-	throw new Error("ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env");
+	throw convex_error({ message: "ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env" });
 }
 
 /** Private key for signing anonymous users JWT */
 const ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM = process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM;
 
 if (!process.env.ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM) {
-	throw new Error("ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM is not set in Convex env");
+	throw convex_error({ message: "ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM is not set in Convex env" });
 }
 
 /** Public key (SPKI) for verifying anonymous users JWT */
 const ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM = process.env.ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM;
 
 if (!process.env.VITE_CONVEX_HTTP_URL) {
-	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
+	throw convex_error({ message: "VITE_CONVEX_HTTP_URL is not set in Convex env" });
 }
 
 /** Issuer of the anonymous users JWT */
 const ANONYMOUS_USERS_JWT_ISSUER = process.env.VITE_CONVEX_HTTP_URL;
 
 if (!process.env.CLERK_SECRET_KEY) {
-	throw new Error("CLERK_SECRET_KEY is not set in Convex env");
+	throw convex_error({ message: "CLERK_SECRET_KEY is not set in Convex env" });
 }
 
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
@@ -89,7 +90,7 @@ const get_anonymous_users_jwt_public_xy = ((/* iife */) => {
 		const jwk = await exportJWK(publicKey);
 
 		if (jwk.kty !== "EC" || jwk.crv !== "P-256" || !jwk.x || !jwk.y) {
-			throw new Error("ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM is not an ES256 P-256 public key");
+			throw convex_error({ message: "ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM is not an ES256 P-256 public key" });
 		}
 
 		return { x: jwk.x, y: jwk.y } as const;
@@ -177,6 +178,7 @@ export const create_anonymous_user = internalMutation({
 					userId: userId,
 					displayName: users_create_anonymouse_user_display_name(userId),
 					updatedAt: now,
+					email: "",
 				})
 				.then(async (anagraphicId) => {
 					await ctx.db.patch("users", userId, {
@@ -300,122 +302,6 @@ async function db_upsert_anagraphic(
 function users_resolve_user_is_bad_request_message(message: string) {
 	return USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES.some((value) => value === message);
 }
-
-export const purge_deleted_user_tombstone = internalMutation({
-	args: {
-		userId: v.id("users"),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const user = await ctx.db.get("users", args.userId);
-		if (!user) {
-			return null;
-		}
-
-		if (user.deletedAt == null) {
-			throw new Error("Cannot purge tombstone for a non-deleted user");
-		}
-
-		const [
-			memberships,
-			deletionRequests,
-			userLimits,
-			anonymousAuthTokens,
-			billingUsageSnapshots,
-			ownedWorkspaces,
-			aiChatThreads,
-			aiChatThreadMessages,
-			pages,
-			pageSnapshots,
-		] = await Promise.all([
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.userId))
-				.collect(),
-			ctx.db
-				.query("data_deletion_requests")
-				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
-				.collect(),
-			ctx.db
-				.query("limits_per_user")
-				.withIndex("by_user_limit_name", (q) => q.eq("userId", args.userId))
-				.collect(),
-			ctx.db
-				.query("users_anon_tokens")
-				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
-				.collect(),
-			ctx.db
-				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", args.userId))
-				.collect(),
-			ctx.db
-				.query("workspaces")
-				.collect()
-				.then((rows) => rows.filter((row) => row.ownerUserId === args.userId)),
-			ctx.db
-				.query("ai_chat_threads")
-				.collect()
-				.then((rows) => rows.filter((row) => row.createdBy === args.userId || row.updatedBy === args.userId)),
-			ctx.db
-				.query("ai_chat_threads_messages_aisdk_5")
-				.collect()
-				.then((rows) => rows.filter((row) => row.createdBy === args.userId)),
-			ctx.db
-				.query("pages")
-				.collect()
-				.then((rows) => rows.filter((row) => row.createdBy === args.userId)),
-			ctx.db
-				.query("pages_snapshots")
-				.collect()
-				.then((rows) => rows.filter((row) => row.created_by === args.userId)),
-		]);
-
-		if (
-			user.defaultWorkspaceId ||
-			user.defaultProjectId ||
-			user.clerkUserId != null ||
-			user.anonymousAuthToken ||
-			memberships.length > 0 ||
-			deletionRequests.length > 0 ||
-			userLimits.length > 0 ||
-			anonymousAuthTokens.length > 0 ||
-			billingUsageSnapshots.length > 0 ||
-			ownedWorkspaces.length > 0 ||
-			aiChatThreads.length > 0 ||
-			aiChatThreadMessages.length > 0 ||
-			pages.length > 0 ||
-			pageSnapshots.length > 0
-		) {
-			throw new Error("Cannot purge deleted user tombstone while dependent state remains", {
-				cause: {
-					userId: args.userId,
-					defaultWorkspaceId: user.defaultWorkspaceId,
-					defaultProjectId: user.defaultProjectId,
-					clerkUserId: user.clerkUserId,
-					hasAnonymousAuthToken: Boolean(user.anonymousAuthToken),
-					memberships: memberships.length,
-					deletionRequests: deletionRequests.length,
-					userLimits: userLimits.length,
-					anonymousAuthTokens: anonymousAuthTokens.length,
-					billingUsageSnapshots: billingUsageSnapshots.length,
-					ownedWorkspaces: ownedWorkspaces.length,
-					aiChatThreads: aiChatThreads.length,
-					aiChatThreadMessages: aiChatThreadMessages.length,
-					pages: pages.length,
-					pageSnapshots: pageSnapshots.length,
-				},
-			});
-		}
-
-		if (user.anagraphic) {
-			await ctx.db.delete("users_anagraphics", user.anagraphic);
-		}
-
-		await ctx.db.delete("users", args.userId);
-
-		return null;
-	},
-});
 
 export const get = internalQuery({
 	args: {
@@ -845,7 +731,7 @@ export const delete_current_user_account = action({
 				clerkUserId: user.clerkUserId,
 			});
 			if (clerkDeleteUserResult._nay) {
-				console.error("[users.delete_current_user_account] Failed to clean up Clerk account after local deletion", {
+				console.error("Failed to clean up Clerk account after local deletion", {
 					clerkDeleteUserResult,
 					clerkUserId: user.clerkUserId,
 					requestId,
@@ -857,20 +743,17 @@ export const delete_current_user_account = action({
 		}
 
 		if (currentSubscription) {
-			const cancelSubscriptionResult = await billing_action_cancel_polar_subscription_at_period_end({
+			await billing_schedule_polar_subscription_period_end_cancellation(ctx, {
+				userId: user._id,
 				subscriptionId: currentSubscription.id,
+			}).catch((error) => {
+				console.error("Failed to schedule Polar subscription period-end cancellation after local deletion", {
+					error,
+					requestId,
+					subscriptionId: currentSubscription.id,
+					userId: user._id,
+				});
 			});
-			if (cancelSubscriptionResult._nay) {
-				console.error(
-					"[users.delete_current_user_account] Failed to cancel Polar subscription at period end after local deletion",
-					{
-						cancelSubscriptionResult,
-						requestId,
-						subscriptionId: currentSubscription.id,
-						userId: user._id,
-					},
-				);
-			}
 		}
 
 		await billing_action_clear_subscriptions_by_user_id(ctx, {
@@ -1109,7 +992,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							if (!identity.email) {
-								console.error("[users.resolve_user_http] Missing Clerk email for billing bootstrap", {
+								console.error("Missing Clerk email for billing bootstrap", {
 									clerkUserId,
 									userId: resolveUserResult._yay.userId,
 								});
@@ -1123,7 +1006,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 								userId: resolveUserResult._yay.userId,
 								email: identity.email,
 							}).catch((error) => {
-								console.error("[users.resolve_user_http] Failed to enqueue Free subscription bootstrap", {
+								console.error("Failed to enqueue Free subscription bootstrap", {
 									error,
 									clerkUserId,
 									userId: resolveUserResult._yay.userId,
@@ -1172,12 +1055,35 @@ declare module "convex/server" {
 }
 
 // #region admin
+export const purge_deleted_user_tombstone = internalMutation({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return null;
+		}
+
+		if (user.deletedAt == null) {
+			throw convex_error({ message: "Cannot purge tombstone for a non-deleted user" });
+		}
+
+		if (user.anagraphic) {
+			await ctx.db.delete("users_anagraphics", user.anagraphic);
+		}
+
+		await ctx.db.delete("users", args.userId);
+
+		return null;
+	},
+});
+
 export const hard_delete_user_now = internalAction({
 	args: {
 		userId: v.id("users"),
-		purgeTombstone: v.optional(v.boolean()),
-		deletePolarCustomer: v.optional(v.boolean()),
-		delete_polar_customer: v.optional(v.boolean()),
+		purgeUserRecord: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1199,7 +1105,8 @@ export const hard_delete_user_now = internalAction({
 				clerkUserId: user.clerkUserId,
 			});
 			if (clerkDeleteUserResult._nay) {
-				throw new Error("Failed to delete Clerk user", {
+				throw convex_error({
+					message: "Failed to delete Clerk user",
 					cause: clerkDeleteUserResult._nay,
 				});
 			}
@@ -1207,31 +1114,51 @@ export const hard_delete_user_now = internalAction({
 			shouldClearClerkUserId = true;
 		}
 
-		if (currentSubscription) {
+		if (args.purgeUserRecord) {
+			await billing_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
+				userId: user._id,
+			});
+		}
+
+		if (args.purgeUserRecord && currentSubscription) {
 			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
 				subscriptionId: currentSubscription.id,
 			});
 			if (revokeSubscriptionResult._nay) {
-				throw new Error("Failed to revoke Polar subscription", {
+				throw convex_error({
+					message: "Failed to revoke Polar subscription",
 					cause: revokeSubscriptionResult._nay,
 				});
 			}
 		}
 
-		billing_action_clear_subscriptions_by_user_id;
-		await billing_action_clear_subscriptions_by_user_id(ctx, {
-			userId: user._id,
-		});
-
-		if (args.deletePolarCustomer ?? args.delete_polar_customer) {
+		if (args.purgeUserRecord) {
 			const deletePolarCustomerResult = await billing_action_delete_polar_customer_by_user_id(ctx, {
 				userId: user._id,
 			});
 			if (deletePolarCustomerResult._nay) {
-				throw new Error("Failed to delete Polar customer", {
+				throw convex_error({
+					message: "Failed to delete Polar customer",
 					cause: deletePolarCustomerResult._nay,
 				});
 			}
+		}
+
+		await billing_action_clear_subscriptions_by_user_id(ctx, {
+			userId: user._id,
+		});
+
+		if (!args.purgeUserRecord && currentSubscription) {
+			await billing_schedule_polar_subscription_period_end_cancellation(ctx, {
+				userId: user._id,
+				subscriptionId: currentSubscription.id,
+			}).catch((error) => {
+				console.error("Failed to schedule Polar subscription period-end cancellation after local hard delete", {
+					error,
+					subscriptionId: currentSubscription.id,
+					userId: user._id,
+				});
+			});
 		}
 
 		await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
@@ -1244,7 +1171,7 @@ export const hard_delete_user_now = internalAction({
 			});
 		}
 
-		if (args.purgeTombstone) {
+		if (args.purgeUserRecord) {
 			await ctx.runMutation(internal.users.purge_deleted_user_tombstone, {
 				userId: args.userId,
 			});

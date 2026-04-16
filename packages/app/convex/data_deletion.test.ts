@@ -36,7 +36,7 @@ async function data_deletion_test_bootstrap_user(
 				userId,
 				displayName: args.displayName,
 				avatarUrl: args.avatarUrl,
-				...(args.email ? { email: args.email } : {}),
+				email: args.email ?? "",
 				updatedAt: now,
 			})
 			.then((anagraphicId) =>
@@ -307,7 +307,7 @@ describe("init_user_deletion", () => {
 				snapshots,
 			] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
-				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db
 					.query("workspaces_projects_users")
@@ -464,13 +464,13 @@ describe("process_user_deletion_request", () => {
 		);
 
 		const requestCreationTime = await t.run(async (ctx) => {
-			const request = await ctx.db.get("data_deletion_requests", requestId);
+			const request = await ctx.db.get("data_deletion_requests", requestId!);
 			return request!._creationTime;
 		});
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
-				requestId,
+				requestId: requestId!,
 				_test_now: requestCreationTime + RETENTION_MS + 1,
 			}),
 		);
@@ -625,13 +625,13 @@ describe("process_user_deletion_request", () => {
 			}),
 		);
 		const requestCreationTime = await t.run(async (ctx) => {
-			const request = await ctx.db.get("data_deletion_requests", requestId);
+			const request = await ctx.db.get("data_deletion_requests", requestId!);
 			return request!._creationTime;
 		});
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
-				requestId,
+				requestId: requestId!,
 				_test_now: requestCreationTime + RETENTION_MS + 1,
 			}),
 		);
@@ -953,7 +953,7 @@ describe("hard_delete_user_data", () => {
 		const after = await t.run(async (ctx) => {
 			const [user, request, workspace, project, pages, snapshots] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
-				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
 				ctx.db.get("workspaces_projects", deletedUser.defaultProjectId),
 				ctx.db
@@ -1141,7 +1141,7 @@ describe("process_deletion_requests", () => {
 				projectId: extraProject._yay.projectId,
 				scope: "project",
 			});
-			const row = await ctx.db.get("data_deletion_requests", rid);
+			const row = await ctx.db.get("data_deletion_requests", rid!);
 			if (!row) {
 				throw new Error("Expected purge request");
 			}
@@ -1186,13 +1186,13 @@ describe("process_deletion_requests", () => {
 				userId: deletedUser.userId,
 				nowTs: 40_001,
 			});
-			const row = await ctx.db.get("data_deletion_requests", rid);
+			const row = await ctx.db.get("data_deletion_requests", rid!);
 			if (!row) {
 				throw new Error("Expected user deletion request");
 			}
 
 			return {
-				userRequestId: rid,
+				userRequestId: rid!,
 				projectRequestId: queuedProjectRequestId,
 				test_now: Math.max(row._creationTime, queuedProjectRequest._creationTime) + RETENTION_MS + 1,
 			};
@@ -1202,7 +1202,7 @@ describe("process_deletion_requests", () => {
 
 		const after = await t.run(async (ctx) => {
 			const [userRequest, projectRequest, requests, workspace, project, pages] = await Promise.all([
-				ctx.db.get("data_deletion_requests", userRequestId),
+				ctx.db.get("data_deletion_requests", userRequestId!),
 				ctx.db.get("data_deletion_requests", projectRequestId),
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
@@ -1344,7 +1344,7 @@ describe("resolve_user after tombstone", () => {
 		const after = await t.run(async (ctx) => {
 			const [user, request, memberships, anagraphic, pages] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
-				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.db
 					.query("workspaces_projects_users")
 					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
@@ -1452,7 +1452,7 @@ describe("resolve_user after tombstone", () => {
 
 		const after = await t.run(async (ctx) => {
 			const [request, subscription] = await Promise.all([
-				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.runQuery(components.polar.lib.getCurrentSubscription, {
 					userId: deletedUser.userId,
 				}),
@@ -1492,12 +1492,12 @@ describe("resolve_user after tombstone", () => {
 			}),
 		);
 		const requestCreationTime2 = await t.run(async (ctx) => {
-			const request = await ctx.db.get("data_deletion_requests", requestId);
+			const request = await ctx.db.get("data_deletion_requests", requestId!);
 			return request!._creationTime;
 		});
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
-				requestId,
+				requestId: requestId!,
 				_test_now: requestCreationTime2 + RETENTION_MS + 1,
 			}),
 		);
@@ -1576,12 +1576,12 @@ describe("resolve_user after tombstone", () => {
 			}),
 		);
 		const requestCreationTime = await t.run(async (ctx) => {
-			const request = await ctx.db.get("data_deletion_requests", requestId);
+			const request = await ctx.db.get("data_deletion_requests", requestId!);
 			return request!._creationTime;
 		});
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
-				requestId,
+				requestId: requestId!,
 				_test_now: requestCreationTime + RETENTION_MS + 1,
 			}),
 		);
@@ -1735,7 +1735,7 @@ describe("resolve_user after tombstone", () => {
 
 		const after = await t.run(async (ctx) => {
 			const [userRequest, resourceDeleteProjectRequest] = await Promise.all([
-				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.db.get("data_deletion_requests", resourceDeleteProjectRequestId),
 			]);
 

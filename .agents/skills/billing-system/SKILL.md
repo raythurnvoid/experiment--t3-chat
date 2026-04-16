@@ -58,7 +58,7 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 - `change_current_subscription` handles paid-plan changes. `Free -> paid` is intentionally not handled there and goes through checkout instead.
 - `generate_customer_portal_url` opens the Polar customer portal.
 - `bootstrap_free_subscription` creates the local Polar customer and the `Free` subscription when missing.
-- `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billingBootstrapWorkpool`.
+- `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`.
 - `handle_polar_customer_state_update` ingests the `customer.state_changed` webhook payload into `billing_usage_snapshots`.
 
 ## Auth bootstrap trigger
@@ -97,11 +97,14 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 
 ## Account deletion billing behavior
 
-- Normal user-facing account deletion schedules the current paid subscription to end at the close of the current billing period instead of revoking it immediately.
+- Normal user-facing account deletion schedules retryable work that cancels the current paid subscription at the close of the current billing period instead of revoking it immediately.
+- Billing owns `billing_cancel_polar_subscription_jobs` as the scheduler row for that work. Keep one row per user, replace the stored `jobId` when you reschedule, and clear the row only when the matching work finishes successfully or an explicit cancel removes it.
 - The delete flow clears the local subscription mirror immediately after scheduling that cancellation so the deleted account no longer presents an active local billing state.
 - `billing_usage_snapshots` are mirrored local billing state, not billing authority. Keep them through phase 1 and delete them only during phase 2 of account deletion.
 - Restoring the account during retention does not undo the scheduled cancellation.
-- Direct admin hard delete remains fully destructive and still revokes the subscription immediately.
+- Direct admin hard delete now uses `purgeUserRecord` as the single operator flag:
+- `purgeUserRecord: false` keeps the immediate local hard-delete path, keeps the final tombstoned user row, and schedules the same retryable period-end cancellation used by the normal delete flow.
+- `purgeUserRecord: true` cancels any scheduled period-end cancellation first, revokes the subscription immediately, deletes the Polar customer immediately, and purges the final local tombstone.
 
 # Operational billing rules
 
