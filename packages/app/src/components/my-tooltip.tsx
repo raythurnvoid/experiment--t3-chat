@@ -36,6 +36,30 @@ export const MyTooltipTrigger = memo(function MyTooltipTrigger(props: MyTooltipT
 });
 // #endregion Trigger
 
+// #region Info Trigger
+export type MyTooltipInfoTrigger_ClassNames = "MyTooltipInfoTrigger";
+
+export type MyTooltipInfoTrigger_Props = MyTooltipTrigger_Props;
+
+/**
+ * Use this for passive inline help inside a tooltip when the trigger is not a real button.
+ * It defaults to `tabIndex={0}` so non-button help content stays keyboard focusable.
+ * Keep layout, icon rendering, colors, spacing, and any non-default `tabIndex` at the call site.
+ * Use `MyTooltipTrigger` or the button wrappers for actual button and icon-button triggers.
+ */
+export const MyTooltipInfoTrigger = memo(function MyTooltipInfoTrigger(props: MyTooltipInfoTrigger_Props) {
+	const { className, tabIndex = 0, ...rest } = props;
+
+	return (
+		<MyTooltipTrigger
+			className={cn("MyTooltipInfoTrigger" satisfies MyTooltipInfoTrigger_ClassNames, className)}
+			tabIndex={tabIndex}
+			{...rest}
+		/>
+	);
+});
+// #endregion Info Trigger
+
 // #region Content
 export type MyTooltipContent_ClassNames = "MyTooltipContent";
 

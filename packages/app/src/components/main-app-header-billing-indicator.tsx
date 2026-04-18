@@ -2,10 +2,10 @@ import "./main-app-header-billing-indicator.css";
 
 import { memo } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
-import { Info } from "lucide-react";
+import { CircleHelp } from "lucide-react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { format_cents } from "@/lib/currency.ts";
 import { cn } from "@/lib/utils.ts";
@@ -19,7 +19,7 @@ type MainAppHeaderBillingIndicator_ClassNames =
 	| "MainAppHeaderBillingIndicator-label"
 	| "MainAppHeaderBillingIndicator-value"
 	| "MainAppHeaderBillingIndicator-sep"
-	| "MainAppHeaderBillingIndicator-info";
+	| "MainAppHeaderBillingIndicator-help";
 
 export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingIndicator() {
 	const auth = AppAuthProvider.useAuth();
@@ -47,26 +47,35 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	const currency = usage.subscription.currency;
 	const dueText = isFree ? "—" : format_cents(usage.meter.amountDueCents, currency);
 	const creditsLeftText = format_cents(usage.meter.balance, currency);
+	const dueGroupContent = (
+		<span className={cn("MainAppHeaderBillingIndicator-group" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
+			<span className={cn("MainAppHeaderBillingIndicator-label" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
+				Due
+			</span>
+			<span className={cn("MainAppHeaderBillingIndicator-value" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
+				{dueText}
+			</span>
+			{isFree && (
+				<CircleHelp
+					className={cn("MainAppHeaderBillingIndicator-help" satisfies MainAppHeaderBillingIndicator_ClassNames)}
+					aria-hidden
+				/>
+			)}
+		</span>
+	);
 
 	return (
 		<div className={cn("MainAppHeaderBillingIndicator" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
-			<span className={cn("MainAppHeaderBillingIndicator-group" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
-				<span className={cn("MainAppHeaderBillingIndicator-label" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
-					Due
-				</span>
-				<span className={cn("MainAppHeaderBillingIndicator-value" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
-					{dueText}
-				</span>
-				{isFree && (
-					<MyIconButton
-						className={cn("MainAppHeaderBillingIndicator-info" satisfies MainAppHeaderBillingIndicator_ClassNames)}
-						variant="ghost-highlightable"
-						tooltip={FREE_PLAN_TOOLTIP}
-					>
-						<Info />
-					</MyIconButton>
-				)}
-			</span>
+			{isFree ? (
+				<MyTooltip placement="bottom">
+					<MyTooltipInfoTrigger>{dueGroupContent}</MyTooltipInfoTrigger>
+					<MyTooltipContent unmountOnHide>
+						<>{FREE_PLAN_TOOLTIP}</>
+					</MyTooltipContent>
+				</MyTooltip>
+			) : (
+				dueGroupContent
+			)}
 			<span className={cn("MainAppHeaderBillingIndicator-sep" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
 				|
 			</span>

@@ -59,7 +59,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import {
@@ -251,7 +251,6 @@ type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-icon"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-limit"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-help"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger"
@@ -306,12 +305,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 								{title}
 							</div>
 							<MyTooltip placement="bottom">
-								<MyTooltipTrigger
-									className={cn(
-										"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
-									)}
-									tabIndex={0}
-								>
+								<MyTooltipInfoTrigger>
 									<span
 										className={cn(
 											"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
@@ -327,7 +321,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 											<CircleHelp />
 										</MyIcon>
 									</span>
-								</MyTooltipTrigger>
+								</MyTooltipInfoTrigger>
 								<MyTooltipContent unmountOnHide>
 									<>{limitTooltip}</>
 								</MyTooltipContent>

@@ -32,14 +32,12 @@
 		color: var(--color-fg-05);
 	}
 
-	.MainAppHeaderBillingIndicator-info.MyButton {
-		width: 24px;
-		height: 24px;
-		padding: 4px;
+	.MainAppHeaderBillingIndicator-help {
+		flex-shrink: 0;
 
-		& svg {
-			width: 14px;
-			height: 14px;
-		}
+		width: 12px;
+		height: 12px;
+
+		color: var(--color-fg-09);
 	}
 }

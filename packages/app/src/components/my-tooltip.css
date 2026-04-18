@@ -1,4 +1,9 @@
 @layer common_components {
+	.MyTooltipInfoTrigger {
+		cursor: help;
+		outline-offset: 2px;
+	}
+
 	.MyTooltipContent {
 		position: relative;
 		pointer-events: none;

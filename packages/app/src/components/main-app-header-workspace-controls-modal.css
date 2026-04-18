@@ -169,10 +169,6 @@
 		color: var(--color-fg-06);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-limit-trigger {
-		cursor: help;
-	}
-
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-limit {
 		display: inline-flex;
 		flex-shrink: 0;
