@@ -63,6 +63,7 @@ import type { RouterForConvexModules } from "./http.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import { billing_ingest_page_save } from "./billing.ts";
+import { rate_limiter } from "./rate_limiter.ts";
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
 	if (parentPath === "/") {
@@ -2595,6 +2596,15 @@ export async function pages_db_yjs_push_update(
 ) {
 	const now = Date.now();
 
+	const limit = await rate_limiter.limit(ctx, "pagesYjsPushUpdate", { key: args.userId });
+	if (!limit.ok) {
+		return Result({
+			_nay: {
+				message: "Rate limit exceeded" as const,
+			},
+		});
+	}
+
 	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
@@ -2637,7 +2647,7 @@ export async function pages_db_yjs_push_update(
 		...schedules.slice(1).map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id)),
 	]);
 
-	return { newSequence: newSequenceData.last_sequence };
+	return Result({ _yay: { newSequence: newSequenceData.last_sequence } });
 }
 
 export const yjs_push_update = mutation({
@@ -2682,6 +2692,9 @@ export const yjs_push_update = mutation({
 			userId: user.id,
 			userName: user.name,
 		});
+		if (pushResult._nay) {
+			return pushResult;
+		}
 
 		if (!user.isAnonymous) {
 			await billing_ingest_page_save(ctx, {
@@ -2689,11 +2702,11 @@ export const yjs_push_update = mutation({
 				pageId: args.pageId,
 				workspaceId: page.workspaceId,
 				projectId: page.projectId,
-				newSequence: pushResult.newSequence,
+				newSequence: pushResult._yay.newSequence,
 			});
 		}
 
-		return Result({ _yay: pushResult });
+		return pushResult;
 	},
 });
 

@@ -951,3 +951,110 @@ test("membership-scoped page and yjs APIs reject cross-user membership ids", asy
 	});
 	expect(unauthorizedYjsPush).toEqual({ _yay: null });
 });
+
+test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Rate Limit User",
+	});
+
+	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {
+		membershipId: db.membershipId,
+		parentId: pages_ROOT_ID,
+		name: "rate-limit-page",
+	});
+	if (createdPage._nay) {
+		throw new Error("Expected owner to create rate-limit page");
+	}
+
+	const pushArgs = {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+		update: new ArrayBuffer(0),
+		sessionId: "rate-limit-session",
+	};
+
+	for (let i = 0; i < 2; i++) {
+		const result = await asUser.mutation(api.ai_docs_temp.yjs_push_update, pushArgs);
+		if (result._nay) {
+			throw new Error(`Expected initial push #${i + 1} to succeed, got: ${result._nay.message}`);
+		}
+	}
+
+	const blocked = await asUser.mutation(api.ai_docs_temp.yjs_push_update, pushArgs);
+	if (!blocked._nay) {
+		throw new Error("Expected third push to be rate limited");
+	}
+	expect(blocked._nay.message).toBe("Rate limit exceeded");
+
+	const stateAfterBlock = await t.run(async (ctx) => {
+		const updates = await ctx.db
+			.query("pages_yjs_updates")
+			.withIndex("by_workspace_project_page_id_sequence", (q) =>
+				q
+					.eq("workspace_id", db.workspaceId)
+					.eq("project_id", db.projectId)
+					.eq("page_id", createdPage._yay.pageId),
+			)
+			.collect();
+		const lastSequence = await ctx.db
+			.query("pages_yjs_docs_last_sequences")
+			.withIndex("by_workspace_project_page_id", (q) =>
+				q
+					.eq("workspace_id", db.workspaceId)
+					.eq("project_id", db.projectId)
+					.eq("page_id", createdPage._yay.pageId),
+			)
+			.first();
+		return { updateCount: updates.length, lastSequence: lastSequence?.last_sequence ?? null };
+	});
+	expect(stateAfterBlock.updateCount).toBe(2);
+	expect(stateAfterBlock.lastSequence).toBe(2);
+});
+
+test("yjs_push_update rate limit applies to anonymous JWT identities", async () => {
+	const t = test_convex();
+	const anonymousUserId = await t.run(async (ctx) =>
+		ctx.db.insert("users", {
+			clerkUserId: null,
+		}),
+	);
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { userId: anonymousUserId }));
+	const asAnonymous = t.withIdentity({
+		issuer: process.env.VITE_CONVEX_HTTP_URL!,
+		subject: anonymousUserId,
+		name: "Anonymous User",
+	});
+
+	const createdPage = await asAnonymous.mutation(api.ai_docs_temp.create_page, {
+		membershipId: db.membershipId,
+		parentId: pages_ROOT_ID,
+		name: "rate-limit-anonymous-page",
+	});
+	if (createdPage._nay) {
+		throw new Error("Expected anonymous user to create rate-limit page");
+	}
+
+	const pushArgs = {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+		update: new ArrayBuffer(0),
+		sessionId: "rate-limit-anonymous-session",
+	};
+
+	for (let i = 0; i < 2; i++) {
+		const result = await asAnonymous.mutation(api.ai_docs_temp.yjs_push_update, pushArgs);
+		if (result._nay) {
+			throw new Error(`Expected anonymous push #${i + 1} to succeed, got: ${result._nay.message}`);
+		}
+	}
+
+	const blocked = await asAnonymous.mutation(api.ai_docs_temp.yjs_push_update, pushArgs);
+	if (!blocked._nay) {
+		throw new Error("Expected anonymous third push to be rate limited");
+	}
+	expect(blocked._nay.message).toBe("Rate limit exceeded");
+});

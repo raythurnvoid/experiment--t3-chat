@@ -6,19 +6,12 @@
  * events at every subscription period boundary; Polar `meter_credit` benefits
  * are detached from products so they never grant credits in parallel.
  *
- * The `benefits` map remains as a stable lookup of legacy Polar benefit descriptions
- * (still useful for tests and historical webhook payloads) but no longer drives UI copy.
  */
 export const billing_PRODUCTS = {
 	Free: {
 		name: "Free",
 		displayName: "Free",
 		recurringCreditsCents: 1000,
-		benefits: {
-			"Free Included Usage": {
-				description: "Free Included Usage",
-			},
-		},
 	},
 	Pro: {
 		name: "Pro",
@@ -27,15 +20,6 @@ export const billing_PRODUCTS = {
 		meter: {
 			name: "Press app usage",
 			displayName: "Press app usage",
-			unitPrice: {
-				amount: 0.01,
-				currency: "eur",
-			},
-		},
-		benefits: {
-			"Pro Included Usage": {
-				description: "Pro Included Usage",
-			},
 		},
 	},
 	"Pay As You Go": {
@@ -45,15 +29,6 @@ export const billing_PRODUCTS = {
 		meter: {
 			name: "Press app usage",
 			displayName: "Press app usage",
-			unitPrice: {
-				amount: 0.01,
-				currency: "eur",
-			},
-		},
-		benefits: {
-			"Free Usage": {
-				description: "Free Usage",
-			},
 		},
 	},
 } as const;

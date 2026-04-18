@@ -6,6 +6,7 @@ import { useNavigate, useRouterState, type RegisteredRouter } from "@tanstack/re
 import { ChevronsUpDown } from "lucide-react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import {
 	MainAppHeaderWorkspaceSwitcherModal,
 	type MainAppHeaderWorkspaceSwitcherModal_ListItem,
@@ -597,6 +598,14 @@ export type MainAppHeader_Props = ComponentPropsWithRef<"header">;
 export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Props) {
 	const { ref, id, className, ...rest } = props;
 
+	const pathname = useRouterState<RegisteredRouter, string>({
+		select: (state) => state.location.pathname,
+	});
+	// The /pages editor header renders its own inline billing indicator next to the editor-type
+	// buttons, so suppress the bar-level copy there to avoid duplication.
+	const lastPathSegment = pathname.split("/").filter(Boolean).at(-1) ?? "";
+	const isPagesRoute = lastPathSegment === "pages";
+
 	return (
 		<header ref={ref} id={id} className={cn("MainAppHeader" satisfies MainAppHeader_ClassNames, className)} {...rest}>
 			<MainAppHeaderWorkspaceControls />
@@ -606,6 +615,7 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 			>
 				{/* The pages inject content here */}
 			</div>
+			{!isPagesRoute && <MainAppHeaderBillingIndicator />}
 		</header>
 	);
 });

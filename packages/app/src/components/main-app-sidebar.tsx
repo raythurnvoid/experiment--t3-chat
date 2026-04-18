@@ -1,5 +1,4 @@
 import "./main-app-sidebar.css";
-import "@/components/my-action.css";
 
 import { memo } from "react";
 import type { Ref } from "react";

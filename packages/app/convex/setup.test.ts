@@ -9,6 +9,7 @@ import type { MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
 import workpool_test from "@convex-dev/workpool/test";
+import rate_limiter_test from "@convex-dev/rate-limiter/test";
 import {
 	workspaces_db_create,
 	workspaces_db_create_project,
@@ -31,6 +32,7 @@ export function test_convex() {
 	workpool_test.register(t, "billing_workpool_bootstrap");
 	workpool_test.register(t, "billing_workpool_cancellation");
 	workpool_test.register(t, "billing_workpool_usage_event");
+	rate_limiter_test.register(t);
 	return t;
 }
 

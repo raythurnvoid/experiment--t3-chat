@@ -1074,6 +1074,11 @@ export type ai_chat_tool_create_text_search_pages_ToolOutput =
 	InferToolOutput<ai_chat_tool_create_text_search_pages_Tool>;
 // #endregion text search pages
 
+// Tools that mutate pages. Ask mode must not expose these. Keep in sync when
+// adding a new mutating page tool.
+export const ai_chat_WRITE_TOOL_NAMES = ["write_page", "edit_page"] as const;
+export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
+
 // #region write page
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`

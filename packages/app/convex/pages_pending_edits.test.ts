@@ -1572,6 +1572,116 @@ describe("save_pages_pending_edit", () => {
 		expect(savedMarkdownAfterNoStagedSave).toContain("Remote drift");
 		expect(savedMarkdownAfterNoStagedSave).not.toContain("Unresolved only");
 	});
+
+	test("save_pages_pending_edit returns rate-limit _nay and preserves pending row when bucket exhausted", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_page_with_markdown({
+				ctx,
+				path: "/pending-edits-save-rate-limited",
+				name: "pending-edits-save-rate-limited",
+				markdown: "# Save base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Rate Limit User",
+		});
+
+		const stagedMarkdown = `${seeded.baseMarkdown}\n\nStaged change`;
+		const upsertResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		if (upsertResult._nay) {
+			throw new Error(upsertResult._nay.message);
+		}
+
+		const pendingBeforeSave = await t.run(async (ctx) =>
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("pageId", seeded.pageId),
+				)
+				.first(),
+		);
+		expect(pendingBeforeSave).not.toBeNull();
+
+		for (let i = 0; i < 2; i++) {
+			const result = await asUser.mutation(api.ai_docs_temp.yjs_push_update, {
+				membershipId: seeded.membershipId,
+				pageId: seeded.pageId,
+				update: new ArrayBuffer(0),
+				sessionId: "rate-limit-pre-exhaust",
+			});
+			if (result._nay) {
+				throw new Error(`Expected pre-exhaust push #${i + 1} to succeed, got: ${result._nay.message}`);
+			}
+		}
+
+		const yjsUpdatesBeforeSave = await t.run(async (ctx) =>
+			ctx.db
+				.query("pages_yjs_updates")
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+					q
+						.eq("workspace_id", seeded.workspaceId)
+						.eq("project_id", seeded.projectId)
+						.eq("page_id", seeded.pageId),
+				)
+				.collect(),
+		);
+		expect(yjsUpdatesBeforeSave.length).toBe(2);
+
+		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+		if (!saveResult._nay) {
+			throw new Error("Expected save_pages_pending_edit to be rate limited");
+		}
+		expect(saveResult._nay.message).toBe("Rate limit exceeded");
+
+		const pendingAfterSave = await t.run(async (ctx) =>
+			ctx.db
+				.query("pages_pending_edits")
+				.withIndex("by_workspace_project_user_page", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("pageId", seeded.pageId),
+				)
+				.first(),
+		);
+		expect(pendingAfterSave?._id).toBe(pendingBeforeSave?._id);
+
+		const lastSequenceSavedAfter = await asUser.query(api.ai_chat.get_pages_pending_edit_last_sequence_saved, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+		expect(lastSequenceSavedAfter).toBeNull();
+
+		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
+			ctx.db
+				.query("pages_yjs_updates")
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+					q
+						.eq("workspace_id", seeded.workspaceId)
+						.eq("project_id", seeded.projectId)
+						.eq("page_id", seeded.pageId),
+				)
+				.collect(),
+		);
+		expect(yjsUpdatesAfterSave.length).toBe(2);
+	});
 });
 
 describe("pages_pending_edits_last_sequence_saved", () => {

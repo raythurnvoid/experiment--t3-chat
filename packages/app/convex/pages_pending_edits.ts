@@ -868,15 +868,18 @@ export const save_pages_pending_edit = mutation({
 				userId: user.id,
 				userName: user.name,
 			});
+			if (result._nay) {
+				return result;
+			}
 
-			newSequence = result.newSequence;
+			newSequence = result._yay.newSequence;
 			if (!user.isAnonymous) {
 				await billing_ingest_page_save(ctx, {
 					userId: user.id,
 					pageId: args.pageId,
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					newSequence: result.newSequence,
+					newSequence: result._yay.newSequence,
 				});
 			}
 			pages_yjs_doc_apply_array_buffer_update(

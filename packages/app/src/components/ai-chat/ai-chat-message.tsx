@@ -33,11 +33,11 @@ import {
 } from "ai";
 import type { ExtractStrict } from "type-fest";
 import {
-	ai_chat_MAIN_MODEL_IDS,
 	ai_chat_get_message_text,
 	type ai_chat_AiSdk5UiMessage,
 	type ai_chat_AiSdk5UiTools,
-	type ai_chat_MainModelId,
+	type ai_chat_ModelId,
+	type ai_chat_ModeId,
 } from "@/lib/ai-chat.ts";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -1364,7 +1364,8 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 
 	message: ai_chat_AiSdk5UiMessage;
 	selectedThreadId: string | null;
-	selectedModelId: ai_chat_MainModelId;
+	selectedModelId: ai_chat_ModelId;
+	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
@@ -1372,6 +1373,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
 	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
+	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
 	onEditStart: AiChatMessage_Props["onEditStart"];
 	onEditCancel: AiChatMessage_Props["onEditCancel"];
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
@@ -1386,6 +1388,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		message,
 		selectedThreadId,
 		selectedModelId,
+		selectedModeId,
 		isRunning,
 		isEditing,
 		messagesChildrenByParentId,
@@ -1393,6 +1396,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		onToolResumeStream,
 		onToolStop,
 		onSelectedModelIdChange,
+		onSelectedModeIdChange,
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
@@ -1500,10 +1504,11 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								canCancel={false}
 								isRunning={false}
 								initialValue={text ?? ""}
-								modelOptions={ai_chat_MAIN_MODEL_IDS}
 								selectedModelId={selectedModelId}
+								selectedModeId={selectedModeId}
 								onValueChange={handleEditValueChange}
 								onSelectedModelIdChange={onSelectedModelIdChange}
+								onSelectedModeIdChange={onSelectedModeIdChange}
 								onSubmit={handleEditSubmit}
 								onInteractedOutside={handleEditCancel}
 								onClose={handleEditCancel}
@@ -1808,7 +1813,8 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 
 	message: ai_chat_AiSdk5UiMessage;
 	selectedThreadId: string | null;
-	selectedModelId: ai_chat_MainModelId;
+	selectedModelId: ai_chat_ModelId;
+	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
@@ -1816,6 +1822,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
 	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
+	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
 	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
 	onEditCancel: () => void;
 	onEditSubmit: (args: { value: string }) => void;
@@ -1837,6 +1844,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		message,
 		selectedThreadId,
 		selectedModelId,
+		selectedModeId,
 		isRunning,
 		isEditing,
 		messagesChildrenByParentId,
@@ -1844,6 +1852,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		onToolResumeStream,
 		onToolStop,
 		onSelectedModelIdChange,
+		onSelectedModeIdChange,
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
@@ -1866,10 +1875,12 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				message={message}
 				selectedThreadId={selectedThreadId}
 				selectedModelId={selectedModelId}
+				selectedModeId={selectedModeId}
 				isRunning={isRunning}
 				isEditing={isEditing}
 				messagesChildrenByParentId={messagesChildrenByParentId}
 				onSelectedModelIdChange={onSelectedModelIdChange}
+				onSelectedModeIdChange={onSelectedModeIdChange}
 				onToolOutput={onToolOutput}
 				onToolResumeStream={onToolResumeStream}
 				onToolStop={onToolStop}

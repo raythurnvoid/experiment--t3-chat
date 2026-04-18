@@ -20,7 +20,6 @@ import {
 	type AiChatComposer_ClassNames,
 	type AiChatComposer_Props,
 } from "@/components/ai-chat/ai-chat-composer.tsx";
-import { ai_chat_MAIN_MODEL_IDS } from "@/lib/ai-chat.ts";
 import {
 	AiChatMessage,
 	type AiChatMessage_ClassNames,
@@ -201,6 +200,7 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 
 	selectedThreadId: string | null;
 	selectedModelId: AiChatController["selectedModelId"];
+	selectedModeId: AiChatController["selectedModeId"];
 	activeBranchMessages: ReturnType<typeof useAiChatController>["activeBranchMessages"];
 	messagesChildrenByParentId: ReturnType<typeof useAiChatController>["messagesChildrenByParentId"];
 	isRunning: boolean;
@@ -211,6 +211,7 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	onToolResumeStream: AiChatMessage_Props["onToolResumeStream"];
 	onToolStop: AiChatMessage_Props["onToolStop"];
 	onSelectedModelIdChange: AiChatMessage_Props["onSelectedModelIdChange"];
+	onSelectedModeIdChange: AiChatMessage_Props["onSelectedModeIdChange"];
 	onEditStart: AiChatMessage_Props["onEditStart"];
 	onEditCancel: AiChatMessage_Props["onEditCancel"];
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
@@ -227,6 +228,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		className,
 		selectedThreadId,
 		selectedModelId,
+		selectedModeId,
 		activeBranchMessages,
 		messagesChildrenByParentId,
 		isRunning,
@@ -234,6 +236,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		error,
 		editingMessageId,
 		onSelectedModelIdChange,
+		onSelectedModeIdChange,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -288,10 +291,12 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 						message={message}
 						selectedThreadId={selectedThreadId}
 						selectedModelId={selectedModelId}
+						selectedModeId={selectedModeId}
 						isRunning={isRunning}
 						isEditing={editingMessageId === message.id}
 						messagesChildrenByParentId={throttledMessagesChildrenByParentId}
 						onSelectedModelIdChange={onSelectedModelIdChange}
+						onSelectedModeIdChange={onSelectedModeIdChange}
 						onToolOutput={onToolOutput}
 						onToolResumeStream={onToolResumeStream}
 						onToolStop={onToolStop}
@@ -416,6 +421,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 	const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedModelId = controller.selectedModelId;
+	const selectedModeId = controller.selectedModeId;
 	const initialComposerValue = controller.session?.draftComposerText ?? "";
 
 	const [messagesListEl, setMessagesListEl] = useState<HTMLDivElement | null>(null);
@@ -439,6 +445,10 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
 		controller.setSelectedModelId(value);
+	});
+
+	const handleSelectedModeIdChange = useFn<AiChatComposer_Props["onSelectedModeIdChange"]>((value) => {
+		controller.setSelectedModeId(value);
 	});
 
 	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value) => {
@@ -748,6 +758,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						ref={setMessagesListEl}
 						selectedThreadId={selectedThreadId}
 						selectedModelId={selectedModelId}
+						selectedModeId={selectedModeId}
 						activeBranchMessages={controller.activeBranchMessages}
 						messagesChildrenByParentId={controller.messagesChildrenByParentId}
 						isRunning={controller.isRunning}
@@ -755,6 +766,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						error={controller.error}
 						editingMessageId={editingMessageId}
 						onSelectedModelIdChange={handleSelectedModelIdChange}
+						onSelectedModeIdChange={handleSelectedModeIdChange}
 						onEditStart={handleEditStart}
 						onEditCancel={handleEditCancel}
 						onEditSubmit={handleEditSubmit}
@@ -778,10 +790,11 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						canCancel={controller.isRunning}
 						isRunning={controller.isRunning}
 						initialValue={initialComposerValue}
-						modelOptions={ai_chat_MAIN_MODEL_IDS}
 						selectedModelId={selectedModelId}
+						selectedModeId={selectedModeId}
 						onValueChange={handleComposerValueChange}
 						onSelectedModelIdChange={handleSelectedModelIdChange}
+						onSelectedModeIdChange={handleSelectedModeIdChange}
 						onSubmit={handleComposerSubmit}
 						onCancel={handleComposerCancel}
 					/>

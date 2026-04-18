@@ -3,6 +3,7 @@ import polar from "@convex-dev/polar/convex.config.js";
 import presence from "@convex-dev/presence/convex.config";
 import migrations from "@convex-dev/migrations/convex.config";
 import workpool from "@convex-dev/workpool/convex.config.js";
+import rateLimiter from "@convex-dev/rate-limiter/convex.config.js";
 
 const app = defineApp();
 
@@ -12,5 +13,6 @@ app.use(migrations);
 app.use(workpool, { name: "billing_workpool_bootstrap" });
 app.use(workpool, { name: "billing_workpool_cancellation" });
 app.use(workpool, { name: "billing_workpool_usage_event" });
+app.use(rateLimiter);
 
 export default app;

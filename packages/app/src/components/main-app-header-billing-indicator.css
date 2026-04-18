@@ -1,0 +1,45 @@
+@layer components {
+	.MainAppHeaderBillingIndicator {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+
+		padding: 0 12px;
+		height: 100%;
+
+		font-size: 0.8125rem;
+		white-space: nowrap;
+
+		color: var(--color-fg-09);
+	}
+
+	.MainAppHeaderBillingIndicator-group {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.MainAppHeaderBillingIndicator-label {
+		color: var(--color-fg-09);
+	}
+
+	.MainAppHeaderBillingIndicator-value {
+		color: var(--color-fg-11);
+		font-weight: 500;
+	}
+
+	.MainAppHeaderBillingIndicator-sep {
+		color: var(--color-fg-05);
+	}
+
+	.MainAppHeaderBillingIndicator-info.MyButton {
+		width: 24px;
+		height: 24px;
+		padding: 4px;
+
+		& svg {
+			width: 14px;
+			height: 14px;
+		}
+	}
+}

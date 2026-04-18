@@ -150,7 +150,7 @@ async function seed_free_product(
 					createdAt: "2026-01-01T00:00:00.000Z",
 					modifiedAt: null,
 					type: "meter_credit",
-					description: billing_PRODUCTS.Free.benefits["Free Included Usage"].description,
+					description: "Free Included Usage",
 					selectable: false,
 					deletable: false,
 					organizationId: "billing_test_org",
@@ -216,7 +216,7 @@ async function seed_pro_product(
 					createdAt: "2026-01-01T00:00:00.000Z",
 					modifiedAt: null,
 					type: "meter_credit",
-					description: billing_PRODUCTS.Pro.benefits["Pro Included Usage"].description,
+					description: "Pro Included Usage",
 					selectable: false,
 					deletable: false,
 					organizationId: "billing_test_org",
@@ -445,7 +445,7 @@ describe("billing list_products", () => {
 			products
 				.find((product) => product.id === polarProProductId)
 				?.benefits?.some((benefit) => {
-					return benefit.description === billing_PRODUCTS.Pro.benefits["Pro Included Usage"].description;
+					return benefit.description === "Pro Included Usage";
 				}),
 		).toBe(true);
 	});
@@ -460,7 +460,7 @@ describe("billing list_products", () => {
 					createdAt: "2026-01-01T00:00:00.000Z",
 					modifiedAt: null,
 					type: "meter_credit",
-					description: billing_PRODUCTS["Pay As You Go"].benefits["Free Usage"].description,
+					description: "Free Usage",
 					selectable: false,
 					deletable: false,
 					organizationId: "billing_test_org",
@@ -482,9 +482,7 @@ describe("billing list_products", () => {
 			units: 250,
 		});
 		expect(paygProduct?.benefits?.some((benefit) => benefit.type === "meter_credit")).toBe(true);
-		expect(paygProduct?.benefits?.map((benefit) => benefit.description)).toContain(
-			billing_PRODUCTS["Pay As You Go"].benefits["Free Usage"].description,
-		);
+		expect(paygProduct?.benefits?.map((benefit) => benefit.description)).toContain("Free Usage");
 	});
 
 	test("returns products while the user has an active subscription", async () => {

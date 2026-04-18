@@ -86,3 +86,6 @@
 [submodule "references-submodules/workpool"]
 	path = references-submodules/workpool
 	url = https://github.com/get-convex/workpool.git
+[submodule "packages/app/vendor/rate-limiter"]
+	path = packages/app/vendor/rate-limiter
+	url = https://github.com/get-convex/rate-limiter

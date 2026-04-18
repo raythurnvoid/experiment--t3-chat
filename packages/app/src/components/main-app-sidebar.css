@@ -8,6 +8,14 @@
 		flex: 1;
 		min-height: 0;
 
+		.MainAppSidebarItem > .MainAppSidebarItem-trigger {
+			/* Override `MyPrimaryActionLink { display: block }` (same-specificity,
+			   same-layer source-order conflict with `MySidebarListItemPrimaryActionLink`). */
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
 		&.MainAppSidebar-state-collapsed:not(.MySidebar-state-closed) {
 			width: 40px;
 

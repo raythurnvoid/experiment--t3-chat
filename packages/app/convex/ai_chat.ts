@@ -1,5 +1,10 @@
 import { omit_properties, should_never_happen } from "../shared/shared-utils.ts";
-import { ai_chat_MAIN_MODEL_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
+import {
+	ai_chat_MODEL_IDS,
+	ai_chat_MODE_IDS,
+	type ai_chat_AiSdk5UiMessage,
+	type ai_chat_ModeId,
+} from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
 import { api } from "./_generated/api.js";
@@ -36,6 +41,7 @@ import {
 	ai_chat_tool_create_write_page,
 	ai_chat_tool_create_edit_page,
 	ai_chat_tool_create_web_search,
+	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -663,7 +669,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 							/**
 							 * Server-allowlisted model.
 							 */
-							model: z.enum(ai_chat_MAIN_MODEL_IDS),
+							model: z.enum(ai_chat_MODEL_IDS),
+							/** Agent mode */
+							mode: z.enum(ai_chat_MODE_IDS),
 							trigger: z.enum(["submit-message", "regenerate-message"]),
 							/**
 							 * The id of the message to which the new message should be appended.
@@ -982,11 +990,23 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										});
 
-										const activeTools = Object.keys(tools) as Array<keyof typeof tools>;
+										const mode: ai_chat_ModeId = body.mode;
+										const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
+										const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) => {
+											// Ask mode strips write tools. Agent mode keeps everything.
+											// Keep the `tools` object intact so `validateUIMessages` can still
+											// recognize tool names from past messages.
+											return mode === "ask" ? !writeToolNames.has(name) : true;
+										});
+
+										const systemPromptForMode =
+											mode === "ask"
+												? `${ai_chat_SYSTEM_PROMPT}\nYou are in Ask mode: do not call \`write_page\` or \`edit_page\`. Answer from reads and searches only.`
+												: ai_chat_SYSTEM_PROMPT;
 
 										const result1 = streamText({
 											model: openai(body.model),
-											system: ai_chat_SYSTEM_PROMPT,
+											system: systemPromptForMode,
 											messages: modelMessages,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,

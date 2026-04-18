@@ -49,7 +49,14 @@ import {
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
-import { ai_chat_MAIN_MODEL_METADATA, type ai_chat_MainModelId } from "@/lib/ai-chat.ts";
+import {
+	ai_chat_MODEL_IDS,
+	ai_chat_MODELS,
+	ai_chat_MODE_IDS,
+	ai_chat_MODE_METADATA,
+	type ai_chat_ModelId,
+	type ai_chat_ModeId,
+} from "@/lib/ai-chat.ts";
 
 export type AiChatComposer_ClassNames =
 	| "AiChatComposer"
@@ -79,11 +86,12 @@ export type AiChatComposer_Props = Omit<
 	canCancel: boolean;
 	isRunning: boolean;
 	initialValue: string;
-	modelOptions: readonly ai_chat_MainModelId[];
-	selectedModelId: ai_chat_MainModelId;
+	selectedModelId: ai_chat_ModelId;
+	selectedModeId: ai_chat_ModeId;
 
 	onValueChange?: (value: string) => void;
-	onSelectedModelIdChange: (value: ai_chat_MainModelId) => void;
+	onSelectedModelIdChange: (value: ai_chat_ModelId) => void;
+	onSelectedModeIdChange: (value: ai_chat_ModeId) => void;
 	onSubmit: (value: string) => void;
 	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
@@ -99,10 +107,11 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		canCancel,
 		isRunning,
 		initialValue,
-		modelOptions,
 		selectedModelId,
+		selectedModeId,
 		onValueChange,
 		onSelectedModelIdChange,
+		onSelectedModeIdChange,
 		onSubmit,
 		onCancel,
 		onInteractedOutside,
@@ -120,20 +129,17 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 	const [composerText, setComposerText] = useState(initialValue);
 	const isEmpty = composerText.trim().length === 0;
 
-	const modes: AiChatComposer_Mode[] = ["Agent", "Ask", "Plan"];
-	const [mode, setMode] = useState<AiChatComposer_Mode>("Agent");
-
 	const [modelFilter, setModelFilter] = useState("");
 	const modelFilterValue = modelFilter.trim().toLowerCase();
-	const selectedModelLabel = ai_chat_MAIN_MODEL_METADATA[selectedModelId].label;
+	const selectedModelLabel = ai_chat_MODELS[selectedModelId].label;
 	const filteredModels = modelFilterValue
-		? modelOptions.filter((modelItem) => {
-				const modelLabel = ai_chat_MAIN_MODEL_METADATA[modelItem].label;
+		? ai_chat_MODEL_IDS.filter((modelItem) => {
+				const modelLabel = ai_chat_MODELS[modelItem].label;
 				return (
 					modelItem.toLowerCase().includes(modelFilterValue) || modelLabel.toLowerCase().includes(modelFilterValue)
 				);
 			})
-		: modelOptions;
+		: ai_chat_MODEL_IDS;
 
 	const canSend = !isRunning && !isEmpty;
 
@@ -391,25 +397,25 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 
 			<div className={"AiChatComposer-configurations" satisfies AiChatComposer_ClassNames}>
 				<MySelect
-					value={mode}
+					value={selectedModeId}
 					setValue={(value) => {
-						setMode(value as AiChatComposer_Mode);
+						onSelectedModeIdChange(value as ai_chat_ModeId);
 					}}
 				>
 					<MySelectTrigger>
 						<MyButton type="button" variant="outline">
-							Mode: {mode}
+							Mode: {ai_chat_MODE_METADATA[selectedModeId].label}
 							<MySelectOpenIndicator />
 						</MyButton>
 					</MySelectTrigger>
 					<MySelectPopover>
 						<MySelectPopoverScrollableArea>
 							<MySelectPopoverContent>
-								{modes.map((mote) => {
+								{ai_chat_MODE_IDS.map((modeId) => {
 									return (
-										<MySelectItem key={mote} value={mote}>
-											{mote}
-											{mode === mote && <MySelectItemIndicator />}
+										<MySelectItem key={modeId} value={modeId}>
+											{ai_chat_MODE_METADATA[modeId].label}
+											{selectedModeId === modeId && <MySelectItemIndicator />}
 										</MySelectItem>
 									);
 								})}
@@ -421,7 +427,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				<MySearchSelect
 					value={selectedModelId}
 					setValue={(value) => {
-						onSelectedModelIdChange(value as ai_chat_MainModelId);
+						onSelectedModelIdChange(value as ai_chat_ModelId);
 					}}
 					setOpen={(open) => {
 						if (!open) {
@@ -444,7 +450,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 								) : (
 									<MySearchSelectList>
 										{filteredModels.map((modelItem) => {
-											const modelLabel = ai_chat_MAIN_MODEL_METADATA[modelItem].label;
+											const modelLabel = ai_chat_MODELS[modelItem].label;
 											return (
 												<MySearchSelectItem key={modelItem} value={modelItem}>
 													{modelLabel}
@@ -480,5 +486,3 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		</form>
 	);
 }
-
-type AiChatComposer_Mode = "Agent" | "Ask" | "Plan";

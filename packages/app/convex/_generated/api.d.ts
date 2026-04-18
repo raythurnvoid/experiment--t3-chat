@@ -19,6 +19,7 @@ import type * as limits from "../limits.js";
 import type * as migrations from "../migrations.js";
 import type * as pages_pending_edits from "../pages_pending_edits.js";
 import type * as presence from "../presence.js";
+import type * as rate_limiter from "../rate_limiter.js";
 import type * as users from "../users.js";
 import type * as workspaces from "../workspaces.js";
 
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   migrations: typeof migrations;
   pages_pending_edits: typeof pages_pending_edits;
   presence: typeof presence;
+  rate_limiter: typeof rate_limiter;
   users: typeof users;
   workspaces: typeof workspaces;
 }>;
@@ -77,4 +79,5 @@ export declare const components: {
   billing_workpool_bootstrap: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_bootstrap">;
   billing_workpool_cancellation: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_cancellation">;
   billing_workpool_usage_event: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_usage_event">;
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
 };

@@ -10,3 +10,4 @@ packages:
   - "packages/app/vendor/mastra/packages/rag"
   - "packages/app/vendor/polar"
   - "packages/app/vendor/presence"
+  - "packages/app/vendor/rate-limiter"

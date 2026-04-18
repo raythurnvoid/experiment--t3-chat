@@ -23,23 +23,44 @@ export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
 export type ai_chat_Thread = Doc<"ai_chat_threads">;
 
-export const ai_chat_MAIN_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
-export type ai_chat_MainModelId = (typeof ai_chat_MAIN_MODEL_IDS)[number];
+export const ai_chat_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
+export type ai_chat_ModelId = (typeof ai_chat_MODEL_IDS)[number];
 
-type AiChatMainModelMetadata = {
+type AiChatModelMetadata = {
 	label: string;
 };
 
-export const ai_chat_DEFAULT_MAIN_MODEL_ID = "gpt-5.4-nano" as const satisfies ai_chat_MainModelId;
+export const ai_chat_DEFAULT_MODEL_ID = "gpt-5.4-nano" as const satisfies ai_chat_ModelId;
 
-export const ai_chat_MAIN_MODEL_METADATA = {
+export const ai_chat_MODELS = {
 	"gpt-5.4-nano": {
 		label: "GPT-5.4 Nano",
 	},
 	"gpt-5.4-mini": {
 		label: "GPT-5.4 Mini",
 	},
-} as const satisfies Record<ai_chat_MainModelId, AiChatMainModelMetadata>;
+} as const satisfies Record<ai_chat_ModelId, AiChatModelMetadata>;
+
+export const ai_chat_MODE_IDS = ["agent", "ask"] as const;
+export type ai_chat_ModeId = (typeof ai_chat_MODE_IDS)[number];
+
+export const ai_chat_DEFAULT_MODE_ID = "agent" as const satisfies ai_chat_ModeId;
+
+type AiChatModeMetadata = {
+	label: string;
+	description: string;
+};
+
+export const ai_chat_MODE_METADATA = {
+	agent: {
+		label: "Agent",
+		description: "Read, search, and propose page edits for review.",
+	},
+	ask: {
+		label: "Ask",
+		description: "Read and search only. Cannot propose page edits.",
+	},
+} as const satisfies Record<ai_chat_ModeId, AiChatModeMetadata>;
 
 export type ai_chat_AiSdk5UiTools = {
 	weather: {
@@ -102,14 +123,19 @@ export type ai_chat_AiSdk5UiMessage = UIMessage<
 		convexId?: string | undefined;
 		convexParentId?: string | null | undefined;
 		parentClientGeneratedId: string | null;
-		selectedModelId?: ai_chat_MainModelId | undefined;
+		selectedModelId?: ai_chat_ModelId | undefined;
+		selectedModeId?: ai_chat_ModeId | undefined;
 	},
 	ai_chat_AiSdk5UiDataParts,
 	ai_chat_AiSdk5UiTools
 >;
 
-export function ai_chat_is_main_model_id(value: string): value is ai_chat_MainModelId {
-	return ai_chat_MAIN_MODEL_IDS.includes(value as ai_chat_MainModelId);
+export function ai_chat_is_model_id(value: string): value is ai_chat_ModelId {
+	return ai_chat_MODEL_IDS.includes(value as ai_chat_ModelId);
+}
+
+export function ai_chat_is_mode_id(value: string): value is ai_chat_ModeId {
+	return ai_chat_MODE_IDS.includes(value as ai_chat_ModeId);
 }
 
 export function ai_chat_get_message_text(message: UIMessage) {

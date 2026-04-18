@@ -21,6 +21,7 @@ import {
 	type pages_EditorView,
 } from "@/lib/pages.ts";
 import { ChevronLeft, ChevronRight, Home, Sparkles } from "lucide-react";
+import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { PagesSidebarToggle } from "@/components/pages-sidebar-toggle.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
@@ -207,6 +208,7 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 			{/* Right: Presence indicator and switches */}
 			<div className={cn("PageEditorHeader-switch-group" satisfies PageEditorHeader_ClassNames)}>
 				<PageEditorPresence users={onlineUsers} />
+				<MainAppHeaderBillingIndicator />
 				<MyButtonGroup value={editorMode} onValueChange={handleEditorModeChange}>
 					<MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>
 					<MyButtonGroupItem value="plain_text_editor">Markdown</MyButtonGroupItem>
