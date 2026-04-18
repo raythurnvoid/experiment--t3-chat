@@ -88,4 +88,5 @@
 	url = https://github.com/get-convex/workpool.git
 [submodule "packages/app/vendor/rate-limiter"]
 	path = packages/app/vendor/rate-limiter
-	url = https://github.com/get-convex/rate-limiter
+	url = https://github.com/raythurnvoid/rate-limiter
+	branch = rt0-updates
