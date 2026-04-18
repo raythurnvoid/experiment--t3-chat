@@ -107,10 +107,22 @@
 
 	@container (width < 200px) {
 		.MainAppSidebarAccountControlTrigger {
+			width: 36px;
 			height: 36px;
 			justify-content: center;
-			padding: 2px;
+			padding: 6px;
 			gap: 0;
+		}
+
+		/* Shrink the avatar to match nav-item glyph size (24x24 inside a 36x36 button).
+		   MyAvatar sets --MyAvatar-size inline via its `size` prop, so override the
+		   computed width/height directly — layer order puts us above common_components. */
+		.MainAppSidebarAccountControlTrigger-avatar,
+		.MainAppSidebarAccountControlTrigger-avatar .MyAvatarImage,
+		.MainAppSidebarAccountControlTrigger-avatar .MyAvatarLoading,
+		.MainAppSidebarAccountControlTrigger-avatar .MyAvatarFallback {
+			width: 24px;
+			height: 24px;
 		}
 
 		.MainAppSidebarAccountControlTrigger-copy,
