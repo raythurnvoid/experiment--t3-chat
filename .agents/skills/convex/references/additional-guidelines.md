@@ -1,9 +1,6 @@
----
-globs: packages/app/convex/**/*.ts
-alwaysApply: false
----
+# Convex — codebase-specific guidelines
 
-Convex additional guidelines for this codebase.
+These extend the base Convex guidance in [../SKILL.md](../SKILL.md) with patterns that are specific to this repository. Read this file before writing or modifying Convex code under `packages/app/convex/**`.
 
 # HTTP routes typing pattern (this repo)
 

@@ -1,20 +1,29 @@
-import type { UnionToIntersection } from "type-fest";
-
-/** Keep human-readable billing copy in code and look up products by their exact Polar names. */
+/**
+ * Keep human-readable billing copy in code and look up products by their exact Polar names.
+ *
+ * `recurringCreditsCents` is the canonical per-month credit grant for each plan.
+ * The Convex monthly credits engine reads this value to ingest negative usage
+ * events at every subscription period boundary; Polar `meter_credit` benefits
+ * are detached from products so they never grant credits in parallel.
+ *
+ * The `benefits` map remains as a stable lookup of legacy Polar benefit descriptions
+ * (still useful for tests and historical webhook payloads) but no longer drives UI copy.
+ */
 export const billing_PRODUCTS = {
 	Free: {
 		name: "Free",
 		displayName: "Free",
+		recurringCreditsCents: 1000,
 		benefits: {
 			"Free Included Usage": {
 				description: "Free Included Usage",
-				displaySuffixText: "usage per month",
 			},
 		},
 	},
 	Pro: {
 		name: "Pro",
 		displayName: "Pro",
+		recurringCreditsCents: 6000,
 		meter: {
 			name: "Press app usage",
 			displayName: "Press app usage",
@@ -26,13 +35,13 @@ export const billing_PRODUCTS = {
 		benefits: {
 			"Pro Included Usage": {
 				description: "Pro Included Usage",
-				displaySuffixText: "usage per month",
 			},
 		},
 	},
 	"Pay As You Go": {
 		name: "Pay As You Go",
 		displayName: "Pay As You Go",
+		recurringCreditsCents: 1000,
 		meter: {
 			name: "Press app usage",
 			displayName: "Press app usage",
@@ -44,7 +53,6 @@ export const billing_PRODUCTS = {
 		benefits: {
 			"Free Usage": {
 				description: "Free Usage",
-				displaySuffixText: "usage",
 			},
 		},
 	},
@@ -68,15 +76,12 @@ export function billing_compare_product_order(leftProductName: string, rightProd
 	return leftProductName.localeCompare(rightProductName);
 }
 
-export function billing_get_product_benefit_display_suffix_text(productName: string, benefitDescription: string) {
-	const product = billing_PRODUCTS[productName as keyof typeof billing_PRODUCTS];
-	type BillingProductBenefits = UnionToIntersection<NonNullable<typeof product>["benefits"]>;
-	const benefits = product?.benefits as BillingProductBenefits | undefined;
-	return benefits?.[benefitDescription as keyof BillingProductBenefits]?.displaySuffixText ?? null;
-}
-
 export function billing_get_product_display_name(productName: string) {
 	return billing_PRODUCTS[productName as keyof typeof billing_PRODUCTS]?.displayName ?? productName;
+}
+
+export function billing_get_recurring_credits_cents(productName: string) {
+	return billing_PRODUCTS[productName as keyof typeof billing_PRODUCTS]?.recurringCreditsCents ?? 0;
 }
 
 export function billing_get_plan_change_kind(currentProductName: string, targetProductName: string) {

@@ -18,7 +18,11 @@ import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, internalQuery, query } from "./_generated/server.js";
 import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
-import { billing_PRODUCTS, billing_get_plan_change_kind } from "../shared/billing.ts";
+import {
+	billing_PRODUCTS,
+	billing_get_plan_change_kind,
+	billing_get_recurring_credits_cents,
+} from "../shared/billing.ts";
 import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
@@ -322,6 +326,18 @@ export const handle_polar_customer_state_update = internalMutation({
 			await ctx.db.patch("billing_usage_snapshots", existing._id, usageSnapshot);
 		} else {
 			await ctx.db.insert("billing_usage_snapshots", usageSnapshot);
+		}
+
+		// Queue the monthly credits engine on every active-subscription state
+		// change so renewals and upgrades grant credits as soon as Polar reports
+		// the new period.
+		if (subscription) {
+			await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.grant_monthly_credits, {
+				userId,
+				subscriptionId: subscription.id,
+				productId: subscription.product_id,
+				periodStart: subscription.current_period_start,
+			});
 		}
 
 		return null;
@@ -932,6 +948,89 @@ export const ingest_usage_event = internalAction({
 	},
 });
 // #endregion event ingestion
+
+// #region monthly credits
+/**
+ * Grant recurring monthly credits for one `(user, subscription, period)` tuple.
+ *
+ * The Convex monthly credits engine is the only code path that grants recurring
+ * credits for every plan (Free, Pay As You Go, Pro). Polar `meter_credit`
+ * benefits are detached from products in the dashboard so they cannot fire in
+ * parallel. The Polar usage event keyed by `externalId` is the authority for
+ * whether this period was already granted.
+ */
+export const grant_monthly_credits = internalAction({
+	args: {
+		userId: v.id("users"),
+		subscriptionId: v.string(),
+		productId: v.string(),
+		periodStart: v.string(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const product = await ctx.runQuery(components.polar.lib.getProduct, {
+			id: args.productId,
+		});
+		if (!product) {
+			throw should_never_happen("Product not found while granting monthly credits", {
+				periodStart: args.periodStart,
+				productId: args.productId,
+				subscriptionId: args.subscriptionId,
+				userId: args.userId,
+			});
+		}
+
+		const recurringAmountCents = billing_get_recurring_credits_cents(product.name);
+		if (recurringAmountCents > 0) {
+			// Use a deterministic externalId so Polar records one immutable grant
+			// event per `(user, subscription, period)` tuple and reports later
+			// retries as duplicates.
+			const ingestResult = await eventsIngest(billing_polar_client(), {
+				events: [
+					{
+						name: billing_EVENTS.pressUsage,
+						externalCustomerId: args.userId,
+						externalId: `monthly-grant:${args.userId}:${args.subscriptionId}:${args.periodStart}`,
+						metadata: {
+							amount: -recurringAmountCents,
+							source: "monthly-grant",
+							subscriptionId: args.subscriptionId,
+							productId: args.productId,
+							productName: product.name,
+							periodStart: args.periodStart,
+						},
+					},
+				],
+			});
+			if (!ingestResult.ok) {
+				throw new Error("Failed to ingest monthly credit grant", {
+					cause: ingestResult.error,
+				});
+			}
+
+			if (ingestResult.value.inserted > 0) {
+				return null;
+			}
+
+			// Treat duplicate responses as proof that Polar already recorded this
+			// period's grant.
+			if ((ingestResult.value.duplicates ?? 0) > 0) {
+				return null;
+			}
+
+			throw should_never_happen("Monthly credit ingest returned no inserted or duplicate events", {
+				duplicates: ingestResult.value.duplicates ?? 0,
+				periodStart: args.periodStart,
+				productId: args.productId,
+				subscriptionId: args.subscriptionId,
+				userId: args.userId,
+			});
+		}
+
+		return null;
+	},
+});
+// #endregion monthly credits
 
 // #region admin
 export const sync_products = internalAction({

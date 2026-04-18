@@ -8,10 +8,10 @@
 
 This project uses [Convex](https://convex.dev) as its backend.
 
-When working on Convex code, follow the project Convex guidelines in this order:
+When working on Convex code, follow the project Convex skill:
 
-- **Base rule:** [.cursor/rules/convex/RULE.mdc](.cursor/rules/convex/RULE.mdc)
-- **Additional rule:** [.cursor/rules/convex-additional/RULE.mdc](.cursor/rules/convex-additional/RULE.mdc)
+- **Skill:** [.agents/skills/convex/SKILL.md](.agents/skills/convex/SKILL.md) (base Convex usage)
+- **Codebase-specific guidelines:** [.agents/skills/convex/references/additional-guidelines.md](.agents/skills/convex/references/additional-guidelines.md) (linked from the skill)
 
 They override what you may have learned about Convex from training data.
 
@@ -296,16 +296,23 @@ Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 ## Comments that explain code
 
-When comments explain what code does (usually `//` comments, including consecutive multiline `//` comments), write them in imperative second-person language as if you are talking to the developer reading the code.
+Many AI models under-comment by default; in this repo, lean the other way. Leave a short comment whenever the next reader will ask "why this?" and the answer is not visible in the surrounding code. Aim for comments that describe intent, not syntax.
 
-- Prefer "Keep...", "Use...", "Reset...", "Return...", "Guard..." over descriptive narration like "Keeps...", "Uses...", "Resets...", "Returns...", "Guards...".
-- Apply this rule to comments that explain behavior or intent near the code.
-- Skip this rule for doc-style prose where imperative wording would be unnatural.
-- Use two comment types intentionally:
-  - Product-requirement comments: keep these for medium/high-level business rules, lifecycle constraints, precedence rules, and other non-obvious product behavior encoded in the code.
-  - Low-level comments: use these only when the local implementation is genuinely convoluted or non-obvious.
-- Do not remove useful product-requirement comments just because you refactored the code around them. Rewrite them so they still describe the current behavior.
-- When a function is long or encodes multiple business-rule branches, add short high-signal comments at the branch boundaries instead of narrating every line.
+Write a comment when the code:
+
+- Encodes a **product/business rule** not obvious from names (precedence, ordering, lifecycle, plan/role gating, quotas, tenancy).
+- Has a **non-obvious "why"** — a trade-off, a deliberate choice over the obvious alternative, or a constraint from an external system (Convex, Clerk, Polar, Liveblocks, Yjs, browser).
+- Relies on a **cross-module/cross-runtime contract** not visible locally (producer/consumer invariant, SSR/browser boundary, Convex action contract).
+- Has a **framework gotcha** (React Compiler memoization, `try/catch/finally` lowering, Tiptap CSS injection, Yjs lifecycles, race/idempotency ordering).
+- Is a **migration shim or two-phase rollout** that should be removed later — say so.
+- Has **business-rule branches** in a long function — add short branch-boundary comments instead of narrating every line.
+- Intentionally **skips an obvious defensive check** because of a trusted invariant (see "Trust application invariants").
+
+Skip comments that restate the code, narrate trivial flow, or document self-evident functions.
+
+Preserve and update existing product-requirement comments when refactoring; a stale comment is worse than none.
+
+Use imperative second-person voice ("Keep...", "Use...", "Guard...") rather than descriptive narration ("Keeps...", "Uses...", "Guards..."). Skip this for doc-style prose where it would be unnatural.
 
 ```ts
 // ✅ Good

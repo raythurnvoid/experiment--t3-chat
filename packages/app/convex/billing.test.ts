@@ -2566,3 +2566,409 @@ describe("ingest_usage_event", () => {
 		).rejects.toThrow("ingest_failed_test");
 	});
 });
+
+describe("grant_monthly_credits", () => {
+	beforeEach(() => {
+		eventsIngestMock.mockReset();
+	});
+
+	afterEach(() => {
+		eventsIngestMock.mockReset();
+	});
+
+	test("uses a stable externalId and treats inserted grants as success", async () => {
+		eventsIngestMock.mockResolvedValue({
+			ok: true,
+			value: {
+				inserted: 1,
+				duplicates: 0,
+			} as never,
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_action_inserted_product",
+		});
+
+		const result = await t.action(internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_action_inserted",
+			productId: polarProductId,
+			periodStart: "2026-01-01T00:00:00.000Z",
+		});
+
+		expect(result).toBeNull();
+		expect(eventsIngestMock).toHaveBeenCalledTimes(1);
+		const ingestCall = eventsIngestMock.mock.calls[0];
+		expect(ingestCall).toBeDefined();
+		const ingestPayload = ingestCall![1] as {
+			events: Array<{
+				externalId: string;
+				externalCustomerId: string;
+				metadata: { amount: number; source: string; periodStart: string };
+				name: string;
+			}>;
+		};
+		expect(ingestPayload.events).toHaveLength(1);
+		expect(ingestPayload.events[0]!.externalId).toBe(
+			`monthly-grant:${userId}:sub_grant_action_inserted:2026-01-01T00:00:00.000Z`,
+		);
+		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
+		expect(ingestPayload.events[0]!.metadata).toMatchObject({
+			amount: -billing_PRODUCTS["Pay As You Go"].recurringCreditsCents,
+			source: "monthly-grant",
+			periodStart: "2026-01-01T00:00:00.000Z",
+		});
+		expect(ingestPayload.events[0]!.name).toBe(billing_EVENTS.pressUsage);
+	});
+
+	test("treats duplicate ingest responses as a clean no-op", async () => {
+		eventsIngestMock.mockResolvedValue({
+			ok: true,
+			value: {
+				inserted: 0,
+				duplicates: 1,
+			} as never,
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_action_duplicate_product",
+		});
+
+		const result = await t.action(internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_action_duplicate",
+			productId: polarProductId,
+			periodStart: "2026-01-01T00:00:00.000Z",
+		});
+
+		expect(result).toBeNull();
+		expect(eventsIngestMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("monthly credits engine via handle_polar_customer_state_update", () => {
+	async function seed_usage_snapshot(
+		t: ReturnType<typeof test_convex>,
+		args: {
+			userId: Id<"users">;
+			polarCustomerId: string;
+			subscription: {
+				id: string;
+				productId: string;
+				currency: string;
+				currentPeriodStart: string;
+				currentPeriodEnd: string;
+			} | null;
+		},
+	) {
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_snapshots", {
+				userId: args.userId,
+				polarCustomerId: args.polarCustomerId,
+				subscription: args.subscription,
+				meter: args.subscription
+					? {
+							id: "meter_units",
+							consumedUnits: 0,
+							creditedUnits: 0,
+							balance: 0,
+							amountDueCents: 0,
+						}
+					: null,
+				lastSyncedAt: Date.now(),
+			});
+		});
+	}
+
+	function payg_active_subscription(args: {
+		subscriptionId: string;
+		productId: string;
+		currentPeriodStart: string;
+		currentPeriodEnd: string;
+	}) {
+		return {
+			id: args.subscriptionId,
+			product_id: args.productId,
+			currency: "eur",
+			current_period_start: args.currentPeriodStart,
+			current_period_end: args.currentPeriodEnd,
+			meters: [
+				{
+					meter_id: "meter_units",
+					consumed_units: 0,
+					credited_units: 0,
+					amount: 0,
+				},
+			],
+		};
+	}
+
+	function active_meter() {
+		return {
+			meter_id: "meter_units",
+			consumed_units: 0,
+			credited_units: 0,
+			balance: 0,
+		};
+	}
+
+	test("enqueues a monthly grant for the first period of an active subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_first_period_product",
+		});
+
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_grant_first_period" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				data: {
+					id: "cust_grant_first_period",
+					external_id: userId,
+					active_subscriptions: [
+						payg_active_subscription({
+							subscriptionId: "sub_grant_first_period",
+							productId: polarProductId,
+							currentPeriodStart: "2026-01-01T00:00:00.000Z",
+							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+						}),
+					],
+					active_meters: [active_meter()],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.grant_monthly_credits,
+			{
+				userId,
+				subscriptionId: "sub_grant_first_period",
+				productId: polarProductId,
+				periodStart: "2026-01-01T00:00:00.000Z",
+			},
+		);
+	});
+
+	test("re-enqueues the same monthly grant for repeated same-period webhook deliveries", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_same_period_product",
+		});
+
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_grant_same_period" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-01-15T00:00:00.000Z",
+				data: {
+					id: "cust_grant_same_period",
+					external_id: userId,
+					active_subscriptions: [
+						payg_active_subscription({
+							subscriptionId: "sub_grant_same_period",
+							productId: polarProductId,
+							currentPeriodStart: "2026-01-01T00:00:00.000Z",
+							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+						}),
+					],
+					active_meters: [active_meter()],
+				},
+			},
+		});
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-01-15T00:00:01.000Z",
+				data: {
+					id: "cust_grant_same_period",
+					external_id: userId,
+					active_subscriptions: [
+						payg_active_subscription({
+							subscriptionId: "sub_grant_same_period",
+							productId: polarProductId,
+							currentPeriodStart: "2026-01-01T00:00:00.000Z",
+							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+						}),
+					],
+					active_meters: [active_meter()],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(2);
+		expect(enqueueActionSpy).toHaveBeenNthCalledWith(
+			1,
+			expect.anything(),
+			internal.billing.grant_monthly_credits,
+			{
+				userId,
+				subscriptionId: "sub_grant_same_period",
+				productId: polarProductId,
+				periodStart: "2026-01-01T00:00:00.000Z",
+			},
+		);
+		expect(enqueueActionSpy).toHaveBeenNthCalledWith(
+			2,
+			expect.anything(),
+			internal.billing.grant_monthly_credits,
+			{
+				userId,
+				subscriptionId: "sub_grant_same_period",
+				productId: polarProductId,
+				periodStart: "2026-01-01T00:00:00.000Z",
+			},
+		);
+	});
+
+	test("enqueues a monthly grant when the subscription has rolled into a new period", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_advanced_period_product",
+		});
+		await seed_usage_snapshot(t, {
+			userId,
+			polarCustomerId: "cust_grant_advanced_period",
+			subscription: {
+				id: "sub_grant_advanced_period",
+				productId: polarProductId,
+				currency: "eur",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+			},
+		});
+
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_grant_advanced_period" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-02-01T00:00:00.000Z",
+				data: {
+					id: "cust_grant_advanced_period",
+					external_id: userId,
+					active_subscriptions: [
+						payg_active_subscription({
+							subscriptionId: "sub_grant_advanced_period",
+							productId: polarProductId,
+							currentPeriodStart: "2026-02-01T00:00:00.000Z",
+							currentPeriodEnd: "2026-03-01T00:00:00.000Z",
+						}),
+					],
+					active_meters: [active_meter()],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.grant_monthly_credits,
+			{
+				userId,
+				subscriptionId: "sub_grant_advanced_period",
+				productId: polarProductId,
+				periodStart: "2026-02-01T00:00:00.000Z",
+			},
+		);
+	});
+
+	test("enqueues a monthly grant when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId: oldProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_upgrade_old_product",
+		});
+		const { polarProductId: newProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "billing_grant_upgrade_new_product",
+		});
+		await seed_usage_snapshot(t, {
+			userId,
+			polarCustomerId: "cust_grant_upgrade",
+			subscription: {
+				id: "sub_grant_upgrade_old",
+				productId: oldProductId,
+				currency: "eur",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+			},
+		});
+
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_grant_upgrade" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-01-15T00:00:00.000Z",
+				data: {
+					id: "cust_grant_upgrade",
+					external_id: userId,
+					active_subscriptions: [
+						payg_active_subscription({
+							subscriptionId: "sub_grant_upgrade_new",
+							productId: newProductId,
+							currentPeriodStart: "2026-01-15T00:00:00.000Z",
+							currentPeriodEnd: "2026-02-15T00:00:00.000Z",
+						}),
+					],
+					active_meters: [active_meter()],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			internal.billing.grant_monthly_credits,
+			{
+				userId,
+				subscriptionId: "sub_grant_upgrade_new",
+				productId: newProductId,
+				periodStart: "2026-01-15T00:00:00.000Z",
+			},
+		);
+	});
+
+	test("is a no-op when the webhook reports no active subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_grant_no_subscription" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				data: {
+					id: "cust_grant_no_subscription",
+					external_id: userId,
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+});

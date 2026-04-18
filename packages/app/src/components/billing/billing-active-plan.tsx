@@ -9,8 +9,8 @@ import { format_time } from "@/lib/date.ts";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import { format_cents, type Currency } from "../../lib/currency.ts";
 import {
-	billing_get_product_benefit_display_suffix_text,
 	billing_get_product_display_name,
+	billing_get_recurring_credits_cents,
 } from "../../../shared/billing.ts";
 
 // #region skeleton
@@ -136,27 +136,16 @@ function plan_interval_label(interval: string) {
 	}
 }
 
+// Source the included-usage copy from the shared catalog (`recurringCreditsCents`)
+// because Polar `meter_credit` benefits are detached: the Convex monthly credits
+// engine is the only app code path that grants recurring credits per plan.
 function included_usage_text(product: ProductDoc, currency: LiteralUnion<Currency, string>) {
-	const benefit = product.benefits?.find((benefit) => {
-		return benefit.type === "meter_credit";
-	});
-
-	if (!benefit) {
+	const recurringCents = billing_get_recurring_credits_cents(product.name);
+	if (recurringCents <= 0) {
 		return null;
 	}
 
-	const includedUsageAmount = benefit.properties?.units;
-	if (!includedUsageAmount) {
-		throw should_never_happen("Product benefit data missing `includedUsageAmount`", { benefit });
-	}
-
-	const suffixText = billing_get_product_benefit_display_suffix_text(product.name, benefit.description);
-
-	if (!suffixText) {
-		throw should_never_happen("Product benefit data missing `suffixText`", { benefit });
-	}
-
-	return `Includes ${format_cents(includedUsageAmount, currency)} of ${suffixText}`;
+	return `Includes ${format_cents(recurringCents, currency)} of usage per month`;
 }
 
 function product_price_currency(product: ProductDoc) {
