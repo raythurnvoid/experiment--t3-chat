@@ -78,3 +78,25 @@ test("pages_markdown_chunk_with_mastra: returns empty chunks for empty markdown"
 
 	expect(chunks._yay).toEqual([]);
 });
+
+test("pages_markdown_chunk_with_mastra: handles consecutive blank lines (regression)", async () => {
+	// Tiptap's markdown serializer can emit multiple blank lines (>=2) between blocks,
+	// which produce adjacent separator matches in the chunker. Previously the 'start'
+	// separatorPosition branch dropped the empty segment, yielding a chunk whose text
+	// was no longer a substring of the source and a -1 startIndex downstream.
+	const markdownContent = "# Welcome\n\nYou can start editing your document here.\n\n\n\ntest\n";
+
+	const chunks = await pages_chunk_markdown(markdownContent);
+	if (chunks._nay) {
+		throw new Error("Expected markdown chunking to succeed for consecutive blank lines", {
+			cause: chunks._nay,
+		});
+	}
+
+	expect(chunks._yay.length).toBeGreaterThan(0);
+	for (const chunk of chunks._yay) {
+		expect(markdownContent).toContain(chunk.markdownChunk);
+		expect(chunk.lineStart).toBeGreaterThanOrEqual(1);
+		expect(chunk.lineEnd).toBeGreaterThanOrEqual(chunk.lineStart);
+	}
+});
