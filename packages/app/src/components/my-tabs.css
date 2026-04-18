@@ -87,6 +87,39 @@
 		line-height: 1;
 
 		color: var(--color-fg-06);
+
+		&.MyTabsTabSurface-variant-container {
+			border: 1px solid var(--color-base-1-05);
+			border-radius: 6px;
+
+			background: var(--color-base-1-03);
+
+			transition:
+				background-color 0.15s ease,
+				border-color 0.15s ease;
+
+			/* Neutralize the inner primary-action backgrounds so they don't clash with the container chrome. */
+			& .MyTabsTabPrimaryAction {
+				background: transparent;
+
+				&:hover {
+					background: transparent;
+				}
+
+				&:active {
+					background: transparent;
+				}
+			}
+
+			&:hover {
+				background: var(--color-base-alt-1-07);
+			}
+
+			&:has(.MyTabsTabPrimaryAction[aria-selected="true"]) {
+				border-color: var(--color-accent-06);
+				background: var(--color-base-alt-1-07);
+			}
+		}
 	}
 	/* #endregion tab-surface */
 

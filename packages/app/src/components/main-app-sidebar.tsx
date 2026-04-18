@@ -2,7 +2,7 @@ import "./main-app-sidebar.css";
 import "@/components/my-action.css";
 
 import { memo } from "react";
-import type { ComponentPropsWithRef, Ref } from "react";
+import type { Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
 import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
@@ -41,12 +41,13 @@ import {
 } from "@/components/my-sidebar.tsx";
 
 // #region theme toggle item
-type MainAppSidebarThemeToggleMenuItem_ClassNames =
-	| "MainAppSidebarThemeToggleMenuItem"
-	| "MainAppSidebarThemeToggleMenuItem-button"
-	| "MainAppSidebarThemeToggleMenuItem-icon";
+type ThemeToggleMenuItem_Props = {
+	tooltip?: string;
+};
 
-const ThemeToggleMenuItem = memo(function ThemeToggleMenuItem() {
+const ThemeToggleMenuItem = memo(function ThemeToggleMenuItem(props: ThemeToggleMenuItem_Props) {
+	const { tooltip } = props;
+
 	const { mode, resolved_theme, set_mode } = useThemeContext();
 
 	const get_theme_icon = () => {
@@ -72,55 +73,26 @@ const ThemeToggleMenuItem = memo(function ThemeToggleMenuItem() {
 		}
 	});
 
+	// Reuse the MainAppSidebarItem DOM/class contract so the collapsed icon-size
+	// rule (`.MainAppSidebarItem-trigger > .MySidebarListItemIcon { font-size: 24px }`)
+	// applies to the theme toggle too.
 	return (
-		<MySidebarListItem
-			className={"MainAppSidebarThemeToggleMenuItem" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
-		>
+		<MySidebarListItem className={"MainAppSidebarItem" satisfies MainAppSidebarItem_ClassNames}>
 			<MySidebarListItemPrimaryAction
+				className={"MainAppSidebarItem-trigger" satisfies MainAppSidebarItem_ClassNames}
+				tooltip={tooltip}
+				tooltipPlacement={tooltip ? "right" : undefined}
 				onClick={handleCycleTheme}
-				className={"MainAppSidebarThemeToggleMenuItem-button" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
 			>
-				<MySidebarListItemIcon
-					className={"MainAppSidebarThemeToggleMenuItem-icon" satisfies MainAppSidebarThemeToggleMenuItem_ClassNames}
-				>
-					{get_theme_icon()}
-				</MySidebarListItemIcon>
-				<MySidebarListItemTitle>
-					<MainAppSidebarMenuButtonLabel>Theme</MainAppSidebarMenuButtonLabel>
+				<MySidebarListItemIcon>{get_theme_icon()}</MySidebarListItemIcon>
+				<MySidebarListItemTitle className={"MainAppSidebarItem-title" satisfies MainAppSidebarItem_ClassNames}>
+					Theme
 				</MySidebarListItemTitle>
 			</MySidebarListItemPrimaryAction>
 		</MySidebarListItem>
 	);
 });
 // #endregion theme toggle item
-
-// #region menu button label
-type MainAppSidebarMenuButtonLabel_ClassNames = "MainAppSidebarMenuButtonLabel";
-
-type MainAppSidebarMenuButtonLabel_Props = ComponentPropsWithRef<"span"> & {
-	ref?: Ref<HTMLSpanElement>;
-	id?: string;
-	className?: string;
-	children?: React.ReactNode;
-};
-
-const MainAppSidebarMenuButtonLabel = memo(function MainAppSidebarMenuButtonLabel(
-	props: MainAppSidebarMenuButtonLabel_Props,
-) {
-	const { ref, id, className, children, ...rest } = props;
-
-	return (
-		<span
-			ref={ref}
-			id={id}
-			className={cn("MainAppSidebarMenuButtonLabel" satisfies MainAppSidebarMenuButtonLabel_ClassNames, className)}
-			{...rest}
-		>
-			{children}
-		</span>
-	);
-});
-// #endregion menu button label
 
 // #region profile section
 type MainAppSidebarProfileSection_ClassNames = "MainAppSidebarProfileSection";
@@ -467,7 +439,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 
 			<MySidebarFooter className={"MainAppSidebar-footer" satisfies MainAppSidebar_ClassNames}>
 				<MySidebarList className={"MainAppSidebar-footer-menu" satisfies MainAppSidebar_ClassNames}>
-					<ThemeToggleMenuItem />
+					<ThemeToggleMenuItem tooltip={mainAppSidebarCollapsed ? "Theme" : undefined} />
 				</MySidebarList>
 				<ProfileSection />
 			</MySidebarFooter>
