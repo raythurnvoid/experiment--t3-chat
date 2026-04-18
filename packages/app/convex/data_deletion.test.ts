@@ -10,6 +10,8 @@ import {
 	workspaces_db_ensure_default_workspace_and_project_for_user,
 } from "../server/workspaces.ts";
 import { user_limits } from "../shared/limits.ts";
+import { pages_create_room_id } from "../shared/pages.ts";
+import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -285,6 +287,34 @@ describe("init_user_deletion", () => {
 			]);
 		});
 
+		const sharedPresenceRoomId = pages_create_room_id(
+			String(sharedWorkspace.workspaceId),
+			String(sharedWorkspace.extraProjectId),
+			"phase-one-shared-presence-page",
+		);
+		await t.run(async (ctx) => {
+			await Promise.all([
+				ctx.runMutation(components.presence.public.heartbeat, {
+					roomId: app_presence_GLOBAL_ROOM_ID,
+					userId: deletedUser.userId,
+					sessionId: "phase-one-deleted-global",
+					interval: 10_000,
+				}),
+				ctx.runMutation(components.presence.public.heartbeat, {
+					roomId: sharedPresenceRoomId,
+					userId: deletedUser.userId,
+					sessionId: "phase-one-deleted-shared",
+					interval: 10_000,
+				}),
+				ctx.runMutation(components.presence.public.heartbeat, {
+					roomId: sharedPresenceRoomId,
+					userId: collaborator.userId,
+					sessionId: "phase-one-collaborator-shared",
+					interval: 10_000,
+				}),
+			]);
+		});
+
 		const requestId = await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.init_user_deletion, {
 				userId: deletedUser.userId,
@@ -305,6 +335,8 @@ describe("init_user_deletion", () => {
 				personalPages,
 				sharedExtraPages,
 				snapshots,
+				deletedPresenceRooms,
+				collaboratorPresenceRooms,
 			] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
 				ctx.db.get("data_deletion_requests", requestId!),
@@ -329,6 +361,16 @@ describe("init_user_deletion", () => {
 					.query("billing_usage_snapshots")
 					.withIndex("by_userId", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
+				ctx.runQuery(components.presence.public.listUser, {
+					userId: deletedUser.userId,
+					onlineOnly: false,
+					limit: 10_000,
+				}),
+				ctx.runQuery(components.presence.public.listUser, {
+					userId: collaborator.userId,
+					onlineOnly: false,
+					limit: 10_000,
+				}),
 			]);
 
 			return {
@@ -343,6 +385,8 @@ describe("init_user_deletion", () => {
 				personalPages,
 				sharedExtraPages,
 				snapshots,
+				deletedPresenceRooms,
+				collaboratorPresenceRooms,
 			};
 		});
 
@@ -362,6 +406,8 @@ describe("init_user_deletion", () => {
 		expect(after.personalPages).toHaveLength(1);
 		expect(after.sharedExtraPages).toHaveLength(1);
 		expect(after.snapshots).toHaveLength(1);
+		expect(after.deletedPresenceRooms).toHaveLength(0);
+		expect(after.collaboratorPresenceRooms.map((room) => room.roomId)).toContain(sharedPresenceRoomId);
 	});
 });
 

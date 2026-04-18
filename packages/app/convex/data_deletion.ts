@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { internal } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import { internalAction, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
@@ -325,6 +325,22 @@ async function db_prepare_user_for_deletion(
 			deletedAt: args.now,
 		});
 	}
+
+	// Drop presence rows for the deleted user so no orphan docs linger;
+	// `list` / `listRoom` already filter silently if anything is re-created.
+	const presenceRooms = await ctx.runQuery(components.presence.public.listUser, {
+		userId: args.user._id,
+		onlineOnly: false,
+		limit: 10_000,
+	});
+	await Promise.all(
+		presenceRooms.map((room) =>
+			ctx.runMutation(components.presence.public.removeRoomUser, {
+				roomId: room.roomId,
+				userId: args.user._id,
+			}),
+		),
+	);
 }
 
 async function db_finalize_deleted_user(

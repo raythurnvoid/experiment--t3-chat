@@ -5,7 +5,6 @@ import { Presence } from "@convex-dev/presence";
 import { convex_error } from "../server/convex-utils.ts";
 import { pages_db_reschedule_pending_edit_cleanup_for_user } from "../server/pages.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
-import { should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -87,24 +86,17 @@ export const list = query({
 
 		const usersWithAnagraphics = await Promise.all(
 			list.map(async (user) => {
+				// Skip rows whose user no longer resolves (unknown id, soft-deleted, or
+				// missing anagraphic). Presence is disposable operational state, so stale
+				// rows are ignored silently instead of being cleaned up proactively.
 				const userId = ctx.db.normalizeId("users", user.userId);
-				if (!userId) {
-					should_never_happen("[presence.list] invalid userId", { userId: user.userId });
-					return null;
-				}
+				if (!userId) return null;
 
 				const userDoc = await ctx.db.get("users", userId);
-				if (!userDoc || !userDoc.anagraphic) {
-					console.error(should_never_happen("[presence.list] missing user", { userId }));
-					return null;
-				}
+				if (!userDoc || userDoc.deletedAt != null || !userDoc.anagraphic) return null;
 
 				const anagraphic = await ctx.db.get("users_anagraphics", userDoc.anagraphic);
-
-				if (!anagraphic) {
-					console.error(should_never_happen("[presence.list] missing anagraphic", { userId }));
-					return null;
-				}
+				if (!anagraphic) return null;
 
 				return {
 					userId,
@@ -197,26 +189,17 @@ export const listRoom = query({
 
 		const usersWithAnagraphics = await Promise.all(
 			list.map(async (user) => {
+				// Skip rows whose user no longer resolves (unknown id, soft-deleted, or
+				// missing anagraphic). Presence is disposable operational state, so stale
+				// rows are ignored silently instead of being cleaned up proactively.
 				const userId = ctx.db.normalizeId("users", user.userId);
-				if (!userId) {
-					console.error(should_never_happen("[presence.listRoom] invalid userId", { userId: user.userId }));
-					return null;
-				}
+				if (!userId) return null;
 
 				const userDoc = await ctx.db.get("users", userId);
-				if (!userDoc || !userDoc.anagraphic) {
-					should_never_happen("[presence.listRoom] missing user or anagraphic id", {
-						userId,
-						anagraphicId: userDoc?.anagraphic,
-					});
-					return null;
-				}
+				if (!userDoc || userDoc.deletedAt != null || !userDoc.anagraphic) return null;
 
 				const anagraphic = await ctx.db.get("users_anagraphics", userDoc.anagraphic);
-				if (!anagraphic) {
-					should_never_happen("[presence.listRoom] missing anagraphic", { userId });
-					return null;
-				}
+				if (!anagraphic) return null;
 
 				return {
 					userId: user.userId,

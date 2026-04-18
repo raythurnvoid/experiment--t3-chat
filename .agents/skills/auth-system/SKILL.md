@@ -190,7 +190,7 @@ Related files:
 User-account deletion is implemented across [users.ts](../../../packages/app/convex/users.ts) and [data_deletion.ts](../../../packages/app/convex/data_deletion.ts):
 
 - `users.delete_current_user_account` is the UI-facing entrypoint.
-- `data_deletion.init_user_deletion` is the reversible phase 1 step: it creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, and marks memberships inactive.
+- `data_deletion.init_user_deletion` is the reversible phase 1 step: it creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, marks memberships inactive, and removes the user from every room tracked by the `@convex-dev/presence` component (via `components.presence.public.listUser` + `removeRoomUser`).
 - Phase 1 does not delete projects, workspaces, pages, or billing usage snapshots.
 - Phase 1 also does not backfill or repair missing anagraphic email; deleted-account recovery only works for users whose normalized email was already stored before deletion.
 - `users.delete_current_user_account` also enqueues retryable work that cancels any paid Polar subscription at the close of the current billing period, then clears the local subscription mirror immediately.
