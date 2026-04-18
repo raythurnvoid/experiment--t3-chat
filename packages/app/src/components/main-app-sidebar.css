@@ -89,17 +89,6 @@
 				padding-left: 2px;
 				padding-right: 2px;
 
-				.MainAppSidebarMenuButtonLabel {
-					overflow: hidden;
-					width: 0;
-				}
-
-				.MainAppSidebarThemeToggleMenuItem-button {
-					width: 36px;
-					padding: 6px;
-					justify-content: center;
-				}
-
 				.MainAppSidebarProfileSection {
 					display: flex;
 					justify-content: center;
@@ -228,29 +217,6 @@
 		white-space: nowrap;
 	}
 	/* #endregion presence users */
-
-	/* #region menu button label */
-	.MainAppSidebarMenuButtonLabel {
-		min-width: 0;
-
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	/* #endregion menu button label */
-
-	/* #region theme toggle item */
-	.MainAppSidebarThemeToggleMenuItem-button {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.MainAppSidebarThemeToggleMenuItem-icon {
-		width: 16px;
-		height: 16px;
-	}
-	/* #endregion theme toggle item */
 
 	/* #region profile section */
 	.MainAppSidebarProfileSection {
