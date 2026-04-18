@@ -20,20 +20,34 @@ export const MyTabsTab = memo(function MyTabsTab(props: MyTabsTab_Props) {
 // #endregion tab
 
 // #region tab-surface
-export type MyTabsTabSurface_ClassNames = "MyTabsTabSurface";
+export type MyTabsTabSurface_ClassNames =
+	| "MyTabsTabSurface"
+	| "MyTabsTabSurface-variant-default"
+	| "MyTabsTabSurface-variant-container";
 
 export type MyTabsTabSurface_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
+	variant?: "default" | "container";
 	children?: ReactNode;
 };
 
 export const MyTabsTabSurface = memo(function MyTabsTabSurface(props: MyTabsTabSurface_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
-		<div ref={ref} id={id} className={cn("MyTabsTabSurface" satisfies MyTabsTabSurface_ClassNames, className)} {...rest}>
+		<div
+			ref={ref}
+			id={id}
+			className={cn(
+				"MyTabsTabSurface" satisfies MyTabsTabSurface_ClassNames,
+				variant === "default" && ("MyTabsTabSurface-variant-default" satisfies MyTabsTabSurface_ClassNames),
+				variant === "container" && ("MyTabsTabSurface-variant-container" satisfies MyTabsTabSurface_ClassNames),
+				className,
+			)}
+			{...rest}
+		>
 			{children}
 		</div>
 	);

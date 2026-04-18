@@ -494,6 +494,7 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 													<MyTabsTabSurface
 														ref={draggableProvided.innerRef}
 														{...draggableProvided.draggableProps}
+														variant="container"
 														className={cn(
 															"PageEditorSidebarAgentHeaderTabs-tab" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
 														)}

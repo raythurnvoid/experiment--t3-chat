@@ -60,15 +60,13 @@
 		display: flex;
 		flex-direction: row;
 		align-items: center;
-		gap: 4px;
+		gap: 6px;
 
 		min-width: 0;
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab {
 		max-width: 200px;
-
-		padding: 0px;
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab-handle {
