@@ -231,18 +231,18 @@
 	--color-green-11: oklch(0.85 0.12 147);
 	--color-green-12: oklch(0.9 0.08 147);
 
-	--color-red-01: oklch(0.117 0.048 29.2);
-	--color-red-02: oklch(0.183 0.075 29.2);
-	--color-red-03: oklch(0.25 0.102 29.2);
-	--color-red-04: oklch(0.317 0.129 29.2);
-	--color-red-05: oklch(0.383 0.156 29.2);
-	--color-red-06: oklch(0.45 0.184 29.2);
-	--color-red-07: oklch(0.517 0.211 29.2);
-	--color-red-08: oklch(0.583 0.238 29.2);
-	--color-red-09: oklch(0.65 0.265 29.2);
-	--color-red-10: oklch(0.717 0.201 29.2);
-	--color-red-11: oklch(0.783 0.144 29.2);
-	--color-red-12: oklch(0.85 0.094 29.2);
+	--color-red-01: oklch(0.117 0.04 29.2);
+	--color-red-02: oklch(0.183 0.07 29.2);
+	--color-red-03: oklch(0.25 0.1 29.2);
+	--color-red-04: oklch(0.317 0.13 29.2);
+	--color-red-05: oklch(0.383 0.16 29.2);
+	--color-red-06: oklch(0.45 0.185 29.2);
+	--color-red-07: oklch(0.517 0.2 29.2);
+	--color-red-08: oklch(0.583 0.21 29.2);
+	--color-red-09: oklch(0.65 0.2 29.2);
+	--color-red-10: oklch(0.717 0.175 29.2);
+	--color-red-11: oklch(0.783 0.135 29.2);
+	--color-red-12: oklch(0.85 0.085 29.2);
 
 	/* PageEditorRichText text colors */
 	--PageEditorRichText-text-color-fg-default: inherit;
