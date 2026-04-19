@@ -78,6 +78,7 @@ const ThemeToggleMenuItem = memo(function ThemeToggleMenuItem(props: ThemeToggle
 	return (
 		<MySidebarListItem className={"MainAppSidebarItem" satisfies MainAppSidebarItem_ClassNames}>
 			<MySidebarListItemPrimaryAction
+				variant="button"
 				className={"MainAppSidebarItem-trigger" satisfies MainAppSidebarItem_ClassNames}
 				tooltip={tooltip}
 				tooltipPlacement={tooltip ? "right" : undefined}
@@ -127,6 +128,7 @@ const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSideba
 	return (
 		<MySidebarListItem className={"MainAppSidebarItem" satisfies MainAppSidebarItem_ClassNames}>
 			<MySidebarListItemPrimaryActionLink
+				variant="button"
 				to={to}
 				className={"MainAppSidebarItem-trigger" satisfies MainAppSidebarItem_ClassNames}
 				data-selected={isActive ? "true" : undefined}
@@ -191,8 +193,10 @@ const MainAppSidebarPresenceUsers = memo(function MainAppSidebarPresenceUsers(
 // #region presence control
 type MainAppSidebarPresenceControl_ClassNames =
 	| "MainAppSidebarPresenceControl"
-	| "MainAppSidebarPresenceControl-primary-trigger"
-	| "MainAppSidebarPresenceControl-primary-trigger-content"
+	| "MainAppSidebarPresenceControl-state-disabled"
+	| "MainAppSidebarPresenceControl-state-enabled"
+	| "MainAppSidebarPresenceControl-primary-action"
+	| "MainAppSidebarPresenceControl-primary-action-content"
 	| "MainAppSidebarPresenceControl-online-label"
 	| "MainAppSidebarPresenceControl-actions"
 	| "MainAppSidebarPresenceControl-actions-online-count"
@@ -230,22 +234,6 @@ const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceContro
 		app_presence_set_enabled(false);
 	});
 
-	if (!presenceEnabled) {
-		return (
-			<MySidebarPrimaryAction
-				onClick={handleEnable}
-				className={"MainAppSidebarPresenceControl" satisfies MainAppSidebarPresenceControl_ClassNames}
-				tooltip={sidebarCollapsed ? "Enable presence" : undefined}
-				tooltipPlacement={sidebarCollapsed ? "right" : undefined}
-			>
-				<MySidebarListItemIcon>
-					<Users />
-				</MySidebarListItemIcon>
-				<MySidebarListItemTitle>Enable presence</MySidebarListItemTitle>
-			</MySidebarPrimaryAction>
-		);
-	}
-
 	const disableButton = (
 		<MyButton
 			variant="ghost-highlightable"
@@ -257,59 +245,82 @@ const MainAppSidebarPresenceControl = memo(function MainAppSidebarPresenceContro
 	);
 
 	return (
-		<div className={"MainAppSidebarPresenceControl" satisfies MainAppSidebarPresenceControl_ClassNames}>
-			<MyHoverCard showTimeout={0} placement="right-start">
-				<MySidebarHovercardAction
-					className={cn(
-						"MainAppSidebarPresenceControl-primary-trigger" satisfies MainAppSidebarPresenceControl_ClassNames,
-					)}
-					aria-label={`Show details about ${onlineCount} online users`}
-				>
-					<div
+		<div
+			className={cn(
+				"MainAppSidebarPresenceControl" satisfies MainAppSidebarPresenceControl_ClassNames,
+				presenceEnabled
+					? ("MainAppSidebarPresenceControl-state-enabled" satisfies MainAppSidebarPresenceControl_ClassNames)
+					: ("MainAppSidebarPresenceControl-state-disabled" satisfies MainAppSidebarPresenceControl_ClassNames),
+			)}
+		>
+			{presenceEnabled ? (
+				<MyHoverCard showTimeout={0} placement="right-start">
+					<MySidebarHovercardAction
+						variant="button"
 						className={cn(
-							"MainAppSidebarPresenceControl-primary-trigger-content" satisfies MainAppSidebarPresenceControl_ClassNames,
+							"MainAppSidebarPresenceControl-primary-action" satisfies MainAppSidebarPresenceControl_ClassNames,
 						)}
+						aria-label={`Show details about ${onlineCount} online users`}
 					>
-						<MySidebarListItemIcon>
-							<Users />
-						</MySidebarListItemIcon>
-						<MySidebarListItemTitle
+						<div
 							className={cn(
-								"MainAppSidebarPresenceControl-online-label" satisfies MainAppSidebarPresenceControl_ClassNames,
+								"MainAppSidebarPresenceControl-primary-action-content" satisfies MainAppSidebarPresenceControl_ClassNames,
 							)}
 						>
-							{onlineCount} Online
-						</MySidebarListItemTitle>
-					</div>
-				</MySidebarHovercardAction>
-				<MyHoverCardContent
-					gutter={4}
-					aria-label="Presence: online users and options"
-					className={cn("MainAppSidebarPresenceControl-hovercard" satisfies MainAppSidebarPresenceControl_ClassNames)}
-				>
-					<MyHoverCardArrow />
+							<MySidebarListItemIcon>
+								<Users />
+							</MySidebarListItemIcon>
+							<MySidebarListItemTitle
+								className={cn(
+									"MainAppSidebarPresenceControl-online-label" satisfies MainAppSidebarPresenceControl_ClassNames,
+								)}
+							>
+								{onlineCount} Online
+							</MySidebarListItemTitle>
+						</div>
+					</MySidebarHovercardAction>
+					<MyHoverCardContent
+						gutter={4}
+						aria-label="Presence: online users and options"
+						className={cn("MainAppSidebarPresenceControl-hovercard" satisfies MainAppSidebarPresenceControl_ClassNames)}
+					>
+						<MyHoverCardArrow />
+						<div
+							hidden={!sidebarCollapsed}
+							className={cn("MainAppSidebarPresenceControl-actions" satisfies MainAppSidebarPresenceControl_ClassNames)}
+						>
+							<span
+								className={cn(
+									"MainAppSidebarPresenceControl-actions-online-count" satisfies MainAppSidebarPresenceControl_ClassNames,
+								)}
+							>
+								{onlineCount} Online
+							</span>
+							{disableButton}
+						</div>
+						<MainAppSidebarPresenceUsers users={onlineUsers} />
+					</MyHoverCardContent>
 					<div
-						hidden={!sidebarCollapsed}
+						hidden={sidebarCollapsed}
 						className={cn("MainAppSidebarPresenceControl-actions" satisfies MainAppSidebarPresenceControl_ClassNames)}
 					>
-						<span
-							className={cn(
-								"MainAppSidebarPresenceControl-actions-online-count" satisfies MainAppSidebarPresenceControl_ClassNames,
-							)}
-						>
-							{onlineCount} Online
-						</span>
 						{disableButton}
 					</div>
-					<MainAppSidebarPresenceUsers users={onlineUsers} />
-				</MyHoverCardContent>
-				<div
-					hidden={sidebarCollapsed}
-					className={cn("MainAppSidebarPresenceControl-actions" satisfies MainAppSidebarPresenceControl_ClassNames)}
+				</MyHoverCard>
+			) : (
+				<MySidebarPrimaryAction
+					variant="button"
+					onClick={handleEnable}
+					className={"MainAppSidebarPresenceControl-primary-action" satisfies MainAppSidebarPresenceControl_ClassNames}
+					tooltip={sidebarCollapsed ? "Enable presence" : undefined}
+					tooltipPlacement={sidebarCollapsed ? "right" : undefined}
 				>
-					{disableButton}
-				</div>
-			</MyHoverCard>
+					<MySidebarListItemIcon>
+						<Users />
+					</MySidebarListItemIcon>
+					<MySidebarListItemTitle>Enable presence</MySidebarListItemTitle>
+				</MySidebarPrimaryAction>
+			)}
 		</div>
 	);
 });

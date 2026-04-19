@@ -5,7 +5,7 @@ import { PanelLeftIcon } from "lucide-react";
 import { memo, type ComponentPropsWithRef } from "react";
 
 import { MyPrimaryAction, MyPrimaryActionLink } from "@/components/my-action.tsx";
-import { MyHovercardAction } from "@/components/my-hovercard.tsx";
+import { MyHovercardAction, type MyHovercardAction_Props } from "@/components/my-hovercard.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -73,20 +73,29 @@ export const MySidebarListItemIcon = memo(function MySidebarListItemIcon(props: 
 // #endregion list item icon
 
 // #region list item primary action
-type MySidebarListItemPrimaryAction_ClassNames = "MySidebarListItemPrimaryAction";
+type MySidebarListItemPrimaryAction_ClassNames =
+	| "MySidebarListItemPrimaryAction"
+	| "MySidebarListItemPrimaryAction-variant-button";
 
-export type MySidebarListItemPrimaryAction_Props = ComponentPropsWithRef<typeof MyPrimaryAction>;
+export type MySidebarListItemPrimaryAction_Props = ComponentPropsWithRef<typeof MyPrimaryAction> & {
+	variant?: "default" | "button";
+};
 
 export const MySidebarListItemPrimaryAction = memo(function MySidebarListItemPrimaryAction(
 	props: MySidebarListItemPrimaryAction_Props,
 ) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
 		<MyPrimaryAction
 			ref={ref}
 			id={id}
-			className={cn("MySidebarListItemPrimaryAction" satisfies MySidebarListItemPrimaryAction_ClassNames, className)}
+			className={cn(
+				"MySidebarListItemPrimaryAction" satisfies MySidebarListItemPrimaryAction_ClassNames,
+				variant === "button" &&
+					("MySidebarListItemPrimaryAction-variant-button" satisfies MySidebarListItemPrimaryAction_ClassNames),
+				className,
+			)}
 			{...rest}
 		>
 			{children}
@@ -96,14 +105,18 @@ export const MySidebarListItemPrimaryAction = memo(function MySidebarListItemPri
 // #endregion list item primary action
 
 // #region list item primary action link
-type MySidebarListItemPrimaryActionLink_ClassNames = "MySidebarListItemPrimaryActionLink";
+type MySidebarListItemPrimaryActionLink_ClassNames =
+	| "MySidebarListItemPrimaryActionLink"
+	| "MySidebarListItemPrimaryActionLink-variant-button";
 
-export type MySidebarListItemPrimaryActionLink_Props = ComponentPropsWithRef<typeof MyPrimaryActionLink>;
+export type MySidebarListItemPrimaryActionLink_Props = ComponentPropsWithRef<typeof MyPrimaryActionLink> & {
+	variant?: "default" | "button";
+};
 
 export const MySidebarListItemPrimaryActionLink = memo(function MySidebarListItemPrimaryActionLink(
 	props: MySidebarListItemPrimaryActionLink_Props,
 ) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
 		<MyPrimaryActionLink
@@ -111,6 +124,10 @@ export const MySidebarListItemPrimaryActionLink = memo(function MySidebarListIte
 			id={id}
 			className={cn(
 				"MySidebarListItemPrimaryActionLink" satisfies MySidebarListItemPrimaryActionLink_ClassNames,
+				variant === "button" &&
+					(
+						"MySidebarListItemPrimaryActionLink-variant-button" satisfies MySidebarListItemPrimaryActionLink_ClassNames
+					),
 				className,
 			)}
 			{...rest}
@@ -159,18 +176,24 @@ export const MySidebarSection = memo(function MySidebarSection(props: MySidebarS
 // #endregion section
 
 // #region primary action
-type MySidebarPrimaryAction_ClassNames = "MySidebarPrimaryAction";
+type MySidebarPrimaryAction_ClassNames = "MySidebarPrimaryAction" | "MySidebarPrimaryAction-variant-button";
 
-export type MySidebarPrimaryAction_Props = ComponentPropsWithRef<typeof MyPrimaryAction>;
+export type MySidebarPrimaryAction_Props = ComponentPropsWithRef<typeof MyPrimaryAction> & {
+	variant?: "default" | "button";
+};
 
 export const MySidebarPrimaryAction = memo(function MySidebarPrimaryAction(props: MySidebarPrimaryAction_Props) {
-	const { ref, id, className, children, ...rest } = props;
+	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
 		<MyPrimaryAction
 			ref={ref}
 			id={id}
-			className={cn("MySidebarPrimaryAction" satisfies MySidebarPrimaryAction_ClassNames, className)}
+			className={cn(
+				"MySidebarPrimaryAction" satisfies MySidebarPrimaryAction_ClassNames,
+				variant === "button" && ("MySidebarPrimaryAction-variant-button" satisfies MySidebarPrimaryAction_ClassNames),
+				className,
+			)}
 			{...rest}
 		>
 			{children}
@@ -180,18 +203,25 @@ export const MySidebarPrimaryAction = memo(function MySidebarPrimaryAction(props
 // #endregion primary action
 
 // #region hovercard action
-type MySidebarHovercardAction_ClassNames = "MySidebarHovercardAction";
+type MySidebarHovercardAction_ClassNames = "MySidebarHovercardAction" | "MySidebarHovercardAction-variant-button";
 
-export type MySidebarHovercardAction_Props = ComponentPropsWithRef<"div">;
+export type MySidebarHovercardAction_Props = MyHovercardAction_Props & {
+	variant?: "default" | "button";
+};
 
 export const MySidebarHovercardAction = memo(function MySidebarHovercardAction(props: MySidebarHovercardAction_Props) {
-	const { ref: _ref, id, className, children, ...rest } = props;
+	const { ref, id, className, variant = "default", children, ...rest } = props;
 
 	return (
 		<MyHovercardAction
+			ref={ref}
 			id={id}
-			className={cn("MySidebarHovercardAction" satisfies MySidebarHovercardAction_ClassNames, className)}
-			{...(rest as any)}
+			className={cn(
+				"MySidebarHovercardAction" satisfies MySidebarHovercardAction_ClassNames,
+				variant === "button" && ("MySidebarHovercardAction-variant-button" satisfies MySidebarHovercardAction_ClassNames),
+				className,
+			)}
+			{...rest}
 		>
 			{children}
 		</MyHovercardAction>

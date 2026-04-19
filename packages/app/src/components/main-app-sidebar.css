@@ -8,14 +8,6 @@
 		flex: 1;
 		min-height: 0;
 
-		.MainAppSidebarItem > .MainAppSidebarItem-trigger {
-			/* Override `MyPrimaryActionLink { display: block }` (same-specificity,
-			   same-layer source-order conflict with `MySidebarListItemPrimaryActionLink`). */
-			display: flex;
-			align-items: center;
-			gap: 8px;
-		}
-
 		&.MainAppSidebar-state-collapsed:not(.MySidebar-state-closed) {
 			width: 40px;
 
@@ -58,36 +50,39 @@
 				padding-right: 2px;
 			}
 
-			> .MySidebarSection .MainAppSidebarPresenceControl {
-				width: 36px;
-				height: 36px;
-				grid-template-columns: auto;
+			> .MySidebarSection {
+				.MainAppSidebarPresenceControl {
+					width: 36px;
+					height: 36px;
+				}
 
-				&:not(:has(.MainAppSidebarPresenceControl-primary-trigger)) {
-					display: flex;
-					align-items: center;
+				.MainAppSidebarPresenceControl-state-disabled > .MainAppSidebarPresenceControl-primary-action {
 					justify-content: center;
 					padding: 6px;
+
+					> .MySidebarListItemTitle {
+						display: none;
+					}
 				}
 
-				> .MySidebarListItemTitle {
-					display: none;
-				}
-
-				> .MySidebarListItemIcon,
-				.MainAppSidebarPresenceControl-primary-trigger-content > .MySidebarListItemIcon {
+				.MainAppSidebarPresenceControl-primary-action > .MySidebarListItemIcon,
+				.MainAppSidebarPresenceControl-primary-action-content > .MySidebarListItemIcon {
 					font-size: 24px;
 				}
 
-				.MainAppSidebarPresenceControl-primary-trigger {
-					padding: 6px;
-					justify-content: center;
+				.MainAppSidebarPresenceControl {
+					grid-template-columns: auto;
 
-					> .MainAppSidebarPresenceControl-primary-trigger-content {
+					&.MainAppSidebarPresenceControl-state-enabled .MainAppSidebarPresenceControl-primary-action {
+						padding: 6px;
 						justify-content: center;
 
-						> .MainAppSidebarPresenceControl-online-label {
-							display: none;
+						> .MainAppSidebarPresenceControl-primary-action-content {
+							justify-content: center;
+
+							> .MainAppSidebarPresenceControl-online-label {
+								display: none;
+							}
 						}
 					}
 				}
@@ -149,12 +144,19 @@
 	/* #region presence control */
 	.MainAppSidebarPresenceControl {
 		display: grid;
-		grid-template-columns: 1fr auto;
 		align-items: center;
 		gap: 8px;
 	}
 
-	.MainAppSidebarPresenceControl-primary-trigger {
+	.MainAppSidebarPresenceControl-state-enabled {
+		grid-template-columns: 1fr auto;
+	}
+
+	.MainAppSidebarPresenceControl-state-disabled {
+		grid-template-columns: 1fr;
+	}
+
+	.MainAppSidebarPresenceControl-state-enabled .MainAppSidebarPresenceControl-primary-action {
 		display: grid;
 		grid-template-columns: subgrid;
 
@@ -165,7 +167,7 @@
 		contain: size style;
 	}
 
-	.MainAppSidebarPresenceControl-primary-trigger-content {
+	.MainAppSidebarPresenceControl-primary-action-content {
 		grid-column: 1;
 
 		display: flex;
@@ -173,6 +175,10 @@
 		gap: 8px;
 
 		min-width: 0;
+	}
+
+	.MainAppSidebarPresenceControl-actions-online-count {
+		font-weight: 500;
 	}
 
 	.MainAppSidebarPresenceControl-actions {

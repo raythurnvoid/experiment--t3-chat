@@ -199,6 +199,77 @@
 
 		font-size: 0.875rem;
 	}
+
+	.MySidebarListItemPrimaryAction,
+	.MySidebarListItemPrimaryActionLink,
+	.MySidebarPrimaryAction {
+		&.MyPrimaryAction,
+		&.MyPrimaryActionLink {
+			/* Keep sidebar actions as rows even when the lower-level action primitive defaults to block layout. */
+			display: flex;
+		}
+	}
+
+	.MySidebarListItemPrimaryAction-variant-button,
+	.MySidebarListItemPrimaryActionLink-variant-button,
+	.MySidebarPrimaryAction-variant-button {
+		&.MyPrimaryAction,
+		&.MyPrimaryActionLink {
+			border-radius: 8px;
+			background: transparent;
+			color: var(--color-fg-07);
+			font-size: 0.875rem;
+			font-weight: 500;
+			transition: background-color 0.1s linear;
+		}
+
+		&:not(:disabled):not(.MyButton-state-disabled) {
+			&:hover,
+			&:focus-visible {
+				background: var(--color-base-1-07);
+				color: var(--color-fg-11);
+			}
+
+			&:active {
+				background: var(--color-base-1-08);
+				color: var(--color-fg-12);
+			}
+		}
+
+		&[data-selected] {
+			background: var(--color-base-1-05);
+			color: var(--color-fg-09);
+		}
+
+		&:disabled,
+		&.MyButton-state-disabled {
+			color: var(--color-fg-04);
+			cursor: default;
+		}
+	}
+
+	.MySidebarHovercardAction-variant-button {
+		&.MyHovercardAction {
+			border-radius: 8px;
+			background: transparent;
+			color: var(--color-fg-07);
+			font-size: 0.875rem;
+			font-weight: 500;
+			transition: background-color 0.1s linear;
+		}
+
+		&:hover,
+		&:has(+ .MyHovercardAction-disclosure:focus-visible),
+		&:has(+ .MyHovercardAction-disclosure:focus-within) {
+			background: var(--color-base-1-07);
+			color: var(--color-fg-11);
+		}
+
+		&:active {
+			background: var(--color-base-1-08);
+			color: var(--color-fg-12);
+		}
+	}
 	/* #endregion list item primary action */
 
 	/* #region hovercard action */
