@@ -10,6 +10,10 @@ import { test_convex } from "./setup.test.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
 import { user_limits } from "../shared/limits.ts";
 
+const polarWebhookMocks = vi.hoisted(() => ({
+	validateEvent: vi.fn(),
+}));
+
 vi.mock("@polar-sh/sdk/core.js", () => ({
 	PolarCore: class PolarCoreMock {
 		constructor(_args: unknown) {}
@@ -27,9 +31,15 @@ vi.mock("@polar-sh/sdk/funcs/customersDelete.js", () => ({
 const customersDeleteMock = vi.mocked(customersDelete);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
 
+vi.mock("@polar-sh/sdk/webhooks", () => ({
+	WebhookVerificationError: class WebhookVerificationError extends Error {},
+	validateEvent: polarWebhookMocks.validateEvent,
+}));
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	customersDeleteMock.mockReset();
+	polarWebhookMocks.validateEvent.mockReset();
 	subscriptionsRevokeMock.mockReset();
 });
 
@@ -744,7 +754,7 @@ describe("delete_current_user_account", () => {
 			expect(after.memberships.every((m) => m.active === false)).toBe(true);
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.anagraphic?.email).toBe("delete-action-user@test.local");
 			expect(after.billingJob?.jobId).toBe("work_delete_current_user_account");
 			expect(fetchSpy).toHaveBeenCalledWith(
@@ -877,7 +887,7 @@ describe("delete_current_user_account", () => {
 			expect(after.memberships.every((m) => m.active === false)).toBe(true);
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account_404");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_delete_404");
 			expect(fetchSpy).toHaveBeenCalledWith(
 				"https://api.clerk.com/v1/users/clerk-user-account-delete-404",
@@ -976,7 +986,7 @@ describe("delete_current_user_account", () => {
 		}
 	});
 
-	test("keeps the local tombstone and clears local subscription state when cancellation scheduling fails", async () => {
+	test("keeps the local tombstone and subscription mirror when cancellation scheduling fails", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -1063,7 +1073,7 @@ describe("delete_current_user_account", () => {
 			expect(after.request).not.toBeNull();
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account_polar_failure");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob).toBeNull();
 			expect(fetchSpy).toHaveBeenCalledTimes(1);
 			expect(enqueueActionSpy).toHaveBeenCalledWith(
@@ -1196,7 +1206,7 @@ describe("delete_current_user_account", () => {
 			expect(after.memberships.every((m) => m.active === false)).toBe(true);
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_delete_account_anonymous");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_delete_anonymous");
 			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(enqueueActionSpy).toHaveBeenCalledWith(
@@ -1422,7 +1432,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.pages).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_hard_delete");
 		} finally {
 			fetchSpy.mockRestore();
@@ -1474,13 +1484,16 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, customer, subscriptions, billingJob] = await Promise.all([
+				const [user, customer, subscriptions, customerSubscriptions, billingJob] = await Promise.all([
 					ctx.db.get("users", seeded.userId),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
 					}),
 					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
 						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listCustomerSubscriptions, {
+						customerId: "cust_users_hard_delete_delete_polar",
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
@@ -1492,6 +1505,7 @@ describe("hard_delete_user_now", () => {
 					user,
 					customer,
 					subscriptions,
+					customerSubscriptions,
 					billingJob,
 				};
 			});
@@ -1502,9 +1516,41 @@ describe("hard_delete_user_now", () => {
 				anonymize: true,
 			});
 			expect(after.user).toBeNull();
-			expect(after.customer).toBeNull();
-			expect(after.subscriptions).toEqual([]);
+			expect(after.customer?.id).toBe("cust_users_hard_delete_delete_polar");
+			expect(after.subscriptions).toHaveLength(1);
+			expect(after.customerSubscriptions).toHaveLength(1);
 			expect(after.billingJob).toBeNull();
+
+			polarWebhookMocks.validateEvent.mockReturnValue({
+				type: "customer.deleted",
+				timestamp: new Date("2026-01-03T00:00:00.000Z"),
+				data: {
+					id: "cust_users_hard_delete_delete_polar",
+				},
+			});
+			const webhookResponse = await t.fetch("/polar/events", {
+				method: "POST",
+				body: JSON.stringify({ fake: true }),
+			});
+			const afterWebhook = await t.run(async (ctx) => {
+				const [customer, customerSubscriptions] = await Promise.all([
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listCustomerSubscriptions, {
+						customerId: "cust_users_hard_delete_delete_polar",
+					}),
+				]);
+
+				return {
+					customer,
+					customerSubscriptions,
+				};
+			});
+
+			expect(webhookResponse.status).toBe(202);
+			expect(afterWebhook.customer).toBeNull();
+			expect(afterWebhook.customerSubscriptions).toHaveLength(1);
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -1566,7 +1612,7 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, anagraphic, requests, workspace, project, snapshots, customer, subscriptions] =
+				const [user, anagraphic, requests, workspace, project, snapshots, customer, subscriptions, customerSubscriptions] =
 					await Promise.all([
 						ctx.db.get("users", seeded.userId),
 						ctx.db.get("users_anagraphics", seeded.anagraphicId),
@@ -1583,6 +1629,9 @@ describe("hard_delete_user_now", () => {
 						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
 							userId: seeded.userId,
 						}),
+						ctx.runQuery(components.polar.lib.listCustomerSubscriptions, {
+							customerId: "cust_users_hard_delete_purge",
+						}),
 					]);
 
 				return {
@@ -1594,6 +1643,7 @@ describe("hard_delete_user_now", () => {
 					snapshots,
 					customer,
 					subscriptions,
+					customerSubscriptions,
 				};
 			});
 
@@ -1612,8 +1662,9 @@ describe("hard_delete_user_now", () => {
 			expect(after.workspace).toBeNull();
 			expect(after.project).toBeNull();
 			expect(after.snapshots).toHaveLength(0);
-			expect(after.customer).toBeNull();
-			expect(after.subscriptions).toEqual([]);
+			expect(after.customer?.id).toBe("cust_users_hard_delete_purge");
+			expect(after.subscriptions).toHaveLength(1);
+			expect(after.customerSubscriptions).toHaveLength(1);
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -1716,7 +1767,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.project).toBeNull();
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_404");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_hard_delete_404");
 		} finally {
 			fetchSpy.mockRestore();
@@ -2086,7 +2137,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.pages).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_initialized");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_hard_delete_initialized");
 		} finally {
 			fetchSpy.mockRestore();
@@ -2319,7 +2370,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.pages).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_anonymous");
-			expect(after.subscriptions).toEqual([]);
+			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_hard_delete_anonymous");
 		} finally {
 			fetchSpy.mockRestore();

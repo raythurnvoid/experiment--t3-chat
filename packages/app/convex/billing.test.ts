@@ -1181,55 +1181,16 @@ describe("handle_polar_customer_state_update", () => {
 				timestamp: "2026-04-11T05:30:11.300891Z",
 				data: {
 					id: "cust_refresh_snapshot_webhook",
-					created_at: "2026-04-07T12:47:35.912837Z",
-					modified_at: "2026-04-11T04:53:38.614819Z",
-					metadata: {
-						userId,
-					},
 					external_id: userId,
-					email: "billing@example.com",
-					email_verified: false,
-					type: "individual",
-					name: "Billing Test",
-					billing_address: {
-						line1: null,
-						line2: null,
-						postal_code: null,
-						city: null,
-						state: null,
-						country: "PT",
-					},
-					tax_id: null,
-					locale: "en-US",
-					organization_id: "billing_test_org",
-					deleted_at: null,
 					active_subscriptions: [
 						{
 							id: "sub_refresh_snapshot_webhook",
-							created_at: "2026-04-07T12:51:57.218982Z",
-							modified_at: null,
-							metadata: {},
-							status: "active",
-							amount: 0,
-							product_id: polarProductId,
-							price_id: "price_new_webhook_meter",
 							currency: "eur",
-							recurring_interval: "month",
+							product_id: polarProductId,
 							current_period_start: "2026-04-07T12:51:57.211492Z",
 							current_period_end: "2026-05-07T12:51:57.211492Z",
-							trial_start: null,
-							trial_end: null,
-							cancel_at_period_end: false,
-							canceled_at: null,
-							started_at: "2026-04-07T12:51:57.211492Z",
-							ends_at: null,
-							discount_id: null,
-							custom_field_data: {},
 							meters: [
 								{
-									id: "sub_meter_refresh_snapshot_webhook",
-									created_at: "2026-04-07T12:47:51.954545Z",
-									modified_at: "2026-04-09T03:59:32.439531Z",
 									meter_id: "meter_new_webhook",
 									consumed_units: 6,
 									credited_units: 0,
@@ -1238,30 +1199,14 @@ describe("handle_polar_customer_state_update", () => {
 							],
 						},
 					],
-					granted_benefits: [
-						{
-							id: "benefit_refresh_snapshot_webhook",
-							created_at: "2026-04-07T12:51:58.518748Z",
-							modified_at: "2026-04-07T12:51:58.603084Z",
-							granted_at: "2026-04-07T12:51:58.602025Z",
-							benefit_id: "benefit_meter_credit_refresh_snapshot",
-							benefit_type: "meter_credit",
-							benefit_metadata: {},
-							properties: {},
-						},
-					],
 					active_meters: [
 						{
-							id: "customer_meter_refresh_snapshot_webhook",
-							created_at: "2026-04-07T12:47:51.954545Z",
-							modified_at: "2026-04-09T03:59:32.439531Z",
 							meter_id: "meter_new_webhook",
 							consumed_units: 6,
 							credited_units: 2178,
 							balance: 2172,
 						},
 					],
-					avatar_url: "https://example.com/avatar.png",
 				},
 			},
 		});
@@ -1286,6 +1231,9 @@ describe("handle_polar_customer_state_update", () => {
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_refresh_snapshot_multiple_active_product",
 		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_refresh_snapshot_multiple_active" as never);
 
 		await expect(
 			t.mutation(internal.billing.handle_polar_customer_state_update, {
@@ -1318,14 +1266,7 @@ describe("handle_polar_customer_state_update", () => {
 				},
 			}),
 		).rejects.toThrow("Multiple active subscriptions are not supported");
-
-		const snapshot = await t.run(async (ctx) =>
-			ctx.db
-				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", userId))
-				.unique(),
-		);
-		expect(snapshot).toBeNull();
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
 	test("writes the usage snapshot from the active customer meter for credits-only Free plans", async () => {
@@ -1383,12 +1324,15 @@ describe("handle_polar_customer_state_update", () => {
 		});
 	});
 
-	test("throws when an active subscription has no resolvable usage meter", async () => {
+	test("throws when no usage meter is resolvable for an active subscription", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_missing_meter_product",
 		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_refresh_snapshot_missing_meter" as never);
 
 		await expect(
 			t.mutation(internal.billing.handle_polar_customer_state_update, {
@@ -1413,14 +1357,7 @@ describe("handle_polar_customer_state_update", () => {
 				},
 			}),
 		).rejects.toThrow("Failed to resolve usage meter for active subscription");
-
-		const snapshot = await t.run(async (ctx) =>
-			ctx.db
-				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", userId))
-				.unique(),
-		);
-		expect(snapshot).toBeNull();
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 });
 
@@ -1565,7 +1502,7 @@ describe("billing change_current_subscription", () => {
 		subscriptionsUpdateMock.mockReset();
 	});
 
-	test("upgrades immediately with invoice proration and updates the stored subscription", async () => {
+	test("upgrades immediately with invoice proration and waits for the subscription webhook", async () => {
 		const t = test_convex();
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_payg_upgrade",
@@ -1601,14 +1538,7 @@ describe("billing change_current_subscription", () => {
 			productId: polarProProductId,
 		});
 
-		expect(result).toEqual({
-			_yay: {
-				changeKind: "upgrade",
-				prorationBehavior: "invoice",
-				targetProductId: polarProProductId,
-				pendingUpdateAppliesAt: null,
-			},
-		});
+		expect(result).toEqual({ _yay: null });
 		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 			id: "sub_upgrade_plan",
 			subscriptionUpdate: {
@@ -1620,11 +1550,11 @@ describe("billing change_current_subscription", () => {
 		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
 			id: "sub_upgrade_plan",
 		});
-		expect(storedSubscription?.productId).toBe(polarProProductId);
+		expect(storedSubscription?.productId).toBe(polarPaygProductId);
 		expect(storedSubscription?.pendingUpdate).toBeNull();
 	});
 
-	test("schedules downgrades for the next period and stores pendingUpdate", async () => {
+	test("schedules downgrades for the next period and waits for the subscription webhook", async () => {
 		const t = test_convex();
 		const { polarProductId: polarPaygProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_change_payg_downgrade",
@@ -1666,14 +1596,7 @@ describe("billing change_current_subscription", () => {
 			productId: polarPaygProductId,
 		});
 
-		expect(result).toEqual({
-			_yay: {
-				changeKind: "downgrade",
-				prorationBehavior: "next_period",
-				targetProductId: polarPaygProductId,
-				pendingUpdateAppliesAt: "2026-02-01T00:00:00.000Z",
-			},
-		});
+		expect(result).toEqual({ _yay: null });
 		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 			id: "sub_downgrade_plan",
 			subscriptionUpdate: {
@@ -1686,12 +1609,7 @@ describe("billing change_current_subscription", () => {
 			id: "sub_downgrade_plan",
 		});
 		expect(storedSubscription?.productId).toBe(polarProProductId);
-		expect(storedSubscription?.pendingUpdate).toEqual({
-			id: "pending_downgrade_plan",
-			appliesAt: "2026-02-01T00:00:00.000Z",
-			productId: polarPaygProductId,
-			seats: null,
-		});
+		expect(storedSubscription?.pendingUpdate).toBeNull();
 	});
 
 	test("schedules paid to Free downgrades for the next period", async () => {
@@ -1736,14 +1654,7 @@ describe("billing change_current_subscription", () => {
 			productId: polarFreeProductId,
 		});
 
-		expect(result).toEqual({
-			_yay: {
-				changeKind: "downgrade",
-				prorationBehavior: "next_period",
-				targetProductId: polarFreeProductId,
-				pendingUpdateAppliesAt: "2026-02-01T00:00:00.000Z",
-			},
-		});
+		expect(result).toEqual({ _yay: null });
 		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
 			id: "sub_downgrade_free_plan",
 			subscriptionUpdate: {
@@ -2719,16 +2630,16 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 
 	function payg_active_subscription(args: {
 		subscriptionId: string;
-		productId: string;
-		currentPeriodStart: string;
-		currentPeriodEnd: string;
+		product_id: string;
+		current_period_start: string;
+		current_period_end: string;
 	}) {
 		return {
 			id: args.subscriptionId,
-			product_id: args.productId,
+			product_id: args.product_id,
 			currency: "eur",
-			current_period_start: args.currentPeriodStart,
-			current_period_end: args.currentPeriodEnd,
+			current_period_start: args.current_period_start,
+			current_period_end: args.current_period_end,
 			meters: [
 				{
 					meter_id: "meter_units",
@@ -2770,9 +2681,9 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 					active_subscriptions: [
 						payg_active_subscription({
 							subscriptionId: "sub_grant_first_period",
-							productId: polarProductId,
-							currentPeriodStart: "2026-01-01T00:00:00.000Z",
-							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+							product_id: polarProductId,
+							current_period_start: "2026-01-01T00:00:00.000Z",
+							current_period_end: "2026-02-01T00:00:00.000Z",
 						}),
 					],
 					active_meters: [active_meter()],
@@ -2810,9 +2721,9 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 					active_subscriptions: [
 						payg_active_subscription({
 							subscriptionId: "sub_grant_same_period",
-							productId: polarProductId,
-							currentPeriodStart: "2026-01-01T00:00:00.000Z",
-							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+							product_id: polarProductId,
+							current_period_start: "2026-01-01T00:00:00.000Z",
+							current_period_end: "2026-02-01T00:00:00.000Z",
 						}),
 					],
 					active_meters: [active_meter()],
@@ -2829,9 +2740,9 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 					active_subscriptions: [
 						payg_active_subscription({
 							subscriptionId: "sub_grant_same_period",
-							productId: polarProductId,
-							currentPeriodStart: "2026-01-01T00:00:00.000Z",
-							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+							product_id: polarProductId,
+							current_period_start: "2026-01-01T00:00:00.000Z",
+							current_period_end: "2026-02-01T00:00:00.000Z",
 						}),
 					],
 					active_meters: [active_meter()],
@@ -2886,9 +2797,9 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 					active_subscriptions: [
 						payg_active_subscription({
 							subscriptionId: "sub_grant_advanced_period",
-							productId: polarProductId,
-							currentPeriodStart: "2026-02-01T00:00:00.000Z",
-							currentPeriodEnd: "2026-03-01T00:00:00.000Z",
+							product_id: polarProductId,
+							current_period_start: "2026-02-01T00:00:00.000Z",
+							current_period_end: "2026-03-01T00:00:00.000Z",
 						}),
 					],
 					active_meters: [active_meter()],
@@ -2940,9 +2851,9 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 					active_subscriptions: [
 						payg_active_subscription({
 							subscriptionId: "sub_grant_upgrade_new",
-							productId: newProductId,
-							currentPeriodStart: "2026-01-15T00:00:00.000Z",
-							currentPeriodEnd: "2026-02-15T00:00:00.000Z",
+							product_id: newProductId,
+							current_period_start: "2026-01-15T00:00:00.000Z",
+							current_period_end: "2026-02-15T00:00:00.000Z",
 						}),
 					],
 					active_meters: [active_meter()],

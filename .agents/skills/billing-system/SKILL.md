@@ -9,6 +9,8 @@ Polar is intended to be the billing source of truth for products, customers, sub
 
 The app mirrors enough billing state locally to drive UI and app behavior. In practice, the repo stores a synced product catalog, synced customers and subscriptions through the vendored Polar component, and a local usage snapshot derived from Polar customer-state webhook payloads.
 
+Subscription lifecycle webhooks are the authoritative sync path for the local subscription mirror. `customer.state_changed` is deliberately narrower: it owns usage snapshots and recurring monthly-credit enqueueing, but it does not infer scheduled plan changes such as `pendingUpdate`.
+
 # Canonical product behavior
 
 ## Plans
@@ -67,13 +69,25 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 - `billing` wraps the vendored Polar component and currently allows only signed-in users through `getUserInfo`.
 - `list_products`, `get_current_user_subscription`, and `get_usage_snapshot` provide the billing panel data.
 - `generate_checkout_link` creates Polar checkout sessions.
-- `change_current_subscription` handles paid-plan changes. `Free -> paid` is intentionally not handled there and goes through checkout instead.
+- `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then waits for the subscription webhook to update the local subscription row. `Free -> paid` is intentionally not handled there and goes through checkout instead.
 - `generate_customer_portal_url` opens the Polar customer portal.
 - `bootstrap_free_subscription` creates the local Polar customer and the `Free` subscription when missing.
 - `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`.
-- `handle_polar_customer_state_update` ingests the `customer.state_changed` webhook payload into `billing_usage_snapshots` and then triggers the monthly credits engine for that user.
+- `handle_polar_customer_state_update` ingests the raw `customer.state_changed` webhook payload into `billing_usage_snapshots` by reading the snake_case fields Polar sends, then triggers the monthly credits engine for that user when the required subscription fields are present.
 
 See [Glossary — convex/billing.ts](#glossary--convexbillingts).
+
+## Webhook ownership
+
+Polar webhooks are split by data ownership:
+
+- `subscription.created`, `subscription.updated`, `subscription.active`, `subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, and `subscription.past_due` update the vendored component's local subscription mirror through the subscription upsert path. This is where subscription fields such as `pendingUpdate` are persisted and cleared.
+- `customer.created` and `customer.updated` are not handled by app-owned webhook code. Local customer rows are created by the supported app flows (`generate_checkout_link` / `bootstrap_free_subscription`) and should not be manually inserted from customer lifecycle webhooks.
+- `customer.deleted` is handled by the vendored Polar component to remove the local customer mapping by Polar customer id. It does not clear subscription rows; subscription webhooks remain the authority for the subscription mirror.
+- `customer.state_changed` updates usage snapshots and enqueues monthly credits from active subscription period data. Do not use this event to derive scheduled plan changes because its `CustomerState` payload does not include subscription `pendingUpdate`.
+- The app supports at most one active subscription per user. If a `customer.state_changed` payload reports multiple `active_subscriptions`, treat that as an impossible billing state and throw instead of choosing one.
+- Active subscriptions must resolve to a usage meter from the subscription meter rows or the product's credit benefit meter. If the app cannot resolve a usage meter for an active subscription, treat that as an impossible billing state and throw instead of saving a partial active snapshot.
+- `product.created`, `product.updated`, `benefit.created`, and `benefit.updated` keep the synced product catalog fresh. Unchecked webhook families such as checkout, orders, refunds, benefit grants, seats, members, and organization updates are not part of the current app sync contract.
 
 ## Monthly credits engine
 
@@ -81,7 +95,7 @@ The monthly credits engine lives at the `// #region monthly credits` block in [b
 
 The Polar `customer.state_changed` webhook is the sole trigger for monthly credits; there is no cron-driven reconciliation pass. Trust the webhook to deliver every state change.
 
-- `handle_polar_customer_state_update` upserts `billing_usage_snapshots` and, when the webhook payload includes an active subscription, enqueues `grant_monthly_credits` on `billing_workpool_usage_event` with `userId`, `subscriptionId`, `productId`, and `periodStart` taken directly from the Polar payload.
+- `handle_polar_customer_state_update` upserts `billing_usage_snapshots` and, when the webhook payload includes a usable active subscription, enqueues `grant_monthly_credits` on `billing_workpool_usage_event` with `userId`, `subscriptionId`, `productId`, and `periodStart` read from Polar's raw snake_case payload (`external_id`, `active_subscriptions`, `product_id`, `current_period_start`).
 - `grant_monthly_credits` (`internalAction`) resolves the Polar product by `productId`, reads `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` queues one negative-amount `monthly_credit` event with `externalId` `monthly_credit::<userId>::<subscriptionId>::<periodStart>`. `ingest_events` performs the Polar `eventsIngest` call under `billing_POLAR_METER_EVENT` / `press_usage_event`. Polar's immutable usage event plus duplicate detection is the authority for whether that period was already granted.
 - Repeated `customer.state_changed` deliveries for the same `(user, subscription, period)` may enqueue the same action multiple times. Treat this as intentional: Polar reports the later ingests as duplicates, so the billing ledger stays idempotent without any local snapshot cursor.
 
@@ -183,7 +197,7 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 #### `change_current_subscription`
 
 - **Kind:** public `action`
-- **Role:** Changes subscription between paid plans (upgrade immediate, downgrade end-of-cycle per Polar / app rules). Does not replace checkout for `Free -> paid`.
+- **Role:** Changes subscription between paid plans (upgrade immediate, downgrade end-of-cycle per Polar / app rules). Does not replace checkout for `Free -> paid`. On success it returns `_yay: null`; the local subscription mirror is updated later by the subscription webhook.
 
 #### `generate_customer_portal_url`
 
@@ -205,8 +219,8 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 #### `handle_polar_customer_state_update`
 
 - **Kind:** `internalMutation`
-- **Args:** `{ payload }` (Polar `customer.state_changed` webhook shape)
-- **Role:** Maps webhook customer to Convex `userId`, updates `billing_usage_snapshots` (subscription + meter snapshot), then enqueues `grant_monthly_credits` directly from the webhook payload when an active subscription is present. Sole trigger for monthly credits.
+- **Args:** `{ payload }` (raw Polar `customer.state_changed` webhook payload, intentionally `v.any()` so strict local validators do not reject future Polar payload changes; read the raw snake_case fields Polar sends rather than SDK camelCase fields)
+- **Role:** Maps webhook customer to Convex `userId`, updates `billing_usage_snapshots` (subscription + meter snapshot) from fields it can read optimistically, then enqueues `grant_monthly_credits` when a usable active subscription is present. Sole trigger for monthly credits. Does not persist subscription mirror fields such as `pendingUpdate`.
 
 ### Glossary — event ingestion
 
@@ -262,18 +276,18 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 
 - [billing-product-card.tsx](../../../packages/app/src/components/billing/billing-product-card.tsx) renders included usage from `billing_get_recurring_credits_cents` (the Convex monthly credits engine is the only code path that grants recurring credits, while Polar event idempotency is the authority for already-granted periods).
 - [billing-active-plan.tsx](../../../packages/app/src/components/billing/billing-active-plan.tsx) renders due amount and remaining credits from the local usage snapshot, and uses `billing_get_recurring_credits_cents` for the included-usage line.
-- The billing panel uses the local usage snapshot populated from `customer.state_changed` to show current due amount, remaining credits, renewal timing, and pending downgrade timing.
+- The billing panel uses the local usage snapshot populated from `customer.state_changed` to show current due amount, remaining credits, and renewal timing. It uses the subscription mirror's `pendingUpdate` field from subscription webhooks to show scheduled plan changes.
 
 ## Account deletion billing behavior
 
 - Normal user-facing account deletion schedules retryable work that cancels the current paid subscription at the close of the current billing period instead of revoking it immediately.
 - Billing owns `billing_cancel_polar_subscription_jobs` as the scheduler row for that work. Keep one row per user, replace the stored `jobId` when you reschedule, and clear the row only when the matching work finishes successfully or an explicit cancel removes it.
-- The delete flow clears the local subscription mirror immediately after scheduling that cancellation so the deleted account no longer presents an active local billing state.
+- Subscription mirror rows remain Polar-owned during account deletion. Do not clear them from app deletion flows; rely on subscription webhooks to reflect scheduled cancellations, revocations, and ended subscriptions.
 - `billing_usage_snapshots` are mirrored local billing state, not billing authority. Keep them through phase 1 and delete them only during phase 2 of account deletion.
 - Restoring the account during retention does not undo the scheduled cancellation.
 - Direct admin hard delete now uses `purgeUserRecord` as the single operator flag:
 - `purgeUserRecord: false` keeps the immediate local hard-delete path, keeps the final tombstoned user row, and schedules the same retryable period-end cancellation used by the normal delete flow.
-- `purgeUserRecord: true` cancels any scheduled period-end cancellation first, revokes the subscription immediately, deletes the Polar customer immediately, and purges the final local tombstone.
+- `purgeUserRecord: true` cancels any scheduled period-end cancellation first, revokes the subscription immediately, requests immediate Polar customer deletion, and purges the final local tombstone. The local Polar customer mapping may briefly remain until the `customer.deleted` webhook arrives.
 
 # Operational billing rules
 

@@ -51,12 +51,7 @@ describe("BillingChangePlanButton", () => {
 
 	test("calls change_current_subscription with the target product id", async () => {
 		actionMock.mockResolvedValue({
-			_yay: {
-				changeKind: "upgrade",
-				prorationBehavior: "invoice",
-				targetProductId: "prod_change",
-				pendingUpdateAppliesAt: null,
-			},
+			_yay: null,
 		});
 
 		render(<BillingChangePlanButton productId="prod_change">Upgrade</BillingChangePlanButton>);

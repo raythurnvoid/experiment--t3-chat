@@ -14,7 +14,7 @@ billing.registerRoutes(http, {
 	events: {
 		"customer.state_changed": async (ctx, _event, rawPayload) => {
 			await ctx.runMutation(internal.billing.handle_polar_customer_state_update, {
-				payload: rawPayload as any,
+				payload: rawPayload,
 			});
 		},
 	},

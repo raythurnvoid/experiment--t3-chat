@@ -31,7 +31,6 @@ import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../
 import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
-	billing_action_clear_subscriptions_by_user_id,
 	billing_cancel_scheduled_polar_subscription_period_end_cancellation,
 	billing_enqueue_free_subscription_bootstrap,
 	billing_schedule_polar_subscription_period_end_cancellation,
@@ -756,10 +755,6 @@ export const delete_current_user_account = action({
 			});
 		}
 
-		await billing_action_clear_subscriptions_by_user_id(ctx, {
-			userId: user._id,
-		});
-
 		if (shouldClearClerkUserId) {
 			await ctx.runMutation(internal.users.clear_clerk_user_id_after_clerk_delete, {
 				userId: user._id,
@@ -1143,10 +1138,6 @@ export const hard_delete_user_now = internalAction({
 				});
 			}
 		}
-
-		await billing_action_clear_subscriptions_by_user_id(ctx, {
-			userId: user._id,
-		});
 
 		if (!args.purgeUserRecord && currentSubscription) {
 			await billing_schedule_polar_subscription_period_end_cancellation(ctx, {

@@ -74,17 +74,6 @@ const billing_workpool_usage_event = new Workpool(components.billing_workpool_us
 	} as const,
 });
 
-export async function billing_action_clear_subscriptions_by_user_id(
-	ctx: ActionCtx | MutationCtx,
-	args: {
-		userId: Id<"users">;
-	},
-) {
-	await ctx.runMutation(components.polar.lib.clearSubscriptionsByUserId, {
-		userId: args.userId,
-	});
-}
-
 export async function billing_action_delete_polar_customer_by_user_id(
 	ctx: ActionCtx | MutationCtx,
 	args: {
@@ -110,10 +99,6 @@ export async function billing_action_delete_polar_customer_by_user_id(
 			},
 		});
 	}
-
-	await ctx.runMutation(components.polar.lib.deleteCustomerByUserId, {
-		userId: args.userId,
-	});
 
 	return Result({ _yay: null });
 }
@@ -225,7 +210,7 @@ export const handle_polar_customer_state_update = internalMutation({
 			timestamp: string;
 			data: {
 				id: string;
-				external_id?: string | null;
+				external_id: string | null;
 				active_subscriptions: Array<{
 					id: string;
 					product_id: string;
@@ -806,12 +791,7 @@ export const change_current_subscription = action({
 		productId: v.string(),
 	},
 	returns: v_result({
-		_yay: v.object({
-			changeKind: v.union(v.literal("upgrade"), v.literal("downgrade")),
-			prorationBehavior: v.union(v.literal("invoice"), v.literal("next_period")),
-			targetProductId: v.string(),
-			pendingUpdateAppliesAt: v.union(v.string(), v.null()),
-		}),
+		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -886,18 +866,7 @@ export const change_current_subscription = action({
 			});
 		}
 
-		await ctx.runMutation(components.polar.lib.updateSubscription, {
-			subscription: convertToDatabaseSubscription(updateResult.value),
-		});
-
-		return Result({
-			_yay: {
-				changeKind,
-				prorationBehavior,
-				targetProductId: targetProduct.id,
-				pendingUpdateAppliesAt: updateResult.value.pendingUpdate?.appliesAt.toISOString() ?? null,
-			},
-		});
+		return Result({ _yay: null });
 	},
 });
 
