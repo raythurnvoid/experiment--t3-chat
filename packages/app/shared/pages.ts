@@ -15,7 +15,7 @@ import { Editor, Extension, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
-import { is_browser, should_never_happen } from "../shared/shared-utils.ts";
+import { composite_id, is_browser, should_never_happen } from "../shared/shared-utils.ts";
 import { CommentsExtension } from "@liveblocks/react-tiptap";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
@@ -44,7 +44,7 @@ export function pages_create_tree_root(): pages_TreeItem {
 }
 
 export function pages_create_room_id(workspaceId: string, projectId: string, pageId: string) {
-	return `pages::${workspaceId}::${projectId}::${pageId}` as const;
+	return composite_id("rooms", "pages", workspaceId, projectId, pageId);
 }
 
 export function pages_validate_name(name: string) {

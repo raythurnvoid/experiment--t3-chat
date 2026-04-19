@@ -46,27 +46,4 @@ export type billing_Event = FunctionArgs<typeof internal.billing.ingest_events>[
 export function billing_event<const T extends billing_Event>(event: T): T {
 	return event;
 }
-
-export function billing_page_save_event_external_id(args: {
-	userId: billing_Event["externalCustomerId"];
-	pageId: string;
-	newSequence: number;
-}) {
-	return `page_save:${args.userId}:${args.pageId}:${args.newSequence}`;
-}
-
-export function billing_monthly_grant_event_external_id(args: {
-	userId: billing_Event["externalCustomerId"];
-	subscriptionId: string;
-	periodStart: string;
-}) {
-	return `monthly_grant:${args.userId}:${args.subscriptionId}:${args.periodStart}`;
-}
-
-export function billing_manual_credit_event_external_id(args: {
-	userId: billing_Event["externalCustomerId"];
-	timestamp: number;
-}) {
-	return `manual_credit:${args.userId}:${args.timestamp}`;
-}
 // #endregion usage events

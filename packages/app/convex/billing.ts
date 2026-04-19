@@ -23,9 +23,8 @@ import {
 	billing_get_plan_change_kind,
 	billing_get_recurring_credits_cents,
 } from "../shared/billing.ts";
+import { composite_id } from "../shared/shared-utils.ts";
 import {
-	billing_manual_credit_event_external_id,
-	billing_monthly_grant_event_external_id,
 	billing_POLAR_METER_EVENT,
 	type billing_Event,
 	billing_event,
@@ -922,7 +921,7 @@ export const ingest_events = internalAction({
 					}),
 				}),
 				v.object({
-					name: v.literal("monthly_grant"),
+					name: v.literal("monthly_credit"),
 					externalCustomerId: v.id("users"),
 					externalId: v.string(),
 					metadata: v.object({
@@ -1027,19 +1026,21 @@ export const grant_monthly_credits = internalAction({
 
 		const recurringAmountCents = billing_get_recurring_credits_cents(product.name);
 		if (recurringAmountCents > 0) {
-			// Use a deterministic externalId so Polar records one immutable grant
+			// Use a deterministic externalId so Polar records one immutable credit
 			// event per `(user, subscription, period)` tuple and reports later
 			// retries as duplicates.
 			await billing_ingest_events(ctx, {
 				events: [
 					billing_event({
-						name: "monthly_grant",
+						name: "monthly_credit",
 						externalCustomerId: args.userId,
-						externalId: billing_monthly_grant_event_external_id({
-							userId: args.userId,
-							subscriptionId: args.subscriptionId,
-							periodStart: args.periodStart,
-						}),
+						externalId: composite_id(
+							"billing",
+							"monthly_credit",
+							args.userId,
+							args.subscriptionId,
+							args.periodStart,
+						),
 						metadata: {
 							amount: -recurringAmountCents,
 							subscriptionId: args.subscriptionId,
@@ -1077,10 +1078,7 @@ export const grant_credit = internalAction({
 				billing_event({
 					name: "manual_credit",
 					externalCustomerId: args.userId,
-					externalId: billing_manual_credit_event_external_id({
-						userId: args.userId,
-						timestamp: Date.now(),
-					}),
+					externalId: composite_id("billing", "manual_credit", args.userId, Date.now()),
 					metadata: {
 						amount: -Math.abs(args.amount),
 					},

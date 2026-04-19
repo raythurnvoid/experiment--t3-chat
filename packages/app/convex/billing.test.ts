@@ -2524,7 +2524,7 @@ describe("ingest_events", () => {
 				{
 					name: "manual_credit",
 					externalCustomerId: userId,
-					externalId: "manual_credit:u:123",
+					externalId: "manual_credit::u::123",
 					metadata: {
 						amount: -2500,
 					},
@@ -2545,7 +2545,7 @@ describe("grant_monthly_credits", () => {
 		eventsIngestMock.mockReset();
 	});
 
-	test("enqueues a stable monthly_grant event through the ingest workpool", async () => {
+	test("enqueues a stable monthly_credit event through the ingest workpool", async () => {
 		const captured: {
 			ingestPayload: {
 				events: Array<{
@@ -2569,7 +2569,7 @@ describe("grant_monthly_credits", () => {
 			});
 
 			captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
-			return "work_monthly_grant_inserted" as never;
+			return "work_monthly_credit_inserted" as never;
 		});
 
 		const t = test_convex();
@@ -2590,23 +2590,23 @@ describe("grant_monthly_credits", () => {
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		const ingestPayload = captured.ingestPayload;
 		if (!ingestPayload) {
-			throw new Error("Expected monthly grant ingest payload to be captured");
+			throw new Error("Expected monthly credit ingest payload to be captured");
 		}
 		expect(ingestPayload.events).toHaveLength(1);
 		expect(ingestPayload.events[0]!.externalId).toBe(
-			`monthly_grant:${userId}:sub_grant_action_inserted:2026-01-01T00:00:00.000Z`,
+			`monthly_credit::${userId}::sub_grant_action_inserted::2026-01-01T00:00:00.000Z`,
 		);
 		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
 		expect(ingestPayload.events[0]!.metadata).toMatchObject({
 			amount: -billing_PRODUCTS["Pay As You Go"].recurringCreditsCents,
 			periodStart: "2026-01-01T00:00:00.000Z",
 		});
-		expect(ingestPayload.events[0]!.name).toBe("monthly_grant");
+		expect(ingestPayload.events[0]!.name).toBe("monthly_credit");
 	});
 
 	test("queues repeated grants and leaves duplicate handling to the ingest worker", async () => {
 		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async () => {
-			return "work_monthly_grant_duplicate" as never;
+			return "work_monthly_credit_duplicate" as never;
 		});
 
 		const t = test_convex();
@@ -2674,7 +2674,7 @@ describe("grant_credit", () => {
 			throw new Error("Expected manual credit ingest payload to be captured");
 		}
 		expect(ingestPayload.events).toHaveLength(1);
-		expect(ingestPayload.events[0]!.externalId).toBe(`manual_credit:${userId}:123456`);
+		expect(ingestPayload.events[0]!.externalId).toBe(`manual_credit::${userId}::123456`);
 		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
 		expect(ingestPayload.events[0]!.metadata).toEqual({
 			amount: -2500,
@@ -2749,7 +2749,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		};
 	}
 
-	test("enqueues a monthly grant for the first period of an active subscription", async () => {
+	test("enqueues a monthly credit for the first period of an active subscription", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -2789,7 +2789,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 	});
 
-	test("re-enqueues the same monthly grant for repeated same-period webhook deliveries", async () => {
+	test("re-enqueues the same monthly credit for repeated same-period webhook deliveries", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -2854,7 +2854,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 	});
 
-	test("enqueues a monthly grant when the subscription has rolled into a new period", async () => {
+	test("enqueues a monthly credit when the subscription has rolled into a new period", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -2905,7 +2905,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 	});
 
-	test("enqueues a monthly grant when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
+	test("enqueues a monthly credit when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId: oldProductId } = await seed_pay_as_you_go_product(t, {

@@ -186,3 +186,41 @@ export function path_name_of(path: string): string {
 	return path_extract_segments_from(path).at(-1) ?? "";
 }
 // #endregion path
+
+// #region composite ids
+/**
+ * Registry of supported composite-id tuple shapes grouped by owning context.
+ *
+ * Each key is the context passed as the first argument to `composite_id`.
+ *
+ * Each value is the exact tuple shape allowed after that context: the first
+ * tuple item is the stable ID kind/prefix, and the remaining items are the
+ * positional fields joined into the final ID.
+ */
+export type AppCompositeIds = {
+	rooms: [kind: "pages", workspaceId: string, projectId: string, pageId: string];
+	billing:
+		| [name: "page_save", userId: string, pageId: string, yjsSequence: number]
+		| [
+				name: "monthly_credit",
+				userId: string,
+				subscriptionId: string,
+				/**
+				 * The start of the period in ISO 8601 format (YYYY-MM-DD).
+				 */
+				periodStart: string,
+		  ]
+		| [name: "manual_credit", userId: string, timestamp: number];
+};
+
+/**
+ * Build a type-safe app composite ID by selecting a context and one of that
+ * context's registered tuple shapes.
+ */
+export function composite_id<const TContext extends keyof AppCompositeIds>(
+	_context: TContext,
+	...parts: AppCompositeIds[TContext]
+) {
+	return parts.join("::");
+}
+// #endregion composite ids

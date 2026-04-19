@@ -1,6 +1,6 @@
 import { ConvexError } from "convex/values";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { should_never_happen } from "./shared-utils.ts";
+import { composite_id, should_never_happen } from "./shared-utils.ts";
 
 const convex_runtime_env_keys = ["CONVEX_CLOUD_URL", "CONVEX_SITE_URL", "CONVEX_URL", "VITE_CONVEX_HTTP_URL"] as const;
 
@@ -19,6 +19,26 @@ function restore_runtime_env() {
 		process.env[key] = value;
 	}
 }
+
+describe("composite_id", () => {
+	test("joins pages room ids with double colons", () => {
+		const id = composite_id("rooms", "pages", "workspace_1", "project_1", "page_1");
+
+		expect(id).toBe("pages::workspace_1::project_1::page_1");
+	});
+
+	test("joins billing event ids with double colons", () => {
+		const id = composite_id("billing", "page_save", "user_1", "page_1", 42);
+
+		expect(id).toBe("page_save::user_1::page_1::42");
+	});
+
+	test("joins monthly credit ids with double colons", () => {
+		const id = composite_id("billing", "monthly_credit", "user_1", "sub_1", "2026-01-01");
+
+		expect(id).toBe("monthly_credit::user_1::sub_1::2026-01-01");
+	});
+});
 
 describe("should_never_happen", () => {
 	afterEach(() => {

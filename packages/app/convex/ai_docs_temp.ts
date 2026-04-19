@@ -54,13 +54,13 @@ import { minimatch } from "minimatch";
 import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import type { Editor } from "@tiptap/core";
-import { should_never_happen } from "../shared/shared-utils.ts";
+import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
-import { billing_event, billing_page_save_event_external_id } from "../server/billing.ts";
+import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import { billing_ingest_events } from "./billing.ts";
@@ -2715,11 +2715,13 @@ export const yjs_push_update = mutation({
 					billing_event({
 						name: "page_save",
 						externalCustomerId: user.id,
-						externalId: billing_page_save_event_external_id({
-							userId: user.id,
-							pageId: args.pageId,
-							newSequence: pushResult._yay.newSequence,
-						}),
+						externalId: composite_id(
+							"billing",
+							"page_save",
+							user.id,
+							args.pageId,
+							pushResult._yay.newSequence,
+						),
 						metadata: {
 							amount: 1,
 							workspaceId: page.workspaceId,

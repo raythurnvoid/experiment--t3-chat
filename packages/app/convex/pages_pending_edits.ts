@@ -6,8 +6,9 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
-import { billing_event, billing_page_save_event_external_id } from "../server/billing.ts";
+import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing.ts";
+import { composite_id } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import {
@@ -880,11 +881,13 @@ export const save_pages_pending_edit = mutation({
 						billing_event({
 							name: "page_save",
 							externalCustomerId: user.id,
-							externalId: billing_page_save_event_external_id({
-								userId: user.id,
-								pageId: args.pageId,
-								newSequence: result._yay.newSequence,
-							}),
+							externalId: composite_id(
+								"billing",
+								"page_save",
+								user.id,
+								args.pageId,
+								result._yay.newSequence,
+							),
 							metadata: {
 								amount: 1,
 								workspaceId: membership.workspaceId,

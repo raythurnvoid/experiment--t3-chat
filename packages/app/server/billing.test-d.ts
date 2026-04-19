@@ -3,7 +3,7 @@ import type { Id } from "../convex/_generated/dataModel.js";
 import { billing_event, type billing_Event } from "./billing.ts";
 
 test("billing_Event exposes the full event name union", () => {
-	expectTypeOf<billing_Event["name"]>().toEqualTypeOf<"page_save" | "monthly_grant" | "manual_credit">();
+	expectTypeOf<billing_Event["name"]>().toEqualTypeOf<"page_save" | "monthly_credit" | "manual_credit">();
 });
 
 test("billing_Event can be discriminated by built payload name", () => {
@@ -20,7 +20,7 @@ test("billing_event preserves the matching source-specific payload type", () => 
 	const pageSaveEvent = billing_event({
 		name: "page_save",
 		externalCustomerId: "user_1" as Id<"users">,
-		externalId: "page_save:user_1:page_1:1",
+		externalId: "page_save::user_1::page_1::1",
 		metadata: {
 			amount: 1,
 			workspaceId: "workspace_1",
