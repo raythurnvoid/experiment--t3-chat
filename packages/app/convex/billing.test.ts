@@ -1,6 +1,5 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { billing_PRODUCTS } from "../shared/billing.ts";
-import { billing_EVENTS } from "../server/billing.ts";
 import { Workpool } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import { billing } from "./billing.ts";
@@ -236,10 +235,7 @@ async function seed_user_id(t: ReturnType<typeof test_convex>) {
 	});
 }
 
-async function get_cancel_polar_subscription_job(
-	t: ReturnType<typeof test_convex>,
-	userId: Id<"users">,
-) {
+async function get_cancel_polar_subscription_job(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
 	return await t.run((ctx) =>
 		ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
@@ -1113,6 +1109,7 @@ describe("billing generate_checkout_link auth", () => {
 			issuer: "https://clerk.test",
 			external_id: "user_no_email_checkout" as Id<"users">,
 			name: "No Email",
+			email: undefined,
 		});
 
 		await expect(
@@ -1131,6 +1128,7 @@ describe("handle_polar_customer_state_update", () => {
 		const userId = await seed_user_id(t);
 		const polarProductId = "billing_refresh_snapshot_webhook_product";
 		const polarProductName = billing_PRODUCTS["Pay As You Go"].name;
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_refresh_snapshot_webhook" as never);
 
 		await t.mutation(components.polar.lib.createProduct, {
 			product: {
@@ -1336,6 +1334,7 @@ describe("handle_polar_customer_state_update", () => {
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_free_product",
 		});
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_refresh_snapshot_free" as never);
 
 		await t.mutation(internal.billing.handle_polar_customer_state_update, {
 			payload: {
@@ -2230,26 +2229,30 @@ describe("billing schedule_polar_subscription_period_end_cancellation", () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 
-		const enqueueActionSpy = vi
-			.spyOn(Workpool.prototype, "enqueueAction")
-			.mockImplementation(async function (this: Workpool, _ctx, fn, fnArgs, options) {
-				expect(this.options.defaultRetryBehavior).toEqual({
-					initialBackoffMs: 10 * 60 * 1000,
-					base: 1.2,
-					maxAttempts: Number.POSITIVE_INFINITY,
-				});
-				expect(fn).toBeDefined();
-				expect(fnArgs).toEqual({
-					userId,
-					subscriptionId: "sub_schedule_initial",
-				});
-				expect(options?.context).toEqual({
-					userId,
-				});
-				expect(options?.onComplete).toBeDefined();
-
-				return "work_schedule_initial" as never;
+		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async function (
+			this: Workpool,
+			_ctx,
+			fn,
+			fnArgs,
+			options,
+		) {
+			expect(this.options.defaultRetryBehavior).toEqual({
+				initialBackoffMs: 10 * 60 * 1000,
+				base: 1.2,
+				maxAttempts: Number.POSITIVE_INFINITY,
 			});
+			expect(fn).toBeDefined();
+			expect(fnArgs).toEqual({
+				userId,
+				subscriptionId: "sub_schedule_initial",
+			});
+			expect(options?.context).toEqual({
+				userId,
+			});
+			expect(options?.onComplete).toBeDefined();
+
+			return "work_schedule_initial" as never;
+		});
 
 		await t.action(internal.billing.schedule_polar_subscription_period_end_cancellation, {
 			userId,
@@ -2504,7 +2507,7 @@ describe("billing cancel_polar_subscription_at_period_end", () => {
 	});
 });
 
-describe("ingest_usage_event", () => {
+describe("ingest_events", () => {
 	beforeEach(() => {
 		eventsIngestMock.mockReset();
 	});
@@ -2513,55 +2516,23 @@ describe("ingest_usage_event", () => {
 		eventsIngestMock.mockReset();
 	});
 
-	test("sends externalCustomerId and stable externalId", async () => {
-		eventsIngestMock.mockResolvedValue({
-			ok: true,
-			value: {} as never,
-		});
-
+	test("skips direct Polar calls in test env", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
-		await t.action(internal.billing.ingest_usage_event, {
-			userId,
-			eventId: `${billing_EVENTS.pressUsage}:u:test-page:1`,
-			metadata: {
-				amount: 1,
-				source: "page-save",
-				workspaceId: "ws",
-				projectId: "pr",
-				pageId: "page",
-				yjsSequence: "1",
-			},
+		await t.action(internal.billing.ingest_events, {
+			events: [
+				{
+					name: "manual_credit",
+					externalCustomerId: userId,
+					externalId: "manual_credit:u:123",
+					metadata: {
+						amount: -2500,
+					},
+				},
+			],
 		});
 
-		expect(eventsIngestMock).toHaveBeenCalledTimes(1);
-		const ingestCall = eventsIngestMock.mock.calls[0];
-		expect(ingestCall).toBeDefined();
-		const ingestPayload = ingestCall![1] as {
-			events: Array<{ externalId: string; externalCustomerId: string; name: string }>;
-		};
-		expect(ingestPayload.events).toHaveLength(1);
-		expect(ingestPayload.events[0]!.externalId).toBe(`${billing_EVENTS.pressUsage}:u:test-page:1`);
-		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
-		expect("customerId" in ingestPayload.events[0]! && ingestPayload.events[0]!.customerId).toBeFalsy();
-		expect(ingestPayload.events[0]!.name).toBe(billing_EVENTS.pressUsage);
-	});
-
-	test("throws when eventsIngest returns an error result", async () => {
-		eventsIngestMock.mockResolvedValue({
-			ok: false,
-			error: { statusCode: 400, message: "ingest_failed_test" } as never,
-		});
-
-		const t = test_convex();
-		const userId = await seed_user_id(t);
-		await expect(
-			t.action(internal.billing.ingest_usage_event, {
-				userId,
-				eventId: `${billing_EVENTS.pressUsage}:u:test-page:2`,
-				metadata: {},
-			}),
-		).rejects.toThrow("ingest_failed_test");
+		expect(eventsIngestMock).not.toHaveBeenCalled();
 	});
 });
 
@@ -2574,13 +2545,31 @@ describe("grant_monthly_credits", () => {
 		eventsIngestMock.mockReset();
 	});
 
-	test("uses a stable externalId and treats inserted grants as success", async () => {
-		eventsIngestMock.mockResolvedValue({
-			ok: true,
-			value: {
-				inserted: 1,
-				duplicates: 0,
-			} as never,
+	test("enqueues a stable monthly_grant event through the ingest workpool", async () => {
+		const captured: {
+			ingestPayload: {
+				events: Array<{
+					externalId: string;
+					externalCustomerId: string;
+					metadata: { amount: number; periodStart: string };
+					name: string;
+				}>;
+			} | null;
+		} = { ingestPayload: null };
+		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async function (
+			this: Workpool,
+			_ctx,
+			_functionReference,
+			args,
+		) {
+			expect(this.options.defaultRetryBehavior).toEqual({
+				initialBackoffMs: 10 * 60 * 1000,
+				base: 1.2,
+				maxAttempts: Number.POSITIVE_INFINITY,
+			});
+
+			captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
+			return "work_monthly_grant_inserted" as never;
 		});
 
 		const t = test_convex();
@@ -2597,37 +2586,27 @@ describe("grant_monthly_credits", () => {
 		});
 
 		expect(result).toBeNull();
-		expect(eventsIngestMock).toHaveBeenCalledTimes(1);
-		const ingestCall = eventsIngestMock.mock.calls[0];
-		expect(ingestCall).toBeDefined();
-		const ingestPayload = ingestCall![1] as {
-			events: Array<{
-				externalId: string;
-				externalCustomerId: string;
-				metadata: { amount: number; source: string; periodStart: string };
-				name: string;
-			}>;
-		};
+		expect(eventsIngestMock).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		const ingestPayload = captured.ingestPayload;
+		if (!ingestPayload) {
+			throw new Error("Expected monthly grant ingest payload to be captured");
+		}
 		expect(ingestPayload.events).toHaveLength(1);
 		expect(ingestPayload.events[0]!.externalId).toBe(
-			`monthly-grant:${userId}:sub_grant_action_inserted:2026-01-01T00:00:00.000Z`,
+			`monthly_grant:${userId}:sub_grant_action_inserted:2026-01-01T00:00:00.000Z`,
 		);
 		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
 		expect(ingestPayload.events[0]!.metadata).toMatchObject({
 			amount: -billing_PRODUCTS["Pay As You Go"].recurringCreditsCents,
-			source: "monthly-grant",
 			periodStart: "2026-01-01T00:00:00.000Z",
 		});
-		expect(ingestPayload.events[0]!.name).toBe(billing_EVENTS.pressUsage);
+		expect(ingestPayload.events[0]!.name).toBe("monthly_grant");
 	});
 
-	test("treats duplicate ingest responses as a clean no-op", async () => {
-		eventsIngestMock.mockResolvedValue({
-			ok: true,
-			value: {
-				inserted: 0,
-				duplicates: 1,
-			} as never,
+	test("queues repeated grants and leaves duplicate handling to the ingest worker", async () => {
+		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async () => {
+			return "work_monthly_grant_duplicate" as never;
 		});
 
 		const t = test_convex();
@@ -2644,7 +2623,63 @@ describe("grant_monthly_credits", () => {
 		});
 
 		expect(result).toBeNull();
-		expect(eventsIngestMock).toHaveBeenCalledTimes(1);
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(eventsIngestMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("grant_credit", () => {
+	beforeEach(() => {
+		eventsIngestMock.mockReset();
+	});
+
+	afterEach(() => {
+		eventsIngestMock.mockReset();
+	});
+
+	test("enqueues the canonical manual_credit event through the ingest workpool", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(123_456);
+		const captured: {
+			ingestPayload: {
+				events: Array<{
+					externalId: string;
+					externalCustomerId: string;
+					metadata: { amount: number };
+					name: string;
+				}>;
+			} | null;
+		} = { ingestPayload: null };
+		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async (
+			_ctx,
+			_functionReference,
+			args,
+		) => {
+			captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
+			return "work_manual_credit" as never;
+		});
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.grant_credit, {
+			userId,
+			amount: 2500,
+		});
+
+		expect(result).toBeNull();
+		expect(eventsIngestMock).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		const ingestPayload = captured.ingestPayload;
+		if (!ingestPayload) {
+			throw new Error("Expected manual credit ingest payload to be captured");
+		}
+		expect(ingestPayload.events).toHaveLength(1);
+		expect(ingestPayload.events[0]!.externalId).toBe(`manual_credit:${userId}:123456`);
+		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
+		expect(ingestPayload.events[0]!.metadata).toEqual({
+			amount: -2500,
+		});
+		expect(ingestPayload.events[0]!.name).toBe("manual_credit");
 	});
 });
 
@@ -2746,16 +2781,12 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(enqueueActionSpy).toHaveBeenCalledWith(
-			expect.anything(),
-			internal.billing.grant_monthly_credits,
-			{
-				userId,
-				subscriptionId: "sub_grant_first_period",
-				productId: polarProductId,
-				periodStart: "2026-01-01T00:00:00.000Z",
-			},
-		);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_first_period",
+			productId: polarProductId,
+			periodStart: "2026-01-01T00:00:00.000Z",
+		});
 	});
 
 	test("re-enqueues the same monthly grant for repeated same-period webhook deliveries", async () => {
@@ -2809,28 +2840,18 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(2);
-		expect(enqueueActionSpy).toHaveBeenNthCalledWith(
-			1,
-			expect.anything(),
-			internal.billing.grant_monthly_credits,
-			{
-				userId,
-				subscriptionId: "sub_grant_same_period",
-				productId: polarProductId,
-				periodStart: "2026-01-01T00:00:00.000Z",
-			},
-		);
-		expect(enqueueActionSpy).toHaveBeenNthCalledWith(
-			2,
-			expect.anything(),
-			internal.billing.grant_monthly_credits,
-			{
-				userId,
-				subscriptionId: "sub_grant_same_period",
-				productId: polarProductId,
-				periodStart: "2026-01-01T00:00:00.000Z",
-			},
-		);
+		expect(enqueueActionSpy).toHaveBeenNthCalledWith(1, expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_same_period",
+			productId: polarProductId,
+			periodStart: "2026-01-01T00:00:00.000Z",
+		});
+		expect(enqueueActionSpy).toHaveBeenNthCalledWith(2, expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_same_period",
+			productId: polarProductId,
+			periodStart: "2026-01-01T00:00:00.000Z",
+		});
 	});
 
 	test("enqueues a monthly grant when the subscription has rolled into a new period", async () => {
@@ -2876,16 +2897,12 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(enqueueActionSpy).toHaveBeenCalledWith(
-			expect.anything(),
-			internal.billing.grant_monthly_credits,
-			{
-				userId,
-				subscriptionId: "sub_grant_advanced_period",
-				productId: polarProductId,
-				periodStart: "2026-02-01T00:00:00.000Z",
-			},
-		);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_advanced_period",
+			productId: polarProductId,
+			periodStart: "2026-02-01T00:00:00.000Z",
+		});
 	});
 
 	test("enqueues a monthly grant when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
@@ -2934,16 +2951,12 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(enqueueActionSpy).toHaveBeenCalledWith(
-			expect.anything(),
-			internal.billing.grant_monthly_credits,
-			{
-				userId,
-				subscriptionId: "sub_grant_upgrade_new",
-				productId: newProductId,
-				periodStart: "2026-01-15T00:00:00.000Z",
-			},
-		);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_grant_upgrade_new",
+			productId: newProductId,
+			periodStart: "2026-01-15T00:00:00.000Z",
+		});
 	});
 
 	test("is a no-op when the webhook reports no active subscription", async () => {

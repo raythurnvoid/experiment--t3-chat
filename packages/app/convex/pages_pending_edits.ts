@@ -6,7 +6,8 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
-import { billing_ingest_page_save } from "./billing.ts";
+import { billing_event, billing_page_save_event_external_id } from "../server/billing.ts";
+import { billing_ingest_events } from "./billing.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import {
@@ -874,12 +875,25 @@ export const save_pages_pending_edit = mutation({
 
 			newSequence = result._yay.newSequence;
 			if (!user.isAnonymous) {
-				await billing_ingest_page_save(ctx, {
-					userId: user.id,
-					pageId: args.pageId,
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					newSequence: result._yay.newSequence,
+				await billing_ingest_events(ctx, {
+					events: [
+						billing_event({
+							name: "page_save",
+							externalCustomerId: user.id,
+							externalId: billing_page_save_event_external_id({
+								userId: user.id,
+								pageId: args.pageId,
+								newSequence: result._yay.newSequence,
+							}),
+							metadata: {
+								amount: 1,
+								workspaceId: membership.workspaceId,
+								projectId: membership.projectId,
+								pageId: args.pageId,
+								yjsSequence: String(result._yay.newSequence),
+							},
+						}),
+					],
 				});
 			}
 			pages_yjs_doc_apply_array_buffer_update(

@@ -23,7 +23,14 @@ import {
 	billing_get_plan_change_kind,
 	billing_get_recurring_credits_cents,
 } from "../shared/billing.ts";
-import { billing_EVENTS, billing_polar_client } from "../server/billing.ts";
+import {
+	billing_manual_credit_event_external_id,
+	billing_monthly_grant_event_external_id,
+	billing_POLAR_METER_EVENT,
+	type billing_Event,
+	billing_event,
+	billing_polar_client,
+} from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	allowed_origins,
@@ -61,6 +68,11 @@ const billing_api = billing.api();
 const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 10 * 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
 });
 
 export async function billing_action_clear_subscriptions_by_user_id(
@@ -893,60 +905,93 @@ export const change_current_subscription = action({
 export const cancel_current_subscription = billing_api.cancelCurrentSubscription;
 
 // #region event ingestion
-export async function billing_ingest_page_save(
-	ctx: MutationCtx,
+export const ingest_events = internalAction({
 	args: {
-		userId: Id<"users">;
-		pageId: Id<"pages">;
-		workspaceId: string;
-		projectId: string;
-		newSequence: number;
-	},
-) {
-	// Skip async billing side effects under tests because `convex-test` does not
-	// keep the workpool scheduler lifecycle alive after the enclosing transaction.
-	if (process.env.NODE_ENV === "test") {
-		return;
-	}
-
-	const eventId = `${billing_EVENTS.pressUsage}:${args.userId}:${args.pageId}:${args.newSequence}`;
-
-	await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_usage_event, {
-		userId: args.userId,
-		eventId,
-		metadata: {
-			amount: 1,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageId: args.pageId,
-			yjsSequence: String(args.newSequence),
-			source: "page-save",
-		},
-	});
-}
-
-export const ingest_usage_event = internalAction({
-	args: {
-		userId: v.id("users"),
-		eventId: v.string(),
-		metadata: v.record(v.string(), v.union(v.string(), v.number())),
+		events: v.array(
+			v.union(
+				v.object({
+					name: v.literal("page_save"),
+					externalCustomerId: v.id("users"),
+					externalId: v.string(),
+					metadata: v.object({
+						amount: v.number(),
+						workspaceId: v.string(),
+						projectId: v.string(),
+						pageId: v.string(),
+						yjsSequence: v.string(),
+					}),
+				}),
+				v.object({
+					name: v.literal("monthly_grant"),
+					externalCustomerId: v.id("users"),
+					externalId: v.string(),
+					metadata: v.object({
+						amount: v.number(),
+						subscriptionId: v.string(),
+						productId: v.string(),
+						productName: v.string(),
+						periodStart: v.string(),
+					}),
+				}),
+				v.object({
+					name: v.literal("manual_credit"),
+					externalCustomerId: v.id("users"),
+					externalId: v.string(),
+					metadata: v.object({
+						amount: v.number(),
+					}),
+				}),
+			),
+		),
 	},
 	handler: async (_ctx, args) => {
+		// Skip direct Polar calls in tests; tests assert queued payloads at the
+		// workpool boundary unless they explicitly opt into this action path.
+		if (process.env.NODE_ENV === "test") {
+			return;
+		}
+
+		// Polar tracks all billing effects in one meter; keep the app event name as
+		// metadata while passing the rest of the Polar-shaped event through.
 		const ingestResult = await eventsIngest(billing_polar_client(), {
-			events: [
-				{
-					name: billing_EVENTS.pressUsage,
-					externalCustomerId: args.userId,
-					externalId: args.eventId,
-					metadata: args.metadata,
-				},
-			],
+			events: args.events.map((event) => {
+				const { name, metadata, ...polarEvent } = event;
+
+				return {
+					...polarEvent,
+					name: billing_POLAR_METER_EVENT,
+					metadata: {
+						...metadata,
+						name,
+					},
+				};
+			}),
 		});
 		if (!ingestResult.ok) {
 			throw new Error(JSON.stringify(ingestResult.error));
 		}
 	},
 });
+
+/**
+ * Queue app-owned billing events for Polar ingestion.
+ *
+ * Keep this as the only local entrypoint for usage-event emission so every
+ * caller gets the workpool retry behavior before `ingest_events` performs
+ * the actual Polar `eventsIngest` call.
+ */
+export async function billing_ingest_events(
+	ctx: ActionCtx | MutationCtx,
+	args: {
+		events: Array<billing_Event>;
+	},
+) {
+	// Keep every billing event ingest behind the workpool so Polar failures are
+	// retried by one queue regardless of the caller runtime.
+	return await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
+		events: args.events,
+	});
+}
 // #endregion event ingestion
 
 // #region monthly credits
@@ -985,45 +1030,25 @@ export const grant_monthly_credits = internalAction({
 			// Use a deterministic externalId so Polar records one immutable grant
 			// event per `(user, subscription, period)` tuple and reports later
 			// retries as duplicates.
-			const ingestResult = await eventsIngest(billing_polar_client(), {
+			await billing_ingest_events(ctx, {
 				events: [
-					{
-						name: billing_EVENTS.pressUsage,
+					billing_event({
+						name: "monthly_grant",
 						externalCustomerId: args.userId,
-						externalId: `monthly-grant:${args.userId}:${args.subscriptionId}:${args.periodStart}`,
+						externalId: billing_monthly_grant_event_external_id({
+							userId: args.userId,
+							subscriptionId: args.subscriptionId,
+							periodStart: args.periodStart,
+						}),
 						metadata: {
 							amount: -recurringAmountCents,
-							source: "monthly-grant",
 							subscriptionId: args.subscriptionId,
 							productId: args.productId,
 							productName: product.name,
 							periodStart: args.periodStart,
 						},
-					},
+					}),
 				],
-			});
-			if (!ingestResult.ok) {
-				throw new Error("Failed to ingest monthly credit grant", {
-					cause: ingestResult.error,
-				});
-			}
-
-			if (ingestResult.value.inserted > 0) {
-				return null;
-			}
-
-			// Treat duplicate responses as proof that Polar already recorded this
-			// period's grant.
-			if ((ingestResult.value.duplicates ?? 0) > 0) {
-				return null;
-			}
-
-			throw should_never_happen("Monthly credit ingest returned no inserted or duplicate events", {
-				duplicates: ingestResult.value.duplicates ?? 0,
-				periodStart: args.periodStart,
-				productId: args.productId,
-				subscriptionId: args.subscriptionId,
-				userId: args.userId,
 			});
 		}
 
@@ -1046,23 +1071,22 @@ export const grant_credit = internalAction({
 		amount: v.number(),
 	},
 	returns: v.null(),
-	handler: async (_ctx, args) => {
-		const ingestResult = await eventsIngest(billing_polar_client(), {
+	handler: async (ctx, args) => {
+		await billing_ingest_events(ctx, {
 			events: [
-				{
-					name: billing_EVENTS.pressUsage,
+				billing_event({
+					name: "manual_credit",
 					externalCustomerId: args.userId,
-					externalId: `grant-credit:${args.userId}:${Date.now()}`,
+					externalId: billing_manual_credit_event_external_id({
+						userId: args.userId,
+						timestamp: Date.now(),
+					}),
 					metadata: {
 						amount: -Math.abs(args.amount),
-						source: "manual-credit",
 					},
-				},
+				}),
 			],
 		});
-		if (!ingestResult.ok) {
-			throw new Error(JSON.stringify(ingestResult.error));
-		}
 		return null;
 	},
 });

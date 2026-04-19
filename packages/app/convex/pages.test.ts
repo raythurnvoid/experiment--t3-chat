@@ -1,10 +1,21 @@
-import { expect, test } from "vitest";
+import { Workpool } from "@convex-dev/workpool";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
 import { pages_ROOT_ID } from "../server/pages.ts";
+
+beforeEach(() => {
+	// Keep page tests focused on page behavior; billing event enqueue behavior is
+	// covered in billing tests.
+	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_page_test_billing_event" as never);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 test("list_pages", async () => {
 	const t = test_convex();
@@ -959,6 +970,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		issuer: "https://clerk.test",
 		external_id: db.userId,
 		name: "Rate Limit User",
+		email: "rate-limit-user@example.com",
 	});
 
 	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {

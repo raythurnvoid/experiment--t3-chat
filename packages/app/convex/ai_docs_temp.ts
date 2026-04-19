@@ -60,9 +60,10 @@ import { internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
+import { billing_event, billing_page_save_event_external_id } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
-import { billing_ingest_page_save } from "./billing.ts";
+import { billing_ingest_events } from "./billing.ts";
 import { rate_limiter } from "./rate_limiter.ts";
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
@@ -2593,14 +2594,26 @@ export async function pages_db_yjs_push_update(
 		userId: Id<"users">;
 		userName: string;
 	},
-) {
+): Promise<
+	Result<
+		| { _yay: { newSequence: number } }
+		| {
+				_nay: {
+					message: "Rate limit exceeded";
+				};
+		  }
+	>
+> {
 	const now = Date.now();
 
-	const limit = await rate_limiter.limit(ctx, "pagesYjsPushUpdate", { key: args.userId });
+	const limit = await rate_limiter.limit(ctx, "pages_yjs_push_update", { key: args.userId });
 	if (!limit.ok) {
 		return Result({
 			_nay: {
-				message: "Rate limit exceeded" as const,
+				name: "nay",
+				message: "Rate limit exceeded",
+				cause: undefined,
+				data: {},
 			},
 		});
 	}
@@ -2697,12 +2710,25 @@ export const yjs_push_update = mutation({
 		}
 
 		if (!user.isAnonymous) {
-			await billing_ingest_page_save(ctx, {
-				userId: user.id,
-				pageId: args.pageId,
-				workspaceId: page.workspaceId,
-				projectId: page.projectId,
-				newSequence: pushResult._yay.newSequence,
+			await billing_ingest_events(ctx, {
+				events: [
+					billing_event({
+						name: "page_save",
+						externalCustomerId: user.id,
+						externalId: billing_page_save_event_external_id({
+							userId: user.id,
+							pageId: args.pageId,
+							newSequence: pushResult._yay.newSequence,
+						}),
+						metadata: {
+							amount: 1,
+							workspaceId: page.workspaceId,
+							projectId: page.projectId,
+							pageId: args.pageId,
+							yjsSequence: String(pushResult._yay.newSequence),
+						},
+					}),
+				],
 			});
 		}
 

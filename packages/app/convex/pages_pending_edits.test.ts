@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { Workpool } from "@convex-dev/workpool";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
@@ -15,6 +16,16 @@ import {
 	pages_yjs_doc_update_from_markdown,
 } from "../server/pages.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
+
+beforeEach(() => {
+	// Keep pending-edit tests focused on document state; billing event enqueue
+	// behavior is covered in billing tests.
+	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_pending_edit_test_billing_event" as never);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 async function seed_page_with_markdown(args: {
 	ctx: MutationCtx;
@@ -1588,6 +1599,7 @@ describe("save_pages_pending_edit", () => {
 			issuer: "https://clerk.test",
 			external_id: seeded.userId,
 			name: "Rate Limit User",
+			email: "rate-limit-user@example.com",
 		});
 
 		const stagedMarkdown = `${seeded.baseMarkdown}\n\nStaged change`;
@@ -1670,17 +1682,32 @@ describe("save_pages_pending_edit", () => {
 		expect(lastSequenceSavedAfter).toBeNull();
 
 		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
-			ctx.db
-				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_id_sequence", (q) =>
-					q
-						.eq("workspace_id", seeded.workspaceId)
-						.eq("project_id", seeded.projectId)
-						.eq("page_id", seeded.pageId),
-				)
-				.collect(),
+			Promise.all([
+				ctx.db
+					.query("pages_yjs_updates")
+					.withIndex("by_workspace_project_page_id_sequence", (q) =>
+						q
+							.eq("workspace_id", seeded.workspaceId)
+							.eq("project_id", seeded.projectId)
+							.eq("page_id", seeded.pageId),
+					)
+					.collect(),
+				ctx.db
+					.query("pages_yjs_docs_last_sequences")
+					.withIndex("by_workspace_project_page_id", (q) =>
+						q
+							.eq("workspace_id", seeded.workspaceId)
+							.eq("project_id", seeded.projectId)
+							.eq("page_id", seeded.pageId),
+					)
+					.first(),
+			]).then(([updates, lastSequence]) => ({
+				updateCount: updates.length,
+				lastSequence: lastSequence?.last_sequence ?? null,
+			})),
 		);
-		expect(yjsUpdatesAfterSave.length).toBe(2);
+		expect(yjsUpdatesAfterSave.updateCount).toBe(2);
+		expect(yjsUpdatesAfterSave.lastSequence).toBe(2);
 	});
 });
 
