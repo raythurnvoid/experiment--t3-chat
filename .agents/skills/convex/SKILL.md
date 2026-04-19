@@ -384,4 +384,5 @@ The sections above describe Convex itself. For conventions specific to this repo
 - **Schema-backed validators** — using `doc(app_convex_schema, "...")` instead of redefining shapes with `v.object({...})`, plus `v.id(...)` and `ctx.db.normalizeId(...)` rules.
 - **Query performance patterns** — concurrent fetches with `Promise.all`, `ctx.db.get` over `ctx.db.query` when ids are known, avoiding `collect().find(...)` for single-row lookups.
 - **Query cache and composition** — favoring stable, composable shared queries over narrowly tailored wrappers.
+- **Vitest testing patterns** — regular `convex-test` coverage plus analyzer-safe in-source tests for private Convex helpers.
 - **Migrations workflow** — `internalMutation` rules in `packages/app/convex/migrations.ts`.

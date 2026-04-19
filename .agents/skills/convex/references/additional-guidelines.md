@@ -71,6 +71,31 @@ export function example_http_routes(router: RouterForConvexModules) {
 }
 ```
 
+# Testing Convex modules with Vitest
+
+The base Convex skill covers the `convex-test` setup for regular Vitest files, including `import.meta.glob(...)` module maps. In this repo, also use the following pattern when adding in-source Vitest tests to a Convex module so private helpers can stay module-private.
+
+Convex module analysis rejects runtime `import.meta`, but Convex's esbuild pass defines `process.env.NODE_ENV` as `"production"` while Vitest uses `"test"`. Keep the `NODE_ENV` check first so esbuild can erase the whole test block before Convex uploads and analyzes the function bundle, while Vitest still sees the standard in-source test syntax.
+
+```ts
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, test, expect, vi } = import.meta.vitest;
+
+	describe("some_private_helper", () => {
+		test("covers private helper behavior", () => {
+			expect(some_private_helper()).toEqual("expected");
+		});
+	});
+}
+```
+
+Rules for Convex in-source tests:
+
+- Use the normal Vitest `import.meta.vitest` API inside the branch.
+- Keep `process.env.NODE_ENV === "test"` as the first `&&` condition. Do not write `if (import.meta.vitest && ...)` in Convex modules because Convex analysis will still evaluate `import.meta`.
+- Prefer in-source tests only for small module-private helpers where exporting the helper would damage the production module API.
+- Keep broader behavior tests in regular `*.test.ts` files using `convex-test` and the module map guidance from the base Convex testing section.
+
 # Errors as values (`Result`) in Convex handlers
 
 This repository uses an errors-as-values pattern (`Result`) in many Convex helpers and handlers.

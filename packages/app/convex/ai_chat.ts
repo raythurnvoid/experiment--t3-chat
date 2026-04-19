@@ -3,7 +3,6 @@ import {
 	ai_chat_MODEL_IDS,
 	ai_chat_MODE_IDS,
 	type ai_chat_AiSdk5UiMessage,
-	type ai_chat_ModeId,
 } from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
@@ -59,6 +58,12 @@ export {
 
 const ai_chat_TITLE_MODEL_ID = "gpt-4.1-nano" as const;
 
+const ai_chat_TITLE_SYSTEM_PROMPT = [
+	"Generate a concise, descriptive title (max 6 words) for this conversation.",
+	"The title should capture the main topic or purpose.",
+	"Respond with ONLY the title, no quotes or extra text.",
+].join("\n");
+
 const ai_chat_SYSTEM_PROMPT = [
 	"You are the app chat agent for the user's workspace.",
 	"Respond directly when you can answer confidently without tools.",
@@ -71,11 +76,52 @@ const ai_chat_SYSTEM_PROMPT = [
 	"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
 ].join("\n");
 
-const ai_chat_TITLE_SYSTEM_PROMPT = [
-	"Generate a concise, descriptive title (max 6 words) for this conversation.",
-	"The title should capture the main topic or purpose.",
-	"Respond with ONLY the title, no quotes or extra text.",
-].join("\n");
+const ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX =
+	"You are in Ask mode: do not call `write_page` or `edit_page`. Answer from reads and searches only.";
+
+function ai_chat_get_agent_configuration(input: {
+	ctx: ActionCtx;
+	ctxData: {
+		workspaceId: string;
+		projectId: string;
+		userId: app_convex_Id<"users">;
+	};
+	args: {
+		modeId: (typeof ai_chat_MODE_IDS)[number];
+	};
+}) {
+	const {
+		ctx,
+		ctxData,
+		args: { modeId },
+	} = input;
+
+	const tools = {
+		read_page: ai_chat_tool_create_read_page(ctx, ctxData),
+		list_pages: ai_chat_tool_create_list_pages(ctx, ctxData),
+		glob_pages: ai_chat_tool_create_glob_pages(ctx, ctxData),
+		grep_pages: ai_chat_tool_create_grep_pages(ctx, ctxData),
+		text_search_pages: ai_chat_tool_create_text_search_pages(ctx, ctxData),
+		write_page: ai_chat_tool_create_write_page(ctx, ctxData),
+		edit_page: ai_chat_tool_create_edit_page(ctx, ctxData),
+		web_search: ai_chat_tool_create_web_search(),
+	};
+
+	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
+
+	// Keep the full tool registry for validation. Ask mode only narrows the tool
+	// names exposed to generation so historical write-tool messages still validate.
+	const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) => {
+		return modeId === "ask" ? !writeToolNames.has(name) : true;
+	});
+
+	return {
+		systemPrompt:
+			modeId === "ask" ? `${ai_chat_SYSTEM_PROMPT}\n${ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX}` : ai_chat_SYSTEM_PROMPT,
+		tools,
+		activeTools,
+	};
+}
 
 export const threads_list = query({
 	args: {
@@ -738,25 +784,17 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const ctxData = {
-									workspaceId: membership.workspaceId,
-									projectId: membership.projectId,
-								};
-								const ctxDataWithUser = {
-									...ctxData,
-									userId: membership.userId,
-								};
-
-								const tools = {
-									read_page: ai_chat_tool_create_read_page(ctx, membership),
-									list_pages: ai_chat_tool_create_list_pages(ctx, membership),
-									glob_pages: ai_chat_tool_create_glob_pages(ctx, membership),
-									grep_pages: ai_chat_tool_create_grep_pages(ctx, membership),
-									text_search_pages: ai_chat_tool_create_text_search_pages(ctx, membership),
-									write_page: ai_chat_tool_create_write_page(ctx, ctxDataWithUser),
-									edit_page: ai_chat_tool_create_edit_page(ctx, ctxDataWithUser),
-									web_search: ai_chat_tool_create_web_search(),
-								};
+								const { systemPrompt, tools, activeTools } = ai_chat_get_agent_configuration({
+									ctx,
+									ctxData: {
+										workspaceId: membership.workspaceId,
+										projectId: membership.projectId,
+										userId: membership.userId,
+									},
+									args: {
+										modeId: body.mode,
+									},
+								});
 
 								// Validate the messages if they are present
 								if (body.messages.length > 0) {
@@ -990,23 +1028,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										});
 
-										const mode: ai_chat_ModeId = body.mode;
-										const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
-										const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) => {
-											// Ask mode strips write tools. Agent mode keeps everything.
-											// Keep the `tools` object intact so `validateUIMessages` can still
-											// recognize tool names from past messages.
-											return mode === "ask" ? !writeToolNames.has(name) : true;
-										});
-
-										const systemPromptForMode =
-											mode === "ask"
-												? `${ai_chat_SYSTEM_PROMPT}\nYou are in Ask mode: do not call \`write_page\` or \`edit_page\`. Answer from reads and searches only.`
-												: ai_chat_SYSTEM_PROMPT;
-
 										const result1 = streamText({
 											model: openai(body.model),
-											system: systemPromptForMode,
+											system: systemPrompt,
 											messages: modelMessages,
 											maxOutputTokens: 2000,
 											abortSignal: request.signal,
@@ -1408,4 +1432,129 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 			},
 		}))(),
 	};
+}
+
+// Vitest sets NODE_ENV to "test"; Convex's bundler defines it as "production",
+// so keep that check first to let esbuild erase `import.meta.vitest` before analysis.
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, test, expect, vi } = import.meta.vitest;
+
+	type ai_chat_get_agent_configuration_test_user_identity = NonNullable<
+		Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>
+	>;
+
+	const ai_chat_get_agent_configuration_test_ctx_data = {
+		workspaceId: "app_workspace_test_1",
+		projectId: "app_project_test_1",
+		userId: "user_1" as app_convex_Id<"users">,
+	} as const;
+
+	const ai_chat_get_agent_configuration_test_user_identity_default = {
+		issuer: "https://clerk.test",
+		subject: "subject-user-1",
+		external_id: "user_1",
+		name: "Test User",
+	} as unknown as ai_chat_get_agent_configuration_test_user_identity;
+
+	const ai_chat_get_agent_configuration_expected_tool_keys = [
+		"read_page",
+		"list_pages",
+		"glob_pages",
+		"grep_pages",
+		"text_search_pages",
+		"write_page",
+		"edit_page",
+		"web_search",
+	] as const;
+
+	const makeCtx = (args?: {
+		runQueryImpl?: (...fnArgs: unknown[]) => Promise<unknown>;
+		runMutationImpl?: (...fnArgs: unknown[]) => Promise<unknown>;
+		userIdentity?: ai_chat_get_agent_configuration_test_user_identity;
+	}) => {
+		const runQuery = vi.fn(args?.runQueryImpl ?? (async () => null));
+		const runMutation = vi.fn(args?.runMutationImpl ?? (async () => null));
+		const getUserIdentity = vi.fn(
+			async () => args?.userIdentity ?? ai_chat_get_agent_configuration_test_user_identity_default,
+		);
+		const ctx = {
+			runQuery,
+			runMutation,
+			auth: {
+				getUserIdentity,
+			},
+		} as unknown as ActionCtx;
+
+		return {
+			ctx,
+			runQuery,
+			runMutation,
+			getUserIdentity,
+		};
+	};
+
+	describe("ai_chat_get_agent_configuration", () => {
+		test("returns the full tool registry and keeps write tools active in Agent mode", () => {
+			const { ctx } = makeCtx();
+			const configuration = ai_chat_get_agent_configuration({
+				ctx,
+				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "agent",
+				},
+			});
+
+			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
+			expect(configuration.activeTools).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
+		});
+
+		test("keeps the full tool registry but excludes write tools from activeTools in Ask mode", () => {
+			const { ctx } = makeCtx();
+			const configuration = ai_chat_get_agent_configuration({
+				ctx,
+				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "ask",
+				},
+			});
+
+			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
+			expect(configuration.activeTools).toEqual([
+				"read_page",
+				"list_pages",
+				"glob_pages",
+				"grep_pages",
+				"text_search_pages",
+				"web_search",
+			]);
+		});
+
+		test("appends the Ask mode instruction to the system prompt", () => {
+			const { ctx } = makeCtx();
+			const configuration = ai_chat_get_agent_configuration({
+				ctx,
+				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "ask",
+				},
+			});
+
+			expect(configuration.systemPrompt).toContain(
+				"You are in Ask mode: do not call `write_page` or `edit_page`. Answer from reads and searches only.",
+			);
+		});
+
+		test("keeps the returned tool keys aligned with the current runtime registry", () => {
+			const { ctx } = makeCtx();
+			const configuration = ai_chat_get_agent_configuration({
+				ctx,
+				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "agent",
+				},
+			});
+
+			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
+		});
+	});
 }
