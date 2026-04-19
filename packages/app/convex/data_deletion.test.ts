@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
+import { presence } from "./presence.ts";
 import { test_convex } from "./setup.test.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import {
@@ -361,16 +362,8 @@ describe("init_user_deletion", () => {
 					.query("billing_usage_snapshots")
 					.withIndex("by_userId", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
-				ctx.runQuery(components.presence.public.listUser, {
-					userId: deletedUser.userId,
-					onlineOnly: false,
-					limit: 10_000,
-				}),
-				ctx.runQuery(components.presence.public.listUser, {
-					userId: collaborator.userId,
-					onlineOnly: false,
-					limit: 10_000,
-				}),
+				presence.listUser(ctx, deletedUser.userId, false, 10_000),
+				presence.listUser(ctx, collaborator.userId, false, 10_000),
 			]);
 
 			return {

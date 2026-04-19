@@ -233,11 +233,7 @@ export const disconnect = mutation({
 			return null;
 		}
 		await presence.disconnect(ctx, args.sessionToken);
-		const onlineRooms = await ctx.runQuery(components.presence.public.listUser, {
-			userId: user.id,
-			onlineOnly: true,
-			limit: 1,
-		});
+		const onlineRooms = await presence.listUser(ctx, user.id, true, 1);
 
 		// Keep the long-lived fallback TTL in `ai_chat` because presence is optional, but
 		// only shorten cleanup when the user is now fully offline across presence sessions.
