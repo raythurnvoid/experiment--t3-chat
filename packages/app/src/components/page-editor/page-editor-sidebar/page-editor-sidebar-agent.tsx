@@ -25,6 +25,9 @@ import {
 	MyTabsPanel,
 	MyTabsPanels,
 	MyTabsTabPrimaryAction,
+	MyTabsTabSecondaryAction,
+	MyTabsTabSecondaryActionIcon,
+	type MyTabsTabSecondaryAction_ClassNames,
 	MyTabsTabSurface,
 } from "@/components/my-tabs.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
@@ -494,7 +497,7 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 													<MyTabsTabSurface
 														ref={draggableProvided.innerRef}
 														{...draggableProvided.draggableProps}
-														variant="container"
+														variant="bordered"
 														className={cn(
 															"PageEditorSidebarAgentHeaderTabs-tab" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
 														)}
@@ -521,28 +524,28 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 																"MyButton" satisfies MyButton_ClassNames,
 																"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
 																"MyIconButton" satisfies MyIconButton_ClassNames,
+																"MyTabsTabSecondaryAction" satisfies MyTabsTabSecondaryAction_ClassNames,
 															)}
 															tabIndex={isSelectedTab ? 0 : -1}
 														>
-															<MyIconButtonIcon>
+															<MyTabsTabSecondaryActionIcon>
 																<GripVertical />
-															</MyIconButtonIcon>
+															</MyTabsTabSecondaryActionIcon>
 														</span>
 
-														<MyIconButton
+														<MyTabsTabSecondaryAction
 															className={cn(
 																"PageEditorSidebarAgentHeaderTabs-tab-close" satisfies PageEditorSidebarAgentHeaderTabs_ClassNames,
 															)}
-															variant="ghost-highlightable"
 															tooltip={openTabs.length <= 1 ? "Keep at least one tab open" : "Close tab"}
 															disabled={openTabs.length <= 1}
 															tabIndex={isSelectedTab ? 0 : -1}
 															onClick={() => handleCloseTab(entry.id)}
 														>
-															<MyIconButtonIcon>
+															<MyTabsTabSecondaryActionIcon>
 																<X />
-															</MyIconButtonIcon>
-														</MyIconButton>
+															</MyTabsTabSecondaryActionIcon>
+														</MyTabsTabSecondaryAction>
 													</MyTabsTabSurface>
 												);
 

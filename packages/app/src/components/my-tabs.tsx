@@ -1,6 +1,7 @@
 import "./my-tabs.css";
 import { memo, type ComponentPropsWithRef, type ReactNode, type Ref } from "react";
 import * as Ariakit from "@ariakit/react";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
 
 // #region tab
@@ -23,13 +24,13 @@ export const MyTabsTab = memo(function MyTabsTab(props: MyTabsTab_Props) {
 export type MyTabsTabSurface_ClassNames =
 	| "MyTabsTabSurface"
 	| "MyTabsTabSurface-variant-default"
-	| "MyTabsTabSurface-variant-container";
+	| "MyTabsTabSurface-variant-bordered";
 
 export type MyTabsTabSurface_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
-	variant?: "default" | "container";
+	variant?: "default" | "bordered";
 	children?: ReactNode;
 };
 
@@ -43,7 +44,7 @@ export const MyTabsTabSurface = memo(function MyTabsTabSurface(props: MyTabsTabS
 			className={cn(
 				"MyTabsTabSurface" satisfies MyTabsTabSurface_ClassNames,
 				variant === "default" && ("MyTabsTabSurface-variant-default" satisfies MyTabsTabSurface_ClassNames),
-				variant === "container" && ("MyTabsTabSurface-variant-container" satisfies MyTabsTabSurface_ClassNames),
+				variant === "bordered" && ("MyTabsTabSurface-variant-bordered" satisfies MyTabsTabSurface_ClassNames),
 				className,
 			)}
 			{...rest}
@@ -74,6 +75,53 @@ export const MyTabsTabPrimaryAction = memo(function MyTabsTabPrimaryAction(props
 	);
 });
 // #endregion tab-primary-action
+
+// #region tab-secondary-action
+export type MyTabsTabSecondaryAction_ClassNames = "MyTabsTabSecondaryAction";
+
+export type MyTabsTabSecondaryAction_Props = Omit<ComponentPropsWithRef<typeof MyIconButton>, "variant">;
+
+export const MyTabsTabSecondaryAction = memo(function MyTabsTabSecondaryAction(
+	props: MyTabsTabSecondaryAction_Props,
+) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<MyIconButton
+			ref={ref}
+			id={id}
+			className={cn("MyTabsTabSecondaryAction" satisfies MyTabsTabSecondaryAction_ClassNames, className)}
+			{...rest}
+			variant="ghost-highlightable"
+		>
+			{children}
+		</MyIconButton>
+	);
+});
+// #endregion tab-secondary-action
+
+// #region tab-secondary-action-icon
+export type MyTabsTabSecondaryActionIcon_ClassNames = "MyTabsTabSecondaryActionIcon";
+
+export type MyTabsTabSecondaryActionIcon_Props = ComponentPropsWithRef<typeof MyIconButtonIcon>;
+
+export const MyTabsTabSecondaryActionIcon = memo(function MyTabsTabSecondaryActionIcon(
+	props: MyTabsTabSecondaryActionIcon_Props,
+) {
+	const { ref, id, className, children, ...rest } = props;
+
+	return (
+		<MyIconButtonIcon
+			ref={ref}
+			id={id}
+			className={cn("MyTabsTabSecondaryActionIcon" satisfies MyTabsTabSecondaryActionIcon_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</MyIconButtonIcon>
+	);
+});
+// #endregion tab-secondary-action-icon
 
 // #region panel
 export type MyTabsPanel_ClassNames = "MyTabsPanel";

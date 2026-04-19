@@ -131,17 +131,17 @@
 
 	/* https://oklch.fyi/ */
 
-	--color-base-1-01: oklch(0.05 0.001 85);
-	--color-base-1-02: oklch(0.088 0.002 85);
-	--color-base-1-03: oklch(0.126 0.004 85);
-	--color-base-1-04: oklch(0.165 0.005 85);
-	--color-base-1-05: oklch(0.203 0.006 85);
-	--color-base-1-06: oklch(0.241 0.007 85);
-	--color-base-1-07: oklch(0.279 0.008 85);
-	--color-base-1-08: oklch(0.317 0.009 85);
-	--color-base-1-09: oklch(0.355 0.01 85);
-	--color-base-1-10: oklch(0.394 0.011 85);
-	--color-base-1-11: oklch(0.432 0.012 85);
+	--color-base-1-01: oklch(0.04 0.001 85);
+	--color-base-1-02: oklch(0.09 0.002 85);
+	--color-base-1-03: oklch(0.16 0.004 85);
+	--color-base-1-04: oklch(0.2 0.005 85);
+	--color-base-1-05: oklch(0.24 0.006 85);
+	--color-base-1-06: oklch(0.275 0.007 85);
+	--color-base-1-07: oklch(0.305 0.008 85);
+	--color-base-1-08: oklch(0.335 0.009 85);
+	--color-base-1-09: oklch(0.365 0.01 85);
+	--color-base-1-10: oklch(0.395 0.011 85);
+	--color-base-1-11: oklch(0.43 0.012 85);
 	--color-base-1-12: oklch(0.47 0.013 85);
 
 	--color-base-2-01: oklch(0.503 0.004 85);
@@ -223,7 +223,7 @@
 	--color-green-03: oklch(0.401 0.114 147);
 	--color-green-04: oklch(0.474 0.135 147);
 	--color-green-05: oklch(0.546 0.156 147);
-	--color-green-06: oklch(0.546 0.156 147);
+	--color-green-06: oklch(0.583 0.166 147);
 	--color-green-07: oklch(0.619 0.176 147);
 	--color-green-08: oklch(0.692 0.19 147);
 	--color-green-09: oklch(0.765 0.19 147);

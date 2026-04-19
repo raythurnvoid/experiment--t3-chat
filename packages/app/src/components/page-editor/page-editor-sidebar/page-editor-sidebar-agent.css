@@ -46,7 +46,8 @@
 
 	/* #region header tabs */
 	.PageEditorSidebarAgentHeaderTabs {
-		flex: 1;
+		flex: 1 0 auto;
+		min-width: max-content;
 
 		display: flex;
 		flex-direction: row;
@@ -57,23 +58,24 @@
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tabs-draggable {
+		flex: 0 0 auto;
+
 		display: flex;
 		flex-direction: row;
 		align-items: center;
 		gap: 6px;
-
-		min-width: 0;
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab {
+		flex: 1 0 140px;
+		min-width: 140px;
 		max-width: 200px;
+		grid-template-columns: 32px minmax(0, 1fr) 32px;
 	}
 
 	.PageEditorSidebarAgentHeaderTabs-tab-handle {
 		grid-row: 1;
 		grid-column: 1;
-
-		margin-right: 2px;
 
 		cursor: grab;
 
