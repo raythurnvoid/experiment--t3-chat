@@ -49,7 +49,16 @@ The shared catalog lives in [billing.ts](../../../packages/app/shared/billing.ts
 - `billing_get_recurring_credits_cents` returns the per-plan recurring credit amount for the monthly credits engine and the billing UI.
 - `billing_get_product_order`, `billing_compare_product_order`, and `billing_get_plan_change_kind` derive catalog ordering plus upgrade vs downgrade behavior from the canonical plan order.
 
-See [Glossary — shared/billing.ts](#glossary--sharedbillingts) for precise signatures and behavior.
+Server-side usage-event typing lives in [billing.ts](../../../packages/app/server/billing.ts), while queued ingestion lives in [billing.ts](../../../packages/app/convex/billing.ts).
+
+- `billing_POLAR_METER_EVENT` stores the single Polar meter event name, `press_usage_event`, used for both usage charges and credits.
+- `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `page_save`, `monthly_grant`, and `manual_credit`.
+- `billing_Event` is the only supported billing usage event shape. It mirrors Polar's event fields with `{ name, externalCustomerId, externalId, metadata }`, except `name` is the app event name; `ingest_events` rewrites that field to the single Polar meter event and stores the app event name in `metadata.name`.
+- `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
+- `billing_page_save_event_external_id`, `billing_monthly_grant_event_external_id`, and `billing_manual_credit_event_external_id` are the only supported helpers for usage-event `externalId` construction. They wrap the shared strict `create_composite_id` tuple helper; keep those billing helpers aligned with the canonical event-name prefixes.
+- `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `billing_Event[]` and always enqueues `ingest_events` on `billing_workpool_usage_event`, which uses the same long retry policy as cancellation (`10min` initial backoff, `1.2` base, unlimited attempts). The action is the only code path that should call Polar `eventsIngest`.
+
+See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
 
 ## Backend ownership
 
@@ -73,7 +82,7 @@ The monthly credits engine lives at the `// #region monthly credits` block in [b
 The Polar `customer.state_changed` webhook is the sole trigger for monthly grants; there is no cron-driven reconciliation pass. Trust the webhook to deliver every state change.
 
 - `handle_polar_customer_state_update` upserts `billing_usage_snapshots` and, when the webhook payload includes an active subscription, enqueues `grant_monthly_credits` on `billing_workpool_usage_event` with `userId`, `subscriptionId`, `productId`, and `periodStart` taken directly from the Polar payload.
-- `grant_monthly_credits` (`internalAction`) resolves the Polar product by `productId`, reads `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` ingests one negative-amount usage event (`billing_EVENTS.pressUsage` / `press_usage_event`) through Polar `eventsIngest` with `externalId` `monthly-grant:<userId>:<subscriptionId>:<periodStart>`. Polar's immutable usage event plus duplicate detection is the authority for whether that period was already granted.
+- `grant_monthly_credits` (`internalAction`) resolves the Polar product by `productId`, reads `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` queues one negative-amount `monthly_grant` event with `externalId` `monthly_grant:<userId>:<subscriptionId>:<periodStart>`. `ingest_events` performs the Polar `eventsIngest` call under `billing_POLAR_METER_EVENT` / `press_usage_event`. Polar's immutable usage event plus duplicate detection is the authority for whether that period was already granted.
 - Repeated `customer.state_changed` deliveries for the same `(user, subscription, period)` may enqueue the same action multiple times. Treat this as intentional: Polar reports the later ingests as duplicates, so the billing ledger stays idempotent without any local snapshot cursor.
 
 See [Glossary — monthly credits](#glossary--monthly-credits).
@@ -119,6 +128,44 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 - **Module:** [packages/app/shared/billing.ts](../../../packages/app/shared/billing.ts)
 - **Signature:** `(productName: string) => string`
 - **Role:** Returns `displayName` from `billing_PRODUCTS` when present, otherwise the raw `productName`. (Useful for UI; not always cited above but part of the same module.)
+
+### Glossary — server/billing.ts
+
+#### `billing_POLAR_METER_EVENT`
+
+- **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
+- **Kind:** `const` string, currently `press_usage_event`.
+- **Role:** The single Polar meter event name used for all usage charges and credits. App event kinds stay in `billing_Event.name` until `ingest_events` moves them into `metadata.name`.
+
+#### `billing_Event`
+
+- **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
+- **Kind:** inferred type alias from `FunctionArgs<typeof internal.billing.ingest_events>["events"][number]`.
+- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`page_save`, `monthly_grant`, `manual_credit`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, `externalId`, and event-specific `metadata`.
+
+#### `billing_event`
+
+- **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
+- **Signature:** `<const T extends billing_Event>(event: T) => T`
+- **Role:** Typed identity helper that checks a literal event against `billing_Event` while preserving the exact discriminated variant. It is not a full builder; call sites construct metadata explicitly and use the external-id helpers for `externalId`.
+
+#### `billing_page_save_event_external_id`
+
+- **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
+- **Signature:** `(args: { userId, pageId, newSequence }) => string`
+- **Role:** Builds `page_save:<userId>:<pageId>:<newSequence>` for page-save idempotency.
+
+#### `billing_monthly_grant_event_external_id`
+
+- **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
+- **Signature:** `(args: { userId, subscriptionId, periodStart }) => string`
+- **Role:** Builds `monthly_grant:<userId>:<subscriptionId>:<periodStart>` for recurring-credit idempotency.
+
+#### `billing_manual_credit_event_external_id`
+
+- **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
+- **Signature:** `(args: { userId, timestamp }) => string`
+- **Role:** Builds `manual_credit:<userId>:<timestamp>` for manually granted credit events.
 
 ### Glossary — convex/billing.ts
 
@@ -179,13 +226,27 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 - **Args:** `{ payload }` (Polar `customer.state_changed` webhook shape)
 - **Role:** Maps webhook customer to Convex `userId`, updates `billing_usage_snapshots` (subscription + meter snapshot), then enqueues `grant_monthly_credits` directly from the webhook payload when an active subscription is present. Sole trigger for monthly grants.
 
+### Glossary — event ingestion
+
+#### `billing_ingest_events`
+
+- **Kind:** exported async helper in [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
+- **Signature:** `(ctx: ActionCtx | MutationCtx, { events: billing_Event[] }) => Promise<WorkId>`
+- **Role:** Mandatory local entrypoint for emitting billing usage events. It enqueues `internal.billing.ingest_events` on `billing_workpool_usage_event` so Polar ingest failures use the long retry policy before the actual API call runs.
+
+#### `ingest_events`
+
+- **Kind:** `internalAction`
+- **Args:** `{ events: billing_Event[] }`
+- **Role:** Performs the actual Polar `eventsIngest` call outside `NODE_ENV === "test"`. For each app event, passes through `externalCustomerId`, `externalId`, and metadata, rewrites Polar `name` to `billing_POLAR_METER_EVENT`, and stores the app event name in `metadata.name`.
+
 ### Glossary — monthly credits
 
 #### `grant_monthly_credits`
 
 - **Kind:** `internalAction`
 - **Args:** `{ userId, subscriptionId, productId, periodStart }`
-- **Role:** Performs Polar usage ingest for the recurring credit (negative amount). The ingest `externalId` plus Polar duplicate detection is the authority for whether that period was already granted.
+- **Role:** Resolves the product, computes the recurring credit amount, and queues a `monthly_grant` billing event with a negative amount when credits are due. The event `externalId` plus Polar duplicate detection inside `ingest_events` is the authority for whether that period was already granted.
 
 ## Auth bootstrap trigger
 
@@ -238,6 +299,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Treat Polar benefit descriptions as exact identifiers in app code: `Free Included Usage`, `Free Usage`, and `Pro Included Usage`. These names remain stable in the catalog because tests and historical webhook payloads still reference them.
 - Treat the Polar meter display name `Press app usage` as the canonical usage meter name in the catalog.
 - Treat the Polar usage event name `press_usage_event` as the canonical event name for usage ingestion.
+- Treat `page_save`, `monthly_grant`, and `manual_credit` as the canonical usage event names. Usage-event `externalId` prefixes must follow those names exactly (`page_save:...`, `monthly_grant:...`, `manual_credit:...`).
 - Keep `meter_credit` benefits detached from every Polar product. The Convex monthly credits engine is the only code path that grants recurring credits; running both would double-grant.
 - Prefer Polar-configured prices over hardcoded monetary logic in the repo. The code usually reads plan names and prices from synced Polar products. Per-plan recurring credit amounts are the exception: they live in `billing_PRODUCTS.<plan>.recurringCreditsCents` and are applied by the monthly credits engine.
 
