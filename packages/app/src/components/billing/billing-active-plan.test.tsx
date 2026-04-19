@@ -28,23 +28,33 @@ function createFreeProduct() {
 				recurringInterval: "month",
 			},
 		],
-		benefits: [
+		benefits: [],
+	} as app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
+}
+
+function createPayAsYouGoProduct() {
+	return {
+		id: "prod_payg",
+		name: "Pay As You Go",
+		isArchived: false,
+		recurringInterval: "month",
+		prices: [
 			{
-				id: "benefit_free",
-				type: "meter_credit",
-				description: "Free Included Usage",
-				properties: {
-					units: 1000,
-				},
+				id: "price_payg",
+				amountType: "metered_unit",
+				isArchived: false,
+				productId: "prod_payg",
+				priceCurrency: "eur",
+				recurringInterval: "month",
 			},
 		],
 	} as app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
 }
 
-function createSubscription() {
+function createSubscription(args?: { productId?: string }) {
 	return {
 		id: "sub_free",
-		productId: "prod_free",
+		productId: args?.productId ?? "prod_free",
 		status: "active",
 		cancelAtPeriodEnd: false,
 		currentPeriodEnd: "2026-02-01T00:00:00.000Z",
@@ -59,7 +69,7 @@ describe("BillingActivePlan", () => {
 		cleanup();
 	});
 
-	test("renders usage for the Free plan and keeps negative balances visible", () => {
+	test("renders Free without requiring a usage meter", () => {
 		render(
 			<BillingActivePlan
 				product={createFreeProduct()}
@@ -75,32 +85,25 @@ describe("BillingActivePlan", () => {
 							currentPeriodStart: "2026-01-01T00:00:00.000Z",
 							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
 						},
-						meter: {
-							id: "meter_press_usage",
-							consumedUnits: 1250,
-							creditedUnits: 1000,
-							balance: -250,
-							amountDueCents: 0,
-						},
+						meter: null,
 						lastSyncedAt: Date.parse("2026-01-15T00:00:00.000Z"),
 					} as app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>
 				}
 			/>,
 		);
 
-		expect(screen.getByText("Due")).not.toBeNull();
-		expect(screen.getByText(/€0\.00/)).not.toBeNull();
-		expect(screen.getByText(/-€2\.50|€-2\.50/)).not.toBeNull();
+		expect(screen.queryByText("Due")).toBeNull();
+		expect(screen.getByText("Includes €10.00 of usage per month")).not.toBeNull();
 	});
 
-	test("throws when the active plan is missing a matching usage snapshot", () => {
+	test("throws when a metered active plan is missing a matching usage snapshot", () => {
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		expect(() => {
 			render(
 				<BillingActivePlan
-					product={createFreeProduct()}
-					subscription={createSubscription()}
+					product={createPayAsYouGoProduct()}
+					subscription={createSubscription({ productId: "prod_payg" })}
 					usage={null}
 				/>,
 			);

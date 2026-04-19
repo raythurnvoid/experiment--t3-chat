@@ -254,7 +254,7 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const pendingUpdateText = get_pending_update_text(subscription, scheduledChangeProductName);
 	const title = billing_get_product_display_name(product.name);
 
-	const shouldShowUsage = meteredPrice != null || product.name === "Free";
+	const shouldShowUsage = meteredPrice != null;
 	const meteredUsageSnapshot = shouldShowUsage
 		? ((/* iife */) => {
 				if (

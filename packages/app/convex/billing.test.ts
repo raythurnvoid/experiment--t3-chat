@@ -957,12 +957,14 @@ describe("billing bootstrap_free_subscription", () => {
 		const result = await t.action(internal.billing.bootstrap_free_subscription, {
 			userId,
 			email: "bootstrap-free@test.local",
+			name: "Bootstrap Free User",
 		});
 
 		expect(result).toBeNull();
 		expect(customersCreateMock).toHaveBeenCalledWith(expect.anything(), {
 			externalId: userId,
 			email: "bootstrap-free@test.local",
+			name: "Bootstrap Free User",
 		});
 		expect(subscriptionsCreateMock).toHaveBeenCalledWith(expect.anything(), {
 			customerId: "cust_bootstrap_free",
@@ -998,6 +1000,7 @@ describe("billing bootstrap_free_subscription", () => {
 		const result = await t.action(internal.billing.bootstrap_free_subscription, {
 			userId,
 			email: "bootstrap-existing@test.local",
+			name: "Bootstrap Existing User",
 		});
 
 		expect(result).toBeNull();
@@ -1023,6 +1026,7 @@ describe("billing bootstrap_free_subscription", () => {
 			t.action(internal.billing.bootstrap_free_subscription, {
 				userId,
 				email: "bootstrap-retry@test.local",
+				name: "Bootstrap Retry User",
 			}),
 		).rejects.toThrow("Failed to bootstrap Free subscription");
 		expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -1123,6 +1127,68 @@ describe("billing generate_checkout_link auth", () => {
 });
 
 describe("handle_polar_customer_state_update", () => {
+	test("treats deleted customer state changes as customer cleanup", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_deleted_customer_state" as never);
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_deleted_customer_state",
+			subscriptionId: "sub_deleted_customer_state",
+			polarProductId: "prod_deleted_customer_state",
+		});
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_snapshots", {
+				userId,
+				polarCustomerId: "cust_deleted_customer_state",
+				subscription: {
+					id: "sub_deleted_customer_state",
+					productId: "prod_deleted_customer_state",
+					currency: "eur",
+					currentPeriodStart: "2026-04-01T00:00:00.000Z",
+					currentPeriodEnd: "2026-05-01T00:00:00.000Z",
+				},
+				meter: null,
+				lastSyncedAt: Date.parse("2026-04-01T00:00:00.000Z"),
+			});
+		});
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-19T20:49:20.577120Z",
+				data: {
+					id: "cust_deleted_customer_state",
+					external_id: null,
+					deleted_at: "2026-04-19T20:49:18.435490Z",
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
+		const customer = await t.query(components.polar.lib.getCustomerByUserId, {
+			userId,
+		});
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		const subscriptions = await t.query(components.polar.lib.listCustomerSubscriptions, {
+			customerId: "cust_deleted_customer_state",
+		});
+
+		expect(customer).toBeNull();
+		expect(snapshot).toBeNull();
+		expect(subscriptions).toEqual([]);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+
 	test("writes the usage snapshot directly from the active subscription meter in the webhook payload", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
@@ -1269,13 +1335,16 @@ describe("handle_polar_customer_state_update", () => {
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
-	test("writes the usage snapshot from the active customer meter for credits-only Free plans", async () => {
+	test("writes the subscription snapshot without a meter for benefit-detached Free plans", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_free_product",
+			benefits: [],
 		});
-		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_refresh_snapshot_free" as never);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_refresh_snapshot_free" as never);
 
 		await t.mutation(internal.billing.handle_polar_customer_state_update, {
 			payload: {
@@ -1315,49 +1384,64 @@ describe("handle_polar_customer_state_update", () => {
 
 		expect(snapshot).not.toBeNull();
 		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_free");
-		expect(snapshot!.meter).toEqual({
-			id: "meter_press_usage",
-			consumedUnits: 240,
-			creditedUnits: 1000,
-			balance: 760,
-			amountDueCents: 0,
+		expect(snapshot!.meter).toBeNull();
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_refresh_snapshot_free",
+			productId: polarProductId,
+			periodStart: "2026-04-13T03:20:38.364476Z",
 		});
 	});
 
-	test("throws when no usage meter is resolvable for an active subscription", async () => {
+	test("writes the subscription snapshot and enqueues credits when no usage meter is resolvable yet", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_missing_meter_product",
+			benefits: [],
 		});
 		const enqueueActionSpy = vi
 			.spyOn(Workpool.prototype, "enqueueAction")
 			.mockResolvedValue("work_refresh_snapshot_missing_meter" as never);
 
-		await expect(
-			t.mutation(internal.billing.handle_polar_customer_state_update, {
-				payload: {
-					type: "customer.state_changed",
-					timestamp: "2026-04-13T03:20:41.064Z",
-					data: {
-						id: "cust_refresh_snapshot_missing_meter",
-						external_id: userId,
-						active_subscriptions: [
-							{
-								id: "sub_refresh_snapshot_missing_meter",
-								product_id: polarProductId,
-								currency: "eur",
-								current_period_start: "2026-04-13T03:20:38.364476Z",
-								current_period_end: "2026-05-13T03:20:38.364476Z",
-								meters: [],
-							},
-						],
-						active_meters: [],
-					},
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-13T03:20:41.064Z",
+				data: {
+					id: "cust_refresh_snapshot_missing_meter",
+					external_id: userId,
+					active_subscriptions: [
+						{
+							id: "sub_refresh_snapshot_missing_meter",
+							product_id: polarProductId,
+							currency: "eur",
+							current_period_start: "2026-04-13T03:20:38.364476Z",
+							current_period_end: "2026-05-13T03:20:38.364476Z",
+							meters: [],
+						},
+					],
+					active_meters: [],
 				},
-			}),
-		).rejects.toThrow("Failed to resolve usage meter for active subscription");
-		expect(enqueueActionSpy).not.toHaveBeenCalled();
+			},
+		});
+
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		expect(snapshot).not.toBeNull();
+		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_missing_meter");
+		expect(snapshot!.meter).toBeNull();
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+			userId,
+			subscriptionId: "sub_refresh_snapshot_missing_meter",
+			productId: polarProductId,
+			periodStart: "2026-04-13T03:20:38.364476Z",
+		});
 	});
 });
 

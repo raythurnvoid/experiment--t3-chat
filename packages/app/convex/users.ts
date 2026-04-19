@@ -954,11 +954,12 @@ export function users_http_routes(router: RouterForConvexModules) {
 								}
 							}
 
+							const displayName = identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId);
 							const resolveUserResult = await ctx.runMutation(internal.users.resolve_user, {
 								clerkUserId: clerkUserId,
 								email: identity.email ?? "",
 								anonymousUserToken: body?.anonymousUserToken,
-								displayName: identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId),
+								displayName,
 							});
 
 							if (resolveUserResult._nay) {
@@ -1000,6 +1001,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 							await billing_enqueue_free_subscription_bootstrap(ctx, {
 								userId: resolveUserResult._yay.userId,
 								email: identity.email,
+								name: displayName,
 							}).catch((error) => {
 								console.error("Failed to enqueue Free subscription bootstrap", {
 									error,

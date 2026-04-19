@@ -73,7 +73,7 @@ function createSubscription() {
 	} as NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>>;
 }
 
-function createUsageSnapshot(args?: { subscriptionId?: string; productId?: string }) {
+function createUsageSnapshot(args?: { subscriptionId?: string; productId?: string; meter?: null }) {
 	return {
 		userId: "user_free",
 		polarCustomerId: "cust_free",
@@ -84,13 +84,16 @@ function createUsageSnapshot(args?: { subscriptionId?: string; productId?: strin
 			currentPeriodStart: "2026-01-01T00:00:00.000Z",
 			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
 		},
-		meter: {
-			id: "meter_press_usage",
-			consumedUnits: 100,
-			creditedUnits: 1000,
-			balance: 900,
-			amountDueCents: 0,
-		},
+		meter:
+			args?.meter === null
+				? null
+				: {
+						id: "meter_press_usage",
+						consumedUnits: 100,
+						creditedUnits: 1000,
+						balance: 900,
+						amountDueCents: 0,
+					},
 		lastSyncedAt: Date.parse("2026-01-15T00:00:00.000Z"),
 	} as NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>>;
 }
@@ -158,6 +161,16 @@ describe("RootLayout", () => {
 
 	test("renders the app once the active subscription usage snapshot is ready", () => {
 		mockQueryResults.push(createSubscription(), createUsageSnapshot());
+
+		const RootLayout = Route.options.component as () => JSX.Element;
+		render(<RootLayout />);
+
+		expect(screen.getByText("App ready")).not.toBeNull();
+		expect(screen.queryByText("Preparing workspace")).toBeNull();
+	});
+
+	test("renders the app once a Free subscription snapshot is ready without a meter", () => {
+		mockQueryResults.push(createSubscription(), createUsageSnapshot({ meter: null }));
 
 		const RootLayout = Route.options.component as () => JSX.Element;
 		render(<RootLayout />);

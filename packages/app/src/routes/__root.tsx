@@ -49,7 +49,6 @@ function billing_is_loading(args: {
 
 	return (
 		!args.usage?.subscription ||
-		!args.usage.meter ||
 		args.usage.subscription.id !== args.subscription.id ||
 		args.usage.subscription.productId !== args.subscription.productId
 	);

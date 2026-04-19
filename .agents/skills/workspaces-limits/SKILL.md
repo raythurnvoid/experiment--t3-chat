@@ -24,6 +24,7 @@ description: Counter-based per-user and per-workspace creation limits for extra 
 	- recomputes `usedCount` from live rows
 	- substitutes code `maxCount` defaults when a limit doc is missing
 - Missing required limit docs should fail intentionally via `should_never_happen(...)` so rollout bugs stay visible.
+- Public capability queries may return `null` for stale identities whose `users` row is tombstoned or already purged during account deletion. Do not treat that as missing limit-doc drift; live users with missing limit docs should still fail intentionally.
 
 # Schema
 

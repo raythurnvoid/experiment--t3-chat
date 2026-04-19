@@ -2442,6 +2442,71 @@ describe("list", () => {
 });
 
 describe("get_user_limit", () => {
+	test("returns null for stale identities after the user row is purged", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => {
+			const id = await ctx.db.insert("users", { clerkUserId: "clerk-user-limit-purged" });
+			await ctx.db.delete(id);
+			return id;
+		});
+		const asDeletedUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Deleted User",
+			email: "workspaces-test-user@test.local",
+		});
+
+		const capability = await asDeletedUser.query(api.limits.get_user_limit, {
+			userId,
+			limitName: "extra_workspaces",
+		});
+
+		expect(capability).toBeNull();
+	});
+
+	test("returns null for stale identities after the user is tombstoned", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => {
+			return await ctx.db.insert("users", {
+				clerkUserId: null,
+				deletedAt: 123_456,
+			});
+		});
+		const asDeletedUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Deleted User",
+			email: "workspaces-test-user@test.local",
+		});
+
+		const capability = await asDeletedUser.query(api.limits.get_user_limit, {
+			userId,
+			limitName: "extra_workspaces",
+		});
+
+		expect(capability).toBeNull();
+	});
+
+	test("still throws when a live user is missing the required limit doc", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => {
+			return await ctx.db.insert("users", { clerkUserId: "clerk-user-limit-missing-doc" });
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Live User",
+			email: "workspaces-test-user@test.local",
+		});
+
+		await expect(
+			asUser.query(api.limits.get_user_limit, {
+				userId,
+				limitName: "extra_workspaces",
+			}),
+		).rejects.toThrow("Missing user limit doc");
+	});
+
 	test("counts only owned non-default workspaces for workspace-create capability", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>

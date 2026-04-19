@@ -57,7 +57,7 @@ export const billing = new Polar<DataModel>(components.polar, {
 			throw convex_error({ message: "Billing requires a signed-in account" });
 		}
 
-		return { userId: user.id, email: user.email };
+		return { userId: user.id, email: user.email, name: user.name };
 	},
 	server: POLAR_SERVER,
 });
@@ -87,9 +87,15 @@ export async function billing_action_delete_polar_customer_by_user_id(
 		return Result({ _yay: null });
 	}
 
+	// Keep the current hard-delete path on Polar's non-anonymizing delete flow.
+	// `anonymize: false` emits `customer.deleted`; `anonymize: true` scrubs PII
+	// by updating the customer with `deleted_at`, so Polar emits `customer.updated`
+	// plus `customer.state_changed` instead. If GDPR erasure becomes required,
+	// add a dedicated deletion flow that opts into `anonymize: true` and handles
+	// cleanup from the `deleted_at` webhook signal.
 	const deleteResult = await customersDelete(billing_polar_client(), {
 		id: customer.id,
-		anonymize: true,
+		anonymize: false,
 	});
 	if (!deleteResult.ok && !(deleteResult.error instanceof ResourceNotFound)) {
 		return Result({
@@ -211,6 +217,7 @@ export const handle_polar_customer_state_update = internalMutation({
 			data: {
 				id: string;
 				external_id: string | null;
+				deleted_at?: string | null;
 				active_subscriptions: Array<{
 					id: string;
 					product_id: string;
@@ -232,6 +239,32 @@ export const handle_polar_customer_state_update = internalMutation({
 				}>;
 			};
 		};
+		if (payload.data.deleted_at) {
+			// Treat deleted_at as the deletion signal because Polar anonymized
+			// customer deletes may arrive as customer.updated/state_changed.
+			await ctx.runMutation(components.polar.lib.deleteCustomerByPolarCustomerId, {
+				polarCustomerId: payload.data.id,
+			});
+
+			const userId = payload.data.external_id ? ctx.db.normalizeId("users", payload.data.external_id) : null;
+			// Use polarCustomerId when external_id is absent because anonymization can
+			// clear the app-owned customer reference before this webhook arrives.
+			const usageSnapshots = userId
+				? await ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_userId", (q) => q.eq("userId", userId))
+						.collect()
+				: await ctx.db
+						.query("billing_usage_snapshots")
+						.filter((q) => q.eq(q.field("polarCustomerId"), payload.data.id))
+						.collect();
+			for (const usageSnapshot of usageSnapshots) {
+				await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
+			}
+
+			return null;
+		}
+
 		const userId = payload.data.external_id as Id<"users">;
 		if (payload.data.active_subscriptions.length > 1) {
 			throw should_never_happen("Multiple active subscriptions are not supported", {
@@ -247,12 +280,15 @@ export const handle_polar_customer_state_update = internalMutation({
 					id: subscription.product_id,
 				})
 			: null;
+		const isFreeSubscription = product?.name === billing_PRODUCTS.Free.name;
 		const meteredPrice =
-			product?.prices?.find((price) => {
-				return !price.isArchived && price.amountType === "metered_unit";
-			}) ?? null;
+			isFreeSubscription === false
+				? (product?.prices?.find((price) => {
+						return !price.isArchived && price.amountType === "metered_unit";
+					}) ?? null)
+				: null;
 		const creditBenefit =
-			meteredPrice == null
+			meteredPrice == null && !isFreeSubscription
 				? (product?.benefits?.find((benefit) => {
 						return benefit.type === "meter_credit";
 					}) ?? null)
@@ -264,7 +300,9 @@ export const handle_polar_customer_state_update = internalMutation({
 			typeof creditBenefit.properties.meterId === "string"
 				? creditBenefit.properties.meterId
 				: null;
-		const meterRow = subscription?.meters[0] ?? null;
+		// Free subscriptions intentionally have no product/subscription meter.
+		// Keep their subscription snapshot, but leave meter state absent.
+		const meterRow = isFreeSubscription ? null : (subscription?.meters[0] ?? null);
 		const activeMeter = meterRow
 			? (payload.data.active_meters.find((meter) => meter.meter_id === meterRow.meter_id) ?? null)
 			: creditBenefitMeterId
@@ -278,9 +316,9 @@ export const handle_polar_customer_state_update = internalMutation({
 					balance: activeMeter?.balance ?? meterRow.credited_units - meterRow.consumed_units,
 					amountDueCents: meterRow.amount,
 				}
-			: creditBenefitMeterId && activeMeter
+			: activeMeter
 				? {
-						id: creditBenefitMeterId,
+						id: activeMeter.meter_id,
 						consumedUnits: activeMeter.consumed_units,
 						creditedUnits: activeMeter.credited_units,
 						balance: activeMeter.balance,
@@ -288,7 +326,7 @@ export const handle_polar_customer_state_update = internalMutation({
 					}
 				: null;
 
-		if (subscription && usageMeter == null) {
+		if (subscription && usageMeter == null && !isFreeSubscription) {
 			throw should_never_happen("Failed to resolve usage meter for active subscription", {
 				activeMeters: payload.data.active_meters,
 				customerId: payload.data.id,
@@ -401,6 +439,7 @@ export const generate_checkout_link = action({
 				productIds: [product.id],
 				userId: user.id,
 				email: user.email,
+				name: user.name,
 				subscriptionId: args.subscriptionId,
 				origin: args.origin,
 				successUrl: args.successUrl,
@@ -679,6 +718,7 @@ export async function billing_enqueue_free_subscription_bootstrap(
 	args: {
 		userId: Id<"users">;
 		email: string;
+		name: string;
 	},
 ) {
 	return await billing_workpool_bootstrap.enqueueAction(ctx, internal.billing.bootstrap_free_subscription, args);
@@ -688,6 +728,7 @@ export const bootstrap_free_subscription = internalAction({
 	args: {
 		userId: v.id("users"),
 		email: v.string(),
+		name: v.string(),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -700,6 +741,7 @@ export const bootstrap_free_subscription = internalAction({
 				const createCustomerResult = await customersCreate(billing.polar, {
 					externalId: args.userId,
 					email: args.email,
+					name: args.name,
 				});
 				if (!createCustomerResult.ok) {
 					throw convex_error({
@@ -707,6 +749,7 @@ export const bootstrap_free_subscription = internalAction({
 						cause: createCustomerResult.error,
 						data: {
 							email: args.email,
+							name: args.name,
 							userId: args.userId,
 						},
 					});

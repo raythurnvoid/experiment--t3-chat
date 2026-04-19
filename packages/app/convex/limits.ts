@@ -37,6 +37,14 @@ export const get_user_limit = query({
 			return null;
 		}
 
+		const userDoc = await ctx.db.get("users", args.userId);
+		if (!userDoc || userDoc.deletedAt != null) {
+			// A live browser tab can keep a valid Convex identity briefly after
+			// account deletion removes the user's limit rows. Treat that as a
+			// stale subscription, not as limit counter drift.
+			return null;
+		}
+
 		const limitDefinition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")

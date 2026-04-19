@@ -282,6 +282,7 @@ describe("/api/auth/resolve-user", () => {
 			expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.bootstrap_free_subscription, {
 				userId: body._yay.userId,
 				email: "resolve-free-user@test.local",
+				name: "Resolve Free User",
 			});
 
 			const [customer, subscription, user] = await Promise.all([
@@ -1513,7 +1514,7 @@ describe("hard_delete_user_now", () => {
 			expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), "work_hard_delete_delete_polar_existing");
 			expect(customersDeleteMock).toHaveBeenCalledWith(expect.anything(), {
 				id: "cust_users_hard_delete_delete_polar",
-				anonymize: true,
+				anonymize: false,
 			});
 			expect(after.user).toBeNull();
 			expect(after.customer?.id).toBe("cust_users_hard_delete_delete_polar");
@@ -1550,7 +1551,7 @@ describe("hard_delete_user_now", () => {
 
 			expect(webhookResponse.status).toBe(202);
 			expect(afterWebhook.customer).toBeNull();
-			expect(afterWebhook.customerSubscriptions).toHaveLength(1);
+			expect(afterWebhook.customerSubscriptions).toHaveLength(0);
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2001,7 +2002,7 @@ describe("hard_delete_user_now", () => {
 			expect(fetchSpy).toHaveBeenCalledTimes(1);
 			expect(customersDeleteMock).toHaveBeenCalledWith(expect.anything(), {
 				id: "cust_users_hard_delete_delete_polar_failure",
-				anonymize: true,
+				anonymize: false,
 			});
 			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.requests).toHaveLength(0);
