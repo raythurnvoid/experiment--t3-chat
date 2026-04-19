@@ -13,6 +13,6 @@ app.use(migrations);
 app.use(workpool, { name: "billing_workpool_bootstrap" });
 app.use(workpool, { name: "billing_workpool_cancellation" });
 app.use(workpool, { name: "billing_workpool_usage_event" });
-app.use(rateLimiter);
+app.use(rateLimiter, { name: "rate_limiter" });
 
 export default app;

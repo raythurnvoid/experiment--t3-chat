@@ -79,6 +79,7 @@ export default defineConfig({
 			// Exclude vendored packages from pre-bundling so they're treated as source files
 			"@convex-dev/presence",
 			"@convex-dev/polar",
+			"@convex-dev/rate-limiter",
 			"@ariakit/react",
 			"@ariakit/react-core",
 

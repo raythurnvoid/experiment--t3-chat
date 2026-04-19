@@ -23,6 +23,19 @@ const convex_test_modules = import.meta.glob("./**/*.ts");
 
 export function test_convex() {
 	const t = convexTest(schema, convex_test_modules);
+	const withIdentity = t.withIdentity.bind(t);
+	t.withIdentity = ((identity) => {
+		// Use realistic Clerk identities by default; tests that cover the missing
+		// email invariant opt out explicitly with `email: undefined`.
+		if (identity.issuer === "https://clerk.test" && !("email" in identity)) {
+			return withIdentity({
+				...identity,
+				email: "test-user@example.com",
+			});
+		}
+
+		return withIdentity(identity);
+	}) as typeof t.withIdentity;
 	t.registerComponent(
 		"polar",
 		polar_test.schema as unknown as Parameters<typeof t.registerComponent>[1],
@@ -32,7 +45,7 @@ export function test_convex() {
 	workpool_test.register(t, "billing_workpool_bootstrap");
 	workpool_test.register(t, "billing_workpool_cancellation");
 	workpool_test.register(t, "billing_workpool_usage_event");
-	rate_limiter_test.register(t);
+	rate_limiter_test.register(t, "rate_limiter");
 	return t;
 }
 

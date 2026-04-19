@@ -13,9 +13,11 @@ Prefer importing vendored TypeScript source files instead of compiled JavaScript
 
 Use these existing vendors as the local pattern:
 
+- `../../../packages/app/vendor/polar` — closest reference for the fork-based remote layout (`origin` = `raythurnvoid/polar` fork, `upstream` = `get-convex/polar`, branch `rt0-updates`)
 - `../../../packages/app/vendor/novel`
 - `../../../packages/app/vendor/liveblocks`
 - `../../../packages/app/vendor/headless-tree`
+- `../../../.gitmodules`
 - `../../../pnpm-workspace.yaml`
 - `../../../packages/app/package.json`
 - `../../../packages/app/vite.config.ts`
@@ -24,29 +26,65 @@ If the repo should be reference-only and not part of the runtime workspace, put 
 
 # Workflow
 
-## 1. Add the repository as a submodule
+## 1. Fork the upstream repository on GitHub first
 
-Add the new repository under `packages/app/vendor/<name>`.
+Always fork the upstream repository **before** adding it as a submodule. The submodule MUST point at the fork as `origin`, not at the original upstream. We routinely commit local patches on a `rt0-updates` branch and need push access.
+
+Use the `gh` CLI to create the fork without cloning (the clone happens via `git submodule add` in the next step).
+
+Before forking:
+
+- Run `gh auth status` and confirm the active account is the one that should own the fork (typically `raythurnvoid` for this repo, matching every existing vendor under `packages/app/vendor/`).
+- If the active `gh` account is wrong, stop and ask the user to switch accounts (`gh auth switch`) before continuing. Do not silently fork into the wrong account.
 
 Example:
 
 ```bash
-git submodule add https://github.com/remix-run/remix.git packages/app/vendor/remix
+gh repo fork get-convex/rate-limiter --clone=false --remote=false
 ```
 
-## 2. Add an upstream remote and a local patch branch
+This produces a fork at `https://github.com/<your-account>/<repo>`. Use that URL as `origin` in the next step.
 
-Inside the vendored repo, add the canonical upstream remote if needed and create a local branch for app-specific edits.
+If a fork already exists for the active account, `gh repo fork` is idempotent and will reuse it.
+
+## 2. Add the fork as a submodule
+
+Add the new repository under `packages/app/vendor/<name>`, using the **fork URL** (not the upstream URL) so `origin` resolves to the fork.
 
 Example:
 
 ```bash
-cd packages/app/vendor/remix
-git remote add upstream https://github.com/remix-run/remix.git
+git submodule add https://github.com/raythurnvoid/rate-limiter.git packages/app/vendor/rate-limiter
+```
+
+## 3. Add the upstream remote and a local patch branch
+
+Inside the vendored repo, add the canonical upstream remote and create the local patch branch.
+
+The convention in this repo:
+
+- `origin` → the fork (already set by `git submodule add`)
+- `upstream` → the original third-party repository
+- working branch → `rt0-updates`
+
+Example:
+
+```bash
+cd packages/app/vendor/rate-limiter
+git remote add upstream https://github.com/get-convex/rate-limiter.git
+git fetch upstream
 git checkout -b rt0-updates
+git push -u origin rt0-updates
 ```
 
-## 3. Register vendored packages in `pnpm-workspace.yaml`
+Verify with `git remote -v`; the result should look like the existing `polar` vendor:
+
+```
+origin    https://github.com/raythurnvoid/<repo> (fetch/push)
+upstream  https://github.com/<original-owner>/<repo>.git (fetch/push)
+```
+
+## 4. Register vendored packages in `pnpm-workspace.yaml`
 
 Add package globs for the vendored repo so pnpm treats it as part of the monorepo workspace.
 
@@ -65,7 +103,7 @@ packages:
   - "packages/app/vendor/presence"
 ```
 
-## 4. Normalize the vendored repo’s root workspace config
+## 5. Normalize the vendored repo’s root workspace config
 
 If the vendored repository has its own workspace manager config that conflicts with the root pnpm workspace, remove or adapt it.
 
@@ -74,7 +112,7 @@ Common case:
 - Remove a root `workspaces` field from the vendored repo’s `package.json`.
 - Keep package-manager-specific settings that are still needed.
 
-## 5. Point vendored packages at source files
+## 6. Point vendored packages at source files
 
 For packages you want to edit locally, expose their source entrypoints directly from `package.json`.
 
@@ -106,7 +144,7 @@ Example:
 
 Only do this for packages that the app should consume as source. If a vendored package still needs a build artifact boundary, preserve that boundary.
 
-## 6. Switch the app dependency to the workspace package
+## 7. Switch the app dependency to the workspace package
 
 Update `../../../packages/app/package.json` so the app consumes the vendored package through pnpm workspace resolution.
 
@@ -120,7 +158,7 @@ Example:
 }
 ```
 
-## 7. Exclude the vendored package from Vite prebundling
+## 8. Exclude the vendored package from Vite prebundling
 
 Update `../../../packages/app/vite.config.ts` so Vite does not prebundle the vendored dependency as opaque external code.
 
@@ -142,16 +180,25 @@ This keeps the package treated as source, which improves:
 - TypeScript resolution
 - HMR/debug iteration
 
-## 8. Verify `.gitmodules`
+## 9. Verify `.gitmodules`
 
-Make sure the submodule entry exists and matches the vendored path.
+Make sure the submodule entry exists, matches the vendored path, points at the **fork URL**, and pins `branch = rt0-updates` so cloning the monorepo checks out the patched branch by default.
 
-Example:
+Match the existing `polar` vendor entry:
 
 ```ini
-[submodule "remix"]
-	path = packages/app/vendor/remix
-	url = https://github.com/remix-run/remix.git
+[submodule "packages/app/vendor/rate-limiter"]
+	path = packages/app/vendor/rate-limiter
+	url = https://github.com/raythurnvoid/rate-limiter
+	branch = rt0-updates
+```
+
+If a previous attempt added a wrong URL (for example, the upstream URL instead of the fork URL), fix `.gitmodules`, then run:
+
+```bash
+git submodule sync packages/app/vendor/<name>
+cd packages/app/vendor/<name>
+git remote set-url origin https://github.com/raythurnvoid/<repo>.git
 ```
 
 # Result

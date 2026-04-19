@@ -259,7 +259,6 @@ Avoid explicitly annotating function return types; prefer TypeScript's inferred 
 
 Exceptions (add an explicit return type when it helps):
 
-- Exported/public API functions where the return type is part of the contract
 - When inference is unstable/too-wide and a return annotation prevents regressions
 
 ## TypeScript exports: export only public API

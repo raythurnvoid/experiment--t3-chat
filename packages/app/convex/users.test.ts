@@ -368,6 +368,7 @@ describe("/api/auth/resolve-user", () => {
 				issuer: "https://clerk.test",
 				subject: "clerk-user-resolve-missing-email",
 				name: "Resolve Missing Email User",
+				email: undefined,
 			});
 
 			const response = await asUser.fetch("/api/auth/resolve-user", {
