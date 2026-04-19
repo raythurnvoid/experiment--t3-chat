@@ -132,6 +132,7 @@ Internal mutation behavior:
   - re-link the new Clerk user id
   - reactivate memberships
   - remove the user-scope deletion request
+  - return a restore marker so `/api/auth/resolve-user` can ask billing bootstrap to restore any Polar subscription still pending period-end cancellation
 - If a different live user already owns the same normalized email:
   - return a recoverable conflict from `internal.users.resolve_user`
   - the HTTP route surfaces that conflict as `400`
@@ -198,7 +199,7 @@ User-account deletion is implemented across [users.ts](../../../packages/app/con
 - `users.hard_delete_user_now` is the direct admin path for immediate local hard deletion:
 - `purgeUserRecord: false` keeps the final tombstoned user row and enqueues the same retryable period-end cancellation used by the normal delete flow.
 - `purgeUserRecord: true` revokes the Polar subscription immediately, deletes the Polar customer immediately, and then purges the final local tombstone. Local Polar customer mapping and local subscription rows are cleared through Polar deletion webhooks (`customer.updated`/`customer.state_changed` with `deleted_at`, or `customer.deleted`).
-- Restoring a deleted account during retention reclaims the same Convex user row, removes the user deletion request, reactivates memberships, and keeps the already scheduled subscription cancellation in place.
+- Restoring a deleted account during retention reclaims the same Convex user row, removes the user deletion request, reactivates memberships, and marks the auth response so billing bootstrap can undo a deletion-triggered Polar period-end cancellation while Polar still allows it. If the prior subscription has fully ended, billing bootstrap creates a new `Free` subscription rather than recreating a paid plan.
 
 For the full workspace/project deletion and purge lifecycle, use the canonical tenancy skill: [workspaces-tenancy: Workspace and project deletion and data purge](../workspaces-tenancy/SKILL.md#workspace-and-project-deletion-and-data-purge).
 

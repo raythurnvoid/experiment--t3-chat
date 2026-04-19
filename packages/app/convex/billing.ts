@@ -129,7 +129,7 @@ export async function billing_action_revoke_polar_subscription(args: { subscript
 	return Result({ _yay: null });
 }
 
-export async function billing_action_cancel_polar_subscription_at_period_end(args: { subscriptionId: string }) {
+async function billing_action_cancel_polar_subscription_at_period_end(args: { subscriptionId: string }) {
 	const cancelResult = await subscriptionsUpdate(billing_polar_client(), {
 		id: args.subscriptionId,
 		subscriptionUpdate: {
@@ -150,6 +150,25 @@ export async function billing_action_cancel_polar_subscription_at_period_end(arg
 	}
 
 	return Result({ _yay: null });
+}
+
+async function billing_action_uncancel_polar_subscription(args: { subscriptionId: string }) {
+	const uncancelResult = await subscriptionsUpdate(billing_polar_client(), {
+		id: args.subscriptionId,
+		subscriptionUpdate: {
+			cancelAtPeriodEnd: false,
+		},
+	});
+	if (!uncancelResult.ok) {
+		return Result({
+			_nay: {
+				message: "Failed to restore Polar subscription",
+				cause: uncancelResult.error,
+			},
+		});
+	}
+
+	return Result({ _yay: uncancelResult.value });
 }
 
 export const get_usage_snapshot = query({
@@ -719,6 +738,7 @@ export async function billing_enqueue_free_subscription_bootstrap(
 		userId: Id<"users">;
 		email: string;
 		name: string;
+		restoreCanceledSubscription?: boolean;
 	},
 ) {
 	return await billing_workpool_bootstrap.enqueueAction(ctx, internal.billing.bootstrap_free_subscription, args);
@@ -729,6 +749,7 @@ export const bootstrap_free_subscription = internalAction({
 		userId: v.id("users"),
 		email: v.string(),
 		name: v.string(),
+		restoreCanceledSubscription: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -775,6 +796,37 @@ export const bootstrap_free_subscription = internalAction({
 				userId: args.userId,
 			});
 			if (currentSubscription) {
+				if (
+					args.restoreCanceledSubscription &&
+					currentSubscription.cancelAtPeriodEnd &&
+					currentSubscription.endedAt == null &&
+					(currentSubscription.status === "active" || currentSubscription.status === "trialing")
+				) {
+					// Account recovery reverses the deletion-triggered period-end
+					// cancellation while Polar still considers the subscription billable.
+					await billing_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
+						userId: args.userId,
+					});
+
+					const uncancelSubscriptionResult = await billing_action_uncancel_polar_subscription({
+						subscriptionId: currentSubscription.id,
+					});
+					if (uncancelSubscriptionResult._nay) {
+						throw convex_error({
+							message: "Failed to restore Polar subscription",
+							cause: uncancelSubscriptionResult._nay,
+							data: {
+								subscriptionId: currentSubscription.id,
+								userId: args.userId,
+							},
+						});
+					}
+
+					await ctx.runMutation(components.polar.lib.updateSubscription, {
+						subscription: convertToDatabaseSubscription(uncancelSubscriptionResult._yay),
+					});
+				}
+
 				return;
 			}
 
@@ -1046,13 +1098,7 @@ export const grant_monthly_credits = internalAction({
 					billing_event({
 						name: "monthly_credit",
 						externalCustomerId: args.userId,
-						externalId: composite_id(
-							"billing",
-							"monthly_credit",
-							args.userId,
-							args.subscriptionId,
-							args.periodStart,
-						),
+						externalId: composite_id("billing", "monthly_credit", args.userId, args.subscriptionId, args.periodStart),
 						metadata: {
 							amount: -recurringAmountCents,
 							subscriptionId: args.subscriptionId,

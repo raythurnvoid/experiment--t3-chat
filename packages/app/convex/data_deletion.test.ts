@@ -1416,7 +1416,7 @@ describe("resolve_user after tombstone", () => {
 		expect(after.pages).toHaveLength(1);
 	});
 
-	test("reclaims the same user row during retention without removing a scheduled subscription cancellation", async () => {
+	test("reclaims the same user row during retention and returns the billing restore marker", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -1490,22 +1490,15 @@ describe("resolve_user after tombstone", () => {
 		}
 
 		const after = await t.run(async (ctx) => {
-			const [request, subscription] = await Promise.all([
-				ctx.db.get("data_deletion_requests", requestId!),
-				ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-					userId: deletedUser.userId,
-				}),
-			]);
+			const request = await ctx.db.get("data_deletion_requests", requestId!);
 
 			return {
 				request,
-				subscription,
 			};
 		});
 
+		expect(result._yay.restoredDeletedAccount).toBe(true);
 		expect(after.request).toBeNull();
-		expect(after.subscription?.id).toBe("sub_returning_billing_user");
-		expect(after.subscription?.cancelAtPeriodEnd).toBe(true);
 	});
 
 	test("reclaims the same user row after retention purge and recreates default tenant state", async () => {

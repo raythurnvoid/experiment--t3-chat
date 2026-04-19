@@ -310,6 +310,63 @@ describe("/api/auth/resolve-user", () => {
 		}
 	});
 
+	test("passes the restore flag to Free subscription bootstrap after reclaiming a tombstoned account", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-resolve-restore-free",
+				displayName: "Resolve Restore User",
+				email: "resolve-restore-user@test.local",
+			}),
+		);
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: seeded.userId,
+				nowTs: 30_001,
+			}),
+		);
+
+		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_resolve_restore_free" as never);
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ id: "clerk-user-resolve-restore-free-again" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}),
+		);
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-restore-free-again",
+				name: "Resolve Restore User Again",
+				email: "resolve-restore-user@test.local",
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(200);
+			expect(body._yay?.userId).toBe(seeded.userId);
+			expect(body._yay?.restoredDeletedAccount).toBe(true);
+			expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.bootstrap_free_subscription, {
+				userId: seeded.userId,
+				email: "resolve-restore-user@test.local",
+				name: "Resolve Restore User Again",
+				restoreCanceledSubscription: true,
+			});
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
 	test("keeps sign-in successful when enqueueing Free bootstrap fails", async () => {
 		const t = test_convex();
 
@@ -1229,7 +1286,7 @@ describe("delete_current_user_account", () => {
 		}
 	});
 
-	test("reclaims the tombstoned user without scheduling a second subscription cancellation", async () => {
+	test("reclaims the tombstoned user and marks it for billing restore without scheduling a second cancellation", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -1299,6 +1356,7 @@ describe("delete_current_user_account", () => {
 			});
 
 			expect(restoreResult._yay.userId).toBe(seeded.userId);
+			expect(restoreResult._yay.restoredDeletedAccount).toBe(true);
 			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBe("clerk-user-account-delete-restore-again");
 			expect(after.request).toBeNull();

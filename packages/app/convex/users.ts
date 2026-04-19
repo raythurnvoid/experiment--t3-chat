@@ -434,7 +434,7 @@ export const resolve_user = internalMutation({
 		anonymousUserToken: v.optional(v.string()),
 		displayName: v.string(),
 	},
-	returns: v_result({ _yay: v.object({ userId: v.id("users") }) }),
+	returns: v_result({ _yay: v.object({ userId: v.id("users"), restoredDeletedAccount: v.boolean() }) }),
 	handler: async (ctx, args) => {
 		// Resolve Clerk sign-in in product-precedence order:
 		// 1. Reuse the existing live Clerk-linked user.
@@ -463,7 +463,7 @@ export const resolve_user = internalMutation({
 				now,
 			});
 
-			return Result({ _yay: { userId: existingLiveUser._id } });
+			return Result({ _yay: { userId: existingLiveUser._id, restoredDeletedAccount: false } });
 		}
 
 		const anagraphicByEmail = await ctx.db
@@ -531,7 +531,7 @@ export const resolve_user = internalMutation({
 				now,
 			});
 
-			return Result({ _yay: { userId: deletedUser._id } });
+			return Result({ _yay: { userId: deletedUser._id, restoredDeletedAccount: true } });
 		}
 
 		// Upgrade the anonymous user in place only after live-user reuse and deleted-account reclaim miss.
@@ -610,7 +610,7 @@ export const resolve_user = internalMutation({
 					}),
 				]);
 
-				return Result({ _yay: { userId: user._id } });
+				return Result({ _yay: { userId: user._id, restoredDeletedAccount: false } });
 			}
 
 			if (user.clerkUserId !== args.clerkUserId) {
@@ -631,7 +631,7 @@ export const resolve_user = internalMutation({
 				}),
 			]);
 
-			return Result({ _yay: { userId: user._id } });
+			return Result({ _yay: { userId: user._id, restoredDeletedAccount: false } });
 		}
 
 		// Create a brand new signed-in user only when no existing live, deleted, or anonymous identity matches.
@@ -657,7 +657,7 @@ export const resolve_user = internalMutation({
 			}),
 		]);
 
-		return Result({ _yay: { userId } });
+		return Result({ _yay: { userId, restoredDeletedAccount: false } });
 	},
 });
 
@@ -949,7 +949,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 								if (user) {
 									return {
 										status: 200,
-										body: Result({ _yay: { userId: user._id } }),
+										body: Result({ _yay: { userId: user._id, restoredDeletedAccount: false } }),
 									} as const;
 								}
 							}
@@ -1002,6 +1002,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 								userId: resolveUserResult._yay.userId,
 								email: identity.email,
 								name: displayName,
+								...(resolveUserResult._yay.restoredDeletedAccount ? { restoreCanceledSubscription: true } : {}),
 							}).catch((error) => {
 								console.error("Failed to enqueue Free subscription bootstrap", {
 									error,

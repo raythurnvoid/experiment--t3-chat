@@ -252,6 +252,10 @@ async function seed_subscription(
 		subscriptionId: string;
 		polarProductId: string;
 		status?: "active" | "trialing";
+		cancelAtPeriodEnd?: boolean;
+		canceledAt?: string | null;
+		endsAt?: string | null;
+		endedAt?: string | null;
 		pendingUpdate?: {
 			id: string;
 			appliesAt: string;
@@ -279,11 +283,13 @@ async function seed_subscription(
 			status: args.status ?? "active",
 			currentPeriodStart: "2026-01-01T00:00:00.000Z",
 			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
-			cancelAtPeriodEnd: false,
+			cancelAtPeriodEnd: args.cancelAtPeriodEnd ?? false,
 			startedAt: "2026-01-01T00:00:00.000Z",
-			endedAt: null,
+			endedAt: args.endedAt ?? null,
 			metadata: {},
 			pendingUpdate: args.pendingUpdate ?? null,
+			...(args.canceledAt !== undefined ? { canceledAt: args.canceledAt } : {}),
+			...(args.endsAt !== undefined ? { endsAt: args.endsAt } : {}),
 		},
 	});
 }
@@ -1006,6 +1012,135 @@ describe("billing bootstrap_free_subscription", () => {
 		expect(result).toBeNull();
 		expect(customersCreateMock).not.toHaveBeenCalled();
 		expect(subscriptionsCreateMock).not.toHaveBeenCalled();
+	});
+
+	test("restores a recovered account subscription that is pending period-end cancellation", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_restore_free_product",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_bootstrap_restore_pending",
+			subscriptionId: "sub_bootstrap_restore_pending",
+			polarProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId,
+			jobId: "work_bootstrap_restore_pending",
+			updatedAt: 30_001,
+		});
+
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_bootstrap_restore_pending",
+				customerId: "cust_bootstrap_restore_pending",
+				productId: polarProductId,
+			}),
+		} as never);
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-restore@test.local",
+			name: "Bootstrap Restore User",
+			restoreCanceledSubscription: true,
+		});
+
+		const [subscription, cancellationJob] = await Promise.all([
+			t.query(components.polar.lib.getCurrentSubscription, { userId }),
+			get_cancel_polar_subscription_job(t, userId),
+		]);
+
+		expect(result).toBeNull();
+		expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), "work_bootstrap_restore_pending");
+		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_bootstrap_restore_pending",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: false,
+			},
+		});
+		expect(subscriptionsCreateMock).not.toHaveBeenCalled();
+		expect(cancellationJob).toBeNull();
+		expect(subscription?.cancelAtPeriodEnd).toBe(false);
+		expect(subscription?.canceledAt).toBeNull();
+		expect(subscription?.endsAt).toBeNull();
+	});
+
+	test("does not uncancel an existing subscription without the account-restore flag", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_non_restore_free_product",
+		});
+
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_bootstrap_non_restore",
+			subscriptionId: "sub_bootstrap_non_restore",
+			polarProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-non-restore@test.local",
+			name: "Bootstrap Non Restore User",
+		});
+
+		const subscription = await t.query(components.polar.lib.getCurrentSubscription, { userId });
+
+		expect(result).toBeNull();
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+		expect(subscriptionsCreateMock).not.toHaveBeenCalled();
+		expect(subscription?.cancelAtPeriodEnd).toBe(true);
+	});
+
+	test("creates a Free subscription for a recovered account with no current subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_restore_missing_subscription_product",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_bootstrap_restore_missing_subscription",
+			userId,
+		});
+		subscriptionsCreateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_bootstrap_restore_missing_subscription",
+				customerId: "cust_bootstrap_restore_missing_subscription",
+				productId: polarProductId,
+			}),
+		} as never);
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-restore-missing-subscription@test.local",
+			name: "Bootstrap Restore Missing Subscription User",
+			restoreCanceledSubscription: true,
+		});
+
+		const subscription = await t.query(components.polar.lib.getCurrentSubscription, { userId });
+
+		expect(result).toBeNull();
+		expect(customersCreateMock).not.toHaveBeenCalled();
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
+		expect(subscriptionsCreateMock).toHaveBeenCalledWith(expect.anything(), {
+			customerId: "cust_bootstrap_restore_missing_subscription",
+			productId: polarProductId,
+		});
+		expect(subscription?.id).toBe("sub_bootstrap_restore_missing_subscription");
 	});
 
 	test("throws when bootstrap fails so the workpool can retry it", async () => {

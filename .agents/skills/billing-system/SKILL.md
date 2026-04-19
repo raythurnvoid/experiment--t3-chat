@@ -71,8 +71,8 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 - `generate_checkout_link` creates Polar checkout sessions and sends the current display name when the vendored Polar helper needs to create a missing customer.
 - `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then waits for the subscription webhook to update the local subscription row. `Free -> paid` is intentionally not handled there and goes through checkout instead.
 - `generate_customer_portal_url` opens the Polar customer portal.
-- `bootstrap_free_subscription` creates the local Polar customer with email and display name, then creates the `Free` subscription when missing.
-- `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`, carrying the resolved display name from auth resolution.
+- `bootstrap_free_subscription` creates the local Polar customer with email and display name, then creates the `Free` subscription when missing. When auth marks the user as a restored deleted account, it first uncancels an active/trialing subscription that is still pending period-end cancellation.
+- `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`, carrying the resolved display name from auth resolution and the optional restored-account billing flag.
 - `handle_polar_customer_state_update` ingests the raw `customer.state_changed` webhook payload into `billing_usage_snapshots` by reading the snake_case fields Polar sends, then triggers the monthly credits engine for that user when the required subscription fields are present. When Polar reports an anonymized customer deletion through `deleted_at`, it removes the local customer mapping, local subscription rows, and usage snapshot instead of recreating a blank snapshot.
 
 See [Glossary — convex/billing.ts](#glossary--convexbillingts).
@@ -208,14 +208,14 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 #### `bootstrap_free_subscription`
 
 - **Kind:** `internalAction`
-- **Args:** `{ userId, email, name }`
-- **Role:** Ensures Polar customer exists with the user's email and display name, inserts local customer row, creates `Free` subscription in Polar and local mirror when the user has no subscription. Invoked via workpool.
+- **Args:** `{ userId, email, name, restoreCanceledSubscription? }`
+- **Role:** Ensures Polar customer exists with the user's email and display name, inserts local customer row, creates `Free` subscription in Polar and local mirror when the user has no current subscription. If `restoreCanceledSubscription` is true and the current Polar subscription mirror is active/trialing with `cancelAtPeriodEnd: true`, it cancels any retry row, calls Polar with `cancelAtPeriodEnd: false`, and updates the local mirror from Polar's response. Invoked via workpool.
 
 #### `billing_enqueue_free_subscription_bootstrap`
 
 - **Kind:** async helper (`export async function`)
-- **Args:** `(ctx: ActionCtx, { userId, email, name })`
-- **Role:** Enqueues `internal.billing.bootstrap_free_subscription` on `billing_workpool_bootstrap` (single-flight style, retries on failure) with the display name resolved during auth.
+- **Args:** `(ctx: ActionCtx, { userId, email, name, restoreCanceledSubscription? })`
+- **Role:** Enqueues `internal.billing.bootstrap_free_subscription` on `billing_workpool_bootstrap` (single-flight style, retries on failure) with the display name resolved during auth and the optional account-recovery billing restore flag.
 
 #### `handle_polar_customer_state_update`
 
@@ -249,7 +249,7 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 The auth-side trigger lives in [users.ts](../../../packages/app/convex/users.ts).
 
-- `/api/auth/resolve-user` resolves or creates the Convex user, writes Clerk `external_id`, then enqueues the `Free` subscription bootstrap with the resolved display name.
+- `/api/auth/resolve-user` resolves or creates the Convex user, writes Clerk `external_id`, then enqueues the `Free` subscription bootstrap with the resolved display name. When it reclaimed a tombstoned account, it includes `restoreCanceledSubscription: true` so billing can undo a deletion-triggered period-end cancellation.
 - Because bootstrap is enqueued through the workpool, a newly resolved signed-in user can briefly exist before the `Free` subscription appears locally.
 
 ## Testing Clerk + Polar signup
@@ -285,7 +285,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Billing owns `billing_cancel_polar_subscription_jobs` as the scheduler row for that work. Keep one row per user, replace the stored `jobId` when you reschedule, and clear the row only when the matching work finishes successfully or an explicit cancel removes it.
 - Subscription mirror rows remain Polar-owned during normal account deletion and scheduled cancellation. Clear them only when Polar reports customer deletion through customer deletion webhooks or a `customer.state_changed` payload with `deleted_at`.
 - `billing_usage_snapshots` are mirrored local billing state, not billing authority. Keep them through phase 1 and delete them only during phase 2 of account deletion.
-- Restoring the account during retention does not undo the scheduled cancellation.
+- Restoring the account during retention enqueues billing bootstrap with `restoreCanceledSubscription: true`. Billing cancels any stored retry row and asks Polar to uncancel the subscription if it is still active/trialing and pending period-end cancellation; if no current subscription remains, bootstrap creates a new `Free` subscription. Do not recreate a paid subscription after the old one has fully ended.
 - Direct admin hard delete now uses `purgeUserRecord` as the single operator flag:
 - `purgeUserRecord: false` keeps the immediate local hard-delete path, keeps the final tombstoned user row, and schedules the same retryable period-end cancellation used by the normal delete flow.
 - `purgeUserRecord: true` cancels any scheduled period-end cancellation first, revokes the subscription immediately, requests immediate Polar customer deletion with `anonymize: false`, and purges the final local tombstone. Polar emits `customer.deleted` for `anonymize: false`; if a future GDPR erasure flow needs `anonymize: true`, treat that as a separate product flow because Polar scrubs PII by updating the customer with `deleted_at` and emits `customer.updated` plus `customer.state_changed` instead. The local Polar customer mapping may briefly remain until Polar reports deletion through `customer.deleted` or a `deleted_at` customer webhook.
