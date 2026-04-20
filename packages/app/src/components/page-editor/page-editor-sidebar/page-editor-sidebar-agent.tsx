@@ -31,6 +31,7 @@ import {
 	MyTabsTabSurface,
 } from "@/components/my-tabs.tsx";
 import { ai_chat_is_optimistic_thread, type AiChatController, useAiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
@@ -334,7 +335,8 @@ type PageEditorSidebarAgentHeader_ClassNames = "PageEditorSidebarAgentHeader";
 
 type PageEditorSidebarAgentHeader_Props = {
 	controller: AiChatController;
-	openTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"];
+	openTabs: storage_local_ValueByKey[`app_state::page_editor_sidebar_open_tabs::scope::${string}`];
+	membershipId: string;
 	selectedChatTabId: string;
 	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 	appHoistingContainer: HTMLElement | null;
@@ -343,13 +345,21 @@ type PageEditorSidebarAgentHeader_Props = {
 const PageEditorSidebarAgentHeader = memo(function PageEditorSidebarAgentHeader(
 	props: PageEditorSidebarAgentHeader_Props,
 ) {
-	const { controller, openTabs, selectedChatTabId, currentThreads, appHoistingContainer } = props;
+	const {
+		controller,
+		openTabs,
+		membershipId,
+		selectedChatTabId,
+		currentThreads,
+		appHoistingContainer,
+	} = props;
 
 	return (
 		<div className={cn("PageEditorSidebarAgentHeader" satisfies PageEditorSidebarAgentHeader_ClassNames)}>
 			<PageEditorSidebarAgentHeaderTabs
 				controller={controller}
 				openTabs={openTabs}
+				membershipId={membershipId}
 				selectedChatTabId={selectedChatTabId}
 				currentThreads={currentThreads}
 				appHoistingContainer={appHoistingContainer}
@@ -357,6 +367,7 @@ const PageEditorSidebarAgentHeader = memo(function PageEditorSidebarAgentHeader(
 			<PageEditorSidebarAgentHeaderActions
 				controller={controller}
 				openTabs={openTabs}
+				membershipId={membershipId}
 				currentThreads={currentThreads}
 			/>
 		</div>
@@ -369,14 +380,19 @@ type PageEditorSidebarAgentHeaderActions_ClassNames = "PageEditorSidebarAgentHea
 
 type PageEditorSidebarAgentHeaderActions_Props = {
 	controller: AiChatController;
-	openTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"];
+	openTabs: storage_local_ValueByKey[`app_state::page_editor_sidebar_open_tabs::scope::${string}`];
+	membershipId: string;
 	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 };
 
 const PageEditorSidebarAgentHeaderActions = memo(function PageEditorSidebarAgentHeaderActions(
 	props: PageEditorSidebarAgentHeaderActions_Props,
 ) {
-	const { controller, openTabs, currentThreads } = props;
+	const { controller, openTabs, membershipId, currentThreads } = props;
+	const selectedTabStorageKey: `app_state::page_editor_sidebar_agent_selected_tab::scope::${string}` =
+		`app_state::page_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+	const openTabsStorageKey: `app_state::page_editor_sidebar_open_tabs::scope::${string}` =
+		`app_state::page_editor_sidebar_open_tabs::scope::${membershipId}`;
 
 	const handleBeforeSelectThread = useFn((threadId: string) => {
 		const inOpenTabs = openTabs.some((t) => t.id === threadId);
@@ -385,9 +401,9 @@ const PageEditorSidebarAgentHeaderActions = memo(function PageEditorSidebarAgent
 			currentThreads,
 			streamingTitleByThreadId: controller.streamingTitleByThreadId,
 		});
-		app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
+		app_local_storage_set_value(selectedTabStorageKey, threadId);
 		if (!inOpenTabs) {
-			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", (previousTabs) => [
+			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [
 				...previousTabs,
 				{ id: threadId, title },
 			]);
@@ -423,7 +439,8 @@ type PageEditorSidebarAgentHeaderTabs_ClassNames =
 
 type PageEditorSidebarAgentHeaderTabs_Props = {
 	controller: AiChatController;
-	openTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"];
+	openTabs: storage_local_ValueByKey[`app_state::page_editor_sidebar_open_tabs::scope::${string}`];
+	membershipId: string;
 	selectedChatTabId: string;
 	currentThreads: AiChatController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 	appHoistingContainer: HTMLElement | null;
@@ -432,7 +449,18 @@ type PageEditorSidebarAgentHeaderTabs_Props = {
 const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHeaderTabs(
 	props: PageEditorSidebarAgentHeaderTabs_Props,
 ) {
-	const { controller, openTabs, selectedChatTabId, currentThreads, appHoistingContainer } = props;
+	const {
+		controller,
+		openTabs,
+		membershipId,
+		selectedChatTabId,
+		currentThreads,
+		appHoistingContainer,
+	} = props;
+	const selectedTabStorageKey: `app_state::page_editor_sidebar_agent_selected_tab::scope::${string}` =
+		`app_state::page_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+	const openTabsStorageKey: `app_state::page_editor_sidebar_open_tabs::scope::${string}` =
+		`app_state::page_editor_sidebar_open_tabs::scope::${membershipId}`;
 
 	const handleDragEnd = useFn((result: DropResult) => {
 		const { destination, source } = result;
@@ -444,7 +472,7 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 		const [removed] = next.splice(source.index, 1);
 		next.splice(destination.index, 0, removed);
 
-		app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", next);
+		app_local_storage_set_value(openTabsStorageKey, next);
 	});
 
 	const handleCloseTab = useFn((threadId: string) => {
@@ -463,12 +491,12 @@ const PageEditorSidebarAgentHeaderTabs = memo(function PageEditorSidebarAgentHea
 		if (shouldSwitchTab) {
 			const fallbackTab = nextOpenTabs[closedTabIndex - 1] ?? nextOpenTabs[closedTabIndex] ?? nextOpenTabs[0];
 			if (fallbackTab) {
-				app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", fallbackTab.id);
+				app_local_storage_set_value(selectedTabStorageKey, fallbackTab.id);
 				controller.selectThread(fallbackTab.id);
 			}
 		}
 
-		app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", nextOpenTabs);
+		app_local_storage_set_value(openTabsStorageKey, nextOpenTabs);
 	});
 
 	return (
@@ -594,12 +622,17 @@ export type PageEditorSidebarAgent_Props = {
 
 export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props: PageEditorSidebarAgent_Props) {
 	const { rootTabId } = props;
+	const { membershipId } = AppTenantProvider.useContext();
 	const controller = useAiChatController({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 	const rootSelectedTab = useAppLocalStorageValue("app_state::pages_last_tab");
-	const openTabs = useAppLocalStorageValue("app_state::page_editor_sidebar_open_tabs");
-	const selectedAgentTab = useAppLocalStorageValue("app_state::page_editor_sidebar_agent_selected_tab");
+	const openTabsStorageKey: `app_state::page_editor_sidebar_open_tabs::scope::${string}` =
+		`app_state::page_editor_sidebar_open_tabs::scope::${membershipId}`;
+	const selectedTabStorageKey: `app_state::page_editor_sidebar_agent_selected_tab::scope::${string}` =
+		`app_state::page_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+	const openTabs = useAppLocalStorageValue(openTabsStorageKey);
+	const selectedAgentTab = useAppLocalStorageValue(selectedTabStorageKey);
 	const currentThreads = controller.currentThreadsWithOptimistic.unarchived.results;
 	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
@@ -621,7 +654,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 	// Replace optimistic open-tab ids with their persisted thread ids once the thread is upgraded.
 	useEffect(() => {
 		let changed = false;
-		const nextOpenTabs: storage_local_ValueByKey["app_state::page_editor_sidebar_open_tabs"] = [];
+		const nextOpenTabs: storage_local_ValueByKey[`app_state::page_editor_sidebar_open_tabs::scope::${string}`] = [];
 		const seenIds = new Set<string>();
 
 		for (const openTab of openTabs) {
@@ -656,7 +689,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 		}
 
 		if (changed) {
-			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", nextOpenTabs);
+			app_local_storage_set_value(openTabsStorageKey, nextOpenTabs);
 		}
 
 		if (!selectedAgentTab) {
@@ -668,9 +701,16 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 		});
 
 		if (persistedSelectedThread && persistedSelectedThread._id !== selectedAgentTab) {
-			app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", persistedSelectedThread._id);
+			app_local_storage_set_value(selectedTabStorageKey, persistedSelectedThread._id);
 		}
-	}, [openTabs, selectedAgentTab, currentThreads, controller.streamingTitleByThreadId]);
+	}, [
+		openTabs,
+		selectedAgentTab,
+		currentThreads,
+		controller.streamingTitleByThreadId,
+		openTabsStorageKey,
+		selectedTabStorageKey,
+	]);
 
 	// Keep the stored opened chat tabs in sync with controller selection.
 	useEffect(() => {
@@ -695,8 +735,8 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 					});
 					const nextOpenTabs = [...openTabs];
 					nextOpenTabs[upgradedOpenTabIndex] = { id: threadId, title };
-					app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", nextOpenTabs);
-					app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
+					app_local_storage_set_value(openTabsStorageKey, nextOpenTabs);
+					app_local_storage_set_value(selectedTabStorageKey, threadId);
 					return;
 				}
 			}
@@ -706,18 +746,26 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 				currentThreads,
 				streamingTitleByThreadId: controller.streamingTitleByThreadId,
 			});
-			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", (previousTabs) => [
+			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [
 				...previousTabs,
 				{ id: threadId, title },
 			]);
-			app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
+			app_local_storage_set_value(selectedTabStorageKey, threadId);
 			return;
 		}
 
 		if (selectedAgentTab !== threadId) {
-			app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", threadId);
+			app_local_storage_set_value(selectedTabStorageKey, threadId);
 		}
-	}, [controller.selectedThreadId, controller.streamingTitleByThreadId, openTabs, selectedAgentTab, currentThreads]);
+	}, [
+		controller.selectedThreadId,
+		controller.streamingTitleByThreadId,
+		openTabs,
+		selectedAgentTab,
+		currentThreads,
+		openTabsStorageKey,
+		selectedTabStorageKey,
+	]);
 
 	// Keep open tab titles in sync with streaming titles
 	useEffect(() => {
@@ -736,16 +784,16 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 			return tab;
 		});
 		if (changed) {
-			app_local_storage_set_value("app_state::page_editor_sidebar_open_tabs", next);
+			app_local_storage_set_value(openTabsStorageKey, next);
 		}
-	}, [openTabs, currentThreads, controller.streamingTitleByThreadId]);
+	}, [openTabs, currentThreads, controller.streamingTitleByThreadId, openTabsStorageKey]);
 
 	const handleChatTabChange = useFn((nextSelectedId: string | null | undefined) => {
 		if (!nextSelectedId || nextSelectedId === selectedChatTabId) {
 			return;
 		}
 
-		app_local_storage_set_value("app_state::page_editor_sidebar_agent_selected_tab", nextSelectedId);
+		app_local_storage_set_value(selectedTabStorageKey, nextSelectedId);
 		if (nextSelectedId !== NEW_CHAT_TAB_ID) {
 			controller.selectThread(nextSelectedId);
 		}
@@ -757,6 +805,7 @@ export const PageEditorSidebarAgent = memo(function PageEditorSidebarAgent(props
 				<PageEditorSidebarAgentHeader
 					controller={controller}
 					openTabs={openTabs}
+					membershipId={membershipId}
 					selectedChatTabId={selectedChatTabId}
 					currentThreads={currentThreads}
 					appHoistingContainer={appHoistingContainer}

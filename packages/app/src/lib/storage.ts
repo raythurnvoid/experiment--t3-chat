@@ -6,8 +6,6 @@ import { objects_equal_deep } from "@/lib/object.ts";
 import { has_defined_property } from "./utils.ts";
 import { useFn } from "../hooks/utils-hooks.ts";
 
-/** Selected opened-chat tab id inside the page editor agent sidebar. */
-
 type FieldDefinition<T> = {
 	defaultValue: T;
 	parse: (raw: string | null) => T;
@@ -19,6 +17,26 @@ function define_field<K extends `app${string}`, T>(definition: FieldDefinition<T
 	return definition as typeof definition & { __key: K };
 }
 
+/**
+ * Canonical registry for app-owned `localStorage` values.
+ *
+ * Each entry defines the storage key, the in-memory value type, and how raw
+ * browser strings are parsed and serialized. Static keys are used exactly as
+ * written. Scoped keys use the `::scope::${membershipId}` schema placeholder;
+ * callers pass the concrete key with the current membership id in that segment.
+ * `get_local_storage_field_definition_from_key` normalizes concrete scoped keys
+ * back to this placeholder entry at runtime.
+ *
+ * Keep reads and writes behind `app_local_storage_get_value`,
+ * `app_local_storage_set_value`, `useAppLocalStorageValue`, or
+ * `useAppLocalStorageStateValue` so callers get the schema-derived TypeScript
+ * type, parsing behavior, same-tab storage event dispatch, and cached
+ * `useSyncExternalStore` updates. `defaultValue` is the hook fallback snapshot;
+ * `parse` is responsible for handling missing or invalid browser values.
+ *
+ * Add an `equals` function for structured values when deep equality should
+ * prevent unnecessary cache updates and rerenders.
+ */
 const storage_local_schema = {
 	"app::auth::anonymous_token": define_field<"app::auth::anonymous_token", string | null>({
 		defaultValue: null,
@@ -50,8 +68,8 @@ const storage_local_schema = {
 		serialize: (value) => value,
 	}),
 
-	"app_state::page_editor_sidebar_agent_selected_tab": define_field<
-		"app_state::page_editor_sidebar_agent_selected_tab",
+	"app_state::page_editor_sidebar_agent_selected_tab::scope::${membershipId}": define_field<
+		`app_state::page_editor_sidebar_agent_selected_tab::scope::${string}`,
 		string | null
 	>({
 		parse: (raw) => {
@@ -65,8 +83,8 @@ const storage_local_schema = {
 		defaultValue: null,
 	}),
 
-	"app_state::page_editor_sidebar_open_tabs": define_field<
-		"app_state::page_editor_sidebar_open_tabs",
+	"app_state::page_editor_sidebar_open_tabs::scope::${membershipId}": define_field<
+		`app_state::page_editor_sidebar_open_tabs::scope::${string}`,
 		Array<{ id: string; title: string }>
 	>({
 		parse: (raw) => {
