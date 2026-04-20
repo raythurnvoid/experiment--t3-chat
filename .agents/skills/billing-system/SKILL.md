@@ -7,9 +7,16 @@ description: Billing system guidelines for the Polar-backed plan catalog, custom
 
 Polar is intended to be the billing source of truth for products, customers, subscriptions, and usage-derived billing state.
 
-The app mirrors enough billing state locally to drive UI and app behavior. In practice, the repo stores a synced product catalog, synced customers and subscriptions through the vendored Polar component, and a local usage snapshot derived from Polar customer-state webhook payloads.
+The app mirrors enough billing state locally to drive UI and app behavior. In practice, the repo stores a synced product catalog, synced customers and subscriptions through the vendored Polar component, and a local usage snapshot derived from Polar customer state.
 
-Subscription lifecycle webhooks are the authoritative sync path for the local subscription mirror. `customer.state_changed` is deliberately narrower: it owns usage snapshots and recurring monthly-credit enqueueing, but it does not infer scheduled plan changes such as `pendingUpdate`.
+Subscription lifecycle webhooks are the authoritative sync path for the local subscription mirror. `customer.state_changed` is deliberately narrower: it owns the local usage snapshot and is the sole trigger for recurring monthly-credit enqueueing, but it does not infer scheduled plan changes such as `pendingUpdate`.
+
+The `billing_usage_snapshots.meter` field stores two independent Polar values for every plan:
+
+- `balance`, `consumedUnits`, and `creditedUnits` come from the customer-level Polar meter (`active_meters`) and own the remaining credit balance.
+- `amountDueCents` comes from the subscription-level Polar meter (`active_subscriptions[].meters`) and owns the amount currently due. It is `0` for `Free` because `Free` has no subscription meter.
+
+The `customer.state_changed` webhook is the canonical refresh path for local usage snapshots. `ingest_events` never mirrors Polar state back into the snapshot. Polar's `customersGetState` is intentionally NOT polled after `eventsIngest`: its meter aggregation lags `eventsIngest` by ~20s and never beats the next `customer.state_changed`. Instead, `db_apply_polar_customer_state_refresh` — the shared helper driven by both the webhook handler and the admin `refresh_from_polar_customer_state` action — writes an optimistic local meter through `db_apply_optimistic_credit_to_snapshot` in the same mutation that upserts the snapshot, so credits land in `billing_usage_snapshots` on the same Convex tick as the grant; the next `customer.state_changed` later replaces that meter with Polar's authoritative value. `db_upsert_usage_snapshot` preserves a present meter against an empty Polar payload as a defensive guard so a stale empty webhook arriving after the optimistic write does not clobber it.
 
 # Canonical product behavior
 
@@ -18,7 +25,8 @@ Subscription lifecycle webhooks are the authoritative sync path for the local su
 ### `Free`
 
 - Give each signed-in user a `Free` subscription after account resolution.
-- Include `€10` of usage every billing month.
+- Include `€10` of usage every billing month. Credits land on the shared customer-level meter the same Convex tick `db_apply_polar_customer_state_refresh` first sees an active subscription, because the inline grant runs inside that helper (driven by the `customer.state_changed` webhook or the admin replay action) and writes an optimistic meter through `db_apply_optimistic_credit_to_snapshot` before Polar's own meter aggregation catches up.
+- `Free` has no subscription-level Polar meter, so `amountDueCents` is always `0` for `Free`.
 - Eventually lock the user once the included usage is exhausted. That lock is not implemented today.
 
 ### `Pay As You Go`
@@ -58,7 +66,7 @@ Server-side usage-event typing lives in [billing.ts](../../../packages/app/serve
 - `billing_Event` is the only supported billing usage event shape. It mirrors Polar's event fields with `{ name, externalCustomerId, externalId, metadata }`, except `name` is the app event name; `ingest_events` rewrites that field to the single Polar meter event and stores the app event name in `metadata.name`.
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
 - Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; keep emitted IDs aligned with the canonical event-name prefixes.
-- `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `billing_Event[]` and always enqueues `ingest_events` on `billing_workpool_usage_event`, which uses the same long retry policy as cancellation (`10min` initial backoff, `1.2` base, unlimited attempts). The action is the only code path that should call Polar `eventsIngest`.
+- `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `billing_Event[]` and always enqueues `ingest_events` on `billing_workpool_usage_event`, which uses the same long retry policy as cancellation (`10min` initial backoff, `1.2` base, unlimited attempts). The enqueued action is the only code path that should call Polar `eventsIngest`.
 
 See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
 
@@ -73,7 +81,7 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 - `generate_customer_portal_url` opens the Polar customer portal.
 - `bootstrap_free_subscription` creates the local Polar customer with email and display name, then creates the `Free` subscription when missing. When auth marks the user as a restored deleted account, it first uncancels an active/trialing subscription that is still pending period-end cancellation.
 - `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`, carrying the resolved display name from auth resolution and the optional restored-account billing flag.
-- `handle_polar_customer_state_update` ingests the raw `customer.state_changed` webhook payload into `billing_usage_snapshots` by reading the snake_case fields Polar sends, then triggers the monthly credits engine for that user when the required subscription fields are present. When Polar reports an anonymized customer deletion through `deleted_at`, it removes the local customer mapping, local subscription rows, and usage snapshot instead of recreating a blank snapshot.
+- `handle_polar_customer_state_update` is a thin adapter that parses the raw `customer.state_changed` webhook payload, converts it through `billing_polar_webhook_to_customer_state`, and calls `db_apply_polar_customer_state_refresh`. The helper owns the full reconcile flow: snapshot upsert from the canonical `BillingCustomerState`, period-gated monthly credit grant (optimistic meter + `monthly_credit` ingest), and customer deletion when the payload carries `deleted_at` (removes the local customer mapping, local subscription rows, and usage snapshot instead of recreating a blank snapshot). The same helper is replayed on demand by the admin `refresh_from_polar_customer_state` action.
 
 See [Glossary — convex/billing.ts](#glossary--convexbillingts).
 
@@ -85,20 +93,25 @@ Polar webhooks are split by data ownership:
 - `customer.created` is not handled by app-owned webhook code. Local customer rows are created by the supported app flows (`generate_checkout_link` / `bootstrap_free_subscription`) and should not be manually inserted from customer lifecycle webhooks.
 - `customer.updated` with `deletedAt`/`deleted_at` and `customer.deleted` remove the local customer mapping and that customer's local subscription rows by Polar customer id.
 - `customer.state_changed` updates usage snapshots and enqueues monthly credits from active subscription period data. If its raw payload has `deleted_at`, treat it as an anonymized customer deletion: remove the local customer mapping, that customer's local subscription rows, and that user's usage snapshot instead of deriving a new snapshot or enqueuing credits. Do not use this event to derive scheduled plan changes because its `CustomerState` payload does not include subscription `pendingUpdate`.
+- `customer.state_changed` is the sole trigger for enqueueing monthly recurring credits and the canonical refresh path for the local usage snapshot.
+- `subscription.active` is intentionally not handled by app-owned webhook code. Polar fires it before its customer-meter ledger is populated, so `customersGetState` from that hook would return `activeMeters: []`. Credits become visible immediately because `db_apply_polar_customer_state_refresh` writes an optimistic local meter through `db_apply_optimistic_credit_to_snapshot` in the same mutation that upserts the snapshot, before enqueueing the Polar event; the later `customer.state_changed` reconciles that meter with Polar's authoritative value once Polar's aggregation catches up (~20s).
 - The app supports at most one active subscription per user. If a `customer.state_changed` payload reports multiple `active_subscriptions`, treat that as an impossible billing state and throw instead of choosing one.
-- `Free` subscriptions intentionally have no product/subscription meters. Save their active subscription snapshot with `meter: null` and still enqueue monthly credits; do not infer a `Free` meter from customer-level `active_meters`.
-- Paid active subscriptions must resolve to a usage meter from the subscription meter rows or the product's credit benefit meter for historical payloads. If the app cannot resolve a paid plan's usage meter, treat that as an impossible billing state and throw instead of saving a partial paid snapshot.
+- Store customer-level meter values (`consumedUnits`, `creditedUnits`, `balance`) on the local snapshot for every plan by resolving the canonical `Press app usage` customer meter from `active_meters`. Store `amountDueCents` from the subscription-level meter when present and `0` otherwise.
+- Resolve the canonical customer meter id in this order: (1) the active subscription's meter id; (2) a synced product's metered_unit price meter id; (3) a legacy `meter_credit` benefit on the subscription product; (4) `null` for fresh subscriptions whose first `monthly_credit` event has not yet produced a customer meter.
+- Paid active subscriptions with a metered price must always carry a subscription meter. If the payload does not include one, treat that as an impossible billing state and throw instead of saving a partial paid snapshot.
+- `Free` subscriptions have no product/subscription meter, so their `amountDueCents` is always `0`. The customer meter is present once `db_apply_polar_customer_state_refresh` has applied the optimistic write through `db_apply_optimistic_credit_to_snapshot`; the next `customer.state_changed` keeps the meter aligned with Polar. Leave `meter: null` only when no subscription has been resolved yet.
 - `product.created`, `product.updated`, `benefit.created`, and `benefit.updated` keep the synced product catalog fresh. Unchecked webhook families such as checkout, orders, refunds, benefit grants, seats, members, and organization updates are not part of the current app sync contract.
 
 ## Monthly credits engine
 
 The monthly credits engine lives at the `// #region monthly credits` block in [billing.ts](../../../packages/app/convex/billing.ts) and is the only app code path that grants recurring credits for every plan (`Free`, `Pay As You Go`, `Pro`). Polar `meter_credit` benefits are detached from the live products in the Polar dashboard so they never grant credits in parallel.
 
-The Polar `customer.state_changed` webhook is the sole trigger for monthly credits; there is no cron-driven reconciliation pass. Trust the webhook to deliver every state change.
+The Polar `customer.state_changed` webhook is the sole trigger for monthly credits in production; there is no cron-driven reconciliation pass. Trust the webhook to deliver every state change. The admin-only `refresh_from_polar_customer_state` action replays the same helper (`db_apply_polar_customer_state_refresh`) on demand from the Convex dashboard when a webhook was lost or local state looks stale.
 
-- `handle_polar_customer_state_update` upserts `billing_usage_snapshots`, saving `meter: null` for `Free` subscriptions and paid-plan meter details when they are resolvable. When the webhook payload includes an active subscription, it enqueues `grant_monthly_credits` on `billing_workpool_usage_event` with `userId`, `subscriptionId`, `productId`, and `periodStart` read from Polar's raw snake_case payload (`external_id`, `active_subscriptions`, `product_id`, `current_period_start`). When the payload has `deleted_at`, it removes the local customer mapping, local subscription rows, and usage snapshot without enqueueing monthly credits.
-- `grant_monthly_credits` (`internalAction`) resolves the Polar product by `productId`, reads `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` queues one negative-amount `monthly_credit` event with `externalId` `monthly_credit::<userId>::<subscriptionId>::<periodStart>`. `ingest_events` performs the Polar `eventsIngest` call under `billing_POLAR_METER_EVENT` / `press_usage_event`. Polar's immutable usage event plus duplicate detection is the authority for whether that period was already granted.
-- Repeated `customer.state_changed` deliveries for the same `(user, subscription, period)` may enqueue the same action multiple times. Treat this as intentional: Polar reports the later ingests as duplicates, so the billing ledger stays idempotent without any local snapshot cursor.
+- `db_apply_polar_customer_state_refresh` upserts `billing_usage_snapshots`, saving `meter: null` for `Free` subscriptions and paid-plan meter details when they are resolvable. When the `BillingCustomerState` includes an active subscription, it then runs the monthly credit grant inline in the same mutation — gated on a subscription period transition (first-ever subscription, renewal with a new `currentPeriodStart`, or a new `subscriptionId` after a plan change) so mid-period repeats are skipped. When the state has `deletedAt`, it removes the local customer mapping, local subscription rows, and usage snapshot without granting monthly credits. The shared `db_upsert_usage_snapshot` writer preserves a present meter when Polar reports `active_meters: []` for an active subscription, so a stale empty webhook payload does not clobber the meter that `db_apply_optimistic_credit_to_snapshot` wrote ahead of Polar.
+- The inline grant resolves the Polar product by `productId`, reads `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` first calls `db_apply_optimistic_credit_to_snapshot` to write the credit into `billing_usage_snapshots` locally on the same Convex tick, then enqueues one negative-amount `monthly_credit` event with `externalId` `monthly_credit::<userId>::<subscriptionId>::<periodStart>` through `billing_ingest_events`. It does not call Polar `customersGetState`; the optimistic write makes the credit visible immediately, and the next `customer.state_changed` reconciles the meter once Polar's aggregation catches up. The period-transition gate replaces the previous per-row dedupe key, so a same-period repeat webhook delivery skips both the optimistic write and the workpool enqueue. Polar's immutable usage event plus duplicate detection by `externalId` remains the authority if a duplicate ingest ever does fire.
+- `db_apply_optimistic_credit_to_snapshot` (synchronous `MutationCtx` helper) patches the user's `billing_usage_snapshots` row with the credit `meter` (mirroring Polar's accounting: negative `consumedUnits`, positive `balance`). It resolves the meter id through `billing_resolve_customer_meter_id` so the optimistic id matches the one Polar sends in the next `customer.state_changed`. The helper expects the snapshot row to exist because `db_apply_polar_customer_state_refresh` upserts it earlier in the same transaction; missing rows surface a `should_never_happen` error rather than silently no-opping.
+- Repeated same-period `customer.state_changed` deliveries (consumption updates, meter recomputes) report the same `(subscriptionId, currentPeriodStart)` and skip the inline grant entirely thanks to the period-transition gate, so the optimistic meter and the Polar event ledger both stay idempotent without any per-row dedupe key.
 
 See [Glossary — monthly credits](#glossary--monthly-credits).
 
@@ -221,7 +234,26 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 - **Kind:** `internalMutation`
 - **Args:** `{ payload }` (raw Polar `customer.state_changed` webhook payload, intentionally `v.any()` so strict local validators do not reject future Polar payload changes; read the raw snake_case fields Polar sends rather than SDK camelCase fields)
-- **Role:** Maps webhook customer to Convex `userId`, updates `billing_usage_snapshots` (`Free` subscription with `meter: null`, or paid subscription plus resolved meter snapshot), then enqueues `grant_monthly_credits` when an active subscription is present. If `deleted_at` is set, removes the local customer mapping, local subscription rows, and usage snapshot instead. Sole trigger for monthly credits. Does not persist subscription mirror fields such as `pendingUpdate`.
+- **Role:** Thin webhook adapter: converts the snake_case payload through `billing_polar_webhook_to_customer_state` and calls `db_apply_polar_customer_state_refresh`. All snapshot and credit logic lives in the helper. Does not persist subscription mirror fields such as `pendingUpdate`.
+
+#### `db_apply_polar_customer_state_refresh`
+
+- **Module:** [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
+- **Kind:** synchronous helper function (`async function`) called with a `MutationCtx`; not a registered Convex function.
+- **Args:** `(ctx, { state: BillingCustomerState, syncedAt })`
+- **Role:** Single source of truth for reconciling a canonical `BillingCustomerState` into local billing state. On `state.deletedAt` it calls `db_delete_customer_state` and returns. Otherwise it guards against multiple active subscriptions, captures the previous snapshot's subscription, resolves `product` and `syncedProducts` from the Polar component, upserts the snapshot via `build_usage_snapshot` + `db_upsert_usage_snapshot`, and runs the monthly credit grant inline when an active subscription is present and the period changed (`previousSubscription === null || previousSubscription.id !== subscription.id || previousSubscription.currentPeriodStart !== subscription.currentPeriodStart`). Called from `handle_polar_customer_state_update` (webhook path) and from `apply_polar_customer_state_refresh` (admin replay path).
+
+#### `apply_polar_customer_state_refresh`
+
+- **Kind:** `internalMutation` (admin region)
+- **Args:** `{ state, syncedAt: number }` where `state` is validated as the full canonical `BillingCustomerState` shape (camelCase fields plus ISO-string dates) at the Convex boundary.
+- **Role:** Thin mutation wrapper around `db_apply_polar_customer_state_refresh` so actions can drive the full refresh flow from a `BillingCustomerState` they obtained out-of-band (e.g. the admin action pulling `CustomerState` directly from Polar via `customersGetState`). Keep this boundary strict because the admin replay path owns the canonical local `BillingCustomerState` contract; unlike vendor webhooks, this payload is app-shaped.
+
+#### `refresh_from_polar_customer_state`
+
+- **Kind:** `internalAction` (admin region)
+- **Args:** `{ userId: Id<"users"> }`
+- **Role:** Admin-only replay path. Reads the authoritative Polar `CustomerState` via `billing.getCustomerState`, converts it through `billing_polar_sdk_to_db_data`, then calls `internal.billing.apply_polar_customer_state_refresh` with `syncedAt: Date.now()`. Safe to run mid-period — the helper's period-transition gate skips the credit grant when `(subscriptionId, currentPeriodStart)` is unchanged, and Polar's deterministic `monthly_credit::<userId>::<subscriptionId>::<periodStart>` `externalId` dedupes duplicate grants at Polar's end. Intended to be triggered manually from the Convex dashboard when a webhook was lost or local state looks stale.
 
 ### Glossary — event ingestion
 
@@ -239,11 +271,18 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 ### Glossary — monthly credits
 
-#### `grant_monthly_credits`
+#### Inline grant inside `db_apply_polar_customer_state_refresh`
 
-- **Kind:** `internalAction`
-- **Args:** `{ userId, subscriptionId, productId, periodStart }`
-- **Role:** Resolves the product, computes the recurring credit amount, and queues a `monthly_credit` billing event with a negative amount when credits are due. The event `externalId` plus Polar duplicate detection inside `ingest_events` is the authority for whether that period was already granted.
+- **Module:** [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
+- **Kind:** inlined branch of `db_apply_polar_customer_state_refresh` (synchronous `MutationCtx` helper); no separate exported function.
+- **Role:** After upserting `billing_usage_snapshots` from the canonical `BillingCustomerState`, resolves the Polar product, computes `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` and the period transition gate passes, calls `db_apply_optimistic_credit_to_snapshot` to write the credit into the local snapshot in the same transaction, then enqueues a single negative-amount `monthly_credit` billing event through `billing_ingest_events`. It does not call Polar `customersGetState`; the optimistic write makes the credit visible immediately, and the next `customer.state_changed` reconciles the meter once Polar's aggregation catches up. Polar's duplicate detection by the deterministic `monthly_credit::<userId>::<subscriptionId>::<periodStart>` `externalId` is the authority for ledger idempotency; the period-transition gate prevents re-running the grant on same-period repeat webhooks (from either the webhook path or the admin replay).
+
+#### `db_apply_optimistic_credit_to_snapshot`
+
+- **Module:** [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
+- **Kind:** synchronous helper function (`async function`) called with a `MutationCtx`; not a registered Convex function.
+- **Args:** `(ctx, { userId, syncedProducts, product, amountCents, syncedAt })`
+- **Role:** Patches the user's `billing_usage_snapshots` row with a credit `meter` mirroring Polar's accounting (`consumedUnits -= amountCents`, `balance += amountCents`, preserving prior `creditedUnits` and `amountDueCents` via spread; defaults `creditedUnits: 0` and `amountDueCents: 0` when no prior meter exists), so the grant updates the UI on the same Convex tick instead of waiting ~20s for Polar's `customer.state_changed`. Resolves the meter id through `billing_resolve_customer_meter_id` so the optimistic id matches the one Polar later sends. Expects the snapshot row to exist because `db_apply_polar_customer_state_refresh` upserts it earlier in the same transaction; missing rows surface a `should_never_happen` error.
 
 ## Auth bootstrap trigger
 

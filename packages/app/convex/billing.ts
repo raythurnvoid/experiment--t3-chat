@@ -7,6 +7,7 @@ import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
+import type { CustomerState } from "@polar-sh/sdk/models/components/customerstate.js";
 import { AlreadyCanceledSubscription } from "@polar-sh/sdk/models/errors/alreadycanceledsubscription.js";
 import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
@@ -87,12 +88,8 @@ export async function billing_action_delete_polar_customer_by_user_id(
 		return Result({ _yay: null });
 	}
 
-	// Keep the current hard-delete path on Polar's non-anonymizing delete flow.
-	// `anonymize: false` emits `customer.deleted`; `anonymize: true` scrubs PII
-	// by updating the customer with `deleted_at`, so Polar emits `customer.updated`
-	// plus `customer.state_changed` instead. If GDPR erasure becomes required,
-	// add a dedicated deletion flow that opts into `anonymize: true` and handles
-	// cleanup from the `deleted_at` webhook signal.
+	// Keep using Polar's hard-delete path here; anonymization emits `deleted_at`
+	// updates instead of `customer.deleted`.
 	const deleteResult = await customersDelete(billing_polar_client(), {
 		id: customer.id,
 		anonymize: false,
@@ -129,7 +126,7 @@ export async function billing_action_revoke_polar_subscription(args: { subscript
 	return Result({ _yay: null });
 }
 
-async function billing_action_cancel_polar_subscription_at_period_end(args: { subscriptionId: string }) {
+async function action_cancel_polar_subscription_at_period_end(args: { subscriptionId: string }) {
 	const cancelResult = await subscriptionsUpdate(billing_polar_client(), {
 		id: args.subscriptionId,
 		subscriptionUpdate: {
@@ -152,7 +149,7 @@ async function billing_action_cancel_polar_subscription_at_period_end(args: { su
 	return Result({ _yay: null });
 }
 
-async function billing_action_uncancel_polar_subscription(args: { subscriptionId: string }) {
+async function action_uncancel_polar_subscription(args: { subscriptionId: string }) {
 	const uncancelResult = await subscriptionsUpdate(billing_polar_client(), {
 		id: args.subscriptionId,
 		subscriptionUpdate: {
@@ -184,6 +181,15 @@ export const get_usage_snapshot = query({
 			.query("billing_usage_snapshots")
 			.withIndex("by_userId", (q) => q.eq("userId", user.id))
 			.first();
+
+		console.info("get_usage_snapshot read", {
+			userId: user.id,
+			hasSnapshot: snap != null,
+			meter: snap?.meter ?? null,
+			subscription: snap?.subscription ?? null,
+			lastSyncedAt: snap ? new Date(snap.lastSyncedAt).toISOString() : null,
+			snapshotCreatedAt: snap ? new Date(snap._creationTime).toISOString() : null,
+		});
 
 		return snap;
 	},
@@ -222,6 +228,421 @@ export const get_current_user_subscription = query({
 });
 
 /**
+ * Canonical customer-state shape for snapshot refreshes.
+ * Keep dates as ISO strings so webhook and SDK inputs share one mutation-safe type.
+ */
+/** Local shape of the `customer.state_changed` webhook payload. */
+type BillingPolarCustomerStateWebhookData = {
+	id: string;
+	external_id: string | null;
+	deleted_at?: string | null;
+	active_subscriptions: Array<{
+		id: string;
+		product_id: string;
+		currency: string;
+		current_period_start: string;
+		current_period_end: string;
+		meters: Array<{
+			meter_id: string;
+			consumed_units: number;
+			credited_units: number;
+			amount: number;
+		}>;
+	}>;
+	active_meters: Array<{
+		meter_id: string;
+		consumed_units: number;
+		credited_units: number;
+		balance: number;
+	}>;
+};
+
+// Convert the webhook payload to the canonical shape.
+function billing_polar_webhook_to_customer_state(data: BillingPolarCustomerStateWebhookData) {
+	return {
+		id: data.id,
+		externalId: data.external_id,
+		deletedAt: data.deleted_at ?? null,
+		activeSubscriptions: data.active_subscriptions.map((sub) => ({
+			id: sub.id,
+			productId: sub.product_id,
+			currency: sub.currency,
+			currentPeriodStart: sub.current_period_start,
+			currentPeriodEnd: sub.current_period_end,
+			meters: sub.meters.map((meter) => ({
+				meterId: meter.meter_id,
+				consumedUnits: meter.consumed_units,
+				creditedUnits: meter.credited_units,
+				amount: meter.amount,
+			})),
+		})),
+		activeMeters: data.active_meters.map((meter) => ({
+			meterId: meter.meter_id,
+			consumedUnits: meter.consumed_units,
+			creditedUnits: meter.credited_units,
+			balance: meter.balance,
+		})),
+	};
+}
+
+// Convert the SDK `CustomerState` to the canonical shape with ISO string dates.
+function billing_polar_sdk_to_db_data(
+	state: CustomerState,
+) {
+	return {
+		id: state.id,
+		externalId: state.externalId ?? null,
+		deletedAt: state.deletedAt ? state.deletedAt.toISOString() : null,
+		activeSubscriptions: state.activeSubscriptions.map((sub) => ({
+			id: sub.id,
+			productId: sub.productId,
+			currency: sub.currency,
+			currentPeriodStart: sub.currentPeriodStart.toISOString(),
+			currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
+			meters: sub.meters.map((meter) => ({
+				meterId: meter.meterId,
+				consumedUnits: meter.consumedUnits,
+				creditedUnits: meter.creditedUnits,
+				amount: meter.amount,
+			})),
+		})),
+		activeMeters: state.activeMeters.map((meter) => ({
+			meterId: meter.meterId,
+			consumedUnits: meter.consumedUnits,
+			creditedUnits: meter.creditedUnits,
+			balance: meter.balance,
+		})),
+	};
+}
+
+type BillingProductLike = {
+	name: string;
+	prices?: Array<{
+		isArchived: boolean;
+		amountType?: string;
+		meterId?: string;
+	}>;
+	benefits?: Array<{
+		type: string;
+		properties?: unknown;
+	}>;
+};
+
+/**
+ * Resolve the app's customer-meter id.
+ *
+ * Prefer subscription meter, then synced metered price, then legacy
+ * `meter_credit`. Return `null` before the first monthly credit creates one.
+ */
+function billing_resolve_customer_meter_id(args: {
+	subscriptionMeterId: string | null;
+	syncedProducts: Array<BillingProductLike>;
+	product: BillingProductLike | null;
+}): string | null {
+	if (args.subscriptionMeterId) {
+		return args.subscriptionMeterId;
+	}
+
+	for (const syncedProduct of args.syncedProducts) {
+		const meteredPrice = syncedProduct.prices?.find((price) => {
+			return !price.isArchived && price.amountType === "metered_unit" && typeof price.meterId === "string";
+		});
+		if (meteredPrice?.meterId) {
+			return meteredPrice.meterId;
+		}
+	}
+
+	const creditBenefit = args.product?.benefits?.find((benefit) => benefit.type === "meter_credit");
+	if (
+		typeof creditBenefit?.properties === "object" &&
+		creditBenefit.properties !== null &&
+		"meterId" in creditBenefit.properties &&
+		typeof creditBenefit.properties.meterId === "string"
+	) {
+		return creditBenefit.properties.meterId;
+	}
+
+	return null;
+}
+
+type BillingUsageSnapshotRow = Omit<Doc<"billing_usage_snapshots">, "_id" | "_creationTime">;
+
+/**
+ * Build `billing_usage_snapshots` from canonical customer state.
+ * Keep balance from the customer meter and amount due from the subscription meter.
+ */
+function build_usage_snapshot(args: {
+	state: ReturnType<typeof billing_polar_webhook_to_customer_state>;
+	product: BillingProductLike | null;
+	syncedProducts: Array<BillingProductLike>;
+	syncedAt: number;
+}): BillingUsageSnapshotRow {
+	const { state, product, syncedProducts, syncedAt } = args;
+	const userId = state.externalId as Id<"users">;
+	const subscription = state.activeSubscriptions[0] ?? null;
+	const subscriptionMeter = subscription?.meters[0] ?? null;
+	const isFreeSubscription = product?.name === billing_PRODUCTS.Free.name;
+	const hasMeteredPrice =
+		product?.prices?.some((price) => !price.isArchived && price.amountType === "metered_unit") ?? false;
+
+	// Paid metered plans must include a subscription meter.
+	if (subscription && !isFreeSubscription && hasMeteredPrice && !subscriptionMeter) {
+		throw should_never_happen("Failed to resolve subscription meter for paid plan", {
+			customerId: state.id,
+			product,
+			subscription,
+			userId,
+		});
+	}
+
+	const customerMeterId = billing_resolve_customer_meter_id({
+		subscriptionMeterId: subscriptionMeter?.meterId ?? null,
+		syncedProducts,
+		product,
+	});
+	const customerMeter = customerMeterId
+		? (state.activeMeters.find((meter) => meter.meterId === customerMeterId) ?? null)
+		: null;
+
+	const usageMeter: BillingUsageSnapshotRow["meter"] = customerMeter
+		? {
+				id: customerMeter.meterId,
+				consumedUnits: customerMeter.consumedUnits,
+				creditedUnits: customerMeter.creditedUnits,
+				balance: customerMeter.balance,
+				amountDueCents: subscriptionMeter?.amount ?? 0,
+			}
+		: subscriptionMeter
+			? {
+					id: subscriptionMeter.meterId,
+					consumedUnits: subscriptionMeter.consumedUnits,
+					creditedUnits: subscriptionMeter.creditedUnits,
+					balance: subscriptionMeter.creditedUnits - subscriptionMeter.consumedUnits,
+					amountDueCents: subscriptionMeter.amount,
+				}
+			: null;
+
+	return {
+		userId,
+		polarCustomerId: state.id,
+		subscription: subscription
+			? {
+					id: subscription.id,
+					productId: subscription.productId,
+					currency: subscription.currency,
+					currentPeriodStart: subscription.currentPeriodStart,
+					currentPeriodEnd: subscription.currentPeriodEnd,
+				}
+			: null,
+		meter: usageMeter,
+		lastSyncedAt: syncedAt,
+	};
+}
+
+async function db_upsert_usage_snapshot(ctx: MutationCtx, snapshot: BillingUsageSnapshotRow) {
+	const existing = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", snapshot.userId))
+		.unique();
+	// Keep an existing meter when Polar still reports `activeMeters: []`.
+	// This avoids wiping an optimistic meter before Polar catches up.
+	const next =
+		existing && existing.meter && !snapshot.meter && snapshot.subscription
+			? { ...snapshot, meter: existing.meter }
+			: snapshot;
+	console.info("upsert billing_usage_snapshots", {
+		userId: next.userId,
+		action: existing ? "patch" : "insert",
+		existingId: existing?._id ?? null,
+		meter: next.meter,
+		subscription: next.subscription,
+		polarCustomerId: next.polarCustomerId,
+		lastSyncedAt: new Date(next.lastSyncedAt).toISOString(),
+		preservedExistingMeter: existing?.meter != null && snapshot.meter == null && snapshot.subscription != null,
+	});
+	if (existing) {
+		await ctx.db.patch("billing_usage_snapshots", existing._id, next);
+	} else {
+		await ctx.db.insert("billing_usage_snapshots", next);
+	}
+}
+
+async function db_delete_customer_state(
+	ctx: MutationCtx,
+	state: ReturnType<typeof billing_polar_webhook_to_customer_state>,
+) {
+	// Treat `deletedAt` as the delete signal for anonymized customers.
+	await ctx.runMutation(components.polar.lib.deleteCustomerByPolarCustomerId, {
+		polarCustomerId: state.id,
+	});
+
+	const userId = state.externalId ? ctx.db.normalizeId("users", state.externalId) : null;
+	// Fall back to `polarCustomerId` because anonymization can clear `externalId`.
+	const usageSnapshots = userId
+		? await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.collect()
+		: await ctx.db
+				.query("billing_usage_snapshots")
+				.filter((q) => q.eq(q.field("polarCustomerId"), state.id))
+				.collect();
+	for (const usageSnapshot of usageSnapshots) {
+		await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
+	}
+}
+
+/**
+ * Reconcile canonical Polar customer state into `billing_usage_snapshots`.
+ * Used by both the webhook path and the admin replay action.
+ */
+async function db_apply_polar_customer_state_refresh(
+	ctx: MutationCtx,
+	args: {
+		state: ReturnType<typeof billing_polar_webhook_to_customer_state>;
+		syncedAt: number;
+	},
+) {
+	const { state, syncedAt } = args;
+
+	if (state.deletedAt) {
+		// Polar anonymization can arrive as a state change with `deletedAt`.
+		await db_delete_customer_state(ctx, state);
+		return;
+	}
+
+	if (state.activeSubscriptions.length > 1) {
+		throw should_never_happen("Multiple active subscriptions are not supported", {
+			activeSubscriptions: state.activeSubscriptions,
+			customerId: state.id,
+			userId: state.externalId,
+		});
+	}
+
+	// Read the current subscription before the upsert so the period gate can compare it.
+	const userId = state.externalId as Id<"users">;
+	const existingSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", userId))
+		.unique();
+	const previousSubscription = existingSnapshot?.subscription ?? null;
+
+	const subscription = state.activeSubscriptions[0] ?? null;
+	const product = subscription
+		? await ctx.runQuery(components.polar.lib.getProduct, { id: subscription.productId })
+		: null;
+	const syncedProducts = await ctx.runQuery(components.polar.lib.listProducts, {});
+
+	const snapshot = build_usage_snapshot({
+		state,
+		product,
+		syncedProducts,
+		syncedAt,
+	});
+	await db_upsert_usage_snapshot(ctx, snapshot);
+
+	// Grant only on a new subscription period or plan change.
+	// Same-period webhook repeats must not re-credit the optimistic meter.
+	if (subscription && product) {
+		const recurringAmountCents = billing_get_recurring_credits_cents(product.name);
+		const periodChanged =
+			previousSubscription === null ||
+			previousSubscription.id !== subscription.id ||
+			previousSubscription.currentPeriodStart !== subscription.currentPeriodStart;
+		if (recurringAmountCents > 0 && periodChanged) {
+			await db_apply_optimistic_credit_to_snapshot(ctx, {
+				userId,
+				syncedProducts,
+				product,
+				amountCents: recurringAmountCents,
+				syncedAt,
+			});
+			await billing_ingest_events(ctx, {
+				events: [
+					billing_event({
+						name: "monthly_credit",
+						externalCustomerId: userId,
+						externalId: composite_id(
+							"billing",
+							"monthly_credit",
+							userId,
+							subscription.id,
+							subscription.currentPeriodStart,
+						),
+						metadata: {
+							amount: -recurringAmountCents,
+							subscriptionId: subscription.id,
+							productId: subscription.productId,
+							productName: product.name,
+							periodStart: subscription.currentPeriodStart,
+						},
+					}),
+				],
+			});
+		}
+	}
+}
+
+/**
+ * Apply the recurring credit to the local snapshot before Polar updates `activeMeters`.
+ * Mirror Polar's meter math locally; the caller owns the period gate.
+ */
+async function db_apply_optimistic_credit_to_snapshot(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		syncedProducts: Array<BillingProductLike>;
+		product: BillingProductLike;
+		amountCents: number;
+		syncedAt: number;
+	},
+) {
+	const existing = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+		.unique();
+	// The snapshot was upserted earlier in this transaction, so the row must exist.
+	if (!existing) {
+		throw should_never_happen("Snapshot row missing for optimistic credit", {
+			userId: args.userId,
+		});
+	}
+
+	const meterId =
+		billing_resolve_customer_meter_id({
+			subscriptionMeterId: null,
+			syncedProducts: args.syncedProducts,
+			product: args.product,
+		}) ??
+		existing.meter?.id ??
+		null;
+
+	const previous = existing.meter;
+	const nextMeter: NonNullable<typeof existing.meter> | null = previous
+		? {
+				...previous,
+				consumedUnits: previous.consumedUnits - args.amountCents,
+				balance: previous.balance + args.amountCents,
+			}
+		: meterId
+			? {
+					id: meterId,
+					consumedUnits: -args.amountCents,
+					creditedUnits: 0,
+					balance: args.amountCents,
+					amountDueCents: 0,
+				}
+			: null;
+
+	if (!nextMeter) return;
+
+	await ctx.db.patch("billing_usage_snapshots", existing._id, {
+		meter: nextMeter,
+		lastSyncedAt: args.syncedAt,
+	});
+}
+
+/**
  * @see https://polar.sh/docs/api-reference/webhooks/customer.state_changed
  */
 export const handle_polar_customer_state_update = internalMutation({
@@ -233,165 +654,24 @@ export const handle_polar_customer_state_update = internalMutation({
 		const payload = args.payload as {
 			type: "customer.state_changed";
 			timestamp: string;
-			data: {
-				id: string;
-				external_id: string | null;
-				deleted_at?: string | null;
-				active_subscriptions: Array<{
-					id: string;
-					product_id: string;
-					currency: string;
-					current_period_start: string;
-					current_period_end: string;
-					meters: Array<{
-						meter_id: string;
-						consumed_units: number;
-						credited_units: number;
-						amount: number;
-					}>;
-				}>;
-				active_meters: Array<{
-					meter_id: string;
-					consumed_units: number;
-					credited_units: number;
-					balance: number;
-				}>;
-			};
+			data: BillingPolarCustomerStateWebhookData;
 		};
-		if (payload.data.deleted_at) {
-			// Treat deleted_at as the deletion signal because Polar anonymized
-			// customer deletes may arrive as customer.updated/state_changed.
-			await ctx.runMutation(components.polar.lib.deleteCustomerByPolarCustomerId, {
-				polarCustomerId: payload.data.id,
-			});
+		const state = billing_polar_webhook_to_customer_state(payload.data);
+		const syncedAt = Date.parse(payload.timestamp);
+		console.info("handle_polar_customer_state_update start", {
+			externalId: state.externalId,
+			polarCustomerId: state.id,
+			payloadTimestamp: payload.timestamp,
+			activeSubscriptionsCount: state.activeSubscriptions.length,
+			activeMeters: state.activeMeters.map((m) => ({
+				meterId: m.meterId,
+				balance: m.balance,
+				consumedUnits: m.consumedUnits,
+				creditedUnits: m.creditedUnits,
+			})),
+		});
 
-			const userId = payload.data.external_id ? ctx.db.normalizeId("users", payload.data.external_id) : null;
-			// Use polarCustomerId when external_id is absent because anonymization can
-			// clear the app-owned customer reference before this webhook arrives.
-			const usageSnapshots = userId
-				? await ctx.db
-						.query("billing_usage_snapshots")
-						.withIndex("by_userId", (q) => q.eq("userId", userId))
-						.collect()
-				: await ctx.db
-						.query("billing_usage_snapshots")
-						.filter((q) => q.eq(q.field("polarCustomerId"), payload.data.id))
-						.collect();
-			for (const usageSnapshot of usageSnapshots) {
-				await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
-			}
-
-			return null;
-		}
-
-		const userId = payload.data.external_id as Id<"users">;
-		if (payload.data.active_subscriptions.length > 1) {
-			throw should_never_happen("Multiple active subscriptions are not supported", {
-				activeSubscriptions: payload.data.active_subscriptions,
-				customerId: payload.data.id,
-				userId,
-			});
-		}
-
-		const subscription = payload.data.active_subscriptions[0];
-		const product = subscription
-			? await ctx.runQuery(components.polar.lib.getProduct, {
-					id: subscription.product_id,
-				})
-			: null;
-		const isFreeSubscription = product?.name === billing_PRODUCTS.Free.name;
-		const meteredPrice =
-			isFreeSubscription === false
-				? (product?.prices?.find((price) => {
-						return !price.isArchived && price.amountType === "metered_unit";
-					}) ?? null)
-				: null;
-		const creditBenefit =
-			meteredPrice == null && !isFreeSubscription
-				? (product?.benefits?.find((benefit) => {
-						return benefit.type === "meter_credit";
-					}) ?? null)
-				: null;
-		const creditBenefitMeterId =
-			typeof creditBenefit?.properties === "object" &&
-			creditBenefit.properties !== null &&
-			"meterId" in creditBenefit.properties &&
-			typeof creditBenefit.properties.meterId === "string"
-				? creditBenefit.properties.meterId
-				: null;
-		// Free subscriptions intentionally have no product/subscription meter.
-		// Keep their subscription snapshot, but leave meter state absent.
-		const meterRow = isFreeSubscription ? null : (subscription?.meters[0] ?? null);
-		const activeMeter = meterRow
-			? (payload.data.active_meters.find((meter) => meter.meter_id === meterRow.meter_id) ?? null)
-			: creditBenefitMeterId
-				? (payload.data.active_meters.find((meter) => meter.meter_id === creditBenefitMeterId) ?? null)
-				: null;
-		const usageMeter = meterRow
-			? {
-					id: meterRow.meter_id,
-					consumedUnits: meterRow.consumed_units,
-					creditedUnits: meterRow.credited_units,
-					balance: activeMeter?.balance ?? meterRow.credited_units - meterRow.consumed_units,
-					amountDueCents: meterRow.amount,
-				}
-			: activeMeter
-				? {
-						id: activeMeter.meter_id,
-						consumedUnits: activeMeter.consumed_units,
-						creditedUnits: activeMeter.credited_units,
-						balance: activeMeter.balance,
-						amountDueCents: 0,
-					}
-				: null;
-
-		if (subscription && usageMeter == null && !isFreeSubscription) {
-			throw should_never_happen("Failed to resolve usage meter for active subscription", {
-				activeMeters: payload.data.active_meters,
-				customerId: payload.data.id,
-				product,
-				subscription,
-				userId,
-			});
-		}
-
-		const usageSnapshot = {
-			userId,
-			polarCustomerId: payload.data.id,
-			subscription: subscription
-				? {
-						id: subscription.id,
-						productId: subscription.product_id,
-						currency: subscription.currency,
-						currentPeriodStart: subscription.current_period_start,
-						currentPeriodEnd: subscription.current_period_end,
-					}
-				: null,
-			meter: usageMeter,
-			lastSyncedAt: Date.parse(payload.timestamp),
-		} satisfies Omit<Doc<"billing_usage_snapshots">, "_id" | "_creationTime">;
-
-		const existing = await ctx.db
-			.query("billing_usage_snapshots")
-			.withIndex("by_userId", (q) => q.eq("userId", userId))
-			.unique();
-		if (existing) {
-			await ctx.db.patch("billing_usage_snapshots", existing._id, usageSnapshot);
-		} else {
-			await ctx.db.insert("billing_usage_snapshots", usageSnapshot);
-		}
-
-		// Queue the monthly credits engine on every active-subscription state
-		// change so renewals and upgrades grant credits as soon as Polar reports
-		// the new period.
-		if (subscription) {
-			await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.grant_monthly_credits, {
-				userId,
-				subscriptionId: subscription.id,
-				productId: subscription.product_id,
-				periodStart: subscription.current_period_start,
-			});
-		}
+		await db_apply_polar_customer_state_refresh(ctx, { state, syncedAt });
 
 		return null;
 	},
@@ -555,9 +835,9 @@ export const upsert_cancel_polar_subscription_job = internalMutation({
 			.query("billing_cancel_polar_subscription_jobs")
 			.withIndex("by_userId", (q) => q.eq("userId", args.userId))
 			.collect();
-		const [currentRow, ...staleRows] = existingRows;
+		const [currentRow, ...staleDocs] = existingRows;
 
-		await Promise.all(staleRows.map((row) => ctx.db.delete("billing_cancel_polar_subscription_jobs", row._id)));
+		await Promise.all(staleDocs.map((doc) => ctx.db.delete("billing_cancel_polar_subscription_jobs", doc._id)));
 
 		if (currentRow) {
 			await ctx.db.patch("billing_cancel_polar_subscription_jobs", currentRow._id, {
@@ -580,12 +860,12 @@ export const delete_cancel_polar_subscription_job = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const rows = await ctx.db
+		const docs = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
 			.withIndex("by_userId", (q) => q.eq("userId", args.userId))
 			.collect();
 
-		await Promise.all(rows.map((row) => ctx.db.delete("billing_cancel_polar_subscription_jobs", row._id)));
+		await Promise.all(docs.map((doc) => ctx.db.delete("billing_cancel_polar_subscription_jobs", doc._id)));
 
 		return null;
 	},
@@ -597,18 +877,18 @@ export const complete_polar_subscription_period_end_cancellation = billing_workp
 	}),
 	handler: async (ctx, args) => {
 		const userId = args.context.userId as Id<"users">;
-		const row = await ctx.db
+		const doc = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
 			.withIndex("by_userId", (q) => q.eq("userId", userId))
 			.first();
-		if (!row || row.jobId !== args.workId) {
+		if (!doc || doc.jobId !== args.workId) {
 			return;
 		}
 
 		if (args.result.kind === "success") {
 			await ctx.db.delete(
 				"billing_cancel_polar_subscription_jobs",
-				row._id as Id<"billing_cancel_polar_subscription_jobs">,
+				doc._id as Id<"billing_cancel_polar_subscription_jobs">,
 			);
 		}
 
@@ -702,7 +982,7 @@ export const cancel_polar_subscription_at_period_end = internalAction({
 	},
 	returns: v.null(),
 	handler: async (_ctx, args) => {
-		const cancelSubscriptionResult = await billing_action_cancel_polar_subscription_at_period_end({
+		const cancelSubscriptionResult = await action_cancel_polar_subscription_at_period_end({
 			subscriptionId: args.subscriptionId,
 		});
 		if (cancelSubscriptionResult._nay) {
@@ -808,7 +1088,7 @@ export const bootstrap_free_subscription = internalAction({
 						userId: args.userId,
 					});
 
-					const uncancelSubscriptionResult = await billing_action_uncancel_polar_subscription({
+					const uncancelSubscriptionResult = await action_uncancel_polar_subscription({
 						subscriptionId: currentSubscription.id,
 					});
 					if (uncancelSubscriptionResult._nay) {
@@ -841,6 +1121,12 @@ export const bootstrap_free_subscription = internalAction({
 				});
 			}
 
+			console.info("bootstrap subscriptionsCreate start", {
+				userId: args.userId,
+				customerId: customer.id,
+				productId: freeProduct.id,
+				startedAt: new Date().toISOString(),
+			});
 			const createSubscriptionResult = await subscriptionsCreate(billing.polar, {
 				customerId: customer.id,
 				productId: freeProduct.id,
@@ -856,6 +1142,13 @@ export const bootstrap_free_subscription = internalAction({
 					},
 				});
 			}
+			console.info("bootstrap subscriptionsCreate ok", {
+				userId: args.userId,
+				customerId: customer.id,
+				subscriptionId: createSubscriptionResult.value.id,
+				status: createSubscriptionResult.value.status,
+				respondedAt: new Date().toISOString(),
+			});
 
 			await ctx.runMutation(components.polar.lib.createSubscription, {
 				subscription: convertToDatabaseSubscription(createSubscriptionResult.value),
@@ -1008,14 +1301,12 @@ export const ingest_events = internalAction({
 		),
 	},
 	handler: async (_ctx, args) => {
-		// Skip direct Polar calls in tests; tests assert queued payloads at the
-		// workpool boundary unless they explicitly opt into this action path.
+		// Skip direct Polar calls in tests; tests usually assert the queued payload.
 		if (process.env.NODE_ENV === "test") {
 			return;
 		}
 
-		// Polar tracks all billing effects in one meter; keep the app event name as
-		// metadata while passing the rest of the Polar-shaped event through.
+		// Polar uses one meter event; keep the app event name in metadata.
 		const ingestResult = await eventsIngest(billing_polar_client(), {
 			events: args.events.map((event) => {
 				const { name, metadata, ...polarEvent } = event;
@@ -1036,91 +1327,99 @@ export const ingest_events = internalAction({
 	},
 });
 
-/**
- * Queue app-owned billing events for Polar ingestion.
- *
- * Keep this as the only local entrypoint for usage-event emission so every
- * caller gets the workpool retry behavior before `ingest_events` performs
- * the actual Polar `eventsIngest` call.
- */
+/** Queue app-owned billing events for Polar ingestion through the usage-event workpool. */
 export async function billing_ingest_events(
 	ctx: ActionCtx | MutationCtx,
 	args: {
 		events: Array<billing_Event>;
 	},
 ) {
-	// Keep every billing event ingest behind the workpool so Polar failures are
-	// retried by one queue regardless of the caller runtime.
+	// Keep all billing event ingest behind one retrying workpool.
 	return await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
 		events: args.events,
 	});
 }
 // #endregion event ingestion
 
-// #region monthly credits
-/**
- * Grant recurring monthly credits for one `(user, subscription, period)` tuple.
- *
- * The Convex monthly credits engine is the only code path that grants recurring
- * credits for every plan (Free, Pay As You Go, Pro). Polar `meter_credit`
- * benefits are detached from products in the dashboard so they cannot fire in
- * parallel. The Polar usage event keyed by `externalId` is the authority for
- * whether this period was already granted.
- */
-export const grant_monthly_credits = internalAction({
-	args: {
-		userId: v.id("users"),
-		subscriptionId: v.string(),
-		productId: v.string(),
-		periodStart: v.string(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const product = await ctx.runQuery(components.polar.lib.getProduct, {
-			id: args.productId,
-		});
-		if (!product) {
-			throw should_never_happen("Product not found while granting monthly credits", {
-				periodStart: args.periodStart,
-				productId: args.productId,
-				subscriptionId: args.subscriptionId,
-				userId: args.userId,
-			});
-		}
-
-		const recurringAmountCents = billing_get_recurring_credits_cents(product.name);
-		if (recurringAmountCents > 0) {
-			// Use a deterministic externalId so Polar records one immutable credit
-			// event per `(user, subscription, period)` tuple and reports later
-			// retries as duplicates.
-			await billing_ingest_events(ctx, {
-				events: [
-					billing_event({
-						name: "monthly_credit",
-						externalCustomerId: args.userId,
-						externalId: composite_id("billing", "monthly_credit", args.userId, args.subscriptionId, args.periodStart),
-						metadata: {
-							amount: -recurringAmountCents,
-							subscriptionId: args.subscriptionId,
-							productId: args.productId,
-							productName: product.name,
-							periodStart: args.periodStart,
-						},
-					}),
-				],
-			});
-		}
-
-		return null;
-	},
-});
-// #endregion monthly credits
-
 // #region admin
 export const sync_products = internalAction({
 	args: {},
 	handler: async (ctx) => {
 		await billing.syncProducts(ctx);
+	},
+});
+
+/** Action-friendly wrapper around `db_apply_polar_customer_state_refresh`. */
+export const apply_polar_customer_state_refresh = internalMutation({
+	args: {
+		state: v.object({
+			id: v.string(),
+			externalId: v.union(v.string(), v.null()),
+			deletedAt: v.union(v.string(), v.null()),
+			activeSubscriptions: v.array(
+				v.object({
+					id: v.string(),
+					productId: v.string(),
+					currency: v.string(),
+					currentPeriodStart: v.string(),
+					currentPeriodEnd: v.string(),
+					meters: v.array(
+						v.object({
+							meterId: v.string(),
+							consumedUnits: v.number(),
+							creditedUnits: v.number(),
+							amount: v.number(),
+						}),
+					),
+				}),
+			),
+			activeMeters: v.array(
+				v.object({
+					meterId: v.string(),
+					consumedUnits: v.number(),
+					creditedUnits: v.number(),
+					balance: v.number(),
+				}),
+			),
+		}),
+		syncedAt: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await db_apply_polar_customer_state_refresh(ctx, { state: args.state, syncedAt: args.syncedAt });
+		return null;
+	},
+});
+
+/**
+ * Admin-only replay of live `CustomerState` through the normal refresh flow.
+ * Same-period replays are safe because the helper skips duplicate grants.
+ */
+export const refresh_from_polar_customer_state = internalAction({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const sdkState = await billing.getCustomerState(ctx, { userId: args.userId });
+		if (!sdkState) {
+			console.info("refresh_from_polar_customer_state: no Polar customer for user", {
+				userId: args.userId,
+			});
+			return null;
+		}
+		const now = Date.now();
+		await ctx.runMutation(internal.billing.apply_polar_customer_state_refresh, {
+			state: billing_polar_sdk_to_db_data(sdkState),
+			syncedAt: now,
+		});
+		console.info("refresh_from_polar_customer_state ok", {
+			userId: args.userId,
+			polarCustomerId: sdkState.id,
+			activeSubscriptionsCount: sdkState.activeSubscriptions.length,
+			syncedAt: now,
+		});
+		return null;
 	},
 });
 

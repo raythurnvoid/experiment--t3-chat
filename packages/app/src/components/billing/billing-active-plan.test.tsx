@@ -24,12 +24,11 @@ function createFreeProduct() {
 				amountType: "free",
 				isArchived: false,
 				productId: "prod_free",
-				priceCurrency: "eur",
 				recurringInterval: "month",
 			},
 		],
 		benefits: [],
-	} as app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
+	} as unknown as app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>[number];
 }
 
 function createPayAsYouGoProduct() {
@@ -69,7 +68,43 @@ describe("BillingActivePlan", () => {
 		cleanup();
 	});
 
-	test("renders Free without requiring a usage meter", () => {
+	test("renders Free with the customer-meter balance and zero amount due", () => {
+		render(
+			<BillingActivePlan
+				product={createFreeProduct()}
+				subscription={createSubscription()}
+				usage={
+					{
+						userId: "user_free",
+						polarCustomerId: "cust_free",
+						subscription: {
+							id: "sub_free",
+							productId: "prod_free",
+							currency: "eur",
+							currentPeriodStart: "2026-01-01T00:00:00.000Z",
+							currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+						},
+						meter: {
+							id: "meter_press_usage",
+							consumedUnits: 240,
+							creditedUnits: 1000,
+							balance: 760,
+							amountDueCents: 0,
+						},
+						lastSyncedAt: Date.parse("2026-01-15T00:00:00.000Z"),
+					} as app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>
+				}
+			/>,
+		);
+
+		expect(screen.getByText("Due")).not.toBeNull();
+		expect(screen.getByText("€0.00")).not.toBeNull();
+		expect(screen.getByText("Remaining credits")).not.toBeNull();
+		expect(screen.getByText("€7.60")).not.toBeNull();
+		expect(screen.getByText("Includes €10.00 of usage per month")).not.toBeNull();
+	});
+
+	test("hides the usage line for Free when the customer meter is not yet available", () => {
 		render(
 			<BillingActivePlan
 				product={createFreeProduct()}
@@ -93,6 +128,7 @@ describe("BillingActivePlan", () => {
 		);
 
 		expect(screen.queryByText("Due")).toBeNull();
+		expect(screen.queryByText("Remaining credits")).toBeNull();
 		expect(screen.getByText("Includes €10.00 of usage per month")).not.toBeNull();
 	});
 

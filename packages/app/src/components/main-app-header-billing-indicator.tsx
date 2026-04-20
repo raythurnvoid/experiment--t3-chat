@@ -35,17 +35,22 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 		return null;
 	}
 
-	// Root layout gates children on billing bootstrap, so these are expected to be present;
-	// bail out silently if any shape precondition fails rather than flashing placeholder text.
+	// Root layout gates children on billing bootstrap, so the subscription and
+	// the snapshot subscription metadata must be present. The customer meter is
+	// the authoritative source for remaining credits and amount due, so hide the
+	// indicator until Polar has synced it for this user.
 	if (!subscription || !usage?.subscription || !usage.meter || !products) {
 		return null;
 	}
 
 	const activeProduct = products.find((product) => product.id === subscription.productId) ?? null;
-	const isFree = activeProduct?.name === "Free";
+	if (!activeProduct) {
+		return null;
+	}
+	const isFree = activeProduct.name === "Free";
 
 	const currency = usage.subscription.currency;
-	const dueText = isFree ? "—" : format_cents(usage.meter.amountDueCents, currency);
+	const dueText = format_cents(usage.meter.amountDueCents, currency);
 	const creditsLeftText = format_cents(usage.meter.balance, currency);
 	const dueGroupContent = (
 		<span className={cn("MainAppHeaderBillingIndicator-group" satisfies MainAppHeaderBillingIndicator_ClassNames)}>

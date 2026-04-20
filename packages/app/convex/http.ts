@@ -12,7 +12,19 @@ const http = httpRouter();
 
 billing.registerRoutes(http, {
 	events: {
-		"customer.state_changed": async (ctx, _event, rawPayload) => {
+		"customer.state_changed": async (ctx, event, rawPayload) => {
+			console.info("[billing-credits] http webhook customer.state_changed received", {
+				externalId: event.data.externalId,
+				polarCustomerId: event.data.id,
+				activeSubscriptionsCount: event.data.activeSubscriptions.length,
+				activeMeters: event.data.activeMeters.map((m) => ({
+					meterId: m.meterId,
+					balance: m.balance,
+					consumedUnits: m.consumedUnits,
+					creditedUnits: m.creditedUnits,
+				})),
+				receivedAt: new Date().toISOString(),
+			});
 			await ctx.runMutation(internal.billing.handle_polar_customer_state_update, {
 				payload: rawPayload,
 			});

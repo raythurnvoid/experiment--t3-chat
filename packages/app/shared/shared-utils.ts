@@ -174,6 +174,8 @@ export function omit_properties<O extends object, P extends KeysOfUnion<O>>(
 	return result;
 }
 
+export function assume_type<T>(v: any): asserts v is T {}
+
 // #region path
 export function path_extract_segments_from(path: string): string[] {
 	if (path === "" || path === "/") return [];

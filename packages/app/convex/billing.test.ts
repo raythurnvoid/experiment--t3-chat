@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, test, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { Workpool } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
@@ -28,6 +28,10 @@ vi.mock("@polar-sh/sdk/funcs/eventsIngest.js", () => ({
 
 vi.mock("@polar-sh/sdk/funcs/customersCreate.js", () => ({
 	customersCreate: vi.fn(),
+}));
+
+vi.mock("@polar-sh/sdk/funcs/customersGetState.js", () => ({
+	customersGetState: vi.fn(),
 }));
 
 vi.mock("@polar-sh/sdk/funcs/subscriptionsCreate.js", () => ({
@@ -343,6 +347,74 @@ function create_updated_polar_subscription(args: {
 				}
 			: null,
 	};
+}
+
+function create_polar_customer_state(args: {
+	customerId: string;
+	userId: string | null;
+	productId: string;
+	subscriptionId: string;
+	currentPeriodStart: string;
+	currentPeriodEnd: string;
+	activeMeters?: Array<{
+		meterId: string;
+		consumedUnits: number;
+		creditedUnits: number;
+		balance: number;
+	}>;
+}) {
+	const createdAt = new Date("2026-01-01T00:00:00.000Z");
+	return {
+		id: args.customerId,
+		createdAt,
+		modifiedAt: null,
+		metadata: {},
+		externalId: args.userId,
+		email: "billing-test@example.com",
+		emailVerified: true,
+		type: "individual",
+		name: "Billing Test Customer",
+		billingAddress: null,
+		taxId: null,
+		locale: null,
+		organizationId: "billing_test_org",
+		deletedAt: null,
+		activeSubscriptions: [
+			{
+				id: args.subscriptionId,
+				createdAt,
+				modifiedAt: null,
+				customFieldData: {},
+				metadata: {},
+				status: "active",
+				amount: 0,
+				productId: args.productId,
+				currency: "eur",
+				recurringInterval: "month",
+				currentPeriodStart: new Date(args.currentPeriodStart),
+				currentPeriodEnd: new Date(args.currentPeriodEnd),
+				trialStart: null,
+				trialEnd: null,
+				cancelAtPeriodEnd: false,
+				canceledAt: null,
+				startedAt: new Date(args.currentPeriodStart),
+				endsAt: null,
+				discountId: null,
+				meters: [],
+			},
+		],
+		grantedBenefits: [],
+		activeMeters: (args.activeMeters ?? []).map((meter) => ({
+			id: `${meter.meterId}_state`,
+			createdAt,
+			modifiedAt: null,
+			meterId: meter.meterId,
+			consumedUnits: meter.consumedUnits,
+			creditedUnits: meter.creditedUnits,
+			balance: meter.balance,
+		})),
+		avatarUrl: "",
+	} satisfies NonNullable<Awaited<ReturnType<typeof billing.getCustomerState>>>;
 }
 
 beforeEach(() => {
@@ -1419,11 +1491,13 @@ describe("handle_polar_customer_state_update", () => {
 				.unique(),
 		);
 
+		const paygRecurringCents = billing_PRODUCTS["Pay As You Go"].recurringCreditsCents;
 		expect(snapshot).not.toBeNull();
 		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_webhook");
 		expect(snapshot!.meter?.id).toBe("meter_new_webhook");
+		// The inline credit only changes `consumedUnits` and `balance`.
 		expect(snapshot!.meter?.amountDueCents).toBe(6);
-		expect(snapshot!.meter?.balance).toBe(2172);
+		expect(snapshot!.meter?.balance).toBe(2172 + paygRecurringCents);
 	});
 
 	test("throws when the webhook payload contains multiple active subscriptions", async () => {
@@ -1470,12 +1544,11 @@ describe("handle_polar_customer_state_update", () => {
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
-	test("writes the subscription snapshot without a meter for benefit-detached Free plans", async () => {
+	test("writes the Free subscription snapshot with the customer meter balance and zero amount due", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_free_product",
-			benefits: [],
 		});
 		const enqueueActionSpy = vi
 			.spyOn(Workpool.prototype, "enqueueAction")
@@ -1517,15 +1590,91 @@ describe("handle_polar_customer_state_update", () => {
 				.unique(),
 		);
 
+		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
 		expect(snapshot).not.toBeNull();
 		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_free");
-		expect(snapshot!.meter).toBeNull();
-		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
-			userId,
-			subscriptionId: "sub_refresh_snapshot_free",
-			productId: polarProductId,
-			periodStart: "2026-04-13T03:20:38.364476Z",
+		// First-period refresh applies the recurring credit on top of the webhook meter.
+		expect(snapshot!.meter).toEqual({
+			id: "meter_press_usage",
+			consumedUnits: 240 - freeRecurringCents,
+			creditedUnits: 1000,
+			balance: 760 + freeRecurringCents,
+			amountDueCents: 0,
 		});
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "monthly_credit",
+					externalCustomerId: userId,
+					externalId: `monthly_credit::${userId}::sub_refresh_snapshot_free::2026-04-13T03:20:38.364476Z`,
+					metadata: expect.objectContaining({
+						amount: -freeRecurringCents,
+						subscriptionId: "sub_refresh_snapshot_free",
+						productId: polarProductId,
+						periodStart: "2026-04-13T03:20:38.364476Z",
+					}),
+				}),
+			],
+		});
+	});
+
+	test("stores the customer meter balance and subscription meter amount due for paid plans", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_refresh_snapshot_pro_product",
+		});
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_refresh_snapshot_pro" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-13T03:20:41.064Z",
+				data: {
+					id: "cust_refresh_snapshot_pro",
+					external_id: userId,
+					active_subscriptions: [
+						{
+							id: "sub_refresh_snapshot_pro",
+							product_id: polarProductId,
+							currency: "eur",
+							current_period_start: "2026-04-13T03:20:38.364476Z",
+							current_period_end: "2026-05-13T03:20:38.364476Z",
+							meters: [
+								{
+									meter_id: "meter_press_usage",
+									consumed_units: 123,
+									credited_units: 1000,
+									amount: 123,
+								},
+							],
+						},
+					],
+					active_meters: [
+						{
+							meter_id: "meter_press_usage",
+							consumed_units: 123,
+							credited_units: 1000,
+							balance: 877,
+						},
+					],
+				},
+			},
+		});
+
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		const proRecurringCents = billing_PRODUCTS.Pro.recurringCreditsCents;
+		expect(snapshot).not.toBeNull();
+		expect(snapshot!.meter?.id).toBe("meter_press_usage");
+		// The inline credit only changes `consumedUnits` and `balance`.
+		expect(snapshot!.meter?.amountDueCents).toBe(123);
+		expect(snapshot!.meter?.balance).toBe(877 + proRecurringCents);
 	});
 
 	test("writes the subscription snapshot and enqueues credits when no usage meter is resolvable yet", async () => {
@@ -1568,15 +1717,145 @@ describe("handle_polar_customer_state_update", () => {
 				.unique(),
 		);
 
+		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
 		expect(snapshot).not.toBeNull();
 		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_missing_meter");
+		// No meter resolves here, so the optimistic write leaves `meter` as `null`.
 		expect(snapshot!.meter).toBeNull();
-		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
-			userId,
-			subscriptionId: "sub_refresh_snapshot_missing_meter",
-			productId: polarProductId,
-			periodStart: "2026-04-13T03:20:38.364476Z",
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "monthly_credit",
+					externalCustomerId: userId,
+					externalId: `monthly_credit::${userId}::sub_refresh_snapshot_missing_meter::2026-04-13T03:20:38.364476Z`,
+					metadata: expect.objectContaining({
+						amount: -freeRecurringCents,
+						subscriptionId: "sub_refresh_snapshot_missing_meter",
+						productId: polarProductId,
+						periodStart: "2026-04-13T03:20:38.364476Z",
+					}),
+				}),
+			],
 		});
+	});
+});
+
+describe("refresh_from_polar_customer_state", () => {
+	test("replays the SDK customer state through the shared refresh flow", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_admin_refresh_free_product",
+		});
+		const getCustomerStateSpy = vi.spyOn(billing, "getCustomerState").mockResolvedValue(
+			create_polar_customer_state({
+				customerId: "cust_admin_refresh_free",
+				userId,
+				productId: polarProductId,
+				subscriptionId: "sub_admin_refresh_free",
+				currentPeriodStart: "2026-04-13T03:20:38.364476Z",
+				currentPeriodEnd: "2026-05-13T03:20:38.364476Z",
+			}),
+		);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_admin_refresh_free" as never);
+		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-13T03:20:41.064Z"));
+
+		await t.action(internal.billing.refresh_from_polar_customer_state, {
+			userId,
+		});
+
+		const snapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
+		expect(getCustomerStateSpy).toHaveBeenCalledWith(expect.anything(), { userId });
+		expect(snapshot).not.toBeNull();
+		expect(snapshot!.polarCustomerId).toBe("cust_admin_refresh_free");
+		expect(snapshot!.subscription).toEqual({
+			id: "sub_admin_refresh_free",
+			productId: polarProductId,
+			currency: "eur",
+			currentPeriodStart: "2026-04-13T03:20:38.364476Z",
+			currentPeriodEnd: "2026-05-13T03:20:38.364476Z",
+		});
+		expect(snapshot!.lastSyncedAt).toBe(Date.parse("2026-04-13T03:20:41.064Z"));
+		expect(snapshot!.meter).toEqual({
+			id: "meter_press_usage",
+			consumedUnits: -freeRecurringCents,
+			creditedUnits: 0,
+			balance: freeRecurringCents,
+			amountDueCents: 0,
+		});
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "monthly_credit",
+					externalCustomerId: userId,
+					externalId: `monthly_credit::${userId}::sub_admin_refresh_free::2026-04-13T03:20:38.364476Z`,
+					metadata: expect.objectContaining({
+						amount: -freeRecurringCents,
+						subscriptionId: "sub_admin_refresh_free",
+						productId: polarProductId,
+						periodStart: "2026-04-13T03:20:38.364476Z",
+					}),
+				}),
+			],
+		});
+	});
+
+	test("skips the same-period replay when the snapshot already exists", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_admin_refresh_same_period_free_product",
+		});
+		const sdkState = create_polar_customer_state({
+			customerId: "cust_admin_refresh_same_period",
+			userId,
+			productId: polarProductId,
+			subscriptionId: "sub_admin_refresh_same_period",
+			currentPeriodStart: "2026-04-13T03:20:38.364476Z",
+			currentPeriodEnd: "2026-05-13T03:20:38.364476Z",
+		});
+		vi.spyOn(billing, "getCustomerState").mockResolvedValue(sdkState);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_admin_refresh_same_period" as never);
+		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-13T03:20:41.064Z"));
+
+		await t.action(internal.billing.refresh_from_polar_customer_state, {
+			userId,
+		});
+
+		const snapshotAfterFirstReplay = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		enqueueActionSpy.mockClear();
+
+		await t.action(internal.billing.refresh_from_polar_customer_state, {
+			userId,
+		});
+
+		const snapshotAfterSecondReplay = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		expect(snapshotAfterFirstReplay).not.toBeNull();
+		expect(snapshotAfterSecondReplay).toEqual(snapshotAfterFirstReplay);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 });
 
@@ -2666,98 +2945,6 @@ describe("ingest_events", () => {
 	});
 });
 
-describe("grant_monthly_credits", () => {
-	beforeEach(() => {
-		eventsIngestMock.mockReset();
-	});
-
-	afterEach(() => {
-		eventsIngestMock.mockReset();
-	});
-
-	test("enqueues a stable monthly_credit event through the ingest workpool", async () => {
-		const captured: {
-			ingestPayload: {
-				events: Array<{
-					externalId: string;
-					externalCustomerId: string;
-					metadata: { amount: number; periodStart: string };
-					name: string;
-				}>;
-			} | null;
-		} = { ingestPayload: null };
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async function (
-			this: Workpool,
-			_ctx,
-			_functionReference,
-			args,
-		) {
-			expect(this.options.defaultRetryBehavior).toEqual({
-				initialBackoffMs: 10 * 60 * 1000,
-				base: 1.2,
-				maxAttempts: Number.POSITIVE_INFINITY,
-			});
-
-			captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
-			return "work_monthly_credit_inserted" as never;
-		});
-
-		const t = test_convex();
-		const userId = await seed_user_id(t);
-		const { polarProductId } = await seed_pay_as_you_go_product(t, {
-			polarProductId: "billing_grant_action_inserted_product",
-		});
-
-		const result = await t.action(internal.billing.grant_monthly_credits, {
-			userId,
-			subscriptionId: "sub_grant_action_inserted",
-			productId: polarProductId,
-			periodStart: "2026-01-01T00:00:00.000Z",
-		});
-
-		expect(result).toBeNull();
-		expect(eventsIngestMock).not.toHaveBeenCalled();
-		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		const ingestPayload = captured.ingestPayload;
-		if (!ingestPayload) {
-			throw new Error("Expected monthly credit ingest payload to be captured");
-		}
-		expect(ingestPayload.events).toHaveLength(1);
-		expect(ingestPayload.events[0]!.externalId).toBe(
-			`monthly_credit::${userId}::sub_grant_action_inserted::2026-01-01T00:00:00.000Z`,
-		);
-		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
-		expect(ingestPayload.events[0]!.metadata).toMatchObject({
-			amount: -billing_PRODUCTS["Pay As You Go"].recurringCreditsCents,
-			periodStart: "2026-01-01T00:00:00.000Z",
-		});
-		expect(ingestPayload.events[0]!.name).toBe("monthly_credit");
-	});
-
-	test("queues repeated grants and leaves duplicate handling to the ingest worker", async () => {
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async () => {
-			return "work_monthly_credit_duplicate" as never;
-		});
-
-		const t = test_convex();
-		const userId = await seed_user_id(t);
-		const { polarProductId } = await seed_pay_as_you_go_product(t, {
-			polarProductId: "billing_grant_action_duplicate_product",
-		});
-
-		const result = await t.action(internal.billing.grant_monthly_credits, {
-			userId,
-			subscriptionId: "sub_grant_action_duplicate",
-			productId: polarProductId,
-			periodStart: "2026-01-01T00:00:00.000Z",
-		});
-
-		expect(result).toBeNull();
-		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(eventsIngestMock).not.toHaveBeenCalled();
-	});
-});
-
 describe("grant_credit", () => {
 	beforeEach(() => {
 		eventsIngestMock.mockReset();
@@ -2779,14 +2966,12 @@ describe("grant_credit", () => {
 				}>;
 			} | null;
 		} = { ingestPayload: null };
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockImplementation(async (
-			_ctx,
-			_functionReference,
-			args,
-		) => {
-			captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
-			return "work_manual_credit" as never;
-		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockImplementation(async (_ctx, _functionReference, args) => {
+				captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
+				return "work_manual_credit" as never;
+			});
 
 		const t = test_convex();
 		const userId = await seed_user_id(t);
@@ -2879,7 +3064,35 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		};
 	}
 
-	test("enqueues a monthly credit for the first period of an active subscription", async () => {
+	function expect_monthly_credit_ingest(
+		spy: MockInstance,
+		args: {
+			callIndex: number;
+			userId: Id<"users">;
+			subscriptionId: string;
+			productId: string;
+			periodStart: string;
+		},
+	) {
+		const recurringCents = billing_PRODUCTS["Pay As You Go"].recurringCreditsCents;
+		expect(spy).toHaveBeenNthCalledWith(args.callIndex, expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "monthly_credit",
+					externalCustomerId: args.userId,
+					externalId: `monthly_credit::${args.userId}::${args.subscriptionId}::${args.periodStart}`,
+					metadata: expect.objectContaining({
+						amount: -recurringCents,
+						subscriptionId: args.subscriptionId,
+						productId: args.productId,
+						periodStart: args.periodStart,
+					}),
+				}),
+			],
+		});
+	}
+
+	test("grants a monthly credit for the first period of an active subscription", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -2911,15 +3124,31 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+		expect_monthly_credit_ingest(enqueueActionSpy, {
+			callIndex: 1,
 			userId,
 			subscriptionId: "sub_grant_first_period",
 			productId: polarProductId,
 			periodStart: "2026-01-01T00:00:00.000Z",
 		});
+
+		const recurringCents = billing_PRODUCTS["Pay As You Go"].recurringCreditsCents;
+		const snapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(snapshot?.meter).toEqual({
+			id: "meter_units",
+			consumedUnits: -recurringCents,
+			creditedUnits: 0,
+			balance: recurringCents,
+			amountDueCents: 0,
+		});
 	});
 
-	test("re-enqueues the same monthly credit for repeated same-period webhook deliveries", async () => {
+	test("skips the monthly credit on a same-period repeat webhook delivery", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -2949,6 +3178,8 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 				},
 			},
 		});
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+
 		await t.mutation(internal.billing.handle_polar_customer_state_update, {
 			payload: {
 				type: "customer.state_changed",
@@ -2969,22 +3200,13 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 			},
 		});
 
-		expect(enqueueActionSpy).toHaveBeenCalledTimes(2);
-		expect(enqueueActionSpy).toHaveBeenNthCalledWith(1, expect.anything(), internal.billing.grant_monthly_credits, {
-			userId,
-			subscriptionId: "sub_grant_same_period",
-			productId: polarProductId,
-			periodStart: "2026-01-01T00:00:00.000Z",
-		});
-		expect(enqueueActionSpy).toHaveBeenNthCalledWith(2, expect.anything(), internal.billing.grant_monthly_credits, {
-			userId,
-			subscriptionId: "sub_grant_same_period",
-			productId: polarProductId,
-			periodStart: "2026-01-01T00:00:00.000Z",
-		});
+		// Period unchanged: no second grant ingest, and Polar dedupes the
+		// already-ingested `monthly_credit` event by its deterministic
+		// `externalId` if a webhook ever does drive another attempt.
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 	});
 
-	test("enqueues a monthly credit when the subscription has rolled into a new period", async () => {
+	test("grants a monthly credit when the subscription has rolled into a new period", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
@@ -3027,7 +3249,8 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+		expect_monthly_credit_ingest(enqueueActionSpy, {
+			callIndex: 1,
 			userId,
 			subscriptionId: "sub_grant_advanced_period",
 			productId: polarProductId,
@@ -3035,7 +3258,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 	});
 
-	test("enqueues a monthly credit when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
+	test("grants a monthly credit when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId: oldProductId } = await seed_pay_as_you_go_product(t, {
@@ -3081,7 +3304,8 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.grant_monthly_credits, {
+		expect_monthly_credit_ingest(enqueueActionSpy, {
+			callIndex: 1,
 			userId,
 			subscriptionId: "sub_grant_upgrade_new",
 			productId: newProductId,

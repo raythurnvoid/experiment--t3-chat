@@ -411,7 +411,6 @@ const app_convex_schema = defineSchema({
 			v.null(),
 		),
 		lastSyncedAt: v.number(),
-		lastRefreshReason: v.optional(v.string()),
 	})
 		.index("by_userId", ["userId"])
 		.index("by_lastSyncedAt", ["lastSyncedAt"]),

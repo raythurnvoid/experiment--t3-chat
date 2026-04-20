@@ -148,11 +148,6 @@ function included_usage_text(product: ProductDoc, currency: LiteralUnion<Currenc
 	return `Includes ${format_cents(recurringCents, currency)} of usage per month`;
 }
 
-function product_price_currency(product: ProductDoc) {
-	const price = product.prices?.find((priceDoc) => !priceDoc.isArchived) ?? null;
-	return price?.priceCurrency ?? null;
-}
-
 function get_subscription_badge_data(subscription: SubscriptionDoc) {
 	if (subscription.status === "trialing") {
 		return {
@@ -244,9 +239,6 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const meteredPrice =
 		product.prices?.find((priceDoc) => !priceDoc.isArchived && priceDoc.amountType === "metered_unit") ?? null;
 
-	const usageCurrency = meteredPrice?.priceCurrency ?? product_price_currency(product);
-	const includedUsageText = usageCurrency != null ? included_usage_text(product, usageCurrency) : null;
-
 	const intervalLabel = plan_interval_label(recurringPrice?.recurringInterval ?? product.recurringInterval ?? "month");
 
 	const badgeData = get_subscription_badge_data(subscription);
@@ -254,36 +246,45 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const pendingUpdateText = get_pending_update_text(subscription, scheduledChangeProductName);
 	const title = billing_get_product_display_name(product.name);
 
-	const shouldShowUsage = meteredPrice != null;
-	const meteredUsageSnapshot = shouldShowUsage
-		? ((/* iife */) => {
-				if (
-					!usage?.subscription ||
-					!usage.meter ||
-					usage.subscription.id !== subscription.id ||
-					usage.subscription.productId !== subscription.productId
-				) {
-					throw should_never_happen("Missing usage snapshot for active billing plan", {
-						productId: product.id,
-						productName: product.name,
-						subscriptionId: subscription.id,
-						usage,
-					});
-				}
+	// The snapshot's subscription is the source of truth for billing currency:
+	// Polar's product prices can omit `priceCurrency` for Free, but every
+	// `customer.state_changed` active subscription carries a currency.
+	const snapshotSubscription =
+		usage?.subscription?.id === subscription.id && usage.subscription.productId === subscription.productId
+			? usage.subscription
+			: null;
+	const snapshotMeter = snapshotSubscription ? (usage?.meter ?? null) : null;
 
-				return {
-					due: format_cents(usage.meter.amountDueCents, usage.subscription.currency),
-					creditsLeft: format_cents(usage.meter.balance, usage.subscription.currency),
-				};
-			})()
+	// Paid plans with a metered price must always have a matching snapshot; Free
+	// or fresh subscriptions may be in the brief window before the first monthly
+	// credit event syncs, in which case we simply hide the usage line.
+	if (meteredPrice != null && (!snapshotSubscription || !snapshotMeter)) {
+		throw should_never_happen("Missing usage snapshot for active billing plan", {
+			productId: product.id,
+			productName: product.name,
+			subscriptionId: subscription.id,
+			usage,
+		});
+	}
+
+	const includedUsageText = snapshotSubscription
+		? included_usage_text(product, snapshotSubscription.currency)
 		: null;
+
+	const planUsageSnapshot =
+		snapshotMeter && snapshotSubscription
+			? {
+					due: format_cents(snapshotMeter.amountDueCents, snapshotSubscription.currency),
+					creditsLeft: format_cents(snapshotMeter.balance, snapshotSubscription.currency),
+				}
+			: null;
 
 	return (
 		<div className={"BillingActivePlan" satisfies BillingActivePlan_ClassNames}>
 			<BillingActivePlanBadge variant={badgeData.badgeVariant}>{badgeData.badgeLabel}</BillingActivePlanBadge>
 			<div className={"BillingActivePlan-title" satisfies BillingActivePlan_ClassNames}>{title}</div>
-			{meteredUsageSnapshot ? (
-				<BillingActivePlanUsage due={meteredUsageSnapshot.due} creditsLeft={meteredUsageSnapshot.creditsLeft} />
+			{planUsageSnapshot ? (
+				<BillingActivePlanUsage due={planUsageSnapshot.due} creditsLeft={planUsageSnapshot.creditsLeft} />
 			) : null}
 			{pendingUpdateText ? (
 				<p className={"BillingActivePlan-pending-update" satisfies BillingActivePlan_ClassNames}>{pendingUpdateText}</p>
