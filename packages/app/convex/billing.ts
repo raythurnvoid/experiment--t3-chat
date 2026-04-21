@@ -182,15 +182,6 @@ export const get_usage_snapshot = query({
 			.withIndex("by_userId", (q) => q.eq("userId", user.id))
 			.first();
 
-		console.info("get_usage_snapshot read", {
-			userId: user.id,
-			hasSnapshot: snap != null,
-			meter: snap?.meter ?? null,
-			subscription: snap?.subscription ?? null,
-			lastSyncedAt: snap ? new Date(snap.lastSyncedAt).toISOString() : null,
-			snapshotCreatedAt: snap ? new Date(snap._creationTime).toISOString() : null,
-		});
-
 		return snap;
 	},
 });
