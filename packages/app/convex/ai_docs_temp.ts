@@ -2608,12 +2608,18 @@ export async function pages_db_yjs_push_update(
 
 	const limit = await rate_limiter.limit(ctx, "pages_yjs_push_update", { key: args.userId });
 	if (!limit.ok) {
+		console.warn("[ai_docs_temp.pages_db_yjs_push_update] Rate limit exceeded", {
+			userId: args.userId,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			pageId: args.pageId,
+			sessionId: args.sessionId,
+		});
+
 		return Result({
 			_nay: {
 				name: "nay",
 				message: "Rate limit exceeded",
-				cause: undefined,
-				data: {},
 			},
 		});
 	}
@@ -2671,12 +2677,9 @@ export const yjs_push_update = mutation({
 		sessionId: v.string(),
 	},
 	returns: v_result({
-		_yay: v.union(
-			v.null(),
-			v.object({
-				newSequence: v.number(),
-			}),
-		),
+		_yay: v.object({
+			newSequence: v.number(),
+		}),
 	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -2688,12 +2691,15 @@ export const yjs_push_update = mutation({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
-			return Result({ _yay: null });
+			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
 		const page = await ctx.db.get("pages", args.pageId);
-		if (!page || page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
-			return Result({ _yay: null });
+		if (!page) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
+			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
 		const pushResult = await pages_db_yjs_push_update(ctx, {

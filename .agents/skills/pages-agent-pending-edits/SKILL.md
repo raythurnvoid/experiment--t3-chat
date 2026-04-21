@@ -297,6 +297,7 @@ Do not rely on the older nonexistent hooks:
 - Stale rebases must be rejected.
 - Active edits must keep refreshing their expiry window.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
+- Live rich-text Yjs sync must serialize outgoing local update batches, retain and retry failed batches ahead of newer edits, and avoid shortening retry backoff with newer edit debounces because later Yjs updates can depend on earlier structs.
 
 # Common failure modes
 
@@ -308,6 +309,7 @@ Do not rely on the older nonexistent hooks:
 - An already-open diff editor can fail to show a new agent proposal immediately if the client reconcile path preserves stale Monaco modified content over the newer remote pending row.
 - Cleanup deletes the wrong version unless `expectedUpdatedAt` protection remains intact.
 - Multi-session presence behavior becomes wrong if disconnect always shortens cleanup, even with another session still online.
+- Rich-text snapshots can revert to old content if the client drops a rate-limited live Yjs update and then successfully sends later dependent updates.
 
 # Debugging checklist
 

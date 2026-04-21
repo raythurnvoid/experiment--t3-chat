@@ -960,7 +960,7 @@ test("membership-scoped page and yjs APIs reject cross-user membership ids", asy
 		update: new ArrayBuffer(0),
 		sessionId: "cross-user-membership",
 	});
-	expect(unauthorizedYjsPush).toEqual({ _yay: null });
+	expect(unauthorizedYjsPush).toEqual({ _nay: { message: "Unauthorized" } });
 });
 
 test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {
