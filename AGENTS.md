@@ -32,6 +32,12 @@ The Convex backend handles:
 - Authentication token generation
 - CORS handling
 
+## Backend current-user auth
+
+Backend handlers that require a current app user should return or throw `Unauthenticated` when Convex auth has no usable identity or when the resolved id has no row in the `users` table. Keep detailed examples and exceptions in the auth system skill: [.agents/skills/auth-system/SKILL.md](.agents/skills/auth-system/SKILL.md).
+
+For recoverable auth and permission failures, Convex queries should throw, while actions and mutations should return a `_nay` Result.
+
 ## Frontend Architecture
 
 [packages/app/src/](packages/app/src):

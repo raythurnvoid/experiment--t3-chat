@@ -698,19 +698,24 @@ export const delete_current_user_account = action({
 	args: {},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx) => {
-		const userFromAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userFromAuth) {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
+			if (!user) {
+				return null;
+			}
+
+			return ctx.runQuery(internal.users.get, {
+				userId: user.id,
+			});
+		});
+		if (!user) {
 			return Result({
 				_nay: {
-					message: "Unauthorized",
+					message: "Unauthenticated",
 				},
 			});
 		}
 
-		const user = await ctx.runQuery(internal.users.get, {
-			userId: userFromAuth.id,
-		});
-		if (!user || user.deletedAt) {
+		if (user.deletedAt) {
 			return Result({ _yay: null });
 		}
 

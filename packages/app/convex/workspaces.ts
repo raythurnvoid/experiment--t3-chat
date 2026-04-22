@@ -157,11 +157,14 @@ export const get_membership_by_workspace_project_name = query({
 	},
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
-		const userFromAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userFromAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		const user = await ctx.db.get("users", userFromAuth.id);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
+			if (!user) {
+				throw convex_error({ message: "Unauthenticated" });
+			}
+
+			return ctx.db.get("users", user.id);
+		});
+
 		if (!user) {
 			return null;
 		}

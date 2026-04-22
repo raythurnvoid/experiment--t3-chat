@@ -293,6 +293,56 @@ When the user requests changes in this area, you must:
 - Clerk `external_id` is used as a pointer to that Convex user id in tokens.
 - Trust Clerk session invalidation after delete. Do not add extra app-side session-state checks or deleted-user guards just to defend against a supposedly still-valid Clerk session.
 
+# Current app user resolution
+
+When a public Convex handler needs the current live app user, resolve auth with `server_convex_get_user_fallback_to_anonymous(ctx)` and then load the `users` row by the returned `id`. Treat both missing pieces as `Unauthenticated`:
+
+- Convex auth returns no usable identity.
+- Convex auth returns a user id, but that id does not resolve to a row in the `users` table.
+
+Reserve `Unauthorized` for a resolved app user who lacks permission for a resource. Use `Not found`, `User not found`, or a more specific message for target resources or target users, not for the current caller principal.
+
+`server_convex_get_user_fallback_to_anonymous` intentionally does not load the `users` table; see [server-utils.ts](../../../packages/app/server/server-utils.ts). Handlers that require the current app account own the row-existence check. Current examples include [users.delete_current_user_account](../../../packages/app/convex/users.ts) and [workspaces.get_membership_by_workspace_project_name](../../../packages/app/convex/workspaces.ts).
+
+For `Result`-returning handlers:
+
+```ts
+const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
+	if (!user) {
+		return null;
+	}
+
+	return ctx.runQuery(internal.users.get, {
+		userId: user.id,
+	});
+});
+if (!user) {
+	return Result({
+		_nay: {
+			message: "Unauthenticated",
+		},
+	});
+}
+```
+
+For query handlers that use Convex errors:
+
+```ts
+const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
+	if (!user) {
+		return null;
+	}
+
+	return ctx.db.get("users", user.id);
+});
+
+if (!user) {
+	throw convex_error({ message: "Unauthenticated" });
+}
+```
+
+If a handler intentionally treats a missing/deleted current user row as stale client state or as an idempotent no-op, leave a short comment explaining that product-specific exception at the branch.
+
 # Prefer cache-friendly query composition
 
 - Reuse existing generic queries before creating new wrapper queries.
