@@ -3,7 +3,7 @@ import type { Id } from "../convex/_generated/dataModel.js";
 import { billing_event, type billing_Event } from "./billing.ts";
 
 test("billing_Event exposes the full event name union", () => {
-	expectTypeOf<billing_Event["name"]>().toEqualTypeOf<"page_save" | "monthly_credit" | "manual_credit">();
+	expectTypeOf<billing_Event["name"]>().toEqualTypeOf<"manual_credit" | "page_save" | "monthly_credit" | "ai_usage">();
 });
 
 test("billing_Event can be discriminated by built payload name", () => {

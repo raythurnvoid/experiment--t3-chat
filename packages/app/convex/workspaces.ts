@@ -159,14 +159,14 @@ export const get_membership_by_workspace_project_name = query({
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
 			if (!user) {
-				throw convex_error({ message: "Unauthenticated" });
+				return null;
 			}
 
 			return ctx.db.get("users", user.id);
 		});
 
 		if (!user) {
-			return null;
+			throw convex_error({ message: "Unauthenticated" });
 		}
 
 		const workspaceNameResult = workspaces_validate_name(args.workspaceName);

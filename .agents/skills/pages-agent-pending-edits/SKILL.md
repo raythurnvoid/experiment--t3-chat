@@ -128,6 +128,7 @@ Important behavior:
 - `upsert_pages_pending_edit_updates` reconstructs existing Yjs branch docs or clones the live base, projects incoming markdown into `unstaged`, projects `staged` only when `stagedMarkdown` is provided, and deletes the row if both branches match the base.
 - `persist_pages_pending_edit_rebased_state` rejects stale live bases and only accepts rebased state built from the current live page snapshot.
 - `save_pages_pending_edit` applies remote drift from base into both branches before saving, persists only the `staged` diff to the live page, writes the saved-sequence marker, and keeps the row alive on partial save.
+- When `save_pages_pending_edit` will actually push a live Yjs diff, signed-in users must pass the billing credit gate first (`minimumRequiredCents: 1`). If the gate denies, return `_nay` with `"Insufficient funds"` before pushing. After a successful push, signed-in saves emit one `page_save` billing event with literal `metadata.amount: 1` and `externalId = composite_id("billing", "page_save", userId, pageId, yjsSequence)`. Anonymous users skip both the gate and the billing event.
 - `upsert_pages_pending_edit_updates` and `persist_pages_pending_edit_rebased_state` do not touch the saved-sequence marker.
 
 # `packages/app/server/pages.ts`
@@ -147,6 +148,7 @@ Two important roles:
 
 - `get_page_last_available_markdown_content_by_path` overlays the current user's pending `unstaged` branch onto reads.
 - `pages_db_yjs_push_update` writes accepted changes back into the live Yjs page stream.
+- The direct `yjs_push_update` mutation uses the same signed-in billing pre-flight and `page_save` usage event rule as pending-edit saves.
 
 The overlay is easy to miss, but it is crucial: AI tools can chain from pending content before anything is committed.
 
@@ -297,6 +299,7 @@ Do not rely on the older nonexistent hooks:
 - Stale rebases must be rejected.
 - Active edits must keep refreshing their expiry window.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
+- Signed-in pending-edit saves that push a live Yjs diff must pass the billing credit gate and then emit one `page_save` usage event; anonymous saves skip billing.
 - Live rich-text Yjs sync must serialize outgoing local update batches, retain and retry failed batches ahead of newer edits, and avoid shortening retry backoff with newer edit debounces because later Yjs updates can depend on earlier structs.
 
 # Common failure modes

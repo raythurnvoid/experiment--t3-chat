@@ -2,7 +2,7 @@ import { describe, expect, test, vi, beforeEach, afterEach, type MockInstance } 
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { Workpool } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
-import { billing } from "./billing.ts";
+import { billing, billing_db_check_credits } from "./billing.ts";
 import { test_convex } from "./setup.test.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
@@ -239,6 +239,40 @@ async function seed_user_id(t: ReturnType<typeof test_convex>) {
 	});
 }
 
+async function seed_billing_usage_snapshot(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		polarProductId: string;
+		balanceCents: number;
+		amountDueCents?: number;
+		lastSyncedAt?: number;
+	},
+) {
+	const lastSyncedAt = args.lastSyncedAt ?? Date.now();
+	await t.run(async (ctx) => {
+		await ctx.db.insert("billing_usage_snapshots", {
+			userId: args.userId,
+			polarCustomerId: `cust_${args.userId}`,
+			subscription: {
+				id: `sub_${args.userId}`,
+				productId: args.polarProductId,
+				currency: "eur",
+				currentPeriodStart: "2026-01-01T00:00:00.000Z",
+				currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+			},
+			meter: {
+				id: "meter_press_usage",
+				consumedUnits: 0,
+				creditedUnits: args.balanceCents,
+				balance: args.balanceCents,
+				amountDueCents: args.amountDueCents ?? 0,
+			},
+			lastSyncedAt,
+		});
+	});
+}
+
 async function get_cancel_polar_subscription_job(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
 	return await t.run((ctx) =>
 		ctx.db
@@ -427,6 +461,116 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+});
+
+describe("check_credits", () => {
+	test("allows a signed-in Free user with current credits to start chat", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, { polarProductId: "prod_free_allow" });
+		await seed_billing_usage_snapshot(t, { userId, polarProductId, balanceCents: 1 });
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result).toEqual({
+			_yay: {
+				hasCredits: true,
+			},
+		});
+	});
+
+	test("reports no credits when the billing snapshot is missing", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result).toEqual({
+			_yay: {
+				hasCredits: false,
+			},
+		});
+	});
+
+	test("reports no credits when the billing snapshot has no subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_snapshots", {
+				userId,
+				polarCustomerId: `cust_${userId}`,
+				subscription: null,
+				meter: null,
+				lastSyncedAt: Date.now(),
+			});
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result).toEqual({
+			_yay: {
+				hasCredits: false,
+			},
+		});
+	});
+
+	test("denies a signed-in Free user at zero balance for chat and page save", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, { polarProductId: "prod_free_zero" });
+		await seed_billing_usage_snapshot(t, { userId, polarProductId, balanceCents: 0 });
+
+		const chatResult = await t.query(internal.billing.check_credits, {
+			userId,
+			minimumRequiredCents: 1,
+		});
+		const pageSaveResult = await t.run(async (ctx) =>
+			billing_db_check_credits(ctx, {
+				userId,
+				minimumRequiredCents: 1,
+			}),
+		);
+
+		for (const result of [chatResult, pageSaveResult]) {
+			expect(result).toEqual({
+				_yay: {
+					hasCredits: false,
+				},
+			});
+		}
+	});
+
+	test("allows paid plans even with a negative balance", async () => {
+		for (const seedProduct of [
+			seed_pay_as_you_go_product,
+			seed_pro_product,
+		] as const) {
+			const t = test_convex();
+			const userId = await seed_user_id(t);
+			const { polarProductId } = await seedProduct(t, { polarProductId: `prod_paid_negative_${userId}` });
+			await seed_billing_usage_snapshot(t, { userId, polarProductId, balanceCents: -100 });
+
+			const result = await t.query(internal.billing.check_credits, {
+				userId,
+				minimumRequiredCents: 1,
+			});
+
+			expect(result).toEqual({
+				_yay: {
+					hasCredits: true,
+				},
+			});
+		}
+	});
 });
 
 describe("billing list_products", () => {
@@ -1753,8 +1897,8 @@ describe("refresh_from_polar_customer_state", () => {
 				userId,
 				productId: polarProductId,
 				subscriptionId: "sub_admin_refresh_free",
-				currentPeriodStart: "2026-04-13T03:20:38.364476Z",
-				currentPeriodEnd: "2026-05-13T03:20:38.364476Z",
+				currentPeriodStart: "2026-04-13T03:20:38.364Z",
+				currentPeriodEnd: "2026-05-13T03:20:38.364Z",
 			}),
 		);
 		const enqueueActionSpy = vi
@@ -1781,8 +1925,8 @@ describe("refresh_from_polar_customer_state", () => {
 			id: "sub_admin_refresh_free",
 			productId: polarProductId,
 			currency: "eur",
-			currentPeriodStart: "2026-04-13T03:20:38.364476Z",
-			currentPeriodEnd: "2026-05-13T03:20:38.364476Z",
+			currentPeriodStart: "2026-04-13T03:20:38.364Z",
+			currentPeriodEnd: "2026-05-13T03:20:38.364Z",
 		});
 		expect(snapshot!.lastSyncedAt).toBe(Date.parse("2026-04-13T03:20:41.064Z"));
 		expect(snapshot!.meter).toEqual({
@@ -1797,12 +1941,12 @@ describe("refresh_from_polar_customer_state", () => {
 				expect.objectContaining({
 					name: "monthly_credit",
 					externalCustomerId: userId,
-					externalId: `monthly_credit::${userId}::sub_admin_refresh_free::2026-04-13T03:20:38.364476Z`,
+					externalId: `monthly_credit::${userId}::sub_admin_refresh_free::2026-04-13T03:20:38.364Z`,
 					metadata: expect.objectContaining({
 						amount: -freeRecurringCents,
 						subscriptionId: "sub_admin_refresh_free",
 						productId: polarProductId,
-						periodStart: "2026-04-13T03:20:38.364476Z",
+						periodStart: "2026-04-13T03:20:38.364Z",
 					}),
 				}),
 			],
@@ -2945,6 +3089,27 @@ describe("ingest_events", () => {
 	});
 });
 
+function mock_billing_ingest_enqueue(workId: string) {
+	const captured: {
+		ingestPayload: {
+			events: Array<{
+				externalId: string;
+				externalCustomerId: string;
+				metadata: { amount: number };
+				name: string;
+			}>;
+		} | null;
+	} = { ingestPayload: null };
+	const enqueueActionSpy = vi
+		.spyOn(Workpool.prototype, "enqueueAction")
+		.mockImplementation(async (_ctx, _functionReference, args) => {
+			captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
+			return workId as never;
+		});
+
+	return { captured, enqueueActionSpy };
+}
+
 describe("grant_credit", () => {
 	beforeEach(() => {
 		eventsIngestMock.mockReset();
@@ -2956,22 +3121,7 @@ describe("grant_credit", () => {
 
 	test("enqueues the canonical manual_credit event through the ingest workpool", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(123_456);
-		const captured: {
-			ingestPayload: {
-				events: Array<{
-					externalId: string;
-					externalCustomerId: string;
-					metadata: { amount: number };
-					name: string;
-				}>;
-			} | null;
-		} = { ingestPayload: null };
-		const enqueueActionSpy = vi
-			.spyOn(Workpool.prototype, "enqueueAction")
-			.mockImplementation(async (_ctx, _functionReference, args) => {
-				captured.ingestPayload = args as NonNullable<typeof captured.ingestPayload>;
-				return "work_manual_credit" as never;
-			});
+		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_manual_credit");
 
 		const t = test_convex();
 		const userId = await seed_user_id(t);
@@ -2993,6 +3143,60 @@ describe("grant_credit", () => {
 		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
 		expect(ingestPayload.events[0]!.metadata).toEqual({
 			amount: -2500,
+		});
+		expect(ingestPayload.events[0]!.name).toBe("manual_credit");
+	});
+
+	test("normalizes negative input to a credit grant", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(123_457);
+		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_manual_credit_negative");
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.grant_credit, {
+			userId,
+			amount: -2500,
+		});
+
+		expect(result).toBeNull();
+		expect(eventsIngestMock).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		const ingestPayload = captured.ingestPayload;
+		if (!ingestPayload) {
+			throw new Error("Expected manual credit ingest payload to be captured");
+		}
+		expect(ingestPayload.events[0]!.externalId).toBe(`manual_credit::${userId}::123457`);
+		expect(ingestPayload.events[0]!.metadata).toEqual({
+			amount: -2500,
+		});
+		expect(ingestPayload.events[0]!.name).toBe("manual_credit");
+	});
+
+	test("allows negative input to reduce the balance when explicitly enabled", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(123_458);
+		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_manual_credit_allowed_negative");
+
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+
+		const result = await t.action(internal.billing.grant_credit, {
+			userId,
+			amount: -2495,
+			allowNegative: true,
+		});
+
+		expect(result).toBeNull();
+		expect(eventsIngestMock).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		const ingestPayload = captured.ingestPayload;
+		if (!ingestPayload) {
+			throw new Error("Expected manual adjustment ingest payload to be captured");
+		}
+		expect(ingestPayload.events[0]!.externalId).toBe(`manual_credit::${userId}::123458`);
+		expect(ingestPayload.events[0]!.externalCustomerId).toBe(userId);
+		expect(ingestPayload.events[0]!.metadata).toEqual({
+			amount: 2495,
 		});
 		expect(ingestPayload.events[0]!.name).toBe("manual_credit");
 	});

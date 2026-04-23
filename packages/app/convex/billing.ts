@@ -75,6 +75,63 @@ const billing_workpool_usage_event = new Workpool(components.billing_workpool_us
 	} as const,
 });
 
+// #region check credits
+
+export async function billing_db_check_credits(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userId: Id<"users">;
+		minimumRequiredCents: number;
+	},
+) {
+	const hasCredits = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+		.first()
+		.then(async (usageSnapshot) => {
+			if (!usageSnapshot?.subscription) {
+				return false;
+			}
+
+			const product = await ctx.runQuery(components.polar.lib.getProduct, { id: usageSnapshot.subscription.productId });
+			if (!product) return false;
+
+			const meterBalanceCents = usageSnapshot.meter?.balance ?? 0;
+
+			if (
+				product.name === ("Free" satisfies keyof typeof billing_PRODUCTS) &&
+				meterBalanceCents < args.minimumRequiredCents
+			) {
+				return false;
+			}
+
+			return true;
+		});
+
+	return Result({
+		_yay: {
+			hasCredits,
+		},
+	});
+}
+
+export const check_credits = internalQuery({
+	args: {
+		userId: v.id("users"),
+		minimumRequiredCents: v.number(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			hasCredits: v.boolean(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		return await billing_db_check_credits(ctx, args);
+	},
+});
+
+// #endregion check credits
+
 export async function billing_action_delete_polar_customer_by_user_id(
 	ctx: ActionCtx | MutationCtx,
 	args: {
@@ -277,9 +334,7 @@ function billing_polar_webhook_to_customer_state(data: BillingPolarCustomerState
 }
 
 // Convert the SDK `CustomerState` to the canonical shape with ISO string dates.
-function billing_polar_sdk_to_db_data(
-	state: CustomerState,
-) {
+function billing_polar_sdk_to_db_data(state: CustomerState) {
 	return {
 		id: state.id,
 		externalId: state.externalId ?? null,
@@ -1257,6 +1312,14 @@ export const ingest_events = internalAction({
 		events: v.array(
 			v.union(
 				v.object({
+					name: v.literal("manual_credit"),
+					externalCustomerId: v.id("users"),
+					externalId: v.string(),
+					metadata: v.object({
+						amount: v.number(),
+					}),
+				}),
+				v.object({
 					name: v.literal("page_save"),
 					externalCustomerId: v.id("users"),
 					externalId: v.string(),
@@ -1281,11 +1344,16 @@ export const ingest_events = internalAction({
 					}),
 				}),
 				v.object({
-					name: v.literal("manual_credit"),
+					name: v.literal("ai_usage"),
 					externalCustomerId: v.id("users"),
 					externalId: v.string(),
 					metadata: v.object({
 						amount: v.number(),
+						modelId: v.string(),
+						inputTokens: v.number(),
+						outputTokens: v.number(),
+						threadId: v.string(),
+						messageId: v.string(),
 					}),
 				}),
 			),
@@ -1414,10 +1482,21 @@ export const refresh_from_polar_customer_state = internalAction({
 	},
 });
 
+/**
+ * Admin helper for adding credit to a user.
+ *
+ * Polar's customer meter is a sum ledger: positive event amounts are usage
+ * that decreases the remaining balance, while negative event amounts are
+ * credits/payments that increase it. By default, keep this action grant-only by
+ * normalizing dashboard input to a negative `manual_credit` event. When
+ * `allowNegative` is true, negative input is treated as a debit for QA/admin
+ * drain flows.
+ */
 export const grant_credit = internalAction({
 	args: {
 		userId: v.id("users"),
 		amount: v.number(),
+		allowNegative: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1428,7 +1507,7 @@ export const grant_credit = internalAction({
 					externalCustomerId: args.userId,
 					externalId: composite_id("billing", "manual_credit", args.userId, Date.now()),
 					metadata: {
-						amount: -Math.abs(args.amount),
+						amount: args.allowNegative ? -args.amount : -Math.abs(args.amount),
 					},
 				}),
 			],

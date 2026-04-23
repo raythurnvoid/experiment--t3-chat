@@ -28,6 +28,12 @@ describe("composite_id", () => {
 	});
 
 	test("joins billing event ids with double colons", () => {
+		const id = composite_id("billing", "manual_credit", "user_1", 123456);
+
+		expect(id).toBe("manual_credit::user_1::123456");
+	});
+
+	test("joins page save ids with double colons", () => {
 		const id = composite_id("billing", "page_save", "user_1", "page_1", 42);
 
 		expect(id).toBe("page_save::user_1::page_1::42");
@@ -37,6 +43,12 @@ describe("composite_id", () => {
 		const id = composite_id("billing", "monthly_credit", "user_1", "sub_1", "2026-01-01");
 
 		expect(id).toBe("monthly_credit::user_1::sub_1::2026-01-01");
+	});
+
+	test("joins AI usage ids with double colons", () => {
+		const id = composite_id("billing", "ai_usage", "user_1", "thread_1", "message_1");
+
+		expect(id).toBe("ai_usage::user_1::thread_1::message_1");
 	});
 });
 

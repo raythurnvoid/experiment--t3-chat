@@ -32,10 +32,11 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI me
 
 Current runtime details:
 
-- Main model: `openai("gpt-5-nano")`
-- Main system prompt is intentionally tiny: "Either respond directly to the user or use the tools at your disposal."
+- Main model comes from the validated request `body.model`, restricted to `ai_chat_MODEL_IDS` (`gpt-5.4-nano`, `gpt-5.4-mini`).
+- Main system prompt is `ai_chat_SYSTEM_PROMPT`; Ask mode appends `ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX` and removes write tools from `activeTools`.
 - Tool choice: `auto`
-- Max tool/model steps per response: `stepCountIs(5)`
+- Max tool/model steps per response: `stepCountIs(10)`
+- Main response max output: `maxOutputTokens: 2000`
 - Title model: `openai("gpt-4.1-nano")`
 - Thread runtime field: `"aisdk_5"`
 
@@ -43,15 +44,20 @@ Current runtime details:
 
 For `POST /api/chat`:
 
-1. Validate the request body and require one of `threadId` or `clientGeneratedThreadId`.
-2. Create the thread if needed and store the optimistic client thread id on the persisted thread.
-3. Resolve the effective parent message id for persistence.
-4. Persist incoming user messages before generation.
-5. Convert stored UI messages to model messages.
-6. Run `streamText(...)` with the current tools.
-7. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
-8. Persist the assistant response in `onFinish`.
-9. If the thread has no title yet, generate a short title and persist it.
+1. Validate the request body, including allowlisted `model`, `mode`, and `trigger`, and require one of `threadId` or `clientGeneratedThreadId`.
+2. Load the membership row, derive the agent configuration, and validate UI messages against the full tool registry.
+3. Resolve the authenticated or anonymous app user.
+4. Resolve the existing thread or keep the optimistic client thread id for a new thread.
+5. For signed-in users, run the billing credit gate before any LLM work or new-thread creation. A denial returns HTTP `402` with `{ message: "Insufficient funds" }`.
+6. Create the thread if needed and store the optimistic client thread id on the persisted thread.
+7. Resolve the effective parent message id for persistence.
+8. Persist incoming user messages before generation.
+9. Convert stored UI messages to model messages.
+10. Run `streamText(...)` with the current tools and `activeTools`.
+11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
+12. Persist the assistant response in `onFinish`.
+13. If the thread has no title yet, generate a short title and persist it.
+14. For signed-in users with non-zero captured token usage and no stream error, emit an `ai_usage` billing event with the actual captured token cost.
 
 Non-obvious runtime details:
 
@@ -60,6 +66,8 @@ Non-obvious runtime details:
 - New threads store the optimistic `clientGeneratedThreadId` so the frontend can dedupe before the SSE mapping arrives.
 - Thread/page access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
+- Ask mode keeps the full tool registry for UI-message validation, but removes `write_page` and `edit_page` from `activeTools` before generation.
+- Billing checks are start-time gates only. They do not reserve spend, and successful signed-in runs emit `billing_event("ai_usage")` after AI SDK reports actual token usage.
 
 # Thread Access And Error Contract
 
@@ -88,7 +96,6 @@ Important details:
 
 The main tool object currently contains:
 
-- `weather`
 - `read_page`
 - `list_pages`
 - `glob_pages`
@@ -96,12 +103,13 @@ The main tool object currently contains:
 - `text_search_pages`
 - `write_page`
 - `edit_page`
+- `web_search`
 
 Important limitation:
 
 - These tools operate on DB-backed pages, not repo files on disk.
 - The agent does not currently have a general shell/filesystem tool in this chat runtime.
-- The `weather` tool is a stub/demo tool, not a real integration.
+- `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace page tools first when the answer should come from the user's docs.
 
 # Tool Semantics
 
@@ -182,6 +190,19 @@ Consequence:
 - This tool is now closer to exact chunk string matching than general fuzzy search.
 - It can still miss matches that cross chunk boundaries.
 - It returns chunk hits, not page-level deduped results.
+
+## `web_search`
+
+Purpose:
+
+- Search the public web for current facts, documentation, release notes, news, and other non-workspace information.
+
+Important behavior:
+
+- Uses the server-side Exa integration and requires `EXA_API_KEY` on the server.
+- Returns compact titles, URLs, and highlight snippets, not long raw pages.
+- The system prompt tells the model to summarize highlights in its own words and to continue from workspace context if web search is unavailable.
+- Prefer page tools first when the answer should come from the user's workspace/docs.
 
 ## `write_page`
 
@@ -283,6 +304,7 @@ Practical guidance:
 8. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
 9. New thread dedupe depends on persisting the optimistic client thread id.
 10. Thread titles are generated lazily and can also be streamed from the secondary title endpoint.
+11. Signed-in chat requests are credit-gated before generation and emit `ai_usage` only from captured token usage after generation; anonymous users skip billing.
 
 # Change Playbooks
 

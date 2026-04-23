@@ -1,12 +1,8 @@
-import { omit_properties, should_never_happen } from "../shared/shared-utils.ts";
-import {
-	ai_chat_MODEL_IDS,
-	ai_chat_MODE_IDS,
-	type ai_chat_AiSdk5UiMessage,
-} from "../shared/ai-chat.ts";
+import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
+import { ai_chat_MODEL_IDS, ai_chat_MODE_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { paginationOptsValidator, paginationResultValidator, type RouteSpec } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
@@ -45,6 +41,8 @@ import {
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
+import { billing_event } from "../server/billing.ts";
+import { billing_ingest_events } from "./billing.ts";
 
 export {
 	remove_pages_pending_edit_if_expired,
@@ -78,6 +76,17 @@ const ai_chat_SYSTEM_PROMPT = [
 
 const ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX =
 	"You are in Ask mode: do not call `write_page` or `edit_page`. Answer from reads and searches only.";
+
+function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
+	switch (args.modelId) {
+		case "gpt-5.4-nano":
+		case "gpt-4.1-nano":
+			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
+		case "gpt-5.4-mini":
+		default:
+			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
+	}
+}
 
 function ai_chat_get_agent_configuration(input: {
 	ctx: ActionCtx;
@@ -532,7 +541,7 @@ export const thread_archive = mutation({
 		membershipId: v.id("workspaces_projects_users"),
 		threadId: v.id("ai_chat_threads"),
 	},
-	returns: v_result({ _yay: v.null() 	}),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
@@ -809,17 +818,28 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 												status: 400,
 												body: {
 													message: "Invalid messages format",
+													cause:
+														error == null
+															? undefined
+															: { message: error instanceof Error ? error.message : String(error) },
 												},
 											} as const;
 										} else {
 											const msg = "Failed to validate chat messages";
 											should_never_happen(msg, {
-												error: error,
+												cause:
+													error == null
+														? undefined
+														: { message: error instanceof Error ? error.message : String(error) },
 											});
 											return {
 												status: 500,
 												body: {
 													message: msg,
+													cause:
+														error == null
+															? undefined
+															: { message: error instanceof Error ? error.message : String(error) },
 												},
 											} as const;
 										}
@@ -827,6 +847,15 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								const now = Date.now();
+								const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+								if (!user) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
 
 								let threadId = null;
 								let createdThreadId = null;
@@ -859,7 +888,34 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										);
 									}
+								}
 
+								// Check credits after cheap request validation but before any LLM work.
+								// Anonymous users skip credit gating because they have no billing snapshot.
+								const lastUserMessage = (body.messages as Array<{ id?: string }>).at(-1);
+								const billingEventId = composite_id(
+									"billing",
+									"ai_usage",
+									membership.userId,
+									(body.threadId ?? body.clientGeneratedThreadId) as string,
+									lastUserMessage?.id ?? body.parentId ?? "turn",
+								);
+								if (user.kind === "signed_in") {
+									const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+										userId: membership.userId,
+										minimumRequiredCents: 1,
+									});
+									if (!creditCheck._yay.hasCredits) {
+										return {
+											status: 402,
+											body: {
+												message: "Insufficient funds",
+											},
+										} as const;
+									}
+								}
+
+								if (!threadId) {
 									const created = await ctx.runMutation(api.ai_chat.thread_create, {
 										membershipId: membership._id,
 										// Store the optimistic client thread id on the persisted thread.
@@ -1003,6 +1059,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								});
 
 								let didStreamError = false;
+								// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
+								// can emit one direct Polar usage event with the actual token cost.
+								let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
+								let capturedActualCents = 0;
 
 								const stream = createUIMessageStream<ai_chat_AiSdk5UiMessage>({
 									generateId: get_id_generator("ai_message"),
@@ -1057,10 +1117,23 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											stopWhen: stepCountIs(10),
 											tools,
 											onAbort: async () => {
-												console.info("[ai_chat_http_routes./api/chat] streamText.onAbort", {
+												console.info("streamText.onAbort", {
 													threadId,
 													parentId: resolvedParentId,
 													requestSignalAborted: request.signal.aborted,
+												});
+											},
+											onFinish: async ({ totalUsage }) => {
+												// Aggregated across all steps; read by createUIMessageStream.onFinish
+												// to emit one direct usage event with the actual cost.
+												capturedUsage = {
+													inputTokens: totalUsage.inputTokens ?? 0,
+													outputTokens: totalUsage.outputTokens ?? 0,
+												};
+												capturedActualCents += compute_token_usage_cost_cents({
+													modelId: body.model,
+													inputTokens: capturedUsage.inputTokens,
+													outputTokens: capturedUsage.outputTokens,
 												});
 											},
 										});
@@ -1086,57 +1159,70 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 										// Generate a title for the new thread
 										if (thread && !existingTitle) {
-											try {
-												if (request.signal.aborted) {
-													return;
+											if (request.signal.aborted) {
+												return;
+											}
+
+											const titleMessages = [...modelMessages, ...response1.messages];
+											const titleResult = streamText({
+												model: openai(ai_chat_TITLE_MODEL_ID),
+												system: ai_chat_TITLE_SYSTEM_PROMPT,
+												messages: titleMessages,
+												stopWhen: stepCountIs(1),
+												temperature: 0.3,
+												maxOutputTokens: 50,
+												abortSignal: request.signal,
+												onFinish: async ({ totalUsage }) => {
+													const titleUsage = {
+														inputTokens: totalUsage.inputTokens ?? 0,
+														outputTokens: totalUsage.outputTokens ?? 0,
+													};
+													capturedUsage = capturedUsage
+														? {
+																inputTokens: capturedUsage.inputTokens + titleUsage.inputTokens,
+																outputTokens: capturedUsage.outputTokens + titleUsage.outputTokens,
+															}
+														: titleUsage;
+													capturedActualCents += compute_token_usage_cost_cents({
+														modelId: ai_chat_TITLE_MODEL_ID,
+														inputTokens: titleUsage.inputTokens,
+														outputTokens: titleUsage.outputTokens,
+													});
+												},
+											});
+
+											const reader = titleResult.textStream.getReader();
+											let title = "";
+											while (true) {
+												const { value, done } = await reader.read();
+												if (done) {
+													break;
 												}
 
-												const titleMessages = [...modelMessages, ...response1.messages];
-												const titleResult = streamText({
-													model: openai(ai_chat_TITLE_MODEL_ID),
-													system: ai_chat_TITLE_SYSTEM_PROMPT,
-													messages: titleMessages,
-													stopWhen: stepCountIs(1),
-													temperature: 0.3,
-													maxOutputTokens: 50,
-													abortSignal: request.signal,
+												if (value) {
+													title += value;
+												}
+											}
+
+											const trimmedTitle = title.trim();
+											if (trimmedTitle) {
+												writer.write({
+													type: "data-chat-title",
+													data: { title: trimmedTitle },
+													transient: true,
 												});
 
-												const reader = titleResult.textStream.getReader();
-												let title = "";
-												while (true) {
-													const { value, done } = await reader.read();
-													if (done) {
-														break;
-													}
-
-													if (value) {
-														title += value;
-													}
-												}
-
-												const trimmedTitle = title.trim();
-												if (trimmedTitle) {
-													writer.write({
-														type: "data-chat-title",
-														data: { title: trimmedTitle },
-														transient: true,
-													});
-
-													const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
+												const threadUpdateResult = await ctx.runMutation(api.ai_chat.thread_update, {
+													threadId: thread._id,
+													membershipId: membership._id,
+													title: trimmedTitle,
+												});
+												if (threadUpdateResult._nay) {
+													console.error("Failed to persist generated title", {
 														threadId: thread._id,
-														membershipId: membership._id,
-														title: trimmedTitle,
+														result: threadUpdateResult,
 													});
-													if (threadUpdateResult._nay) {
-														console.error("Failed to persist generated title", {
-															threadId: thread._id,
-															result: threadUpdateResult,
-														});
-													}
 												}
-											} catch (error: unknown) {
-												console.error("Title generation error:", error);
 											}
 										}
 									},
@@ -1146,58 +1232,74 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										return error instanceof Error ? error.message : String(error);
 									},
 									onFinish: async (result) => {
-										try {
-											if (!result.responseMessage) {
-												return;
-											}
+										if (!result.responseMessage) {
+											return;
+										}
 
-											if (result.isAborted) {
-												console.info("[ai_chat_http_routes./api/chat] createUIMessageStream.onFinish aborted", {
-													threadId,
-													parentId: resolvedParentId,
-													isAborted: result.isAborted,
-													didStreamError,
-													hasResponseMessage: Boolean(result.responseMessage),
-												});
-												return;
-											}
-
-											const responseMessage = {
-												...result.responseMessage,
-												...(result.isAborted || didStreamError
-													? {
-															metadata: {
-																...(result.responseMessage.metadata ?? {}),
-																status: result.isAborted ? ("aborted" as const) : ("errored" as const),
-																parentClientGeneratedId:
-																	result.responseMessage.metadata?.parentClientGeneratedId ?? null,
-															},
-														}
-													: {}),
-											} satisfies ai_chat_AiSdk5UiMessage;
-
-											// Persist completed assistant responses below the last persisted request message.
-											const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
-												membershipId: membership._id,
-												threadId: threadId as app_convex_Id<"ai_chat_threads">,
+										if (result.isAborted) {
+											console.info("onFinish aborted", {
+												threadId,
 												parentId: resolvedParentId,
-												messages: [
-													{
-														clientGeneratedMessageId: responseMessage.id,
-														content: responseMessage,
-													},
+												isAborted: result.isAborted,
+												didStreamError,
+												hasResponseMessage: Boolean(result.responseMessage),
+											});
+											return;
+										}
+
+										const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
+										const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
+										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
+										if (user.kind === "signed_in" && capturedTotalTokens > 0 && !didStreamError) {
+											await billing_ingest_events(ctx, {
+												events: [
+													billing_event({
+														name: "ai_usage",
+														externalCustomerId: membership.userId,
+														externalId: billingEventId,
+														metadata: {
+															amount: capturedActualCents,
+															modelId: body.model,
+															inputTokens: capturedInputTokens,
+															outputTokens: capturedOutputTokens,
+															threadId: String(threadId ?? ""),
+															messageId: String(result.responseMessage.id ?? ""),
+														},
+													}),
 												],
 											});
+										}
 
-											if (assistantPersistResult._nay) {
-												console.error("Failed to persist assistant message", {
-													result: assistantPersistResult,
-													threadId,
-													parentId: resolvedParentId,
-												});
-											}
-										} catch (error: unknown) {
-											console.error("Failed to persist chat messages:", error);
+										const responseMessage = {
+											...result.responseMessage,
+											...(result.isAborted || didStreamError
+												? {
+														metadata: {
+															...(result.responseMessage.metadata ?? {}),
+															status: result.isAborted ? ("aborted" as const) : ("errored" as const),
+															parentClientGeneratedId: result.responseMessage.metadata?.parentClientGeneratedId ?? null,
+														},
+													}
+												: {}),
+										} satisfies ai_chat_AiSdk5UiMessage;
+
+										// Persist completed assistant responses below the last persisted request message.
+										const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
+											membershipId: membership._id,
+											threadId: threadId as app_convex_Id<"ai_chat_threads">,
+											parentId: resolvedParentId,
+											messages: [
+												{
+													clientGeneratedMessageId: responseMessage.id,
+													content: responseMessage,
+												},
+											],
+										});
+
+										if (assistantPersistResult._nay) {
+											throw new Error("Failed to persist assistant message", {
+												cause: assistantPersistResult._nay,
+											});
 										}
 									},
 								});
@@ -1206,22 +1308,16 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									status: 200,
 									body: stream,
 								} as const;
-							} catch (error: unknown) {
-								console.error("AI chat stream error:", error);
-
-								if (error instanceof Error) {
-									return {
-										status: 500,
-										body: {
-											message: error.message,
-										},
-									} as const;
-								}
+							} catch (error) {
+								const message = "AI chat stream error";
+								console.error(`${message}:`, error);
 
 								return {
 									status: 500,
 									body: {
 										message: "Internal server error",
+										cause:
+											error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
 									},
 								} as const;
 							}
@@ -1335,6 +1431,36 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									.filter(Boolean)
 									.join("\n");
 
+								const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+								if (!user) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+
+								const billingEventId = composite_id("billing", "ai_usage", membership.userId, thread_id, "title");
+
+								// Check credits before title generation. One title per thread; the literal
+								// "title" discriminator keeps the usage event id stable across HTTP retries.
+								const shouldGateCredits = user?.kind === "signed_in";
+								if (shouldGateCredits) {
+									const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+										userId: membership.userId,
+										minimumRequiredCents: 1,
+									});
+									if (!creditCheck._yay.hasCredits) {
+										return {
+											status: 402,
+											body: { message: "Insufficient funds" },
+										} as const;
+									}
+								}
+
+								let titleCapturedUsage: { inputTokens: number; outputTokens: number } | null = null;
+
 								// Generate title using AI with streaming
 								const result = streamText({
 									model: openai(ai_chat_TITLE_MODEL_ID),
@@ -1351,6 +1477,12 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									experimental_transform: smoothStream({
 										delayInMs: 100,
 									}),
+									onFinish: async ({ totalUsage }) => {
+										titleCapturedUsage = {
+											inputTokens: totalUsage.inputTokens ?? 0,
+											outputTokens: totalUsage.outputTokens ?? 0,
+										};
+									},
 								});
 
 								// Transform the AI stream to properly encode text chunks
@@ -1363,6 +1495,33 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										controller.enqueue(chunk);
 									},
 									flush: async () => {
+										const capturedInputTokens = titleCapturedUsage?.inputTokens ?? 0;
+										const capturedOutputTokens = titleCapturedUsage?.outputTokens ?? 0;
+										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
+										if (shouldGateCredits && capturedTotalTokens > 0) {
+											await billing_ingest_events(ctx, {
+												events: [
+													billing_event({
+														name: "ai_usage",
+														externalCustomerId: membership.userId,
+														externalId: billingEventId,
+														metadata: {
+															amount: compute_token_usage_cost_cents({
+																modelId: ai_chat_TITLE_MODEL_ID,
+																inputTokens: capturedInputTokens,
+																outputTokens: capturedOutputTokens,
+															}),
+															modelId: ai_chat_TITLE_MODEL_ID,
+															inputTokens: capturedInputTokens,
+															outputTokens: capturedOutputTokens,
+															threadId: thread_id,
+															messageId: "title",
+														},
+													}),
+												],
+											});
+										}
+
 										const trimmedTitle = title.trim();
 										if (!trimmedTitle) {
 											return;
@@ -1392,13 +1551,16 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									status: 200,
 									body: stream,
 								} as const;
-							} catch (error: unknown) {
-								console.error("Title generation error:", error);
+							} catch (error) {
+								const message = "Title generation error";
+								console.error(`${message}:`, error);
 
 								return {
 									status: 500,
 									body: {
-										message: error instanceof Error ? error.message : "Unknown error",
+										message,
+										cause:
+											error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
 									},
 								} as const;
 							}
@@ -1416,7 +1578,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									});
 								}
 
-								return Response.json(result, result);
+								return Response.json(result.body, result);
 							}),
 						});
 

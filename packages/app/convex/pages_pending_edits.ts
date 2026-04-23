@@ -7,7 +7,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
 import { billing_event } from "../server/billing.ts";
-import { billing_ingest_events } from "./billing.ts";
+import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
 import { composite_id } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
@@ -861,6 +861,22 @@ export const save_pages_pending_edit = mutation({
 			yjsDoc: latestPageYjsDoc,
 		});
 		if (diffUpdateForLatestPageYjsDoc) {
+			// Pre-flight the credit gate before the push so Free users at 0
+			// balance don't force a rollback. Anonymous users skip the gate.
+			if (!user.isAnonymous) {
+				const check = await billing_db_check_credits(ctx, {
+					userId: user.id,
+					minimumRequiredCents: 1,
+				});
+				if (!check._yay.hasCredits) {
+					return Result({
+						_nay: {
+							message: "Insufficient funds",
+						},
+					});
+				}
+			}
+
 			const result = await pages_db_yjs_push_update(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,

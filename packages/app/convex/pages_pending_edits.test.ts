@@ -1,9 +1,10 @@
 import { Workpool } from "@convex-dev/workpool";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api.js";
+import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 import {
 	pages_db_reschedule_pending_edit_cleanup_for_user,
 	pages_FIRST_VERSION,
@@ -17,15 +18,80 @@ import {
 } from "../server/pages.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
+let enqueueActionSpy: MockInstance;
+
 beforeEach(() => {
-	// Keep pending-edit tests focused on document state; billing event enqueue
-	// behavior is covered in billing tests.
-	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_pending_edit_test_billing_event" as never);
+	// Keep pending-edit tests off the real billing workpool while still letting
+	// focused cases assert whether a page-save event was enqueued.
+	enqueueActionSpy = vi
+		.spyOn(Workpool.prototype, "enqueueAction")
+		.mockResolvedValue("work_pending_edit_test_billing_event" as never);
 });
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
+
+async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
+	const existingSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", userId))
+		.unique();
+	if (existingSnapshot) return;
+
+	const polarProductId = "pending_edit_test_free_product";
+	const existingProduct = await ctx.runQuery(components.polar.lib.getProduct, { id: polarProductId });
+	if (!existingProduct) {
+		await ctx.runMutation(components.polar.lib.createProduct, {
+			product: {
+				id: polarProductId,
+				organizationId: "pending_edit_test_org",
+				name: billing_PRODUCTS.Free.name,
+				description: null,
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [
+					{
+						id: `${polarProductId}_price`,
+						createdAt: "2026-01-01T00:00:00.000Z",
+						modifiedAt: null,
+						amountType: "free",
+						isArchived: false,
+						productId: polarProductId,
+						priceCurrency: "eur",
+						recurringInterval: "month",
+					},
+				],
+				medias: [],
+				benefits: [],
+			},
+		});
+	}
+
+	await ctx.db.insert("billing_usage_snapshots", {
+		userId,
+		polarCustomerId: `pending_edit_test_customer_${userId}`,
+		subscription: {
+			id: `pending_edit_test_subscription_${userId}`,
+			productId: polarProductId,
+			currency: "eur",
+			currentPeriodStart: "2026-01-01T00:00:00.000Z",
+			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+		},
+		meter: {
+			id: "meter_press_usage",
+			consumedUnits: 0,
+			creditedUnits: 100_000,
+			balance: 100_000,
+			amountDueCents: 0,
+		},
+		lastSyncedAt: Date.now(),
+	});
+}
 
 async function seed_page_with_markdown(args: {
 	ctx: MutationCtx;
@@ -42,6 +108,7 @@ async function seed_page_with_markdown(args: {
 	const { ctx, path, name, markdown } = args;
 	const membership = args.membership ?? (await test_mocks_fill_db_with.membership(ctx));
 	const { userId, workspaceId, projectId, membershipId } = membership;
+	await seed_billing_snapshot_for_user(ctx, userId);
 
 	const pageId = await ctx.db.insert("pages", {
 		workspaceId,
@@ -1200,6 +1267,69 @@ describe("presence.disconnect", () => {
 });
 
 describe("save_pages_pending_edit", () => {
+	test("save_pages_pending_edit blocks Free users at zero credits before saving", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_page_with_markdown({
+				ctx,
+				path: "/pending-edits-save-zero-credits",
+				name: "pending-edits-save-zero-credits",
+				markdown: "# Save base",
+			}),
+		);
+		await t.run(async (ctx) => {
+			const snapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", seeded.userId))
+				.unique();
+			if (!snapshot?.meter) {
+				throw new Error("Expected seeded billing snapshot meter");
+			}
+			await ctx.db.patch("billing_usage_snapshots", snapshot._id, {
+				meter: {
+					...snapshot.meter,
+					creditedUnits: 0,
+					balance: 0,
+				},
+			});
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked chunk`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked chunk`,
+		});
+
+		const saveResult = await asUser.mutation(api.ai_chat.save_pages_pending_edit, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+
+		expect(saveResult).toEqual({
+			_nay: {
+				message: "Insufficient funds",
+			},
+		});
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+
+		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
+			read_page_markdown_from_yjs({
+				ctx,
+				workspaceId: seeded.workspaceId,
+				projectId: seeded.projectId,
+				pageId: seeded.pageId,
+			}),
+		);
+		expect(savedMarkdownAfterDeniedSave).toBe(seeded.baseMarkdown);
+	});
+
 	test("save_pages_pending_edit supports partial save and keeps unresolved pending row", async () => {
 		const t = test_convex();
 
@@ -1237,6 +1367,21 @@ describe("save_pages_pending_edit", () => {
 			throw new Error("Missing save result _yay while testing partial save");
 		}
 		expect(saveResult._yay.newSequence).not.toBeNull();
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "page_save",
+					externalCustomerId: seeded.userId,
+					metadata: expect.objectContaining({
+						amount: 1,
+						workspaceId: seeded.workspaceId,
+						projectId: seeded.projectId,
+						pageId: seeded.pageId,
+						yjsSequence: String(saveResult._yay.newSequence),
+					}),
+				}),
+			],
+		});
 
 		const pendingEditLastSequenceSaved = await t.run(async (ctx) =>
 			read_pending_edit_last_sequence_saved_row({

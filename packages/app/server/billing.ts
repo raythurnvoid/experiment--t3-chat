@@ -37,6 +37,10 @@ export const billing_POLAR_METER_EVENT = "press_usage_event";
  * - `externalId`: Sent as Polar `externalId` for idempotency.
  * - `metadata`: Sent as Polar `metadata`, with `name` added by the ingest helper.
  *
+ * Polar's meter sums event amounts directly. Positive `metadata.amount` values
+ * are usage that consumes/decreases balance; negative values are credits or
+ * payments that increase balance.
+ *
  * Other Polar event fields are intentionally not modeled until a real billing
  * event needs them: `customerId`, `externalMemberId`, `memberId`,
  * `organizationId`, `parentId`, and `timestamp`.

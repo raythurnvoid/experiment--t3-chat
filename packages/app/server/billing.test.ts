@@ -5,6 +5,19 @@ import { composite_id } from "../shared/shared-utils.ts";
 import { billing_event, type billing_Event } from "./billing.ts";
 
 describe("billing_event", () => {
+	test("builds the canonical manual_credit usage event payload", () => {
+		const event = {
+			name: "manual_credit",
+			externalCustomerId: "user_1" as Id<"users">,
+			externalId: composite_id("billing", "manual_credit", "user_1" as Id<"users">, 123456),
+			metadata: {
+				amount: -2500,
+			},
+		} satisfies billing_Event;
+
+		expect(billing_event(event)).toEqual(event);
+	});
+
 	test("builds the canonical page_save usage event payload", () => {
 		const event = {
 			name: "page_save",
@@ -51,13 +64,18 @@ describe("billing_event", () => {
 		expect(billing_event(event)).toEqual(event);
 	});
 
-	test("builds the canonical manual_credit usage event payload", () => {
+	test("builds the canonical ai_usage usage event payload", () => {
 		const event = {
-			name: "manual_credit",
+			name: "ai_usage",
 			externalCustomerId: "user_1" as Id<"users">,
-			externalId: composite_id("billing", "manual_credit", "user_1" as Id<"users">, 123456),
+			externalId: composite_id("billing", "ai_usage", "user_1" as Id<"users">, "thread_1", "message_1"),
 			metadata: {
-				amount: -2500,
+				amount: 12.5,
+				modelId: "gpt-5.4-nano",
+				inputTokens: 1000,
+				outputTokens: 250,
+				threadId: "thread_1",
+				messageId: "message_1",
 			},
 		} satisfies billing_Event;
 

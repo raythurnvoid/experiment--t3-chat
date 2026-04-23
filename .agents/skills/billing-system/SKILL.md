@@ -27,7 +27,7 @@ The `customer.state_changed` webhook is the canonical refresh path for local usa
 - Give each signed-in user a `Free` subscription after account resolution.
 - Include `€10` of usage every billing month. Credits land on the shared customer-level meter the same Convex tick `db_apply_polar_customer_state_refresh` first sees an active subscription, because the inline grant runs inside that helper (driven by the `customer.state_changed` webhook or the admin replay action) and writes an optimistic meter through `db_apply_optimistic_credit_to_snapshot` before Polar's own meter aggregation catches up.
 - `Free` has no subscription-level Polar meter, so `amountDueCents` is always `0` for `Free`.
-- Eventually lock the user once the included usage is exhausted. That lock is not implemented today.
+- Credit gates block signed-in `Free` users once their current synced meter balance is below the operation minimum. Paid plans can go negative and bill overage through Polar.
 
 ### `Pay As You Go`
 
@@ -62,7 +62,7 @@ The shared catalog lives in [billing.ts](../../../packages/app/shared/billing.ts
 Server-side usage-event typing lives in [billing.ts](../../../packages/app/server/billing.ts), while queued ingestion lives in [billing.ts](../../../packages/app/convex/billing.ts).
 
 - `billing_POLAR_METER_EVENT` stores the single Polar meter event name, `press_usage_event`, used for both usage charges and credits.
-- `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `page_save`, `monthly_credit`, and `manual_credit`.
+- `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `manual_credit`, `page_save`, `monthly_credit`, and `ai_usage`.
 - `billing_Event` is the only supported billing usage event shape. It mirrors Polar's event fields with `{ name, externalCustomerId, externalId, metadata }`, except `name` is the app event name; `ingest_events` rewrites that field to the single Polar meter event and stores the app event name in `metadata.name`.
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
 - Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; keep emitted IDs aligned with the canonical event-name prefixes.
@@ -108,12 +108,68 @@ The monthly credits engine lives at the `// #region monthly credits` block in [b
 
 The Polar `customer.state_changed` webhook is the sole trigger for monthly credits in production; there is no cron-driven reconciliation pass. Trust the webhook to deliver every state change. The admin-only `refresh_from_polar_customer_state` action replays the same helper (`db_apply_polar_customer_state_refresh`) on demand from the Convex dashboard when a webhook was lost or local state looks stale.
 
-- `db_apply_polar_customer_state_refresh` upserts `billing_usage_snapshots`, saving `meter: null` for `Free` subscriptions and paid-plan meter details when they are resolvable. When the `BillingCustomerState` includes an active subscription, it then runs the monthly credit grant inline in the same mutation — gated on a subscription period transition (first-ever subscription, renewal with a new `currentPeriodStart`, or a new `subscriptionId` after a plan change) so mid-period repeats are skipped. When the state has `deletedAt`, it removes the local customer mapping, local subscription rows, and usage snapshot without granting monthly credits. The shared `db_upsert_usage_snapshot` writer preserves a present meter when Polar reports `active_meters: []` for an active subscription, so a stale empty webhook payload does not clobber the meter that `db_apply_optimistic_credit_to_snapshot` wrote ahead of Polar.
+- `db_apply_polar_customer_state_refresh` first upserts `billing_usage_snapshots` from the customer-state payload, then runs the monthly credit grant inline in the same mutation when the `BillingCustomerState` includes an active subscription. Fresh `Free` snapshots can be `meter: null` at the upsert point because `Free` has no subscription meter; the inline grant immediately patches the optimistic customer meter when recurring credits apply. The grant is gated on a subscription period transition (first-ever subscription, renewal with a new `currentPeriodStart`, or a new `subscriptionId` after a plan change) so mid-period repeats are skipped. When the state has `deletedAt`, it removes the local customer mapping, local subscription rows, and usage snapshot without granting monthly credits. The shared `db_upsert_usage_snapshot` writer preserves a present meter when Polar reports `active_meters: []` for an active subscription, so a stale empty webhook payload does not clobber the meter that `db_apply_optimistic_credit_to_snapshot` wrote ahead of Polar.
 - The inline grant resolves the Polar product by `productId`, reads `billing_get_recurring_credits_cents(product.name)`, and when `recurringAmountCents > 0` first calls `db_apply_optimistic_credit_to_snapshot` to write the credit into `billing_usage_snapshots` locally on the same Convex tick, then enqueues one negative-amount `monthly_credit` event with `externalId` `monthly_credit::<userId>::<subscriptionId>::<periodStart>` through `billing_ingest_events`. It does not call Polar `customersGetState`; the optimistic write makes the credit visible immediately, and the next `customer.state_changed` reconciles the meter once Polar's aggregation catches up. The period-transition gate replaces the previous per-row dedupe key, so a same-period repeat webhook delivery skips both the optimistic write and the workpool enqueue. Polar's immutable usage event plus duplicate detection by `externalId` remains the authority if a duplicate ingest ever does fire.
 - `db_apply_optimistic_credit_to_snapshot` (synchronous `MutationCtx` helper) patches the user's `billing_usage_snapshots` row with the credit `meter` (mirroring Polar's accounting: negative `consumedUnits`, positive `balance`). It resolves the meter id through `billing_resolve_customer_meter_id` so the optimistic id matches the one Polar sends in the next `customer.state_changed`. The helper expects the snapshot row to exist because `db_apply_polar_customer_state_refresh` upserts it earlier in the same transaction; missing rows surface a `should_never_happen` error rather than silently no-opping.
 - Repeated same-period `customer.state_changed` deliveries (consumption updates, meter recomputes) report the same `(subscriptionId, currentPeriodStart)` and skip the inline grant entirely thanks to the period-transition gate, so the optimistic meter and the Polar event ledger both stay idempotent without any per-row dedupe key.
 
 See [Glossary — monthly credits](#glossary--monthly-credits).
+
+## Credit gating
+
+Credit gating is a read-only start-time check. Backend credit checks live in [billing.ts](../../../packages/app/convex/billing.ts). The gate never reserves, debits, settles, releases, or prunes local credits. It reads the current `billing_usage_snapshots.meter.balance` that was synced from Polar and decides whether the operation may start.
+
+### Plan policy
+
+Keep the plan policy direct at the gate call site:
+
+- `Free` reports `hasCredits: false` whenever `meterBalanceCents < minimumRequiredCents`. Callers map that denial to the literal message `"Insufficient funds"`; keep richer upgrade copy in ad hoc UI queries, not in the gate result.
+- `Pay As You Go` and `Pro` always allow; overage becomes Polar-billed usage on the next cycle.
+
+Do not reintroduce a shared `credits_policy_allow_spend` helper for this rule. The intended code shape is the straightforward `product.name === "Free" && meterBalanceCents < minimumRequiredCents` check where the gate needs it. Trust the synced Polar product `name`; do not add a separate plan-name validation helper in the gate.
+
+### Gate APIs
+
+There is one backend gate operation:
+
+- `billing_db_check_credits(ctx, { userId, minimumRequiredCents })` — loads the synced Polar product from `snapshot.subscription.productId`, reads `snapshot.meter?.balance ?? 0`, and returns `_yay: { hasCredits }`. Missing billing state, missing products, and insufficient Free-plan balance return `hasCredits: false`; paid plans return `hasCredits: true` even with a negative balance.
+- `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. It returns the same `_yay: { hasCredits }` shape.
+
+Missing snapshots or subscriptions are treated as `hasCredits: false` in gate helpers. Billing UI hides until the subscription, product list, and usage snapshot are ready.
+
+### Chat start check and usage event
+
+[ai_chat.ts](../../../packages/app/convex/ai_chat.ts) checks signed-in credits before LLM work with `minimumRequiredCents: 1`. This applies to the main `/api/chat` stream and the secondary title-generation endpoint. Anonymous users skip this path because they have no subscription snapshot.
+
+- On deny the handler returns `402` with `{ message: "Insufficient funds" }`. If the UI needs richer plan-aware copy, add a separate query for that UI surface instead of expanding the gate result.
+- On successful finish, signed-in chat flows emit direct `billing_event("ai_usage")` events through `billing_ingest_events` when AI SDK reports non-zero token usage. The main stream emits one event with the captured main-response usage plus inline title usage when a new thread title was generated; the secondary title endpoint emits one title event with `messageId: "title"`.
+- Use deterministic `externalId` values built with `composite_id("billing", "ai_usage", userId, threadId, messageId)` so Polar dedupes HTTP retries. For the secondary title endpoint, the final part is the literal `"title"`.
+- Keep the token-pricing switch local to `compute_token_usage_cost_cents` in `ai_chat.ts`. Do not recreate a shared entitlements module, exported pricing type, or helper for the current pricing table.
+- Do not store chat spend locally. Do not estimate or reserve worst-case cost. Do not stop a live stream when the balance goes below zero in the current implementation; stream cutoff is a future billing-lock feature.
+
+### Page-save check and usage event
+
+Page saves ([yjs_push_update](../../../packages/app/convex/ai_docs_temp.ts) and [save_pages_pending_edit](../../../packages/app/convex/pages_pending_edits.ts)) fail fast before the yjs push:
+
+1. `billing_db_check_credits(ctx, { userId, minimumRequiredCents: 1 })` — read-only pre-flight. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
+2. Run the yjs push; obtain the new sequence.
+3. Emit the existing `billing_event("page_save")` with `externalId = composite_id("billing", "page_save", userId, pageId, yjsSequence)` and literal `metadata.amount: 1`.
+
+There is no local credit debit after save. Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. Do not reintroduce a shared `credits_PAGE_SAVE_COST_CENTS` constant for the current one-cent page-save rule; keep the literal at the call sites unless the product rule changes.
+
+### Anonymous users
+
+Anonymous users skip credit gating, mirroring the existing `billing_event` skip in page-save mutations. They have no subscription and no snapshot row, so callers must gate on `user.isAnonymous === false` or `user.kind === "signed_in"` before running the gate.
+
+### UI surface: billing indicator
+
+The billing indicator ([main-app-header-billing-indicator.tsx](../../../packages/app/src/components/main-app-header-billing-indicator.tsx)) consumes the existing billing queries directly:
+
+- `api.billing.get_current_user_subscription`
+- `api.billing.get_usage_snapshot`
+- `api.billing.list_products`
+
+The indicator displays `usage.meter.balance` as the synced remaining credits. When that balance is below `0`, the component swaps in an alarm color on the remaining value, shows a `TriangleAlert` icon, and wraps the group in a tooltip showing `"Out of funds"`. It does not call a separate backend capability query.
 
 ## Function definitions
 
@@ -169,7 +225,7 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 - **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
 - **Kind:** inferred type alias from `FunctionArgs<typeof internal.billing.ingest_events>["events"][number]`.
-- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`page_save`, `monthly_credit`, `manual_credit`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, `externalId`, and event-specific `metadata`.
+- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`manual_credit`, `page_save`, `monthly_credit`, `ai_usage`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, `externalId`, and event-specific `metadata`.
 
 #### `billing_event`
 
@@ -202,6 +258,18 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 - **Kind:** public `query`
 - **Args / returns:** `{}` → `billing_usage_snapshots` doc for the signed-in user or `null`.
 - **Role:** Local snapshot (subscription period, meter, balances from webhook-derived state) for the billing panel.
+
+#### `billing_db_check_credits`
+
+- **Kind:** exported async helper
+- **Args:** `(ctx: QueryCtx | MutationCtx, { userId, minimumRequiredCents })`
+- **Role:** Read-only credit gate for mutations/queries that need to fail before doing paid work. Returns `_yay: { hasCredits: false }` on missing billing state, missing products, or insufficient Free-plan balance; paid plans are allowed even with negative balance.
+
+#### `check_credits`
+
+- **Kind:** `internalQuery`
+- **Args:** `{ userId, minimumRequiredCents }`
+- **Role:** Action-facing wrapper around `billing_db_check_credits`, used by chat HTTP flows before LLM work starts. Chat callers convert `hasCredits: false` into HTTP `402` with `{ message: "Insufficient funds" }`.
 
 #### `generate_checkout_link`
 
@@ -335,13 +403,15 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Treat Polar benefit descriptions as exact identifiers in app code: `Free Included Usage`, `Free Usage`, and `Pro Included Usage`. These names remain stable in the catalog because tests and historical webhook payloads still reference them.
 - Treat the Polar meter display name `Press app usage` as the canonical usage meter name in the catalog.
 - Treat the Polar usage event name `press_usage_event` as the canonical event name for usage ingestion.
-- Treat `page_save`, `monthly_credit`, and `manual_credit` as the canonical usage event names. Usage-event `externalId` prefixes must follow those names exactly and use `::` as the only composite-id separator (`page_save::...`, `monthly_credit::...`, `manual_credit::...`).
+- Treat `manual_credit`, `page_save`, `monthly_credit`, and `ai_usage` as the canonical usage event names. When listing billing event names in validators, tuple unions, tests, docs, or specs, put `manual_credit` first because it is the manual/admin variant, then list `page_save`, `monthly_credit`, and `ai_usage`. Usage-event `externalId` prefixes must follow those names exactly and use `::` as the only composite-id separator (`manual_credit::...`, `page_save::...`, `monthly_credit::...`, `ai_usage::...`).
+- Treat Polar meter amounts as a signed sum ledger: positive `metadata.amount` values are usage that consumes/decreases balance, while negative values are credits or payments that increase balance. `grant_credit` normalizes dashboard input to a negative `manual_credit` event by default. QA/admin drain flows may pass `allowNegative: true` with a negative `amount`, which records a positive manual usage event and reduces the balance.
+- Keep the current page-save usage amount as a literal `1` at each call site, and keep the current chat token-pricing switch local to `packages/app/convex/ai_chat.ts`.
 - Keep `meter_credit` benefits detached from every Polar product. The Convex monthly credits engine is the only code path that grants recurring credits; running both would double-grant.
 - Prefer Polar-configured prices over hardcoded monetary logic in the repo. The code usually reads plan names and prices from synced Polar products. Per-plan recurring credit amounts are the exception: they live in `billing_PRODUCTS.<plan>.recurringCreditsCents` and are applied by the monthly credits engine.
 
 # TODO / known gaps
 
-- Enforce the `Free` plan lock once the included usage is exhausted.
+- Decide before GA whether the current hardcoded chat token rates and literal one-cent page-save amount are final product pricing or placeholders.
 - Define and implement anonymous-user billing and limits so anonymous users mirror `Free`-plan limits.
 - Move usage snapshot ownership into the vendored Polar component when that migration happens.
 - Reconcile repo behavior and business policy whenever plan allowances or billing-cycle credit behavior change.

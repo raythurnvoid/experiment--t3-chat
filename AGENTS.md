@@ -28,7 +28,7 @@ The Convex backend handles:
 
 - AI chat streaming with OpenAI integration
 - Thread and message management
-- Tool calling (weather, page tools)
+- Tool calling (page tools and web search)
 - Authentication token generation
 - CORS handling
 
@@ -274,6 +274,16 @@ Use `export` only when a symbol is intentionally part of the module's public API
 - Keep helpers, types, constants, and other implementation details module-private when they are only used inside the same file.
 - Do not export symbols "just in case" or to make local file organization feel cleaner.
 - When in doubt, start module-private and add `export` later once there is a real cross-module use.
+
+## Convex function argument types
+
+When a helper needs a Convex args object type, keep the type surface as small and local as the code needs.
+
+- Prefer an inline object type when the helper only consumes a small body shape or a one-off subset.
+- If a helper intentionally mirrors a generated registered function's full args shape (`api.foo.bar` or `internal.foo.bar`), use `FunctionArgs<typeof internal.foo.bar>`.
+- If you truly need the full args shape from a local registered function export (`typeof check_credits`), convert it first with `FunctionArgs<FunctionReferenceFromExport<typeof check_credits>>`.
+- Import those utility types from `convex/server` only when you use them: `import type { FunctionArgs, FunctionReferenceFromExport } from "convex/server";`
+- Do not use implementation details such as `_handler`, do not extract a separate validator just to get a type, and do not create a named args type unless a production API genuinely needs it.
 
 ## Test organization
 
@@ -736,7 +746,7 @@ Do not add a module/feature prefix to a private type just because it lives in th
 When a private type supports generic module machinery rather than one specific exported owner, prefer a plain PascalCase name such as `FieldDefinition` over `app_local_storage_FieldDefinition`. Reserve owner-scoped names like `OwnerSymbol_Descriptor` for declarations that are truly owned by that symbol, not for every private type in the file.
 
 ```ts
-export const ai_chat_MAIN_MODEL_IDS = ["gpt-5-nano", "gpt-4.1-mini"] as const;
+export const ai_chat_MAIN_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
 
 export class ai_chat_MyClass {
 	constructor(public projectId: string) {}

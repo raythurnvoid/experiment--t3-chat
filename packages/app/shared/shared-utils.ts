@@ -202,6 +202,7 @@ export function path_name_of(path: string): string {
 export type AppCompositeIds = {
 	rooms: [kind: "pages", workspaceId: string, projectId: string, pageId: string];
 	billing:
+		| [name: "manual_credit", userId: string, timestamp: number]
 		| [name: "page_save", userId: string, pageId: string, yjsSequence: number]
 		| [
 				name: "monthly_credit",
@@ -212,7 +213,7 @@ export type AppCompositeIds = {
 				 */
 				periodStart: string,
 		  ]
-		| [name: "manual_credit", userId: string, timestamp: number];
+		| [name: "ai_usage", userId: string, threadId: string, messageId: string];
 };
 
 /**

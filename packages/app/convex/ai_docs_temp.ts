@@ -63,7 +63,7 @@ import type { RouterForConvexModules } from "./http.ts";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
-import { billing_ingest_events } from "./billing.ts";
+import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
 import { rate_limiter } from "./rate_limiter.ts";
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
@@ -2700,6 +2700,23 @@ export const yjs_push_update = mutation({
 		}
 		if (page.workspaceId !== membership.workspaceId || page.projectId !== membership.projectId) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// Pre-flight the credit gate *before* the push so Free users at 0 balance
+		// don't force a rollback. Anonymous users skip the gate (they also skip
+		// `billing_event("page_save")` below).
+		if (!user.isAnonymous) {
+			const check = await billing_db_check_credits(ctx, {
+				userId: user.id,
+				minimumRequiredCents: 1,
+			});
+			if (!check._yay.hasCredits) {
+				return Result({
+					_nay: {
+						message: "Insufficient funds",
+					},
+				});
+			}
 		}
 
 		const pushResult = await pages_db_yjs_push_update(ctx, {
