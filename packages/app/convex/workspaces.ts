@@ -157,12 +157,12 @@ export const get_membership_by_workspace_project_name = query({
 	},
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
-			if (!user) {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+			if (!userAuth) {
 				return null;
 			}
 
-			return ctx.db.get("users", user.id);
+			return ctx.db.get("users", userAuth.id);
 		});
 
 		if (!user) {

@@ -32,6 +32,7 @@ import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
 	billing_cancel_scheduled_polar_subscription_period_end_cancellation,
+	billing_db_ensure_anonymous_user_usage_snapshot,
 	billing_enqueue_free_subscription_bootstrap,
 	billing_schedule_polar_subscription_period_end_cancellation,
 } from "./billing.ts";
@@ -191,6 +192,8 @@ export const create_anonymous_user = internalMutation({
 				userId,
 				now,
 			}),
+
+			billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }),
 		]);
 
 		return {
@@ -608,6 +611,16 @@ export const resolve_user = internalMutation({
 						userId,
 						now,
 					}),
+
+					// Discard the anonymous billing snapshot; the signed-in Free
+					// bootstrap will create a fresh Polar-backed snapshot.
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_userId", (q) => q.eq("userId", user._id))
+						.first()
+						.then((usageSnapshot) =>
+							usageSnapshot ? ctx.db.delete("billing_usage_snapshots", usageSnapshot._id) : undefined,
+						),
 				]);
 
 				return Result({ _yay: { userId: user._id, restoredDeletedAccount: false } });
@@ -698,13 +711,13 @@ export const delete_current_user_account = action({
 	args: {},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
-			if (!user) {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+			if (!userAuth) {
 				return null;
 			}
 
 			return ctx.runQuery(internal.users.get, {
-				userId: user.id,
+				userId: userAuth.id,
 			});
 		});
 		if (!user) {

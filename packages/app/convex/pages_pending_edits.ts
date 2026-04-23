@@ -791,12 +791,18 @@ export const save_pages_pending_edit = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+			if (!userAuth) {
+				return null;
+			}
+
+			return ctx.db.get("users", userAuth.id);
+		});
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: user._id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -807,7 +813,7 @@ export const save_pages_pending_edit = mutation({
 			pages_db_get_pending_edit(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				userId: user.id,
+				userId: user._id,
 				pageId: args.pageId,
 				pendingEditId: args.pendingEditId,
 			}),
@@ -861,20 +867,16 @@ export const save_pages_pending_edit = mutation({
 			yjsDoc: latestPageYjsDoc,
 		});
 		if (diffUpdateForLatestPageYjsDoc) {
-			// Pre-flight the credit gate before the push so Free users at 0
-			// balance don't force a rollback. Anonymous users skip the gate.
-			if (!user.isAnonymous) {
-				const check = await billing_db_check_credits(ctx, {
-					userId: user.id,
-					minimumRequiredCents: 1,
+			const check = await billing_db_check_credits(ctx, {
+				userId: user._id,
+				minimumRequiredCents: 1,
+			});
+			if (!check._yay.hasCredits) {
+				return Result({
+					_nay: {
+						message: "Insufficient funds",
+					},
 				});
-				if (!check._yay.hasCredits) {
-					return Result({
-						_nay: {
-							message: "Insufficient funds",
-						},
-					});
-				}
 			}
 
 			const result = await pages_db_yjs_push_update(ctx, {
@@ -882,28 +884,22 @@ export const save_pages_pending_edit = mutation({
 				projectId: membership.projectId,
 				pageId: args.pageId,
 				update: pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
-				sessionId: `pages_pending_edit:${user.id}`,
-				userId: user.id,
-				userName: user.name,
+				sessionId: `pages_pending_edit:${user._id}`,
+				userId: user._id,
 			});
 			if (result._nay) {
 				return result;
 			}
 
 			newSequence = result._yay.newSequence;
-			if (!user.isAnonymous) {
-				await billing_ingest_events(ctx, {
-					events: [
-						billing_event({
+			await billing_ingest_events(ctx, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
 							name: "page_save",
-							externalCustomerId: user.id,
-							externalId: composite_id(
-								"billing",
-								"page_save",
-								user.id,
-								args.pageId,
-								result._yay.newSequence,
-							),
+							externalCustomerId: user._id,
+							externalId: composite_id("billing", "page_save", user._id, args.pageId, result._yay.newSequence),
 							metadata: {
 								amount: 1,
 								workspaceId: membership.workspaceId,
@@ -912,9 +908,9 @@ export const save_pages_pending_edit = mutation({
 								yjsSequence: String(result._yay.newSequence),
 							},
 						}),
-					],
-				});
-			}
+					},
+				],
+			});
 			pages_yjs_doc_apply_array_buffer_update(
 				livePageYjsDocAfterSave,
 				pages_u8_to_array_buffer(diffUpdateForLatestPageYjsDoc),
@@ -942,7 +938,7 @@ export const save_pages_pending_edit = mutation({
 				pages_pending_edit_upsert_last_sequence_saved(ctx, {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					userId: user.id,
+					userId: user._id,
 					pageId: args.pageId,
 					lastSequenceSaved: nextBaseYjsSequence,
 					updatedAt: now,
@@ -982,7 +978,7 @@ export const save_pages_pending_edit = mutation({
 			pages_pending_edit_upsert_last_sequence_saved(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				userId: user.id,
+				userId: user._id,
 				pageId: args.pageId,
 				lastSequenceSaved: nextBaseYjsSequence,
 				updatedAt: now,

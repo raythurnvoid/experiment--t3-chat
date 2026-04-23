@@ -127,7 +127,7 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	const shouldQuery = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
 
 	const subscription = useQuery(app_convex_api.billing.get_current_user_subscription, shouldQuery ? {} : "skip");
-	const usage = useQuery(app_convex_api.billing.get_usage_snapshot, shouldQuery ? {} : "skip");
+	const billingUsageSnapshot = useQuery(app_convex_api.billing.get_usage_snapshot, shouldQuery ? {} : "skip");
 	const products = useQuery(app_convex_api.billing.list_products, shouldQuery ? {} : "skip");
 
 	if (!shouldQuery) {
@@ -138,7 +138,15 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	// the snapshot subscription metadata must be present. The customer meter is
 	// the authoritative source for remaining credits and amount due, so hide the
 	// indicator until Polar has synced it for this user.
-	if (!subscription || !usage?.subscription || !usage.meter || !products) {
+	if (
+		!subscription ||
+		!billingUsageSnapshot?.subscription ||
+		billingUsageSnapshot.polarCustomerId == null ||
+		billingUsageSnapshot.subscription.id == null ||
+		!billingUsageSnapshot.meter ||
+		billingUsageSnapshot.meter.id == null ||
+		!products
+	) {
 		return null;
 	}
 
@@ -148,9 +156,9 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	}
 	const isFree = activeProduct.name === "Free";
 
-	const currency = usage.subscription.currency;
-	const dueText = format_cents(usage.meter.amountDueCents, currency);
-	const remainingCents = usage.meter.balance;
+	const currency = billingUsageSnapshot.subscription.currency;
+	const dueText = format_cents(billingUsageSnapshot.meter.amountDueCents, currency);
+	const remainingCents = billingUsageSnapshot.meter.balance;
 	const creditsLeftText = format_cents(remainingCents, currency);
 	const isExhausted = remainingCents < 0;
 

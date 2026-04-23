@@ -1,11 +1,14 @@
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
 import { pages_ROOT_ID } from "../server/pages.ts";
+import type { Id } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 
 beforeEach(() => {
 	// Keep page tests focused on page behavior; billing event enqueue behavior is
@@ -16,6 +19,67 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 });
+
+async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
+	const usageSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", userId))
+		.unique();
+	if (usageSnapshot) return;
+
+	const polarProductId = "pages_test_free_product";
+	const existingProduct = await ctx.runQuery(components.polar.lib.getProduct, { id: polarProductId });
+	if (!existingProduct) {
+		await ctx.runMutation(components.polar.lib.createProduct, {
+			product: {
+				id: polarProductId,
+				organizationId: "pages_test_org",
+				name: billing_PRODUCTS.Free.name,
+				description: null,
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [
+					{
+						id: `${polarProductId}_price`,
+						createdAt: "2026-01-01T00:00:00.000Z",
+						modifiedAt: null,
+						amountType: "free",
+						isArchived: false,
+						productId: polarProductId,
+						priceCurrency: "eur",
+						recurringInterval: "month",
+					},
+				],
+				medias: [],
+				benefits: [],
+			},
+		});
+	}
+
+	await ctx.db.insert("billing_usage_snapshots", {
+		userId,
+		polarCustomerId: `pages_test_customer_${userId}`,
+		subscription: {
+			id: `pages_test_subscription_${userId}`,
+			productId: polarProductId,
+			currency: "eur",
+			currentPeriodStart: "2026-01-01T00:00:00.000Z",
+			currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+		},
+		meter: {
+			id: "meter_press_usage",
+			consumedUnits: 0,
+			creditedUnits: 100_000,
+			balance: 100_000,
+			amountDueCents: 0,
+		},
+		lastSyncedAt: Date.now(),
+	});
+}
 
 test("list_pages", async () => {
 	const t = test_convex();
@@ -966,6 +1030,7 @@ test("membership-scoped page and yjs APIs reject cross-user membership ids", asy
 test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_pages(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
 		external_id: db.userId,
@@ -1021,10 +1086,15 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 					.eq("page_id", createdPage._yay.pageId),
 			)
 			.first();
-		return { updateCount: updates.length, lastSequence: lastSequence?.last_sequence ?? null };
+		return {
+			updateCount: updates.length,
+			lastSequence: lastSequence?.last_sequence ?? null,
+			createdByList: updates.map((update) => update.created_by),
+		};
 	});
 	expect(stateAfterBlock.updateCount).toBe(2);
 	expect(stateAfterBlock.lastSequence).toBe(2);
+	expect(stateAfterBlock.createdByList).toEqual([db.userId, db.userId]);
 });
 
 test("yjs_push_update rate limit applies to anonymous JWT identities", async () => {
@@ -1034,6 +1104,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 			clerkUserId: null,
 		}),
 	);
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, anonymousUserId));
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx, { userId: anonymousUserId }));
 	const asAnonymous = t.withIdentity({
 		issuer: process.env.VITE_CONVEX_HTTP_URL!,

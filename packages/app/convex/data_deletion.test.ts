@@ -10,6 +10,7 @@ import {
 	workspaces_db_create_project,
 	workspaces_db_ensure_default_workspace_and_project_for_user,
 } from "../server/workspaces.ts";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 import { user_limits } from "../shared/limits.ts";
 import { pages_create_room_id } from "../shared/pages.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
@@ -1665,6 +1666,23 @@ describe("resolve_user after tombstone", () => {
 				nowTs: 30_301,
 			}),
 		);
+		await t.mutation(components.polar.lib.createProduct, {
+			product: {
+				id: "data_deletion_anonymous_free_product",
+				organizationId: "data_deletion_test_org",
+				name: billing_PRODUCTS.Free.name,
+				description: null,
+				isRecurring: true,
+				isArchived: false,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				modifiedAt: null,
+				recurringInterval: "month",
+				metadata: {},
+				prices: [],
+				medias: [],
+				benefits: [],
+			},
+		});
 
 		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
 			method: "POST",

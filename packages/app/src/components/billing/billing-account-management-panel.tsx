@@ -190,7 +190,7 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 
 	const billingProducts = useQuery(app_convex_api.billing.list_products, isAnonymous ? "skip" : {});
 	const currentSubscription = useQuery(app_convex_api.billing.get_current_user_subscription, isAnonymous ? "skip" : {});
-	const billingUsage = useQuery(app_convex_api.billing.get_usage_snapshot, isAnonymous ? "skip" : {});
+	const billingUsageSnapshot = useQuery(app_convex_api.billing.get_usage_snapshot, isAnonymous ? "skip" : {});
 	const convex = useConvex();
 
 	const handleManageSubscription = useFn(() => {
@@ -282,7 +282,7 @@ export const BillingAccountManagementPanel = memo(function BillingAccountManagem
 							<BillingActivePlan
 								product={activeProduct}
 								subscription={currentSubscription}
-								usage={billingUsage}
+								usageSnapshot={billingUsageSnapshot}
 								scheduledChangeProductName={
 									pendingUpdateProduct ? billing_get_product_display_name(pendingUpdateProduct.name) : null
 								}

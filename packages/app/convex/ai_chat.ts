@@ -847,7 +847,15 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								const now = Date.now();
-								const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+									if (!userAuth) {
+										return null;
+									}
+
+									return ctx.runQuery(internal.users.get, {
+										userId: userAuth.id,
+									});
+								});
 								if (!user) {
 									return {
 										status: 401,
@@ -891,7 +899,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								// Check credits after cheap request validation but before any LLM work.
-								// Anonymous users skip credit gating because they have no billing snapshot.
 								const lastUserMessage = (body.messages as Array<{ id?: string }>).at(-1);
 								const billingEventId = composite_id(
 									"billing",
@@ -900,19 +907,17 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									(body.threadId ?? body.clientGeneratedThreadId) as string,
 									lastUserMessage?.id ?? body.parentId ?? "turn",
 								);
-								if (user.kind === "signed_in") {
-									const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-										userId: membership.userId,
-										minimumRequiredCents: 1,
-									});
-									if (!creditCheck._yay.hasCredits) {
-										return {
-											status: 402,
-											body: {
-												message: "Insufficient funds",
-											},
-										} as const;
-									}
+								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+									userId: membership.userId,
+									minimumRequiredCents: 1,
+								});
+								if (!creditCheck._yay.hasCredits) {
+									return {
+										status: 402,
+										body: {
+											message: "Insufficient funds",
+										},
+									} as const;
 								}
 
 								if (!threadId) {
@@ -1250,22 +1255,25 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
 										const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
 										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-										if (user.kind === "signed_in" && capturedTotalTokens > 0 && !didStreamError) {
+										if (capturedTotalTokens > 0 && !didStreamError) {
 											await billing_ingest_events(ctx, {
-												events: [
-													billing_event({
-														name: "ai_usage",
-														externalCustomerId: membership.userId,
-														externalId: billingEventId,
-														metadata: {
-															amount: capturedActualCents,
-															modelId: body.model,
-															inputTokens: capturedInputTokens,
-															outputTokens: capturedOutputTokens,
-															threadId: String(threadId ?? ""),
-															messageId: String(result.responseMessage.id ?? ""),
-														},
-													}),
+												userEvents: [
+													{
+														user,
+														event: billing_event({
+															name: "ai_usage",
+															externalCustomerId: membership.userId,
+															externalId: billingEventId,
+															metadata: {
+																amount: capturedActualCents,
+																modelId: body.model,
+																inputTokens: capturedInputTokens,
+																outputTokens: capturedOutputTokens,
+																threadId: String(threadId ?? ""),
+																messageId: String(result.responseMessage.id ?? ""),
+															},
+														}),
+													},
 												],
 											});
 										}
@@ -1431,7 +1439,15 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									.filter(Boolean)
 									.join("\n");
 
-								const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+									if (!userAuth) {
+										return null;
+									}
+
+									return ctx.runQuery(internal.users.get, {
+										userId: userAuth.id,
+									});
+								});
 								if (!user) {
 									return {
 										status: 401,
@@ -1445,18 +1461,15 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 								// Check credits before title generation. One title per thread; the literal
 								// "title" discriminator keeps the usage event id stable across HTTP retries.
-								const shouldGateCredits = user?.kind === "signed_in";
-								if (shouldGateCredits) {
-									const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-										userId: membership.userId,
-										minimumRequiredCents: 1,
-									});
-									if (!creditCheck._yay.hasCredits) {
-										return {
-											status: 402,
-											body: { message: "Insufficient funds" },
-										} as const;
-									}
+								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+									userId: membership.userId,
+									minimumRequiredCents: 1,
+								});
+								if (!creditCheck._yay.hasCredits) {
+									return {
+										status: 402,
+										body: { message: "Insufficient funds" },
+									} as const;
 								}
 
 								let titleCapturedUsage: { inputTokens: number; outputTokens: number } | null = null;
@@ -1498,26 +1511,30 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										const capturedInputTokens = titleCapturedUsage?.inputTokens ?? 0;
 										const capturedOutputTokens = titleCapturedUsage?.outputTokens ?? 0;
 										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-										if (shouldGateCredits && capturedTotalTokens > 0) {
+										if (capturedTotalTokens > 0) {
+											const titleCostCents = compute_token_usage_cost_cents({
+												modelId: ai_chat_TITLE_MODEL_ID,
+												inputTokens: capturedInputTokens,
+												outputTokens: capturedOutputTokens,
+											});
 											await billing_ingest_events(ctx, {
-												events: [
-													billing_event({
-														name: "ai_usage",
-														externalCustomerId: membership.userId,
-														externalId: billingEventId,
-														metadata: {
-															amount: compute_token_usage_cost_cents({
+												userEvents: [
+													{
+														user,
+														event: billing_event({
+															name: "ai_usage",
+															externalCustomerId: membership.userId,
+															externalId: billingEventId,
+															metadata: {
+																amount: titleCostCents,
 																modelId: ai_chat_TITLE_MODEL_ID,
 																inputTokens: capturedInputTokens,
 																outputTokens: capturedOutputTokens,
-															}),
-															modelId: ai_chat_TITLE_MODEL_ID,
-															inputTokens: capturedInputTokens,
-															outputTokens: capturedOutputTokens,
-															threadId: thread_id,
-															messageId: "title",
-														},
-													}),
+																threadId: thread_id,
+																messageId: "title",
+															},
+														}),
+													},
 												],
 											});
 										}

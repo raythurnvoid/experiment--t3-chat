@@ -8,6 +8,7 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex } from "./setup.test.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
+import { billing_PRODUCTS } from "../shared/billing.ts";
 import { user_limits } from "../shared/limits.ts";
 
 const polarWebhookMocks = vi.hoisted(() => ({
@@ -572,6 +573,10 @@ describe("resolve_user", () => {
 
 	test("upgrades the anonymous user in place and stores the normalized email", async () => {
 		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_upgrade_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
 		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
 			method: "POST",
 			headers: {
@@ -619,6 +624,10 @@ describe("resolve_user", () => {
 				email: "resolve-internal-conflict@test.local",
 			}),
 		);
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_conflict_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
 		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
 			method: "POST",
 			headers: {
@@ -669,16 +678,16 @@ describe("resolve_user", () => {
 });
 
 describe("delete_current_user_account", () => {
-	test("returns Unauthorized when no authenticated identity is present", async () => {
+	test("returns Unauthenticated when no authenticated identity is present", async () => {
 		const t = test_convex();
 
 		const result = await t.action(api.users.delete_current_user_account, {});
 
 		expect(result._yay).toBeUndefined();
-		expect(result._nay?.message).toBe("Unauthorized");
+		expect(result._nay?.message).toBe("Unauthenticated");
 	});
 
-	test("returns Unauthorized when Clerk external_id is not set yet", async () => {
+	test("returns Unauthenticated when Clerk external_id is not set yet", async () => {
 		const t = test_convex();
 		const asSignedInWithoutExternalId = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -689,7 +698,7 @@ describe("delete_current_user_account", () => {
 		const result = await asSignedInWithoutExternalId.action(api.users.delete_current_user_account, {});
 
 		expect(result._yay).toBeUndefined();
-		expect(result._nay?.message).toBe("Unauthorized");
+		expect(result._nay?.message).toBe("Unauthenticated");
 	});
 
 	test("deletes the Clerk user, schedules the current subscription for period-end cancellation, and processes the local tombstone flow", async () => {
@@ -2434,5 +2443,76 @@ describe("hard_delete_user_now", () => {
 		} finally {
 			fetchSpy.mockRestore();
 		}
+	});
+});
+
+describe("anonymous billing snapshot lifecycle", () => {
+	test("create_anonymous_user seeds a billing snapshot", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_create_anonymous_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+		const { userId } = await t.mutation(internal.users.create_anonymous_user, {});
+
+		const usageSnapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.polarCustomerId).toBeNull();
+		expect(usageSnapshot!.subscription?.id).toBeNull();
+		expect(usageSnapshot!.subscription?.productId).toBe("users_create_anonymous_free_product");
+		expect(usageSnapshot!.meter?.id).toBeNull();
+		expect(usageSnapshot!.meter?.balance).toBeGreaterThan(0);
+	});
+
+	test("resolve_user anonymous-upgrade deletes the anonymous snapshot", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_resolve_anonymous_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		// Create an anonymous user via the HTTP endpoint.
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		// Verify the anonymous snapshot exists.
+		const usageSnapshotBefore = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", anonymousPayload.userId))
+				.unique(),
+		);
+		expect(usageSnapshotBefore).not.toBeNull();
+		expect(usageSnapshotBefore!.polarCustomerId).toBeNull();
+
+		// Upgrade the anonymous user to a signed-in user.
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-user-anon-snapshot-upgrade",
+				email: "anon-snapshot-upgrade@test.local",
+				anonymousUserToken: anonymousPayload.token,
+				displayName: "Upgraded Anon User",
+			}),
+		);
+		expect(result._yay).toBeDefined();
+
+		// Verify the anonymous snapshot was deleted.
+		const usageSnapshotAfter = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", anonymousPayload.userId))
+				.unique(),
+		);
+		expect(usageSnapshotAfter).toBeNull();
 	});
 });

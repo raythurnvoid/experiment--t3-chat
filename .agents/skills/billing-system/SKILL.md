@@ -66,7 +66,7 @@ Server-side usage-event typing lives in [billing.ts](../../../packages/app/serve
 - `billing_Event` is the only supported billing usage event shape. It mirrors Polar's event fields with `{ name, externalCustomerId, externalId, metadata }`, except `name` is the app event name; `ingest_events` rewrites that field to the single Polar meter event and stores the app event name in `metadata.name`.
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
 - Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; keep emitted IDs aligned with the canonical event-name prefixes.
-- `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `billing_Event[]` and always enqueues `ingest_events` on `billing_workpool_usage_event`, which uses the same long retry policy as cancellation (`10min` initial backoff, `1.2` base, unlimited attempts). The enqueued action is the only code path that should call Polar `eventsIngest`.
+- `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `{ event, user }` pairs using the real `users` row, routes signed-in rows (`user.clerkUserId != null`) to the `billing_workpool_usage_event` retry path, and routes anonymous rows (`user.clerkUserId == null`) to a local mutation that applies the synthetic snapshot directly. The enqueued `ingest_events` action remains the only code path that should call Polar `eventsIngest`.
 
 See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
 
@@ -139,10 +139,10 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 ### Chat start check and usage event
 
-[ai_chat.ts](../../../packages/app/convex/ai_chat.ts) checks signed-in credits before LLM work with `minimumRequiredCents: 1`. This applies to the main `/api/chat` stream and the secondary title-generation endpoint. Anonymous users skip this path because they have no subscription snapshot.
+[ai_chat.ts](../../../packages/app/convex/ai_chat.ts) checks credits before LLM work with `minimumRequiredCents: 1`. This applies to the main `/api/chat` stream and the secondary title-generation endpoint. Both signed-in and anonymous users go through this gate. Anonymous users reuse the synthetic snapshot that was seeded at anonymous-user creation.
 
 - On deny the handler returns `402` with `{ message: "Insufficient funds" }`. If the UI needs richer plan-aware copy, add a separate query for that UI surface instead of expanding the gate result.
-- On successful finish, signed-in chat flows emit direct `billing_event("ai_usage")` events through `billing_ingest_events` when AI SDK reports non-zero token usage. The main stream emits one event with the captured main-response usage plus inline title usage when a new thread title was generated; the secondary title endpoint emits one title event with `messageId: "title"`.
+- On successful finish, chat flows always emit direct `billing_event("ai_usage")` events through `billing_ingest_events` when AI SDK reports non-zero token usage. Signed-in rows go to Polar via the workpool; anonymous rows apply locally to the synthetic snapshot. The main stream emits one event with the captured main-response usage plus inline title usage when a new thread title was generated; the secondary title endpoint emits one title event with `messageId: "title"`.
 - Use deterministic `externalId` values built with `composite_id("billing", "ai_usage", userId, threadId, messageId)` so Polar dedupes HTTP retries. For the secondary title endpoint, the final part is the literal `"title"`.
 - Keep the token-pricing switch local to `compute_token_usage_cost_cents` in `ai_chat.ts`. Do not recreate a shared entitlements module, exported pricing type, or helper for the current pricing table.
 - Do not store chat spend locally. Do not estimate or reserve worst-case cost. Do not stop a live stream when the balance goes below zero in the current implementation; stream cutoff is a future billing-lock feature.
@@ -153,13 +153,21 @@ Page saves ([yjs_push_update](../../../packages/app/convex/ai_docs_temp.ts) and 
 
 1. `billing_db_check_credits(ctx, { userId, minimumRequiredCents: 1 })` — read-only pre-flight. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
 2. Run the yjs push; obtain the new sequence.
-3. Emit the existing `billing_event("page_save")` with `externalId = composite_id("billing", "page_save", userId, pageId, yjsSequence)` and literal `metadata.amount: 1`.
+3. Emit the existing `billing_event("page_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "page_save", userId, pageId, yjsSequence)` and literal `metadata.amount: 1`.
 
-There is no local credit debit after save. Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. Do not reintroduce a shared `credits_PAGE_SAVE_COST_CENTS` constant for the current one-cent page-save rule; keep the literal at the call sites unless the product rule changes.
+For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Do not reintroduce a shared `credits_PAGE_SAVE_COST_CENTS` constant for the current one-cent page-save rule; keep the literal at the call sites unless the product rule changes.
 
 ### Anonymous users
 
-Anonymous users skip credit gating, mirroring the existing `billing_event` skip in page-save mutations. They have no subscription and no snapshot row, so callers must gate on `user.isAnonymous === false` or `user.kind === "signed_in"` before running the gate.
+Anonymous users participate in credit gating through a **synthetic `billing_usage_snapshots` row** seeded at user creation. The snapshot mirrors Free-plan limits without touching Polar.
+
+- The snapshot keeps the `subscription` and `meter` objects, but marks them as synthetic with null external ids: `polarCustomerId: null`, `subscription.id: null`, `meter.id: null`. `subscription.productId` reuses the real synced Polar Free product id.
+- `billing_db_check_credits` treats anonymous snapshots like regular `Free` snapshots by reading the synced Free `productId` from `subscription.productId` and the current synthetic `meter.balance`. It does not perform any lazy refill on read.
+- `reset_due_anonymous_credits` runs daily from `crons.ts` at `00:00 UTC`. Anonymous snapshots store `currentPeriodStart` and `currentPeriodEnd` at UTC midnight boundaries, and the cron refills any anonymous snapshot whose `currentPeriodEnd` day is today.
+- Anonymous local application now flows through `billing_ingest_events` and `internal.billing.ingest_anonymous_user_events`, which apply signed `metadata.amount` values directly to the synthetic snapshot (`positive` usage lowers balance, `negative` credits raise balance). Callers are expected to gate first, and the daily cron owns period rollover.
+- `billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now })` is idempotent and creates the row only if one does not exist. It is called at anonymous-user creation only and returns `null` after ensuring the row.
+- Anonymous usage still does **not** go through Polar `eventsIngest`, but it does go through `billing_ingest_events`, which routes anonymous rows to the local synthetic-snapshot ledger instead of Polar.
+- On anonymous-to-signed-in upgrade (`resolve_user`), the synthetic snapshot is deleted. The signed-in Free bootstrap via Polar creates a fresh Polar-backed snapshot.
 
 ### UI surface: billing indicator
 
@@ -271,6 +279,18 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 - **Args:** `{ userId, minimumRequiredCents }`
 - **Role:** Action-facing wrapper around `billing_db_check_credits`, used by chat HTTP flows before LLM work starts. Chat callers convert `hasCredits: false` into HTTP `402` with `{ message: "Insufficient funds" }`.
 
+#### `billing_db_ensure_anonymous_user_usage_snapshot`
+
+- **Kind:** exported async helper (`MutationCtx`)
+- **Args:** `(ctx, { userId, now })`
+- **Role:** Idempotent creator of the anonymous synthetic `billing_usage_snapshots` row. Seeded at anonymous-user creation only. Uses null external ids (`polarCustomerId`, `subscription.id`, `meter.id`) plus the real synced Free `productId`, aligns the stored period bounds to UTC midnight, and returns `null` after ensuring the row.
+
+#### `reset_due_anonymous_credits`
+
+- **Kind:** `internalMutation`
+- **Args:** `{ _test_now?: number }`
+- **Role:** Daily UTC-midnight refill for anonymous synthetic snapshots. When a snapshot's `currentPeriodEnd` day matches the current UTC day, it resets the meter back to the Free recurring credit amount and advances the stored 30-day period to the next UTC-midnight boundary.
+
 #### `generate_checkout_link`
 
 - **Kind:** public `action`
@@ -328,8 +348,14 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 #### `billing_ingest_events`
 
 - **Kind:** exported async helper in [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
-- **Signature:** `(ctx: ActionCtx | MutationCtx, { events: billing_Event[] }) => Promise<WorkId>`
-- **Role:** Mandatory local entrypoint for emitting billing usage events. It enqueues `internal.billing.ingest_events` on `billing_workpool_usage_event` so Polar ingest failures use the long retry policy before the actual API call runs.
+- **Signature:** `(ctx: ActionCtx | MutationCtx, { userEvents: Array<{ event: billing_Event; user: Doc<"users"> }> }) => Promise<void>`
+- **Role:** Mandatory local entrypoint for emitting billing usage events. It routes signed-in rows to `billing_workpool_usage_event` and routes anonymous rows to `internal.billing.ingest_anonymous_user_events`, so call sites no longer branch on billing transport details.
+
+#### `ingest_anonymous_user_events`
+
+- **Kind:** `internalMutation`
+- **Args:** `{ userEvents: Array<{ event: billing_Event; user: Doc<"users"> }> }`
+- **Role:** The only local synthetic-snapshot apply path. It reads `event.metadata.amount` as a signed delta against the anonymous snapshot, patches the row in place, and logs/skips malformed or non-anonymous rows instead of returning a caller-visible billing result.
 
 #### `ingest_events`
 
@@ -412,6 +438,5 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 # TODO / known gaps
 
 - Decide before GA whether the current hardcoded chat token rates and literal one-cent page-save amount are final product pricing or placeholders.
-- Define and implement anonymous-user billing and limits so anonymous users mirror `Free`-plan limits.
 - Move usage snapshot ownership into the vendored Polar component when that migration happens.
 - Reconcile repo behavior and business policy whenever plan allowances or billing-cycle credit behavior change.

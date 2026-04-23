@@ -33,7 +33,7 @@ type RootLayout_UsageSnapshot = app_convex_FunctionReturnType<typeof app_convex_
 
 function billing_is_loading(args: {
 	subscription: RootLayout_CurrentSubscription | undefined;
-	usage: RootLayout_UsageSnapshot | undefined;
+	billingUsageSnapshot: RootLayout_UsageSnapshot | undefined;
 }) {
 	if (args.subscription === undefined) {
 		return true;
@@ -43,14 +43,15 @@ function billing_is_loading(args: {
 		return false;
 	}
 
-	if (args.usage === undefined) {
+	if (args.billingUsageSnapshot === undefined) {
 		return true;
 	}
 
 	return (
-		!args.usage?.subscription ||
-		args.usage.subscription.id !== args.subscription.id ||
-		args.usage.subscription.productId !== args.subscription.productId
+		!args.billingUsageSnapshot?.subscription ||
+		args.billingUsageSnapshot.subscription.id == null ||
+		args.billingUsageSnapshot.subscription.id !== args.subscription.id ||
+		args.billingUsageSnapshot.subscription.productId !== args.subscription.productId
 	);
 }
 
@@ -96,12 +97,12 @@ function RootLayout() {
 	const shouldWaitForBillingBootstrap =
 		auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
 	const billingSubscription = useQuery(app_convex_api.billing.get_current_user_subscription, shouldWaitForBillingBootstrap ? {} : "skip");
-	const billingUsage = useQuery(app_convex_api.billing.get_usage_snapshot, shouldWaitForBillingBootstrap ? {} : "skip");
+	const billingUsageSnapshot = useQuery(app_convex_api.billing.get_usage_snapshot, shouldWaitForBillingBootstrap ? {} : "skip");
 	const isBillingBootstrapLoading =
 		shouldWaitForBillingBootstrap &&
 		billing_is_loading({
 			subscription: billingSubscription,
-			usage: billingUsage,
+			billingUsageSnapshot,
 		});
 
 	const isLoading = convexAuth.isLoading || !auth.isLoaded || isBillingBootstrapLoading;

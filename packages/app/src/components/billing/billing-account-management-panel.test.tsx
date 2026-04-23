@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 
-const { actionMock, mockQueryResults } = vi.hoisted(() => {
+const { actionMock, useQueryMock } = vi.hoisted(() => {
 	return {
 		actionMock: vi.fn(),
-		mockQueryResults: [] as unknown[],
+		useQueryMock: vi.fn(),
 	};
 });
 
@@ -21,11 +21,13 @@ vi.mock("convex/react", async (importOriginal) => {
 		useConvex: () => ({
 			action: actionMock,
 		}),
-		useQuery: () => {
-			return mockQueryResults.shift();
-		},
+		useQuery: (query: unknown) => useQueryMock(query),
 	};
 });
+
+vi.mock("@/hooks/utils-hooks.ts", () => ({
+	useFn: <T extends (...args: never[]) => unknown>(handler: T) => handler,
+}));
 
 vi.mock("@/components/billing/billing-active-plan.tsx", () => ({
 	BillingActivePlan: function BillingActivePlan(props: { scheduledChangeProductName?: string | null }) {
@@ -128,28 +130,41 @@ function createUsageSnapshot(args: { subscriptionId: string; productId: string }
 	} as NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>>;
 }
 
+function mockBillingQueries(args: {
+	products: app_convex_FunctionReturnType<typeof app_convex_api.billing.list_products>;
+	subscription: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>;
+	billingUsageSnapshot: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
+}) {
+	const queryResults = [args.products, args.subscription, args.billingUsageSnapshot];
+	let callIndex = 0;
+	useQueryMock.mockImplementation(() => {
+		const result = queryResults[callIndex % queryResults.length];
+		callIndex += 1;
+		return result;
+	});
+}
+
 describe("BillingAccountManagementPanel", () => {
 	beforeEach(() => {
 		actionMock.mockReset();
-		mockQueryResults.length = 0;
+		useQueryMock.mockReset();
 	});
 
 	afterEach(() => {
 		cleanup();
-		vi.restoreAllMocks();
-		mockQueryResults.length = 0;
+		vi.clearAllMocks();
 	});
 
 	test("keeps checkout buttons when there is no active subscription", () => {
-		mockQueryResults.push(
-			[
+		mockBillingQueries({
+			products: [
 				createProduct("Pro", "prod_pro"),
 				createProduct("Free", "prod_free"),
 				createProduct("Pay As You Go", "prod_payg"),
 			],
-			null,
-			null,
-		);
+			subscription: null,
+			billingUsageSnapshot: null,
+		});
 
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
@@ -165,21 +180,21 @@ describe("BillingAccountManagementPanel", () => {
 	});
 
 	test("shows an upgrade action for higher-ranked plans when the user already has a subscription", () => {
-		mockQueryResults.push(
-			[
+		mockBillingQueries({
+			products: [
 				createProduct("Pay As You Go", "prod_payg"),
 				createProduct("Pro", "prod_pro"),
 				createProduct("Free", "prod_free"),
 			],
-			createSubscription({
+			subscription: createSubscription({
 				id: "sub_payg",
 				productId: "prod_payg",
 			}),
-			createUsageSnapshot({
+			billingUsageSnapshot: createUsageSnapshot({
 				subscriptionId: "sub_payg",
 				productId: "prod_payg",
 			}),
-		);
+		});
 
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
@@ -190,21 +205,21 @@ describe("BillingAccountManagementPanel", () => {
 	});
 
 	test("shows checkout upgrades with the active Free subscription id", () => {
-		mockQueryResults.push(
-			[
+		mockBillingQueries({
+			products: [
 				createProduct("Pay As You Go", "prod_payg"),
 				createProduct("Free", "prod_free"),
 				createProduct("Pro", "prod_pro"),
 			],
-			createSubscription({
+			subscription: createSubscription({
 				id: "sub_free",
 				productId: "prod_free",
 			}),
-			createUsageSnapshot({
+			billingUsageSnapshot: createUsageSnapshot({
 				subscriptionId: "sub_free",
 				productId: "prod_free",
 			}),
-		);
+		});
 
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
@@ -214,18 +229,18 @@ describe("BillingAccountManagementPanel", () => {
 	});
 
 	test("renders the active plan section even when the usage snapshot is still missing", () => {
-		mockQueryResults.push(
-			[
+		mockBillingQueries({
+			products: [
 				createProduct("Free", "prod_free"),
 				createProduct("Pay As You Go", "prod_payg"),
 				createProduct("Pro", "prod_pro"),
 			],
-			createSubscription({
+			subscription: createSubscription({
 				id: "sub_free",
 				productId: "prod_free",
 			}),
-			null,
-		);
+			billingUsageSnapshot: null,
+		});
 
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 
@@ -234,13 +249,13 @@ describe("BillingAccountManagementPanel", () => {
 	});
 
 	test("shows scheduled downgrade messaging when a lower-tier change is pending", () => {
-		mockQueryResults.push(
-			[
+		mockBillingQueries({
+			products: [
 				createProduct("Free", "prod_free"),
 				createProduct("Pay As You Go", "prod_payg"),
 				createProduct("Pro", "prod_pro"),
 			],
-			createSubscription({
+			subscription: createSubscription({
 				id: "sub_pro",
 				productId: "prod_pro",
 				pendingUpdate: {
@@ -250,11 +265,11 @@ describe("BillingAccountManagementPanel", () => {
 					seats: null,
 				},
 			}),
-			createUsageSnapshot({
+			billingUsageSnapshot: createUsageSnapshot({
 				subscriptionId: "sub_pro",
 				productId: "prod_pro",
 			}),
-		);
+		});
 
 		render(<BillingAccountManagementPanel isAnonymous={false} />);
 

@@ -8,10 +8,7 @@ import { MyBadge } from "@/components/my-badge.tsx";
 import { format_time } from "@/lib/date.ts";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import { format_cents, type Currency } from "../../lib/currency.ts";
-import {
-	billing_get_product_display_name,
-	billing_get_recurring_credits_cents,
-} from "../../../shared/billing.ts";
+import { billing_get_product_display_name, billing_get_recurring_credits_cents } from "../../../shared/billing.ts";
 
 // #region skeleton
 type BillingActivePlanSkeleton_ClassNames =
@@ -224,12 +221,12 @@ type BillingActivePlan_ClassNames =
 export type BillingActivePlan_Props = {
 	product: ProductDoc;
 	subscription: SubscriptionDoc;
-	usage: UsageSnapshotDoc | undefined;
+	usageSnapshot: UsageSnapshotDoc | undefined;
 	scheduledChangeProductName?: string | null;
 };
 
 export const BillingActivePlan = memo(function BillingActivePlan(props: BillingActivePlan_Props) {
-	const { product, subscription, usage, scheduledChangeProductName } = props;
+	const { product, subscription, usageSnapshot, scheduledChangeProductName } = props;
 
 	const recurringPrice =
 		product.prices?.find((priceDoc) => !priceDoc.isArchived && priceDoc.amountType === "fixed") ??
@@ -250,10 +247,12 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	// Polar's product prices can omit `priceCurrency` for Free, but every
 	// `customer.state_changed` active subscription carries a currency.
 	const snapshotSubscription =
-		usage?.subscription?.id === subscription.id && usage.subscription.productId === subscription.productId
-			? usage.subscription
+		usageSnapshot?.subscription?.id != null &&
+		usageSnapshot.subscription.id === subscription.id &&
+		usageSnapshot.subscription.productId === subscription.productId
+			? usageSnapshot.subscription
 			: null;
-	const snapshotMeter = snapshotSubscription ? (usage?.meter ?? null) : null;
+	const snapshotMeter = snapshotSubscription && usageSnapshot?.meter?.id != null ? usageSnapshot.meter : null;
 
 	// Paid plans with a metered price must always have a matching snapshot; Free
 	// or fresh subscriptions may be in the brief window before the first monthly
@@ -263,13 +262,11 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 			productId: product.id,
 			productName: product.name,
 			subscriptionId: subscription.id,
-			usage,
+			billingUsageSnapshot: usageSnapshot,
 		});
 	}
 
-	const includedUsageText = snapshotSubscription
-		? included_usage_text(product, snapshotSubscription.currency)
-		: null;
+	const includedUsageText = snapshotSubscription ? included_usage_text(product, snapshotSubscription.currency) : null;
 
 	const planUsageSnapshot =
 		snapshotMeter && snapshotSubscription

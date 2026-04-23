@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import { components } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
-import { billing_PRODUCTS } from "../shared/billing.ts";
+import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
+import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
+import { billing_event } from "../server/billing.ts";
 
 vi.mock("@polar-sh/sdk/core.js", () => ({
 	PolarCore: class PolarCoreMock {
@@ -113,6 +115,76 @@ describe("/api/chat credit gate", () => {
 				model: "gpt-5.4-nano",
 				trigger: "submit-message",
 				clientGeneratedThreadId: "thread_chat_credit_gate_client",
+				membershipId: seeded.membershipId,
+			}),
+		});
+		const body = await response.json();
+
+		expect(response.status).toBe(402);
+		expect(body).toEqual({
+			message: "Insufficient funds",
+		});
+	});
+
+	test("returns 402 when an anonymous user has zero current credits", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				workspaceName: "personal",
+				projectName: "home",
+			}),
+		);
+		await seed_free_product(t, "prod_chat_credit_gate_anonymous");
+
+		// Seed and drain the anonymous billing snapshot.
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		await t.run(async (ctx) => {
+			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: seeded.userId, now: Date.now() });
+			const user = await ctx.db.get("users", seeded.userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: seeded.userId,
+							externalId: "manual_credit::anonymous_chat_credit_gate::1",
+							metadata: {
+								amount: recurringCredits,
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: seeded.userId,
+			name: "Anonymous Credit Gate",
+		});
+
+		const response = await asAnonymous.fetch("/api/chat", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				messages: [
+					{
+						id: "msg_anon_credit_gate_user",
+						role: "user",
+						parts: [{ type: "text", text: "Say one short sentence." }],
+					},
+				],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-5.4-nano",
+				trigger: "submit-message",
+				clientGeneratedThreadId: "thread_anon_credit_gate_client",
 				membershipId: seeded.membershipId,
 			}),
 		});

@@ -60,6 +60,7 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 
 	if (isAnonymous) {
 		const userId = identity.subject as Id<"users">;
+
 		return {
 			kind: "anonymous",
 			isAnonymous: true,

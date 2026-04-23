@@ -73,7 +73,7 @@ describe("BillingActivePlan", () => {
 			<BillingActivePlan
 				product={createFreeProduct()}
 				subscription={createSubscription()}
-				usage={
+				usageSnapshot={
 					{
 						userId: "user_free",
 						polarCustomerId: "cust_free",
@@ -109,7 +109,7 @@ describe("BillingActivePlan", () => {
 			<BillingActivePlan
 				product={createFreeProduct()}
 				subscription={createSubscription()}
-				usage={
+				usageSnapshot={
 					{
 						userId: "user_free",
 						polarCustomerId: "cust_free",
@@ -140,7 +140,43 @@ describe("BillingActivePlan", () => {
 				<BillingActivePlan
 					product={createPayAsYouGoProduct()}
 					subscription={createSubscription({ productId: "prod_payg" })}
-					usage={null}
+					usageSnapshot={null}
+				/>,
+			);
+		}).toThrow("Missing usage snapshot for active billing plan");
+
+		consoleErrorSpy.mockRestore();
+	});
+
+	test("throws when a metered active plan only has a synthetic null-id usage snapshot", () => {
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		expect(() => {
+			render(
+				<BillingActivePlan
+					product={createPayAsYouGoProduct()}
+					subscription={createSubscription({ productId: "prod_payg" })}
+					usageSnapshot={
+						{
+							userId: "user_payg",
+							polarCustomerId: null,
+							subscription: {
+								id: null,
+								productId: "prod_payg",
+								currency: "eur",
+								currentPeriodStart: "2026-01-01T00:00:00.000Z",
+								currentPeriodEnd: "2026-02-01T00:00:00.000Z",
+							},
+							meter: {
+								id: null,
+								consumedUnits: 240,
+								creditedUnits: 1000,
+								balance: 760,
+								amountDueCents: 0,
+							},
+							lastSyncedAt: Date.parse("2026-01-15T00:00:00.000Z"),
+						} as app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>
+					}
 				/>,
 			);
 		}).toThrow("Missing usage snapshot for active billing plan");

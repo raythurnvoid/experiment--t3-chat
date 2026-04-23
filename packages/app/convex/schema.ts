@@ -240,7 +240,7 @@ const app_convex_schema = defineSchema({
 				type: v.literal("USER_AI_EDIT"),
 			}),
 		),
-		created_by: v.string(),
+		created_by: v.id("users"),
 		created_at: v.number(),
 	}).index("by_workspace_project_page_id_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
 
@@ -389,10 +389,10 @@ const app_convex_schema = defineSchema({
 	 */
 	billing_usage_snapshots: defineTable({
 		userId: v.id("users"),
-		polarCustomerId: v.string(),
+		polarCustomerId: v.union(v.string(), v.null()),
 		subscription: v.union(
 			v.object({
-				id: v.string(),
+				id: v.union(v.string(), v.null()),
 				productId: v.string(),
 				currency: v.string(),
 				currentPeriodStart: v.string(),
@@ -402,7 +402,7 @@ const app_convex_schema = defineSchema({
 		),
 		meter: v.union(
 			v.object({
-				id: v.string(),
+				id: v.union(v.string(), v.null()),
 				consumedUnits: v.number(),
 				creditedUnits: v.number(),
 				balance: v.number(),
@@ -413,6 +413,7 @@ const app_convex_schema = defineSchema({
 		lastSyncedAt: v.number(),
 	})
 		.index("by_userId", ["userId"])
+		.index("by_polarCustomerId_currentPeriodEnd", ["polarCustomerId", "subscription.currentPeriodEnd"])
 		.index("by_lastSyncedAt", ["lastSyncedAt"]),
 
 	/**

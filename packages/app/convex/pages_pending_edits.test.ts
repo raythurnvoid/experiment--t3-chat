@@ -4,7 +4,9 @@ import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
-import { billing_PRODUCTS } from "../shared/billing.ts";
+import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
+import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
+import { billing_event } from "../server/billing.ts";
 import {
 	pages_db_reschedule_pending_edit_cleanup_for_user,
 	pages_FIRST_VERSION,
@@ -33,11 +35,11 @@ afterEach(() => {
 });
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
-	const existingSnapshot = await ctx.db
+	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
 		.withIndex("by_userId", (q) => q.eq("userId", userId))
 		.unique();
-	if (existingSnapshot) return;
+	if (usageSnapshot) return;
 
 	const polarProductId = "pending_edit_test_free_product";
 	const existingProduct = await ctx.runQuery(components.polar.lib.getProduct, { id: polarProductId });
@@ -182,6 +184,23 @@ async function seed_page_with_markdown(args: {
 		pageId,
 		baseMarkdown: baseMarkdownResult._yay,
 	};
+}
+
+let seed_signed_in_page_user_counter = 0;
+
+async function seed_signed_in_page_with_markdown(
+	args: Omit<Parameters<typeof seed_page_with_markdown>[0], "membership">,
+) {
+	const userId = await args.ctx.db.insert("users", {
+		clerkUserId: `clerk_pending_edit_test_${seed_signed_in_page_user_counter++}`,
+	});
+	const membership = await test_mocks_fill_db_with.membership(args.ctx, {
+		userId,
+	});
+	return await seed_page_with_markdown({
+		...args,
+		membership,
+	});
 }
 
 async function read_page_markdown_from_yjs(args: {
@@ -1271,7 +1290,7 @@ describe("save_pages_pending_edit", () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
+			seed_signed_in_page_with_markdown({
 				ctx,
 				path: "/pending-edits-save-zero-credits",
 				name: "pending-edits-save-zero-credits",
@@ -1279,16 +1298,16 @@ describe("save_pages_pending_edit", () => {
 			}),
 		);
 		await t.run(async (ctx) => {
-			const snapshot = await ctx.db
+			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", seeded.userId))
 				.unique();
-			if (!snapshot?.meter) {
+			if (!usageSnapshot?.meter) {
 				throw new Error("Expected seeded billing snapshot meter");
 			}
-			await ctx.db.patch("billing_usage_snapshots", snapshot._id, {
+			await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
 				meter: {
-					...snapshot.meter,
+					...usageSnapshot.meter,
 					creditedUnits: 0,
 					balance: 0,
 				},
@@ -1330,11 +1349,154 @@ describe("save_pages_pending_edit", () => {
 		expect(savedMarkdownAfterDeniedSave).toBe(seeded.baseMarkdown);
 	});
 
+	test("save_pages_pending_edit blocks anonymous users at zero credits before saving", async () => {
+		const t = test_convex();
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+
+		const seeded = await t.run(async (ctx) => {
+			const result = await seed_page_with_markdown({
+				ctx,
+				path: "/pending-edits-save-anon-zero-credits",
+				name: "pending-edits-save-anon-zero-credits",
+				markdown: "# Anon save base",
+			});
+			// Replace the signed-in billing snapshot with an anonymous one and drain it.
+			const usageSnapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", result.userId))
+				.unique();
+			if (usageSnapshot) await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
+			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: result.userId, now: Date.now() });
+			const user = await ctx.db.get("users", result.userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: result.userId,
+							externalId: "manual_credit::anonymous_pending_edits::1",
+							metadata: {
+								amount: recurringCredits,
+							},
+						}),
+					},
+				],
+			});
+			return result;
+		});
+
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: seeded.userId,
+			name: "Anonymous User",
+		});
+
+		await asAnonymous.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked anon chunk`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked anon chunk`,
+		});
+
+		const saveResult = await asAnonymous.mutation(api.ai_chat.save_pages_pending_edit, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+
+		expect(saveResult).toEqual({
+			_nay: {
+				message: "Insufficient funds",
+			},
+		});
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+
+		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
+			read_page_markdown_from_yjs({
+				ctx,
+				workspaceId: seeded.workspaceId,
+				projectId: seeded.projectId,
+				pageId: seeded.pageId,
+			}),
+		);
+		expect(savedMarkdownAfterDeniedSave).toBe(seeded.baseMarkdown);
+	});
+
+	test("save_pages_pending_edit bills anonymous users locally after a successful save", async () => {
+		const t = test_convex();
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+
+		const seeded = await t.run(async (ctx) => {
+			const result = await seed_page_with_markdown({
+				ctx,
+				path: "/pending-edits-save-anon-success",
+				name: "pending-edits-save-anon-success",
+				markdown: "# Anon save base",
+			});
+			const usageSnapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", result.userId))
+				.unique();
+			if (usageSnapshot) await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
+			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: result.userId, now: Date.now() });
+			return result;
+		});
+
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: seeded.userId,
+			name: "Anonymous User",
+		});
+
+		await asAnonymous.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nSaved anon chunk`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nSaved anon chunk`,
+		});
+
+		const saveResult = await asAnonymous.mutation(api.ai_chat.save_pages_pending_edit, {
+			membershipId: seeded.membershipId,
+			pageId: seeded.pageId,
+		});
+		if (saveResult._nay) {
+			throw new Error(saveResult._nay.message);
+		}
+		if (!saveResult._yay) {
+			throw new Error("Missing save result _yay while testing anonymous save billing");
+		}
+
+		expect(saveResult._yay.newSequence).not.toBeNull();
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+
+		const usageSnapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", seeded.userId))
+				.unique(),
+		);
+		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
+		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits - 1);
+
+		const savedMarkdown = await t.run(async (ctx) =>
+			read_page_markdown_from_yjs({
+				ctx,
+				workspaceId: seeded.workspaceId,
+				projectId: seeded.projectId,
+				pageId: seeded.pageId,
+			}),
+		);
+		expect(savedMarkdown).toContain("Saved anon chunk");
+	});
+
 	test("save_pages_pending_edit supports partial save and keeps unresolved pending row", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
+			seed_signed_in_page_with_markdown({
 				ctx,
 				path: "/pending-edits-save",
 				name: "pending-edits-save",
@@ -1382,6 +1544,18 @@ describe("save_pages_pending_edit", () => {
 				}),
 			],
 		});
+
+		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
+			ctx.db
+				.query("pages_yjs_updates")
+				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+					q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
+				)
+				.order("asc")
+				.collect(),
+		);
+		expect(yjsUpdatesAfterSave).toHaveLength(1);
+		expect(yjsUpdatesAfterSave[0]?.created_by).toBe(seeded.userId);
 
 		const pendingEditLastSequenceSaved = await t.run(async (ctx) =>
 			read_pending_edit_last_sequence_saved_row({
@@ -1434,7 +1608,7 @@ describe("save_pages_pending_edit", () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
+			seed_signed_in_page_with_markdown({
 				ctx,
 				path: "/pending-edits-save-full",
 				name: "pending-edits-save-full",
@@ -1515,7 +1689,7 @@ describe("save_pages_pending_edit", () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
+			seed_signed_in_page_with_markdown({
 				ctx,
 				path: "/pending-edits-save-stale-id",
 				name: "pending-edits-save-stale-id",
@@ -1633,7 +1807,7 @@ describe("save_pages_pending_edit", () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
+			seed_signed_in_page_with_markdown({
 				ctx,
 				path: "/pending-edits-save-no-staged",
 				name: "pending-edits-save-no-staged",
@@ -1733,7 +1907,7 @@ describe("save_pages_pending_edit", () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
-			seed_page_with_markdown({
+			seed_signed_in_page_with_markdown({
 				ctx,
 				path: "/pending-edits-save-rate-limited",
 				name: "pending-edits-save-rate-limited",
@@ -1788,10 +1962,7 @@ describe("save_pages_pending_edit", () => {
 			ctx.db
 				.query("pages_yjs_updates")
 				.withIndex("by_workspace_project_page_id_sequence", (q) =>
-					q
-						.eq("workspace_id", seeded.workspaceId)
-						.eq("project_id", seeded.projectId)
-						.eq("page_id", seeded.pageId),
+					q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 				)
 				.collect(),
 		);
@@ -1831,19 +2002,13 @@ describe("save_pages_pending_edit", () => {
 				ctx.db
 					.query("pages_yjs_updates")
 					.withIndex("by_workspace_project_page_id_sequence", (q) =>
-						q
-							.eq("workspace_id", seeded.workspaceId)
-							.eq("project_id", seeded.projectId)
-							.eq("page_id", seeded.pageId),
+						q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 					)
 					.collect(),
 				ctx.db
 					.query("pages_yjs_docs_last_sequences")
 					.withIndex("by_workspace_project_page_id", (q) =>
-						q
-							.eq("workspace_id", seeded.workspaceId)
-							.eq("project_id", seeded.projectId)
-							.eq("page_id", seeded.pageId),
+						q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 					)
 					.first(),
 			]).then(([updates, lastSequence]) => ({

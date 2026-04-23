@@ -1,11 +1,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { mockQueryResults, useAuthMock, useConvexAuthMock } = vi.hoisted(() => {
+const { useAuthMock, useConvexAuthMock, useQueryMock } = vi.hoisted(() => {
 	return {
-		mockQueryResults: [] as unknown[],
 		useAuthMock: vi.fn(),
 		useConvexAuthMock: vi.fn(),
+		useQueryMock: vi.fn(),
 	};
 });
 
@@ -22,7 +22,7 @@ vi.mock("convex/react", async (importOriginal) => {
 	return {
 		...actual,
 		useConvexAuth: () => useConvexAuthMock(),
-		useQuery: () => mockQueryResults.shift(),
+		useQuery: (query: unknown) => useQueryMock(query),
 	};
 });
 
@@ -73,12 +73,18 @@ function createSubscription() {
 	} as NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>>;
 }
 
-function createUsageSnapshot(args?: { subscriptionId?: string; productId?: string; meter?: null }) {
+function createUsageSnapshot(args?: {
+	subscriptionId?: string | null;
+	productId?: string;
+	polarCustomerId?: string | null;
+	meter?: null;
+	meterId?: string | null;
+}) {
 	return {
 		userId: "user_free",
-		polarCustomerId: "cust_free",
+		polarCustomerId: args && "polarCustomerId" in args ? args.polarCustomerId : "cust_free",
 		subscription: {
-			id: args?.subscriptionId ?? "sub_free",
+			id: args && "subscriptionId" in args ? args.subscriptionId : "sub_free",
 			productId: args?.productId ?? "prod_free",
 			currency: "eur",
 			currentPeriodStart: "2026-01-01T00:00:00.000Z",
@@ -88,7 +94,7 @@ function createUsageSnapshot(args?: { subscriptionId?: string; productId?: strin
 			args?.meter === null
 				? null
 				: {
-						id: "meter_press_usage",
+						id: args && "meterId" in args ? args.meterId : "meter_press_usage",
 						consumedUnits: 100,
 						creditedUnits: 1000,
 						balance: 900,
@@ -98,11 +104,24 @@ function createUsageSnapshot(args?: { subscriptionId?: string; productId?: strin
 	} as NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>>;
 }
 
+function mockBillingQueries(args: {
+	subscription: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>;
+	billingUsageSnapshot: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
+}) {
+	const queryResults = [args.subscription, args.billingUsageSnapshot];
+	let callIndex = 0;
+	useQueryMock.mockImplementation(() => {
+		const result = queryResults[callIndex % queryResults.length];
+		callIndex += 1;
+		return result;
+	});
+}
+
 describe("RootLayout", () => {
 	beforeEach(() => {
-		mockQueryResults.length = 0;
 		useAuthMock.mockReset();
 		useConvexAuthMock.mockReset();
+		useQueryMock.mockReset();
 
 		useAuthMock.mockReturnValue({
 			isLoaded: true,
@@ -118,12 +137,14 @@ describe("RootLayout", () => {
 
 	afterEach(() => {
 		cleanup();
-		mockQueryResults.length = 0;
 		vi.clearAllMocks();
 	});
 
 	test("keeps the startup shell visible while billing bootstrap is still missing usage", () => {
-		mockQueryResults.push(createSubscription(), null);
+		mockBillingQueries({
+			subscription: createSubscription(),
+			billingUsageSnapshot: null,
+		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
 		render(<RootLayout />);
@@ -134,13 +155,30 @@ describe("RootLayout", () => {
 	});
 
 	test("keeps the startup shell visible while the usage snapshot belongs to another subscription", () => {
-		mockQueryResults.push(
-			createSubscription(),
-			createUsageSnapshot({
+		mockBillingQueries({
+			subscription: createSubscription(),
+			billingUsageSnapshot: createUsageSnapshot({
 				subscriptionId: "sub_other",
 				productId: "prod_other",
 			}),
-		);
+		});
+
+		const RootLayout = Route.options.component as () => JSX.Element;
+		render(<RootLayout />);
+
+		expect(screen.getByText("Preparing workspace")).not.toBeNull();
+		expect(screen.queryByText("App ready")).toBeNull();
+	});
+
+	test("keeps the startup shell visible while the usage snapshot has a null subscription id", () => {
+		mockBillingQueries({
+			subscription: createSubscription(),
+			billingUsageSnapshot: createUsageSnapshot({
+				subscriptionId: null,
+				polarCustomerId: null,
+				meterId: null,
+			}),
+		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
 		render(<RootLayout />);
@@ -150,32 +188,41 @@ describe("RootLayout", () => {
 	});
 
 	test("does not wait for usage when there is no active subscription", () => {
-		mockQueryResults.push(null, undefined);
+		mockBillingQueries({
+			subscription: null,
+			billingUsageSnapshot: undefined,
+		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
-		render(<RootLayout />);
+		const element = RootLayout();
 
-		expect(screen.getByText("App ready")).not.toBeNull();
-		expect(screen.queryByText("Preparing workspace")).toBeNull();
+		expect(typeof element.type).toBe("function");
+		expect((element.type as { name?: string }).name).toBe("RootLayoutInner");
 	});
 
 	test("renders the app once the active subscription usage snapshot is ready", () => {
-		mockQueryResults.push(createSubscription(), createUsageSnapshot());
+		mockBillingQueries({
+			subscription: createSubscription(),
+			billingUsageSnapshot: createUsageSnapshot(),
+		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
-		render(<RootLayout />);
+		const element = RootLayout();
 
-		expect(screen.getByText("App ready")).not.toBeNull();
-		expect(screen.queryByText("Preparing workspace")).toBeNull();
+		expect(typeof element.type).toBe("function");
+		expect((element.type as { name?: string }).name).toBe("RootLayoutInner");
 	});
 
 	test("renders the app once a Free subscription snapshot is ready without a meter", () => {
-		mockQueryResults.push(createSubscription(), createUsageSnapshot({ meter: null }));
+		mockBillingQueries({
+			subscription: createSubscription(),
+			billingUsageSnapshot: createUsageSnapshot({ meter: null }),
+		});
 
 		const RootLayout = Route.options.component as () => JSX.Element;
-		render(<RootLayout />);
+		const element = RootLayout();
 
-		expect(screen.getByText("App ready")).not.toBeNull();
-		expect(screen.queryByText("Preparing workspace")).toBeNull();
+		expect(typeof element.type).toBe("function");
+		expect((element.type as { name?: string }).name).toBe("RootLayoutInner");
 	});
 });

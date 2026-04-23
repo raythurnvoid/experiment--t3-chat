@@ -24,6 +24,7 @@ import {
 	billing_get_plan_change_kind,
 	billing_get_recurring_credits_cents,
 } from "../shared/billing.ts";
+import { date_get_day_start_timestamp, date_MS_DAYS_30 } from "../shared/date.ts";
 import { composite_id } from "../shared/shared-utils.ts";
 import {
 	billing_POLAR_METER_EVENT,
@@ -132,6 +133,126 @@ export const check_credits = internalQuery({
 
 // #endregion check credits
 
+// #region anonymous credits
+
+function create_anonymous_user_usage_snapshot_period(now: number) {
+	const periodStartTs = date_get_day_start_timestamp(now);
+	const currentPeriodStart = new Date(periodStartTs).toISOString();
+	const currentPeriodEnd = new Date(periodStartTs + date_MS_DAYS_30).toISOString();
+	return { currentPeriodStart, currentPeriodEnd };
+}
+
+/**
+ * Ensure the user has a synthetic anonymous `billing_usage_snapshots` row.
+ * Reuse the existing row when present; otherwise insert the current Free-plan snapshot.
+ * Return `null` after the row is ensured.
+ */
+export async function billing_db_ensure_anonymous_user_usage_snapshot(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		now: number;
+	},
+) {
+	const usageSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_userId", (q) => q.eq("userId", args.userId))
+		.first();
+	if (usageSnapshot) {
+		return null;
+	}
+
+	const freeProduct =
+		(await ctx.runQuery(components.polar.lib.listProducts, {})).find((product) => {
+			return product.name === billing_PRODUCTS.Free.name && !product.isArchived;
+		}) ?? null;
+	if (!freeProduct) {
+		throw should_never_happen("Free product not found among synced Polar products", {
+			productName: billing_PRODUCTS.Free.name,
+			userId: args.userId,
+		});
+	}
+
+	const { currentPeriodStart, currentPeriodEnd } = create_anonymous_user_usage_snapshot_period(args.now);
+	const recurringCreditsCents = billing_get_recurring_credits_cents(freeProduct.name);
+
+	const snapshot = {
+		userId: args.userId,
+		polarCustomerId: null,
+		subscription: {
+			id: null,
+			productId: freeProduct.id,
+			currency: "eur",
+			currentPeriodStart,
+			currentPeriodEnd,
+		},
+		meter: {
+			id: null,
+			consumedUnits: 0,
+			creditedUnits: recurringCreditsCents,
+			balance: recurringCreditsCents,
+			amountDueCents: 0,
+		},
+		lastSyncedAt: args.now,
+	} satisfies BillingUsageSnapshotRow;
+
+	await ctx.db.insert("billing_usage_snapshots", snapshot);
+	return null;
+}
+
+export const reset_due_anonymous_credits = internalMutation({
+	args: {
+		/**
+		 * Internal simulated wall time (ms) used by tests to target one due UTC day.
+		 *
+		 * Omit in normal production and cron flows (`Date.now()` is used).
+		 */
+		_test_now: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const now = args._test_now ?? Date.now();
+		const todayPeriodEnd = new Date(date_get_day_start_timestamp(now)).toISOString();
+		const recurringCreditsCents = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		const { currentPeriodStart, currentPeriodEnd } = create_anonymous_user_usage_snapshot_period(now);
+
+		const dueUsageSnapshots = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_polarCustomerId_currentPeriodEnd", (q) =>
+				q.eq("polarCustomerId", null).eq("subscription.currentPeriodEnd", todayPeriodEnd),
+			)
+			.collect();
+
+		await Promise.all(
+			dueUsageSnapshots.map(async (usageSnapshot) => {
+				if (!usageSnapshot.subscription || !usageSnapshot.meter) {
+					console.error("Anonymous billing usage snapshot is missing subscription or meter", { usageSnapshot });
+					return;
+				}
+
+				await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+					subscription: {
+						...usageSnapshot.subscription,
+						currentPeriodStart,
+						currentPeriodEnd,
+					},
+					meter: {
+						...usageSnapshot.meter,
+						consumedUnits: 0,
+						creditedUnits: recurringCreditsCents,
+						balance: recurringCreditsCents,
+					},
+					lastSyncedAt: now,
+				});
+			}),
+		);
+
+		return null;
+	},
+});
+
+// #endregion anonymous credits
+
 export async function billing_action_delete_polar_customer_by_user_id(
 	ctx: ActionCtx | MutationCtx,
 	args: {
@@ -234,12 +355,12 @@ export const get_usage_snapshot = query({
 			return null;
 		}
 
-		const snap = await ctx.db
+		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
 			.withIndex("by_userId", (q) => q.eq("userId", user.id))
 			.first();
 
-		return snap;
+		return usageSnapshot;
 	},
 });
 
@@ -485,29 +606,30 @@ function build_usage_snapshot(args: {
 	};
 }
 
-async function db_upsert_usage_snapshot(ctx: MutationCtx, snapshot: BillingUsageSnapshotRow) {
-	const existing = await ctx.db
+async function db_upsert_usage_snapshot(ctx: MutationCtx, usageSnapshot: BillingUsageSnapshotRow) {
+	const existingUsageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_userId", (q) => q.eq("userId", snapshot.userId))
+		.withIndex("by_userId", (q) => q.eq("userId", usageSnapshot.userId))
 		.unique();
 	// Keep an existing meter when Polar still reports `activeMeters: []`.
 	// This avoids wiping an optimistic meter before Polar catches up.
 	const next =
-		existing && existing.meter && !snapshot.meter && snapshot.subscription
-			? { ...snapshot, meter: existing.meter }
-			: snapshot;
+		existingUsageSnapshot && existingUsageSnapshot.meter && !usageSnapshot.meter && usageSnapshot.subscription?.id != null
+			? { ...usageSnapshot, meter: existingUsageSnapshot.meter }
+			: usageSnapshot;
 	console.info("upsert billing_usage_snapshots", {
 		userId: next.userId,
-		action: existing ? "patch" : "insert",
-		existingId: existing?._id ?? null,
+		action: existingUsageSnapshot ? "patch" : "insert",
+		existingId: existingUsageSnapshot?._id ?? null,
 		meter: next.meter,
 		subscription: next.subscription,
 		polarCustomerId: next.polarCustomerId,
 		lastSyncedAt: new Date(next.lastSyncedAt).toISOString(),
-		preservedExistingMeter: existing?.meter != null && snapshot.meter == null && snapshot.subscription != null,
+		preservedExistingMeter:
+			existingUsageSnapshot?.meter != null && usageSnapshot.meter == null && usageSnapshot.subscription?.id != null,
 	});
-	if (existing) {
-		await ctx.db.patch("billing_usage_snapshots", existing._id, next);
+	if (existingUsageSnapshot) {
+		await ctx.db.patch("billing_usage_snapshots", existingUsageSnapshot._id, next);
 	} else {
 		await ctx.db.insert("billing_usage_snapshots", next);
 	}
@@ -566,12 +688,20 @@ async function db_apply_polar_customer_state_refresh(
 	}
 
 	// Read the current subscription before the upsert so the period gate can compare it.
-	const userId = state.externalId as Id<"users">;
-	const existingSnapshot = await ctx.db
+	const user = await ctx.db.get("users", state.externalId as Id<"users">);
+	if (!user) {
+		throw should_never_happen("Missing user while applying monthly billing credit", {
+			activeSubscriptions: state.activeSubscriptions,
+			customerId: state.id,
+			userId: state.externalId,
+		});
+	}
+
+	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_userId", (q) => q.eq("userId", userId))
+		.withIndex("by_userId", (q) => q.eq("userId", user._id))
 		.unique();
-	const previousSubscription = existingSnapshot?.subscription ?? null;
+	const previousSubscription = usageSnapshot?.subscription ?? null;
 
 	const subscription = state.activeSubscriptions[0] ?? null;
 	const product = subscription
@@ -589,40 +719,43 @@ async function db_apply_polar_customer_state_refresh(
 
 	// Grant only on a new subscription period or plan change.
 	// Same-period webhook repeats must not re-credit the optimistic meter.
-	if (subscription && product) {
+	if (subscription?.id != null && product) {
 		const recurringAmountCents = billing_get_recurring_credits_cents(product.name);
 		const periodChanged =
-			previousSubscription === null ||
+			previousSubscription?.id == null ||
 			previousSubscription.id !== subscription.id ||
 			previousSubscription.currentPeriodStart !== subscription.currentPeriodStart;
 		if (recurringAmountCents > 0 && periodChanged) {
 			await db_apply_optimistic_credit_to_snapshot(ctx, {
-				userId,
+				userId: user._id,
 				syncedProducts,
 				product,
 				amountCents: recurringAmountCents,
 				syncedAt,
 			});
 			await billing_ingest_events(ctx, {
-				events: [
-					billing_event({
-						name: "monthly_credit",
-						externalCustomerId: userId,
-						externalId: composite_id(
-							"billing",
-							"monthly_credit",
-							userId,
-							subscription.id,
-							subscription.currentPeriodStart,
-						),
-						metadata: {
-							amount: -recurringAmountCents,
-							subscriptionId: subscription.id,
-							productId: subscription.productId,
-							productName: product.name,
-							periodStart: subscription.currentPeriodStart,
-						},
-					}),
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "monthly_credit",
+							externalCustomerId: user._id,
+							externalId: composite_id(
+								"billing",
+								"monthly_credit",
+								user._id,
+								subscription.id,
+								subscription.currentPeriodStart,
+							),
+							metadata: {
+								amount: -recurringAmountCents,
+								subscriptionId: subscription.id,
+								productId: subscription.productId,
+								productName: product.name,
+								periodStart: subscription.currentPeriodStart,
+							},
+						}),
+					},
 				],
 			});
 		}
@@ -643,12 +776,12 @@ async function db_apply_optimistic_credit_to_snapshot(
 		syncedAt: number;
 	},
 ) {
-	const existing = await ctx.db
+	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
 		.withIndex("by_userId", (q) => q.eq("userId", args.userId))
 		.unique();
 	// The snapshot was upserted earlier in this transaction, so the row must exist.
-	if (!existing) {
+	if (!usageSnapshot) {
 		throw should_never_happen("Snapshot row missing for optimistic credit", {
 			userId: args.userId,
 		});
@@ -660,11 +793,11 @@ async function db_apply_optimistic_credit_to_snapshot(
 			syncedProducts: args.syncedProducts,
 			product: args.product,
 		}) ??
-		existing.meter?.id ??
+		usageSnapshot.meter?.id ??
 		null;
 
-	const previous = existing.meter;
-	const nextMeter: NonNullable<typeof existing.meter> | null = previous
+	const previous = usageSnapshot.meter;
+	const nextMeter: NonNullable<typeof usageSnapshot.meter> | null = previous
 		? {
 				...previous,
 				consumedUnits: previous.consumedUnits - args.amountCents,
@@ -682,7 +815,7 @@ async function db_apply_optimistic_credit_to_snapshot(
 
 	if (!nextMeter) return;
 
-	await ctx.db.patch("billing_usage_snapshots", existing._id, {
+	await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
 		meter: nextMeter,
 		lastSyncedAt: args.syncedAt,
 	});
@@ -1307,57 +1440,57 @@ export const change_current_subscription = action({
 export const cancel_current_subscription = billing_api.cancelCurrentSubscription;
 
 // #region event ingestion
+const billing_event_validator = v.union(
+	v.object({
+		name: v.literal("manual_credit"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+		}),
+	}),
+	v.object({
+		name: v.literal("page_save"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			workspaceId: v.string(),
+			projectId: v.string(),
+			pageId: v.string(),
+			yjsSequence: v.string(),
+		}),
+	}),
+	v.object({
+		name: v.literal("monthly_credit"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			subscriptionId: v.string(),
+			productId: v.string(),
+			productName: v.string(),
+			periodStart: v.string(),
+		}),
+	}),
+	v.object({
+		name: v.literal("ai_usage"),
+		externalCustomerId: v.id("users"),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			modelId: v.string(),
+			inputTokens: v.number(),
+			outputTokens: v.number(),
+			threadId: v.string(),
+			messageId: v.string(),
+		}),
+	}),
+);
+
 export const ingest_events = internalAction({
 	args: {
-		events: v.array(
-			v.union(
-				v.object({
-					name: v.literal("manual_credit"),
-					externalCustomerId: v.id("users"),
-					externalId: v.string(),
-					metadata: v.object({
-						amount: v.number(),
-					}),
-				}),
-				v.object({
-					name: v.literal("page_save"),
-					externalCustomerId: v.id("users"),
-					externalId: v.string(),
-					metadata: v.object({
-						amount: v.number(),
-						workspaceId: v.string(),
-						projectId: v.string(),
-						pageId: v.string(),
-						yjsSequence: v.string(),
-					}),
-				}),
-				v.object({
-					name: v.literal("monthly_credit"),
-					externalCustomerId: v.id("users"),
-					externalId: v.string(),
-					metadata: v.object({
-						amount: v.number(),
-						subscriptionId: v.string(),
-						productId: v.string(),
-						productName: v.string(),
-						periodStart: v.string(),
-					}),
-				}),
-				v.object({
-					name: v.literal("ai_usage"),
-					externalCustomerId: v.id("users"),
-					externalId: v.string(),
-					metadata: v.object({
-						amount: v.number(),
-						modelId: v.string(),
-						inputTokens: v.number(),
-						outputTokens: v.number(),
-						threadId: v.string(),
-						messageId: v.string(),
-					}),
-				}),
-			),
-		),
+		events: v.array(billing_event_validator),
 	},
 	handler: async (_ctx, args) => {
 		// Skip direct Polar calls in tests; tests usually assert the queued payload.
@@ -1386,17 +1519,94 @@ export const ingest_events = internalAction({
 	},
 });
 
-/** Queue app-owned billing events for Polar ingestion through the usage-event workpool. */
+export const ingest_anonymous_user_events = internalMutation({
+	args: {
+		userEvents: v.array(
+			v.object({
+				event: billing_event_validator,
+				user: doc(app_convex_schema, "users"),
+			}),
+		),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+
+		await Promise.all(
+			args.userEvents.map(async ({ event, user }) => {
+				if (user.clerkUserId != null) {
+					console.error("Anonymous billing ingest received a signed-in user row", {
+						userId: user._id,
+						event,
+					});
+					return;
+				}
+
+				if (event.metadata.amount === 0) {
+					return;
+				}
+
+				const usageSnapshot = await ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_userId", (q) => q.eq("userId", user._id))
+					.first();
+				if (!usageSnapshot || usageSnapshot.meter == null) {
+					throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {
+						userId: user._id,
+						event,
+						usageSnapshot,
+					});
+				}
+
+				await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+					meter: {
+						...usageSnapshot.meter,
+						consumedUnits: usageSnapshot.meter!.consumedUnits + event.metadata.amount,
+						balance: usageSnapshot.meter!.balance - event.metadata.amount,
+					},
+					lastSyncedAt: now,
+				});
+			}),
+		);
+
+		return null;
+	},
+});
+
+/** Route app-owned billing events by real user row: Polar for signed-in users, local snapshot updates for anonymous users. */
 export async function billing_ingest_events(
 	ctx: ActionCtx | MutationCtx,
 	args: {
-		events: Array<billing_Event>;
+		userEvents: Array<{
+			event: billing_Event;
+			user: Doc<"users">;
+		}>;
 	},
 ) {
-	// Keep all billing event ingest behind one retrying workpool.
-	return await billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
-		events: args.events,
-	});
+	const anonymousUserEvents: typeof args.userEvents = [];
+	const signedInEvents: Array<billing_Event> = [];
+
+	for (const userEvent of args.userEvents) {
+		if (userEvent.user.clerkUserId == null) {
+			anonymousUserEvents.push(userEvent);
+			continue;
+		}
+
+		signedInEvents.push(userEvent.event);
+	}
+
+	await Promise.all([
+		signedInEvents.length === 0
+			? Promise.resolve()
+			: billing_workpool_usage_event.enqueueAction(ctx, internal.billing.ingest_events, {
+					events: signedInEvents,
+				}),
+		anonymousUserEvents.length === 0
+			? Promise.resolve()
+			: ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+					userEvents: anonymousUserEvents,
+				}),
+	]);
 }
 // #endregion event ingestion
 
@@ -1498,21 +1708,31 @@ export const grant_credit = internalAction({
 		amount: v.number(),
 		allowNegative: v.optional(v.boolean()),
 	},
-	returns: v.null(),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		const user = await ctx.runQuery(internal.users.get, {
+			userId: args.userId,
+		});
+		if (!user) {
+			return Result({ _nay: { message: "User not found" } });
+		}
+
 		await billing_ingest_events(ctx, {
-			events: [
-				billing_event({
-					name: "manual_credit",
-					externalCustomerId: args.userId,
-					externalId: composite_id("billing", "manual_credit", args.userId, Date.now()),
-					metadata: {
-						amount: args.allowNegative ? -args.amount : -Math.abs(args.amount),
-					},
-				}),
+			userEvents: [
+				{
+					user,
+					event: billing_event({
+						name: "manual_credit",
+						externalCustomerId: args.userId,
+						externalId: composite_id("billing", "manual_credit", args.userId, Date.now()),
+						metadata: {
+							amount: args.allowNegative ? -args.amount : -Math.abs(args.amount),
+						},
+					}),
+				},
 			],
 		});
-		return null;
+		return Result({ _yay: null });
 	},
 });
 

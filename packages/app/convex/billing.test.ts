@@ -1,8 +1,13 @@
 import { describe, expect, test, vi, beforeEach, afterEach, type MockInstance } from "vitest";
-import { billing_PRODUCTS } from "../shared/billing.ts";
+import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { Workpool } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
-import { billing, billing_db_check_credits } from "./billing.ts";
+import {
+	billing,
+	billing_db_ensure_anonymous_user_usage_snapshot,
+	billing_db_check_credits,
+	billing_ingest_events,
+} from "./billing.ts";
 import { test_convex } from "./setup.test.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
@@ -14,6 +19,7 @@ import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
+import { billing_event } from "../server/billing.ts";
 import type { Id } from "./_generated/dataModel.js";
 
 vi.mock("@polar-sh/sdk/core.js", () => ({
@@ -235,6 +241,17 @@ async function seed_user_id(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => {
 		return await ctx.db.insert("users", {
 			clerkUserId: null,
+		});
+	});
+}
+
+let seed_signed_in_user_id_counter = 0;
+
+async function seed_signed_in_user_id(t: ReturnType<typeof test_convex>) {
+	const clerkUserId = `clerk_test_${seed_signed_in_user_id_counter++}`;
+	return await t.run(async (ctx) => {
+		return await ctx.db.insert("users", {
+			clerkUserId,
 		});
 	});
 }
@@ -550,10 +567,7 @@ describe("check_credits", () => {
 	});
 
 	test("allows paid plans even with a negative balance", async () => {
-		for (const seedProduct of [
-			seed_pay_as_you_go_product,
-			seed_pro_product,
-		] as const) {
+		for (const seedProduct of [seed_pay_as_you_go_product, seed_pro_product] as const) {
 			const t = test_convex();
 			const userId = await seed_user_id(t);
 			const { polarProductId } = await seedProduct(t, { polarProductId: `prod_paid_negative_${userId}` });
@@ -570,6 +584,266 @@ describe("check_credits", () => {
 				},
 			});
 		}
+	});
+});
+
+describe("anonymous credit gate", () => {
+	test("ensure_snapshot creates the expected synthetic snapshot", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_free_anon_ensure_snapshot",
+		});
+		const now = Date.parse("2026-01-13T15:20:38.364Z");
+
+		const usageSnapshot = await t.run(async (ctx) => {
+			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now });
+			return await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique();
+		});
+		if (!usageSnapshot) {
+			throw new Error("Snapshot missing");
+		}
+
+		expect(usageSnapshot.polarCustomerId).toBeNull();
+		expect(usageSnapshot.subscription).toMatchObject({
+			id: null,
+			productId: polarProductId,
+			currency: "eur",
+			currentPeriodStart: "2026-01-13T00:00:00.000Z",
+			currentPeriodEnd: "2026-02-12T00:00:00.000Z",
+		});
+		expect(usageSnapshot.meter).toMatchObject({
+			id: null,
+			consumedUnits: 0,
+			creditedUnits: billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name),
+			balance: billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name),
+			amountDueCents: 0,
+		});
+	});
+
+	test("ensure_snapshot is idempotent and does not insert a duplicate", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_anon_idempotent",
+		});
+		const now = Date.now();
+
+		await t.run(async (ctx) => billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }));
+		await t.run(async (ctx) => billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }));
+
+		const usageSnapshots = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.collect(),
+		);
+		expect(usageSnapshots).toHaveLength(1);
+	});
+
+	test("check_credits returns hasCredits: true for an anonymous user with balance", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_anon_has_credits",
+		});
+		await t.run(async (ctx) => billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now: Date.now() }));
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result).toEqual({ _yay: { hasCredits: true } });
+	});
+
+	test("check_credits returns hasCredits: false after draining anonymous balance", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_anon_drained",
+		});
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		await t.run(async (ctx) => billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now: Date.now() }));
+
+		// Drain the full balance.
+		await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+
+			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: userId,
+							externalId: "manual_credit::anonymous_drain_balance::1",
+							metadata: {
+								amount: recurringCredits,
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result).toEqual({ _yay: { hasCredits: false } });
+	});
+
+	test("check_credits stays false after the period ends until the daily reset runs", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_anon_period_end",
+		});
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		const now = Date.now();
+		await t.run(async (ctx) => billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }));
+
+		// Drain the full balance.
+		await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+
+			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: userId,
+							externalId: "manual_credit::anonymous_period_end::1",
+							metadata: {
+								amount: recurringCredits,
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		// Advance the period end into the past.
+		await t.run(async (ctx) => {
+			const usageSnapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique();
+			if (!usageSnapshot?.subscription) throw new Error("Snapshot missing");
+			await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+				subscription: {
+					...usageSnapshot.subscription,
+					currentPeriodEnd: new Date(now - 1).toISOString(),
+				},
+			});
+		});
+
+		const result = await t.run(async (ctx) => billing_db_check_credits(ctx, { userId, minimumRequiredCents: 1 }));
+
+		expect(result).toEqual({ _yay: { hasCredits: false } });
+	});
+
+	test("reset_due_anonymous_credits refills the balance and advances the period on the due UTC day", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_anon_reset",
+		});
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		const now = Date.parse("2026-01-13T15:20:38.364Z");
+		await t.run(async (ctx) => billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }));
+
+		// Drain the full balance.
+		await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+
+			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: userId,
+							externalId: "manual_credit::anonymous_reset_due::1",
+							metadata: {
+								amount: recurringCredits,
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		const resetDay = Date.parse("2026-02-12T12:00:00.000Z");
+		await t.mutation(internal.billing.reset_due_anonymous_credits, {
+			_test_now: resetDay,
+		});
+
+		const usageSnapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits);
+		expect(usageSnapshot?.subscription).toMatchObject({
+			currentPeriodStart: "2026-02-12T00:00:00.000Z",
+			currentPeriodEnd: "2026-03-14T00:00:00.000Z",
+		});
+	});
+
+	test("ingest_anonymous_user_events does not mutate a non-anonymous snapshot", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const { polarProductId } = await seed_free_product(t, { polarProductId: "prod_free_anon_guard" });
+		await seed_billing_usage_snapshot(t, { userId, polarProductId, balanceCents: 500 });
+
+		await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+
+			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: userId,
+							externalId: "manual_credit::non_anonymous_snapshot::1",
+							metadata: {
+								amount: 1,
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		// Balance should remain unchanged.
+		const usageSnapshot = await t.run(async (ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(usageSnapshot?.meter?.balance).toBe(500);
 	});
 });
 
@@ -1058,9 +1332,9 @@ describe("billing get_usage_snapshot", () => {
 	test("returns null when unauthenticated", async () => {
 		const t = test_convex();
 
-		const usage = await t.query(api.billing.get_usage_snapshot, {});
+		const usageSnapshot = await t.query(api.billing.get_usage_snapshot, {});
 
-		expect(usage).toBeNull();
+		expect(usageSnapshot).toBeNull();
 	});
 
 	test("returns null when no snapshot exists", async () => {
@@ -1072,9 +1346,9 @@ describe("billing get_usage_snapshot", () => {
 			email: "usage-empty@test.local",
 		});
 
-		const usage = await asUser.query(api.billing.get_usage_snapshot, {});
+		const usageSnapshot = await asUser.query(api.billing.get_usage_snapshot, {});
 
-		expect(usage).toBeNull();
+		expect(usageSnapshot).toBeNull();
 	});
 
 	test("returns snapshot fields when a billing_usage_snapshots row exists", async () => {
@@ -1140,16 +1414,16 @@ describe("billing get_usage_snapshot", () => {
 			email: "usage-ready@test.local",
 		});
 
-		const usage = await asUser.query(api.billing.get_usage_snapshot, {});
-		expect(usage).not.toBeNull();
-		if (!usage) {
+		const usageSnapshot = await asUser.query(api.billing.get_usage_snapshot, {});
+		expect(usageSnapshot).not.toBeNull();
+		if (!usageSnapshot) {
 			throw new Error("Expected usage snapshot");
 		}
-		expect(usage.subscription?.productId).toBe(polarProductId);
-		expect(usage.meter?.consumedUnits).toBe(4);
-		expect(usage.meter?.amountDueCents).toBe(250);
-		expect(usage.meter?.balance).toBe(96);
-		expect(usage.lastSyncedAt).toBe(syncedAt);
+		expect(usageSnapshot.subscription?.productId).toBe(polarProductId);
+		expect(usageSnapshot.meter?.consumedUnits).toBe(4);
+		expect(usageSnapshot.meter?.amountDueCents).toBe(250);
+		expect(usageSnapshot.meter?.balance).toBe(96);
+		expect(usageSnapshot.lastSyncedAt).toBe(syncedAt);
 	});
 });
 
@@ -1524,7 +1798,7 @@ describe("handle_polar_customer_state_update", () => {
 		const customer = await t.query(components.polar.lib.getCustomerByUserId, {
 			userId,
 		});
-		const snapshot = await t.run(async (ctx) =>
+		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1535,7 +1809,7 @@ describe("handle_polar_customer_state_update", () => {
 		});
 
 		expect(customer).toBeNull();
-		expect(snapshot).toBeNull();
+		expect(usageSnapshot).toBeNull();
 		expect(subscriptions).toEqual([]);
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
@@ -1628,7 +1902,7 @@ describe("handle_polar_customer_state_update", () => {
 			},
 		});
 
-		const snapshot = await t.run(async (ctx) =>
+		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1636,12 +1910,12 @@ describe("handle_polar_customer_state_update", () => {
 		);
 
 		const paygRecurringCents = billing_PRODUCTS["Pay As You Go"].recurringCreditsCents;
-		expect(snapshot).not.toBeNull();
-		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_webhook");
-		expect(snapshot!.meter?.id).toBe("meter_new_webhook");
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.subscription?.id).toBe("sub_refresh_snapshot_webhook");
+		expect(usageSnapshot!.meter?.id).toBe("meter_new_webhook");
 		// The inline credit only changes `consumedUnits` and `balance`.
-		expect(snapshot!.meter?.amountDueCents).toBe(6);
-		expect(snapshot!.meter?.balance).toBe(2172 + paygRecurringCents);
+		expect(usageSnapshot!.meter?.amountDueCents).toBe(6);
+		expect(usageSnapshot!.meter?.balance).toBe(2172 + paygRecurringCents);
 	});
 
 	test("throws when the webhook payload contains multiple active subscriptions", async () => {
@@ -1690,7 +1964,7 @@ describe("handle_polar_customer_state_update", () => {
 
 	test("writes the Free subscription snapshot with the customer meter balance and zero amount due", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_free_product",
 		});
@@ -1727,7 +2001,7 @@ describe("handle_polar_customer_state_update", () => {
 			},
 		});
 
-		const snapshot = await t.run(async (ctx) =>
+		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1735,10 +2009,10 @@ describe("handle_polar_customer_state_update", () => {
 		);
 
 		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
-		expect(snapshot).not.toBeNull();
-		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_free");
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.subscription?.id).toBe("sub_refresh_snapshot_free");
 		// First-period refresh applies the recurring credit on top of the webhook meter.
-		expect(snapshot!.meter).toEqual({
+		expect(usageSnapshot!.meter).toEqual({
 			id: "meter_press_usage",
 			consumedUnits: 240 - freeRecurringCents,
 			creditedUnits: 1000,
@@ -1764,7 +2038,7 @@ describe("handle_polar_customer_state_update", () => {
 
 	test("stores the customer meter balance and subscription meter amount due for paid plans", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_pro_product(t, {
 			polarProductId: "billing_refresh_snapshot_pro_product",
 		});
@@ -1806,7 +2080,7 @@ describe("handle_polar_customer_state_update", () => {
 			},
 		});
 
-		const snapshot = await t.run(async (ctx) =>
+		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1814,16 +2088,16 @@ describe("handle_polar_customer_state_update", () => {
 		);
 
 		const proRecurringCents = billing_PRODUCTS.Pro.recurringCreditsCents;
-		expect(snapshot).not.toBeNull();
-		expect(snapshot!.meter?.id).toBe("meter_press_usage");
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.meter?.id).toBe("meter_press_usage");
 		// The inline credit only changes `consumedUnits` and `balance`.
-		expect(snapshot!.meter?.amountDueCents).toBe(123);
-		expect(snapshot!.meter?.balance).toBe(877 + proRecurringCents);
+		expect(usageSnapshot!.meter?.amountDueCents).toBe(123);
+		expect(usageSnapshot!.meter?.balance).toBe(877 + proRecurringCents);
 	});
 
 	test("writes the subscription snapshot and enqueues credits when no usage meter is resolvable yet", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_refresh_snapshot_missing_meter_product",
 			benefits: [],
@@ -1854,7 +2128,7 @@ describe("handle_polar_customer_state_update", () => {
 			},
 		});
 
-		const snapshot = await t.run(async (ctx) =>
+		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1862,10 +2136,10 @@ describe("handle_polar_customer_state_update", () => {
 		);
 
 		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
-		expect(snapshot).not.toBeNull();
-		expect(snapshot!.subscription?.id).toBe("sub_refresh_snapshot_missing_meter");
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.subscription?.id).toBe("sub_refresh_snapshot_missing_meter");
 		// No meter resolves here, so the optimistic write leaves `meter` as `null`.
-		expect(snapshot!.meter).toBeNull();
+		expect(usageSnapshot!.meter).toBeNull();
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
 				expect.objectContaining({
@@ -1887,7 +2161,7 @@ describe("handle_polar_customer_state_update", () => {
 describe("refresh_from_polar_customer_state", () => {
 	test("replays the SDK customer state through the shared refresh flow", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_admin_refresh_free_product",
 		});
@@ -1910,7 +2184,7 @@ describe("refresh_from_polar_customer_state", () => {
 			userId,
 		});
 
-		const snapshot = await t.run((ctx) =>
+		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1919,17 +2193,17 @@ describe("refresh_from_polar_customer_state", () => {
 
 		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
 		expect(getCustomerStateSpy).toHaveBeenCalledWith(expect.anything(), { userId });
-		expect(snapshot).not.toBeNull();
-		expect(snapshot!.polarCustomerId).toBe("cust_admin_refresh_free");
-		expect(snapshot!.subscription).toEqual({
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.polarCustomerId).toBe("cust_admin_refresh_free");
+		expect(usageSnapshot!.subscription).toEqual({
 			id: "sub_admin_refresh_free",
 			productId: polarProductId,
 			currency: "eur",
 			currentPeriodStart: "2026-04-13T03:20:38.364Z",
 			currentPeriodEnd: "2026-05-13T03:20:38.364Z",
 		});
-		expect(snapshot!.lastSyncedAt).toBe(Date.parse("2026-04-13T03:20:41.064Z"));
-		expect(snapshot!.meter).toEqual({
+		expect(usageSnapshot!.lastSyncedAt).toBe(Date.parse("2026-04-13T03:20:41.064Z"));
+		expect(usageSnapshot!.meter).toEqual({
 			id: "meter_press_usage",
 			consumedUnits: -freeRecurringCents,
 			creditedUnits: 0,
@@ -1955,7 +2229,7 @@ describe("refresh_from_polar_customer_state", () => {
 
 	test("skips the same-period replay when the snapshot already exists", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_admin_refresh_same_period_free_product",
 		});
@@ -1977,7 +2251,7 @@ describe("refresh_from_polar_customer_state", () => {
 			userId,
 		});
 
-		const snapshotAfterFirstReplay = await t.run((ctx) =>
+		const usageSnapshotAfterFirstReplay = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -1990,15 +2264,15 @@ describe("refresh_from_polar_customer_state", () => {
 			userId,
 		});
 
-		const snapshotAfterSecondReplay = await t.run((ctx) =>
+		const usageSnapshotAfterSecondReplay = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
-		expect(snapshotAfterFirstReplay).not.toBeNull();
-		expect(snapshotAfterSecondReplay).toEqual(snapshotAfterFirstReplay);
+		expect(usageSnapshotAfterFirstReplay).not.toBeNull();
+		expect(usageSnapshotAfterSecondReplay).toEqual(usageSnapshotAfterFirstReplay);
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 });
@@ -3087,6 +3361,130 @@ describe("ingest_events", () => {
 
 		expect(eventsIngestMock).not.toHaveBeenCalled();
 	});
+
+	test("billing_ingest_events splits signed-in and anonymous userEvents", async () => {
+		const t = test_convex();
+		const anonymousUserId = await seed_user_id(t);
+		const signedInUserId = await seed_signed_in_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_ingest_split",
+		});
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		await t.run(async (ctx) => {
+			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: anonymousUserId, now: Date.now() });
+		});
+		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_split_user_events");
+
+		await t.run(async (ctx) => {
+			const anonymousUser = await ctx.db.get("users", anonymousUserId);
+			const signedInUser = await ctx.db.get("users", signedInUserId);
+			if (!anonymousUser || !signedInUser) {
+				throw new Error("Expected seeded users");
+			}
+
+			await billing_ingest_events(ctx, {
+				userEvents: [
+					{
+						user: signedInUser,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: signedInUserId,
+							externalId: "manual_credit::signed_in::1",
+							metadata: {
+								amount: -1500,
+							},
+						}),
+					},
+					{
+						user: anonymousUser,
+						event: billing_event({
+							name: "manual_credit",
+							externalCustomerId: anonymousUserId,
+							externalId: "manual_credit::anonymous::1",
+							metadata: {
+								amount: -2500,
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(captured.ingestPayload).toEqual({
+			events: [
+				expect.objectContaining({
+					name: "manual_credit",
+					externalCustomerId: signedInUserId,
+					externalId: "manual_credit::signed_in::1",
+					metadata: {
+						amount: -1500,
+					},
+				}),
+			],
+		});
+
+		const usageSnapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", anonymousUserId))
+				.unique(),
+		);
+		expect(usageSnapshot?.meter?.consumedUnits).toBe(-2500);
+		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits + 2500);
+	});
+
+	test("billing_ingest_events applies anonymous usage amounts locally without queuing Polar work", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await seed_free_product(t, {
+			polarProductId: "prod_free_ingest_local_usage",
+		});
+		const recurringCredits = billing_get_recurring_credits_cents(billing_PRODUCTS.Free.name);
+		await t.run(async (ctx) => {
+			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now: Date.now() });
+		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_anonymous_usage_local" as never);
+
+		await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", userId);
+			if (!user) {
+				throw new Error("Expected anonymous user");
+			}
+
+			await billing_ingest_events(ctx, {
+				userEvents: [
+					{
+						user,
+						event: billing_event({
+							name: "page_save",
+							externalCustomerId: userId,
+							externalId: "page_save::anonymous::1",
+							metadata: {
+								amount: 1,
+								workspaceId: "workspace_1",
+								projectId: "project_1",
+								pageId: "page_1",
+								yjsSequence: "1",
+							},
+						}),
+					},
+				],
+			});
+		});
+
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+		const usageSnapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_userId", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
+		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits - 1);
+	});
 });
 
 function mock_billing_ingest_enqueue(workId: string) {
@@ -3124,14 +3522,14 @@ describe("grant_credit", () => {
 		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_manual_credit");
 
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 
 		const result = await t.action(internal.billing.grant_credit, {
 			userId,
 			amount: 2500,
 		});
 
-		expect(result).toBeNull();
+		expect(result).toEqual({ _yay: null });
 		expect(eventsIngestMock).not.toHaveBeenCalled();
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		const ingestPayload = captured.ingestPayload;
@@ -3152,14 +3550,14 @@ describe("grant_credit", () => {
 		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_manual_credit_negative");
 
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 
 		const result = await t.action(internal.billing.grant_credit, {
 			userId,
 			amount: -2500,
 		});
 
-		expect(result).toBeNull();
+		expect(result).toEqual({ _yay: null });
 		expect(eventsIngestMock).not.toHaveBeenCalled();
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		const ingestPayload = captured.ingestPayload;
@@ -3178,7 +3576,7 @@ describe("grant_credit", () => {
 		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_manual_credit_allowed_negative");
 
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 
 		const result = await t.action(internal.billing.grant_credit, {
 			userId,
@@ -3186,7 +3584,7 @@ describe("grant_credit", () => {
 			allowNegative: true,
 		});
 
-		expect(result).toBeNull();
+		expect(result).toEqual({ _yay: null });
 		expect(eventsIngestMock).not.toHaveBeenCalled();
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		const ingestPayload = captured.ingestPayload;
@@ -3199,6 +3597,30 @@ describe("grant_credit", () => {
 			amount: 2495,
 		});
 		expect(ingestPayload.events[0]!.name).toBe("manual_credit");
+	});
+
+	test("returns nay when the target user does not exist", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_id(t);
+		await t.run(async (ctx) => {
+			await ctx.db.delete("users", userId);
+		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_manual_credit_missing_user" as never);
+
+		const result = await t.action(internal.billing.grant_credit, {
+			userId,
+			amount: 2500,
+		});
+
+		expect(result).toEqual({
+			_nay: {
+				message: "User not found",
+			},
+		});
+		expect(eventsIngestMock).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 });
 
@@ -3298,7 +3720,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 
 	test("grants a monthly credit for the first period of an active subscription", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_grant_first_period_product",
 		});
@@ -3337,13 +3759,13 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		});
 
 		const recurringCents = billing_PRODUCTS["Pay As You Go"].recurringCreditsCents;
-		const snapshot = await t.run(async (ctx) =>
+		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
 				.withIndex("by_userId", (q) => q.eq("userId", userId))
 				.unique(),
 		);
-		expect(snapshot?.meter).toEqual({
+		expect(usageSnapshot?.meter).toEqual({
 			id: "meter_units",
 			consumedUnits: -recurringCents,
 			creditedUnits: 0,
@@ -3354,7 +3776,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 
 	test("skips the monthly credit on a same-period repeat webhook delivery", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_grant_same_period_product",
 		});
@@ -3412,7 +3834,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 
 	test("grants a monthly credit when the subscription has rolled into a new period", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_grant_advanced_period_product",
 		});
@@ -3464,7 +3886,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 
 	test("grants a monthly credit when the webhook moves the snapshot to a new subscription mid-period after a plan upgrade", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId: oldProductId } = await seed_pay_as_you_go_product(t, {
 			polarProductId: "billing_grant_upgrade_old_product",
 		});
