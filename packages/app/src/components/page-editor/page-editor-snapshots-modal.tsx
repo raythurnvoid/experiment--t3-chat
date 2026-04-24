@@ -39,8 +39,8 @@ type PageEditorSnapshotsModal_UsersDict = Record<string, PageEditorSnapshotsModa
 type PageEditorSnapshotsModal_ListSnapshot = {
 	_id: app_convex_Id<"pages_snapshots">;
 	_creationTime: number;
-	created_by: string;
-	archived_at: number;
+	createdBy: string;
+	archivedAt: number;
 };
 
 type PageEditorSnapshotsModal_ListQueryResult = {
@@ -148,7 +148,7 @@ const PageEditorSnapshotsModalListItem = memo(function PageEditorSnapshotsModalL
 	props: PageEditorSnapshotsModalListItem_Props,
 ) {
 	const { snapshot, userDisplayName, onClickArchive, onClickSnapshot } = props;
-	const isArchived = snapshot.archived_at > 0;
+	const isArchived = snapshot.archivedAt > 0;
 
 	const handleRowClick = useFn((event: MouseEvent<HTMLDivElement>) => {
 		const target = event.target as HTMLElement;
@@ -301,7 +301,7 @@ const PageEditorSnapshotsModalList = memo(function PageEditorSnapshotsModalList(
 				<PageEditorSnapshotsModalListItem
 					key={snapshot._id}
 					snapshot={snapshot}
-					userDisplayName={usersDict[snapshot.created_by]?.displayName ?? "Unknown"}
+					userDisplayName={usersDict[snapshot.createdBy]?.displayName ?? "Unknown"}
 					onClickArchive={onClickArchive}
 					onClickSnapshot={onClickSnapshot}
 				/>
@@ -524,7 +524,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 												"PageEditorSnapshotsModalPreviewModal-snapshot-data-author" satisfies PageEditorSnapshotsModalPreviewModal_ClassNames,
 											)}
 										>
-											{usersDict[snapshot.created_by]?.displayName ?? "Unknown"}
+											{usersDict[snapshot.createdBy]?.displayName ?? "Unknown"}
 										</div>
 										<div
 											className={cn(
@@ -551,7 +551,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 													<MyTooltipContent unmountOnHide>
 														<div>
 															<div>{format_relative_time(previousSnapshot._creationTime)}</div>
-															<div>{usersDict[previousSnapshot.created_by]?.displayName ?? "Unknown"}</div>
+															<div>{usersDict[previousSnapshot.createdBy]?.displayName ?? "Unknown"}</div>
 														</div>
 													</MyTooltipContent>
 												)}
@@ -577,7 +577,7 @@ const PageEditorSnapshotsModalPreviewModal = memo(function PageEditorSnapshotsMo
 													<MyTooltipContent unmountOnHide>
 														<div>
 															<div>{format_relative_time(nextSnapshot._creationTime)}</div>
-															<div>{usersDict[nextSnapshot.created_by]?.displayName ?? "Unknown"}</div>
+															<div>{usersDict[nextSnapshot.createdBy]?.displayName ?? "Unknown"}</div>
 														</div>
 													</MyTooltipContent>
 												)}
@@ -762,7 +762,7 @@ export const PageEditorSnapshotsModal = memo(function PageEditorSnapshotsModal(p
 	);
 
 	const snapshotUserIds = snapshotsQueryResult
-		? [...new Set(snapshotsQueryResult.snapshots.map((row) => row.created_by))]
+		? [...new Set(snapshotsQueryResult.snapshots.map((row) => row.createdBy))]
 		: [];
 
 	const userAnagraphicsQueryResults = useQueries(

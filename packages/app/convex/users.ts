@@ -252,7 +252,7 @@ async function db_ensure_default_user_limit(
 ) {
 	const existingLimit = await ctx.db
 		.query("limits_per_user")
-		.withIndex("by_user_limitName", (q) =>
+		.withIndex("byUserLimitName", (q) =>
 			q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
 		)
 		.first();
@@ -452,7 +452,7 @@ export const resolve_user = internalMutation({
 
 		const existingUsersForClerk = await ctx.db
 			.query("users")
-			.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
+			.withIndex("byClerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
 			.collect();
 		const existingLiveUser = existingUsersForClerk.find((user) => user.deletedAt == null) ?? null;
 
@@ -471,7 +471,7 @@ export const resolve_user = internalMutation({
 
 		const anagraphicByEmail = await ctx.db
 			.query("users_anagraphics")
-			.withIndex("by_email", (q) => q.eq("email", email))
+			.withIndex("byEmail", (q) => q.eq("email", email))
 			.unique()
 			.catch(() => "duplicate_email" as const);
 		if (anagraphicByEmail === "duplicate_email") {
@@ -492,11 +492,11 @@ export const resolve_user = internalMutation({
 			const [memberships, deletionRequests] = await Promise.all([
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser._id))
+					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", deletedUser._id))
 					.collect(),
 				ctx.db
 					.query("data_deletion_requests")
-					.withIndex("by_user", (q) => q.eq("userId", deletedUser._id))
+					.withIndex("byUser", (q) => q.eq("userId", deletedUser._id))
 					.collect(),
 			]);
 
@@ -577,7 +577,7 @@ export const resolve_user = internalMutation({
 					// remove it so the anonymous user can become the canonical user record.
 					ctx.db
 						.query("users")
-						.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
+						.withIndex("byClerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
 						.collect()
 						.then((existingClerkUsers) =>
 							Promise.all(
@@ -616,7 +616,7 @@ export const resolve_user = internalMutation({
 					// bootstrap will create a fresh Polar-backed snapshot.
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", user._id))
+						.withIndex("byUser", (q) => q.eq("userId", user._id))
 						.first()
 						.then((usageSnapshot) =>
 							usageSnapshot ? ctx.db.delete("billing_usage_snapshots", usageSnapshot._id) : undefined,

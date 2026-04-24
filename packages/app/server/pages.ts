@@ -72,8 +72,8 @@ export async function pages_db_get_yjs_content_and_sequence(
 		ctx.db.get("pages_yjs_snapshots", page.yjsSnapshotId),
 		ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("by_workspace_project_page_sequence", (q) =>
-				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
+			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 			)
 			.order("asc")
 			.collect(),
@@ -83,11 +83,11 @@ export async function pages_db_get_yjs_content_and_sequence(
 
 	if (
 		!yjsSnapshotDoc ||
-		yjsSnapshotDoc.workspace_id !== args.workspaceId ||
-		yjsSnapshotDoc.project_id !== args.projectId ||
+		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
+		yjsSnapshotDoc.projectId !== args.projectId ||
 		!yjsLastSequenceDoc ||
-		yjsLastSequenceDoc.workspace_id !== args.workspaceId ||
-		yjsLastSequenceDoc.project_id !== args.projectId
+		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
+		yjsLastSequenceDoc.projectId !== args.projectId
 	) {
 		console.error(
 			should_never_happen("[pages_db_get_yjs_content_and_sequence] Missing yjsSnapshotDoc or yjsLastSequenceDoc", {
@@ -110,7 +110,7 @@ export async function pages_db_get_yjs_content_and_sequence(
 		yjsLastSequenceDoc,
 		yjsUpdatesDocs,
 		incrementalYjsUpdatesDocs,
-		yjsSequence: yjsLastSequenceDoc.last_sequence,
+		yjsSequence: yjsLastSequenceDoc.lastSequence,
 	};
 }
 
@@ -134,7 +134,7 @@ export async function pages_db_get_pending_edit(
 			? pendingEditById
 			: await ctx.db
 					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
+					.withIndex("byWorkspaceProjectUserPage", (q) =>
 						q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
@@ -154,7 +154,7 @@ export async function pages_db_cancel_pending_edit_cleanup_tasks(
 ) {
 	const cleanupTasks = await ctx.db
 		.query("pages_pending_edits_cleanup_tasks")
-		.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
+		.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 		.collect();
 
 	await Promise.all([
@@ -178,7 +178,7 @@ export async function pages_db_schedule_pending_edit_cleanup(
 	const [existingCleanupTasks, scheduledFunctionId] = await Promise.all([
 		ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 			.collect(),
 		ctx.scheduler.runAfter(
 			args.delayMs ?? 4 * 60 * 60 * 1000,
@@ -216,7 +216,7 @@ export async function pages_db_reschedule_pending_edit_cleanup_for_user(
 ) {
 	const pendingEdits = await ctx.db
 		.query("pages_pending_edits")
-		.withIndex("by_workspace_project_user_page", (q) =>
+		.withIndex("byWorkspaceProjectUserPage", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
 		)
 		.collect();

@@ -48,7 +48,7 @@ export const get_user_limit = query({
 		const limitDefinition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_user_limitName", (q) => q.eq("userId", args.userId).eq("limitName", args.limitName))
+			.withIndex("byUserLimitName", (q) => q.eq("userId", args.userId).eq("limitName", args.limitName))
 			.first();
 
 		if (!limit) {
@@ -84,7 +84,7 @@ export const get_workspace_limit = query({
 		}
 		const membership = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) =>
+			.withIndex("byActiveUserWorkspaceProject", (q) =>
 				q.eq("active", true).eq("userId", user.id).eq("workspaceId", args.workspaceId),
 			)
 			.first();
@@ -95,7 +95,7 @@ export const get_workspace_limit = query({
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", args.workspaceId).eq("limitName", args.limitName))
+			.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", args.workspaceId).eq("limitName", args.limitName))
 			.first();
 
 		if (!limit) {

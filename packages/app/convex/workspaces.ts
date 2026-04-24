@@ -50,7 +50,7 @@ export const list = query({
 		}
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user.id))
+			.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user.id))
 			.collect();
 
 		const projectIdsByWorkspace = new Map<Id<"workspaces">, Set<Id<"workspaces_projects">>>();
@@ -141,7 +141,7 @@ export const get_membership_for_scope = query({
 
 		const membership = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) =>
+			.withIndex("byActiveUserWorkspaceProject", (q) =>
 				q.eq("active", true).eq("userId", user.id).eq("workspaceId", workspaceId).eq("projectId", projectId),
 			)
 			.first();
@@ -181,7 +181,7 @@ export const get_membership_by_workspace_project_name = query({
 
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user._id))
+			.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user._id))
 			.collect();
 
 		const candidateMembershipsPromises = [];
@@ -375,7 +375,7 @@ export const add_user_to_workspace_project = mutation({
 			ctx.db.get("workspaces_projects", args.projectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.withIndex("byActiveUserWorkspaceProject", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", user.id)
@@ -385,7 +385,7 @@ export const add_user_to_workspace_project = mutation({
 				.first(),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId).eq("userId", args.userIdToAdd))
+				.withIndex("byProjectUserActive", (q) => q.eq("projectId", args.projectId).eq("userId", args.userIdToAdd))
 				.first(),
 		]);
 
@@ -476,7 +476,7 @@ export const edit_workspace = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.withIndex("byActiveUserWorkspaceProject", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", user.id)
@@ -538,7 +538,7 @@ export const edit_workspace = mutation({
 
 		const existingWorkspace = await ctx.db
 			.query("workspaces")
-			.withIndex("by_name", (q) => q.eq("name", name))
+			.withIndex("byName", (q) => q.eq("name", name))
 			.first();
 		if (existingWorkspace && existingWorkspace._id !== args.workspaceId) {
 			return Result({
@@ -590,7 +590,7 @@ export const edit_project = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.withIndex("byActiveUserWorkspaceProject", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", user.id)
@@ -600,7 +600,7 @@ export const edit_project = mutation({
 				.first(),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.withIndex("byActiveUserWorkspaceProject", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", user.id)
@@ -669,11 +669,11 @@ export const edit_project = mutation({
 		const [defaultProjects, nonDefaultProjects] = await Promise.all([
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
+				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
 				.collect(),
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
+				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
 				.collect(),
 		]);
 
@@ -721,13 +721,13 @@ export const delete_workspace = mutation({
 			ctx.db.get("workspaces", args.workspaceId),
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId))
 				.first()
 				.then(async (project) =>
 					project
 						? await ctx.db
 								.query("workspaces_projects_users")
-								.withIndex("by_active_user_workspace_project", (q) =>
+								.withIndex("byActiveUserWorkspaceProject", (q) =>
 									q
 										.eq("active", true)
 										.eq("userId", user.id)
@@ -765,7 +765,7 @@ export const delete_workspace = mutation({
 
 		const workspaceProjects = await ctx.db
 			.query("workspaces_projects")
-			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspace._id))
+			.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", workspace._id))
 			.collect();
 
 		const [, ...userIdsPerProject] = await Promise.all([
@@ -778,7 +778,7 @@ export const delete_workspace = mutation({
 			...workspaceProjects.map(async (project) => {
 				const projectUsers = await ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_project_user_active", (q) => q.eq("projectId", project._id))
+					.withIndex("byProjectUserActive", (q) => q.eq("projectId", project._id))
 					.collect();
 
 				await Promise.all(
@@ -796,7 +796,7 @@ export const delete_workspace = mutation({
 			const limitDefinition = user_limits.EXTRA_WORKSPACES;
 			const limit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("by_user_limitName", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
+				.withIndex("byUserLimitName", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
 				.first();
 
 			if (limit && limit.usedCount > 0) {
@@ -852,7 +852,7 @@ export const delete_project = mutation({
 								defaultProjectId
 									? await ctx.db
 											.query("workspaces_projects_users")
-											.withIndex("by_active_user_workspace_project", (q) =>
+											.withIndex("byActiveUserWorkspaceProject", (q) =>
 												q
 													.eq("active", true)
 													.eq("userId", user.id)
@@ -867,7 +867,7 @@ export const delete_project = mutation({
 			),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId))
+				.withIndex("byProjectUserActive", (q) => q.eq("projectId", args.projectId))
 				.collect(),
 		]);
 
@@ -909,7 +909,7 @@ export const delete_project = mutation({
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
+			.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
 			.first();
 
 		if (limit && limit.usedCount > 0) {

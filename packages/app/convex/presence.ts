@@ -35,7 +35,7 @@ export const heartbeat = mutation({
 		if (result.isNewSession) {
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user.id))
+				.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user.id))
 				.collect();
 
 			await Promise.all([
@@ -243,7 +243,7 @@ export const disconnect = mutation({
 
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user.id))
+			.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user.id))
 			.collect();
 
 		await Promise.all(

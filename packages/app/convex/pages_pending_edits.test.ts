@@ -37,7 +37,7 @@ afterEach(() => {
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", userId))
+		.withIndex("byUser", (q) => q.eq("userId", userId))
 		.unique();
 	if (usageSnapshot) return;
 
@@ -126,14 +126,14 @@ async function seed_page_with_markdown(args: {
 	});
 
 	const markdownContentId = await ctx.db.insert("pages_markdown_content", {
-		workspace_id: workspaceId,
-		project_id: projectId,
-		page_id: pageId,
+		workspaceId: workspaceId,
+		projectId: projectId,
+		pageId: pageId,
 		content: markdown,
-		is_archived: false,
-		yjs_sequence: 0,
-		updated_at: Date.now(),
-		updated_by: String(userId),
+		isArchived: false,
+		yjsSequence: 0,
+		updatedAt: Date.now(),
+		updatedBy: String(userId),
 	});
 
 	const baseYjsDoc = new YDoc();
@@ -153,21 +153,21 @@ async function seed_page_with_markdown(args: {
 	}
 
 	const snapshotId = await ctx.db.insert("pages_yjs_snapshots", {
-		workspace_id: workspaceId,
-		project_id: projectId,
-		page_id: pageId,
+		workspaceId: workspaceId,
+		projectId: projectId,
+		pageId: pageId,
 		sequence: 0,
-		snapshot_update: pages_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-		created_by: userId,
-		updated_by: String(userId),
-		updated_at: Date.now(),
+		snapshotUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
+		createdBy: userId,
+		updatedBy: String(userId),
+		updatedAt: Date.now(),
 	});
 
 	const lastSequenceId = await ctx.db.insert("pages_yjs_docs_last_sequences", {
-		workspace_id: workspaceId,
-		project_id: projectId,
-		page_id: pageId,
-		last_sequence: 0,
+		workspaceId: workspaceId,
+		projectId: projectId,
+		pageId: pageId,
+		lastSequence: 0,
 	});
 
 	await ctx.db.patch("pages", pageId, {
@@ -222,13 +222,13 @@ async function read_page_markdown_from_yjs(args: {
 
 	const updates = await ctx.db
 		.query("pages_yjs_updates")
-		.withIndex("by_workspace_project_page_sequence", (q) =>
-			q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("page_id", page._id),
+		.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("pageId", page._id),
 		)
 		.order("asc")
 		.collect();
 
-	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshot.snapshot_update, {
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate, {
 		additionalIncrementalArrayBufferUpdates: updates
 			.filter((update) => update.sequence > snapshot.sequence)
 			.map((update) => update.update),
@@ -279,8 +279,8 @@ async function read_page_yjs_state(args: {
 		ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId),
 		ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("by_workspace_project_page_sequence", (q) =>
-				q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("page_id", page._id),
+			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("pageId", page._id),
 			)
 			.order("asc")
 			.collect(),
@@ -289,7 +289,7 @@ async function read_page_yjs_state(args: {
 		throw new Error("Page Yjs state missing while reading Yjs state");
 	}
 
-	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshot.snapshot_update, {
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate, {
 		additionalIncrementalArrayBufferUpdates: updates
 			.filter((update) => update.sequence > snapshot.sequence)
 			.map((update) => update.update),
@@ -297,7 +297,7 @@ async function read_page_yjs_state(args: {
 
 	return {
 		yjsUpdate: pages_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
-		yjsSequence: lastSequenceDoc.last_sequence,
+		yjsSequence: lastSequenceDoc.lastSequence,
 	};
 }
 
@@ -313,7 +313,7 @@ async function build_page_diff_update_from_snapshot(args: { ctx: MutationCtx; pa
 		throw new Error("Snapshot missing while preparing diff update from snapshot");
 	}
 
-	const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshot.snapshot_update);
+	const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate);
 	const targetYjsDoc = pages_yjs_doc_clone({
 		yjsDoc: baseYjsDoc,
 	});
@@ -371,7 +371,7 @@ function read_pending_row_markdown_state(args: {
 async function list_pending_edit_cleanup_tasks(args: { ctx: MutationCtx; pendingEditId: Id<"pages_pending_edits"> }) {
 	return await args.ctx.db
 		.query("pages_pending_edits_cleanup_tasks")
-		.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
+		.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 		.collect();
 }
 
@@ -384,7 +384,7 @@ async function read_pending_edit_last_sequence_saved_row(args: {
 }) {
 	return await args.ctx.db
 		.query("pages_pending_edits_last_sequence_saved")
-		.withIndex("by_workspace_project_user_page", (q) =>
+		.withIndex("byWorkspaceProjectUserPage", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -439,7 +439,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -464,7 +464,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const secondPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -498,7 +498,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const pendingAfterDiscard = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -538,7 +538,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -566,7 +566,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const secondPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -612,7 +612,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const stalePendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -642,7 +642,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const currentPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -671,7 +671,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const pendingRowAfterFallback = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -721,7 +721,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -785,7 +785,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -837,7 +837,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -898,7 +898,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -941,7 +941,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -979,7 +979,7 @@ describe("upsert_pages_pending_edit_updates", () => {
 		const secondPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1054,7 +1054,7 @@ describe("pages_db_reschedule_pending_edit_cleanup_for_user", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1134,7 +1134,7 @@ describe("presence.disconnect", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1221,7 +1221,7 @@ describe("presence.disconnect", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1300,7 +1300,7 @@ describe("save_pages_pending_edit", () => {
 		await t.run(async (ctx) => {
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+				.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 				.unique();
 			if (!usageSnapshot?.meter) {
 				throw new Error("Expected seeded billing snapshot meter");
@@ -1363,7 +1363,7 @@ describe("save_pages_pending_edit", () => {
 			// Replace the signed-in billing snapshot with an anonymous one and drain it.
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", result.userId))
+				.withIndex("byUser", (q) => q.eq("userId", result.userId))
 				.unique();
 			if (usageSnapshot) await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
 			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: result.userId, now: Date.now() });
@@ -1438,7 +1438,7 @@ describe("save_pages_pending_edit", () => {
 			});
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", result.userId))
+				.withIndex("byUser", (q) => q.eq("userId", result.userId))
 				.unique();
 			if (usageSnapshot) await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
 			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: result.userId, now: Date.now() });
@@ -1475,7 +1475,7 @@ describe("save_pages_pending_edit", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+				.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
@@ -1548,14 +1548,14 @@ describe("save_pages_pending_edit", () => {
 		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_sequence", (q) =>
-					q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
+				.withIndex("byWorkspaceProjectPageSequence", (q) =>
+					q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("pageId", seeded.pageId),
 				)
 				.order("asc")
 				.collect(),
 		);
 		expect(yjsUpdatesAfterSave).toHaveLength(1);
-		expect(yjsUpdatesAfterSave[0]?.created_by).toBe(seeded.userId);
+		expect(yjsUpdatesAfterSave[0]?.createdBy).toBe(seeded.userId);
 
 		const pendingEditLastSequenceSaved = await t.run(async (ctx) =>
 			read_pending_edit_last_sequence_saved_row({
@@ -1572,7 +1572,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1663,7 +1663,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1713,7 +1713,7 @@ describe("save_pages_pending_edit", () => {
 		const stalePendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1744,7 +1744,7 @@ describe("save_pages_pending_edit", () => {
 		const currentPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1774,7 +1774,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1869,7 +1869,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1935,7 +1935,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingBeforeSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -1961,8 +1961,8 @@ describe("save_pages_pending_edit", () => {
 		const yjsUpdatesBeforeSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_sequence", (q) =>
-					q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
+				.withIndex("byWorkspaceProjectPageSequence", (q) =>
+					q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("pageId", seeded.pageId),
 				)
 				.collect(),
 		);
@@ -1980,7 +1980,7 @@ describe("save_pages_pending_edit", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -2001,19 +2001,19 @@ describe("save_pages_pending_edit", () => {
 			Promise.all([
 				ctx.db
 					.query("pages_yjs_updates")
-					.withIndex("by_workspace_project_page_sequence", (q) =>
-						q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
+					.withIndex("byWorkspaceProjectPageSequence", (q) =>
+						q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("pageId", seeded.pageId),
 					)
 					.collect(),
 				ctx.db
 					.query("pages_yjs_docs_last_sequences")
-					.withIndex("by_workspace_project_page", (q) =>
-						q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
+					.withIndex("byWorkspaceProjectPage", (q) =>
+						q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("pageId", seeded.pageId),
 					)
 					.first(),
 			]).then(([updates, lastSequence]) => ({
 				updateCount: updates.length,
-				lastSequence: lastSequence?.last_sequence ?? null,
+				lastSequence: lastSequence?.lastSequence ?? null,
 			})),
 		);
 		expect(yjsUpdatesAfterSave.updateCount).toBe(2);
@@ -2186,7 +2186,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		const pendingAfterPersist = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -2258,7 +2258,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 			Promise.all([
 				ctx.db
 					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
+					.withIndex("byWorkspaceProjectUserPage", (q) =>
 						q
 							.eq("workspaceId", seeded.workspaceId)
 							.eq("projectId", seeded.projectId)
@@ -2268,7 +2268,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 					.first(),
 				ctx.db
 					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
+					.withIndex("byWorkspaceProjectUserPage", (q) =>
 						q
 							.eq("workspaceId", seeded.workspaceId)
 							.eq("projectId", seeded.projectId)
@@ -2321,7 +2321,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 			Promise.all([
 				ctx.db
 					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
+					.withIndex("byWorkspaceProjectUserPage", (q) =>
 						q
 							.eq("workspaceId", seeded.workspaceId)
 							.eq("projectId", seeded.projectId)
@@ -2331,7 +2331,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 					.first(),
 				ctx.db
 					.query("pages_pending_edits")
-					.withIndex("by_workspace_project_user_page", (q) =>
+					.withIndex("byWorkspaceProjectUserPage", (q) =>
 						q
 							.eq("workspaceId", seeded.workspaceId)
 							.eq("projectId", seeded.projectId)
@@ -2405,7 +2405,7 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 		const pendingAfterClear = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -2504,7 +2504,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -2549,7 +2549,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 		const pendingAfterStaleCleanup = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -2601,7 +2601,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)
@@ -2633,7 +2633,7 @@ describe("remove_pages_pending_edit_if_expired", () => {
 		const pendingAfterCleanup = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_workspace_project_user_page", (q) =>
+				.withIndex("byWorkspaceProjectUserPage", (q) =>
 					q
 						.eq("workspaceId", seeded.workspaceId)
 						.eq("projectId", seeded.projectId)

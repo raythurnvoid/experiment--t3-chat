@@ -17,7 +17,7 @@ type MockIncrementalUpdate = {
 	update: ArrayBuffer;
 	origin: {
 		type: "USER_EDIT";
-		session_id: string;
+		sessionId: string;
 	};
 };
 
@@ -164,7 +164,7 @@ async function createReadyProvider() {
 	const presenceStore = createPresenceStore();
 	appConvexMock.app_convex.query.mockResolvedValue({
 		sequence: 0,
-		snapshot_update: createEmptySnapshotUpdate(),
+		snapshotUpdate: createEmptySnapshotUpdate(),
 	});
 
 	const provider = new LiveblocksYjsProvider({
@@ -206,7 +206,7 @@ function emitLocalAck(args: { sequence: number; sessionId: string; update: Array
 				update: args.update,
 				origin: {
 					type: "USER_EDIT",
-					session_id: args.sessionId,
+					sessionId: args.sessionId,
 				},
 			},
 		],

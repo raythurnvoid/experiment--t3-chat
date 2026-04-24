@@ -55,7 +55,7 @@ export async function workspaces_db_create(
 		? null
 		: await ctx.db
 				.query("workspaces")
-				.withIndex("by_name", (q) => q.eq("name", name))
+				.withIndex("byName", (q) => q.eq("name", name))
 				.first();
 	if (existingWorkspace) {
 		return Result({
@@ -69,7 +69,7 @@ export async function workspaces_db_create(
 		const definition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_user_limitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
+			.withIndex("byUserLimitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
 			.first();
 		if (!limit) {
 			throw should_never_happen("[workspaces_db_create] Missing user limit doc", {
@@ -178,7 +178,7 @@ export async function workspaces_db_create_project(
 	const hasMembership = Boolean(
 		await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) =>
+			.withIndex("byActiveUserWorkspaceProject", (q) =>
 				q.eq("active", true).eq("userId", args.userId).eq("workspaceId", args.workspaceId),
 			)
 			.first(),
@@ -195,11 +195,11 @@ export async function workspaces_db_create_project(
 	const [defaultProjects, nonDefaultProjects] = await Promise.all([
 		ctx.db
 			.query("workspaces_projects")
-			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", true))
+			.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId).eq("default", true))
 			.collect(),
 		ctx.db
 			.query("workspaces_projects")
-			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", false))
+			.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId).eq("default", false))
 			.collect(),
 	]);
 
@@ -215,7 +215,7 @@ export async function workspaces_db_create_project(
 
 	const limit = await ctx.db
 		.query("limits_per_workspace")
-		.withIndex("by_workspace_limitName", (q) =>
+		.withIndex("byWorkspaceLimitName", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("limitName", workspace_limits.EXTRA_PROJECTS.name),
 		)
 		.first();

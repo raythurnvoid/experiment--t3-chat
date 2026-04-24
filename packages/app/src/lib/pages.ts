@@ -222,7 +222,7 @@ export async function pages_fetch_page_yjs_state_and_markdown(args: {
 	// to only include updates that are after the snapshot.
 	const filteredIncrementalUpdates = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
 
-	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsSnapshotDoc.snapshot_update, {
+	const yjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsSnapshotDoc.snapshotUpdate, {
 		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
 	});
 	const markdown = pages_yjs_doc_get_markdown({ yjsDoc });

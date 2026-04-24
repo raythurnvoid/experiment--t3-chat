@@ -294,7 +294,7 @@ async function get_cancel_polar_subscription_job(t: ReturnType<typeof test_conve
 	return await t.run((ctx) =>
 		ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("by_user", (q) => q.eq("userId", userId))
+			.withIndex("byUser", (q) => q.eq("userId", userId))
 			.first(),
 	);
 }
@@ -600,7 +600,7 @@ describe("anonymous credit gate", () => {
 			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now });
 			return await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique();
 		});
 		if (!usageSnapshot) {
@@ -638,7 +638,7 @@ describe("anonymous credit gate", () => {
 		const usageSnapshots = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.collect(),
 		);
 		expect(usageSnapshots).toHaveLength(1);
@@ -739,7 +739,7 @@ describe("anonymous credit gate", () => {
 		await t.run(async (ctx) => {
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique();
 			if (!usageSnapshot?.subscription) throw new Error("Snapshot missing");
 			await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
@@ -797,7 +797,7 @@ describe("anonymous credit gate", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits);
@@ -840,7 +840,7 @@ describe("anonymous credit gate", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.balance).toBe(500);
@@ -1801,7 +1801,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		const subscriptions = await t.query(components.polar.lib.listCustomerSubscriptions, {
@@ -1905,7 +1905,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2004,7 +2004,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2083,7 +2083,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2131,7 +2131,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2187,7 +2187,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2254,7 +2254,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const usageSnapshotAfterFirstReplay = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2267,7 +2267,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const usageSnapshotAfterSecondReplay = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -3116,7 +3116,7 @@ describe("billing schedule_polar_subscription_period_end_cancellation", () => {
 		const rowCount = await t.run((ctx) =>
 			ctx.db
 				.query("billing_cancel_polar_subscription_jobs")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.collect()
 				.then((rows) => rows.length),
 		);
@@ -3427,7 +3427,7 @@ describe("ingest_events", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", anonymousUserId))
+				.withIndex("byUser", (q) => q.eq("userId", anonymousUserId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(-2500);
@@ -3479,7 +3479,7 @@ describe("ingest_events", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
@@ -3762,7 +3762,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter).toEqual({

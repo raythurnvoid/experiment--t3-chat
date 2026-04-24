@@ -90,14 +90,14 @@ async function data_deletion_test_seed_page(
 	});
 
 	await ctx.db.insert("pages_markdown_content", {
-		workspace_id: args.workspaceId,
-		project_id: args.projectId,
-		page_id: pageId,
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		pageId: pageId,
 		content: `# ${args.tag}`,
-		is_archived: false,
-		yjs_sequence: 0,
-		updated_at: Date.now(),
-		updated_by: args.userId,
+		isArchived: false,
+		yjsSequence: 0,
+		updatedAt: Date.now(),
+		updatedBy: args.userId,
 	});
 
 	return {
@@ -345,7 +345,7 @@ describe("init_user_deletion", () => {
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
 				ctx.db.get("workspaces_projects", deletedUser.defaultProjectId),
@@ -361,7 +361,7 @@ describe("init_user_deletion", () => {
 					.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
 				ctx.db
 					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("byUser", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				presence.listUser(ctx, deletedUser.userId, false, 10_000),
 				presence.listUser(ctx, collaborator.userId, false, 10_000),
@@ -466,7 +466,7 @@ describe("process_user_deletion_request", () => {
 				userId: String(deletedUser.userId),
 				pageId: await ctx.db
 					.query("pages")
-					.withIndex("by_workspace_project_name", (q) =>
+					.withIndex("byWorkspaceProjectName", (q) =>
 						q
 							.eq("workspaceId", String(created._yay.workspaceId))
 							.eq("projectId", String(created._yay.defaultProjectId))
@@ -534,15 +534,15 @@ describe("process_user_deletion_request", () => {
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db
 					.query("pages_pending_edits")
-					.withIndex("by_user_page", (q) => q.eq("userId", String(deletedUser.userId)))
+					.withIndex("byUserPage", (q) => q.eq("userId", String(deletedUser.userId)))
 					.collect(),
 				ctx.db
 					.query("pages_pending_edits_last_sequence_saved")
-					.withIndex("by_user_page", (q) => q.eq("userId", String(deletedUser.userId)))
+					.withIndex("byUserPage", (q) => q.eq("userId", String(deletedUser.userId)))
 					.collect(),
 				ctx.db.query("pages_pending_edits_cleanup_tasks").collect(),
 				ctx.db.query("data_deletion_requests").collect(),
@@ -551,7 +551,7 @@ describe("process_user_deletion_request", () => {
 				ctx.db.get("workspaces", sharedWorkspace.workspaceId),
 				ctx.db
 					.query("pages")
-					.withIndex("by_workspace_project_name", (q) =>
+					.withIndex("byWorkspaceProjectName", (q) =>
 						q
 							.eq("workspaceId", String(sharedWorkspace.workspaceId))
 							.eq("projectId", String(sharedWorkspace.defaultProjectId))
@@ -689,7 +689,7 @@ describe("process_user_deletion_request", () => {
 						.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
 					ctx.db
 						.query("workspaces_projects_users")
-						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+						.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", deletedUser.userId))
 						.collect(),
 				]);
 
@@ -1002,7 +1002,7 @@ describe("hard_delete_user_data", () => {
 					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
 				ctx.db
 					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("byUser", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 			]);
 
@@ -1387,7 +1387,7 @@ describe("resolve_user after tombstone", () => {
 				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
+					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
 				ctx.db
@@ -1554,7 +1554,7 @@ describe("resolve_user after tombstone", () => {
 				}),
 				ctx.db
 					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
+					.withIndex("byUserLimitName", (q) =>
 						q.eq("userId", deletedUser.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
 					)
 					.first(),

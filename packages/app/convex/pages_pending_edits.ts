@@ -53,7 +53,7 @@ async function pages_pending_edit_upsert_last_sequence_saved(
 ) {
 	const existingRow = await ctx.db
 		.query("pages_pending_edits_last_sequence_saved")
-		.withIndex("by_workspace_project_user_page", (q) =>
+		.withIndex("byWorkspaceProjectUserPage", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -209,7 +209,7 @@ async function pages_pending_edit_resolve_branch_docs(
 		});
 	}
 
-	const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+	const baseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshotUpdate, {
 		additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
 	});
 
@@ -412,7 +412,7 @@ export const remove_pages_pending_edit_if_expired = internalMutation({
 		// created the task, treat this run as stale and do not delete the newer pending state.
 		const cleanupTasks = await ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 			.collect();
 
 		const matchingCleanupTasks = cleanupTasks.filter(
@@ -544,7 +544,7 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 			});
 		}
 
-		const latestBaseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+		const latestBaseYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshotUpdate, {
 			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
 		});
 		const latestBaseYjsUpdate = pages_pending_edit_encode_yjs_state_update({
@@ -737,7 +737,7 @@ export const list_pages_pending_edits = query({
 
 		const pagesPendingEdits = await ctx.db
 			.query("pages_pending_edits")
-			.withIndex("by_workspace_project_user_page", (q) =>
+			.withIndex("byWorkspaceProjectUserPage", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("userId", user.id),
 			)
 			.order("asc")
@@ -768,7 +768,7 @@ export const get_pages_pending_edit_last_sequence_saved = query({
 
 		return await ctx.db
 			.query("pages_pending_edits_last_sequence_saved")
-			.withIndex("by_workspace_project_user_page", (q) =>
+			.withIndex("byWorkspaceProjectUserPage", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
@@ -843,7 +843,7 @@ export const save_pages_pending_edit = mutation({
 		const baseYjsDoc = reconstructedBranchDocs.baseYjsDoc;
 		const stagedBranchYjsDoc = reconstructedBranchDocs.stagedBranchYjsDoc;
 		const unstagedBranchYjsDoc = reconstructedBranchDocs.unstagedBranchYjsDoc;
-		const latestPageYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshot_update, {
+		const latestPageYjsDoc = pages_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshotUpdate, {
 			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
 		});
 

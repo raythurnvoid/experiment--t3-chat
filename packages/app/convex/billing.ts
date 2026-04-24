@@ -87,7 +87,7 @@ export async function billing_db_check_credits(
 ) {
 	const hasCredits = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.withIndex("byUser", (q) => q.eq("userId", args.userId))
 		.first()
 		.then(async (usageSnapshot) => {
 			if (!usageSnapshot?.subscription) {
@@ -156,7 +156,7 @@ export async function billing_db_ensure_anonymous_user_usage_snapshot(
 ) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.withIndex("byUser", (q) => q.eq("userId", args.userId))
 		.first();
 	if (usageSnapshot) {
 		return null;
@@ -218,7 +218,7 @@ export const reset_due_anonymous_credits = internalMutation({
 
 		const dueUsageSnapshots = await ctx.db
 			.query("billing_usage_snapshots")
-			.withIndex("by_polarCustomer_currentPeriodEnd", (q) =>
+			.withIndex("byPolarCustomerCurrentPeriodEnd", (q) =>
 				q.eq("polarCustomerId", null).eq("subscription.currentPeriodEnd", todayPeriodEnd),
 			)
 			.collect();
@@ -357,7 +357,7 @@ export const get_usage_snapshot = query({
 
 		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
-			.withIndex("by_user", (q) => q.eq("userId", user.id))
+			.withIndex("byUser", (q) => q.eq("userId", user.id))
 			.first();
 
 		return usageSnapshot;
@@ -609,7 +609,7 @@ function build_usage_snapshot(args: {
 async function db_upsert_usage_snapshot(ctx: MutationCtx, usageSnapshot: BillingUsageSnapshotRow) {
 	const existingUsageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", usageSnapshot.userId))
+		.withIndex("byUser", (q) => q.eq("userId", usageSnapshot.userId))
 		.unique();
 	// Keep an existing meter when Polar still reports `activeMeters: []`.
 	// This avoids wiping an optimistic meter before Polar catches up.
@@ -649,7 +649,7 @@ async function db_delete_customer_state(
 	const usageSnapshots = userId
 		? await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.collect()
 		: await ctx.db
 				.query("billing_usage_snapshots")
@@ -699,7 +699,7 @@ async function db_apply_polar_customer_state_refresh(
 
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", user._id))
+		.withIndex("byUser", (q) => q.eq("userId", user._id))
 		.unique();
 	const previousSubscription = usageSnapshot?.subscription ?? null;
 
@@ -778,7 +778,7 @@ async function db_apply_optimistic_credit_to_snapshot(
 ) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.withIndex("byUser", (q) => q.eq("userId", args.userId))
 		.unique();
 	// The snapshot was upserted earlier in this transaction, so the row must exist.
 	if (!usageSnapshot) {
@@ -996,7 +996,7 @@ export const get_cancel_polar_subscription_job_by_user_id = internalQuery({
 		return (
 			(await ctx.db
 				.query("billing_cancel_polar_subscription_jobs")
-				.withIndex("by_user", (q) => q.eq("userId", args.userId))
+				.withIndex("byUser", (q) => q.eq("userId", args.userId))
 				.first()) ?? null
 		);
 	},
@@ -1012,7 +1012,7 @@ export const upsert_cancel_polar_subscription_job = internalMutation({
 	handler: async (ctx, args) => {
 		const existingRows = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.withIndex("byUser", (q) => q.eq("userId", args.userId))
 			.collect();
 		const [currentRow, ...staleDocs] = existingRows;
 
@@ -1041,7 +1041,7 @@ export const delete_cancel_polar_subscription_job = internalMutation({
 	handler: async (ctx, args) => {
 		const docs = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.withIndex("byUser", (q) => q.eq("userId", args.userId))
 			.collect();
 
 		await Promise.all(docs.map((doc) => ctx.db.delete("billing_cancel_polar_subscription_jobs", doc._id)));
@@ -1058,7 +1058,7 @@ export const complete_polar_subscription_period_end_cancellation = billing_workp
 		const userId = args.context.userId as Id<"users">;
 		const doc = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("by_user", (q) => q.eq("userId", userId))
+			.withIndex("byUser", (q) => q.eq("userId", userId))
 			.first();
 		if (!doc || doc.jobId !== args.workId) {
 			return;
@@ -1548,7 +1548,7 @@ export const ingest_anonymous_user_events = internalMutation({
 
 				const usageSnapshot = await ctx.db
 					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.withIndex("byUser", (q) => q.eq("userId", user._id))
 					.first();
 				if (!usageSnapshot || usageSnapshot.meter == null) {
 					throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {

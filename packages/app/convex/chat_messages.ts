@@ -90,7 +90,7 @@ export const chat_messages_list = query({
 
 		const children = await ctx.db
 			.query("chat_messages")
-			.withIndex("by_workspace_project_thread", (q) =>
+			.withIndex("byWorkspaceProjectThread", (q) =>
 				q.eq("workspaceId", root.workspaceId).eq("projectId", root.projectId).eq("threadId", args.threadId),
 			)
 			.order("asc")
@@ -183,7 +183,7 @@ export const chat_messages_threads_list = query({
 
 					const lastChild = await ctx.db
 						.query("chat_messages")
-						.withIndex("by_workspace_project_thread", (q) =>
+						.withIndex("byWorkspaceProjectThread", (q) =>
 							q.eq("workspaceId", message.workspaceId).eq("projectId", message.projectId).eq("threadId", message._id),
 						)
 						.order("desc")

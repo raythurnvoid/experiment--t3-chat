@@ -226,14 +226,14 @@ async function users_test_seed_page(
 	});
 
 	await ctx.db.insert("pages_markdown_content", {
-		workspace_id: args.workspaceId,
-		project_id: args.projectId,
-		page_id: pageId,
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		pageId: pageId,
 		content: `# ${args.tag}`,
-		is_archived: false,
-		yjs_sequence: 0,
-		updated_at: Date.now(),
-		updated_by: args.userId,
+		isArchived: false,
+		yjsSequence: 0,
+		updatedAt: Date.now(),
+		updatedBy: args.userId,
 	});
 
 	return {
@@ -455,7 +455,7 @@ describe("/api/auth/resolve-user", () => {
 			const user = await t.run((ctx) =>
 				ctx.db
 					.query("users")
-					.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-missing-email"))
+					.withIndex("byClerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-missing-email"))
 					.first(),
 			);
 
@@ -510,7 +510,7 @@ describe("/api/auth/resolve-user", () => {
 					ctx.db.get("users", existingUser.userId),
 					ctx.db
 						.query("users")
-						.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-email-conflict"))
+						.withIndex("byClerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-email-conflict"))
 						.first(),
 					ctx.db.get("users_anagraphics", existingUser.anagraphicId),
 				]);
@@ -655,7 +655,7 @@ describe("resolve_user", () => {
 				ctx.db.get("users", anonymousPayload.userId),
 				ctx.db
 					.query("users")
-					.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-conflict"))
+					.withIndex("byClerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-conflict"))
 					.first(),
 				ctx.db.get("users_anagraphics", existingUser.anagraphicId),
 			]);
@@ -766,7 +766,7 @@ describe("delete_current_user_account", () => {
 						ctx.db.get("users", seeded.userId),
 						ctx.db
 							.query("data_deletion_requests")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 						ctx.db
 							.query("data_deletion_requests")
@@ -774,13 +774,13 @@ describe("delete_current_user_account", () => {
 							.then((rows) => rows.filter((r) => r.scope !== "user")),
 						ctx.db
 							.query("workspaces_projects_users")
-							.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db
 							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 							userId: seeded.userId,
@@ -791,7 +791,7 @@ describe("delete_current_user_account", () => {
 						ctx.db.get("users_anagraphics", seeded.anagraphicId),
 						ctx.db
 							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 					]);
 
@@ -901,7 +901,7 @@ describe("delete_current_user_account", () => {
 						ctx.db.get("users", seeded.userId),
 						ctx.db
 							.query("data_deletion_requests")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 						ctx.db
 							.query("data_deletion_requests")
@@ -909,13 +909,13 @@ describe("delete_current_user_account", () => {
 							.then((rows) => rows.filter((r) => r.scope !== "user")),
 						ctx.db
 							.query("workspaces_projects_users")
-							.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db
 							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 							userId: seeded.userId,
@@ -925,7 +925,7 @@ describe("delete_current_user_account", () => {
 						}),
 						ctx.db
 							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 					]);
 
@@ -1015,7 +1015,7 @@ describe("delete_current_user_account", () => {
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 					ctx.db
 						.query("data_deletion_requests")
@@ -1023,7 +1023,7 @@ describe("delete_current_user_account", () => {
 						.then((rows) => rows.filter((r) => r.scope !== "user")),
 					ctx.db
 						.query("workspaces_projects_users")
-						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
@@ -1106,11 +1106,11 @@ describe("delete_current_user_account", () => {
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -1120,7 +1120,7 @@ describe("delete_current_user_account", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -1220,7 +1220,7 @@ describe("delete_current_user_account", () => {
 						ctx.db.get("users", seeded.userId),
 						ctx.db
 							.query("data_deletion_requests")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 						ctx.db
 							.query("data_deletion_requests")
@@ -1228,13 +1228,13 @@ describe("delete_current_user_account", () => {
 							.then((rows) => rows.filter((r) => r.scope !== "user")),
 						ctx.db
 							.query("workspaces_projects_users")
-							.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db
 							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 							userId: seeded.userId,
@@ -1244,7 +1244,7 @@ describe("delete_current_user_account", () => {
 						}),
 						ctx.db
 							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 					]);
 
@@ -1349,11 +1349,11 @@ describe("delete_current_user_account", () => {
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 					ctx.db
 						.query("workspaces_projects_users")
-						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 				]);
 
@@ -1440,7 +1440,7 @@ describe("hard_delete_user_now", () => {
 							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 						ctx.db
 							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 							userId: seeded.userId,
@@ -1450,7 +1450,7 @@ describe("hard_delete_user_now", () => {
 						}),
 						ctx.db
 							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.first(),
 					]);
 
@@ -1565,7 +1565,7 @@ describe("hard_delete_user_now", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -1689,7 +1689,7 @@ describe("hard_delete_user_now", () => {
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db
 							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 							userId: seeded.userId,
@@ -1786,7 +1786,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -1796,7 +1796,7 @@ describe("hard_delete_user_now", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -1893,7 +1893,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -1980,7 +1980,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -2147,7 +2147,7 @@ describe("hard_delete_user_now", () => {
 						.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -2157,7 +2157,7 @@ describe("hard_delete_user_now", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -2305,11 +2305,11 @@ describe("hard_delete_user_now", () => {
 				ctx.db.get("users_anagraphics", seeded.anagraphicId),
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
 					.collect(),
 				ctx.db
 					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) => q.eq("userId", seeded.userId))
+					.withIndex("byUserLimitName", (q) => q.eq("userId", seeded.userId))
 					.collect(),
 			]);
 
@@ -2387,7 +2387,7 @@ describe("hard_delete_user_now", () => {
 						.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -2397,7 +2397,7 @@ describe("hard_delete_user_now", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -2458,7 +2458,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.withIndex("byUser", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2489,7 +2489,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 		const usageSnapshotBefore = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", anonymousPayload.userId))
+				.withIndex("byUser", (q) => q.eq("userId", anonymousPayload.userId))
 				.unique(),
 		);
 		expect(usageSnapshotBefore).not.toBeNull();
@@ -2510,7 +2510,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 		const usageSnapshotAfter = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", anonymousPayload.userId))
+				.withIndex("byUser", (q) => q.eq("userId", anonymousPayload.userId))
 				.unique(),
 		);
 		expect(usageSnapshotAfter).toBeNull();

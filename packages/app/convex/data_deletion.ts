@@ -31,7 +31,7 @@ async function db_purge_workspace_project_content(
 	for (const pendingEditId of pendingEditIds) {
 		const task = await ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", pendingEditId))
+			.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", pendingEditId))
 			.first();
 		if (task) {
 			pendingEditCleanupTaskIds.push(task._id);
@@ -41,7 +41,7 @@ async function db_purge_workspace_project_content(
 	const pageIds: Array<Id<"pages">> = [];
 	for await (const page of ctx.db
 		.query("pages")
-		.withIndex("by_workspace_project_parent_name", (q) =>
+		.withIndex("byWorkspaceProjectParentName", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pageIds.push(page._id);
@@ -51,7 +51,7 @@ async function db_purge_workspace_project_content(
 	for (const pageId of pageIds) {
 		const sched = await ctx.db
 			.query("pages_yjs_snapshot_schedules")
-			.withIndex("by_page", (q) => q.eq("page_id", pageId))
+			.withIndex("byPage", (q) => q.eq("pageId", pageId))
 			.first();
 		if (sched) {
 			pagesYjsSnapshotScheduleIds.push(sched._id);
@@ -62,7 +62,7 @@ async function db_purge_workspace_project_content(
 	const aiChatThreadsMessagesAisdk5Ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
 	for await (const row of ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
-		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("byWorkspaceProjectThread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		aiChatThreadsMessagesAisdk5Ids.push(row._id);
 	}
 
@@ -70,7 +70,7 @@ async function db_purge_workspace_project_content(
 	const aiChatThreadsIds: Array<Id<"ai_chat_threads">> = [];
 	for await (const row of ctx.db
 		.query("ai_chat_threads")
-		.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
+		.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		aiChatThreadsIds.push(row._id);
@@ -80,7 +80,7 @@ async function db_purge_workspace_project_content(
 	const chatMessagesIds: Array<Id<"chat_messages">> = [];
 	for await (const row of ctx.db
 		.query("chat_messages")
-		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("byWorkspaceProjectThread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		chatMessagesIds.push(row._id);
 	}
 
@@ -96,7 +96,7 @@ async function db_purge_workspace_project_content(
 	const pagesPlainTextChunksIds: Array<Id<"pages_plain_text_chunks">> = [];
 	for await (const row of ctx.db
 		.query("pages_plain_text_chunks")
-		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
+		.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesPlainTextChunksIds.push(row._id);
@@ -106,7 +106,7 @@ async function db_purge_workspace_project_content(
 	const pagesMarkdownChunksIds: Array<Id<"pages_markdown_chunks">> = [];
 	for await (const row of ctx.db
 		.query("pages_markdown_chunks")
-		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
+		.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesMarkdownChunksIds.push(row._id);
@@ -116,8 +116,8 @@ async function db_purge_workspace_project_content(
 	const pagesYjsSnapshotsIds: Array<Id<"pages_yjs_snapshots">> = [];
 	for await (const row of ctx.db
 		.query("pages_yjs_snapshots")
-		.withIndex("by_workspace_project_page_sequence", (q) =>
-			q.eq("workspace_id", workspaceId).eq("project_id", projectId),
+		.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesYjsSnapshotsIds.push(row._id);
 	}
@@ -126,8 +126,8 @@ async function db_purge_workspace_project_content(
 	const pagesYjsUpdatesIds: Array<Id<"pages_yjs_updates">> = [];
 	for await (const row of ctx.db
 		.query("pages_yjs_updates")
-		.withIndex("by_workspace_project_page_sequence", (q) =>
-			q.eq("workspace_id", workspaceId).eq("project_id", projectId),
+		.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesYjsUpdatesIds.push(row._id);
 	}
@@ -136,7 +136,7 @@ async function db_purge_workspace_project_content(
 	const pagesYjsDocsLastSequencesIds: Array<Id<"pages_yjs_docs_last_sequences">> = [];
 	for await (const row of ctx.db
 		.query("pages_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_page", (q) => q.eq("workspace_id", workspaceId).eq("project_id", projectId))) {
+		.withIndex("byWorkspaceProjectPage", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		pagesYjsDocsLastSequencesIds.push(row._id);
 	}
 
@@ -144,8 +144,8 @@ async function db_purge_workspace_project_content(
 	const pagesSnapshotsContentsIds: Array<Id<"pages_snapshots_contents">> = [];
 	for await (const row of ctx.db
 		.query("pages_snapshots_contents")
-		.withIndex("by_workspace_project_page_pageSnapshot", (q) =>
-			q.eq("workspace_id", workspaceId).eq("project_id", projectId),
+		.withIndex("byWorkspaceProjectPageSnapshot", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesSnapshotsContentsIds.push(row._id);
 	}
@@ -154,8 +154,8 @@ async function db_purge_workspace_project_content(
 	const pagesSnapshotsIds: Array<Id<"pages_snapshots">> = [];
 	for await (const row of ctx.db
 		.query("pages_snapshots")
-		.withIndex("by_workspace_project_page_archivedAt", (q) =>
-			q.eq("workspace_id", workspaceId).eq("project_id", projectId),
+		.withIndex("byWorkspaceProjectPageArchivedAt", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesSnapshotsIds.push(row._id);
 	}
@@ -163,7 +163,7 @@ async function db_purge_workspace_project_content(
 	// pages_markdown_content (full table scan)
 	const pagesMarkdownContentIds: Array<Id<"pages_markdown_content">> = [];
 	for await (const row of ctx.db.query("pages_markdown_content")) {
-		if (row.workspace_id === workspaceId && row.project_id === projectId) {
+		if (row.workspaceId === workspaceId && row.projectId === projectId) {
 			pagesMarkdownContentIds.push(row._id);
 		}
 	}
@@ -216,7 +216,7 @@ async function db_delete_data_deletion_requests(
 	if (args.scope === "user") {
 		const rows = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.withIndex("byUser", (q) => q.eq("userId", args.userId))
 			.collect();
 
 		await Promise.all(
@@ -229,7 +229,7 @@ async function db_delete_data_deletion_requests(
 	const rows = await ctx.db
 		.query("data_deletion_requests")
 		.withIndex(
-			"by_workspace_project",
+			"byWorkspaceProject",
 			args.scope === "project"
 				? (q) => q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId)
 				: (q) => q.eq("workspaceId", args.workspaceId),
@@ -253,7 +253,7 @@ async function db_delete_workspace(
 ) {
 	const projects = await ctx.db
 		.query("workspaces_projects")
-		.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+		.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId))
 		.collect();
 
 	const projectRequestsToDelete = [];
@@ -280,11 +280,11 @@ async function db_delete_workspace(
 		const [remainingProjects, limitsPerWorkspaceDocs] = await Promise.all([
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId))
 				.collect(),
 			ctx.db
 				.query("limits_per_workspace")
-				.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", args.workspaceId))
+				.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", args.workspaceId))
 				.collect(),
 		]);
 
@@ -307,7 +307,7 @@ async function db_prepare_user_for_deletion(
 ) {
 	const memberships = await ctx.db
 		.query("workspaces_projects_users")
-		.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.user._id))
+		.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", args.user._id))
 		.collect();
 
 	if (args.user.deletedAt == null) {
@@ -352,27 +352,27 @@ async function db_finalize_deleted_user(
 		await Promise.all([
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+				.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", user._id))
 				.collect(),
 			ctx.db
 				.query("users_anon_tokens")
-				.withIndex("by_user", (q) => q.eq("userId", user._id))
+				.withIndex("byUser", (q) => q.eq("userId", user._id))
 				.collect(),
 			ctx.db
 				.query("limits_per_user")
-				.withIndex("by_user_limitName", (q) => q.eq("userId", user._id))
+				.withIndex("byUserLimitName", (q) => q.eq("userId", user._id))
 				.collect(),
 			ctx.db
 				.query("pages_pending_edits")
-				.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
+				.withIndex("byUserPage", (q) => q.eq("userId", userIdString))
 				.collect(),
 			ctx.db
 				.query("pages_pending_edits_last_sequence_saved")
-				.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
+				.withIndex("byUserPage", (q) => q.eq("userId", userIdString))
 				.collect(),
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_user", (q) => q.eq("userId", user._id))
+				.withIndex("byUser", (q) => q.eq("userId", user._id))
 				.collect(),
 		]);
 
@@ -381,7 +381,7 @@ async function db_finalize_deleted_user(
 			pendingEdits.map((row) =>
 				ctx.db
 					.query("pages_pending_edits_cleanup_tasks")
-					.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", row._id))
+					.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", row._id))
 					.collect(),
 			),
 		)
@@ -425,7 +425,7 @@ async function db_finalize_deleted_user(
 
 		const remainingMemberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("by_active_workspace_project_user", (q) => q.eq("active", true).eq("workspaceId", workspaceId))
+			.withIndex("byActiveWorkspaceProjectUser", (q) => q.eq("active", true).eq("workspaceId", workspaceId))
 			.first();
 		if (remainingMemberships) {
 			continue;

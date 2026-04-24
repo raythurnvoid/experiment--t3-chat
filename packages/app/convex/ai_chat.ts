@@ -162,7 +162,7 @@ export const threads_list = query({
 
 		const threads_query = ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
+			.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("archived", archived),
 			);
 
@@ -316,7 +316,7 @@ export const thread_branch = mutation({
 
 		const allMessages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_workspace_project_thread", (q) =>
+			.withIndex("byWorkspaceProjectThread", (q) =>
 				q.eq("workspaceId", thread.workspaceId).eq("projectId", thread.projectId).eq("threadId", threadId),
 			)
 			.collect();
@@ -337,14 +337,14 @@ export const thread_branch = mutation({
 
 		const unarchivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
+			.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", false),
 			)
 			.collect();
 
 		const archivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
+			.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", true),
 			)
 			.collect();
@@ -617,7 +617,7 @@ export const thread_messages_list = query({
 
 		const messages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_workspace_project_thread", (q) =>
+			.withIndex("byWorkspaceProjectThread", (q) =>
 				q.eq("workspaceId", thread.workspaceId).eq("projectId", thread.projectId).eq("threadId", threadId),
 			)
 			.order(args.order ?? "desc")
