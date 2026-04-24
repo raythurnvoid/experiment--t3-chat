@@ -158,7 +158,7 @@ async function seed_page_with_markdown(args: {
 		page_id: pageId,
 		sequence: 0,
 		snapshot_update: pages_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
-		created_by: String(userId),
+		created_by: userId,
 		updated_by: String(userId),
 		updated_at: Date.now(),
 	});

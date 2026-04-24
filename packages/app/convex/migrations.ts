@@ -15,6 +15,26 @@ type LegacyBillingUsageSnapshot = Omit<Doc<"billing_usage_snapshots">, "_id" | "
 	optimisticCreditAppliedKey?: string;
 };
 
+export const migrate_pages_yjs_snapshots_created_by_to_user_id = app_migrations.define({
+	table: "pages_yjs_snapshots",
+	migrateOne: async (ctx, snapshot) => {
+		// Use the single-user dev database invariant to rewrite legacy display names to app user IDs.
+		const users = await ctx.db.query("users").take(2);
+		if (users.length !== 1) {
+			throw new Error("Expected exactly one user while migrating pages_yjs_snapshots.created_by");
+		}
+
+		const userId = users[0]._id;
+		if (snapshot.created_by === userId) {
+			return;
+		}
+
+		return {
+			created_by: userId,
+		};
+	},
+});
+
 export const remove_billing_usage_snapshots_last_granted_period_start = app_migrations.define({
 	table: "billing_usage_snapshots",
 	migrateOne: async (ctx, snapshot) => {
@@ -56,6 +76,9 @@ export const remove_billing_usage_snapshots_last_refresh_reason = app_migrations
 
 /** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
 export const run = app_migrations.runner();
+export const run_migrate_pages_yjs_snapshots_created_by_to_user_id = app_migrations.runner(
+	internal.migrations.migrate_pages_yjs_snapshots_created_by_to_user_id,
+);
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
 	internal.migrations.remove_billing_usage_snapshots_last_granted_period_start,
 );

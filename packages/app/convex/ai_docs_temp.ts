@@ -546,7 +546,7 @@ async function do_create_page(
 				page_id: pageId,
 				sequence: initialYjsSequence,
 				snapshot_update: pages_u8_to_array_buffer(initialYjsSnapshotUpdate),
-				created_by: user.name,
+				created_by: user.id,
 				updated_by: user.name,
 				updated_at: now,
 			}),

@@ -212,7 +212,7 @@ const app_convex_schema = defineSchema({
 		page_id: v.id("pages"),
 		sequence: v.number(),
 		snapshot_update: v.bytes(),
-		created_by: v.string(),
+		created_by: v.id("users"),
 		updated_by: v.string(),
 		updated_at: v.number(),
 	}).index("by_workspace_project_page_id_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
