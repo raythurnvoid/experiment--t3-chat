@@ -8,8 +8,18 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 export const presence = new Presence(components.presence);
+
+function presence_rate_limit_error(rateLimit: { message: string; retryAfterMs: number }) {
+	return convex_error({
+		message: rateLimit.message,
+		data: {
+			retryAfterMs: rateLimit.retryAfterMs,
+		},
+	});
+}
 
 export const heartbeat = mutation({
 	args: { roomId: v.string(), userId: v.string(), sessionId: v.string(), interval: v.number() },
@@ -28,6 +38,11 @@ export const heartbeat = mutation({
 					sessionId: args.sessionId,
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_heartbeat", key: user.id });
+		if (rateLimit) {
+			throw presence_rate_limit_error(rateLimit);
 		}
 
 		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
@@ -145,6 +160,11 @@ export const setSessionData = mutation({
 	args: { sessionToken: v.string(), data: v.any() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_write", key: args.sessionToken });
+		if (rateLimit) {
+			throw presence_rate_limit_error(rateLimit);
+		}
+
 		return await ctx.runMutation(components.presence.public.setSessionData, {
 			sessionToken: args.sessionToken,
 			data: args.data,
@@ -156,6 +176,14 @@ export const removeSessionData = mutation({
 	args: { roomToken: v.string(), sessionId: v.string() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "presence_write",
+			key: `${args.roomToken}:${args.sessionId}`,
+		});
+		if (rateLimit) {
+			throw presence_rate_limit_error(rateLimit);
+		}
+
 		return await presence.removeSessionData(ctx, args.roomToken, args.sessionId);
 	},
 });
@@ -227,6 +255,11 @@ export const disconnect = mutation({
 	args: { sessionToken: v.string() },
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_write", key: args.sessionToken });
+		if (rateLimit) {
+			throw presence_rate_limit_error(rateLimit);
+		}
+
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user) {
 			await presence.disconnect(ctx, args.sessionToken);

@@ -60,7 +60,7 @@ export type PageEditorCommentsSidebar_Props = {
 export function PageEditorCommentsSidebar(props: PageEditorCommentsSidebar_Props) {
 	const { threadIds } = props;
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 
 	const [query, setFilterValue] = useState("");
 
@@ -68,8 +68,7 @@ export function PageEditorCommentsSidebar(props: PageEditorCommentsSidebar_Props
 		app_convex_api.chat_messages.chat_messages_threads_list,
 		threadIds.length > 0
 			? {
-					workspaceId,
-					projectId,
+					membershipId,
 					threadIds,
 					isArchived: false,
 				}

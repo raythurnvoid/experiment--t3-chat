@@ -126,6 +126,128 @@ describe("/api/chat credit gate", () => {
 		});
 	});
 
+	test("returns 429 on the third signed-in chat request before credit or model work", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				workspaceName: "personal",
+				projectName: "home",
+			}),
+		);
+		await seed_free_product(t, "prod_chat_rate_limit_zero");
+		await seed_snapshot(t, {
+			userId: seeded.userId,
+			polarProductId: "prod_chat_rate_limit_zero",
+			balanceCents: 0,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk_chat_rate_limit_zero",
+			external_id: seeded.userId,
+			email: "chat-rate-limit@test.local",
+		});
+
+		const body = {
+			messages: [
+				{
+					id: "msg_chat_rate_limit_user",
+					role: "user",
+					parts: [{ type: "text", text: "Say one short sentence." }],
+				},
+			],
+			parentId: null,
+			mode: "ask",
+			model: "gpt-5.4-nano",
+			trigger: "submit-message",
+			clientGeneratedThreadId: "thread_chat_rate_limit_client",
+			membershipId: seeded.membershipId,
+		};
+
+		for (let i = 0; i < 2; i++) {
+			const response = await asUser.fetch("/api/chat", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(402);
+		}
+
+		const blocked = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+		const blockedBody = await blocked.json();
+
+		expect(blocked.status).toBe(429);
+		expect(blockedBody.message).toBe("Rate limit exceeded");
+		expect(typeof blockedBody.retryAfterMs).toBe("number");
+	});
+
+	test("returns 429 on the third signed-in title request before credit or model work", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				workspaceName: "personal",
+				projectName: "home",
+			}),
+		);
+		await seed_free_product(t, "prod_title_rate_limit_zero");
+		await seed_snapshot(t, {
+			userId: seeded.userId,
+			polarProductId: "prod_title_rate_limit_zero",
+			balanceCents: 0,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk_title_rate_limit_zero",
+			external_id: seeded.userId,
+			email: "title-rate-limit@test.local",
+		});
+
+		const body = {
+			membershipId: seeded.membershipId,
+			thread_id: "thread_title_rate_limit",
+			assistant_id: "system/thread_title",
+			messages: [
+				{
+					role: "user",
+					content: "Say one short sentence.",
+				},
+			],
+		};
+
+		for (let i = 0; i < 2; i++) {
+			const response = await asUser.fetch("/api/v1/runs/stream", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(402);
+		}
+
+		const blocked = await asUser.fetch("/api/v1/runs/stream", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+		const blockedBody = await blocked.json();
+
+		expect(blocked.status).toBe(429);
+		expect(blockedBody.message).toBe("Rate limit exceeded");
+		expect(typeof blockedBody.retryAfterMs).toBe("number");
+	});
+
 	test("returns 402 when an anonymous user has zero current credits", async () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) =>

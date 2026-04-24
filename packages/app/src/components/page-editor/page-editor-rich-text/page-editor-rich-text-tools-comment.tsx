@@ -31,7 +31,7 @@ export type PageEditorRichTextToolsComment_Props = {
 export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsComment_Props) {
 	const { onClose } = props;
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 
 	const createCommentsThread = useMutation(app_convex_api.chat_messages.chat_messages_threads_create);
 
@@ -78,8 +78,7 @@ export function PageEditorRichTextToolsComment(props: PageEditorRichTextToolsCom
 
 		// Create a new root message (thread) in Convex
 		createCommentsThread({
-			workspaceId,
-			projectId,
+			membershipId,
 			content: markdownContent.trim(),
 		})
 			.then((result) => {

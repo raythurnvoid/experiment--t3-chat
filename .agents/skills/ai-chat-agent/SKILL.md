@@ -48,16 +48,17 @@ For `POST /api/chat`:
 2. Load the membership row, derive the agent configuration, and validate UI messages against the full tool registry.
 3. Resolve the authenticated or anonymous app user.
 4. Resolve the existing thread or keep the optimistic client thread id for a new thread.
-5. For signed-in users, run the billing credit gate before any LLM work or new-thread creation. A denial returns HTTP `402` with `{ message: "Insufficient funds" }`.
-6. Create the thread if needed and store the optimistic client thread id on the persisted thread.
-7. Resolve the effective parent message id for persistence.
-8. Persist incoming user messages before generation.
-9. Convert stored UI messages to model messages.
-10. Run `streamText(...)` with the current tools and `activeTools`.
-11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
-12. Persist the assistant response in `onFinish`.
-13. If the thread has no title yet, generate a short title and persist it.
-14. For signed-in users with non-zero captured token usage and no stream error, emit an `ai_usage` billing event with the actual captured token cost.
+5. Rate-limit the HTTP request by user id before any LLM work.
+6. Run the billing credit gate before any LLM work or new-thread creation. A denial returns HTTP `402` with `{ message: "Insufficient funds" }`; a rate-limit denial returns HTTP `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
+7. Create the thread if needed and store the optimistic client thread id on the persisted thread.
+8. Resolve the effective parent message id for persistence.
+9. Persist incoming user messages before generation.
+10. Convert stored UI messages to model messages.
+11. Run `streamText(...)` with the current tools and `activeTools`.
+12. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
+13. Persist the assistant response in `onFinish`.
+14. If the thread has no title yet, generate a short title and persist it.
+15. With non-zero captured token usage and no stream error, emit an `ai_usage` billing event with the actual captured token cost.
 
 Non-obvious runtime details:
 
@@ -67,7 +68,7 @@ Non-obvious runtime details:
 - Thread/page access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
 - Ask mode keeps the full tool registry for UI-message validation, but removes `write_page` and `edit_page` from `activeTools` before generation.
-- Billing checks are start-time gates only. They do not reserve spend, and successful signed-in runs emit `billing_event("ai_usage")` after AI SDK reports actual token usage.
+- Billing checks are start-time gates only. They do not reserve spend, and successful runs emit `billing_event("ai_usage")` after AI SDK reports actual token usage. Anonymous usage routes through the synthetic billing snapshot instead of Polar.
 
 # Thread Access And Error Contract
 
@@ -304,7 +305,7 @@ Practical guidance:
 8. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
 9. New thread dedupe depends on persisting the optimistic client thread id.
 10. Thread titles are generated lazily and can also be streamed from the secondary title endpoint.
-11. Signed-in chat requests are credit-gated before generation and emit `ai_usage` only from captured token usage after generation; anonymous users skip billing.
+11. Chat requests are rate-limited and credit-gated before generation, then emit `ai_usage` only from captured token usage after generation. Anonymous users use the synthetic Free snapshot and local anonymous billing ingest.
 
 # Change Playbooks
 

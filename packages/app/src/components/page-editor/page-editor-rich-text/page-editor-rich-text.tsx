@@ -652,7 +652,7 @@ const PageEditorRichTextAnchoredCommentsLayer = memo(function PageEditorRichText
 ) {
 	const { commentsPortalHost, editor, isEditorReady } = props;
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 
 	const threadIdsKey = useEditorState({
 		editor,
@@ -665,8 +665,7 @@ const PageEditorRichTextAnchoredCommentsLayer = memo(function PageEditorRichText
 		app_convex_api.chat_messages.chat_messages_threads_list,
 		threadIds.length > 0
 			? {
-					workspaceId,
-					projectId,
+					membershipId,
 					threadIds,
 					isArchived: false,
 				}
@@ -727,6 +726,8 @@ type PageEditorRichTextInner_Props = {
 function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 	const { pagesYjs, pageId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const [editor, setEditor] = useState<Editor | null>(null);
 
 	const isEditorReady = pagesYjs.syncStatus === "synchronizing" || pagesYjs.syncStatus === "synchronized";
@@ -740,7 +741,7 @@ function PageEditorRichTextInner(props: PageEditorRichTextInner_Props) {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
 				const result = await app_fetch_ai_docs_contextual_prompt({
-					input: { prompt, context, previous },
+					input: { prompt, context, previous, membershipId, requestId: crypto.randomUUID() },
 					signal,
 				});
 

@@ -79,6 +79,7 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 - `generate_checkout_link` creates Polar checkout sessions and sends the current display name when the vendored Polar helper needs to create a missing customer.
 - `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then waits for the subscription webhook to update the local subscription row. `Free -> paid` is intentionally not handled there and goes through checkout instead.
 - `generate_customer_portal_url` opens the Polar customer portal.
+- Public billing actions (`generate_checkout_link`, `generate_customer_portal_url`, `change_current_subscription`, and `cancel_current_subscription`) are rate-limited after signed-in auth and before Polar session/update calls. Throttled Result callers receive `_nay.message === "Rate limit exceeded"`.
 - `bootstrap_free_subscription` creates the local Polar customer with email and display name, then creates the `Free` subscription when missing. When auth marks the user as a restored deleted account, it first uncancels an active/trialing subscription that is still pending period-end cancellation.
 - `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`, carrying the resolved display name from auth resolution and the optional restored-account billing flag.
 - `handle_polar_customer_state_update` is a thin adapter that parses the raw `customer.state_changed` webhook payload, converts it through `billing_polar_webhook_to_customer_state`, and calls `db_apply_polar_customer_state_refresh`. The helper owns the full reconcile flow: snapshot upsert from the canonical `BillingCustomerState`, period-gated monthly credit grant (optimistic meter + `monthly_credit` ingest), and customer deletion when the payload carries `deleted_at` (removes the local customer mapping, local subscription rows, and usage snapshot instead of recreating a blank snapshot). The same helper is replayed on demand by the admin `refresh_from_polar_customer_state` action.
@@ -94,6 +95,7 @@ Polar webhooks are split by data ownership:
 - `customer.updated` with `deletedAt`/`deleted_at` and `customer.deleted` remove the local customer mapping and that customer's local subscription rows by Polar customer id.
 - `customer.state_changed` updates usage snapshots and enqueues monthly credits from active subscription period data. If its raw payload has `deleted_at`, treat it as an anonymized customer deletion: remove the local customer mapping, that customer's local subscription rows, and that user's usage snapshot instead of deriving a new snapshot or enqueuing credits. Do not use this event to derive scheduled plan changes because its `CustomerState` payload does not include subscription `pendingUpdate`.
 - `customer.state_changed` is the sole trigger for enqueueing monthly recurring credits and the canonical refresh path for the local usage snapshot.
+- Do not app-rate-limit Polar webhook routes. Signature verification and Polar's delivery semantics are the gate; throttling webhooks can leave local billing state stale.
 - `subscription.active` is intentionally not handled by app-owned webhook code. Polar fires it before its customer-meter ledger is populated, so `customersGetState` from that hook would return `activeMeters: []`. Credits become visible immediately because `db_apply_polar_customer_state_refresh` writes an optimistic local meter through `db_apply_optimistic_credit_to_snapshot` in the same mutation that upserts the snapshot, before enqueueing the Polar event; the later `customer.state_changed` reconciles that meter with Polar's authoritative value once Polar's aggregation catches up (~20s).
 - The app supports at most one active subscription per user. If a `customer.state_changed` payload reports multiple `active_subscriptions`, treat that as an impossible billing state and throw instead of choosing one.
 - Store customer-level meter values (`consumedUnits`, `creditedUnits`, `balance`) on the local snapshot for every plan by resolving the canonical `Press app usage` customer meter from `active_meters`. Store `amountDueCents` from the subscription-level meter when present and `0` otherwise.
@@ -147,15 +149,25 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 - Keep the token-pricing switch local to `compute_token_usage_cost_cents` in `ai_chat.ts`. Do not recreate a shared entitlements module, exported pricing type, or helper for the current pricing table.
 - Do not store chat spend locally. Do not estimate or reserve worst-case cost. Do not stop a live stream when the balance goes below zero in the current implementation; stream cutoff is a future billing-lock feature.
 
+### Inline editor AI check and usage event
+
+[`/api/ai-docs-temp/contextual-prompt`](../../../packages/app/convex/ai_docs_temp.ts) is an authenticated, membership-scoped AI endpoint. Callers must send `membershipId` and a per-request `requestId`; the frontend obtains a Convex auth token from `AppAuthProvider` and sends it in `Authorization`.
+
+- The route rate-limits first, then checks credits with `minimumRequiredCents: 1` before `streamText` for the inline popover path or `generateText` for the Liveblocks contextual resolver JSON path.
+- On rate-limit deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
+- On credit deny it returns `402` with `{ message: "Insufficient funds" }`.
+- On successful finish/completion, it emits one `billing_event("ai_usage")` when AI SDK reports non-zero token usage. The deterministic external id is `composite_id("billing", "ai_usage", userId, "inline_ai", requestId)`, with metadata `threadId: "inline_ai"` and `messageId: requestId`.
+- Keep the current inline-AI pricing helper local to `ai_docs_temp.ts` while pricing remains hardcoded.
+
 ### Page-save check and usage event
 
-Page saves ([yjs_push_update](../../../packages/app/convex/ai_docs_temp.ts) and [save_pages_pending_edit](../../../packages/app/convex/pages_pending_edits.ts)) fail fast before the yjs push:
+Page saves ([yjs_push_update](../../../packages/app/convex/ai_docs_temp.ts), [save_pages_pending_edit](../../../packages/app/convex/pages_pending_edits.ts), and [restore_snapshot](../../../packages/app/convex/ai_docs_temp.ts)) fail fast before the yjs push or restore write:
 
 1. `billing_db_check_credits(ctx, { userId, minimumRequiredCents: 1 })` — read-only pre-flight. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
 2. Run the yjs push; obtain the new sequence.
 3. Emit the existing `billing_event("page_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "page_save", userId, pageId, yjsSequence)` and literal `metadata.amount: 1`.
 
-For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Do not reintroduce a shared `credits_PAGE_SAVE_COST_CENTS` constant for the current one-cent page-save rule; keep the literal at the call sites unless the product rule changes.
+For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_PAGE_SAVE_COST_CENTS` constant for the current one-cent page-save rule; keep the literal at the call sites unless the product rule changes.
 
 ### Anonymous users
 
@@ -277,7 +289,7 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 - **Kind:** `internalQuery`
 - **Args:** `{ userId, minimumRequiredCents }`
-- **Role:** Action-facing wrapper around `billing_db_check_credits`, used by chat HTTP flows before LLM work starts. Chat callers convert `hasCredits: false` into HTTP `402` with `{ message: "Insufficient funds" }`.
+- **Role:** Action-facing wrapper around `billing_db_check_credits`, used by chat and inline-editor HTTP flows before LLM work starts. HTTP callers convert `hasCredits: false` into `402` with `{ message: "Insufficient funds" }`.
 
 #### `billing_db_ensure_anonymous_user_usage_snapshot`
 

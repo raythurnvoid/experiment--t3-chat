@@ -36,6 +36,7 @@ import {
 	billing_enqueue_free_subscription_bootstrap,
 	billing_schedule_polar_subscription_period_end_cancellation,
 } from "./billing.ts";
+import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
 	throw convex_error({ message: "ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env" });
@@ -732,6 +733,11 @@ export const delete_current_user_account = action({
 			return Result({ _yay: null });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "account_delete", key: user._id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
 			userId: user._id,
 		});
@@ -878,6 +884,20 @@ export function users_http_routes(router: RouterForConvexModules) {
 									return { status: 401, body: { message: "Invalid token" } } as const;
 								}
 
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "auth_http",
+									key: userWithAnagraphicAndAnonToken.user._id,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
 								if (
 									authFromToken.expiresAt &&
 									authFromToken.expiresAt > Date.now() + ANONYMOUS_USERS_JWT_REFRESH_THRESHOLD_MS
@@ -908,6 +928,20 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							// Create path: no token provided, create new anonymous user
+							const rateLimit = await rate_limiter_limit_by_key(ctx, {
+								name: "auth_http",
+								key: rate_limiter_http_client_key(request),
+							});
+							if (rateLimit) {
+								return {
+									status: 429,
+									body: {
+										message: rateLimit.message,
+										retryAfterMs: rateLimit.retryAfterMs,
+									},
+								} as const;
+							}
+
 							const { jwt, userId } = await mint_anonymous_jwt(ctx);
 							return {
 								status: 200,
@@ -960,6 +994,20 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							const clerkUserId = identity.subject;
+							const rateLimit = await rate_limiter_limit_by_key(ctx, {
+								name: "auth_http",
+								key: identity.external_id ?? clerkUserId,
+							});
+							if (rateLimit) {
+								return {
+									status: 429,
+									body: {
+										message: rateLimit.message,
+										retryAfterMs: rateLimit.retryAfterMs,
+									},
+								} as const;
+							}
+
 							if (identity.external_id) {
 								const user = await ctx.runQuery(internal.users.get, {
 									userId: identity.external_id,

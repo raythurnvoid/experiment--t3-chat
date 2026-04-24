@@ -1141,3 +1141,210 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 	}
 	expect(blocked._nay.message).toBe("Rate limit exceeded");
 });
+
+test("restore_snapshot blocks Free users without enough credits before writing", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Restore Credits User",
+		email: "restore-credits-user@example.com",
+	});
+
+	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {
+		membershipId: db.membershipId,
+		parentId: pages_ROOT_ID,
+		name: "restore-credit-page",
+	});
+	if (createdPage._nay) {
+		throw new Error("Expected page creation to succeed before restore credit test");
+	}
+
+	const pageSnapshotId = await t.run(async (ctx) => {
+		const usageSnapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("byUser", (q) => q.eq("userId", db.userId))
+			.unique();
+		if (!usageSnapshot?.meter) {
+			throw new Error("Expected seeded billing snapshot");
+		}
+		await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+			meter: {
+				...usageSnapshot.meter,
+				balance: 0,
+			},
+		});
+
+		const snapshotId = await ctx.db.insert("pages_snapshots", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			pageId: createdPage._yay.pageId,
+			createdBy: db.userId,
+			archivedAt: 0,
+		});
+		await ctx.db.insert("pages_snapshots_contents", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			pageSnapshotId: snapshotId,
+			pageId: createdPage._yay.pageId,
+			content: "# restored content\n",
+		});
+
+		return snapshotId;
+	});
+
+	const restoreResult = await asUser.mutation(api.ai_docs_temp.restore_snapshot, {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+		pageSnapshotId,
+		sessionId: "restore-credit-test",
+		currentMarkdownContent: "",
+	});
+	expect(restoreResult._nay?.message).toBe("Insufficient funds");
+
+	const yjsUpdates = await t.run((ctx) =>
+		ctx.db
+			.query("pages_yjs_updates")
+			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("pageId", createdPage._yay.pageId),
+			)
+			.collect(),
+	);
+	expect(yjsUpdates).toHaveLength(0);
+});
+
+test("/api/ai-docs-temp/contextual-prompt returns 429 on the third inline AI request before model work", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => {
+		await seed_billing_snapshot_for_user(ctx, db.userId);
+		const usageSnapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("byUser", (q) => q.eq("userId", db.userId))
+			.unique();
+		if (!usageSnapshot?.meter) {
+			throw new Error("Expected seeded billing snapshot");
+		}
+		await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+			meter: {
+				...usageSnapshot.meter,
+				balance: 0,
+			},
+		});
+	});
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Inline AI Rate User",
+		email: "inline-ai-rate-user@example.com",
+	});
+
+	for (let i = 0; i < 2; i++) {
+		const response = await asUser.fetch("/api/ai-docs-temp/contextual-prompt", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				prompt: "Continue this sentence",
+				membershipId: db.membershipId,
+				requestId: `inline_ai_rate_${i}`,
+			}),
+		});
+		expect(response.status).toBe(402);
+	}
+
+	const blocked = await asUser.fetch("/api/ai-docs-temp/contextual-prompt", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			prompt: "Continue this sentence",
+			membershipId: db.membershipId,
+			requestId: "inline_ai_rate_blocked",
+		}),
+	});
+	const blockedBody = await blocked.json();
+
+	expect(blocked.status).toBe(429);
+	expect(blockedBody.message).toBe("Rate limit exceeded");
+	expect(typeof blockedBody.retryAfterMs).toBe("number");
+});
+
+test("restore_snapshot emits page_save usage for the restored Yjs sequence", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Restore Billing User",
+		email: "restore-billing-user@example.com",
+	});
+
+	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {
+		membershipId: db.membershipId,
+		parentId: pages_ROOT_ID,
+		name: "restore-billing-page",
+	});
+	if (createdPage._nay) {
+		throw new Error("Expected page creation to succeed before restore billing test");
+	}
+
+	const pageSnapshotId = await t.run(async (ctx) => {
+		const snapshotId = await ctx.db.insert("pages_snapshots", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			pageId: createdPage._yay.pageId,
+			createdBy: db.userId,
+			archivedAt: 0,
+		});
+		await ctx.db.insert("pages_snapshots_contents", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			pageSnapshotId: snapshotId,
+			pageId: createdPage._yay.pageId,
+			content: "# restored content\n",
+		});
+
+		return snapshotId;
+	});
+
+	const restoreResult = await asUser.mutation(api.ai_docs_temp.restore_snapshot, {
+		membershipId: db.membershipId,
+		pageId: createdPage._yay.pageId,
+		pageSnapshotId,
+		sessionId: "restore-billing-test",
+		currentMarkdownContent: "",
+	});
+	if (restoreResult._nay) {
+		throw new Error(`Expected restore to succeed, got: ${restoreResult._nay.message}`);
+	}
+
+	const yjsUpdates = await t.run((ctx) =>
+		ctx.db
+			.query("pages_yjs_updates")
+			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("pageId", createdPage._yay.pageId),
+			)
+			.collect(),
+	);
+	expect(yjsUpdates).toHaveLength(1);
+	expect(vi.mocked(Workpool.prototype.enqueueAction)).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+		events: [
+			expect.objectContaining({
+				name: "page_save",
+				externalCustomerId: db.userId,
+				externalId: `page_save::${db.userId}::${createdPage._yay.pageId}::${yjsUpdates[0]?.sequence}`,
+				metadata: expect.objectContaining({
+					amount: 1,
+					pageId: createdPage._yay.pageId,
+					yjsSequence: String(yjsUpdates[0]?.sequence),
+				}),
+			}),
+		],
+	});
+});

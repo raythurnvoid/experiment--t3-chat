@@ -32,6 +32,8 @@ import { MyIcon } from "@/components/my-icon.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { Editor } from "@tiptap/core";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 
 const OPTIONS = {
 	transform: [
@@ -340,15 +342,33 @@ export type PageEditorRichTextToolsInlineAi_Props = {
 export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsInlineAi_Props) {
 	const { editor, onDiscard } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const [inputValue, setInputValue] = useState("");
 	const formRef = useRef<HTMLFormElement>(null);
 
 	const completionInst = useCompletion({
 		api: app_fetch_main_api_url("/api/ai-docs-temp/contextual-prompt"),
 		fetch: async (input, requestInit) => {
-			const response = await fetch(input, requestInit);
-			if (response.status === 429) {
-				throw new Error("You have reached your request limit for the day.");
+			const headers = new Headers(requestInit?.headers);
+			const token = await AppAuthProvider.getToken();
+			if (token) {
+				headers.set("Authorization", `Bearer ${token}`);
+			}
+
+			const response = await fetch(input, { ...requestInit, headers });
+
+			if (response.status === 402 || response.status === 429) {
+				const body = await response
+					.clone()
+					.json()
+					.catch(() => null);
+
+				if (response.status === 402) {
+					throw new Error(body?.message ?? "Insufficient funds");
+				}
+
+				throw new Error(body?.message ?? "You have reached your request limit. Try again shortly.");
 			}
 			return response;
 		},
@@ -367,7 +387,12 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 
 		completionInst
 			.complete(args.text, {
-				body: { option: args.option, command: args.command },
+				body: {
+					option: args.option,
+					command: args.command,
+					membershipId,
+					requestId: crypto.randomUUID(),
+				},
 			})
 			.catch((e) => {
 				console.error(e);
@@ -383,9 +408,20 @@ export function PageEditorRichTextToolsInlineAi(props: PageEditorRichTextToolsIn
 		}
 
 		if (completionInst.completion) {
-			return completionInst.complete(completionInst.completion, {
-				body: { option: "zap", command: inputValue },
-			});
+			completionInst
+				.complete(completionInst.completion, {
+					body: {
+						option: "zap",
+						command: inputValue,
+						membershipId,
+						requestId: crypto.randomUUID(),
+					},
+				})
+				.catch((error) => {
+					console.error(error);
+					toast.error(error.message);
+				});
+			return;
 		}
 
 		const slice = editor.state.selection.content();

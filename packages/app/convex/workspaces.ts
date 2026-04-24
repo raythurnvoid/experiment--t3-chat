@@ -16,6 +16,7 @@ import {
 	workspaces_validate_name,
 } from "../server/workspaces.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 /**
  * TODO: to be implemented
@@ -305,6 +306,11 @@ export const create_workspace = mutation({
 			});
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		return await workspaces_db_create(ctx, {
 			userId: user.id,
 			name: args.name,
@@ -342,6 +348,11 @@ export const create_project = mutation({
 					message: descriptionResult._nay.message,
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		return await workspaces_db_create_project(ctx, {
@@ -436,6 +447,11 @@ export const add_user_to_workspace_project = mutation({
 					message: "Permission denied",
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.insert("workspaces_projects_users", {
@@ -546,6 +562,11 @@ export const edit_workspace = mutation({
 					message: "Workspace name already exists",
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.patch("workspaces", args.workspaceId, {
@@ -687,6 +708,11 @@ export const edit_project = mutation({
 			}
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		await ctx.db.patch("workspaces_projects", args.projectId, {
 			name,
 			description,
@@ -761,6 +787,11 @@ export const delete_workspace = mutation({
 					message: "Permission denied",
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const workspaceProjects = await ctx.db
@@ -896,6 +927,11 @@ export const delete_project = mutation({
 					message: "Permission denied",
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const affectedUserIds = new Set<Id<"users">>(projectUserLookup.map((projectUser) => projectUser.userId));

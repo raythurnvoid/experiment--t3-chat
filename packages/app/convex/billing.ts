@@ -40,6 +40,7 @@ import {
 } from "../server/server-utils.ts";
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
 import app_convex_schema from "./schema.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 if (!process.env.POLAR_SERVER) {
 	throw new Error("POLAR_SERVER is not set");
@@ -63,8 +64,6 @@ export const billing = new Polar<DataModel>(components.polar, {
 	},
 	server: POLAR_SERVER,
 });
-
-const billing_api = billing.api();
 
 const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
 	maxParallelism: 1,
@@ -912,6 +911,11 @@ export const generate_checkout_link = action({
 			return Result({ _nay: { message: "Invalid checkout product" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const checkoutSessionResult = await Result_try_async(() =>
 			billing.createCheckoutSession(ctx, {
 				productIds: [product.id],
@@ -956,6 +960,11 @@ export const generate_customer_portal_url = action({
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!user || user.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
@@ -1402,6 +1411,11 @@ export const change_current_subscription = action({
 			return Result({ _nay: { message: "Plan changes between equivalent tiers are not supported" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
 		const updateResult = await subscriptionsUpdate(billing.polar, {
 			id: currentSubscription.id,
@@ -1437,7 +1451,47 @@ export const change_current_subscription = action({
 	},
 });
 
-export const cancel_current_subscription = billing_api.cancelCurrentSubscription;
+export const cancel_current_subscription = action({
+	args: {
+		revokeImmediately: v.optional(v.boolean()),
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!user || user.kind !== "signed_in") {
+			return Result({ _nay: { message: "A signed-in account is required for billing" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const cancelResult = await Result_try_async(() =>
+			billing.cancelSubscription(ctx, { revokeImmediately: args.revokeImmediately }),
+		);
+		if (cancelResult._nay) {
+			const message = cancelResult._nay.message;
+			if (message === "Subscription not found") {
+				return Result({ _nay: { message: "Subscription not found" } });
+			}
+			if (message === "Subscription is not active") {
+				return Result({ _nay: { message: "Subscription is not active" } });
+			}
+
+			return Result({
+				_nay: {
+					message: "Failed to cancel current subscription",
+					cause: cancelResult._nay,
+				},
+			});
+		}
+
+		return Result({ _yay: null });
+	},
+});
 
 // #region event ingestion
 const billing_event_validator = v.union(

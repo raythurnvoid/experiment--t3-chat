@@ -11,6 +11,7 @@ import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
 import { composite_id } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	pages_db_cancel_pending_edit_cleanup_tasks,
 	pages_db_get_pending_edit,
@@ -464,6 +465,11 @@ export const upsert_pages_pending_edit_updates = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		return await pages_pending_edit_upsert_updates(ctx, {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
@@ -577,6 +583,11 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 					cause: branchDocsHaveChanges._nay,
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		if (!branchDocsHaveChanges._yay) {
@@ -837,6 +848,11 @@ export const save_pages_pending_edit = mutation({
 					message: "Page Yjs content not found",
 				},
 			});
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: user._id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const reconstructedBranchDocs = pages_pending_edit_reconstruct_branch_docs(pendingEdit);

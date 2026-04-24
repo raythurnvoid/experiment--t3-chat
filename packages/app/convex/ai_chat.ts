@@ -43,6 +43,7 @@ import type { RouterForConvexModules } from "./http.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 export {
 	remove_pages_pending_edit_if_expired,
@@ -247,6 +248,11 @@ export const thread_create = mutation({
 
 		const now = Date.now();
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const threadId = await ctx.db.insert("ai_chat_threads", {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
@@ -386,6 +392,11 @@ export const thread_branch = mutation({
 		const title = `${baseTitle} (${maxSuffix + 1})`;
 		const clientGeneratedId = get_id_generator("ai_thread")();
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const newThreadId = await ctx.db.insert("ai_chat_threads", {
 			workspaceId,
 			projectId,
@@ -503,6 +514,11 @@ export const thread_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		await ctx.db.patch(
 			"ai_chat_threads",
 			threadId,
@@ -566,6 +582,11 @@ export const thread_archive = mutation({
 		}
 
 		const now = Date.now();
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
 
 		await ctx.db.patch("ai_chat_threads", args.threadId, {
 			archived: true,
@@ -674,6 +695,15 @@ export const thread_messages_add = mutation({
 		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
 
 		const now = Date.now();
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "ai_chat_message_write",
+			key: user.id,
+			count: Math.max(args.messages.length, 1),
+		});
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
 
 		const ids: Array<app_convex_Id<"ai_chat_threads_messages_aisdk_5">> = [];
 		let nextParentId = parentId;
@@ -896,6 +926,20 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 										);
 									}
+								}
+
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_chat_http",
+									key: membership.userId,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
 								}
 
 								// Check credits after cheap request validation but before any LLM work.
@@ -1458,6 +1502,20 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								const billingEventId = composite_id("billing", "ai_usage", membership.userId, thread_id, "title");
+
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_chat_http",
+									key: membership.userId,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
 
 								// Check credits before title generation. One title per thread; the literal
 								// "title" discriminator keeps the usage event id stable across HTTP retries.

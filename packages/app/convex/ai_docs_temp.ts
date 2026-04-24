@@ -17,7 +17,7 @@ import {
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator, type RouteSpec } from "convex/server";
-import { streamText, smoothStream } from "ai";
+import { generateText, streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
 	path_extract_segments_from,
@@ -56,7 +56,7 @@ import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import type { Editor } from "@tiptap/core";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema from "./schema.ts";
-import { internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
@@ -64,7 +64,60 @@ import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
 import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
-import { rate_limiter } from "./rate_limiter.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+
+const pages_INLINE_AI_MODEL_ID = "gpt-5-mini" as const;
+
+function pages_compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
+	switch (args.modelId) {
+		case "gpt-5.4-nano":
+		case "gpt-4.1-nano":
+			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
+		case "gpt-5.4-mini":
+		case pages_INLINE_AI_MODEL_ID:
+		default:
+			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
+	}
+}
+
+async function pages_ingest_inline_ai_usage_event(
+	ctx: ActionCtx | MutationCtx,
+	args: {
+		user: Doc<"users">;
+		requestId: string;
+		inputTokens: number;
+		outputTokens: number;
+	},
+) {
+	if (args.inputTokens + args.outputTokens === 0) {
+		return;
+	}
+
+	await billing_ingest_events(ctx, {
+		userEvents: [
+			{
+				user: args.user,
+				event: billing_event({
+					name: "ai_usage",
+					externalCustomerId: args.user._id,
+					externalId: composite_id("billing", "ai_usage", args.user._id, "inline_ai", args.requestId),
+					metadata: {
+						amount: pages_compute_token_usage_cost_cents({
+							modelId: pages_INLINE_AI_MODEL_ID,
+							inputTokens: args.inputTokens,
+							outputTokens: args.outputTokens,
+						}),
+						modelId: pages_INLINE_AI_MODEL_ID,
+						inputTokens: args.inputTokens,
+						outputTokens: args.outputTokens,
+						threadId: "inline_ai",
+						messageId: args.requestId,
+					},
+				}),
+			},
+		],
+	});
+}
 
 function pages_materialized_path_join(parentPath: string, pageName: string) {
 	if (parentPath === "/") {
@@ -631,6 +684,11 @@ export const create_page = mutation({
 			return nameValidationResult;
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const page = await do_create_page(ctx, {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
@@ -663,6 +721,11 @@ export const create_page_quick = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		// Ensure ".tmp" under root exists
@@ -778,6 +841,11 @@ export const rename_page = mutation({
 			}
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		await ctx.db.patch("pages", args.pageId, {
 			name: args.name,
 			path: renamedPath,
@@ -870,6 +938,13 @@ export const move_pages = mutation({
 						message: "Path already exists",
 					},
 				});
+			}
+		}
+
+		if (pagesToMove.length > 0) {
+			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+			if (rateLimit) {
+				return Result({ _nay: { message: rateLimit.message } });
 			}
 		}
 
@@ -972,6 +1047,13 @@ export const archive_pages = mutation({
 					continue;
 				}
 				pageIdsToArchive.add(descendantPage._id);
+			}
+		}
+
+		if (pageIdsToArchive.size > 0) {
+			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+			if (rateLimit) {
+				return Result({ _nay: { message: rateLimit.message } });
 			}
 		}
 
@@ -1269,6 +1351,11 @@ export const unarchive_pages = mutation({
 		}
 
 		// Preconditions passed, apply all patches.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const updatedAt = Date.now();
 		await Promise.all(
 			plans.map(async (plan) =>
@@ -2030,6 +2117,11 @@ export const create_home_page = mutation({
 			return Result({ _yay: { pageId: page._id } });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		// Create homepage with empty name
 		const result = await do_create_page(ctx, {
 			workspaceId: membership.workspaceId,
@@ -2227,6 +2319,11 @@ export const archive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		await ctx.db.patch("pages_snapshots", args.pageSnapshotId, {
 			archivedAt: Date.now(),
 		});
@@ -2257,6 +2354,11 @@ export const unarchive_snapshot = mutation({
 		const snapshot = await ctx.db.get("pages_snapshots", args.pageSnapshotId);
 		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
 			return Result({ _yay: null });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.patch("pages_snapshots", args.pageSnapshotId, {
@@ -2319,7 +2421,7 @@ async function write_markdown_to_yjs_sync(
 		.first();
 
 	if (!pageYjsData) {
-		return;
+		return null;
 	}
 
 	// Convert markdown to TipTap JSON
@@ -2341,7 +2443,7 @@ async function write_markdown_to_yjs_sync(
 	});
 
 	if (!diffUpdate) {
-		return;
+		return null;
 	}
 
 	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([
@@ -2377,6 +2479,8 @@ async function write_markdown_to_yjs_sync(
 			updatedBy: args.userId,
 		}),
 	]);
+
+	return newSequenceData.lastSequence;
 }
 
 export const yjs_get_doc_last_snapshot = query({
@@ -2605,20 +2709,12 @@ export async function pages_db_yjs_push_update(
 > {
 	const now = Date.now();
 
-	const limit = await rate_limiter.limit(ctx, "pages_yjs_push_update", { key: args.userId });
-	if (!limit.ok) {
-		console.warn("[ai_docs_temp.pages_db_yjs_push_update] Rate limit exceeded", {
-			userId: args.userId,
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			pageId: args.pageId,
-			sessionId: args.sessionId,
-		});
-
+	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_yjs_push_update", key: args.userId });
+	if (rateLimit) {
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "Rate limit exceeded",
+				message: rateLimit.message,
 			},
 		});
 	}
@@ -2889,6 +2985,28 @@ export const restore_snapshot = mutation({
 			});
 		}
 
+		const userDoc = await ctx.db.get("users", user.id);
+		if (!userDoc) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: user.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const check = await billing_db_check_credits(ctx, {
+			userId: user.id,
+			minimumRequiredCents: 1,
+		});
+		if (!check._yay.hasCredits) {
+			return Result({
+				_nay: {
+					message: "Insufficient funds",
+				},
+			});
+		}
+
 		const now = Date.now();
 		const createdBy = user.id;
 		const updatedBy = user.name;
@@ -2896,7 +3014,7 @@ export const restore_snapshot = mutation({
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
 		// so the user can revert to it if needed.
-		await Promise.all([
+		const [, , , restoredYjsSequence] = await Promise.all([
 			// Store current state as a backup snapshot
 			store_version_snapshot(ctx, {
 				workspaceId: membership.workspaceId,
@@ -2970,6 +3088,28 @@ export const restore_snapshot = mutation({
 					name: "nay",
 					message,
 				},
+			});
+		}
+
+		if (restoredYjsSequence !== null) {
+			await billing_ingest_events(ctx, {
+				userEvents: [
+					{
+						user: userDoc,
+						event: billing_event({
+							name: "page_save",
+							externalCustomerId: userDoc._id,
+							externalId: composite_id("billing", "page_save", userDoc._id, args.pageId, restoredYjsSequence),
+							metadata: {
+								amount: 1,
+								workspaceId: membership.workspaceId,
+								projectId: membership.projectId,
+								pageId: args.pageId,
+								yjsSequence: String(restoredYjsSequence),
+							},
+						}),
+					},
+				],
 			});
 		}
 
@@ -3065,6 +3205,24 @@ export function pages_http_routes(router: RouterForConvexModules) {
 							prompt: z.string(),
 							option: z.string().optional(),
 							command: z.string().optional(),
+							context: z
+								.object({
+									beforeSelection: z.string(),
+									selection: z.string(),
+									afterSelection: z.string(),
+								})
+								.optional(),
+							previous: z
+								.object({
+									prompt: z.string(),
+									response: z.object({
+										type: z.enum(["insert", "replace", "other"]).optional(),
+										text: z.string(),
+									}),
+								})
+								.optional(),
+							membershipId: z.string(),
+							requestId: z.string(),
 						});
 
 						type SearchParams = never;
@@ -3082,7 +3240,7 @@ export function pages_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const { prompt, option, command } = body._yay;
+								const { prompt, option, command, context, previous, membershipId, requestId } = body._yay;
 
 								if (!prompt || typeof prompt !== "string") {
 									return {
@@ -3093,61 +3251,169 @@ export function pages_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								// Create appropriate system and user prompts based on option (matching liveblocks pattern)
+								const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+								if (!userAuth) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+
+								const [user, membership] = await Promise.all([
+									ctx.runQuery(internal.users.get, { userId: userAuth.id }),
+									ctx.runQuery(api.workspaces.get_membership_from_string, { membershipId }),
+								]);
+								if (!user) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+								if (!membership || membership.userId !== user._id) {
+									return {
+										status: 403,
+										body: {
+											message: "Unauthorized",
+										},
+									} as const;
+								}
+
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_inline_http",
+									key: user._id,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
+								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+									userId: user._id,
+									minimumRequiredCents: 1,
+								});
+								if (!creditCheck._yay.hasCredits) {
+									return {
+										status: 402,
+										body: {
+											message: "Insufficient funds",
+										},
+									} as const;
+								}
+
+								// Use the Liveblocks contextual shape when editor context is present; the inline popover path
+								// omits context and consumes the streaming response below.
 								let systemPrompt = "";
 								let userPrompt = "";
 
-								switch (option) {
-									case "continue":
-										systemPrompt =
-											"You are an AI writing assistant that continues existing text based on context from prior text. " +
-											"Give more weight/priority to the later characters than the beginning ones. " +
-											"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
-											"Use Markdown formatting when appropriate.";
-										userPrompt = prompt;
-										break;
-									case "improve":
-										systemPrompt =
-											"You are an AI writing assistant that improves existing text. " +
-											"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
-											"Use Markdown formatting when appropriate.";
-										userPrompt = `The existing text is: ${prompt}`;
-										break;
-									case "shorter":
-										systemPrompt =
-											"You are an AI writing assistant that shortens existing text. " +
-											"Use Markdown formatting when appropriate.";
-										userPrompt = `The existing text is: ${prompt}`;
-										break;
-									case "longer":
-										systemPrompt =
-											"You are an AI writing assistant that lengthens existing text. " +
-											"Use Markdown formatting when appropriate.";
-										userPrompt = `The existing text is: ${prompt}`;
-										break;
-									case "fix":
-										systemPrompt =
-											"You are an AI writing assistant that fixes grammar and spelling errors in existing text. " +
-											"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
-											"Use Markdown formatting when appropriate.";
-										userPrompt = `The existing text is: ${prompt}`;
-										break;
-									case "zap":
-										systemPrompt =
-											"You area an AI writing assistant that generates text based on a prompt. " +
-											"You take an input from the user and a command for manipulating the text. " +
-											"Use Markdown formatting when appropriate.";
-										userPrompt = `For this text: ${prompt}. You have to respect the command: ${command}`;
-										break;
-									default:
-										systemPrompt =
-											"You are an AI writing assistant. Help with the given text based on the user's needs.";
-										userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
+								if (context) {
+									systemPrompt =
+										"You are an AI writing assistant for a rich text editor. " +
+										"Return only the text that should be inserted or used as the replacement. " +
+										"Use Markdown formatting when appropriate.";
+									userPrompt = [
+										`Instruction: ${prompt}`,
+										`Before selection:\n${context.beforeSelection || "(empty)"}`,
+										`Selected text:\n${context.selection || "(empty)"}`,
+										`After selection:\n${context.afterSelection || "(empty)"}`,
+										previous
+											? `Previous instruction:\n${previous.prompt}\n\nPrevious response:\n${previous.response.text}`
+											: null,
+									]
+										.filter((value) => value !== null)
+										.join("\n\n");
+								} else {
+									switch (option) {
+										case "continue":
+											systemPrompt =
+												"You are an AI writing assistant that continues existing text based on context from prior text. " +
+												"Give more weight/priority to the later characters than the beginning ones. " +
+												"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = prompt;
+											break;
+										case "improve":
+											systemPrompt =
+												"You are an AI writing assistant that improves existing text. " +
+												"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "shorter":
+											systemPrompt =
+												"You are an AI writing assistant that shortens existing text. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "longer":
+											systemPrompt =
+												"You are an AI writing assistant that lengthens existing text. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "fix":
+											systemPrompt =
+												"You are an AI writing assistant that fixes grammar and spelling errors in existing text. " +
+												"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "zap":
+											systemPrompt =
+												"You are an AI writing assistant that generates text based on a prompt. " +
+												"You take an input from the user and a command for manipulating the text. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `For this text: ${prompt}. You have to respect the command: ${command}`;
+											break;
+										default:
+											systemPrompt =
+												"You are an AI writing assistant. Help with the given text based on the user's needs.";
+											userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
+									}
+								}
+
+								if (context) {
+									const result = await generateText({
+										model: openai(pages_INLINE_AI_MODEL_ID),
+										system: systemPrompt,
+										messages: [
+											{
+												role: "user",
+												content: userPrompt,
+											},
+										],
+										temperature: 0.7,
+										maxOutputTokens: 500,
+										abortSignal: request.signal,
+									});
+
+									await pages_ingest_inline_ai_usage_event(ctx, {
+										user,
+										requestId,
+										inputTokens: result.totalUsage.inputTokens ?? 0,
+										outputTokens: result.totalUsage.outputTokens ?? 0,
+									});
+
+									return {
+										status: 200,
+										body: {
+											type: context.selection.trim() ? "replace" : "insert",
+											text: result.text,
+										},
+									} as const;
 								}
 
 								// Generate streaming completion using AI SDK v5 UI message stream response
 								const result = streamText({
-									model: openai("gpt-5-mini"),
+									model: openai(pages_INLINE_AI_MODEL_ID),
 									system: systemPrompt,
 									messages: [
 										{
@@ -3160,6 +3426,15 @@ export function pages_http_routes(router: RouterForConvexModules) {
 									experimental_transform: smoothStream({
 										delayInMs: 100,
 									}),
+									abortSignal: request.signal,
+									onFinish: async ({ totalUsage }) => {
+										await pages_ingest_inline_ai_usage_event(ctx, {
+											user,
+											requestId,
+											inputTokens: totalUsage.inputTokens ?? 0,
+											outputTokens: totalUsage.outputTokens ?? 0,
+										});
+									},
 								});
 
 								return {
@@ -3183,7 +3458,7 @@ export function pages_http_routes(router: RouterForConvexModules) {
 							handler: httpAction(async (ctx, request) => {
 								const result = await handler(ctx, request);
 
-								if (result.status === 200) {
+								if (result.status === 200 && "toUIMessageStreamResponse" in result.body) {
 									return result.body.toUIMessageStreamResponse({
 										onError: (error) => {
 											console.error("AI generation error:", error);

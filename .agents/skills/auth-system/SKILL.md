@@ -98,6 +98,7 @@ Routes implemented in: [users.ts](../../../packages/app/convex/users.ts)
   - extract user id from JWT
   - verify the provided token matches the stored token for that user
   - issue a new JWT and store it on the user record
+- The create path is rate-limited by forwarded client IP headers with a stable fallback before minting a user/token. The refresh path is rate-limited by the resolved anonymous user id before reissuing a token. On deny the route returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
 
 Anonymous JWT properties:
 
@@ -116,6 +117,7 @@ Exposes public JWK(s) for the anonymous JWT signing key so JWT verifiers can val
 Purpose: ensure a Clerk identity is linked to a Convex user id, and ensure Clerk `external_id` is set.
 
 - Requires a valid Clerk-authenticated request (`ctx.auth.getUserIdentity()` must exist).
+- The route rate-limits by `identity.external_id` when present, otherwise by the Clerk subject, before returning or mutating user state. On deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
 - If `identity.external_id` already exists, returns it.
 - Otherwise:
   - calls internal mutation `internal.users.resolve_user` to find/create/link the Convex user
@@ -179,6 +181,7 @@ Relevant files:
 - apply the local app tombstone first
 - then attempt Clerk cleanup as best-effort follow-up
 - do not fail the app-local deletion just because Clerk deletion failed
+- rate-limit the user-facing action by current user id before starting local deletion, Clerk cleanup, or billing cancellation work. Result callers receive `_nay.message === "Rate limit exceeded"` when throttled.
 
 Related files:
 

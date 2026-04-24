@@ -26,6 +26,7 @@ import {
 } from "./page-editor-rich-text/page-editor-rich-text-comment-composer.tsx";
 import { useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 
 const comment_id_pattern = /^[a-z0-9]{32}$/;
 
@@ -190,6 +191,8 @@ type PageEditorCommentsThreadForm_Props = {
 function PageEditorCommentsThreadForm(props: PageEditorCommentsThreadForm_Props) {
 	const { threadId, onSubmit } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const addMessage = useMutation(app_convex_api.chat_messages.chat_messages_add);
 
 	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
@@ -232,6 +235,7 @@ function PageEditorCommentsThreadForm(props: PageEditorCommentsThreadForm_Props)
 
 		// Add new message to thread
 		addMessage({
+			membershipId,
 			rootId: threadId,
 			content: markdownContent.trim(),
 		})
@@ -365,6 +369,8 @@ export type PageEditorCommentsThread_Props = {
 export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) {
 	const { ref, className, thread, open, hidden, onToggle, onClick } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
+
 	const renderPromise = useRenderPromise();
 
 	const composerRef = useRef<PageEditorRichTextCommentComposer_Ref | null>(null);
@@ -377,6 +383,7 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 		app_convex_api.chat_messages.chat_messages_list,
 		open
 			? {
+					membershipId,
 					threadId: thread.id,
 					limit: 100,
 				}
@@ -413,8 +420,13 @@ export function PageEditorCommentsThread(props: PageEditorCommentsThread_Props) 
 
 		setIsArchiving(true);
 
-		archiveThread({ messageId: thread.id })
-			.then(() => {
+		archiveThread({ membershipId, messageId: thread.id })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message ?? "Failed to resolve comment");
+					return;
+				}
+
 				toast.success("Marked as resolved");
 			})
 			.catch((e) => {

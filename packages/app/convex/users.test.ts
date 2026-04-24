@@ -615,6 +615,42 @@ describe("resolve_user", () => {
 		expect(after.anagraphic?.email).toBe("resolve-anonymous-email@test.local");
 	});
 
+	test("rate-limits anonymous user creation by forwarded client key", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_rate_limit_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		for (let i = 0; i < 2; i++) {
+			const response = await t.fetch("/api/auth/anonymous", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-forwarded-for": "203.0.113.10",
+				},
+				body: JSON.stringify({}),
+			});
+			expect(response.status).toBe(200);
+		}
+
+		const blocked = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-forwarded-for": "203.0.113.10",
+			},
+			body: JSON.stringify({}),
+		});
+		const blockedBody = await blocked.json();
+		const users = await t.run((ctx) => ctx.db.query("users").collect());
+
+		expect(blocked.status).toBe(429);
+		expect(blockedBody.message).toBe("Rate limit exceeded");
+		expect(typeof blockedBody.retryAfterMs).toBe("number");
+		expect(users).toHaveLength(2);
+	});
+
 	test("returns a conflict when another live user already owns the email and leaves the anonymous user untouched", async () => {
 		const t = test_convex();
 		const existingUser = await t.run((ctx) =>
