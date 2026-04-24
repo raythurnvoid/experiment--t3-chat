@@ -90,3 +90,6 @@
 	path = packages/app/vendor/rate-limiter
 	url = https://github.com/raythurnvoid/rate-limiter
 	branch = rt0-updates
+[submodule "references-submodules/action-retrier"]
+	path = references-submodules/action-retrier
+	url = https://github.com/get-convex/action-retrier.git

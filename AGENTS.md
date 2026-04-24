@@ -189,6 +189,8 @@ All vendored and reference submodule paths are listed below in this single secti
   - Helpers:
     - [references-submodules/convex-helpers/](references-submodules/convex-helpers)
     - [package docs](references-submodules/convex-helpers/packages/convex-helpers/README.md)
+  - Components:
+    - [references-submodules/action-retrier/](references-submodules/action-retrier) - Action Retrier component (`@convex-dev/action-retrier`)
   - Example apps / templates:
     - [references-submodules/convex-demos/](references-submodules/convex-demos)
     - [references-submodules/convex-tutorial/](references-submodules/convex-tutorial)

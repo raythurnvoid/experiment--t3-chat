@@ -30,6 +30,7 @@ They are used for scraping/reading documentation and source code during developm
 - Convex TypeScript/JS SDK + CLI: `references-submodules/convex-js`
 - Convex helpers (community utilities): `references-submodules/convex-helpers`
   - Package docs: `references-submodules/convex-helpers/packages/convex-helpers/README.md`
+- Convex Action Retrier component: `references-submodules/action-retrier`
 - Convex demos: `references-submodules/convex-demos`
 - Convex tutorial starter: `references-submodules/convex-tutorial`
 - Convex tour chat sample: `references-submodules/convex-tour-chat`
