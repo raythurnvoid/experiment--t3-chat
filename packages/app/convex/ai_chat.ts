@@ -162,7 +162,7 @@ export const threads_list = query({
 
 		const threads_query = ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_last_message_at", (q) =>
+			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("archived", archived),
 			);
 
@@ -337,14 +337,14 @@ export const thread_branch = mutation({
 
 		const unarchivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_last_message_at", (q) =>
+			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", false),
 			)
 			.collect();
 
 		const archivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_last_message_at", (q) =>
+			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", true),
 			)
 			.collect();

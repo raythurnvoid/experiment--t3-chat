@@ -106,7 +106,7 @@ function createUsageSnapshot(args?: {
 
 function mockBillingQueries(args: {
 	subscription: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_current_user_subscription>;
-	billingUsageSnapshot: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot>;
+	billingUsageSnapshot: app_convex_FunctionReturnType<typeof app_convex_api.billing.get_usage_snapshot> | undefined;
 }) {
 	const queryResults = [args.subscription, args.billingUsageSnapshot];
 	let callIndex = 0;

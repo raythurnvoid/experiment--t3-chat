@@ -412,7 +412,7 @@ export const remove_pages_pending_edit_if_expired = internalMutation({
 		// created the task, treat this run as stale and do not delete the newer pending state.
 		const cleanupTasks = await ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 			.collect();
 
 		const matchingCleanupTasks = cleanupTasks.filter(

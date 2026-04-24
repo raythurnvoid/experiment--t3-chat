@@ -796,7 +796,7 @@ export const delete_workspace = mutation({
 			const limitDefinition = user_limits.EXTRA_WORKSPACES;
 			const limit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("by_user_limit_name", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
+				.withIndex("by_user_limitName", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
 				.first();
 
 			if (limit && limit.usedCount > 0) {
@@ -909,7 +909,7 @@ export const delete_project = mutation({
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
+			.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
 			.first();
 
 		if (limit && limit.usedCount > 0) {

@@ -37,7 +37,7 @@ afterEach(() => {
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("by_userId", (q) => q.eq("userId", userId))
+		.withIndex("by_user", (q) => q.eq("userId", userId))
 		.unique();
 	if (usageSnapshot) return;
 
@@ -222,7 +222,7 @@ async function read_page_markdown_from_yjs(args: {
 
 	const updates = await ctx.db
 		.query("pages_yjs_updates")
-		.withIndex("by_workspace_project_page_id_sequence", (q) =>
+		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("page_id", page._id),
 		)
 		.order("asc")
@@ -279,7 +279,7 @@ async function read_page_yjs_state(args: {
 		ctx.db.get("pages_yjs_docs_last_sequences", page.yjsLastSequenceId),
 		ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("by_workspace_project_page_id_sequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspace_id", workspaceId).eq("project_id", projectId).eq("page_id", page._id),
 			)
 			.order("asc")
@@ -371,7 +371,7 @@ function read_pending_row_markdown_state(args: {
 async function list_pending_edit_cleanup_tasks(args: { ctx: MutationCtx; pendingEditId: Id<"pages_pending_edits"> }) {
 	return await args.ctx.db
 		.query("pages_pending_edits_cleanup_tasks")
-		.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+		.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 		.collect();
 }
 
@@ -1300,7 +1300,7 @@ describe("save_pages_pending_edit", () => {
 		await t.run(async (ctx) => {
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", seeded.userId))
+				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 				.unique();
 			if (!usageSnapshot?.meter) {
 				throw new Error("Expected seeded billing snapshot meter");
@@ -1363,7 +1363,7 @@ describe("save_pages_pending_edit", () => {
 			// Replace the signed-in billing snapshot with an anonymous one and drain it.
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", result.userId))
+				.withIndex("by_user", (q) => q.eq("userId", result.userId))
 				.unique();
 			if (usageSnapshot) await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
 			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: result.userId, now: Date.now() });
@@ -1438,7 +1438,7 @@ describe("save_pages_pending_edit", () => {
 			});
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", result.userId))
+				.withIndex("by_user", (q) => q.eq("userId", result.userId))
 				.unique();
 			if (usageSnapshot) await ctx.db.delete("billing_usage_snapshots", usageSnapshot._id);
 			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId: result.userId, now: Date.now() });
@@ -1475,7 +1475,7 @@ describe("save_pages_pending_edit", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("by_userId", (q) => q.eq("userId", seeded.userId))
+				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
@@ -1548,7 +1548,7 @@ describe("save_pages_pending_edit", () => {
 		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+				.withIndex("by_workspace_project_page_sequence", (q) =>
 					q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 				)
 				.order("asc")
@@ -1961,7 +1961,7 @@ describe("save_pages_pending_edit", () => {
 		const yjsUpdatesBeforeSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+				.withIndex("by_workspace_project_page_sequence", (q) =>
 					q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 				)
 				.collect(),
@@ -2001,13 +2001,13 @@ describe("save_pages_pending_edit", () => {
 			Promise.all([
 				ctx.db
 					.query("pages_yjs_updates")
-					.withIndex("by_workspace_project_page_id_sequence", (q) =>
+					.withIndex("by_workspace_project_page_sequence", (q) =>
 						q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 					)
 					.collect(),
 				ctx.db
 					.query("pages_yjs_docs_last_sequences")
-					.withIndex("by_workspace_project_page_id", (q) =>
+					.withIndex("by_workspace_project_page", (q) =>
 						q.eq("workspace_id", seeded.workspaceId).eq("project_id", seeded.projectId).eq("page_id", seeded.pageId),
 					)
 					.first(),

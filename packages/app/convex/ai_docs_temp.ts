@@ -134,7 +134,7 @@ function db_query_pages_by_path(
 ) {
 	return ctx.db
 		.query("pages")
-		.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -146,7 +146,7 @@ function db_query_pages_by_path(
 function db_get_home_page(ctx: pages_QueryOrMutationCtx, args: { workspaceId: string; projectId: string }) {
 	return ctx.db
 		.query("pages")
-		.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+		.withIndex("by_workspace_project_parent_name", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -196,13 +196,13 @@ export async function db_upsert_page_chunks(
 	await Promise.all([
 		ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 			)
 			.collect(),
 		ctx.db
 			.query("pages_markdown_chunks")
-			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 			)
 			.collect(),
@@ -361,7 +361,7 @@ async function cascade_page_descendants_path(
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+			.withIndex("by_workspace_project_parent_name", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
 			)
 			.collect();
@@ -416,7 +416,7 @@ export const get_tree_items_list = query({
 
 		const pages = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_name", (q) =>
+			.withIndex("by_workspace_project_name", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
 			)
 			.order("asc")
@@ -668,7 +668,7 @@ export const create_page_quick = mutation({
 		// Ensure ".tmp" under root exists
 		const tmp = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+			.withIndex("by_workspace_project_parent_name", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
@@ -958,7 +958,7 @@ export const archive_pages = mutation({
 			const descendantsPathPrefix = `${page.path}/`;
 			const descendantPages = await ctx.db
 				.query("pages")
-				.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 					q
 						.eq("workspaceId", membership.workspaceId)
 						.eq("projectId", membership.projectId)
@@ -1192,7 +1192,7 @@ export const unarchive_pages = mutation({
 
 							return ctx.db
 								.query("pages")
-								.withIndex("by_workspaceId_projectId_path_archiveOperationId", (q) =>
+								.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 									q
 										.eq("workspaceId", membership.workspaceId)
 										.eq("projectId", membership.projectId)
@@ -1385,7 +1385,7 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_archiveOperationId", (q) =>
+			.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -1411,7 +1411,7 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("by_workspaceId_projectId_parentId_archiveOperationId", (q) =>
+			.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -1486,7 +1486,7 @@ export const list_pages = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("pages")
-						.withIndex("by_workspaceId_projectId_parentId_archiveOperationId", (q) =>
+						.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
@@ -1679,7 +1679,7 @@ export const get_plain_text = query({
 
 		const latestChunkByPage = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId).eq("pageId", args.pageId),
 			)
 			.order("desc")
@@ -1695,7 +1695,7 @@ export const get_plain_text = query({
 
 		const plainTextChunks = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", page.workspaceId)
 					.eq("projectId", page.projectId)
@@ -1795,7 +1795,7 @@ export const text_search_pages = internalQuery({
 	}> => {
 		const matches = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withSearchIndex("search_by_plain_text_chunk", (q) =>
+			.withSearchIndex("search_by_plainTextChunk", (q) =>
 				q.search("plainTextChunk", args.query).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
@@ -1853,7 +1853,7 @@ export const text_search_pages = internalQuery({
 					const [chunkAbove, chunkBelow] = await Promise.all([
 						ctx.db
 							.query("pages_markdown_chunks")
-							.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+							.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
@@ -1864,7 +1864,7 @@ export const text_search_pages = internalQuery({
 							.first(),
 						ctx.db
 							.query("pages_markdown_chunks")
-							.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+							.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
@@ -1919,7 +1919,7 @@ export const create_page_by_path = internalMutation({
 			// Does this segment exist?
 			const existing = await ctx.db
 				.query("pages")
-				.withIndex("by_workspaceId_projectId_parentId_name", (q) =>
+				.withIndex("by_workspace_project_parent_name", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
@@ -2082,7 +2082,7 @@ export const get_page_snapshots_list = query({
 
 		const snapshots = await ctx.db
 			.query("pages_snapshots")
-			.withIndex("by_workspace_project_page_id_archived_at", (q) => {
+			.withIndex("by_workspace_project_page_archivedAt", (q) => {
 				const qBase = q
 					.eq("workspace_id", membership.workspaceId)
 					.eq("project_id", membership.projectId)
@@ -2149,7 +2149,7 @@ async function do_get_page_snapshot_content(
 ) {
 	const content = await ctx.db
 		.query("pages_snapshots_contents")
-		.withIndex("by_workspace_project_page_snapshot_id", (q) =>
+		.withIndex("by_workspace_project_page_pageSnapshot", (q) =>
 			q
 				.eq("workspace_id", args.workspaceId)
 				.eq("project_id", args.projectId)
@@ -2312,7 +2312,7 @@ async function write_markdown_to_yjs_sync(
 	// Reconstruct the latest Y.Doc from last snapshot
 	const pageYjsData = await ctx.db
 		.query("pages_yjs_snapshots")
-		.withIndex("by_workspace_project_page_id_sequence", (q) =>
+		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 		)
 		.order("desc")
@@ -2400,7 +2400,7 @@ export const yjs_get_doc_last_snapshot = query({
 
 		return await ctx.db
 			.query("pages_yjs_snapshots")
-			.withIndex("by_workspace_project_page_id_sequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspace_id", membership.workspaceId).eq("project_id", membership.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
@@ -2424,7 +2424,7 @@ export const update_snapshots = internalMutation({
 	handler: async (ctx, args) => {
 		const cleanScheduleLocksPromise = ctx.db
 			.query("pages_yjs_snapshot_schedules")
-			.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
+			.withIndex("by_page", (q) => q.eq("page_id", args.pageId))
 			.collect()
 			.then((scheduleLocks) =>
 				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id))),
@@ -2452,7 +2452,7 @@ export const update_snapshots = internalMutation({
 			// Load latest snapshot
 			const yjsSnapshotData = await ctx.db
 				.query("pages_yjs_snapshots")
-				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+				.withIndex("by_workspace_project_page_sequence", (q) =>
 					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 				)
 				.order("desc")
@@ -2470,7 +2470,7 @@ export const update_snapshots = internalMutation({
 			// Fetch updates since snapshot up to uptoSeq
 			const updateDataList = await ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("by_workspace_project_page_id_sequence", (q) =>
+				.withIndex("by_workspace_project_page_sequence", (q) =>
 					q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 				)
 				.order("asc")
@@ -2558,7 +2558,7 @@ async function yjs_increment_or_create_last_sequence(
 ) {
 	let lastSequenceData = await ctx.db
 		.query("pages_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_page_id", (q) =>
+		.withIndex("by_workspace_project_page", (q) =>
 			q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 		)
 		.order("desc")
@@ -2648,7 +2648,7 @@ export async function pages_db_yjs_push_update(
 
 	const schedules = await ctx.db
 		.query("pages_yjs_snapshot_schedules")
-		.withIndex("by_page_id", (q) => q.eq("page_id", args.pageId))
+		.withIndex("by_page", (q) => q.eq("page_id", args.pageId))
 		.collect();
 
 	const scheduledId = await ctx.scheduler.runAfter(snapshotScheduleDelayMs, internal.ai_docs_temp.update_snapshots, {
@@ -2781,7 +2781,7 @@ export const yjs_get_incremental_updates = query({
 
 		const updates = await ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("by_workspace_project_page_id_sequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspace_id", membership.workspaceId).eq("project_id", membership.projectId).eq("page_id", args.pageId),
 			)
 			.order("desc")
@@ -3036,7 +3036,7 @@ export const cleanup_old_snapshots = internalMutation({
 					// TODO: If we save the content id in the snapshot doc we can use the more efficient .get
 					ctx.db
 						.query("pages_snapshots_contents")
-						.withIndex("by_workspace_project_page_snapshot_id", (q) =>
+						.withIndex("by_workspace_project_page_pageSnapshot", (q) =>
 							q
 								.eq("workspace_id", snapshot.workspace_id)
 								.eq("project_id", snapshot.project_id)

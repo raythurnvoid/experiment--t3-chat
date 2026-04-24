@@ -69,7 +69,7 @@ export async function workspaces_db_create(
 		const definition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_user_limit_name", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
+			.withIndex("by_user_limitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
 			.first();
 		if (!limit) {
 			throw should_never_happen("[workspaces_db_create] Missing user limit doc", {
@@ -215,7 +215,7 @@ export async function workspaces_db_create_project(
 
 	const limit = await ctx.db
 		.query("limits_per_workspace")
-		.withIndex("by_workspace_limit", (q) =>
+		.withIndex("by_workspace_limitName", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("limitName", workspace_limits.EXTRA_PROJECTS.name),
 		)
 		.first();

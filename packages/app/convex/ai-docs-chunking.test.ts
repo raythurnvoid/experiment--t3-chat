@@ -59,7 +59,7 @@ test("db_upsert_page_chunks replaces existing chunk rows for a page", async () =
 
 		const markdownChunks = await ctx.db
 			.query("pages_markdown_chunks")
-			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
 					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
@@ -68,7 +68,7 @@ test("db_upsert_page_chunks replaces existing chunk rows for a page", async () =
 			.collect();
 		const plainTextChunks = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("by_workspace_project_page_sequenceChunk", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
 					.eq("projectId", test_mocks_hardcoded.project_id.project_1)

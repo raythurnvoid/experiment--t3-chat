@@ -44,7 +44,7 @@ async function workspaces_test_bootstrap_user(t: ReturnType<typeof test_convex>,
 		const now = Date.now();
 		const userLimit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_user_limit_name", (q) =>
+			.withIndex("by_user_limitName", (q) =>
 				q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
 			)
 			.first();
@@ -203,11 +203,11 @@ describe("create_workspace", () => {
 						ctx.db.get("workspaces_projects", result._yay!.defaultProjectId),
 						ctx.db
 							.query("limits_per_user")
-							.withIndex("by_user_limit_name", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
+							.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
 							.first(),
 						ctx.db
 							.query("limits_per_workspace")
-							.withIndex("by_workspace_limit", (q) =>
+							.withIndex("by_workspace_limitName", (q) =>
 								q.eq("workspaceId", result._yay!.workspaceId).eq("limitName", "extra_projects"),
 							)
 							.first(),
@@ -622,14 +622,14 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const workspaceLimit = user?.defaultWorkspaceId
 				? await ctx.db
 						.query("limits_per_workspace")
-						.withIndex("by_workspace_limit", (q) =>
+						.withIndex("by_workspace_limitName", (q) =>
 							q.eq("workspaceId", user.defaultWorkspaceId!).eq("limitName", "extra_projects"),
 						)
 						.first()
 				: null;
 			const userLimit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("by_user_limit_name", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
+				.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
 				.first();
 
 			return {
@@ -781,7 +781,7 @@ describe("create_project", () => {
 							.first(),
 						ctx.db
 							.query("limits_per_workspace")
-							.withIndex("by_workspace_limit", (q) =>
+							.withIndex("by_workspace_limitName", (q) =>
 								q.eq("workspaceId", wsResult._yay!.workspaceId).eq("limitName", "extra_projects"),
 							)
 							.first(),
@@ -1724,7 +1724,7 @@ describe("delete_project", () => {
 					ctx.db.get("users", userId),
 					ctx.db
 						.query("limits_per_workspace")
-						.withIndex("by_workspace_limit", (q) =>
+						.withIndex("by_workspace_limitName", (q) =>
 							q.eq("workspaceId", created._yay!.workspaceId).eq("limitName", "extra_projects"),
 						)
 						.first(),
@@ -1860,7 +1860,7 @@ describe("delete_workspace", () => {
 		const limitsBeforeDelete = await t.run(async (ctx) =>
 			ctx.db
 				.query("limits_per_workspace")
-				.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+				.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 				.collect(),
 		);
 
@@ -1890,11 +1890,11 @@ describe("delete_workspace", () => {
 				ctx.db.get("users", memberId),
 				ctx.db
 					.query("limits_per_user")
-					.withIndex("by_user_limit_name", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
+					.withIndex("by_user_limitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
 					.first(),
 				ctx.db
 					.query("limits_per_workspace")
-					.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("workspaces_projects_users").collect(),
 				ctx.db.query("data_deletion_requests").collect(),
@@ -1959,7 +1959,7 @@ describe("delete_workspace", () => {
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
 				ctx.db
 					.query("limits_per_workspace")
-					.withIndex("by_workspace_limit", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("pages").collect(),
 			]);

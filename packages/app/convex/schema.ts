@@ -28,7 +28,7 @@ const app_convex_schema = defineSchema({
 		 * timestamp in milliseconds
 		 **/
 		lastMessageAt: v.optional(v.number()),
-	}).index("by_workspace_project_archived_last_message_at", ["workspaceId", "projectId", "archived", "lastMessageAt"]),
+	}).index("by_workspace_project_archived_lastMessageAt", ["workspaceId", "projectId", "archived", "lastMessageAt"]),
 
 	/**
 	 * Each doc should be compatible with {@link ai_chat_AiSdk5UiMessage}.
@@ -73,7 +73,7 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
-		.index("by_userId_pageId", ["userId", "pageId"]),
+		.index("by_user_page", ["userId", "pageId"]),
 
 	pages_pending_edits_last_sequence_saved: defineTable({
 		workspaceId: v.string(),
@@ -85,7 +85,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
 		.index("by_workspace_project_page_user", ["workspaceId", "projectId", "pageId", "userId"])
-		.index("by_userId_pageId", ["userId", "pageId"]),
+		.index("by_user_page", ["userId", "pageId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks for each pending edit row.
@@ -96,7 +96,7 @@ const app_convex_schema = defineSchema({
 		pendingEditId: v.id("pages_pending_edits"),
 		scheduledFunctionId: v.id("_scheduled_functions"),
 		expectedUpdatedAt: v.number(),
-	}).index("by_pendingEditId", ["pendingEditId"]),
+	}).index("by_pendingEdit", ["pendingEditId"]),
 
 	pages: defineTable({
 		/** Workspace ID extracted from roomId */
@@ -126,26 +126,26 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
 	})
-		.index("by_workspaceId_projectId_parentId_name", ["workspaceId", "projectId", "parentId", "name"])
-		.index("by_workspaceId_projectId_parentId_archiveOperationId", [
+		.index("by_workspace_project_parent_name", ["workspaceId", "projectId", "parentId", "name"])
+		.index("by_workspace_project_parent_archiveOperation", [
 			"workspaceId",
 			"projectId",
 			"parentId",
 			"archiveOperationId",
 		])
-		.index("by_workspaceId_projectId_path_archiveOperationId", [
+		.index("by_workspace_project_path_archiveOperation", [
 			"workspaceId",
 			"projectId",
 			"path",
 			"archiveOperationId",
 		])
-		.index("by_workspaceId_projectId_archiveOperationId_path", [
+		.index("by_workspace_project_archiveOperation_path", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
 			"path",
 		])
-		.index("by_workspaceId_projectId_name", ["workspaceId", "projectId", "name"]),
+		.index("by_workspace_project_name", ["workspaceId", "projectId", "name"]),
 	/**
 	 * Table to store markdown content for pages.
 	 */
@@ -176,7 +176,7 @@ const app_convex_schema = defineSchema({
 		lineStart: v.number(),
 		lineEnd: v.number(),
 		chunkFlags: v.number(),
-	}).index("by_workspace_project_page_sequenceChunk", [
+	}).index("by_workspace_project_page_yjsSequence_chunkIndex", [
 		"workspaceId",
 		"projectId",
 		"pageId",
@@ -193,18 +193,18 @@ const app_convex_schema = defineSchema({
 		plainTextChunk: v.string(),
 		markdownChunkId: v.id("pages_markdown_chunks"),
 	})
-		.searchIndex("search_by_plain_text_chunk", {
+		.searchIndex("search_by_plainTextChunk", {
 			searchField: "plainTextChunk",
 			filterFields: ["workspaceId", "projectId"],
 		})
-		.index("by_workspace_project_page_sequenceChunk", [
+		.index("by_workspace_project_page_yjsSequence_chunkIndex", [
 			"workspaceId",
 			"projectId",
 			"pageId",
 			"yjsSequence",
 			"chunkIndex",
 		])
-		.index("byMarkdownChunkId", ["markdownChunkId"]),
+		.index("by_markdownChunk", ["markdownChunkId"]),
 
 	pages_yjs_snapshots: defineTable({
 		workspace_id: v.string(),
@@ -215,7 +215,7 @@ const app_convex_schema = defineSchema({
 		created_by: v.id("users"),
 		updated_by: v.string(),
 		updated_at: v.number(),
-	}).index("by_workspace_project_page_id_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
+	}).index("by_workspace_project_page_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
 
 	pages_yjs_updates: defineTable({
 		workspace_id: v.string(),
@@ -242,14 +242,14 @@ const app_convex_schema = defineSchema({
 		),
 		created_by: v.id("users"),
 		created_at: v.number(),
-	}).index("by_workspace_project_page_id_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
+	}).index("by_workspace_project_page_sequence", ["workspace_id", "project_id", "page_id", "sequence"]),
 
 	pages_yjs_docs_last_sequences: defineTable({
 		workspace_id: v.string(),
 		project_id: v.string(),
 		page_id: v.id("pages"),
 		last_sequence: v.number(),
-	}).index("by_workspace_project_page_id", ["workspace_id", "project_id", "page_id"]),
+	}).index("by_workspace_project_page", ["workspace_id", "project_id", "page_id"]),
 
 	/**
 	 * Internal table to track scheduled YJS snapshot updates.
@@ -257,7 +257,7 @@ const app_convex_schema = defineSchema({
 	pages_yjs_snapshot_schedules: defineTable({
 		page_id: v.id("pages"),
 		scheduled_function_id: v.id("_scheduled_functions"),
-	}).index("by_page_id", ["page_id"]),
+	}).index("by_page", ["page_id"]),
 
 	pages_snapshots: defineTable({
 		workspace_id: v.string(),
@@ -269,7 +269,7 @@ const app_convex_schema = defineSchema({
 		 * unarchived, and > 0 for the archive timestamp in milliseconds.
 		 */
 		archived_at: v.number(),
-	}).index("by_workspace_project_page_id_archived_at", ["workspace_id", "project_id", "page_id", "archived_at"]),
+	}).index("by_workspace_project_page_archivedAt", ["workspace_id", "project_id", "page_id", "archived_at"]),
 
 	pages_snapshots_contents: defineTable({
 		workspace_id: v.string(),
@@ -277,7 +277,7 @@ const app_convex_schema = defineSchema({
 		page_snapshot_id: v.id("pages_snapshots"),
 		content: v.string(),
 		page_id: v.id("pages"),
-	}).index("by_workspace_project_page_snapshot_id", ["workspace_id", "project_id", "page_snapshot_id"]),
+	}).index("by_workspace_project_page_pageSnapshot", ["workspace_id", "project_id", "page_snapshot_id"]),
 	// #endregion pages
 
 	// #region chat messages
@@ -321,10 +321,10 @@ const app_convex_schema = defineSchema({
 		scope: v.union(v.literal("project"), v.literal("workspace"), v.literal("user")),
 	})
 		.index("by_workspace_project", ["workspaceId", "projectId"])
-		.index("by_user_and_scope", ["userId", "scope"])
-		.index("by_workspace_and_scope", ["workspaceId", "scope"])
-		.index("by_workspace_and_project_and_scope", ["workspaceId", "projectId", "scope"])
-		.index("by_userId", ["userId"]),
+		.index("by_user_scope", ["userId", "scope"])
+		.index("by_workspace_scope", ["workspaceId", "scope"])
+		.index("by_workspace_project_scope", ["workspaceId", "projectId", "scope"])
+		.index("by_user", ["userId"]),
 	// #endregion data deletion
 
 	// #region workspaces
@@ -369,7 +369,7 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 		updatedAt: v.number(),
 		lastReconciledAt: v.optional(v.number()),
-	}).index("by_user_limit_name", ["userId", "limitName"]),
+	}).index("by_user_limitName", ["userId", "limitName"]),
 
 	limits_per_workspace: defineTable({
 		workspaceId: v.id("workspaces"),
@@ -379,7 +379,7 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 		updatedAt: v.number(),
 		lastReconciledAt: v.optional(v.number()),
-	}).index("by_workspace_limit", ["workspaceId", "limitName"]),
+	}).index("by_workspace_limitName", ["workspaceId", "limitName"]),
 	// #endregion workspaces
 
 	// #region billing
@@ -412,8 +412,8 @@ const app_convex_schema = defineSchema({
 		),
 		lastSyncedAt: v.number(),
 	})
-		.index("by_userId", ["userId"])
-		.index("by_polarCustomerId_currentPeriodEnd", ["polarCustomerId", "subscription.currentPeriodEnd"])
+		.index("by_user", ["userId"])
+		.index("by_polarCustomer_currentPeriodEnd", ["polarCustomerId", "subscription.currentPeriodEnd"])
 		.index("by_lastSyncedAt", ["lastSyncedAt"]),
 
 	/**
@@ -424,7 +424,7 @@ const app_convex_schema = defineSchema({
 		userId: v.id("users"),
 		jobId: v.string(),
 		updatedAt: v.number(),
-	}).index("by_userId", ["userId"]),
+	}).index("by_user", ["userId"]),
 	// #endregion billing
 
 	// #region users
@@ -432,7 +432,7 @@ const app_convex_schema = defineSchema({
 		userId: v.id("users"),
 		token: v.string(),
 		updatedAt: v.number(),
-	}).index("by_userId", ["userId"]),
+	}).index("by_user", ["userId"]),
 
 	users: defineTable({
 		/** Clerk user ID, null for anonymous users */
@@ -442,7 +442,7 @@ const app_convex_schema = defineSchema({
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
 		deletedAt: v.optional(v.number()),
-	}).index("by_clerk_user_id", ["clerkUserId"]),
+	}).index("by_clerkUser", ["clerkUserId"]),
 
 	users_anagraphics: defineTable({
 		userId: v.id("users"),
@@ -453,7 +453,7 @@ const app_convex_schema = defineSchema({
 		email: v.string(),
 		updatedAt: v.number(),
 	})
-		.index("by_userId", ["userId"])
+		.index("by_user", ["userId"])
 		.index("by_email", ["email"]),
 
 	clerk_webhook_receipts: defineTable({
@@ -461,7 +461,7 @@ const app_convex_schema = defineSchema({
 		eventType: v.string(),
 		clerkUserId: v.optional(v.string()),
 		receivedAt: v.number(),
-	}).index("by_eventId", ["eventId"]),
+	}).index("by_event", ["eventId"]),
 
 	// #endregion users
 });

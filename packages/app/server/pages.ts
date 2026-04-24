@@ -72,7 +72,7 @@ export async function pages_db_get_yjs_content_and_sequence(
 		ctx.db.get("pages_yjs_snapshots", page.yjsSnapshotId),
 		ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("by_workspace_project_page_id_sequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspace_id", args.workspaceId).eq("project_id", args.projectId).eq("page_id", args.pageId),
 			)
 			.order("asc")
@@ -154,7 +154,7 @@ export async function pages_db_cancel_pending_edit_cleanup_tasks(
 ) {
 	const cleanupTasks = await ctx.db
 		.query("pages_pending_edits_cleanup_tasks")
-		.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+		.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 		.collect();
 
 	await Promise.all([
@@ -178,7 +178,7 @@ export async function pages_db_schedule_pending_edit_cleanup(
 	const [existingCleanupTasks, scheduledFunctionId] = await Promise.all([
 		ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_pendingEditId", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 			.collect(),
 		ctx.scheduler.runAfter(
 			args.delayMs ?? 4 * 60 * 60 * 1000,

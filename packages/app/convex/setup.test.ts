@@ -168,7 +168,7 @@ export const test_mocks_fill_db_with = {
 
 		const userLimit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("by_user_limit_name", (q) => q.eq("userId", userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name))
+			.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name))
 			.first();
 		if (!userLimit) {
 			await ctx.db.insert("limits_per_user", {
