@@ -50,17 +50,17 @@ const POLAR_SERVER = process.env.POLAR_SERVER as "sandbox" | "production";
 
 /**
  * Single Polar client for this app: register webhook routes on this instance only, and use
- * {@link billing.api} exports for Convex functions (see @convex-dev/polar README).
+ * {@link billing_polar.api} exports for Convex functions (see @convex-dev/polar README).
  */
-export const billing = new Polar<DataModel>(components.polar, {
+export const billing_polar = new Polar<DataModel>(components.polar, {
 	getUserInfo: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx as QueryCtx | ActionCtx);
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx as QueryCtx | ActionCtx);
 
-		if (!user || user.kind !== "signed_in") {
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			throw convex_error({ message: "Billing requires a signed-in account" });
 		}
 
-		return { userId: user.id, email: user.email, name: user.name };
+		return { userId: userAuth.id, email: userAuth.email, name: userAuth.name };
 	},
 	server: POLAR_SERVER,
 });
@@ -86,14 +86,14 @@ export async function billing_db_check_credits(
 ) {
 	const hasCredits = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("byUser", (q) => q.eq("userId", args.userId))
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.first()
 		.then(async (usageSnapshot) => {
 			if (!usageSnapshot?.subscription) {
 				return false;
 			}
 
-			const product = await ctx.runQuery(components.polar.lib.getProduct, { id: usageSnapshot.subscription.productId });
+			const product = await billing_polar.getProduct(ctx, { productId: usageSnapshot.subscription.productId });
 			if (!product) return false;
 
 			const meterBalanceCents = usageSnapshot.meter?.balance ?? 0;
@@ -155,14 +155,14 @@ export async function billing_db_ensure_anonymous_user_usage_snapshot(
 ) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("byUser", (q) => q.eq("userId", args.userId))
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.first();
 	if (usageSnapshot) {
 		return null;
 	}
 
 	const freeProduct =
-		(await ctx.runQuery(components.polar.lib.listProducts, {})).find((product) => {
+		(await billing_polar.listProducts(ctx)).find((product) => {
 			return product.name === billing_PRODUCTS.Free.name && !product.isArchived;
 		}) ?? null;
 	if (!freeProduct) {
@@ -217,7 +217,7 @@ export const reset_due_anonymous_credits = internalMutation({
 
 		const dueUsageSnapshots = await ctx.db
 			.query("billing_usage_snapshots")
-			.withIndex("byPolarCustomerCurrentPeriodEnd", (q) =>
+			.withIndex("by_polarCustomer_currentPeriodEnd", (q) =>
 				q.eq("polarCustomerId", null).eq("subscription.currentPeriodEnd", todayPeriodEnd),
 			)
 			.collect();
@@ -258,9 +258,7 @@ export async function billing_action_delete_polar_customer_by_user_id(
 		userId: Id<"users">;
 	},
 ) {
-	const customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-		userId: args.userId,
-	});
+	const customer = await billing_polar.getCustomerByUserId(ctx, args.userId);
 	if (!customer) {
 		return Result({ _yay: null });
 	}
@@ -349,14 +347,14 @@ export const get_usage_snapshot = query({
 	args: {},
 	returns: v.union(v.null(), doc(app_convex_schema, "billing_usage_snapshots")),
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return null;
 		}
 
 		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
-			.withIndex("byUser", (q) => q.eq("userId", user.id))
+			.withIndex("by_user", (q) => q.eq("userId", userAuth.id))
 			.first();
 
 		return usageSnapshot;
@@ -366,31 +364,29 @@ export const get_usage_snapshot = query({
 export const list_products = query({
 	args: {},
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return [];
 		}
 
-		return await billing.listProducts(ctx);
+		return await billing_polar.listProducts(ctx);
 	},
 });
 
 export const get_current_user_subscription = query({
 	args: {},
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return null;
 		}
 
-		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-			userId: user.id,
-		});
+		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: userAuth.id });
 		if (!currentSubscription) {
 			return null;
 		}
 
-		const { product, ...subscription } = currentSubscription;
+		const { product, productKey, ...subscription } = currentSubscription;
 		return subscription;
 	},
 });
@@ -608,12 +604,15 @@ function build_usage_snapshot(args: {
 async function db_upsert_usage_snapshot(ctx: MutationCtx, usageSnapshot: BillingUsageSnapshotRow) {
 	const existingUsageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("byUser", (q) => q.eq("userId", usageSnapshot.userId))
+		.withIndex("by_user", (q) => q.eq("userId", usageSnapshot.userId))
 		.unique();
 	// Keep an existing meter when Polar still reports `activeMeters: []`.
 	// This avoids wiping an optimistic meter before Polar catches up.
 	const next =
-		existingUsageSnapshot && existingUsageSnapshot.meter && !usageSnapshot.meter && usageSnapshot.subscription?.id != null
+		existingUsageSnapshot &&
+		existingUsageSnapshot.meter &&
+		!usageSnapshot.meter &&
+		usageSnapshot.subscription?.id != null
 			? { ...usageSnapshot, meter: existingUsageSnapshot.meter }
 			: usageSnapshot;
 	console.info("upsert billing_usage_snapshots", {
@@ -648,7 +647,7 @@ async function db_delete_customer_state(
 	const usageSnapshots = userId
 		? await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.collect()
 		: await ctx.db
 				.query("billing_usage_snapshots")
@@ -698,15 +697,13 @@ async function db_apply_polar_customer_state_refresh(
 
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("byUser", (q) => q.eq("userId", user._id))
+		.withIndex("by_user", (q) => q.eq("userId", user._id))
 		.unique();
 	const previousSubscription = usageSnapshot?.subscription ?? null;
 
 	const subscription = state.activeSubscriptions[0] ?? null;
-	const product = subscription
-		? await ctx.runQuery(components.polar.lib.getProduct, { id: subscription.productId })
-		: null;
-	const syncedProducts = await ctx.runQuery(components.polar.lib.listProducts, {});
+	const product = subscription ? await billing_polar.getProduct(ctx, { productId: subscription.productId }) : null;
+	const syncedProducts = await billing_polar.listProducts(ctx);
 
 	const snapshot = build_usage_snapshot({
 		state,
@@ -777,7 +774,7 @@ async function db_apply_optimistic_credit_to_snapshot(
 ) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("byUser", (q) => q.eq("userId", args.userId))
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.unique();
 	// The snapshot was upserted earlier in this transaction, so the row must exist.
 	if (!usageSnapshot) {
@@ -856,7 +853,7 @@ export const handle_polar_customer_state_update = internalMutation({
 });
 
 /**
- * Checkout for a single Polar product id synced into this deployment. The product must exist in {@link billing.listProducts} and
+ * Checkout for a single Polar product id synced into this deployment. The product must exist in {@link billing_polar.listProducts} and
  * must not be archived. {@link origin} and {@link successUrl} are checked against {@link allowed_origins}.
  */
 export const generate_checkout_link = action({
@@ -898,30 +895,30 @@ export const generate_checkout_link = action({
 			return Result({ _nay: { message: "Success URL is not allowed for checkout" } });
 		}
 
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for checkout" } });
 		}
 
 		const product =
-			(await billing.listProducts(ctx)).find((product) => {
+			(await billing_polar.listProducts(ctx)).find((product) => {
 				return product.id === args.productId && !product.isArchived;
 			}) ?? null;
 		if (!product) {
 			return Result({ _nay: { message: "Invalid checkout product" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const checkoutSessionResult = await Result_try_async(() =>
-			billing.createCheckoutSession(ctx, {
+			billing_polar.createCheckoutSession(ctx, {
 				productIds: [product.id],
-				userId: user.id,
-				email: user.email,
-				name: user.name,
+				userId: userAuth.id,
+				email: userAuth.email,
+				name: userAuth.name,
 				subscriptionId: args.subscriptionId,
 				origin: args.origin,
 				successUrl: args.successUrl,
@@ -957,24 +954,22 @@ export const generate_customer_portal_url = action({
 		}),
 	}),
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-			userId: user.id,
-		});
+		const customer = await billing_polar.getCustomerByUserId(ctx, userAuth.id);
 		if (!customer) {
 			return Result({ _nay: { message: "Customer not found" } });
 		}
 
-		const session = await customerSessionsCreate(billing.polar, {
+		const session = await customerSessionsCreate(billing_polar.polar, {
 			customerId: customer.id,
 		});
 		if (!session.ok) {
@@ -1005,7 +1000,7 @@ export const get_cancel_polar_subscription_job_by_user_id = internalQuery({
 		return (
 			(await ctx.db
 				.query("billing_cancel_polar_subscription_jobs")
-				.withIndex("byUser", (q) => q.eq("userId", args.userId))
+				.withIndex("by_user", (q) => q.eq("userId", args.userId))
 				.first()) ?? null
 		);
 	},
@@ -1021,7 +1016,7 @@ export const upsert_cancel_polar_subscription_job = internalMutation({
 	handler: async (ctx, args) => {
 		const existingRows = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("byUser", (q) => q.eq("userId", args.userId))
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.collect();
 		const [currentRow, ...staleDocs] = existingRows;
 
@@ -1050,7 +1045,7 @@ export const delete_cancel_polar_subscription_job = internalMutation({
 	handler: async (ctx, args) => {
 		const docs = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("byUser", (q) => q.eq("userId", args.userId))
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.collect();
 
 		await Promise.all(docs.map((doc) => ctx.db.delete("billing_cancel_polar_subscription_jobs", doc._id)));
@@ -1067,7 +1062,7 @@ export const complete_polar_subscription_period_end_cancellation = billing_workp
 		const userId = args.context.userId as Id<"users">;
 		const doc = await ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("byUser", (q) => q.eq("userId", userId))
+			.withIndex("by_user", (q) => q.eq("userId", userId))
 			.first();
 		if (!doc || doc.jobId !== args.workId) {
 			return;
@@ -1222,12 +1217,10 @@ export const bootstrap_free_subscription = internalAction({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const bootstrapResult = await Result_try_async(async () => {
-			let customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-				userId: args.userId,
-			});
+			let customer = await billing_polar.getCustomerByUserId(ctx, args.userId);
 
 			if (!customer) {
-				const createCustomerResult = await customersCreate(billing.polar, {
+				const createCustomerResult = await customersCreate(billing_polar.polar, {
 					externalId: args.userId,
 					email: args.email,
 					name: args.name,
@@ -1249,9 +1242,7 @@ export const bootstrap_free_subscription = internalAction({
 					userId: args.userId,
 				});
 
-				customer = await ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-					userId: args.userId,
-				});
+				customer = await billing_polar.getCustomerByUserId(ctx, args.userId);
 			}
 
 			if (!customer) {
@@ -1260,9 +1251,7 @@ export const bootstrap_free_subscription = internalAction({
 				});
 			}
 
-			const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-				userId: args.userId,
-			});
+			const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: args.userId });
 			if (currentSubscription) {
 				if (
 					args.restoreCanceledSubscription &&
@@ -1299,7 +1288,7 @@ export const bootstrap_free_subscription = internalAction({
 			}
 
 			const freeProduct =
-				(await billing.listProducts(ctx)).find((product) => {
+				(await billing_polar.listProducts(ctx)).find((product) => {
 					return product.name === billing_PRODUCTS.Free.name && !product.isArchived;
 				}) ?? null;
 			if (!freeProduct) {
@@ -1315,7 +1304,7 @@ export const bootstrap_free_subscription = internalAction({
 				productId: freeProduct.id,
 				startedAt: new Date().toISOString(),
 			});
-			const createSubscriptionResult = await subscriptionsCreate(billing.polar, {
+			const createSubscriptionResult = await subscriptionsCreate(billing_polar.polar, {
 				customerId: customer.id,
 				productId: freeProduct.id,
 			});
@@ -1370,14 +1359,12 @@ export const change_current_subscription = action({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
 		}
 
-		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-			userId: user.id,
-		});
+		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: userAuth.id });
 		if (
 			!currentSubscription ||
 			(currentSubscription.status !== "active" && currentSubscription.status !== "trialing")
@@ -1386,7 +1373,7 @@ export const change_current_subscription = action({
 		}
 
 		const targetProduct =
-			(await billing.listProducts(ctx)).find((product) => {
+			(await billing_polar.listProducts(ctx)).find((product) => {
 				return product.id === args.productId && !product.isArchived;
 			}) ?? null;
 		if (!targetProduct) {
@@ -1411,13 +1398,13 @@ export const change_current_subscription = action({
 			return Result({ _nay: { message: "Plan changes between equivalent tiers are not supported" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
-		const updateResult = await subscriptionsUpdate(billing.polar, {
+		const updateResult = await subscriptionsUpdate(billing_polar.polar, {
 			id: currentSubscription.id,
 			subscriptionUpdate: {
 				productId: targetProduct.id,
@@ -1459,18 +1446,18 @@ export const cancel_current_subscription = action({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user || user.kind !== "signed_in") {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const cancelResult = await Result_try_async(() =>
-			billing.cancelSubscription(ctx, { revokeImmediately: args.revokeImmediately }),
+			billing_polar.cancelSubscription(ctx, { revokeImmediately: args.revokeImmediately }),
 		);
 		if (cancelResult._nay) {
 			const message = cancelResult._nay.message;
@@ -1602,7 +1589,7 @@ export const ingest_anonymous_user_events = internalMutation({
 
 				const usageSnapshot = await ctx.db
 					.query("billing_usage_snapshots")
-					.withIndex("byUser", (q) => q.eq("userId", user._id))
+					.withIndex("by_user", (q) => q.eq("userId", user._id))
 					.first();
 				if (!usageSnapshot || usageSnapshot.meter == null) {
 					throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {
@@ -1668,7 +1655,7 @@ export async function billing_ingest_events(
 export const sync_products = internalAction({
 	args: {},
 	handler: async (ctx) => {
-		await billing.syncProducts(ctx);
+		await billing_polar.syncProducts(ctx);
 	},
 });
 
@@ -1724,7 +1711,7 @@ export const refresh_from_polar_customer_state = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const sdkState = await billing.getCustomerState(ctx, { userId: args.userId });
+		const sdkState = await billing_polar.getCustomerState(ctx, { userId: args.userId });
 		if (!sdkState) {
 			console.info("refresh_from_polar_customer_state: no Polar customer for user", {
 				userId: args.userId,
@@ -1796,14 +1783,12 @@ export const revoke_subscription = internalAction({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const subscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-			userId: args.userId,
-		});
+		const subscription = await billing_polar.getCurrentSubscription(ctx, { userId: args.userId });
 		if (!subscription) {
 			return Result({ _nay: { message: "Subscription not found" } });
 		}
 
-		const revokeResult = await subscriptionsRevoke(billing.polar, {
+		const revokeResult = await subscriptionsRevoke(billing_polar.polar, {
 			id: subscription.id,
 		});
 		if (!revokeResult.ok) {

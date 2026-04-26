@@ -182,6 +182,7 @@ Relevant files:
 - then attempt Clerk cleanup as best-effort follow-up
 - do not fail the app-local deletion just because Clerk deletion failed
 - rate-limit the user-facing action by current user id before starting local deletion, Clerk cleanup, or billing cancellation work. Result callers receive `_nay.message === "Rate limit exceeded"` when throttled.
+- before tombstoning, the frontend must make the user resolve every owned non-personal workspace: transfer ownership first through `access_control.transfer_workspace_ownership`, or explicitly confirm deletion in the UI. The backend delete action assumes any workspace still owned by the user should be deleted.
 
 Related files:
 
@@ -194,7 +195,11 @@ Related files:
 User-account deletion is implemented across [users.ts](../../../packages/app/convex/users.ts) and [data_deletion.ts](../../../packages/app/convex/data_deletion.ts):
 
 - `users.delete_current_user_account` is the UI-facing entrypoint.
-- `data_deletion.init_user_deletion` is the reversible phase 1 step: it creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, marks memberships inactive, and removes the user from every room tracked by the `@convex-dev/presence` component (via `components.presence.public.listUser` + `removeRoomUser`).
+- `access_control.transfer_workspace_ownership` is the ownership-transfer endpoint. The UI calls it first for account-deletion transfer choices, before calling `users.delete_current_user_account`.
+- `users.delete_current_user_account` calls the owned-workspace-aware deletion initializer. If the deleting user still owns non-personal workspaces after frontend transfer calls complete, the backend queues those workspaces for deletion automatically.
+- Transfer choices preserve the shared workspace for active members because the owner row and quota counters change before the user tombstone starts.
+- Automatically queued owned-workspace deletions immediately remove that workspace’s memberships and access-control rows, then leave the heavy tenant content purge to the existing delayed workspace deletion worker.
+- The reversible user phase creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, marks remaining memberships inactive, and removes the user from every room tracked by the `@convex-dev/presence` component (via `components.presence.public.listUser` + `removeRoomUser`).
 - Phase 1 does not delete projects, workspaces, pages, or billing usage snapshots.
 - Phase 1 also does not backfill or repair missing anagraphic email; deleted-account recovery only works for users whose normalized email was already stored before deletion.
 - `users.delete_current_user_account` also enqueues retryable work that cancels any paid Polar subscription at the close of the current billing period, then clears the local subscription mirror immediately.
@@ -220,11 +225,13 @@ There is no Clerk deletion webhook safety-net in the current architecture. Accou
 
 Summary:
 
-- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
+- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `access_control_role_assignments`, `access_control_permission_grants`, `user_notifications`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
 - Bootstrap: `create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
+- The default `personal` workspace is private. Invites/member-management writes reject it.
+- Non-personal workspace ownership lives in the workspace default-project `access_control_role_assignments` owner row; exactly one effective owner controls workspace deletion and ownership transfer.
 - **Implementation note:** Many app surfaces may still use older hardcoded workspace/project ids outside this tenancy module—verify callsites.
 
-Authorization stubs in `workspaces.ts` (`user_is_workspace_admin`, `user_is_project_admin`) are temporary; replace for real RBAC.
+Authorization helpers in `workspaces.ts` call the backend access-control permission checker. Frontend guards and full permission-management UI are intentionally incremental follow-up work.
 
 # Planned functionality (not fully implemented yet)
 
@@ -234,8 +241,8 @@ The app is organized into projects and workspaces so users can organize assets f
 
 When an anonymous user is created:
 
-- A project and workspace must be created as well.
-- Other users (including anonymous, depending on visibility) can be invited into the project/workspace.
+- A personal workspace and home project must be created as well.
+- V1 invitations are immediate in-app access for existing signed-in users by exact email. No outbound email is sent.
 
 ## Public vs private semantics
 
@@ -261,7 +268,11 @@ Important: “public write” means anyone who knows the asset id can write (sha
 
 ## Granular permissions system
 
-Permissions are intended to be granular and set per-asset and optionally per-user id (including anonymous user ids).
+Canonical access-control details live in `../access-control/SKILL.md`.
+
+Permissions are represented by allow-only rows in `access_control_permission_grants`. Grants can target roles, specific users, or public access for `workspace`, `project`, `page`, and `thread` resources.
+
+Current roles are `owner`, `admin`, and `member`. The owner is a system role on the workspace default project with full workspace authority; admin/member authority is represented by seeded grant rows. Direct user and public grants allow asset-level access without changing a user’s role.
 
 The owner may:
 

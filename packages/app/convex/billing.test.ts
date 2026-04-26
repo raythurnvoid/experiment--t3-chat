@@ -3,7 +3,7 @@ import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared
 import { Workpool } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import {
-	billing,
+	billing_polar,
 	billing_db_ensure_anonymous_user_usage_snapshot,
 	billing_db_check_credits,
 	billing_ingest_events,
@@ -294,7 +294,7 @@ async function get_cancel_polar_subscription_job(t: ReturnType<typeof test_conve
 	return await t.run((ctx) =>
 		ctx.db
 			.query("billing_cancel_polar_subscription_jobs")
-			.withIndex("byUser", (q) => q.eq("userId", userId))
+			.withIndex("by_user", (q) => q.eq("userId", userId))
 			.first(),
 	);
 }
@@ -465,7 +465,7 @@ function create_polar_customer_state(args: {
 			balance: meter.balance,
 		})),
 		avatarUrl: "",
-	} satisfies NonNullable<Awaited<ReturnType<typeof billing.getCustomerState>>>;
+	} satisfies NonNullable<Awaited<ReturnType<typeof billing_polar.getCustomerState>>>;
 }
 
 beforeEach(() => {
@@ -600,7 +600,7 @@ describe("anonymous credit gate", () => {
 			await billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now });
 			return await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique();
 		});
 		if (!usageSnapshot) {
@@ -638,7 +638,7 @@ describe("anonymous credit gate", () => {
 		const usageSnapshots = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.collect(),
 		);
 		expect(usageSnapshots).toHaveLength(1);
@@ -739,7 +739,7 @@ describe("anonymous credit gate", () => {
 		await t.run(async (ctx) => {
 			const usageSnapshot = await ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique();
 			if (!usageSnapshot?.subscription) throw new Error("Snapshot missing");
 			await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
@@ -797,7 +797,7 @@ describe("anonymous credit gate", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits);
@@ -840,7 +840,7 @@ describe("anonymous credit gate", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.balance).toBe(500);
@@ -1801,7 +1801,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		const subscriptions = await t.query(components.polar.lib.listCustomerSubscriptions, {
@@ -1905,7 +1905,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2004,7 +2004,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2083,7 +2083,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2131,7 +2131,7 @@ describe("handle_polar_customer_state_update", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2165,7 +2165,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const { polarProductId } = await seed_free_product(t, {
 			polarProductId: "billing_admin_refresh_free_product",
 		});
-		const getCustomerStateSpy = vi.spyOn(billing, "getCustomerState").mockResolvedValue(
+		const getCustomerStateSpy = vi.spyOn(billing_polar, "getCustomerState").mockResolvedValue(
 			create_polar_customer_state({
 				customerId: "cust_admin_refresh_free",
 				userId,
@@ -2187,7 +2187,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2241,7 +2241,7 @@ describe("refresh_from_polar_customer_state", () => {
 			currentPeriodStart: "2026-04-13T03:20:38.364476Z",
 			currentPeriodEnd: "2026-05-13T03:20:38.364476Z",
 		});
-		vi.spyOn(billing, "getCustomerState").mockResolvedValue(sdkState);
+		vi.spyOn(billing_polar, "getCustomerState").mockResolvedValue(sdkState);
 		const enqueueActionSpy = vi
 			.spyOn(Workpool.prototype, "enqueueAction")
 			.mockResolvedValue("work_admin_refresh_same_period" as never);
@@ -2254,7 +2254,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const usageSnapshotAfterFirstReplay = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2267,7 +2267,7 @@ describe("refresh_from_polar_customer_state", () => {
 		const usageSnapshotAfterSecondReplay = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2329,7 +2329,7 @@ describe("billing generate_checkout_link create session", () => {
 			polarProductId: "billing_checkout_session_fail",
 		});
 
-		vi.spyOn(billing, "createCheckoutSession").mockRejectedValue(new Error("polar checkout exploded"));
+		vi.spyOn(billing_polar, "createCheckoutSession").mockRejectedValue(new Error("polar checkout exploded"));
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -2353,7 +2353,7 @@ describe("billing generate_checkout_link create session", () => {
 			polarProductId: "billing_checkout_session_success",
 		});
 
-		vi.spyOn(billing, "createCheckoutSession").mockResolvedValue({
+		vi.spyOn(billing_polar, "createCheckoutSession").mockResolvedValue({
 			url: "https://checkout.test/session",
 		} as never);
 
@@ -2380,7 +2380,7 @@ describe("billing generate_checkout_link create session", () => {
 			polarProductId: "billing_checkout_session_upgrade_from_free",
 		});
 
-		const createCheckoutSessionSpy = vi.spyOn(billing, "createCheckoutSession").mockResolvedValue({
+		const createCheckoutSessionSpy = vi.spyOn(billing_polar, "createCheckoutSession").mockResolvedValue({
 			url: "https://checkout.test/session",
 		} as never);
 
@@ -3116,7 +3116,7 @@ describe("billing schedule_polar_subscription_period_end_cancellation", () => {
 		const rowCount = await t.run((ctx) =>
 			ctx.db
 				.query("billing_cancel_polar_subscription_jobs")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.collect()
 				.then((rows) => rows.length),
 		);
@@ -3427,7 +3427,7 @@ describe("ingest_events", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", anonymousUserId))
+				.withIndex("by_user", (q) => q.eq("userId", anonymousUserId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(-2500);
@@ -3479,7 +3479,7 @@ describe("ingest_events", () => {
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
@@ -3762,7 +3762,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 		expect(usageSnapshot?.meter).toEqual({

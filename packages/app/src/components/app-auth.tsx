@@ -145,7 +145,7 @@ let auth_token_manager = init_auth_token_manager();
  */
 export type AppAuthContextValue = {
 	/** Either the Clerk user ID if signed in, or the anonymous user ID from the anonymous token */
-	userId: string | null;
+	userId: app_convex_Id<"users"> | null;
 	/** Whether the user is using anonymous auth */
 	isAnonymous: boolean | undefined;
 	/** Whether auth is currently loading */

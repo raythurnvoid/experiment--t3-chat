@@ -14,7 +14,7 @@ import {
 	workspaces_db_create,
 	workspaces_db_create_project,
 	workspaces_db_ensure_default_workspace_and_project_for_user,
-} from "../server/workspaces.ts";
+} from "./workspaces.ts";
 import { user_limits } from "../shared/limits.ts";
 
 // #region helpers
@@ -168,7 +168,7 @@ export const test_mocks_fill_db_with = {
 
 		const userLimit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("byUserLimitName", (q) => q.eq("userId", userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name))
+			.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name))
 			.first();
 		if (!userLimit) {
 			await ctx.db.insert("limits_per_user", {
@@ -194,7 +194,7 @@ export const test_mocks_fill_db_with = {
 		if (workspaceName === "personal" && projectName === "home") {
 			const membershipId = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byProjectUserActive", (q) => q.eq("projectId", user.defaultProjectId!).eq("userId", userId))
+				.withIndex("by_project_user_active", (q) => q.eq("projectId", user.defaultProjectId!).eq("userId", userId))
 				.first()
 				.then((membership) => membership?._id);
 			if (!membershipId) {
@@ -237,7 +237,7 @@ export const test_mocks_fill_db_with = {
 
 		const membershipId = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byProjectUserActive", (q) => q.eq("projectId", projectId).eq("userId", userId))
+			.withIndex("by_project_user_active", (q) => q.eq("projectId", projectId).eq("userId", userId))
 			.first()
 			.then((membership) => membership?._id);
 		if (!membershipId) {

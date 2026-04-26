@@ -1,6 +1,6 @@
 ---
 name: workspaces-limits
-description: Counter-based per-user and per-workspace creation limits for extra workspaces and projects. Use when changing `packages/app/server/workspaces.ts`, `packages/app/convex/workspaces.ts`, related migrations, or tests for workspace/project quota behavior.
+description: Counter-based per-user and per-workspace creation limits for extra workspaces and projects. Use when changing `packages/app/convex/workspaces.ts`, related migrations, or tests for workspace/project quota behavior.
 ---
 
 # Mental model
@@ -40,20 +40,19 @@ description: Counter-based per-user and per-workspace creation limits for extra 
 	- `updatedAt`
 	- optional `lastReconciledAt`
 - Key indexes:
-	- `limits_per_user.by_userId_limitName`
-	- `limits_per_workspace.by_workspaceId_limitName`
+	- `limits_per_user.by_user_limitName`
+	- `limits_per_workspace.by_workspace_limitName`
 
 # Runtime write paths
 
 - Keep mutation-side counter logic **inline at the caller**.
 - Do **not** introduce single-use helper abstractions for consume/release flows.
 - Current ownership:
-	- `packages/app/server/workspaces.ts`: create/bootstrap seeding + counter increments
-	- `packages/app/convex/workspaces.ts`: list capability reads + delete flows + counter decrements
+	- `packages/app/convex/workspaces.ts`: create/bootstrap seeding, list capability reads, and counter increments/decrements
 
 ## User bootstrap
 
-- `workspaces_db_ensure_default_workspace_and_project_for_user` in `packages/app/server/workspaces.ts` must:
+- `workspaces_db_ensure_default_workspace_and_project_for_user` in `packages/app/convex/workspaces.ts` must:
 	- trust `users.defaultWorkspaceId` when present
 	- create the default `personal`/`home` tenant only when no default workspace exists yet
 - It does **not** scan for or repair an existing tenant when pointers are missing.
@@ -81,7 +80,14 @@ description: Counter-based per-user and per-workspace creation limits for extra 
 
 - `packages/app/convex/workspaces.ts` keeps decrement logic inline.
 - `delete_project` decrements the workspace limit when deleting a non-default project.
-- `delete_workspace` decrements the owner user limit immediately, but defers deleting `limits_per_workspace` until `data_deletion.process_workspace_deletion_request` runs for the queued workspace-scope purge.
+- `delete_workspace` reads the owner from the workspace default-project `access_control_role_assignments` row, decrements that owner’s `extra_workspaces` counter immediately, and defers deleting `limits_per_workspace` until `data_deletion.process_workspace_deletion_request` runs for the queued workspace-scope purge.
+- Account deletion uses the same counter release rule when the backend queues a still-owned workspace for deletion instead of the frontend transferring it first.
+
+## Ownership transfer
+
+- `access_control.transfer_workspace_ownership` must respect the recipient’s persisted `extra_workspaces` limit doc.
+- Transfer decrements the old owner’s `usedCount` and increments the new owner’s `usedCount` in the same mutation as replacing the default-project owner assignment.
+- Do not recompute ownership usage from workspace rows; use migrations/audits to reconcile drift.
 
 # Shared constants
 
@@ -124,7 +130,6 @@ pnpm exec vitest run "convex/workspaces.test.ts"
 - Keep mutation logic explicit and local.
 - Prefer fixing rollout/data issues with migrations over adding runtime self-healing.
 - When changing limits behavior, review together:
-	- `packages/app/server/workspaces.ts`
 	- `packages/app/convex/workspaces.ts`
 	- `packages/app/convex/migrations.ts`
 	- `packages/app/convex/workspaces.test.ts`

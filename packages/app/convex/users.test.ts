@@ -7,7 +7,7 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex } from "./setup.test.ts";
-import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
+import { workspaces_db_create, workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { user_limits } from "../shared/limits.ts";
 
@@ -295,7 +295,9 @@ describe("/api/auth/resolve-user", () => {
 				}),
 				t.run((ctx) => ctx.db.get("users", body._yay.userId)),
 			]);
-			const anagraphic = user?.anagraphic ? await t.run((ctx) => ctx.db.get("users_anagraphics", user.anagraphic!)) : null;
+			const anagraphic = user?.anagraphic
+				? await t.run((ctx) => ctx.db.get("users_anagraphics", user.anagraphic!))
+				: null;
 
 			expect(customer).toBeNull();
 			expect(subscription).toBeNull();
@@ -327,7 +329,9 @@ describe("/api/auth/resolve-user", () => {
 			}),
 		);
 
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_resolve_restore_free" as never);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_resolve_restore_free" as never);
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(JSON.stringify({ id: "clerk-user-resolve-restore-free-again" }), {
 				status: 200,
@@ -455,7 +459,7 @@ describe("/api/auth/resolve-user", () => {
 			const user = await t.run((ctx) =>
 				ctx.db
 					.query("users")
-					.withIndex("byClerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-missing-email"))
+					.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-missing-email"))
 					.first(),
 			);
 
@@ -510,7 +514,7 @@ describe("/api/auth/resolve-user", () => {
 					ctx.db.get("users", existingUser.userId),
 					ctx.db
 						.query("users")
-						.withIndex("byClerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-email-conflict"))
+						.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-email-conflict"))
 						.first(),
 					ctx.db.get("users_anagraphics", existingUser.anagraphicId),
 				]);
@@ -691,7 +695,7 @@ describe("resolve_user", () => {
 				ctx.db.get("users", anonymousPayload.userId),
 				ctx.db
 					.query("users")
-					.withIndex("byClerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-conflict"))
+					.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", "clerk-user-resolve-conflict"))
 					.first(),
 				ctx.db.get("users_anagraphics", existingUser.anagraphicId),
 			]);
@@ -714,6 +718,82 @@ describe("resolve_user", () => {
 });
 
 describe("delete_current_user_account", () => {
+	test("transfers owned workspace ownership through the access-control endpoint", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-transfer-owner",
+				displayName: "Delete Transfer Owner",
+				email: "delete-transfer-owner@test.local",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-transfer-collaborator",
+				displayName: "Delete Transfer Collaborator",
+				email: "delete-transfer-collaborator@test.local",
+			}),
+		);
+
+		const workspace = await t.run(async (ctx) => {
+			const created = await workspaces_db_create(ctx, {
+				userId: owner.userId,
+				name: "delete-transfer",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay.workspaceId,
+				projectId: created._yay.defaultProjectId,
+				userId: collaborator.userId,
+				active: true,
+			});
+
+			return created._yay;
+		});
+
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-account-delete-transfer-owner",
+			external_id: owner.userId,
+			name: "Delete Transfer Owner",
+			email: "delete-transfer-owner@test.local",
+		});
+
+		const transferResult = await asOwner.mutation(api.access_control.transfer_workspace_ownership, {
+			workspaceId: workspace.workspaceId,
+			newOwnerUserId: collaborator.userId,
+		});
+
+		expect(transferResult._nay).toBeUndefined();
+		const after = await t.run(async (ctx) => {
+			const [ownerRole, collaboratorLimit] = await Promise.all([
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_role_user", (q) =>
+						q.eq("workspaceId", workspace.workspaceId).eq("projectId", workspace.defaultProjectId).eq("role", "owner"),
+					)
+					.first(),
+				ctx.db
+					.query("limits_per_user")
+					.withIndex("by_user_limitName", (q) =>
+						q.eq("userId", collaborator.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+					)
+					.first(),
+			]);
+
+			return { ownerRole, collaboratorLimit };
+		});
+
+		expect(after.ownerRole?.userId).toBe(collaborator.userId);
+		expect(after.collaboratorLimit?.usedCount).toBe(1);
+	});
+
 	test("returns Unauthenticated when no authenticated identity is present", async () => {
 		const t = test_convex();
 
@@ -735,6 +815,91 @@ describe("delete_current_user_account", () => {
 
 		expect(result._yay).toBeUndefined();
 		expect(result._nay?.message).toBe("Unauthenticated");
+	});
+
+	test("queues still-owned workspaces for deletion during account deletion", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-owned-delete",
+				displayName: "Delete Owned Workspace",
+				email: "delete-owned-workspace@test.local",
+			}),
+		);
+		const workspace = await t.run(async (ctx) => {
+			const created = await workspaces_db_create(ctx, {
+				userId: seeded.userId,
+				name: "delete-owned",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			return created._yay;
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-account-delete-owned-delete",
+			external_id: seeded.userId,
+			name: "Delete Owned Workspace",
+			email: "delete-owned-workspace@test.local",
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, {
+				status: 200,
+			}),
+		);
+
+		try {
+			const result = await asUser.action(api.users.delete_current_user_account, {});
+
+			expect(result._nay).toBeUndefined();
+			const after = await t.run(async (ctx) => {
+				const [user, ownerRoles, memberships, workspaceRequests, ownerLimit] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_role_user", (q) =>
+							q
+								.eq("workspaceId", workspace.workspaceId)
+								.eq("projectId", workspace.defaultProjectId)
+								.eq("role", "owner"),
+						)
+						.collect(),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_workspace_project_user", (q) =>
+							q.eq("active", true).eq("workspaceId", workspace.workspaceId),
+						)
+						.collect(),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"))
+						.collect(),
+					ctx.db
+						.query("limits_per_user")
+						.withIndex("by_user_limitName", (q) =>
+							q.eq("userId", seeded.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+						)
+						.first(),
+				]);
+
+				return { user, ownerRoles, memberships, workspaceRequests, ownerLimit };
+			});
+
+			expect(after.user?.deletedAt).toBeTypeOf("number");
+			expect(after.ownerRoles).toHaveLength(0);
+			expect(after.memberships).toHaveLength(0);
+			expect(after.workspaceRequests).toHaveLength(1);
+			expect(after.ownerLimit?.usedCount).toBe(0);
+		} finally {
+			fetchSpy.mockRestore();
+		}
 	});
 
 	test("deletes the Clerk user, schedules the current subscription for period-end cancellation, and processes the local tombstone flow", async () => {
@@ -799,37 +964,37 @@ describe("delete_current_user_account", () => {
 					anagraphic,
 					billingJob,
 				] = await Promise.all([
-						ctx.db.get("users", seeded.userId),
-						ctx.db
-							.query("data_deletion_requests")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.first(),
-						ctx.db
-							.query("data_deletion_requests")
-							.collect()
-							.then((rows) => rows.filter((r) => r.scope !== "user")),
-						ctx.db
-							.query("workspaces_projects_users")
-							.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-						ctx.db
-							.query("billing_usage_snapshots")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-							userId: seeded.userId,
-						}),
-						ctx.db.get("users_anagraphics", seeded.anagraphicId),
-						ctx.db
-							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.first(),
-					]);
+					ctx.db.get("users", seeded.userId),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+					ctx.db
+						.query("data_deletion_requests")
+						.collect()
+						.then((rows) => rows.filter((r) => r.scope !== "user")),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+					ctx.db.get("users_anagraphics", seeded.anagraphicId),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+				]);
 
 				return {
 					user,
@@ -926,44 +1091,56 @@ describe("delete_current_user_account", () => {
 				statusText: "Not Found",
 			}),
 		);
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_delete_404" as never);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_delete_404" as never);
 
 		try {
 			const result = await asUser.action(api.users.delete_current_user_account, {});
 
 			const after = await t.run(async (ctx) => {
-				const [user, request, purgeRequests, memberships, workspace, project, snapshots, customer, subscriptions, billingJob] =
-					await Promise.all([
-						ctx.db.get("users", seeded.userId),
-						ctx.db
-							.query("data_deletion_requests")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.first(),
-						ctx.db
-							.query("data_deletion_requests")
-							.collect()
-							.then((rows) => rows.filter((r) => r.scope !== "user")),
-						ctx.db
-							.query("workspaces_projects_users")
-							.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-						ctx.db
-							.query("billing_usage_snapshots")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-							userId: seeded.userId,
-						}),
-						ctx.db
-							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.first(),
-					]);
+				const [
+					user,
+					request,
+					purgeRequests,
+					memberships,
+					workspace,
+					project,
+					snapshots,
+					customer,
+					subscriptions,
+					billingJob,
+				] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+					ctx.db
+						.query("data_deletion_requests")
+						.collect()
+						.then((rows) => rows.filter((r) => r.scope !== "user")),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+				]);
 
 				return {
 					user,
@@ -1051,7 +1228,7 @@ describe("delete_current_user_account", () => {
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.first(),
 					ctx.db
 						.query("data_deletion_requests")
@@ -1059,7 +1236,7 @@ describe("delete_current_user_account", () => {
 						.then((rows) => rows.filter((r) => r.scope !== "user")),
 					ctx.db
 						.query("workspaces_projects_users")
-						.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
@@ -1142,11 +1319,11 @@ describe("delete_current_user_account", () => {
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.first(),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -1156,7 +1333,7 @@ describe("delete_current_user_account", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -1251,38 +1428,48 @@ describe("delete_current_user_account", () => {
 			const result = await asAnonymous.action(api.users.delete_current_user_account, {});
 
 			const after = await t.run(async (ctx) => {
-				const [user, request, purgeRequests, memberships, workspace, project, snapshots, customer, subscriptions, billingJob] =
-					await Promise.all([
-						ctx.db.get("users", seeded.userId),
-						ctx.db
-							.query("data_deletion_requests")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.first(),
-						ctx.db
-							.query("data_deletion_requests")
-							.collect()
-							.then((rows) => rows.filter((r) => r.scope !== "user")),
-						ctx.db
-							.query("workspaces_projects_users")
-							.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-						ctx.db
-							.query("billing_usage_snapshots")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-							userId: seeded.userId,
-						}),
-						ctx.db
-							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.first(),
-					]);
+				const [
+					user,
+					request,
+					purgeRequests,
+					memberships,
+					workspace,
+					project,
+					snapshots,
+					customer,
+					subscriptions,
+					billingJob,
+				] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+					ctx.db
+						.query("data_deletion_requests")
+						.collect()
+						.then((rows) => rows.filter((r) => r.scope !== "user")),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+				]);
 
 				return {
 					user,
@@ -1385,11 +1572,11 @@ describe("delete_current_user_account", () => {
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.first(),
 					ctx.db
 						.query("workspaces_projects_users")
-						.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 				]);
 
@@ -1455,7 +1642,9 @@ describe("hard_delete_user_now", () => {
 				status: 200,
 			}),
 		);
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_hard_delete" as never);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_hard_delete" as never);
 
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
@@ -1476,7 +1665,7 @@ describe("hard_delete_user_now", () => {
 							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 						ctx.db
 							.query("billing_usage_snapshots")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 							.collect(),
 						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 							userId: seeded.userId,
@@ -1486,7 +1675,7 @@ describe("hard_delete_user_now", () => {
 						}),
 						ctx.db
 							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 							.first(),
 					]);
 
@@ -1601,7 +1790,7 @@ describe("hard_delete_user_now", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -1716,27 +1905,36 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, anagraphic, requests, workspace, project, snapshots, customer, subscriptions, customerSubscriptions] =
-					await Promise.all([
-						ctx.db.get("users", seeded.userId),
-						ctx.db.get("users_anagraphics", seeded.anagraphicId),
-						ctx.db.query("data_deletion_requests").collect(),
-						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-						ctx.db
-							.query("billing_usage_snapshots")
-							.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listCustomerSubscriptions, {
-							customerId: "cust_users_hard_delete_purge",
-						}),
-					]);
+				const [
+					user,
+					anagraphic,
+					requests,
+					workspace,
+					project,
+					snapshots,
+					customer,
+					subscriptions,
+					customerSubscriptions,
+				] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db.get("users_anagraphics", seeded.anagraphicId),
+					ctx.db.query("data_deletion_requests").collect(),
+					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listCustomerSubscriptions, {
+						customerId: "cust_users_hard_delete_purge",
+					}),
+				]);
 
 				return {
 					user,
@@ -1807,7 +2005,9 @@ describe("hard_delete_user_now", () => {
 				statusText: "Not Found",
 			}),
 		);
-		const enqueueActionSpy = vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_hard_delete_404" as never);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_hard_delete_404" as never);
 
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
@@ -1822,7 +2022,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -1832,7 +2032,7 @@ describe("hard_delete_user_now", () => {
 					}),
 					ctx.db
 						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.first(),
 				]);
 
@@ -1929,7 +2129,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -2016,7 +2216,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
 						.collect(),
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
@@ -2172,30 +2372,31 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, workspace, project, pages, snapshots, customer, subscriptions, billingJob] = await Promise.all([
-					ctx.db.get("users", seeded.userId),
-					ctx.db.query("data_deletion_requests").collect(),
-					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-					ctx.db
-						.query("pages")
-						.collect()
-						.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
-					ctx.db
-						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-						.collect(),
-					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-						userId: seeded.userId,
-					}),
-					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-						userId: seeded.userId,
-					}),
-					ctx.db
-						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-						.first(),
-				]);
+				const [user, requests, workspace, project, pages, snapshots, customer, subscriptions, billingJob] =
+					await Promise.all([
+						ctx.db.get("users", seeded.userId),
+						ctx.db.query("data_deletion_requests").collect(),
+						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+						ctx.db
+							.query("pages")
+							.collect()
+							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
+						ctx.db
+							.query("billing_usage_snapshots")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.collect(),
+						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+							userId: seeded.userId,
+						}),
+						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+							userId: seeded.userId,
+						}),
+						ctx.db
+							.query("billing_cancel_polar_subscription_jobs")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.first(),
+					]);
 
 				return {
 					user,
@@ -2341,11 +2542,11 @@ describe("hard_delete_user_now", () => {
 				ctx.db.get("users_anagraphics", seeded.anagraphicId),
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", seeded.userId))
+					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
 					.collect(),
 				ctx.db
 					.query("limits_per_user")
-					.withIndex("byUserLimitName", (q) => q.eq("userId", seeded.userId))
+					.withIndex("by_user_limitName", (q) => q.eq("userId", seeded.userId))
 					.collect(),
 			]);
 
@@ -2412,30 +2613,31 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, workspace, project, pages, snapshots, customer, subscriptions, billingJob] = await Promise.all([
-					ctx.db.get("users", seeded.userId),
-					ctx.db.query("data_deletion_requests").collect(),
-					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-					ctx.db
-						.query("pages")
-						.collect()
-						.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
-					ctx.db
-						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-						.collect(),
-					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-						userId: seeded.userId,
-					}),
-					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-						userId: seeded.userId,
-					}),
-					ctx.db
-						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("byUser", (q) => q.eq("userId", seeded.userId))
-						.first(),
-				]);
+				const [user, requests, workspace, project, pages, snapshots, customer, subscriptions, billingJob] =
+					await Promise.all([
+						ctx.db.get("users", seeded.userId),
+						ctx.db.query("data_deletion_requests").collect(),
+						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+						ctx.db
+							.query("pages")
+							.collect()
+							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
+						ctx.db
+							.query("billing_usage_snapshots")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.collect(),
+						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+							userId: seeded.userId,
+						}),
+						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+							userId: seeded.userId,
+						}),
+						ctx.db
+							.query("billing_cancel_polar_subscription_jobs")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.first(),
+					]);
 
 				return {
 					user,
@@ -2494,7 +2696,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 		const usageSnapshot = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", userId))
+				.withIndex("by_user", (q) => q.eq("userId", userId))
 				.unique(),
 		);
 
@@ -2525,7 +2727,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 		const usageSnapshotBefore = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", anonymousPayload.userId))
+				.withIndex("by_user", (q) => q.eq("userId", anonymousPayload.userId))
 				.unique(),
 		);
 		expect(usageSnapshotBefore).not.toBeNull();
@@ -2546,7 +2748,7 @@ describe("anonymous billing snapshot lifecycle", () => {
 		const usageSnapshotAfter = await t.run(async (ctx) =>
 			ctx.db
 				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", anonymousPayload.userId))
+				.withIndex("by_user", (q) => q.eq("userId", anonymousPayload.userId))
 				.unique(),
 		);
 		expect(usageSnapshotAfter).toBeNull();

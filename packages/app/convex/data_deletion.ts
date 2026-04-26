@@ -5,6 +5,8 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { presence } from "./presence.ts";
+import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
+import { user_limits } from "../shared/limits.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const USER_DELETION_REQUEST_BATCH_SIZE = 20;
@@ -31,7 +33,7 @@ async function db_purge_workspace_project_content(
 	for (const pendingEditId of pendingEditIds) {
 		const task = await ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", pendingEditId))
+			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", pendingEditId))
 			.first();
 		if (task) {
 			pendingEditCleanupTaskIds.push(task._id);
@@ -41,7 +43,7 @@ async function db_purge_workspace_project_content(
 	const pageIds: Array<Id<"pages">> = [];
 	for await (const page of ctx.db
 		.query("pages")
-		.withIndex("byWorkspaceProjectParentName", (q) =>
+		.withIndex("by_workspace_project_parent_name", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pageIds.push(page._id);
@@ -51,7 +53,7 @@ async function db_purge_workspace_project_content(
 	for (const pageId of pageIds) {
 		const sched = await ctx.db
 			.query("pages_yjs_snapshot_schedules")
-			.withIndex("byPage", (q) => q.eq("pageId", pageId))
+			.withIndex("by_page", (q) => q.eq("pageId", pageId))
 			.first();
 		if (sched) {
 			pagesYjsSnapshotScheduleIds.push(sched._id);
@@ -62,7 +64,7 @@ async function db_purge_workspace_project_content(
 	const aiChatThreadsMessagesAisdk5Ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
 	for await (const row of ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
-		.withIndex("byWorkspaceProjectThread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		aiChatThreadsMessagesAisdk5Ids.push(row._id);
 	}
 
@@ -70,7 +72,7 @@ async function db_purge_workspace_project_content(
 	const aiChatThreadsIds: Array<Id<"ai_chat_threads">> = [];
 	for await (const row of ctx.db
 		.query("ai_chat_threads")
-		.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
+		.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		aiChatThreadsIds.push(row._id);
@@ -80,7 +82,7 @@ async function db_purge_workspace_project_content(
 	const chatMessagesIds: Array<Id<"chat_messages">> = [];
 	for await (const row of ctx.db
 		.query("chat_messages")
-		.withIndex("byWorkspaceProjectThread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		chatMessagesIds.push(row._id);
 	}
 
@@ -96,7 +98,7 @@ async function db_purge_workspace_project_content(
 	const pagesPlainTextChunksIds: Array<Id<"pages_plain_text_chunks">> = [];
 	for await (const row of ctx.db
 		.query("pages_plain_text_chunks")
-		.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesPlainTextChunksIds.push(row._id);
@@ -106,7 +108,7 @@ async function db_purge_workspace_project_content(
 	const pagesMarkdownChunksIds: Array<Id<"pages_markdown_chunks">> = [];
 	for await (const row of ctx.db
 		.query("pages_markdown_chunks")
-		.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesMarkdownChunksIds.push(row._id);
@@ -116,7 +118,7 @@ async function db_purge_workspace_project_content(
 	const pagesYjsSnapshotsIds: Array<Id<"pages_yjs_snapshots">> = [];
 	for await (const row of ctx.db
 		.query("pages_yjs_snapshots")
-		.withIndex("byWorkspaceProjectPageSequence", (q) =>
+		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesYjsSnapshotsIds.push(row._id);
@@ -126,7 +128,7 @@ async function db_purge_workspace_project_content(
 	const pagesYjsUpdatesIds: Array<Id<"pages_yjs_updates">> = [];
 	for await (const row of ctx.db
 		.query("pages_yjs_updates")
-		.withIndex("byWorkspaceProjectPageSequence", (q) =>
+		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesYjsUpdatesIds.push(row._id);
@@ -136,7 +138,7 @@ async function db_purge_workspace_project_content(
 	const pagesYjsDocsLastSequencesIds: Array<Id<"pages_yjs_docs_last_sequences">> = [];
 	for await (const row of ctx.db
 		.query("pages_yjs_docs_last_sequences")
-		.withIndex("byWorkspaceProjectPage", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("by_workspace_project_page", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		pagesYjsDocsLastSequencesIds.push(row._id);
 	}
 
@@ -144,7 +146,7 @@ async function db_purge_workspace_project_content(
 	const pagesSnapshotsContentsIds: Array<Id<"pages_snapshots_contents">> = [];
 	for await (const row of ctx.db
 		.query("pages_snapshots_contents")
-		.withIndex("byWorkspaceProjectPageSnapshot", (q) =>
+		.withIndex("by_workspace_project_pageSnapshot", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesSnapshotsContentsIds.push(row._id);
@@ -154,7 +156,7 @@ async function db_purge_workspace_project_content(
 	const pagesSnapshotsIds: Array<Id<"pages_snapshots">> = [];
 	for await (const row of ctx.db
 		.query("pages_snapshots")
-		.withIndex("byWorkspaceProjectPageArchivedAt", (q) =>
+		.withIndex("by_workspace_project_page_archivedAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		pagesSnapshotsIds.push(row._id);
@@ -216,7 +218,7 @@ async function db_delete_data_deletion_requests(
 	if (args.scope === "user") {
 		const rows = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("byUser", (q) => q.eq("userId", args.userId))
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.collect();
 
 		await Promise.all(
@@ -229,7 +231,7 @@ async function db_delete_data_deletion_requests(
 	const rows = await ctx.db
 		.query("data_deletion_requests")
 		.withIndex(
-			"byWorkspaceProject",
+			"by_workspace_project",
 			args.scope === "project"
 				? (q) => q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId)
 				: (q) => q.eq("workspaceId", args.workspaceId),
@@ -253,7 +255,7 @@ async function db_delete_workspace(
 ) {
 	const projects = await ctx.db
 		.query("workspaces_projects")
-		.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId))
+		.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
 		.collect();
 
 	const projectRequestsToDelete = [];
@@ -277,25 +279,109 @@ async function db_delete_workspace(
 
 	const workspaceStill = await ctx.db.get("workspaces", args.workspaceId);
 	if (workspaceStill) {
-		const [remainingProjects, limitsPerWorkspaceDocs] = await Promise.all([
+		await Promise.all([
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId))
-				.collect(),
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+				.collect()
+				.then((remainingProjects) =>
+					Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id))),
+				),
 			ctx.db
 				.query("limits_per_workspace")
-				.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", args.workspaceId))
-				.collect(),
+				.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", args.workspaceId))
+				.collect()
+				.then((limitsPerWorkspaceDocs) =>
+					Promise.all(limitsPerWorkspaceDocs.map((doc) => ctx.db.delete("limits_per_workspace", doc._id))),
+				),
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspaceId))
+				.collect()
+				.then((rows) =>
+					Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id))),
+				),
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspaceId))
+				.collect()
+				.then((rows) =>
+					Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id))),
+				),
 		]);
-
-		await Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id)));
-		await Promise.all(limitsPerWorkspaceDocs.map((doc) => ctx.db.delete("limits_per_workspace", doc._id)));
 		await ctx.db.delete("workspaces", args.workspaceId);
 	}
 
 	return {
 		projectRequestsToDelete,
 	};
+}
+
+async function db_queue_workspace_deletion_for_owner_account_deletion(
+	ctx: MutationCtx,
+	args: {
+		owner: Id<"users">;
+		workspace: Doc<"workspaces">;
+		now: number;
+	},
+) {
+	const [, , , userIdsPerProject] = await Promise.all([
+		data_deletion_db_request(ctx, {
+			userId: args.owner,
+			workspaceId: args.workspace._id,
+			scope: "workspace",
+		}),
+		ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspace._id))
+			.collect()
+			.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+		ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspace._id))
+			.collect()
+			.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+		ctx.db
+			.query("workspaces_projects")
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspace._id))
+			.collect()
+			.then((workspaceProjects) =>
+				Promise.all(
+					workspaceProjects.map(async (project) => {
+						const projectUsers = await ctx.db
+							.query("workspaces_projects_users")
+							.withIndex("by_project_user_active", (q) => q.eq("projectId", project._id))
+							.collect();
+
+						await Promise.all(
+							projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+						);
+
+						return projectUsers.map((projectUser) => projectUser.userId);
+					}),
+				),
+			),
+	]);
+
+	const ownerLimit = await ctx.db
+		.query("limits_per_user")
+		.withIndex("by_user_limitName", (q) =>
+			q.eq("userId", args.owner).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+		)
+		.first();
+	if (ownerLimit && ownerLimit.usedCount > 0) {
+		await ctx.db.patch("limits_per_user", ownerLimit._id, {
+			usedCount: ownerLimit.usedCount - 1,
+			updatedAt: args.now,
+		});
+	}
+
+	for (const userId of new Set<Id<"users">>(userIdsPerProject.flat())) {
+		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+			userId,
+			now: args.now,
+		});
+	}
 }
 
 async function db_prepare_user_for_deletion(
@@ -307,7 +393,7 @@ async function db_prepare_user_for_deletion(
 ) {
 	const memberships = await ctx.db
 		.query("workspaces_projects_users")
-		.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", args.user._id))
+		.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.user._id))
 		.collect();
 
 	if (args.user.deletedAt == null) {
@@ -330,9 +416,7 @@ async function db_prepare_user_for_deletion(
 	// Drop presence rows for the deleted user so no orphan docs linger;
 	// `list` / `listRoom` already filter silently if anything is re-created.
 	const presenceRooms = await presence.listUser(ctx, args.user._id, false, 10_000);
-	await Promise.all(
-		presenceRooms.map((room) => presence.removeRoomUser(ctx, room.roomId, args.user._id)),
-	);
+	await Promise.all(presenceRooms.map((room) => presence.removeRoomUser(ctx, room.roomId, args.user._id)));
 }
 
 async function db_finalize_deleted_user(
@@ -348,40 +432,51 @@ async function db_finalize_deleted_user(
 	}
 
 	const userIdString = String(user._id);
-	const [membershipsAll, anonymousAuthTokens, userLimits, pendingEdits, lastSequenceSaved, billingUsageSnapshots] =
-		await Promise.all([
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", user._id))
-				.collect(),
-			ctx.db
-				.query("users_anon_tokens")
-				.withIndex("byUser", (q) => q.eq("userId", user._id))
-				.collect(),
-			ctx.db
-				.query("limits_per_user")
-				.withIndex("byUserLimitName", (q) => q.eq("userId", user._id))
-				.collect(),
-			ctx.db
-				.query("pages_pending_edits")
-				.withIndex("byUserPage", (q) => q.eq("userId", userIdString))
-				.collect(),
-			ctx.db
-				.query("pages_pending_edits_last_sequence_saved")
-				.withIndex("byUserPage", (q) => q.eq("userId", userIdString))
-				.collect(),
-			ctx.db
-				.query("billing_usage_snapshots")
-				.withIndex("byUser", (q) => q.eq("userId", user._id))
-				.collect(),
-		]);
+	const [
+		membershipsAll,
+		accessRoleAssignments,
+		anonymousAuthTokens,
+		userLimits,
+		pendingEdits,
+		lastSequenceSaved,
+		billingUsageSnapshots,
+	] = await Promise.all([
+		ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("users_anon_tokens")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("limits_per_user")
+			.withIndex("by_user_limitName", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("pages_pending_edits")
+			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
+			.collect(),
+		ctx.db
+			.query("pages_pending_edits_last_sequence_saved")
+			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
+			.collect(),
+		ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect(),
+	]);
 
 	const pendingEditCleanupTasks = (
 		await Promise.all(
 			pendingEdits.map((row) =>
 				ctx.db
 					.query("pages_pending_edits_cleanup_tasks")
-					.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", row._id))
+					.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", row._id))
 					.collect(),
 			),
 		)
@@ -396,11 +491,20 @@ async function db_finalize_deleted_user(
 	for (const membership of membershipsAll) {
 		affectedWorkspaceIds.add(membership.workspaceId);
 	}
+	for (const assignment of accessRoleAssignments) {
+		affectedWorkspaceIds.add(assignment.workspaceId);
+	}
 
 	await Promise.all(pendingEditCleanupTasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)));
 	await Promise.all(lastSequenceSaved.map((row) => ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id)));
 	await Promise.all(pendingEdits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
 	await Promise.all(membershipsAll.map((row) => ctx.db.delete("workspaces_projects_users", row._id)));
+	await Promise.all(accessRoleAssignments.map((row) => ctx.db.delete("access_control_role_assignments", row._id)));
+	await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_user_workspace_project_resource_permission", (q) => q.eq("userId", user._id))
+		.collect()
+		.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id))));
 	await Promise.all(anonymousAuthTokens.map((row) => ctx.db.delete("users_anon_tokens", row._id)));
 	await Promise.all(userLimits.map((row) => ctx.db.delete("limits_per_user", row._id)));
 	await Promise.all(billingUsageSnapshots.map((row) => ctx.db.delete("billing_usage_snapshots", row._id)));
@@ -425,7 +529,7 @@ async function db_finalize_deleted_user(
 
 		const remainingMemberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byActiveWorkspaceProjectUser", (q) => q.eq("active", true).eq("workspaceId", workspaceId))
+			.withIndex("by_active_workspace_project_user", (q) => q.eq("active", true).eq("workspaceId", workspaceId))
 			.first();
 		if (remainingMemberships) {
 			continue;
@@ -451,8 +555,40 @@ export const init_user_deletion = internalMutation({
 		}
 
 		const now = args.nowTs ?? Date.now();
-		// Keep phase 1 reversible by only tombstoning the user and deactivating
-		// memberships. Leave all destructive cleanup for phase 2.
+		const ownerAssignments = await ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", args.userId).eq("role", "owner"))
+			.collect();
+		const ownedWorkspaceIds = new Set<Id<"workspaces">>();
+		const ownedWorkspaces = (
+			await Promise.all(
+				ownerAssignments.map(async (ownerAssignment) => {
+					if (ownedWorkspaceIds.has(ownerAssignment.workspaceId)) {
+						return null;
+					}
+					ownedWorkspaceIds.add(ownerAssignment.workspaceId);
+
+					const workspace = await ctx.db.get("workspaces", ownerAssignment.workspaceId);
+					if (!workspace || workspace.default || ownerAssignment.projectId !== workspace.defaultProjectId) {
+						return null;
+					}
+
+					return workspace;
+				}),
+			)
+		).filter((workspace): workspace is NonNullable<typeof workspace> => workspace !== null);
+
+		for (const workspace of ownedWorkspaces) {
+			await db_queue_workspace_deletion_for_owner_account_deletion(ctx, {
+				owner: user._id,
+				workspace,
+				now,
+			});
+		}
+
+		// Keep phase 1 reversible for the account itself. Owned workspaces that
+		// remain after any frontend transfer calls are queued for deletion here,
+		// so restoring the account does not recover those workspace deletions.
 		await db_prepare_user_for_deletion(ctx, {
 			user,
 			now,

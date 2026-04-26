@@ -10,7 +10,7 @@ import {
 } from "./_generated/server.js";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
-import { components, internal } from "./_generated/api.js";
+import { internal } from "./_generated/api.js";
 import { type RouteSpec } from "convex/server";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -27,7 +27,7 @@ import type { Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { workspaces_db_ensure_default_workspace_and_project_for_user } from "../server/workspaces.ts";
+import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
 import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
@@ -35,6 +35,7 @@ import {
 	billing_db_ensure_anonymous_user_usage_snapshot,
 	billing_enqueue_free_subscription_bootstrap,
 	billing_schedule_polar_subscription_period_end_cancellation,
+	billing_polar,
 } from "./billing.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
@@ -253,7 +254,7 @@ async function db_ensure_default_user_limit(
 ) {
 	const existingLimit = await ctx.db
 		.query("limits_per_user")
-		.withIndex("byUserLimitName", (q) =>
+		.withIndex("by_user_limitName", (q) =>
 			q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
 		)
 		.first();
@@ -453,7 +454,7 @@ export const resolve_user = internalMutation({
 
 		const existingUsersForClerk = await ctx.db
 			.query("users")
-			.withIndex("byClerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
+			.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
 			.collect();
 		const existingLiveUser = existingUsersForClerk.find((user) => user.deletedAt == null) ?? null;
 
@@ -472,7 +473,7 @@ export const resolve_user = internalMutation({
 
 		const anagraphicByEmail = await ctx.db
 			.query("users_anagraphics")
-			.withIndex("byEmail", (q) => q.eq("email", email))
+			.withIndex("by_email", (q) => q.eq("email", email))
 			.unique()
 			.catch(() => "duplicate_email" as const);
 		if (anagraphicByEmail === "duplicate_email") {
@@ -493,11 +494,11 @@ export const resolve_user = internalMutation({
 			const [memberships, deletionRequests] = await Promise.all([
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", deletedUser._id))
+					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser._id))
 					.collect(),
 				ctx.db
 					.query("data_deletion_requests")
-					.withIndex("byUser", (q) => q.eq("userId", deletedUser._id))
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser._id))
 					.collect(),
 			]);
 
@@ -578,7 +579,7 @@ export const resolve_user = internalMutation({
 					// remove it so the anonymous user can become the canonical user record.
 					ctx.db
 						.query("users")
-						.withIndex("byClerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
+						.withIndex("by_clerkUser", (q) => q.eq("clerkUserId", args.clerkUserId))
 						.collect()
 						.then((existingClerkUsers) =>
 							Promise.all(
@@ -617,7 +618,7 @@ export const resolve_user = internalMutation({
 					// bootstrap will create a fresh Polar-backed snapshot.
 					ctx.db
 						.query("billing_usage_snapshots")
-						.withIndex("byUser", (q) => q.eq("userId", user._id))
+						.withIndex("by_user", (q) => q.eq("userId", user._id))
 						.first()
 						.then((usageSnapshot) =>
 							usageSnapshot ? ctx.db.delete("billing_usage_snapshots", usageSnapshot._id) : undefined,
@@ -712,15 +713,13 @@ export const delete_current_user_account = action({
 	args: {},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
-			if (!userAuth) {
-				return null;
-			}
-
-			return ctx.runQuery(internal.users.get, {
-				userId: userAuth.id,
-			});
-		});
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
+			userAuth
+				? ctx.runQuery(internal.users.get, {
+						userId: userAuth.id,
+					})
+				: null,
+		);
 		if (!user) {
 			return Result({
 				_nay: {
@@ -738,14 +737,19 @@ export const delete_current_user_account = action({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-			userId: user._id,
-		});
+		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
 
-		const requestId = await ctx.runMutation(internal.data_deletion.init_user_deletion, {
-			userId: user._id,
-			nowTs: Date.now(),
-		});
+		const requestId: Id<"data_deletion_requests"> | null = await ctx.runMutation(
+			internal.data_deletion.init_user_deletion,
+			{
+				userId: user._id,
+				nowTs: Date.now(),
+			},
+		);
+
+		if (requestId === null) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 
 		let shouldClearClerkUserId = false;
 
@@ -1158,9 +1162,7 @@ export const hard_delete_user_now = internalAction({
 			return null;
 		}
 
-		const currentSubscription = await ctx.runQuery(components.polar.lib.getCurrentSubscription, {
-			userId: user._id,
-		});
+		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
 
 		let shouldClearClerkUserId = false;
 

@@ -179,6 +179,18 @@ All vendored and reference submodule paths are listed below in this single secti
 
 - [references-submodules/ai-chatbot/](references-submodules/ai-chatbot) - Vercel AI Chatbot reference app/template
 
+- [references-submodules/tanstack-router/](references-submodules/tanstack-router) - TanStack Router repository
+
+  - Documentation folders:
+    - [docs/router/](references-submodules/tanstack-router/docs/router)
+  - Examples folders:
+    - [examples/react/](references-submodules/tanstack-router/examples/react)
+  - Package folders:
+    - [packages/react-router/](references-submodules/tanstack-router/packages/react-router)
+    - [packages/router-core/](references-submodules/tanstack-router/packages/router-core)
+    - [packages/router-plugin/](references-submodules/tanstack-router/packages/router-plugin)
+    - [packages/zod-adapter/](references-submodules/tanstack-router/packages/zod-adapter)
+
 - Convex reference repositories (submodules under [references-submodules/](references-submodules))
 
   - Back-end + docs source:

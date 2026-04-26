@@ -2,40 +2,389 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
+import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { user_limits, workspace_limits } from "../shared/limits.ts";
-import { workspaces_list_sort_projects_for_workspace, workspaces_list_sort_workspaces } from "../shared/workspaces.ts";
+import {
+	workspaces_description_normalize,
+	workspaces_list_sort_projects_for_workspace,
+	workspaces_list_sort_workspaces,
+	workspaces_name_autofix_and_validate,
+} from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
 import {
-	workspaces_db_create,
-	workspaces_db_create_project,
-	workspaces_db_ensure_default_workspace_and_project_for_user,
-	workspaces_validate_description,
-	workspaces_validate_name,
-} from "../server/workspaces.ts";
+	access_control_db_ensure_role_assignment,
+	access_control_db_ensure_role_permission_grant,
+	access_control_db_has_permission,
+} from "./access_control.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
+const DEFAULT_WORKSPACE_NAME = "personal";
+const DEFAULT_PROJECT_NAME = "home";
+
+const access_control_workspace_role_permission_grants = [
+	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.members.manage" },
+	{ role: "admin", permission: "project.create" },
+	{ role: "admin", permission: "project.update" },
+	{ role: "admin", permission: "project.delete" },
+	{ role: "admin", permission: "project.members.manage" },
+	{ role: "admin", permission: "asset.read" },
+	{ role: "admin", permission: "asset.write" },
+	{ role: "admin", permission: "workspace.roles.manage" },
+	{ role: "admin", permission: "asset.permissions.manage" },
+	{ role: "member", permission: "workspace.update" },
+	{ role: "member", permission: "project.create" },
+	{ role: "member", permission: "project.update" },
+	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "asset.read" },
+	{ role: "member", permission: "asset.write" },
+] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
+
+const access_control_project_role_permission_grants = [
+	{ role: "admin", permission: "project.update" },
+	{ role: "admin", permission: "project.delete" },
+	{ role: "admin", permission: "project.members.manage" },
+	{ role: "admin", permission: "asset.read" },
+	{ role: "admin", permission: "asset.write" },
+	{ role: "admin", permission: "asset.permissions.manage" },
+	{ role: "member", permission: "project.update" },
+	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "asset.read" },
+	{ role: "member", permission: "asset.write" },
+] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
+
 /**
- * TODO: to be implemented
+ * Autofix then validate a workspace or project name.
+ *
+ * @returns A result containing the normalized name if valid, or an error message if invalid.
  */
-async function user_is_workspace_admin(
-	_ctx: MutationCtx,
-	_args: { workspaceId: Id<"workspaces">; userId: Id<"users"> },
-) {
-	return true;
+function workspaces_validate_name(name: string) {
+	return workspaces_name_autofix_and_validate(name);
+}
+
+function workspaces_validate_description(raw: string) {
+	return workspaces_description_normalize(raw);
 }
 
 /**
- * TODO: to be implemented
+ * Get a membership doc by id and verify it belongs to the given user.
  */
-async function user_is_project_admin(
-	_ctx: MutationCtx,
-	_args: { projectId: Id<"workspaces_projects">; userId: Id<"users"> },
+export async function workspaces_db_get_membership_for_user(
+	ctx: QueryCtx | MutationCtx,
+	args: { userId: Id<"users">; membershipId: Id<"workspaces_projects_users"> },
 ) {
-	return true;
+	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
+	if (!membership || membership.userId !== args.userId || membership.active === false) {
+		return null;
+	}
+	return membership;
+}
+
+export async function workspaces_db_create(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; name: string; description: string; now: number; default?: boolean },
+) {
+	const nameResult = workspaces_validate_name(args.name);
+	if (nameResult._nay) {
+		return Result({
+			_nay: {
+				message: nameResult._nay.message,
+			},
+		});
+	}
+	const name = nameResult._yay;
+
+	const allowDuplicateDefaultWorkspaceName = Boolean(args.default) && name === DEFAULT_WORKSPACE_NAME;
+
+	const existingWorkspace = allowDuplicateDefaultWorkspaceName
+		? null
+		: await ctx.db
+				.query("workspaces")
+				.withIndex("by_name", (q) => q.eq("name", name))
+				.first();
+	if (existingWorkspace) {
+		return Result({
+			_nay: {
+				message: "Workspace name already exists",
+			},
+		});
+	}
+
+	if (!args.default) {
+		const definition = user_limits.EXTRA_WORKSPACES;
+		const limit = await ctx.db
+			.query("limits_per_user")
+			.withIndex("by_user_limitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
+			.first();
+		if (!limit) {
+			throw should_never_happen("Missing user limit doc", {
+				userId: args.userId,
+				limitName: definition.name,
+			});
+		}
+
+		const remainingCount = Math.max(0, limit.maxCount - limit.usedCount);
+		if (remainingCount <= 0) {
+			return Result({
+				_nay: {
+					message: definition.disabledReason,
+				},
+			});
+		}
+
+		await ctx.db.patch("limits_per_user", limit._id, {
+			usedCount: limit.usedCount + 1,
+			updatedAt: args.now,
+		});
+	}
+
+	const workspaceId = await ctx.db.insert("workspaces", {
+		name,
+		description: args.description,
+		default: args.default ?? false,
+		updatedAt: args.now,
+	});
+
+	const defaultProjectId = await ctx.db.insert("workspaces_projects", {
+		workspaceId,
+		name: DEFAULT_PROJECT_NAME,
+		description: "",
+		default: true,
+		updatedAt: args.now,
+	});
+
+	const updates = [
+		ctx.db.patch("workspaces", workspaceId, {
+			defaultProjectId,
+		}),
+
+		ctx.db.insert("limits_per_workspace", {
+			workspaceId,
+			limitName: workspace_limits.EXTRA_PROJECTS.name,
+			usedCount: 0,
+			maxCount: workspace_limits.EXTRA_PROJECTS.maxCount,
+			createdAt: args.now,
+			updatedAt: args.now,
+		}),
+
+		ctx.db.insert("workspaces_projects_users", {
+			workspaceId: workspaceId,
+			projectId: defaultProjectId,
+			userId: args.userId,
+			active: true,
+			updatedAt: args.now,
+		}),
+
+		access_control_db_ensure_role_assignment(ctx, {
+			workspaceId,
+			projectId: defaultProjectId,
+			userId: args.userId,
+			role: "owner",
+			now: args.now,
+		}),
+	];
+
+	if (args.default) {
+		updates.push(
+			ctx.db.patch("users", args.userId, {
+				defaultWorkspaceId: workspaceId,
+				defaultProjectId,
+			}),
+		);
+	}
+
+	await Promise.all(updates);
+
+	for (const grant of access_control_workspace_role_permission_grants) {
+		await access_control_db_ensure_role_permission_grant(ctx, {
+			workspaceId,
+			projectId: defaultProjectId,
+			resourceKind: "workspace",
+			resourceId: String(workspaceId),
+			role: grant.role,
+			permission: grant.permission,
+			now: args.now,
+		});
+	}
+
+	for (const grant of access_control_project_role_permission_grants) {
+		await access_control_db_ensure_role_permission_grant(ctx, {
+			workspaceId,
+			projectId: defaultProjectId,
+			resourceKind: "project",
+			resourceId: String(defaultProjectId),
+			role: grant.role,
+			permission: grant.permission,
+			now: args.now,
+		});
+	}
+
+	return Result({
+		_yay: {
+			workspaceId,
+			defaultProjectId,
+			name,
+			defaultProjectName: DEFAULT_PROJECT_NAME,
+		},
+	});
+}
+
+export async function workspaces_db_create_project(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; workspaceId: Id<"workspaces">; name: string; description: string; now: number },
+) {
+	const nameResult = workspaces_validate_name(args.name);
+	if (nameResult._nay) {
+		return Result({
+			_nay: {
+				message: nameResult._nay.message,
+			},
+		});
+	}
+	const name = nameResult._yay;
+
+	const workspace = await ctx.db.get("workspaces", args.workspaceId);
+	if (!workspace) {
+		return Result({
+			_nay: {
+				message: "Workspace not found",
+			},
+		});
+	}
+
+	const hasMembership = Boolean(
+		await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q.eq("active", true).eq("userId", args.userId).eq("workspaceId", args.workspaceId),
+			)
+			.first(),
+	);
+
+	if (!hasMembership) {
+		return Result({
+			_nay: {
+				message: "Workspace not found",
+			},
+		});
+	}
+
+	const [defaultProjects, nonDefaultProjects] = await Promise.all([
+		ctx.db
+			.query("workspaces_projects")
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", true))
+			.collect(),
+		ctx.db
+			.query("workspaces_projects")
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId).eq("default", false))
+			.collect(),
+	]);
+
+	for (const project of [...defaultProjects, ...nonDefaultProjects]) {
+		if (project.name === name) {
+			return Result({
+				_nay: {
+					message: "Project name already exists",
+				},
+			});
+		}
+	}
+
+	const limit = await ctx.db
+		.query("limits_per_workspace")
+		.withIndex("by_workspace_limitName", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("limitName", workspace_limits.EXTRA_PROJECTS.name),
+		)
+		.first();
+	if (!limit) {
+		throw should_never_happen("Missing workspace limit doc", {
+			workspaceId: args.workspaceId,
+			limitName: workspace_limits.EXTRA_PROJECTS.name,
+		});
+	}
+	const remainingCount = Math.max(0, limit.maxCount - limit.usedCount);
+	if (remainingCount <= 0) {
+		return Result({
+			_nay: {
+				message: workspace_limits.EXTRA_PROJECTS.disabledReason,
+			},
+		});
+	}
+
+	await ctx.db.patch("limits_per_workspace", limit._id, {
+		usedCount: limit.usedCount + 1,
+		updatedAt: args.now,
+	});
+
+	const projectId = await ctx.db.insert("workspaces_projects", {
+		workspaceId: args.workspaceId,
+		name,
+		description: args.description,
+		default: false,
+		updatedAt: args.now,
+	});
+
+	await ctx.db.insert("workspaces_projects_users", {
+		workspaceId: args.workspaceId,
+		projectId,
+		userId: args.userId,
+		active: true,
+		updatedAt: args.now,
+	});
+
+	await access_control_db_ensure_role_assignment(ctx, {
+		workspaceId: args.workspaceId,
+		projectId,
+		userId: args.userId,
+		role: "member",
+		now: args.now,
+	});
+
+	for (const grant of access_control_project_role_permission_grants) {
+		await access_control_db_ensure_role_permission_grant(ctx, {
+			workspaceId: args.workspaceId,
+			projectId,
+			resourceKind: "project",
+			resourceId: String(projectId),
+			role: grant.role,
+			permission: grant.permission,
+			now: args.now,
+		});
+	}
+
+	return Result({
+		_yay: {
+			projectId,
+			name,
+			workspaceId: args.workspaceId,
+		},
+	});
+}
+
+export async function workspaces_db_ensure_default_workspace_and_project_for_user(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; now: number },
+) {
+	const user = await ctx.db.get("users", args.userId);
+	if (!user) {
+		return;
+	}
+
+	const defaultWorkspace = user.defaultWorkspaceId ? await ctx.db.get("workspaces", user.defaultWorkspaceId) : null;
+
+	if (!defaultWorkspace) {
+		await workspaces_db_create(ctx, {
+			userId: args.userId,
+			name: DEFAULT_WORKSPACE_NAME,
+			description: "",
+			now: args.now,
+			default: true,
+		});
+	}
 }
 
 export const list = query({
@@ -45,13 +394,13 @@ export const list = query({
 		workspaceIdsProjectsDict: v.record(v.id("workspaces"), v.array(doc(app_convex_schema, "workspaces_projects"))),
 	}),
 	handler: async (ctx) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user.id))
+			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", userAuth.id))
 			.collect();
 
 		const projectIdsByWorkspace = new Map<Id<"workspaces">, Set<Id<"workspaces_projects">>>();
@@ -130,8 +479,8 @@ export const get_membership_for_scope = query({
 	},
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const workspaceId = ctx.db.normalizeId("workspaces", args.workspaceId);
@@ -142,8 +491,8 @@ export const get_membership_for_scope = query({
 
 		const membership = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byActiveUserWorkspaceProject", (q) =>
-				q.eq("active", true).eq("userId", user.id).eq("workspaceId", workspaceId).eq("projectId", projectId),
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q.eq("active", true).eq("userId", userAuth.id).eq("workspaceId", workspaceId).eq("projectId", projectId),
 			)
 			.first();
 
@@ -182,7 +531,7 @@ export const get_membership_by_workspace_project_name = query({
 
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user._id))
+			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", user._id))
 			.collect();
 
 		const candidateMembershipsPromises = [];
@@ -244,35 +593,64 @@ async function db_get_membership(
  */
 export const get_membership = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
-	},
-	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
-	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		return await db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
-	},
-});
-
-export const get_membership_from_string = query({
-	args: {
 		membershipId: v.string(),
 	},
 	returns: v.union(doc(app_convex_schema, "workspaces_projects_users"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
+		// Normalize untrusted request ids before `db.get`; Convex throws for malformed strings and wrong-table ids.
 		const membershipId = ctx.db.normalizeId("workspaces_projects_users", args.membershipId.trim());
 		if (!membershipId) {
 			return null;
 		}
 
-		return await db_get_membership(ctx, { membershipId, userId: user.id });
+		return await db_get_membership(ctx, { membershipId, userId: userAuth.id });
+	},
+});
+
+export const list_workspace_project_users = query({
+	args: {
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
+	},
+	returns: v.union(v.array(v.id("users")), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		const [currentProjectMembership, projectMemberships] = await Promise.all([
+			// Check if the current user is part of the requested project.
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userAuth.id)
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId),
+				)
+				.first(),
+			// Get all users in the requested project.
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_workspace_project_user", (q) =>
+					q.eq("active", true).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+				)
+				.collect(),
+		]);
+
+		// Return nothing if the user requesting the list is not part of the project.
+		if (!currentProjectMembership) {
+			return null;
+		}
+
+		return projectMemberships.map((membership) => membership.userId);
 	},
 });
 
@@ -290,8 +668,8 @@ export const create_workspace = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -306,13 +684,13 @@ export const create_workspace = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		return await workspaces_db_create(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			name: args.name,
 			description: descriptionResult._yay,
 			now,
@@ -334,8 +712,8 @@ export const create_project = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -350,13 +728,13 @@ export const create_project = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		return await workspaces_db_create_project(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			workspaceId: args.workspaceId,
 			name: args.name,
 			description: descriptionResult._yay,
@@ -365,105 +743,296 @@ export const create_project = mutation({
 	},
 });
 
-export const add_user_to_workspace_project = mutation({
+/**
+ * Add an existing user to a workspace project by id or by email.
+ * The default project means workspace membership, so adding to
+ * another project also adds the user to default when needed.
+ */
+export const invite_user_to_workspace_project = mutation({
 	args: {
 		workspaceId: v.id("workspaces"),
 		projectId: v.id("workspaces_projects"),
-		userIdToAdd: v.id("users"),
+		email: v.optional(v.string()),
+		userIdToAdd: v.optional(v.id("users")),
 	},
 	returns: v_result({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const [userToAdd, workspace, project, projectCurrentUserLookup, projectUserToAddLookup] = await Promise.all([
-			ctx.db.get("users", args.userIdToAdd),
-			ctx.db.get("workspaces", args.workspaceId),
-			ctx.db.get("workspaces_projects", args.projectId),
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("byActiveUserWorkspaceProject", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", user.id)
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId),
-				)
-				.first(),
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("byProjectUserActive", (q) => q.eq("projectId", args.projectId).eq("userId", args.userIdToAdd))
-				.first(),
-		]);
-
-		if (!userToAdd) {
-			return Result({
-				_nay: {
-					message: "User to add not found",
-				},
-			});
-		}
-
-		if (!workspace || !project || !projectCurrentUserLookup || project.workspaceId !== args.workspaceId) {
-			return Result({
-				_nay: {
-					message: "Project not found",
-				},
-			});
-		}
-
-		if (workspace.default) {
-			return Result({
-				_nay: {
-					message: "Cannot add user to default workspace",
-				},
-			});
-		}
-
-		if (projectUserToAddLookup) {
-			return Result({
-				_nay: {
-					message: "User already a member of the project",
-				},
-			});
-		}
-
-		const invitedUser = await ctx.db.get("users", args.userIdToAdd);
-		if (!invitedUser) {
-			return Result({
-				_nay: {
-					message: "User not found",
-				},
-			});
-		}
-
-		if (!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))) {
-			return Result({
-				_nay: {
-					message: "Permission denied",
-				},
-			});
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		await ctx.db.insert("workspaces_projects_users", {
-			workspaceId: workspace._id,
-			projectId: project._id,
-			userId: args.userIdToAdd,
-			active: true,
-		});
+		let userIdToAdd = args.userIdToAdd ?? null;
+		if (!userIdToAdd) {
+			const email = args.email?.trim().toLowerCase() ?? "";
+			if (!email) {
+				return Result({ _nay: { message: "Email is required" } });
+			}
 
-		return Result({
-			_yay: null,
-		});
+			const anagraphic = await ctx.db
+				.query("users_anagraphics")
+				.withIndex("by_email", (q) => q.eq("email", email))
+				.unique()
+				.catch(() => "duplicate_email" as const);
+			if (!anagraphic || anagraphic === "duplicate_email") {
+				return Result({ _nay: { message: "User to add not found" } });
+			}
+			userIdToAdd = anagraphic.userId;
+		}
+
+		if (userAuth.id === userIdToAdd) {
+			return Result({ _nay: { message: "Cannot invite yourself" } });
+		}
+
+		const now = Date.now();
+
+		// Load the user, workspace, and requested project before checking membership and permissions.
+		const [userToAdd, workspace, project] = await Promise.all([
+			ctx.db.get("users", userIdToAdd),
+			ctx.db.get("workspaces", args.workspaceId),
+			ctx.db.get("workspaces_projects", args.projectId),
+		]);
+
+		if (!userToAdd || userToAdd.deletedAt != null) {
+			return Result({ _nay: { message: "User to add not found" } });
+		}
+
+		if (!workspace || !project || project.workspaceId !== args.workspaceId) {
+			return Result({ _nay: { message: "Project not found" } });
+		}
+
+		if (!workspace.defaultProjectId) {
+			throw should_never_happen("Workspace default project not found", {
+				workspaceId: workspace._id,
+			});
+		}
+		const defaultProjectId = workspace.defaultProjectId;
+		const isDefaultProject = project._id === defaultProjectId;
+
+		if (workspace.default) {
+			return Result({ _nay: { message: "Cannot add user to default workspace" } });
+		}
+
+		const [currentHomeMembership, canManageMembers] = await Promise.all([
+			// Check if the current user is part of the workspace before adding another user.
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userAuth.id)
+						.eq("workspaceId", workspace._id)
+						.eq("projectId", defaultProjectId),
+				)
+				.first(),
+			access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: defaultProjectId,
+				defaultProjectId,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
+				permission: "workspace.members.manage",
+				userId: userAuth.id,
+			}),
+		]);
+		if (!currentHomeMembership) {
+			return Result({ _nay: { message: "Project not found" } });
+		}
+
+		if (!canManageMembers) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Check if the user is already in the default project and in the requested project.
+		const [existingHomeMembership, existingProjectMembership] = await Promise.all([
+			isDefaultProject
+				? null
+				: ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_user_workspace_project", (q) =>
+							q
+								.eq("active", true)
+								.eq("userId", userIdToAdd)
+								.eq("workspaceId", workspace._id)
+								.eq("projectId", defaultProjectId),
+						)
+						.first(),
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q.eq("active", true).eq("userId", userIdToAdd).eq("workspaceId", workspace._id).eq("projectId", project._id),
+				)
+				.first(),
+		]);
+
+		if (existingProjectMembership) {
+			// Treat repeated invite attempts as success when the user is already in the requested project.
+			return Result({ _yay: null });
+		}
+
+		// Add the user to the default project and, when different, to the requested project.
+		await Promise.all([
+			existingHomeMembership
+				? null
+				: ctx.db.insert("workspaces_projects_users", {
+						workspaceId: workspace._id,
+						projectId: defaultProjectId,
+						userId: userIdToAdd,
+						active: true,
+						updatedAt: now,
+					}),
+			access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: workspace._id,
+				projectId: defaultProjectId,
+				userId: userIdToAdd,
+				role: "member",
+				now,
+			}),
+			isDefaultProject
+				? null
+				: ctx.db.insert("workspaces_projects_users", {
+						workspaceId: workspace._id,
+						projectId: project._id,
+						userId: userIdToAdd,
+						active: true,
+						updatedAt: now,
+					}),
+			isDefaultProject
+				? null
+				: access_control_db_ensure_role_assignment(ctx, {
+						workspaceId: workspace._id,
+						projectId: project._id,
+						userId: userIdToAdd,
+						role: "member",
+						now,
+					}),
+			ctx.db.insert("user_notifications", {
+				userId: userIdToAdd,
+				kind: "workspace_project_invite",
+				read: false,
+				actorUserId: userAuth.id,
+				workspaceId: workspace._id,
+				projectId: project._id,
+				createdAt: now,
+				updatedAt: now,
+			}),
+		]);
+
+		return Result({ _yay: null });
+	},
+});
+
+export const remove_user_from_workspace = mutation({
+	args: {
+		workspaceId: v.id("workspaces"),
+		userIdToRemove: v.id("users"),
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const workspace = await ctx.db.get("workspaces", args.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+
+		if (!workspace.defaultProjectId) {
+			throw should_never_happen("Workspace default project not found", {
+				workspaceId: workspace._id,
+			});
+		}
+		const defaultProjectId = workspace.defaultProjectId;
+
+		const [currentHomeMembership, userToRemoveIsOwner, canManageMembers] = await Promise.all([
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userAuth.id)
+						.eq("workspaceId", workspace._id)
+						.eq("projectId", defaultProjectId),
+				)
+				.first(),
+			// Check if the user is the owner of the workspace.
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_project_role_user", (q) =>
+					q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+				)
+				.first()
+				.then((ownerAssignment) => ownerAssignment?.userId === args.userIdToRemove),
+			access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: defaultProjectId,
+				defaultProjectId,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
+				permission: "workspace.members.manage",
+				userId: userAuth.id,
+			}),
+		]);
+		if (!currentHomeMembership) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+
+		if (workspace.default) {
+			return Result({ _nay: { message: "Cannot remove users from the default workspace" } });
+		}
+
+		if (userToRemoveIsOwner) {
+			return Result({ _nay: { message: "Cannot remove the workspace owner" } });
+		}
+
+		// Allow regular members to leave, but keep removing another user behind member-management permission.
+		if (userAuth.id !== args.userIdToRemove && !canManageMembers) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		await Promise.all([
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q.eq("active", true).eq("userId", args.userIdToRemove).eq("workspaceId", workspace._id),
+				)
+				.collect()
+				.then((memberships) =>
+					Promise.all(memberships.map((membership) => ctx.db.delete("workspaces_projects_users", membership._id))),
+				),
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_user_project_role", (q) =>
+					q.eq("workspaceId", workspace._id).eq("userId", args.userIdToRemove),
+				)
+				.collect()
+				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_workspace_user_project_resource_permission", (q) =>
+					q.eq("workspaceId", workspace._id).eq("userId", args.userIdToRemove),
+				)
+				.collect()
+				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+		]);
+
+		return Result({ _yay: null });
 	},
 });
 
@@ -480,8 +1049,8 @@ export const edit_workspace = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -492,10 +1061,10 @@ export const edit_workspace = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byActiveUserWorkspaceProject", (q) =>
+				.withIndex("by_active_user_workspace_project", (q) =>
 					q
 						.eq("active", true)
-						.eq("userId", user.id)
+						.eq("userId", userAuth.id)
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.defaultProjectId),
 				)
@@ -516,7 +1085,17 @@ export const edit_workspace = mutation({
 			});
 		}
 
-		if (!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))) {
+		if (
+			!(await access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: defaultProject._id,
+				defaultProjectId: defaultProject._id,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
+				permission: "workspace.update",
+				userId: userAuth.id,
+			}))
+		) {
 			return Result({
 				_nay: {
 					message: "Permission denied",
@@ -554,7 +1133,7 @@ export const edit_workspace = mutation({
 
 		const existingWorkspace = await ctx.db
 			.query("workspaces")
-			.withIndex("byName", (q) => q.eq("name", name))
+			.withIndex("by_name", (q) => q.eq("name", name))
 			.first();
 		if (existingWorkspace && existingWorkspace._id !== args.workspaceId) {
 			return Result({
@@ -564,7 +1143,7 @@ export const edit_workspace = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -598,8 +1177,8 @@ export const edit_project = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -611,20 +1190,20 @@ export const edit_project = mutation({
 			ctx.db.get("workspaces_projects", args.defaultProjectId),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byActiveUserWorkspaceProject", (q) =>
+				.withIndex("by_active_user_workspace_project", (q) =>
 					q
 						.eq("active", true)
-						.eq("userId", user.id)
+						.eq("userId", userAuth.id)
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.defaultProjectId),
 				)
 				.first(),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byActiveUserWorkspaceProject", (q) =>
+				.withIndex("by_active_user_workspace_project", (q) =>
 					q
 						.eq("active", true)
-						.eq("userId", user.id)
+						.eq("userId", userAuth.id)
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId),
 				)
@@ -649,8 +1228,24 @@ export const edit_project = mutation({
 		}
 
 		if (
-			!(await user_is_project_admin(ctx, { projectId: project._id, userId: user.id })) &&
-			!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))
+			!(await access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: project._id,
+				defaultProjectId: defaultProject._id,
+				resourceKind: "project",
+				resourceId: String(project._id),
+				permission: "project.update",
+				userId: userAuth.id,
+			})) &&
+			!(await access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: defaultProject._id,
+				defaultProjectId: defaultProject._id,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
+				permission: "workspace.update",
+				userId: userAuth.id,
+			}))
 		) {
 			return Result({
 				_nay: {
@@ -690,11 +1285,11 @@ export const edit_project = mutation({
 		const [defaultProjects, nonDefaultProjects] = await Promise.all([
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", true))
 				.collect(),
 			ctx.db
 				.query("workspaces_projects")
-				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", project.workspaceId).eq("default", false))
 				.collect(),
 		]);
 
@@ -708,7 +1303,7 @@ export const edit_project = mutation({
 			}
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -736,36 +1331,48 @@ export const delete_workspace = mutation({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const now = Date.now();
 
-		const [workspace, worspaceUserLookup] = await Promise.all([
-			ctx.db.get("workspaces", args.workspaceId),
-			ctx.db
-				.query("workspaces_projects")
-				.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", args.workspaceId))
-				.first()
-				.then(async (project) =>
-					project
-						? await ctx.db
-								.query("workspaces_projects_users")
-								.withIndex("byActiveUserWorkspaceProject", (q) =>
-									q
-										.eq("active", true)
-										.eq("userId", user.id)
-										.eq("workspaceId", args.workspaceId)
-										.eq("projectId", project._id),
-								)
-								.first()
-						: null,
-				),
-		]);
+		const workspace = await ctx.db.get("workspaces", args.workspaceId);
+		if (!workspace) {
+			return Result({
+				_nay: {
+					message: "Workspace not found",
+				},
+			});
+		}
 
-		if (!workspace || !worspaceUserLookup) {
+		if (!workspace.defaultProjectId) {
+			throw should_never_happen("Workspace default project not found", {
+				workspaceId: workspace._id,
+			});
+		}
+		const defaultProjectId = workspace.defaultProjectId;
+
+		const [workspaceUserLookup, ownerAssignment] = await Promise.all([
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userAuth.id)
+						.eq("workspaceId", workspace._id)
+						.eq("projectId", defaultProjectId),
+				)
+				.first(),
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_project_role_user", (q) =>
+					q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+				)
+				.first(),
+		]);
+		if (!workspaceUserLookup) {
 			return Result({
 				_nay: {
 					message: "Workspace not found",
@@ -781,7 +1388,7 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		if (!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))) {
+		if (ownerAssignment?.userId !== userAuth.id) {
 			return Result({
 				_nay: {
 					message: "Permission denied",
@@ -789,45 +1396,59 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const workspaceProjects = await ctx.db
-			.query("workspaces_projects")
-			.withIndex("byWorkspaceDefault", (q) => q.eq("workspaceId", workspace._id))
-			.collect();
-
-		const [, ...userIdsPerProject] = await Promise.all([
+		const [, , , userIdsPerProject] = await Promise.all([
 			// Queue one delayed workspace purge row while you remove project memberships in parallel.
 			data_deletion_db_request(ctx, {
-				userId: user.id,
+				userId: userAuth.id,
 				workspaceId: workspace._id,
 				scope: "workspace",
 			}),
-			...workspaceProjects.map(async (project) => {
-				const projectUsers = await ctx.db
-					.query("workspaces_projects_users")
-					.withIndex("byProjectUserActive", (q) => q.eq("projectId", project._id))
-					.collect();
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", workspace._id))
+				.collect()
+				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", workspace._id))
+				.collect()
+				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+			ctx.db
+				.query("workspaces_projects")
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspace._id))
+				.collect()
+				.then((workspaceProjects) =>
+					Promise.all(
+						workspaceProjects.map(async (project) => {
+							const projectUsers = await ctx.db
+								.query("workspaces_projects_users")
+								.withIndex("by_project_user_active", (q) => q.eq("projectId", project._id))
+								.collect();
 
-				await Promise.all(
-					projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
-				);
+							await Promise.all(
+								projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+							);
 
-				return projectUsers.map((projectUser) => projectUser.userId);
-			}),
+							return projectUsers.map((projectUser) => projectUser.userId);
+						}),
+					),
+				),
 		]);
 
 		const affectedUserIds = new Set<Id<"users">>(userIdsPerProject.flat());
 
-		if (workspace.ownerUserId) {
-			const ownerUserId = workspace.ownerUserId;
+		if (ownerAssignment) {
 			const limitDefinition = user_limits.EXTRA_WORKSPACES;
 			const limit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("byUserLimitName", (q) => q.eq("userId", ownerUserId).eq("limitName", limitDefinition.name))
+				.withIndex("by_user_limitName", (q) =>
+					q.eq("userId", ownerAssignment.userId).eq("limitName", limitDefinition.name),
+				)
 				.first();
 
 			if (limit && limit.usedCount > 0) {
@@ -859,8 +1480,8 @@ export const delete_project = mutation({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -883,10 +1504,10 @@ export const delete_project = mutation({
 								defaultProjectId
 									? await ctx.db
 											.query("workspaces_projects_users")
-											.withIndex("byActiveUserWorkspaceProject", (q) =>
+											.withIndex("by_active_user_workspace_project", (q) =>
 												q
 													.eq("active", true)
-													.eq("userId", user.id)
+													.eq("userId", userAuth.id)
 													.eq("workspaceId", project.workspaceId)
 													.eq("projectId", defaultProjectId),
 											)
@@ -898,7 +1519,7 @@ export const delete_project = mutation({
 			),
 			ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byProjectUserActive", (q) => q.eq("projectId", args.projectId))
+				.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId))
 				.collect(),
 		]);
 
@@ -919,8 +1540,24 @@ export const delete_project = mutation({
 		}
 
 		if (
-			!(await user_is_project_admin(ctx, { projectId: project._id, userId: user.id })) &&
-			!(await user_is_workspace_admin(ctx, { workspaceId: workspace._id, userId: user.id }))
+			!(await access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: project._id,
+				defaultProjectId: workspaceUserLookup.projectId,
+				resourceKind: "project",
+				resourceId: String(project._id),
+				permission: "project.update",
+				userId: userAuth.id,
+			})) &&
+			!(await access_control_db_has_permission(ctx, {
+				workspaceId: workspace._id,
+				projectId: workspaceUserLookup.projectId,
+				defaultProjectId: workspaceUserLookup.projectId,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
+				permission: "workspace.update",
+				userId: userAuth.id,
+			}))
 		) {
 			return Result({
 				_nay: {
@@ -929,7 +1566,7 @@ export const delete_project = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -937,7 +1574,7 @@ export const delete_project = mutation({
 		const affectedUserIds = new Set<Id<"users">>(projectUserLookup.map((projectUser) => projectUser.userId));
 
 		await data_deletion_db_request(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			workspaceId: workspace._id,
 			projectId: project._id,
 			scope: "project",
@@ -945,7 +1582,9 @@ export const delete_project = mutation({
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name))
+			.withIndex("by_workspace_limitName", (q) =>
+				q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name),
+			)
 			.first();
 
 		if (limit && limit.usedCount > 0) {
@@ -954,9 +1593,23 @@ export const delete_project = mutation({
 				updatedAt: now,
 			});
 		}
-		await Promise.all(
-			projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
-		);
+		await Promise.all([
+			Promise.all(projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id))),
+			ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_project_user_role", (q) =>
+					q.eq("workspaceId", workspace._id).eq("projectId", project._id),
+				)
+				.collect()
+				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_workspace_project_resource_user_permission", (q) =>
+					q.eq("workspaceId", workspace._id).eq("projectId", project._id),
+				)
+				.collect()
+				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+		]);
 
 		await ctx.db.delete("workspaces_projects", project._id);
 		for (const userId of affectedUserIds) {

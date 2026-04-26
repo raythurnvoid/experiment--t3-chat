@@ -37,17 +37,17 @@ export const chat_messages_threads_create = mutation({
 	},
 	returns: v_result({ _yay: v.object({ threadId: v.id("chat_messages") }) }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (!membership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -58,7 +58,7 @@ export const chat_messages_threads_create = mutation({
 			threadId: null,
 			parentId: null,
 			isArchived: false,
-			createdBy: user.name,
+			createdBy: userAuth.name,
 			content: args.content,
 		});
 
@@ -79,12 +79,12 @@ export const chat_messages_add = mutation({
 	},
 	returns: v_result({ _yay: v.object({ messageId: v.id("chat_messages") }) }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (!membership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -98,7 +98,7 @@ export const chat_messages_add = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -109,7 +109,7 @@ export const chat_messages_add = mutation({
 			threadId: args.rootId,
 			parentId: args.rootId,
 			isArchived: false,
-			createdBy: user.name,
+			createdBy: userAuth.name,
 			content: args.content,
 		});
 
@@ -129,12 +129,12 @@ export const chat_messages_list = query({
 		limit: v.number(),
 	},
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (!membership) {
 			return { messages: [] };
 		}
@@ -146,7 +146,7 @@ export const chat_messages_list = query({
 
 		const children = await ctx.db
 			.query("chat_messages")
-			.withIndex("byWorkspaceProjectThread", (q) =>
+			.withIndex("by_workspace_project_thread", (q) =>
 				q.eq("workspaceId", root.workspaceId).eq("projectId", root.projectId).eq("threadId", args.threadId),
 			)
 			.order("asc")
@@ -170,12 +170,12 @@ export const chat_messages_archive = mutation({
 	},
 	returns: v_result({ _yay: v.object({ success: v.boolean() }) }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (!membership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -189,7 +189,7 @@ export const chat_messages_archive = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "comments_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -211,12 +211,12 @@ export const chat_messages_get = query({
 		messageId: v.id("chat_messages"),
 	},
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (!membership) {
 			return null;
 		}
@@ -252,12 +252,12 @@ export const chat_messages_threads_list = query({
 		),
 	},
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: user.id });
+		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (!membership) {
 			return { threads: [] };
 		}
@@ -285,7 +285,7 @@ export const chat_messages_threads_list = query({
 
 					const lastChild = await ctx.db
 						.query("chat_messages")
-						.withIndex("byWorkspaceProjectThread", (q) =>
+						.withIndex("by_workspace_project_thread", (q) =>
 							q.eq("workspaceId", message.workspaceId).eq("projectId", message.projectId).eq("threadId", message._id),
 						)
 						.order("desc")

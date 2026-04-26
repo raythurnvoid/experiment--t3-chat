@@ -243,6 +243,28 @@
 		}
 	}
 
+	.MyButton-variant-ghost_destructive {
+		background: transparent;
+		color: var(--color-red-09);
+
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
+			&:hover,
+			&:focus-visible {
+				background: var(--color-red-02);
+				color: var(--color-red-10);
+			}
+
+			&:active {
+				background: var(--color-red-03);
+				color: var(--color-red-11);
+			}
+		}
+
+		&:is(:disabled, .MyButton-state-disabled) {
+			color: var(--color-fg-04);
+		}
+	}
+
 	.MyButton-variant-ghost-highlightable {
 		background: transparent;
 

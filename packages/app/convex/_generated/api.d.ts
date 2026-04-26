@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as access_control from "../access_control.js";
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_docs_temp from "../ai_docs_temp.js";
 import type * as billing from "../billing.js";
@@ -17,6 +18,7 @@ import type * as data_deletion from "../data_deletion.js";
 import type * as http from "../http.js";
 import type * as limits from "../limits.js";
 import type * as migrations from "../migrations.js";
+import type * as notifications from "../notifications.js";
 import type * as pages_pending_edits from "../pages_pending_edits.js";
 import type * as presence from "../presence.js";
 import type * as rate_limiter from "../rate_limiter.js";
@@ -30,6 +32,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  access_control: typeof access_control;
   ai_chat: typeof ai_chat;
   ai_docs_temp: typeof ai_docs_temp;
   billing: typeof billing;
@@ -39,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   limits: typeof limits;
   migrations: typeof migrations;
+  notifications: typeof notifications;
   pages_pending_edits: typeof pages_pending_edits;
   presence: typeof presence;
   rate_limiter: typeof rate_limiter;

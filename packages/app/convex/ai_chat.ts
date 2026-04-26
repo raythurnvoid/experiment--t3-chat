@@ -24,7 +24,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
-import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
+import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
@@ -141,12 +141,12 @@ export const threads_list = query({
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "ai_chat_threads")),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 
@@ -163,7 +163,7 @@ export const threads_list = query({
 
 		const threads_query = ctx.db
 			.query("ai_chat_threads")
-			.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
+			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("archived", archived),
 			);
 
@@ -189,12 +189,12 @@ export const thread_get = query({
 	},
 	returns: v.union(doc(app_convex_schema, "ai_chat_threads"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -233,13 +233,13 @@ export const thread_create = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -248,7 +248,7 @@ export const thread_create = mutation({
 
 		const now = Date.now();
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -261,8 +261,8 @@ export const thread_create = mutation({
 			lastMessageAt: args.lastMessageAt,
 			archived: false,
 			runtime: "aisdk_5",
-			createdBy: user.id,
-			updatedBy: user.id,
+			createdBy: userAuth.id,
+			updatedBy: userAuth.id,
 			updatedAt: now,
 			starred: false,
 		});
@@ -290,13 +290,13 @@ export const thread_branch = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -322,7 +322,7 @@ export const thread_branch = mutation({
 
 		const allMessages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("byWorkspaceProjectThread", (q) =>
+			.withIndex("by_workspace_project_thread", (q) =>
 				q.eq("workspaceId", thread.workspaceId).eq("projectId", thread.projectId).eq("threadId", threadId),
 			)
 			.collect();
@@ -343,14 +343,14 @@ export const thread_branch = mutation({
 
 		const unarchivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
+			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", false),
 			)
 			.collect();
 
 		const archivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("byWorkspaceProjectArchivedLastMessageAt", (q) =>
+			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", true),
 			)
 			.collect();
@@ -392,7 +392,7 @@ export const thread_branch = mutation({
 		const title = `${baseTitle} (${maxSuffix + 1})`;
 		const clientGeneratedId = get_id_generator("ai_thread")();
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -405,8 +405,8 @@ export const thread_branch = mutation({
 			lastMessageAt: now,
 			archived: false,
 			runtime: "aisdk_5",
-			createdBy: user.id,
-			updatedBy: user.id,
+			createdBy: userAuth.id,
+			updatedBy: userAuth.id,
 			updatedAt: now,
 			starred: false,
 		});
@@ -455,7 +455,7 @@ export const thread_branch = mutation({
 					projectId,
 					parentId: nextParentId,
 					threadId: newThreadId,
-					createdBy: user.id,
+					createdBy: userAuth.id,
 					updatedAt: now,
 					clientGeneratedMessageId: message.clientGeneratedMessageId,
 					content: message.content,
@@ -468,7 +468,7 @@ export const thread_branch = mutation({
 		await ctx.db.patch("ai_chat_threads", newThreadId, {
 			lastMessageAt: now,
 			updatedAt: now,
-			updatedBy: user.id,
+			updatedBy: userAuth.id,
 		});
 
 		return Result({ _yay: { threadId: newThreadId } });
@@ -488,13 +488,13 @@ export const thread_update = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -514,7 +514,7 @@ export const thread_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -524,7 +524,7 @@ export const thread_update = mutation({
 			threadId,
 			Object.assign(
 				{
-					updatedBy: user.id,
+					updatedBy: userAuth.id,
 					updatedAt: Date.now(),
 				},
 				args.title !== undefined
@@ -559,13 +559,13 @@ export const thread_archive = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -583,14 +583,14 @@ export const thread_archive = mutation({
 
 		const now = Date.now();
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.patch("ai_chat_threads", args.threadId, {
 			archived: true,
-			updatedBy: user.id,
+			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
 
@@ -614,12 +614,12 @@ export const thread_messages_list = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -638,7 +638,7 @@ export const thread_messages_list = query({
 
 		const messages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("byWorkspaceProjectThread", (q) =>
+			.withIndex("by_workspace_project_thread", (q) =>
 				q.eq("workspaceId", thread.workspaceId).eq("projectId", thread.projectId).eq("threadId", threadId),
 			)
 			.order(args.order ?? "desc")
@@ -672,12 +672,12 @@ export const thread_messages_add = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -698,7 +698,7 @@ export const thread_messages_add = mutation({
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "ai_chat_message_write",
-			key: user.id,
+			key: userAuth.id,
 			count: Math.max(args.messages.length, 1),
 		});
 		if (rateLimit) {
@@ -713,7 +713,7 @@ export const thread_messages_add = mutation({
 				projectId: thread.projectId,
 				parentId: nextParentId,
 				threadId: args.threadId,
-				createdBy: user.id,
+				createdBy: userAuth.id,
 				updatedAt: now,
 				clientGeneratedMessageId: message.clientGeneratedMessageId,
 				content: message.content,
@@ -727,7 +727,7 @@ export const thread_messages_add = mutation({
 			await ctx.db.patch("ai_chat_threads", args.threadId, {
 				lastMessageAt: now,
 				updatedAt: now,
-				updatedBy: user.id,
+				updatedBy: userAuth.id,
 			});
 		}
 
@@ -801,7 +801,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 								const body = requestParseResult._yay;
 
-								const membership = await ctx.runQuery(api.workspaces.get_membership_from_string, {
+								const membership = await ctx.runQuery(api.workspaces.get_membership, {
 									membershipId: body.membershipId,
 								});
 
@@ -1454,7 +1454,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const membership = await ctx.runQuery(api.workspaces.get_membership_from_string, {
+								const membership = await ctx.runQuery(api.workspaces.get_membership, {
 									membershipId: body.membershipId,
 								});
 

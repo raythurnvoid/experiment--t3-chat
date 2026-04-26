@@ -49,6 +49,10 @@
 		max-height: none;
 
 		padding: 0;
+
+		@media (min-width: 760px) {
+			grid-template-columns: 180px minmax(0, 1fr);
+		}
 	}
 
 	.MainAppAccountManagement-body > .MyTabsList {
@@ -60,6 +64,11 @@
 		contain: content;
 
 		padding: 8px;
+
+		@media (min-width: 760px) {
+			padding: 8px;
+			border-right: 1px solid var(--color-base-1-07);
+		}
 	}
 
 	.MainAppAccountManagement-body .MyTabsTabSurface {
@@ -91,6 +100,12 @@
 		padding: 20px;
 
 		overflow: auto;
+
+		@media (min-width: 760px) {
+			.MainAppAccountManagement-panels {
+				padding: 20px;
+			}
+		}
 	}
 
 	.MainAppAccountManagement-panel {
@@ -106,21 +121,6 @@
 		min-height: 240px;
 
 		color: var(--color-fg-08);
-	}
-
-	@media (min-width: 760px) {
-		.MainAppAccountManagement-body {
-			grid-template-columns: 180px minmax(0, 1fr);
-		}
-
-		.MainAppAccountManagement-body > .MyTabsList {
-			padding: 8px;
-			border-right: 1px solid var(--color-base-1-07);
-		}
-
-		.MainAppAccountManagement-panels {
-			padding: 20px;
-		}
 	}
 
 	.MainAppAccountManagementProfile,
@@ -373,13 +373,92 @@
 		display: grid;
 		grid-template-columns: minmax(0, 1fr);
 		gap: 12px;
-	}
 
-	@media (min-width: 640px) {
-		.MainAppAccountManagementDeleteAccount-form {
+		@media (min-width: 640px) {
 			grid-template-columns: minmax(0, 1fr) auto;
 			align-items: end;
 		}
 	}
+
 	/* #endregion delete account */
+
+	/* #region delete account workspace list */
+	.MainAppAccountManagementDeleteAccountWorkspaceList {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		font-size: 13px;
+		color: var(--color-fg-08);
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		padding: 10px;
+		border: 1px solid var(--color-red-07);
+		border-radius: 8px;
+
+		background: color-mix(in srgb, var(--color-red-03) 18%, transparent);
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-header {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-title {
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-11);
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-meta {
+		margin: 3px 0 0;
+
+		font-size: 12px;
+		line-height: 1.35;
+		color: var(--color-fg-07);
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-controls {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 8px;
+
+		@media (min-width: 640px) {
+			grid-template-columns: minmax(0, 1fr) auto;
+			align-items: center;
+		}
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-select {
+		width: 100%;
+		justify-content: space-between;
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-delete {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-10);
+	}
+
+	.MainAppAccountManagementDeleteAccountWorkspaceList-workspace-delete > input {
+		width: 16px;
+		height: 16px;
+		flex: none;
+	}
+
+	/* #endregion delete account workspace list */
 }

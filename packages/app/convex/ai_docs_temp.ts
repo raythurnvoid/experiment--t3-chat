@@ -62,7 +62,7 @@ import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
+import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
 import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
@@ -187,7 +187,7 @@ function db_query_pages_by_path(
 ) {
 	return ctx.db
 		.query("pages")
-		.withIndex("byWorkspaceProjectPathArchiveOperation", (q) =>
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -199,7 +199,7 @@ function db_query_pages_by_path(
 function db_get_home_page(ctx: pages_QueryOrMutationCtx, args: { workspaceId: string; projectId: string }) {
 	return ctx.db
 		.query("pages")
-		.withIndex("byWorkspaceProjectParentName", (q) =>
+		.withIndex("by_workspace_project_parent_name", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -249,13 +249,13 @@ export async function db_upsert_page_chunks(
 	await Promise.all([
 		ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 			)
 			.collect(),
 		ctx.db
 			.query("pages_markdown_chunks")
-			.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 			)
 			.collect(),
@@ -414,7 +414,7 @@ async function cascade_page_descendants_path(
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectParentName", (q) =>
+			.withIndex("by_workspace_project_parent_name", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
 			)
 			.collect();
@@ -455,12 +455,12 @@ export const get_tree_items_list = query({
 	},
 	returns: get_tree_items_list_validator,
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -469,7 +469,7 @@ export const get_tree_items_list = query({
 
 		const pages = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectName", (q) =>
+			.withIndex("by_workspace_project_name", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
 			)
 			.order("asc")
@@ -519,8 +519,8 @@ async function do_create_page(
 		};
 	},
 ) {
-	const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!user) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 	const now = Date.now();
@@ -586,8 +586,8 @@ async function do_create_page(
 		version: pages_FIRST_VERSION,
 		name: args.name,
 		archiveOperationId: undefined,
-		createdBy: user.id,
-		updatedBy: user.name,
+		createdBy: userAuth.id,
+		updatedBy: userAuth.name,
 		updatedAt: now,
 	});
 
@@ -599,8 +599,8 @@ async function do_create_page(
 				pageId: pageId,
 				sequence: initialYjsSequence,
 				snapshotUpdate: pages_u8_to_array_buffer(initialYjsSnapshotUpdate),
-				createdBy: user.id,
-				updatedBy: user.name,
+				createdBy: userAuth.id,
+				updatedBy: userAuth.name,
 				updatedAt: now,
 			}),
 			ctx.db.insert("pages_yjs_docs_last_sequences", {
@@ -616,7 +616,7 @@ async function do_create_page(
 				content: args.markdown_content,
 				isArchived: false,
 				yjsSequence: initialYjsSequence,
-				updatedBy: user.name,
+				updatedBy: userAuth.name,
 				updatedAt: now,
 			}),
 			db_upsert_page_chunks(ctx, {
@@ -667,12 +667,12 @@ export const create_page = mutation({
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -684,7 +684,7 @@ export const create_page = mutation({
 			return nameValidationResult;
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -711,19 +711,19 @@ export const create_page_quick = mutation({
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -731,7 +731,7 @@ export const create_page_quick = mutation({
 		// Ensure ".tmp" under root exists
 		const tmp = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectParentName", (q) =>
+			.withIndex("by_workspace_project_parent_name", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
@@ -788,12 +788,12 @@ export const rename_page = mutation({
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -841,7 +841,7 @@ export const rename_page = mutation({
 			}
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -849,7 +849,7 @@ export const rename_page = mutation({
 		await ctx.db.patch("pages", args.pageId, {
 			name: args.name,
 			path: renamedPath,
-			updatedBy: user.name,
+			updatedBy: userAuth.name,
 			updatedAt: Date.now(),
 		});
 		await cascade_page_descendants_path(ctx, {
@@ -870,12 +870,12 @@ export const move_pages = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -942,7 +942,7 @@ export const move_pages = mutation({
 		}
 
 		if (pagesToMove.length > 0) {
-			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 			if (rateLimit) {
 				return Result({ _nay: { message: rateLimit.message } });
 			}
@@ -975,12 +975,12 @@ export const archive_pages = mutation({
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -1033,7 +1033,7 @@ export const archive_pages = mutation({
 			const descendantsPathPrefix = `${page.path}/`;
 			const descendantPages = await ctx.db
 				.query("pages")
-				.withIndex("byWorkspaceProjectPathArchiveOperation", (q) =>
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 					q
 						.eq("workspaceId", membership.workspaceId)
 						.eq("projectId", membership.projectId)
@@ -1051,7 +1051,7 @@ export const archive_pages = mutation({
 		}
 
 		if (pageIdsToArchive.size > 0) {
-			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 			if (rateLimit) {
 				return Result({ _nay: { message: rateLimit.message } });
 			}
@@ -1061,7 +1061,7 @@ export const archive_pages = mutation({
 			[...pageIdsToArchive].map(async (pageId) => {
 				await ctx.db.patch("pages", pageId, {
 					archiveOperationId,
-					updatedBy: user.name,
+					updatedBy: userAuth.name,
 					updatedAt: now,
 				});
 			}),
@@ -1078,12 +1078,12 @@ export const unarchive_pages = mutation({
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -1274,7 +1274,7 @@ export const unarchive_pages = mutation({
 
 							return ctx.db
 								.query("pages")
-								.withIndex("byWorkspaceProjectPathArchiveOperation", (q) =>
+								.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 									q
 										.eq("workspaceId", membership.workspaceId)
 										.eq("projectId", membership.projectId)
@@ -1351,7 +1351,7 @@ export const unarchive_pages = mutation({
 		}
 
 		// Preconditions passed, apply all patches.
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -1361,7 +1361,7 @@ export const unarchive_pages = mutation({
 			plans.map(async (plan) =>
 				ctx.db.patch("pages", plan.page._id, {
 					archiveOperationId: undefined,
-					updatedBy: user.name,
+					updatedBy: userAuth.name,
 					updatedAt,
 					...(plan.targetPath !== plan.page.path ? { path: plan.targetPath } : {}),
 					...(plan.targetParentId !== plan.page.parentId ? { parentId: plan.targetParentId } : {}),
@@ -1380,12 +1380,12 @@ export const get = query({
 	},
 	returns: v.union(doc(app_convex_schema, "pages"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -1419,12 +1419,12 @@ export const get_page_by_path = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -1472,7 +1472,7 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectParentArchiveOperation", (q) =>
+			.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -1498,7 +1498,7 @@ export const get_page_info_for_list_dir_pagination = internalQuery({
 		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectParentArchiveOperation", (q) =>
+			.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
@@ -1573,7 +1573,7 @@ export const list_pages = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("pages")
-						.withIndex("byWorkspaceProjectParentArchiveOperation", (q) =>
+						.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
@@ -1663,8 +1663,8 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
@@ -1693,16 +1693,16 @@ export const get_page_last_available_markdown_content_by_path = internalQuery({
 			pendingEditById &&
 			pendingEditById.workspaceId === args.workspaceId &&
 			pendingEditById.projectId === args.projectId &&
-			pendingEditById.userId === user.id &&
+			pendingEditById.userId === userAuth.id &&
 			pendingEditById.pageId === convexId
 				? pendingEditById
 				: await ctx.db
 						.query("pages_pending_edits")
-						.withIndex("byWorkspaceProjectUserPage", (q) =>
+						.withIndex("by_workspace_project_user_page", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
-								.eq("userId", user.id)
+								.eq("userId", userAuth.id)
 								.eq("pageId", convexId),
 						)
 						.first();
@@ -1742,12 +1742,12 @@ export const get_plain_text = query({
 	args: { membershipId: v.id("workspaces_projects_users"), pageId: v.id("pages") },
 	returns: v.union(v.string(), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -1766,7 +1766,7 @@ export const get_plain_text = query({
 
 		const latestChunkByPage = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q.eq("workspaceId", page.workspaceId).eq("projectId", page.projectId).eq("pageId", args.pageId),
 			)
 			.order("desc")
@@ -1782,7 +1782,7 @@ export const get_plain_text = query({
 
 		const plainTextChunks = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+			.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", page.workspaceId)
 					.eq("projectId", page.projectId)
@@ -1800,12 +1800,12 @@ export const get_page_last_yjs_sequence = query({
 	args: { membershipId: v.id("workspaces_projects_users"), pageId: v.id("pages") },
 	returns: v.union(v.object({ lastSequence: v.number() }), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -1882,7 +1882,7 @@ export const text_search_pages = internalQuery({
 	}> => {
 		const matches = await ctx.db
 			.query("pages_plain_text_chunks")
-			.withSearchIndex("searchByPlainTextChunk", (q) =>
+			.withSearchIndex("search_by_plainTextChunk", (q) =>
 				q.search("plainTextChunk", args.query).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
 			)
 			.take(Math.max(1, Math.min(100, args.limit)));
@@ -1940,7 +1940,7 @@ export const text_search_pages = internalQuery({
 					const [chunkAbove, chunkBelow] = await Promise.all([
 						ctx.db
 							.query("pages_markdown_chunks")
-							.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+							.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
@@ -1951,7 +1951,7 @@ export const text_search_pages = internalQuery({
 							.first(),
 						ctx.db
 							.query("pages_markdown_chunks")
-							.withIndex("byWorkspaceProjectPageYjsSequenceChunkIndex", (q) =>
+							.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
@@ -2006,7 +2006,7 @@ export const create_page_by_path = internalMutation({
 			// Does this segment exist?
 			const existing = await ctx.db
 				.query("pages")
-				.withIndex("byWorkspaceProjectParentName", (q) =>
+				.withIndex("by_workspace_project_parent_name", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
@@ -2063,12 +2063,12 @@ export const get_home_page = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2096,12 +2096,12 @@ export const create_home_page = mutation({
 	},
 	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2117,7 +2117,7 @@ export const create_home_page = mutation({
 			return Result({ _yay: { pageId: page._id } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -2158,12 +2158,12 @@ export const get_page_snapshots_list = query({
 		snapshots: v.array(doc(app_convex_schema, "pages_snapshots")),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2174,7 +2174,7 @@ export const get_page_snapshots_list = query({
 
 		const snapshots = await ctx.db
 			.query("pages_snapshots")
-			.withIndex("byWorkspaceProjectPageArchivedAt", (q) => {
+			.withIndex("by_workspace_project_page_archivedAt", (q) => {
 				const qBase = q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
@@ -2201,12 +2201,12 @@ export const get_page_snapshot = query({
 	},
 	returns: v.union(doc(app_convex_schema, "pages_snapshots"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2241,11 +2241,8 @@ async function do_get_page_snapshot_content(
 ) {
 	const content = await ctx.db
 		.query("pages_snapshots_contents")
-		.withIndex("byWorkspaceProjectPageSnapshot", (q) =>
-			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
-				.eq("pageSnapshotId", args.pageSnapshotId),
+		.withIndex("by_workspace_project_pageSnapshot", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageSnapshotId", args.pageSnapshotId),
 		)
 		.first();
 	if (!content || content.pageId !== args.pageId) {
@@ -2274,12 +2271,12 @@ export const get_page_snapshot_content = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2302,12 +2299,12 @@ export const archive_snapshot = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2319,7 +2316,7 @@ export const archive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -2339,12 +2336,12 @@ export const unarchive_snapshot = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2356,7 +2353,7 @@ export const unarchive_snapshot = mutation({
 			return Result({ _yay: null });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -2414,7 +2411,7 @@ async function write_markdown_to_yjs_sync(
 	// Reconstruct the latest Y.Doc from last snapshot
 	const pageYjsData = await ctx.db
 		.query("pages_yjs_snapshots")
-		.withIndex("byWorkspaceProjectPageSequence", (q) =>
+		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 		)
 		.order("desc")
@@ -2446,10 +2443,7 @@ async function write_markdown_to_yjs_sync(
 		return null;
 	}
 
-	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([
-		new Uint8Array(pageYjsData.snapshotUpdate),
-		diffUpdate,
-	]);
+	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([new Uint8Array(pageYjsData.snapshotUpdate), diffUpdate]);
 
 	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
 		workspaceId: args.workspaceId,
@@ -2490,12 +2484,12 @@ export const yjs_get_doc_last_snapshot = query({
 	},
 	returns: v.union(doc(app_convex_schema, "pages_yjs_snapshots"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2504,7 +2498,7 @@ export const yjs_get_doc_last_snapshot = query({
 
 		return await ctx.db
 			.query("pages_yjs_snapshots")
-			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("pageId", args.pageId),
 			)
 			.order("desc")
@@ -2528,7 +2522,7 @@ export const update_snapshots = internalMutation({
 	handler: async (ctx, args) => {
 		const cleanScheduleLocksPromise = ctx.db
 			.query("pages_yjs_snapshot_schedules")
-			.withIndex("byPage", (q) => q.eq("pageId", args.pageId))
+			.withIndex("by_page", (q) => q.eq("pageId", args.pageId))
 			.collect()
 			.then((scheduleLocks) =>
 				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("pages_yjs_snapshot_schedules", schedule._id))),
@@ -2556,7 +2550,7 @@ export const update_snapshots = internalMutation({
 			// Load latest snapshot
 			const yjsSnapshotData = await ctx.db
 				.query("pages_yjs_snapshots")
-				.withIndex("byWorkspaceProjectPageSequence", (q) =>
+				.withIndex("by_workspace_project_page_sequence", (q) =>
 					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 				)
 				.order("desc")
@@ -2574,7 +2568,7 @@ export const update_snapshots = internalMutation({
 			// Fetch updates since snapshot up to uptoSeq
 			const updateDataList = await ctx.db
 				.query("pages_yjs_updates")
-				.withIndex("byWorkspaceProjectPageSequence", (q) =>
+				.withIndex("by_workspace_project_page_sequence", (q) =>
 					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 				)
 				.order("asc")
@@ -2662,7 +2656,7 @@ async function yjs_increment_or_create_last_sequence(
 ) {
 	let lastSequenceData = await ctx.db
 		.query("pages_yjs_docs_last_sequences")
-		.withIndex("byWorkspaceProjectPage", (q) =>
+		.withIndex("by_workspace_project_page", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("pageId", args.pageId),
 		)
 		.order("desc")
@@ -2744,7 +2738,7 @@ export async function pages_db_yjs_push_update(
 
 	const schedules = await ctx.db
 		.query("pages_yjs_snapshot_schedules")
-		.withIndex("byPage", (q) => q.eq("pageId", args.pageId))
+		.withIndex("by_page", (q) => q.eq("pageId", args.pageId))
 		.collect();
 
 	const scheduledId = await ctx.scheduler.runAfter(snapshotScheduleDelayMs, internal.ai_docs_temp.update_snapshots, {
@@ -2863,12 +2857,12 @@ export const yjs_get_incremental_updates = query({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2877,7 +2871,7 @@ export const yjs_get_incremental_updates = query({
 
 		const updates = await ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("pageId", args.pageId),
 			)
 			.order("desc")
@@ -2928,12 +2922,12 @@ export const restore_snapshot = mutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -2985,18 +2979,18 @@ export const restore_snapshot = mutation({
 			});
 		}
 
-		const userDoc = await ctx.db.get("users", user.id);
+		const userDoc = await ctx.db.get("users", userAuth.id);
 		if (!userDoc) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_snapshot_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const check = await billing_db_check_credits(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			minimumRequiredCents: 1,
 		});
 		if (!check._yay.hasCredits) {
@@ -3008,8 +3002,8 @@ export const restore_snapshot = mutation({
 		}
 
 		const now = Date.now();
-		const createdBy = user.id;
-		const updatedBy = user.name;
+		const createdBy = userAuth.id;
+		const updatedBy = userAuth.name;
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
@@ -3041,7 +3035,7 @@ export const restore_snapshot = mutation({
 			write_markdown_to_yjs_sync(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				userId: user.id,
+				userId: userAuth.id,
 				pageId: args.pageId,
 				markdownContent: snapshotContent.content,
 				sessionId: args.sessionId,
@@ -3176,7 +3170,7 @@ export const cleanup_old_snapshots = internalMutation({
 					// TODO: If we save the content id in the snapshot doc we can use the more efficient .get
 					ctx.db
 						.query("pages_snapshots_contents")
-						.withIndex("byWorkspaceProjectPageSnapshot", (q) =>
+						.withIndex("by_workspace_project_pageSnapshot", (q) =>
 							q
 								.eq("workspaceId", snapshot.workspaceId)
 								.eq("projectId", snapshot.projectId)
@@ -3251,20 +3245,9 @@ export function pages_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-								if (!userAuth) {
-									return {
-										status: 401,
-										body: {
-											message: "Unauthenticated",
-										},
-									} as const;
-								}
-
-								const [user, membership] = await Promise.all([
-									ctx.runQuery(internal.users.get, { userId: userAuth.id }),
-									ctx.runQuery(api.workspaces.get_membership_from_string, { membershipId }),
-								]);
+								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
+									userAuth ? ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null,
+								);
 								if (!user) {
 									return {
 										status: 401,
@@ -3273,6 +3256,8 @@ export function pages_http_routes(router: RouterForConvexModules) {
 										},
 									} as const;
 								}
+
+								const membership = await ctx.runQuery(api.workspaces.get_membership, { membershipId });
 								if (!membership || membership.userId !== user._id) {
 									return {
 										status: 403,

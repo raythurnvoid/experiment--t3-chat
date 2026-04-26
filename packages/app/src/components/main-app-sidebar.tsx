@@ -3,10 +3,12 @@ import "./main-app-sidebar.css";
 import { memo } from "react";
 import type { Ref } from "react";
 import type { LucideIcon } from "lucide-react";
-import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, Users } from "lucide-react";
+import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, UserRoundCog, Users } from "lucide-react";
 import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
+import { useQuery } from "convex/react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { url_path_chat, url_path_pages } from "@/lib/urls.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { url_path_chat, url_path_pages, url_path_users } from "@/lib/urls.ts";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -372,10 +374,14 @@ type MainAppSidebar_Props = {
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { workspaceId, workspaceName, projectName } = AppTenantProvider.useContext();
+	const workspaceList = useQuery(app_convex_api.workspaces.list);
+	const workspace = workspaceList?.workspaces.find((workspace) => workspace._id === workspaceId);
+	const showUsersNavigation = workspace?.default === false;
 
 	const chatPath = url_path_chat({ workspaceName, projectName });
 	const pagesPath = url_path_pages({ workspaceName, projectName });
+	const usersPath = url_path_users({ workspaceName, projectName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
 	const [mainAppSidebarCollapsed, setMainAppSidebarCollapsed] = useAppLocalStorageStateValue(
@@ -444,6 +450,15 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Pages" : undefined}
 					/>
+					{/* Personal workspaces keep member management out of main nav; direct URLs stay guarded/read-only. */}
+					{showUsersNavigation ? (
+						<MainAppSidebarItem
+							to={usersPath}
+							label="Users"
+							icon={UserRoundCog}
+							tooltip={mainAppSidebarCollapsed ? "Users" : undefined}
+						/>
+					) : null}
 				</MySidebarList>
 			</MySidebarScrollableArea>
 

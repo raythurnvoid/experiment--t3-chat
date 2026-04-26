@@ -74,7 +74,7 @@ See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary �
 
 The backend billing module lives in [billing.ts](../../../packages/app/convex/billing.ts).
 
-- `billing` wraps the vendored Polar component and currently allows only signed-in users through `getUserInfo`, returning the Convex user id, email, and app display name for Polar customer creation.
+- `billing_polar` wraps the vendored Polar component and currently allows only signed-in users through `getUserInfo`, returning the Convex user id, email, and app display name for Polar customer creation.
 - `list_products`, `get_current_user_subscription`, and `get_usage_snapshot` provide the billing panel data.
 - `generate_checkout_link` creates Polar checkout sessions and sends the current display name when the vendored Polar helper needs to create a missing customer.
 - `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then waits for the subscription webhook to update the local subscription row. `Free -> paid` is intentionally not handled there and goes through checkout instead.
@@ -255,17 +255,17 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 ### Glossary — convex/billing.ts
 
-#### `billing`
+#### `billing_polar`
 
 - **Module:** [packages/app/convex/billing.ts](../../../packages/app/convex/billing.ts)
-- **Kind:** `Polar<DataModel>` instance (`export const billing`).
-- **Role:** Vendored `@convex-dev/polar` integration: `getUserInfo` restricts billing to signed-in Convex users; exposes `billing.api()`, `billing.listProducts`, webhook registration, and Polar server mode from `POLAR_SERVER`.
+- **Kind:** `Polar<DataModel>` instance (`export const billing_polar`).
+- **Role:** Vendored `@convex-dev/polar` integration: `getUserInfo` restricts billing to signed-in Convex users; exposes `billing_polar.api()`, `billing_polar.listProducts`, webhook registration, and Polar server mode from `POLAR_SERVER`.
 
 #### `list_products`
 
 - **Kind:** public `query`
 - **Args / returns:** `{}` → array of synced Polar products (empty when user is not signed in).
-- **Role:** Billing panel catalog; delegates to `billing.listProducts` after auth check.
+- **Role:** Billing panel catalog; delegates to `billing_polar.listProducts` after auth check.
 
 #### `get_current_user_subscription`
 
@@ -353,7 +353,7 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 - **Kind:** `internalAction` (admin region)
 - **Args:** `{ userId: Id<"users"> }`
-- **Role:** Admin-only replay path. Reads the authoritative Polar `CustomerState` via `billing.getCustomerState`, converts it through `billing_polar_sdk_to_db_data`, then calls `internal.billing.apply_polar_customer_state_refresh` with `syncedAt: Date.now()`. Safe to run mid-period — the helper's period-transition gate skips the credit grant when `(subscriptionId, currentPeriodStart)` is unchanged, and Polar's deterministic `monthly_credit::<userId>::<subscriptionId>::<periodStart>` `externalId` dedupes duplicate grants at Polar's end. Intended to be triggered manually from the Convex dashboard when a webhook was lost or local state looks stale.
+- **Role:** Admin-only replay path. Reads the authoritative Polar `CustomerState` via `billing_polar.getCustomerState`, converts it through `billing_polar_sdk_to_db_data`, then calls `internal.billing.apply_polar_customer_state_refresh` with `syncedAt: Date.now()`. Safe to run mid-period — the helper's period-transition gate skips the credit grant when `(subscriptionId, currentPeriodStart)` is unchanged, and Polar's deterministic `monthly_credit::<userId>::<subscriptionId>::<periodStart>` `externalId` dedupes duplicate grants at Polar's end. Intended to be triggered manually from the Convex dashboard when a webhook was lost or local state looks stale.
 
 ### Glossary — event ingestion
 

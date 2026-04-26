@@ -10,7 +10,7 @@ import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
 import { composite_id } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-import { workspaces_db_get_membership_for_user } from "../server/workspaces.ts";
+import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	pages_db_cancel_pending_edit_cleanup_tasks,
@@ -54,7 +54,7 @@ async function pages_pending_edit_upsert_last_sequence_saved(
 ) {
 	const existingRow = await ctx.db
 		.query("pages_pending_edits_last_sequence_saved")
-		.withIndex("byWorkspaceProjectUserPage", (q) =>
+		.withIndex("by_workspace_project_user_page", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
@@ -413,7 +413,7 @@ export const remove_pages_pending_edit_if_expired = internalMutation({
 		// created the task, treat this run as stale and do not delete the newer pending state.
 		const cleanupTasks = await ctx.db
 			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("byPendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
+			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", args.pendingEditId))
 			.collect();
 
 		const matchingCleanupTasks = cleanupTasks.filter(
@@ -453,19 +453,19 @@ export const upsert_pages_pending_edit_updates = mutation({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -473,7 +473,7 @@ export const upsert_pages_pending_edit_updates = mutation({
 		return await pages_pending_edit_upsert_updates(ctx, {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
-			userId: user.id,
+			userId: userAuth.id,
 			pageId: args.pageId,
 			pendingEditId: args.pendingEditId,
 			stagedMarkdown: args.stagedMarkdown,
@@ -516,12 +516,12 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -532,7 +532,7 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 			pages_db_get_pending_edit(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				userId: user.id,
+				userId: userAuth.id,
 				pageId: args.pageId,
 				pendingEditId: args.pendingEditId,
 			}),
@@ -585,7 +585,7 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "pages_pending_edit_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
@@ -630,7 +630,7 @@ export const persist_pages_pending_edit_rebased_state = mutation({
 			pendingEditId = await ctx.db.insert("pages_pending_edits", {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				userId: user.id,
+				userId: userAuth.id,
 				pageId: args.pageId,
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate: args.baseYjsUpdate,
@@ -692,12 +692,12 @@ export const get_pages_pending_edit = query({
 	},
 	returns: v.union(doc(app_convex_schema, "pages_pending_edits"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -707,7 +707,7 @@ export const get_pages_pending_edit = query({
 		return await pages_db_get_pending_edit(ctx, {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
-			userId: user.id,
+			userId: userAuth.id,
 			pageId: args.pageId,
 			pendingEditId: args.pendingEditId,
 		});
@@ -734,12 +734,12 @@ export const list_pages_pending_edits = query({
 	},
 	returns: v.array(doc(app_convex_schema, "pages_pending_edits")),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -748,8 +748,8 @@ export const list_pages_pending_edits = query({
 
 		const pagesPendingEdits = await ctx.db
 			.query("pages_pending_edits")
-			.withIndex("byWorkspaceProjectUserPage", (q) =>
-				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("userId", user.id),
+			.withIndex("by_workspace_project_user_page", (q) =>
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("userId", userAuth.id),
 			)
 			.order("asc")
 			.collect();
@@ -765,12 +765,12 @@ export const get_pages_pending_edit_last_sequence_saved = query({
 	},
 	returns: v.union(doc(app_convex_schema, "pages_pending_edits_last_sequence_saved"), v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
-			userId: user.id,
+			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
@@ -779,11 +779,11 @@ export const get_pages_pending_edit_last_sequence_saved = query({
 
 		return await ctx.db
 			.query("pages_pending_edits_last_sequence_saved")
-			.withIndex("byWorkspaceProjectUserPage", (q) =>
+			.withIndex("by_workspace_project_user_page", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
-					.eq("userId", user.id)
+					.eq("userId", userAuth.id)
 					.eq("pageId", args.pageId),
 			)
 			.first();

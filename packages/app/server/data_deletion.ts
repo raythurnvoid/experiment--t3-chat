@@ -19,7 +19,7 @@ export async function data_deletion_db_request(
 	if (args.scope === "user") {
 		const existing = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("byUserScope", (q) => q.eq("userId", args.userId).eq("scope", "user"))
+			.withIndex("by_user_scope", (q) => q.eq("userId", args.userId).eq("scope", "user"))
 			.first();
 
 		if (existing) {
@@ -43,7 +43,7 @@ export async function data_deletion_db_request(
 
 		const existingProjectRequests = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("byWorkspaceProjectScope", (q) =>
+			.withIndex("by_workspace_project_scope", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("scope", "project"),
 			)
 			.first();
@@ -62,7 +62,7 @@ export async function data_deletion_db_request(
 
 	const existingWorkspaceRequest = await ctx.db
 		.query("data_deletion_requests")
-		.withIndex("byWorkspaceScope", (q) => q.eq("workspaceId", args.workspaceId).eq("scope", "workspace"))
+		.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", args.workspaceId).eq("scope", "workspace"))
 		.first();
 
 	if (existingWorkspaceRequest) {

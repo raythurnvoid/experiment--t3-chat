@@ -1,0 +1,211 @@
+@layer components {
+	/* #region root */
+	.RouteUsers {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+
+		width: min(100%, 960px);
+		min-height: 0;
+		height: 100%;
+		margin-inline: auto;
+		padding: 24px;
+		overflow: auto;
+	}
+
+	.RouteUsers-loading,
+	.RouteUsers-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+
+	/* #endregion root */
+
+	/* #region user list */
+	.RouteUsers-list {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	/* #endregion user list */
+
+	/* #region header */
+	.RouteUsersHeader {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 16px;
+	}
+
+	.RouteUsersHeader-title {
+		margin: 0;
+
+		font-size: 24px;
+		font-weight: 650;
+		line-height: 1.2;
+		color: var(--color-fg-12);
+	}
+
+	.RouteUsersHeader-description {
+		margin: 6px 0 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RouteUsersHeader-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+	}
+	/* #endregion header */
+
+	/* #region user list item */
+	.RouteUsersUserListItem {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 12px;
+
+		padding: 14px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.RouteUsersUserListItem-avatar {
+		grid-column: 1;
+	}
+
+	.RouteUsersUserListItem-main {
+		grid-column: 2;
+		min-width: 0;
+	}
+
+	.RouteUsersUserListItem-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RouteUsersUserListItem-name {
+		min-width: 0;
+		contain: content;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 15px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RouteUsersUserListItem-actions {
+		grid-column: 3;
+
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+	}
+
+	.RouteUsersUserListItem-remove-trigger {
+		display: inline-flex;
+	}
+	/* #endregion user list item */
+
+	/* #region invite modal */
+	.RouteUsersInviteModal {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+
+		width: min(92vw, 480px);
+		padding: 18px;
+	}
+
+	.RouteUsersInviteModal-trigger {
+		display: inline-flex;
+	}
+
+	.RouteUsersInviteModal-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.RouteUsersInviteModal-project-trigger {
+		width: 100%;
+		justify-content: space-between;
+	}
+
+	.RouteUsersInviteModal-actions {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	/* #endregion invite modal */
+
+	/* #region transfer modal */
+	.RouteUsersTransferModal {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+
+		width: min(92vw, 480px);
+		padding: 18px;
+	}
+
+	.RouteUsersTransferModal-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.RouteUsersTransferModal-actions {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	/* #endregion transfer modal */
+
+	@media (max-width: 640px) {
+		.RouteUsers {
+			padding: 16px;
+		}
+
+		.RouteUsersHeader {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.RouteUsersHeader-toolbar {
+			justify-content: start;
+		}
+
+		.RouteUsersUserListItem {
+			grid-template-columns: auto minmax(0, 1fr);
+		}
+
+		.RouteUsersUserListItem-actions {
+			grid-column: 1 / -1;
+			justify-content: start;
+			flex-wrap: wrap;
+		}
+	}
+}

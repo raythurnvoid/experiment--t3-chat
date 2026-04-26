@@ -18,6 +18,14 @@
 		flex: 1;
 		min-width: 0;
 	}
+
+	.MainAppHeader-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		padding-right: 12px;
+	}
 	/* #endregion root */
 
 	/* #region workspace controls */
@@ -84,4 +92,3 @@
 	}
 	/* #endregion workspace controls */
 }
-

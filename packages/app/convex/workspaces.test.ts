@@ -5,8 +5,16 @@ import type { MutationCtx } from "./_generated/server.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	workspaces_db_create,
+	workspaces_db_create_project,
 	workspaces_db_ensure_default_workspace_and_project_for_user,
-} from "../server/workspaces.ts";
+} from "./workspaces.ts";
+import {
+	access_control_db_ensure_public_permission_grant,
+	access_control_db_ensure_role_assignment,
+	access_control_db_ensure_role_permission_grant,
+	access_control_db_ensure_user_permission_grant,
+	access_control_db_has_permission,
+} from "./access_control.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { user_limits, workspace_limits } from "../shared/limits.ts";
 import { workspaces_description_max_length, workspaces_name_max_length } from "../shared/workspaces.ts";
@@ -44,7 +52,7 @@ async function workspaces_test_bootstrap_user(t: ReturnType<typeof test_convex>,
 		const now = Date.now();
 		const userLimit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("byUserLimitName", (q) =>
+			.withIndex("by_user_limitName", (q) =>
 				q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
 			)
 			.first();
@@ -196,18 +204,33 @@ describe("create_workspace", () => {
 		expect(result._yay?.name).toBe("acme-labs");
 		expect(result._yay?.defaultProjectName).toBe("home");
 
-		const { workspace, project, userLimit, workspaceLimit } = result._yay
+		const { workspace, project, ownerRole, permissionGrants, userLimit, workspaceLimit } = result._yay
 			? await t.run(async (ctx) => {
-					const [workspace, project, userLimit, workspaceLimit] = await Promise.all([
+					const [workspace, project, ownerRole, permissionGrants, userLimit, workspaceLimit] = await Promise.all([
 						ctx.db.get("workspaces", result._yay!.workspaceId),
 						ctx.db.get("workspaces_projects", result._yay!.defaultProjectId),
 						ctx.db
+							.query("access_control_role_assignments")
+							.withIndex("by_workspace_project_role_user", (q) =>
+								q
+									.eq("workspaceId", result._yay!.workspaceId)
+									.eq("projectId", result._yay!.defaultProjectId)
+									.eq("role", "owner"),
+							)
+							.first(),
+						ctx.db
+							.query("access_control_permission_grants")
+							.withIndex("by_workspace_project_resource_user_permission", (q) =>
+								q.eq("workspaceId", result._yay!.workspaceId),
+							)
+							.collect(),
+						ctx.db
 							.query("limits_per_user")
-							.withIndex("byUserLimitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
+							.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
 							.first(),
 						ctx.db
 							.query("limits_per_workspace")
-							.withIndex("byWorkspaceLimitName", (q) =>
+							.withIndex("by_workspace_limitName", (q) =>
 								q.eq("workspaceId", result._yay!.workspaceId).eq("limitName", "extra_projects"),
 							)
 							.first(),
@@ -216,14 +239,36 @@ describe("create_workspace", () => {
 					return {
 						workspace,
 						project,
+						ownerRole,
+						permissionGrants,
 						userLimit,
 						workspaceLimit,
 					};
 				})
-			: { workspace: null, project: null, userLimit: null, workspaceLimit: null };
+			: {
+					workspace: null,
+					project: null,
+					ownerRole: null,
+					permissionGrants: [],
+					userLimit: null,
+					workspaceLimit: null,
+				};
 
 		expect(workspace?.name).toBe("acme-labs");
-		expect(workspace?.ownerUserId).toBe(userId);
+		expect(workspace?.owner).toBeUndefined();
+		expect(ownerRole?.userId).toBe(userId);
+		expect(permissionGrants.some((grant) => grant.role === "member" && grant.permission === "project.create")).toBe(
+			true,
+		);
+		expect(
+			permissionGrants.some((grant) => grant.role === "admin" && grant.permission === "workspace.members.manage"),
+		).toBe(true);
+		expect(
+			permissionGrants.some((grant) => grant.role === "member" && grant.permission === "workspace.members.manage"),
+		).toBe(false);
+		expect(
+			permissionGrants.some((grant) => grant.role === "admin" && grant.permission === "workspace.roles.manage"),
+		).toBe(true);
 		expect(project?.name).toBe("home");
 		expect(userLimit?.usedCount).toBe(1);
 		expect(userLimit?.maxCount).toBe(1);
@@ -518,7 +563,7 @@ describe("create_workspace", () => {
 		});
 		expect(sharedWorkspace._yay).toBeTruthy();
 
-		const shareResult = await owner.mutation(api.workspaces.add_user_to_workspace_project, {
+		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: sharedWorkspace._yay!.workspaceId,
 			projectId: sharedWorkspace._yay!.defaultProjectId,
 			userIdToAdd: memberId,
@@ -622,14 +667,14 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const workspaceLimit = user?.defaultWorkspaceId
 				? await ctx.db
 						.query("limits_per_workspace")
-						.withIndex("byWorkspaceLimitName", (q) =>
+						.withIndex("by_workspace_limitName", (q) =>
 							q.eq("workspaceId", user.defaultWorkspaceId!).eq("limitName", "extra_projects"),
 						)
 						.first()
 				: null;
 			const userLimit = await ctx.db
 				.query("limits_per_user")
-				.withIndex("byUserLimitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
+				.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
 				.first();
 
 			return {
@@ -660,7 +705,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const project = user?.defaultProjectId ? await ctx.db.get("workspaces_projects", user.defaultProjectId) : null;
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", userId))
+				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", userId))
 				.collect();
 
 			return {
@@ -704,7 +749,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 			const user = await ctx.db.get("users", userId);
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byUserWorkspaceProjectActive", (q) => q.eq("userId", userId))
+				.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", userId))
 				.collect();
 
 			const defaultWorkspaces = (
@@ -772,16 +817,39 @@ describe("create_project", () => {
 
 		const membership = result._yay
 			? await t.run(async (ctx) => {
-					const [membership, workspaceLimit] = await Promise.all([
+					const [membership, roleAssignment, projectGrant, workspaceLimit] = await Promise.all([
 						ctx.db
 							.query("workspaces_projects_users")
-							.withIndex("byProjectUserActive", (q) =>
+							.withIndex("by_project_user_active", (q) =>
 								q.eq("projectId", result._yay!.projectId).eq("userId", userId),
 							)
 							.first(),
 						ctx.db
+							.query("access_control_role_assignments")
+							.withIndex("by_workspace_project_user_role", (q) =>
+								q
+									.eq("workspaceId", wsResult._yay!.workspaceId)
+									.eq("projectId", result._yay!.projectId)
+									.eq("userId", userId)
+									.eq("role", "member"),
+							)
+							.first(),
+						ctx.db
+							.query("access_control_permission_grants")
+							.withIndex("by_workspace_project_resource_role_permission", (q) =>
+								q
+									.eq("workspaceId", wsResult._yay!.workspaceId)
+									.eq("projectId", result._yay!.projectId)
+									.eq("resourceKind", "project")
+									.eq("resourceId", String(result._yay!.projectId))
+									.eq("principalKind", "role")
+									.eq("role", "member")
+									.eq("permission", "project.update"),
+							)
+							.first(),
+						ctx.db
 							.query("limits_per_workspace")
-							.withIndex("byWorkspaceLimitName", (q) =>
+							.withIndex("by_workspace_limitName", (q) =>
 								q.eq("workspaceId", wsResult._yay!.workspaceId).eq("limitName", "extra_projects"),
 							)
 							.first(),
@@ -789,11 +857,15 @@ describe("create_project", () => {
 
 					return {
 						membership,
+						roleAssignment,
+						projectGrant,
 						workspaceLimit,
 					};
 				})
 			: null;
 		expect(membership?.membership).toBeTruthy();
+		expect(membership?.roleAssignment).toBeTruthy();
+		expect(membership?.projectGrant).toBeTruthy();
 		expect(membership?.workspaceLimit?.usedCount).toBe(1);
 	});
 
@@ -1059,7 +1131,7 @@ describe("create_project", () => {
 		});
 		expect(extraProject._yay).toBeTruthy();
 
-		const shareResult = await owner.mutation(api.workspaces.add_user_to_workspace_project, {
+		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: sharedWorkspace._yay!.workspaceId,
 			projectId: sharedWorkspace._yay!.defaultProjectId,
 			userIdToAdd: memberId,
@@ -1137,7 +1209,7 @@ describe("create_project", () => {
 	});
 });
 
-describe("add_user_to_workspace_project", () => {
+describe("invite_user_to_workspace_project with userIdToAdd", () => {
 	test("rejects adding another user to the default workspace", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
@@ -1156,13 +1228,1112 @@ describe("add_user_to_workspace_project", () => {
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId: ownerId }));
 		expect(created._yay).toBeTruthy();
 
-		const result = await owner.mutation(api.workspaces.add_user_to_workspace_project, {
+		const result = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: created._yay!.workspaceId,
 			projectId: created._yay!.defaultProjectId,
 			userIdToAdd: memberId,
 		});
 
 		expect(result._nay?.message).toBe("Cannot add user to default workspace");
+	});
+});
+
+describe("invite_user_to_workspace_project", () => {
+	test("rejects invites to the default workspace", async () => {
+		const t = test_convex();
+		const [ownerId, invitedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-default-invite-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-default-invite-invitee" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, invitedUserId] });
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			const anagraphicId = await ctx.db.insert("users_anagraphics", {
+				userId: invitedUserId,
+				displayName: "Default Invitee",
+				email: "default-invitee@test.local",
+				updatedAt: now,
+			});
+			await ctx.db.patch("users", invitedUserId, { anagraphic: anagraphicId });
+		});
+		const ownerUser = await t.run((ctx) => ctx.db.get("users", ownerId));
+		if (!ownerUser?.defaultWorkspaceId || !ownerUser.defaultProjectId) {
+			throw new Error("Expected owner default workspace");
+		}
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "default-invite-owner@test.local",
+		});
+
+		const result = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
+			workspaceId: ownerUser.defaultWorkspaceId,
+			projectId: ownerUser.defaultProjectId,
+			email: "default-invitee@test.local",
+		});
+
+		expect(result._nay?.message).toBe("Cannot add user to default workspace");
+	});
+
+	test("adds home and selected project memberships, creates a notification, and supports removal", async () => {
+		const t = test_convex();
+		const [ownerId, invitedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-invite-invitee" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, invitedUserId] });
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			const anagraphicId = await ctx.db.insert("users_anagraphics", {
+				userId: invitedUserId,
+				displayName: "Invited User",
+				email: "invited-user@test.local",
+				updatedAt: now,
+			});
+			await ctx.db.patch("users", invitedUserId, { anagraphic: anagraphicId });
+		});
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "invite-owner@test.local",
+		});
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "invite-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+		const selectedProject = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId: ownerId,
+				description: "",
+				workspaceId: created._yay!.workspaceId,
+				name: "roadmap",
+				now: Date.now(),
+			}),
+		);
+		expect(selectedProject._yay).toBeTruthy();
+
+		const inviteResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
+			workspaceId: created._yay!.workspaceId,
+			projectId: selectedProject._yay!.projectId,
+			email: "Invited-User@Test.Local",
+		});
+		expect(inviteResult._yay).toBeNull();
+
+		const afterInvite = await t.run(async (ctx) => {
+			const [memberships, notifications, roleAssignments] = await Promise.all([
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q.eq("active", true).eq("userId", invitedUserId).eq("workspaceId", created._yay!.workspaceId),
+					)
+					.collect(),
+				ctx.db
+					.query("user_notifications")
+					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
+					.collect(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_user_project_role", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("userId", invitedUserId),
+					)
+					.collect(),
+			]);
+
+			return { memberships, notifications, roleAssignments };
+		});
+
+		expect(afterInvite.memberships.map((membership) => membership.projectId).sort()).toEqual(
+			[created._yay!.defaultProjectId, selectedProject._yay!.projectId].sort(),
+		);
+		expect(afterInvite.roleAssignments.map((assignment) => assignment.projectId).sort()).toEqual(
+			[created._yay!.defaultProjectId, selectedProject._yay!.projectId].sort(),
+		);
+		expect(afterInvite.notifications).toHaveLength(1);
+		expect(afterInvite.notifications[0]?.read).toBe(false);
+		expect(afterInvite.notifications[0]?.workspaceId).toBe(created._yay!.workspaceId);
+		expect(afterInvite.notifications[0]?.projectId).toBe(selectedProject._yay!.projectId);
+
+		const homeProjectUserIds = await owner.query(api.workspaces.list_workspace_project_users, {
+			workspaceId: created._yay!.workspaceId,
+			projectId: created._yay!.defaultProjectId,
+		});
+		expect(homeProjectUserIds?.toSorted()).toEqual([ownerId, invitedUserId].toSorted());
+
+		const selectedProjectUserIds = await owner.query(api.workspaces.list_workspace_project_users, {
+			workspaceId: created._yay!.workspaceId,
+			projectId: selectedProject._yay!.projectId,
+		});
+		expect(selectedProjectUserIds?.toSorted()).toEqual([ownerId, invitedUserId].toSorted());
+
+		const removeResult = await owner.mutation(api.workspaces.remove_user_from_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			userIdToRemove: invitedUserId,
+		});
+		expect(removeResult._yay).toBeNull();
+
+		const afterRemove = await t.run(async (ctx) => {
+			const [membershipsAfterRemove, roleAssignmentsAfterRemove] = await Promise.all([
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q.eq("active", true).eq("userId", invitedUserId).eq("workspaceId", created._yay!.workspaceId),
+					)
+					.collect(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_user_project_role", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("userId", invitedUserId),
+					)
+					.collect(),
+			]);
+			return { membershipsAfterRemove, roleAssignmentsAfterRemove };
+		});
+		expect(afterRemove.membershipsAfterRemove).toHaveLength(0);
+		expect(afterRemove.roleAssignmentsAfterRemove).toHaveLength(0);
+	});
+
+	test("allows a workspace admin to invite users", async () => {
+		const t = test_convex();
+		const [ownerId, adminId, invitedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-admin-invite-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-admin-invite-admin" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-admin-invite-invitee" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, adminId, invitedUserId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "admin-invite-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: adminId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: adminId,
+				role: "admin",
+				now,
+			});
+		});
+
+		const admin = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: adminId,
+			name: "Admin",
+			email: "admin-invite-admin@test.local",
+		});
+
+		const result = await admin.mutation(api.workspaces.invite_user_to_workspace_project, {
+			workspaceId: created._yay!.workspaceId,
+			projectId: created._yay!.defaultProjectId,
+			userIdToAdd: invitedUserId,
+		});
+		expect(result._yay).toBeNull();
+
+		const afterInvite = await t.run(async (ctx) => {
+			const [membership, notification] = await Promise.all([
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", invitedUserId)
+							.eq("workspaceId", created._yay!.workspaceId)
+							.eq("projectId", created._yay!.defaultProjectId),
+					)
+					.first(),
+				ctx.db
+					.query("user_notifications")
+					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
+					.first(),
+			]);
+
+			return { membership, notification };
+		});
+
+		expect(afterInvite.membership).not.toBeNull();
+		expect(afterInvite.notification?.actorUserId).toBe(adminId);
+	});
+
+	test("rejects invites from regular workspace members", async () => {
+		const t = test_convex();
+		const [ownerId, memberId, invitedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-invite-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-invite-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-invite-invitee" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId, invitedUserId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "member-invite-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				role: "member",
+				now,
+			});
+		});
+
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "member-invite-member@test.local",
+		});
+
+		const result = await member.mutation(api.workspaces.invite_user_to_workspace_project, {
+			workspaceId: created._yay!.workspaceId,
+			projectId: created._yay!.defaultProjectId,
+			userIdToAdd: invitedUserId,
+		});
+		expect(result._nay?.message).toBe("Permission denied");
+
+		const afterInvite = await t.run(async (ctx) => {
+			const [membership, notifications] = await Promise.all([
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q.eq("active", true).eq("userId", invitedUserId).eq("workspaceId", created._yay!.workspaceId),
+					)
+					.collect(),
+				ctx.db
+					.query("user_notifications")
+					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
+					.collect(),
+			]);
+
+			return { membership, notifications };
+		});
+
+		expect(afterInvite.membership).toHaveLength(0);
+		expect(afterInvite.notifications).toHaveLength(0);
+	});
+});
+
+describe("remove_user_from_workspace", () => {
+	test("rejects removing another user by a member", async () => {
+		const t = test_convex();
+		const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-remove-other-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-remove-other-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-remove-other-target" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId, otherMemberId] });
+
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "remove-other-member@test.local",
+		});
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "remove-other-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await Promise.all(
+				[memberId, otherMemberId].map(async (userId) => {
+					await ctx.db.insert("workspaces_projects_users", {
+						workspaceId: created._yay!.workspaceId,
+						projectId: created._yay!.defaultProjectId,
+						userId,
+						active: true,
+					});
+					await access_control_db_ensure_role_assignment(ctx, {
+						workspaceId: created._yay!.workspaceId,
+						projectId: created._yay!.defaultProjectId,
+						userId,
+						role: "member",
+						now,
+					});
+				}),
+			);
+		});
+
+		const result = await member.mutation(api.workspaces.remove_user_from_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			userIdToRemove: otherMemberId,
+		});
+		expect(result._nay?.message).toBe("Permission denied");
+
+		const otherMemberMemberships = await t.run((ctx) =>
+			ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q.eq("active", true).eq("userId", otherMemberId).eq("workspaceId", created._yay!.workspaceId),
+				)
+				.collect(),
+		);
+		expect(otherMemberMemberships).toHaveLength(1);
+	});
+
+	test("allows a member to leave the workspace", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-leave-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-leave-member" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "leave-member@test.local",
+		});
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "leave-team",
+				now: Date.now(),
+			}),
+		);
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				role: "member",
+				now,
+			});
+		});
+
+		const leaveResult = await member.mutation(api.workspaces.remove_user_from_workspace, {
+			workspaceId: created._yay!.workspaceId,
+			userIdToRemove: memberId,
+		});
+		expect(leaveResult._yay).toBeNull();
+
+		const afterLeave = await t.run(async (ctx) => {
+			const [memberships, roleAssignments] = await Promise.all([
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q.eq("active", true).eq("userId", memberId).eq("workspaceId", created._yay!.workspaceId),
+					)
+					.collect(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_user_project_role", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("userId", memberId),
+					)
+					.collect(),
+			]);
+			return { memberships, roleAssignments };
+		});
+		expect(afterLeave.memberships).toHaveLength(0);
+		expect(afterLeave.roleAssignments).toHaveLength(0);
+	});
+});
+
+describe("access_control.transfer_workspace_ownership", () => {
+	test("moves the owner role and updates extra-workspace counters", async () => {
+		const t = test_convex();
+		const [ownerId, newOwnerId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-transfer-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-transfer-new-owner" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, newOwnerId] });
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "transfer-owner@test.local",
+		});
+		const created = await owner.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "transfer-team",
+		});
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: newOwnerId,
+				active: true,
+			});
+		});
+
+		const transferResult = await owner.mutation(api.access_control.transfer_workspace_ownership, {
+			workspaceId: created._yay!.workspaceId,
+			newOwnerUserId: newOwnerId,
+		});
+		expect(transferResult._yay).toBeNull();
+
+		const afterTransfer = await t.run(async (ctx) => {
+			const [ownerRoles, oldOwnerMemberRole, oldOwnerLimit, newOwnerLimit, oldOwnerHomeMembership] = await Promise.all([
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_role_user", (q) =>
+						q
+							.eq("workspaceId", created._yay!.workspaceId)
+							.eq("projectId", created._yay!.defaultProjectId)
+							.eq("role", "owner"),
+					)
+					.collect(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_user_role", (q) =>
+						q
+							.eq("workspaceId", created._yay!.workspaceId)
+							.eq("projectId", created._yay!.defaultProjectId)
+							.eq("userId", ownerId)
+							.eq("role", "member"),
+					)
+					.first(),
+				ctx.db
+					.query("limits_per_user")
+					.withIndex("by_user_limitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
+					.first(),
+				ctx.db
+					.query("limits_per_user")
+					.withIndex("by_user_limitName", (q) => q.eq("userId", newOwnerId).eq("limitName", "extra_workspaces"))
+					.first(),
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", ownerId)
+							.eq("workspaceId", created._yay!.workspaceId)
+							.eq("projectId", created._yay!.defaultProjectId),
+					)
+					.first(),
+			]);
+
+			return { ownerRoles, oldOwnerMemberRole, oldOwnerLimit, newOwnerLimit, oldOwnerHomeMembership };
+		});
+
+		expect(afterTransfer.ownerRoles).toHaveLength(1);
+		expect(afterTransfer.ownerRoles[0]?.userId).toBe(newOwnerId);
+		expect(afterTransfer.oldOwnerMemberRole?.userId).toBe(ownerId);
+		expect(afterTransfer.oldOwnerLimit?.usedCount).toBe(0);
+		expect(afterTransfer.newOwnerLimit?.usedCount).toBe(1);
+		expect(afterTransfer.oldOwnerHomeMembership).not.toBeNull();
+	});
+});
+
+describe("access_control", () => {
+	test("does not grant member-management permissions to regular members", async () => {
+		const t = test_convex();
+		const [ownerId, adminId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-management-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-management-admin" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-management-member" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, adminId, memberId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				name: "member-management-access",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const project = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId: ownerId,
+				workspaceId: created._yay!.workspaceId,
+				name: "project-access",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (project._nay) {
+			throw new Error(project._nay.message);
+		}
+
+		const result = await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const projectId of [created._yay!.defaultProjectId, project._yay!.projectId]) {
+				await access_control_db_ensure_role_assignment(ctx, {
+					workspaceId: created._yay!.workspaceId,
+					projectId,
+					userId: adminId,
+					role: "admin",
+					now,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					workspaceId: created._yay!.workspaceId,
+					projectId,
+					userId: memberId,
+					role: "member",
+					now,
+				});
+			}
+
+			const memberWorkspaceAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				defaultProjectId: created._yay!.defaultProjectId,
+				resourceKind: "workspace",
+				resourceId: String(created._yay!.workspaceId),
+				permission: "workspace.members.manage",
+				userId: memberId,
+			});
+			const adminWorkspaceAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				defaultProjectId: created._yay!.defaultProjectId,
+				resourceKind: "workspace",
+				resourceId: String(created._yay!.workspaceId),
+				permission: "workspace.members.manage",
+				userId: adminId,
+			});
+			const memberProjectAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: project._yay!.projectId,
+				defaultProjectId: created._yay!.defaultProjectId,
+				resourceKind: "project",
+				resourceId: String(project._yay!.projectId),
+				permission: "project.members.manage",
+				userId: memberId,
+			});
+			const adminProjectAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: project._yay!.projectId,
+				defaultProjectId: created._yay!.defaultProjectId,
+				resourceKind: "project",
+				resourceId: String(project._yay!.projectId),
+				permission: "project.members.manage",
+				userId: adminId,
+			});
+
+			return { memberWorkspaceAccess, adminWorkspaceAccess, memberProjectAccess, adminProjectAccess };
+		});
+
+		expect(result.memberWorkspaceAccess).toBe(false);
+		expect(result.adminWorkspaceAccess).toBe(true);
+		expect(result.memberProjectAccess).toBe(false);
+		expect(result.adminProjectAccess).toBe(true);
+	});
+
+	test("returns current workspace permission for owners and admins but not regular members", async () => {
+		const t = test_convex();
+		const [ownerId, adminId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-current-permission-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-current-permission-admin" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-current-permission-member" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, adminId, memberId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				name: "current-permission",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const [userId, role] of [
+				[adminId, "admin"],
+				[memberId, "member"],
+			] as const) {
+				await ctx.db.insert("workspaces_projects_users", {
+					workspaceId: created._yay!.workspaceId,
+					projectId: created._yay!.defaultProjectId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					workspaceId: created._yay!.workspaceId,
+					projectId: created._yay!.defaultProjectId,
+					userId,
+					role,
+					now,
+				});
+			}
+		});
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "current-permission-owner@test.local",
+		});
+		const admin = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: adminId,
+			name: "Admin",
+			email: "current-permission-admin@test.local",
+		});
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "current-permission-member@test.local",
+		});
+
+		const [ownerPermission, adminPermission, memberPermission] = await Promise.all([
+			owner.query(api.access_control.get_current_user_workspace_permission, {
+				workspaceId: created._yay.workspaceId,
+				permission: "workspace.members.manage",
+			}),
+			admin.query(api.access_control.get_current_user_workspace_permission, {
+				workspaceId: created._yay.workspaceId,
+				permission: "workspace.members.manage",
+			}),
+			member.query(api.access_control.get_current_user_workspace_permission, {
+				workspaceId: created._yay.workspaceId,
+				permission: "workspace.members.manage",
+			}),
+		]);
+
+		expect(ownerPermission).toBe(true);
+		expect(adminPermission).toBe(true);
+		expect(memberPermission).toBe(false);
+	});
+
+	test("returns the current user's exact role for one workspace/project scope", async () => {
+		const t = test_convex();
+		const [ownerId, scopedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-role-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-role-scoped" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, scopedUserId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				name: "access-role",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const workspace = created._yay;
+
+		const [projectAId, projectBId] = await t.run(async (ctx) => {
+			const now = Date.now();
+			const [projectAId, projectBId] = await Promise.all([
+				ctx.db.insert("workspaces_projects", {
+					workspaceId: workspace.workspaceId,
+					name: "role-a",
+					description: "",
+					default: false,
+					updatedAt: now,
+				}),
+				ctx.db.insert("workspaces_projects", {
+					workspaceId: workspace.workspaceId,
+					name: "role-b",
+					description: "",
+					default: false,
+					updatedAt: now,
+				}),
+			]);
+
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: projectAId,
+				userId: scopedUserId,
+				role: "member",
+				now,
+			});
+
+			return [projectAId, projectBId] as const;
+		});
+
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "workspaces-test-user@test.local",
+		});
+		const scopedUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: scopedUserId,
+			name: "Scoped User",
+			email: "workspaces-test-user@test.local",
+		});
+
+		const ownerRole = await owner.query(api.access_control.get_current_user_role, {
+			workspaceId: workspace.workspaceId,
+			projectId: workspace.defaultProjectId,
+		});
+		const localProjectRole = await scopedUser.query(api.access_control.get_current_user_role, {
+			workspaceId: workspace.workspaceId,
+			projectId: projectAId,
+		});
+		const siblingProjectRoleBeforeDefaultRole = await scopedUser.query(api.access_control.get_current_user_role, {
+			workspaceId: workspace.workspaceId,
+			projectId: projectBId,
+		});
+
+		await t.run((ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				userId: scopedUserId,
+				role: "admin",
+				now: Date.now(),
+			}),
+		);
+
+		const localProjectRoleAfterDefaultRole = await scopedUser.query(api.access_control.get_current_user_role, {
+			workspaceId: workspace.workspaceId,
+			projectId: projectAId,
+		});
+		const siblingProjectRoleAfterDefaultRole = await scopedUser.query(api.access_control.get_current_user_role, {
+			workspaceId: workspace.workspaceId,
+			projectId: projectBId,
+		});
+		const defaultProjectRoleAfterDefaultRole = await scopedUser.query(api.access_control.get_current_user_role, {
+			workspaceId: workspace.workspaceId,
+			projectId: workspace.defaultProjectId,
+		});
+
+		expect(ownerRole).toBe("owner");
+		expect(localProjectRole).toBe("member");
+		expect(siblingProjectRoleBeforeDefaultRole).toBeNull();
+		expect(localProjectRoleAfterDefaultRole).toBe("member");
+		expect(siblingProjectRoleAfterDefaultRole).toBeNull();
+		expect(defaultProjectRoleAfterDefaultRole).toBe("admin");
+	});
+
+	test("keeps extra-project role assignments local and default-project assignments workspace-wide", async () => {
+		const t = test_convex();
+		const [ownerId, scopedUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-scoped" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, scopedUserId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				name: "access-scope",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const workspace = created._yay;
+
+		const result = await t.run(async (ctx) => {
+			const now = Date.now();
+			const [projectAId, projectBId] = await Promise.all([
+				ctx.db.insert("workspaces_projects", {
+					workspaceId: workspace.workspaceId,
+					name: "access-a",
+					description: "",
+					default: false,
+					updatedAt: now,
+				}),
+				ctx.db.insert("workspaces_projects", {
+					workspaceId: workspace.workspaceId,
+					name: "access-b",
+					description: "",
+					default: false,
+					updatedAt: now,
+				}),
+			]);
+
+			for (const projectId of [projectAId, projectBId]) {
+				await access_control_db_ensure_role_permission_grant(ctx, {
+					workspaceId: workspace.workspaceId,
+					projectId,
+					resourceKind: "project",
+					resourceId: String(projectId),
+					role: "member",
+					permission: "project.update",
+					now,
+				});
+			}
+
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: projectAId,
+				userId: scopedUserId,
+				role: "member",
+				now,
+			});
+
+			const projectALocalAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: projectAId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "project",
+				resourceId: String(projectAId),
+				permission: "project.update",
+				userId: scopedUserId,
+			});
+			const projectBAccessBeforeWorkspaceRole = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: projectBId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "project",
+				resourceId: String(projectBId),
+				permission: "project.update",
+				userId: scopedUserId,
+			});
+
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				userId: scopedUserId,
+				role: "member",
+				now,
+			});
+
+			const projectBAccessAfterWorkspaceRole = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: projectBId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "project",
+				resourceId: String(projectBId),
+				permission: "project.update",
+				userId: scopedUserId,
+			});
+
+			return {
+				projectALocalAccess,
+				projectBAccessBeforeWorkspaceRole,
+				projectBAccessAfterWorkspaceRole,
+			};
+		});
+
+		expect(result.projectALocalAccess).toBe(true);
+		expect(result.projectBAccessBeforeWorkspaceRole).toBe(false);
+		expect(result.projectBAccessAfterWorkspaceRole).toBe(true);
+	});
+
+	test("allows direct user grants and keeps public grants resource-and-permission specific", async () => {
+		const t = test_convex();
+		const [ownerId, grantedUserId, otherUserId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-grant-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-granted" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-access-other" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, grantedUserId, otherUserId] });
+
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				name: "access-grants",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const workspace = created._yay;
+
+		const result = await t.run(async (ctx) => {
+			const now = Date.now();
+			const [pageId, otherPageId] = await Promise.all([
+				ctx.db.insert("pages", {
+					workspaceId: String(workspace.workspaceId),
+					projectId: String(workspace.defaultProjectId),
+					path: "/access-user-grant",
+					name: "access-user-grant",
+					version: 0,
+					parentId: "root",
+					createdBy: ownerId,
+					updatedBy: String(ownerId),
+					updatedAt: now,
+				}),
+				ctx.db.insert("pages", {
+					workspaceId: String(workspace.workspaceId),
+					projectId: String(workspace.defaultProjectId),
+					path: "/access-public-other",
+					name: "access-public-other",
+					version: 0,
+					parentId: "root",
+					createdBy: ownerId,
+					updatedBy: String(ownerId),
+					updatedAt: now,
+				}),
+			]);
+
+			await Promise.all([
+				access_control_db_ensure_user_permission_grant(ctx, {
+					workspaceId: workspace.workspaceId,
+					projectId: workspace.defaultProjectId,
+					resourceKind: "page",
+					resourceId: String(pageId),
+					userId: grantedUserId,
+					permission: "asset.write",
+					now,
+				}),
+				access_control_db_ensure_public_permission_grant(ctx, {
+					workspaceId: workspace.workspaceId,
+					projectId: workspace.defaultProjectId,
+					resourceKind: "page",
+					resourceId: String(pageId),
+					permission: "asset.read",
+					now,
+				}),
+			]);
+
+			const directUserAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "page",
+				resourceId: String(pageId),
+				permission: "asset.write",
+				userId: grantedUserId,
+			});
+			const otherUserAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "page",
+				resourceId: String(pageId),
+				permission: "asset.write",
+				userId: otherUserId,
+			});
+			const publicReadAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "page",
+				resourceId: String(pageId),
+				permission: "asset.read",
+				allowPublic: true,
+			});
+			const publicWriteAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "page",
+				resourceId: String(pageId),
+				permission: "asset.write",
+				allowPublic: true,
+			});
+			const otherPagePublicAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "page",
+				resourceId: String(otherPageId),
+				permission: "asset.read",
+				allowPublic: true,
+			});
+			const publicAccessWithoutPublicFlag = await access_control_db_has_permission(ctx, {
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
+				defaultProjectId: workspace.defaultProjectId,
+				resourceKind: "page",
+				resourceId: String(pageId),
+				permission: "asset.read",
+			});
+
+			return {
+				directUserAccess,
+				otherUserAccess,
+				publicReadAccess,
+				publicWriteAccess,
+				otherPagePublicAccess,
+				publicAccessWithoutPublicFlag,
+			};
+		});
+
+		expect(result.directUserAccess).toBe(true);
+		expect(result.otherUserAccess).toBe(false);
+		expect(result.publicReadAccess).toBe(true);
+		expect(result.publicWriteAccess).toBe(false);
+		expect(result.otherPagePublicAccess).toBe(false);
+		expect(result.publicAccessWithoutPublicFlag).toBe(false);
 	});
 });
 
@@ -1717,23 +2888,46 @@ describe("delete_project", () => {
 		expect(result._yay).toBeNull();
 
 		const after_delete = await t.run(async (ctx) => {
-			const [project, requests, user, workspaceLimit, pages, markdownContent, aiThreads, aiMessages, chatMessages] =
-				await Promise.all([
-					ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
-					ctx.db.query("data_deletion_requests").collect(),
-					ctx.db.get("users", userId),
-					ctx.db
-						.query("limits_per_workspace")
-						.withIndex("byWorkspaceLimitName", (q) =>
-							q.eq("workspaceId", created._yay!.workspaceId).eq("limitName", "extra_projects"),
-						)
-						.first(),
-					ctx.db.query("pages").collect(),
-					ctx.db.query("pages_markdown_content").collect(),
-					ctx.db.query("ai_chat_threads").collect(),
-					ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
-					ctx.db.query("chat_messages").collect(),
-				]);
+			const [
+				project,
+				requests,
+				user,
+				workspaceLimit,
+				roleAssignments,
+				permissionGrants,
+				pages,
+				markdownContent,
+				aiThreads,
+				aiMessages,
+				chatMessages,
+			] = await Promise.all([
+				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
+				ctx.db.query("data_deletion_requests").collect(),
+				ctx.db.get("users", userId),
+				ctx.db
+					.query("limits_per_workspace")
+					.withIndex("by_workspace_limitName", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("limitName", "extra_projects"),
+					)
+					.first(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_user_role", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("projectId", extraProject._yay!.projectId),
+					)
+					.collect(),
+				ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_workspace_project_resource_user_permission", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("projectId", extraProject._yay!.projectId),
+					)
+					.collect(),
+				ctx.db.query("pages").collect(),
+				ctx.db.query("pages_markdown_content").collect(),
+				ctx.db.query("ai_chat_threads").collect(),
+				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+				ctx.db.query("chat_messages").collect(),
+			]);
 
 			return {
 				project,
@@ -1742,6 +2936,8 @@ describe("delete_project", () => {
 				),
 				user,
 				workspaceLimit,
+				roleAssignments,
+				permissionGrants,
 				pages: pages.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
@@ -1779,6 +2975,8 @@ describe("delete_project", () => {
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
 		expect(after_delete.workspaceLimit?.usedCount).toBe(0);
+		expect(after_delete.roleAssignments).toHaveLength(0);
+		expect(after_delete.permissionGrants).toHaveLength(0);
 		expect(after_delete.user?.defaultWorkspaceId).toBe(personalDefaultIds.workspaceId);
 		expect(after_delete.user?.defaultProjectId).toBe(personalDefaultIds.defaultProjectId);
 
@@ -1799,6 +2997,52 @@ describe("delete_project", () => {
 });
 
 describe("delete_workspace", () => {
+	test("rejects deletion by an active member who is not the workspace owner", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-delete-owner-only-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-delete-owner-only-member" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "delete-owner-only-owner@test.local",
+		});
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "delete-owner-only-member@test.local",
+		});
+
+		const created = await owner.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "owner-only-delete",
+		});
+		expect(created._yay).toBeTruthy();
+
+		await t.run(async (ctx) => {
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				active: true,
+			});
+		});
+
+		const result = await member.mutation(api.workspaces.delete_workspace, {
+			workspaceId: created._yay!.workspaceId,
+		});
+		expect(result._nay?.message).toBe("Permission denied");
+
+		const workspaceAfter = await t.run((ctx) => ctx.db.get("workspaces", created._yay!.workspaceId));
+		expect(workspaceAfter).not.toBeNull();
+	});
+
 	test("queues workspace-scope purge, drops memberships immediately, keeps structure until cron, then purge removes content and structure", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
@@ -1860,7 +3104,7 @@ describe("delete_workspace", () => {
 		const limitsBeforeDelete = await t.run(async (ctx) =>
 			ctx.db
 				.query("limits_per_workspace")
-				.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+				.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 				.collect(),
 		);
 
@@ -1878,6 +3122,8 @@ describe("delete_workspace", () => {
 				ownerLimit,
 				workspaceLimits,
 				memberships,
+				roleAssignments,
+				permissionGrants,
 				requests,
 				pages,
 				aiThreads,
@@ -1890,13 +3136,23 @@ describe("delete_workspace", () => {
 				ctx.db.get("users", memberId),
 				ctx.db
 					.query("limits_per_user")
-					.withIndex("byUserLimitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
+					.withIndex("by_user_limitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
 					.first(),
 				ctx.db
 					.query("limits_per_workspace")
-					.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("workspaces_projects_users").collect(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.collect(),
+				ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_workspace_project_resource_user_permission", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId),
+					)
+					.collect(),
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.query("pages").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
@@ -1912,6 +3168,8 @@ describe("delete_workspace", () => {
 				ownerLimit,
 				workspaceLimits,
 				memberships: memberships.filter((row) => row.workspaceId === created._yay!.workspaceId),
+				roleAssignments,
+				permissionGrants,
 				requests: requests.filter((row) => row.workspaceId === created._yay!.workspaceId),
 				pages: pages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 				aiThreads: aiThreads.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
@@ -1924,6 +3182,8 @@ describe("delete_workspace", () => {
 		expect(after_delete.defaultProject).not.toBeNull();
 		expect(after_delete.secondaryProject).not.toBeNull();
 		expect(after_delete.memberships).toHaveLength(0);
+		expect(after_delete.roleAssignments).toHaveLength(0);
+		expect(after_delete.permissionGrants).toHaveLength(0);
 		expect(after_delete.requests).toHaveLength(1);
 		expect(after_delete.requests[0]?.scope).toBe("workspace");
 		expect(after_delete.pages).toHaveLength(2);
@@ -1959,7 +3219,7 @@ describe("delete_workspace", () => {
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
 				ctx.db
 					.query("limits_per_workspace")
-					.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("pages").collect(),
 			]);
@@ -2280,7 +3540,7 @@ describe("list", () => {
 		});
 		expect(wsA._yay).toBeTruthy();
 
-		const shareResult = await owner.mutation(api.workspaces.add_user_to_workspace_project, {
+		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: wsA._yay!.workspaceId,
 			projectId: wsA._yay!.defaultProjectId,
 			userIdToAdd: userIds[0],
@@ -2331,7 +3591,7 @@ describe("list", () => {
 			name: "alpha-extra",
 		});
 		expect(sharedWorkspace._yay).toBeTruthy();
-		const shareResult = await owner.mutation(api.workspaces.add_user_to_workspace_project, {
+		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: sharedWorkspace._yay!.workspaceId,
 			projectId: sharedWorkspace._yay!.defaultProjectId,
 			userIdToAdd: userIds[0],
@@ -2446,7 +3706,7 @@ describe("get_user_limit", () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) => {
 			const id = await ctx.db.insert("users", { clerkUserId: "clerk-user-limit-purged" });
-			await ctx.db.delete(id);
+			await ctx.db.delete("users", id);
 			return id;
 		});
 		const asDeletedUser = t.withIdentity({
@@ -2535,7 +3795,7 @@ describe("get_user_limit", () => {
 		});
 		expect(sharedWorkspace._yay).toBeTruthy();
 
-		const shareResult = await owner.mutation(api.workspaces.add_user_to_workspace_project, {
+		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: sharedWorkspace._yay!.workspaceId,
 			projectId: sharedWorkspace._yay!.defaultProjectId,
 			userIdToAdd: memberId,

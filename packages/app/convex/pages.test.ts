@@ -23,7 +23,7 @@ afterEach(() => {
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
 	const usageSnapshot = await ctx.db
 		.query("billing_usage_snapshots")
-		.withIndex("byUser", (q) => q.eq("userId", userId))
+		.withIndex("by_user", (q) => q.eq("userId", userId))
 		.unique();
 	if (usageSnapshot) return;
 
@@ -386,7 +386,7 @@ test("create_page rejects names containing path separator characters", async () 
 		for (const invalidName of invalidNames) {
 			const invalidPages = await ctx.db
 				.query("pages")
-				.withIndex("byWorkspaceProjectParentName", (q) =>
+				.withIndex("by_workspace_project_parent_name", (q) =>
 					q
 						.eq("workspaceId", db.workspaceId)
 						.eq("projectId", db.projectId)
@@ -438,7 +438,7 @@ test("archived pages can share path with a new active page", async () => {
 		const path = `/${duplicateName}`;
 		const pagesAtPath = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectPathArchiveOperation", (q) =>
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", path),
 			)
 			.collect();
@@ -690,7 +690,7 @@ test("create_page_by_path rejects invalid path segments", async () => {
 	await t.run(async (ctx) => {
 		const invalidParentRows = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectParentName", (q) =>
+			.withIndex("by_workspace_project_parent_name", (q) =>
 				q
 					.eq("workspaceId", db.workspaceId)
 					.eq("projectId", db.projectId)
@@ -731,7 +731,7 @@ test("create_page_by_path reuses only active pages", async () => {
 		const root2Path = `/${db.pages.page_root_2.name}`;
 		const pagesAtRoot2Path = await ctx.db
 			.query("pages")
-			.withIndex("byWorkspaceProjectPathArchiveOperation", (q) =>
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", root2Path),
 			)
 			.collect();
@@ -1070,7 +1070,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 	const stateAfterBlock = await t.run(async (ctx) => {
 		const updates = await ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q
 					.eq("workspaceId", db.workspaceId)
 					.eq("projectId", db.projectId)
@@ -1079,7 +1079,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 			.collect();
 		const lastSequence = await ctx.db
 			.query("pages_yjs_docs_last_sequences")
-			.withIndex("byWorkspaceProjectPage", (q) =>
+			.withIndex("by_workspace_project_page", (q) =>
 				q
 					.eq("workspaceId", db.workspaceId)
 					.eq("projectId", db.projectId)
@@ -1165,7 +1165,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	const pageSnapshotId = await t.run(async (ctx) => {
 		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
-			.withIndex("byUser", (q) => q.eq("userId", db.userId))
+			.withIndex("by_user", (q) => q.eq("userId", db.userId))
 			.unique();
 		if (!usageSnapshot?.meter) {
 			throw new Error("Expected seeded billing snapshot");
@@ -1207,7 +1207,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	const yjsUpdates = await t.run((ctx) =>
 		ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("pageId", createdPage._yay.pageId),
 			)
 			.collect(),
@@ -1222,7 +1222,7 @@ test("/api/ai-docs-temp/contextual-prompt returns 429 on the third inline AI req
 		await seed_billing_snapshot_for_user(ctx, db.userId);
 		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
-			.withIndex("byUser", (q) => q.eq("userId", db.userId))
+			.withIndex("by_user", (q) => q.eq("userId", db.userId))
 			.unique();
 		if (!usageSnapshot?.meter) {
 			throw new Error("Expected seeded billing snapshot");
@@ -1327,7 +1327,7 @@ test("restore_snapshot emits page_save usage for the restored Yjs sequence", asy
 	const yjsUpdates = await t.run((ctx) =>
 		ctx.db
 			.query("pages_yjs_updates")
-			.withIndex("byWorkspaceProjectPageSequence", (q) =>
+			.withIndex("by_workspace_project_page_sequence", (q) =>
 				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("pageId", createdPage._yay.pageId),
 			)
 			.collect(),

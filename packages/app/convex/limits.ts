@@ -29,11 +29,11 @@ export const get_user_limit = query({
 	},
 	returns: v.union(user_limit_capability_validator, v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		if (user.id !== args.userId) {
+		if (userAuth.id !== args.userId) {
 			return null;
 		}
 
@@ -48,7 +48,7 @@ export const get_user_limit = query({
 		const limitDefinition = user_limits.EXTRA_WORKSPACES;
 		const limit = await ctx.db
 			.query("limits_per_user")
-			.withIndex("byUserLimitName", (q) => q.eq("userId", args.userId).eq("limitName", args.limitName))
+			.withIndex("by_user_limitName", (q) => q.eq("userId", args.userId).eq("limitName", args.limitName))
 			.first();
 
 		if (!limit) {
@@ -78,14 +78,14 @@ export const get_workspace_limit = query({
 	},
 	returns: v.union(workspace_limit_capability_validator, v.null()),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		const membership = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byActiveUserWorkspaceProject", (q) =>
-				q.eq("active", true).eq("userId", user.id).eq("workspaceId", args.workspaceId),
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q.eq("active", true).eq("userId", userAuth.id).eq("workspaceId", args.workspaceId),
 			)
 			.first();
 		if (!membership) {
@@ -95,7 +95,7 @@ export const get_workspace_limit = query({
 		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
 		const limit = await ctx.db
 			.query("limits_per_workspace")
-			.withIndex("byWorkspaceLimitName", (q) => q.eq("workspaceId", args.workspaceId).eq("limitName", args.limitName))
+			.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", args.workspaceId).eq("limitName", args.limitName))
 			.first();
 
 		if (!limit) {

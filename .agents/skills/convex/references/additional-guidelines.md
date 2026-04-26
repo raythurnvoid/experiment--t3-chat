@@ -140,6 +140,14 @@ When calling Result-returning helpers:
 - Bubble `_nay` when possible.
 - If bubbling is not possible at that boundary, at least log `_nay` with context.
 
+## Convex logging format
+
+Convex already tags backend logs with function/runtime context, so do not prefix Convex `console.log`, `console.warn`, or `console.error` messages with manual owner tags like `[OwnerSymbol.operation]`.
+
+- Keep Convex log messages stable and concise.
+- Put ids, errors, `_nay`, and other details in structured metadata objects.
+- Treat this as the Convex-specific exception to the app-wide log-prefix convention.
+
 ## Prefer `_nay` / `null` over `throw new Error` in Convex code
 
 - In Convex actions and mutations, prefer `returns: v_result(...)` plus `Result({ _nay: ... })` for expected or recoverable failures instead of `throw new Error(...)`.
@@ -389,10 +397,11 @@ Convex query results are automatically cached by the client and kept consistent 
 
 - Prefer reusing an existing generic query over adding a new narrowly tailored wrapper query that returns nearly the same data.
 - Favor stable, composable query shapes that multiple screens can call with the same args and therefore share the same cache entry.
+- Public queries should usually return domain rows or small reusable domain shapes, not UI-specific view models that join unrelated data only for one screen.
 - Do not optimize primarily for "fewer client-side requests". A few extra client-side queries are acceptable, especially when they can run in parallel or hit warm cache.
 - It is often better to compose 2-3 smaller queries in the client than to create one larger query whose cache entry is more specific and gets invalidated or busted more often.
 - Small waterfalls are acceptable when they preserve better cache reuse and query composability.
-- Only introduce a specialized combined query when the combined shape is a real shared domain API, not just a convenience for one component.
+- Only introduce a specialized combined query when the combined shape is a real shared domain API, when backend authorization requires resolving the data together, or when the composition would otherwise create a concrete performance problem.
 - When the UI only needs app-owned profile fields, prefer reusing a generic profile/anagraphic query over creating a "current X view model" query just to reshape the payload.
 
 Practical implication for this repo:

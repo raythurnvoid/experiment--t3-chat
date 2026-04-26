@@ -93,3 +93,6 @@
 [submodule "references-submodules/action-retrier"]
 	path = references-submodules/action-retrier
 	url = https://github.com/get-convex/action-retrier.git
+[submodule "references-submodules/tanstack-router"]
+	path = references-submodules/tanstack-router
+	url = ../../TanStack/router.git

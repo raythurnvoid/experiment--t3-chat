@@ -20,7 +20,7 @@ import {
 	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { users_create_anonymouse_user_display_name } from "../../shared/users.ts";
 
@@ -259,7 +259,7 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 		app_convex_api.users.get_anagraphic,
 		auth.isAuthenticated && auth.userId
 			? {
-					userId: auth.userId as app_convex_Id<"users">,
+					userId: auth.userId,
 				}
 			: "skip",
 	);
@@ -341,7 +341,7 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 					onSignOut={handleSignOut}
 				/>
 			</div>
-			<MainAppAccountManagement open={accountManagementOpen} setOpen={setAccountManagementOpen} />
+			<MainAppAccountManagement open={accountManagementOpen} onOpenChange={setAccountManagementOpen} />
 		</MyMenu>
 	);
 });

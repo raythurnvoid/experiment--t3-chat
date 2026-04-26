@@ -13,6 +13,7 @@ import type { CreateFileRoute, FileRoutesByPath } from '@tanstack/react-router'
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WWorkspaceNameProjectNameRouteRouteImport } from './routes/w/$workspaceName/$projectName/route'
+import { Route as WWorkspaceNameProjectNameUsersRouteImport } from './routes/w/$workspaceName/$projectName/users'
 import { Route as WWorkspaceNameProjectNameChatRouteImport } from './routes/w/$workspaceName/$projectName/chat'
 import { Route as WWorkspaceNameProjectNamePagesIndexRouteImport } from './routes/w/$workspaceName/$projectName/pages/index'
 
@@ -26,6 +27,12 @@ const WWorkspaceNameProjectNameRouteRoute =
     id: '/w/$workspaceName/$projectName',
     path: '/w/$workspaceName/$projectName',
     getParentRoute: () => rootRouteImport,
+  } as any)
+const WWorkspaceNameProjectNameUsersRoute =
+  WWorkspaceNameProjectNameUsersRouteImport.update({
+    id: '/users',
+    path: '/users',
+    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
   } as any)
 const WWorkspaceNameProjectNameChatRoute =
   WWorkspaceNameProjectNameChatRouteImport.update({
@@ -44,12 +51,14 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
   '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
+  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersRoute
   '/w/$workspaceName/$projectName/pages': typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
   '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
+  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersRoute
   '/w/$workspaceName/$projectName/pages': typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 export interface FileRoutesById {
@@ -57,6 +66,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
   '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
+  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersRoute
   '/w/$workspaceName/$projectName/pages/': typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 export interface FileRouteTypes {
@@ -65,18 +75,21 @@ export interface FileRouteTypes {
     | '/'
     | '/w/$workspaceName/$projectName'
     | '/w/$workspaceName/$projectName/chat'
+    | '/w/$workspaceName/$projectName/users'
     | '/w/$workspaceName/$projectName/pages'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/w/$workspaceName/$projectName'
     | '/w/$workspaceName/$projectName/chat'
+    | '/w/$workspaceName/$projectName/users'
     | '/w/$workspaceName/$projectName/pages'
   id:
     | '__root__'
     | '/'
     | '/w/$workspaceName/$projectName'
     | '/w/$workspaceName/$projectName/chat'
+    | '/w/$workspaceName/$projectName/users'
     | '/w/$workspaceName/$projectName/pages/'
   fileRoutesById: FileRoutesById
 }
@@ -100,6 +113,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/w/$workspaceName/$projectName'
       preLoaderRoute: typeof WWorkspaceNameProjectNameRouteRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/w/$workspaceName/$projectName/users': {
+      id: '/w/$workspaceName/$projectName/users'
+      path: '/users'
+      fullPath: '/w/$workspaceName/$projectName/users'
+      preLoaderRoute: typeof WWorkspaceNameProjectNameUsersRouteImport
+      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
     }
     '/w/$workspaceName/$projectName/chat': {
       id: '/w/$workspaceName/$projectName/chat'
@@ -145,6 +165,15 @@ declare module './routes/w/$workspaceName/$projectName/chat' {
     FileRoutesByPath['/w/$workspaceName/$projectName/chat']['fullPath']
   >
 }
+declare module './routes/w/$workspaceName/$projectName/users' {
+  const createFileRoute: CreateFileRoute<
+    '/w/$workspaceName/$projectName/users',
+    FileRoutesByPath['/w/$workspaceName/$projectName/users']['parentRoute'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/users']['id'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/users']['path'],
+    FileRoutesByPath['/w/$workspaceName/$projectName/users']['fullPath']
+  >
+}
 declare module './routes/w/$workspaceName/$projectName/pages/index' {
   const createFileRoute: CreateFileRoute<
     '/w/$workspaceName/$projectName/pages/',
@@ -157,12 +186,14 @@ declare module './routes/w/$workspaceName/$projectName/pages/index' {
 
 interface WWorkspaceNameProjectNameRouteRouteChildren {
   WWorkspaceNameProjectNameChatRoute: typeof WWorkspaceNameProjectNameChatRoute
+  WWorkspaceNameProjectNameUsersRoute: typeof WWorkspaceNameProjectNameUsersRoute
   WWorkspaceNameProjectNamePagesIndexRoute: typeof WWorkspaceNameProjectNamePagesIndexRoute
 }
 
 const WWorkspaceNameProjectNameRouteRouteChildren: WWorkspaceNameProjectNameRouteRouteChildren =
   {
     WWorkspaceNameProjectNameChatRoute: WWorkspaceNameProjectNameChatRoute,
+    WWorkspaceNameProjectNameUsersRoute: WWorkspaceNameProjectNameUsersRoute,
     WWorkspaceNameProjectNamePagesIndexRoute:
       WWorkspaceNameProjectNamePagesIndexRoute,
   }

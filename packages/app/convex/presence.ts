@@ -29,8 +29,8 @@ export const heartbeat = mutation({
 		isNewSession: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			throw convex_error({
 				message: "Presence heartbeat requires an authenticated user",
 				data: {
@@ -40,17 +40,17 @@ export const heartbeat = mutation({
 			});
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_heartbeat", key: user.id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_heartbeat", key: userAuth.id });
 		if (rateLimit) {
 			throw presence_rate_limit_error(rateLimit);
 		}
 
-		const result = await presence.heartbeat(ctx, args.roomId, user.id, args.sessionId, args.interval);
+		const result = await presence.heartbeat(ctx, args.roomId, userAuth.id, args.sessionId, args.interval);
 
 		if (result.isNewSession) {
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
-				.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user.id))
+				.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", userAuth.id))
 				.collect();
 
 			await Promise.all([
@@ -66,7 +66,7 @@ export const heartbeat = mutation({
 					pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
 						workspaceId: membership.workspaceId,
 						projectId: membership.projectId,
-						userId: user.id,
+						userId: userAuth.id,
 					}),
 				),
 			]);
@@ -260,13 +260,13 @@ export const disconnect = mutation({
 			throw presence_rate_limit_error(rateLimit);
 		}
 
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!user) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			await presence.disconnect(ctx, args.sessionToken);
 			return null;
 		}
 		await presence.disconnect(ctx, args.sessionToken);
-		const onlineRooms = await presence.listUser(ctx, user.id, true, 1);
+		const onlineRooms = await presence.listUser(ctx, userAuth.id, true, 1);
 
 		// Keep the long-lived fallback TTL in `ai_chat` because presence is optional, but
 		// only shorten cleanup when the user is now fully offline across presence sessions.
@@ -276,7 +276,7 @@ export const disconnect = mutation({
 
 		const memberships = await ctx.db
 			.query("workspaces_projects_users")
-			.withIndex("byActiveUserWorkspaceProject", (q) => q.eq("active", true).eq("userId", user.id))
+			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", userAuth.id))
 			.collect();
 
 		await Promise.all(
@@ -284,7 +284,7 @@ export const disconnect = mutation({
 				await pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					userId: user.id,
+					userId: userAuth.id,
 					delayMs: 30_000,
 				});
 			}),

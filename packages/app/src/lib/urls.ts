@@ -11,6 +11,10 @@ export function url_path_chat(args: { workspaceName: string; projectName: string
 	return `/w/${args.workspaceName}/${args.projectName}/chat`;
 }
 
+export function url_path_users(args: { workspaceName: string; projectName: string }) {
+	return `/w/${args.workspaceName}/${args.projectName}/users`;
+}
+
 export function app_tenantPaths_scopeKey(args: { workspaceId: string; projectId: string }) {
 	return `${args.workspaceId}::${args.projectId}`;
 }

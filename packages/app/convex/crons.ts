@@ -6,6 +6,9 @@ const crons = cronJobs();
 // Once daily at 00:00 UTC.
 crons.cron("reset due anonymous billing credits", "0 0 * * *", internal.billing.reset_due_anonymous_credits, {});
 
+// Once daily at 04:00 UTC.
+crons.cron("cleanup extra notifications", "0 4 * * *", internal.notifications.cleanup_extra_notifications, {});
+
 // Once daily at 05:00 UTC.
 crons.cron("cleanup old snapshots", "0 5 * * *", internal.ai_docs_temp.cleanup_old_snapshots);
 

@@ -2,6 +2,11 @@ import { Migrations } from "@convex-dev/migrations";
 import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import { internalMutation } from "./_generated/server.js";
+import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
+import {
+	access_control_db_ensure_role_assignment,
+	access_control_db_ensure_role_permission_grant,
+} from "./access_control.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
@@ -14,6 +19,49 @@ type LegacyBillingUsageSnapshot = Omit<Doc<"billing_usage_snapshots">, "_id" | "
 	lastRefreshReason?: string;
 	optimisticCreditAppliedKey?: string;
 };
+
+type LegacyWorkspaceWithOwnerUserId = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "owner"> & {
+	_id: Id<"workspaces">;
+	_creationTime: number;
+	owner?: Id<"users">;
+	ownerUserId?: Id<"users">;
+};
+
+type WorkspaceWithOwner = Doc<"workspaces"> & {
+	owner?: Id<"users">;
+};
+
+const access_control_workspace_role_permission_grants = [
+	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.members.manage" },
+	{ role: "admin", permission: "project.create" },
+	{ role: "admin", permission: "project.update" },
+	{ role: "admin", permission: "project.delete" },
+	{ role: "admin", permission: "project.members.manage" },
+	{ role: "admin", permission: "asset.read" },
+	{ role: "admin", permission: "asset.write" },
+	{ role: "admin", permission: "workspace.roles.manage" },
+	{ role: "admin", permission: "asset.permissions.manage" },
+	{ role: "member", permission: "workspace.update" },
+	{ role: "member", permission: "project.create" },
+	{ role: "member", permission: "project.update" },
+	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "asset.read" },
+	{ role: "member", permission: "asset.write" },
+] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
+
+const access_control_project_role_permission_grants = [
+	{ role: "admin", permission: "project.update" },
+	{ role: "admin", permission: "project.delete" },
+	{ role: "admin", permission: "project.members.manage" },
+	{ role: "admin", permission: "asset.read" },
+	{ role: "admin", permission: "asset.write" },
+	{ role: "admin", permission: "asset.permissions.manage" },
+	{ role: "member", permission: "project.update" },
+	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "asset.read" },
+	{ role: "member", permission: "asset.write" },
+] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
 
 export const remove_billing_usage_snapshots_last_granted_period_start = app_migrations.define({
 	table: "billing_usage_snapshots",
@@ -54,6 +102,208 @@ export const remove_billing_usage_snapshots_last_refresh_reason = app_migrations
 	},
 });
 
+export const rename_workspaces_owner_user_id_to_owner = app_migrations.define({
+	table: "workspaces",
+	migrateOne: async (ctx, workspace) => {
+		const legacyWorkspace = workspace as LegacyWorkspaceWithOwnerUserId;
+		if (legacyWorkspace.ownerUserId === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, ownerUserId, owner, ...next } = legacyWorkspace;
+		await ctx.db.replace("workspaces", _id, {
+			...next,
+			owner: owner ?? ownerUserId,
+		});
+	},
+});
+
+export const backfill_access_control_owner_assignments = app_migrations.define({
+	table: "workspaces",
+	migrateOne: async (ctx, workspace) => {
+		if (!workspace.defaultProjectId) {
+			return;
+		}
+		const defaultProjectId = workspace.defaultProjectId;
+
+		const owner = (workspace as WorkspaceWithOwner).owner;
+		if (!owner) {
+			return;
+		}
+
+		const existingOwnerAssignment = await ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_user_role", (q) =>
+				q
+					.eq("workspaceId", workspace._id)
+					.eq("projectId", defaultProjectId)
+					.eq("userId", owner)
+					.eq("role", "owner"),
+			)
+			.first();
+		if (existingOwnerAssignment) {
+			return;
+		}
+
+		await access_control_db_ensure_role_assignment(ctx, {
+			workspaceId: workspace._id,
+			projectId: defaultProjectId,
+			userId: owner,
+			role: "owner",
+			now: Date.now(),
+		});
+	},
+});
+
+export const backfill_workspace_home_memberships = app_migrations.define({
+	table: "workspaces_projects_users",
+	migrateOne: async (ctx, membership) => {
+		if (membership.active === false) {
+			return;
+		}
+
+		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+		if (!workspace?.defaultProjectId || membership.projectId === workspace.defaultProjectId) {
+			return;
+		}
+		const defaultProjectId = workspace.defaultProjectId;
+
+		const existingHomeMemberships = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_user_workspace_project_active", (q) =>
+				q.eq("userId", membership.userId).eq("workspaceId", membership.workspaceId).eq("projectId", defaultProjectId),
+			)
+			.collect();
+		if (existingHomeMemberships.some((homeMembership) => homeMembership.active !== false)) {
+			return;
+		}
+
+		await ctx.db.insert("workspaces_projects_users", {
+			workspaceId: membership.workspaceId,
+			projectId: defaultProjectId,
+			userId: membership.userId,
+			active: true,
+			updatedAt: Date.now(),
+		});
+	},
+});
+
+export const backfill_access_control_member_assignments = app_migrations.define({
+	table: "workspaces_projects_users",
+	migrateOne: async (ctx, membership) => {
+		if (membership.active === false) {
+			return;
+		}
+
+		const existingAssignments = await ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_user_role", (q) =>
+				q
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
+					.eq("userId", membership.userId),
+			)
+			.collect();
+		if (existingAssignments.length > 0) {
+			return;
+		}
+
+		await access_control_db_ensure_role_assignment(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			userId: membership.userId,
+			role: "member",
+			now: Date.now(),
+		});
+	},
+});
+
+export const seed_access_control_workspace_permission_grants = app_migrations.define({
+	table: "workspaces",
+	migrateOne: async (ctx, workspace) => {
+		if (!workspace.defaultProjectId) {
+			return;
+		}
+
+		const now = Date.now();
+		for (const grant of access_control_workspace_role_permission_grants) {
+			await access_control_db_ensure_role_permission_grant(ctx, {
+				workspaceId: workspace._id,
+				projectId: workspace.defaultProjectId,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
+				role: grant.role,
+				permission: grant.permission,
+				now,
+			});
+		}
+	},
+});
+
+export const seed_access_control_project_permission_grants = app_migrations.define({
+	table: "workspaces_projects",
+	migrateOne: async (ctx, project) => {
+		const now = Date.now();
+		for (const grant of access_control_project_role_permission_grants) {
+			await access_control_db_ensure_role_permission_grant(ctx, {
+				workspaceId: project.workspaceId,
+				projectId: project._id,
+				resourceKind: "project",
+				resourceId: String(project._id),
+				role: grant.role,
+				permission: grant.permission,
+				now,
+			});
+		}
+	},
+});
+
+export const remove_access_control_member_management_grants = app_migrations.define({
+	table: "access_control_permission_grants",
+	migrateOne: async (ctx, grant) => {
+		if (
+			grant.principalKind !== "role" ||
+			grant.role !== "member" ||
+			(grant.permission !== "workspace.members.manage" && grant.permission !== "project.members.manage")
+		) {
+			return;
+		}
+
+		await ctx.db.delete(grant._id);
+	},
+});
+
+export const cleanup_duplicate_access_control_owner_assignments = app_migrations.define({
+	table: "workspaces",
+	migrateOne: async (ctx, workspace) => {
+		if (!workspace.defaultProjectId) {
+			return;
+		}
+		const defaultProjectId = workspace.defaultProjectId;
+
+		const ownerAssignments = await ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_role_user", (q) =>
+				q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+			)
+			.collect();
+
+		const sortedOwnerAssignments = ownerAssignments.sort((a, b) => a._creationTime - b._creationTime);
+		const owner = (workspace as WorkspaceWithOwner).owner;
+		const keptAssignment = owner
+			? (sortedOwnerAssignments.find((assignment) => assignment.userId === owner) ?? sortedOwnerAssignments[0])
+			: sortedOwnerAssignments[0];
+		if (!keptAssignment) {
+			return;
+		}
+
+		const duplicateAssignments = sortedOwnerAssignments.filter((assignment) => assignment._id !== keptAssignment._id);
+		await Promise.all(
+			duplicateAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
+		);
+	},
+});
+
 /** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
@@ -64,4 +314,28 @@ export const run_remove_billing_usage_snapshots_optimistic_credit_applied_key = 
 );
 export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrations.runner(
 	internal.migrations.remove_billing_usage_snapshots_last_refresh_reason,
+);
+export const run_rename_workspaces_owner_user_id_to_owner = app_migrations.runner(
+	internal.migrations.rename_workspaces_owner_user_id_to_owner,
+);
+export const run_backfill_access_control_owner_assignments = app_migrations.runner(
+	internal.migrations.backfill_access_control_owner_assignments,
+);
+export const run_backfill_workspace_home_memberships = app_migrations.runner(
+	internal.migrations.backfill_workspace_home_memberships,
+);
+export const run_backfill_access_control_member_assignments = app_migrations.runner(
+	internal.migrations.backfill_access_control_member_assignments,
+);
+export const run_seed_access_control_workspace_permission_grants = app_migrations.runner(
+	internal.migrations.seed_access_control_workspace_permission_grants,
+);
+export const run_seed_access_control_project_permission_grants = app_migrations.runner(
+	internal.migrations.seed_access_control_project_permission_grants,
+);
+export const run_remove_access_control_member_management_grants = app_migrations.runner(
+	internal.migrations.remove_access_control_member_management_grants,
+);
+export const run_cleanup_duplicate_access_control_owner_assignments = app_migrations.runner(
+	internal.migrations.cleanup_duplicate_access_control_owner_assignments,
 );
