@@ -6,7 +6,7 @@ import type { access_control_Permission, access_control_Role } from "../shared/a
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { user_limits, workspace_limits } from "../shared/limits.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
 	workspaces_description_normalize,
 	workspaces_list_sort_projects_for_workspace,
@@ -115,29 +115,22 @@ export async function workspaces_db_create(
 	}
 
 	if (!args.default) {
-		const definition = user_limits.EXTRA_WORKSPACES;
-		const limit = await ctx.db
-			.query("limits_per_user")
-			.withIndex("by_user_limitName", (q) => q.eq("userId", args.userId).eq("limitName", definition.name))
-			.first();
-		if (!limit) {
-			throw should_never_happen("Missing user limit doc", {
-				userId: args.userId,
-				limitName: definition.name,
-			});
-		}
-
-		const remainingCount = Math.max(0, limit.maxCount - limit.usedCount);
+		// Non-default workspace ownership consumes the creator's workspace quota.
+		const quota = await quotas_db_get(ctx, {
+			quotaName: "extra_workspaces",
+			userId: args.userId,
+		});
+		const remainingCount = Math.max(0, quota.maxCount - quota.usedCount);
 		if (remainingCount <= 0) {
 			return Result({
 				_nay: {
-					message: definition.disabledReason,
+					message: "Workspace quota reached",
 				},
 			});
 		}
 
-		await ctx.db.patch("limits_per_user", limit._id, {
-			usedCount: limit.usedCount + 1,
+		await ctx.db.patch("quotas", quota._id, {
+			usedCount: quota.usedCount + 1,
 			updatedAt: args.now,
 		});
 	}
@@ -162,13 +155,10 @@ export async function workspaces_db_create(
 			defaultProjectId,
 		}),
 
-		ctx.db.insert("limits_per_workspace", {
+		quotas_db_ensure(ctx, {
+			quotaName: "extra_projects",
 			workspaceId,
-			limitName: workspace_limits.EXTRA_PROJECTS.name,
-			usedCount: 0,
-			maxCount: workspace_limits.EXTRA_PROJECTS.maxCount,
-			createdAt: args.now,
-			updatedAt: args.now,
+			now: args.now,
 		}),
 
 		ctx.db.insert("workspaces_projects_users", {
@@ -294,29 +284,21 @@ export async function workspaces_db_create_project(
 		}
 	}
 
-	const limit = await ctx.db
-		.query("limits_per_workspace")
-		.withIndex("by_workspace_limitName", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("limitName", workspace_limits.EXTRA_PROJECTS.name),
-		)
-		.first();
-	if (!limit) {
-		throw should_never_happen("Missing workspace limit doc", {
-			workspaceId: args.workspaceId,
-			limitName: workspace_limits.EXTRA_PROJECTS.name,
-		});
-	}
-	const remainingCount = Math.max(0, limit.maxCount - limit.usedCount);
+	const quota = await quotas_db_get(ctx, {
+		quotaName: "extra_projects",
+		workspaceId: args.workspaceId,
+	});
+	const remainingCount = Math.max(0, quota.maxCount - quota.usedCount);
 	if (remainingCount <= 0) {
 		return Result({
 			_nay: {
-				message: workspace_limits.EXTRA_PROJECTS.disabledReason,
+				message: "Project quota reached",
 			},
 		});
 	}
 
-	await ctx.db.patch("limits_per_workspace", limit._id, {
-		usedCount: limit.usedCount + 1,
+	await ctx.db.patch("quotas", quota._id, {
+		usedCount: quota.usedCount + 1,
 		updatedAt: args.now,
 	});
 
@@ -1443,17 +1425,13 @@ export const delete_workspace = mutation({
 		const affectedUserIds = new Set<Id<"users">>(userIdsPerProject.flat());
 
 		if (ownerAssignment) {
-			const limitDefinition = user_limits.EXTRA_WORKSPACES;
-			const limit = await ctx.db
-				.query("limits_per_user")
-				.withIndex("by_user_limitName", (q) =>
-					q.eq("userId", ownerAssignment.userId).eq("limitName", limitDefinition.name),
-				)
-				.first();
-
-			if (limit && limit.usedCount > 0) {
-				await ctx.db.patch("limits_per_user", limit._id, {
-					usedCount: limit.usedCount - 1,
+			const quota = await quotas_db_get(ctx, {
+				quotaName: "extra_workspaces",
+				userId: ownerAssignment.userId,
+			});
+			if (quota.usedCount > 0) {
+				await ctx.db.patch("quotas", quota._id, {
+					usedCount: quota.usedCount - 1,
 					updatedAt: now,
 				});
 			}
@@ -1579,17 +1557,13 @@ export const delete_project = mutation({
 			projectId: project._id,
 			scope: "project",
 		});
-		const limitDefinition = workspace_limits.EXTRA_PROJECTS;
-		const limit = await ctx.db
-			.query("limits_per_workspace")
-			.withIndex("by_workspace_limitName", (q) =>
-				q.eq("workspaceId", workspace._id).eq("limitName", limitDefinition.name),
-			)
-			.first();
-
-		if (limit && limit.usedCount > 0) {
-			await ctx.db.patch("limits_per_workspace", limit._id, {
-				usedCount: limit.usedCount - 1,
+		const quota = await quotas_db_get(ctx, {
+			quotaName: "extra_projects",
+			workspaceId: workspace._id,
+		});
+		if (quota.usedCount > 0) {
+			await ctx.db.patch("quotas", quota._id, {
+				usedCount: quota.usedCount - 1,
 				updatedAt: now,
 			});
 		}

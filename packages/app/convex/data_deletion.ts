@@ -6,7 +6,7 @@ import app_convex_schema from "./schema.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { presence } from "./presence.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
-import { user_limits } from "../shared/limits.ts";
+import { quotas_db_get } from "./quotas.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const USER_DELETION_REQUEST_BATCH_SIZE = 20;
@@ -23,9 +23,9 @@ async function db_purge_workspace_project_content(
 
 	// pages_pending_edits (tenant docs + cleanup tasks + page ids used to locate `pages_yjs_snapshot_schedules` docs)
 	const pendingEditIds: Array<Id<"pages_pending_edits">> = [];
-	for await (const row of ctx.db.query("pages_pending_edits")) {
-		if (row.workspaceId === workspaceId && row.projectId === projectId) {
-			pendingEditIds.push(row._id);
+	for await (const doc of ctx.db.query("pages_pending_edits")) {
+		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
+			pendingEditIds.push(doc._id);
 		}
 	}
 
@@ -62,111 +62,111 @@ async function db_purge_workspace_project_content(
 
 	// ai_chat_threads_messages_aisdk_5
 	const aiChatThreadsMessagesAisdk5Ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
 		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
-		aiChatThreadsMessagesAisdk5Ids.push(row._id);
+		aiChatThreadsMessagesAisdk5Ids.push(doc._id);
 	}
 
 	// ai_chat_threads
 	const aiChatThreadsIds: Array<Id<"ai_chat_threads">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("ai_chat_threads")
 		.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		aiChatThreadsIds.push(row._id);
+		aiChatThreadsIds.push(doc._id);
 	}
 
 	// chat_messages
 	const chatMessagesIds: Array<Id<"chat_messages">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("chat_messages")
 		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
-		chatMessagesIds.push(row._id);
+		chatMessagesIds.push(doc._id);
 	}
 
 	// pages_pending_edits_last_sequence_saved (full table scan; filter in memory)
 	const pagesPendingEditsLastSequenceSavedIds: Array<Id<"pages_pending_edits_last_sequence_saved">> = [];
-	for await (const row of ctx.db.query("pages_pending_edits_last_sequence_saved")) {
-		if (row.workspaceId === workspaceId && row.projectId === projectId) {
-			pagesPendingEditsLastSequenceSavedIds.push(row._id);
+	for await (const doc of ctx.db.query("pages_pending_edits_last_sequence_saved")) {
+		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
+			pagesPendingEditsLastSequenceSavedIds.push(doc._id);
 		}
 	}
 
 	// pages_plain_text_chunks
 	const pagesPlainTextChunksIds: Array<Id<"pages_plain_text_chunks">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_plain_text_chunks")
 		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesPlainTextChunksIds.push(row._id);
+		pagesPlainTextChunksIds.push(doc._id);
 	}
 
 	// pages_markdown_chunks
 	const pagesMarkdownChunksIds: Array<Id<"pages_markdown_chunks">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_markdown_chunks")
 		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesMarkdownChunksIds.push(row._id);
+		pagesMarkdownChunksIds.push(doc._id);
 	}
 
 	// pages_yjs_snapshots
 	const pagesYjsSnapshotsIds: Array<Id<"pages_yjs_snapshots">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_yjs_snapshots")
 		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesYjsSnapshotsIds.push(row._id);
+		pagesYjsSnapshotsIds.push(doc._id);
 	}
 
 	// pages_yjs_updates
 	const pagesYjsUpdatesIds: Array<Id<"pages_yjs_updates">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_yjs_updates")
 		.withIndex("by_workspace_project_page_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesYjsUpdatesIds.push(row._id);
+		pagesYjsUpdatesIds.push(doc._id);
 	}
 
 	// pages_yjs_docs_last_sequences
 	const pagesYjsDocsLastSequencesIds: Array<Id<"pages_yjs_docs_last_sequences">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_yjs_docs_last_sequences")
 		.withIndex("by_workspace_project_page", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
-		pagesYjsDocsLastSequencesIds.push(row._id);
+		pagesYjsDocsLastSequencesIds.push(doc._id);
 	}
 
 	// pages_snapshots_contents
 	const pagesSnapshotsContentsIds: Array<Id<"pages_snapshots_contents">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_snapshots_contents")
 		.withIndex("by_workspace_project_pageSnapshot", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesSnapshotsContentsIds.push(row._id);
+		pagesSnapshotsContentsIds.push(doc._id);
 	}
 
 	// pages_snapshots
 	const pagesSnapshotsIds: Array<Id<"pages_snapshots">> = [];
-	for await (const row of ctx.db
+	for await (const doc of ctx.db
 		.query("pages_snapshots")
 		.withIndex("by_workspace_project_page_archivedAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesSnapshotsIds.push(row._id);
+		pagesSnapshotsIds.push(doc._id);
 	}
 
 	// pages_markdown_content (full table scan)
 	const pagesMarkdownContentIds: Array<Id<"pages_markdown_content">> = [];
-	for await (const row of ctx.db.query("pages_markdown_content")) {
-		if (row.workspaceId === workspaceId && row.projectId === projectId) {
-			pagesMarkdownContentIds.push(row._id);
+	for await (const doc of ctx.db.query("pages_markdown_content")) {
+		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
+			pagesMarkdownContentIds.push(doc._id);
 		}
 	}
 
@@ -216,19 +216,19 @@ async function db_delete_data_deletion_requests(
 		| { scope: "project"; workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects"> },
 ) {
 	if (args.scope === "user") {
-		const rows = await ctx.db
+		const docs = await ctx.db
 			.query("data_deletion_requests")
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.collect();
 
 		await Promise.all(
-			rows.filter((row) => row.scope === "user").map((row) => ctx.db.delete("data_deletion_requests", row._id)),
+			docs.filter((doc) => doc.scope === "user").map((doc) => ctx.db.delete("data_deletion_requests", doc._id)),
 		);
 
 		return;
 	}
 
-	const rows = await ctx.db
+	const docs = await ctx.db
 		.query("data_deletion_requests")
 		.withIndex(
 			"by_workspace_project",
@@ -239,11 +239,11 @@ async function db_delete_data_deletion_requests(
 		.collect();
 
 	await Promise.all(
-		rows
-			.filter((row) =>
-				args.scope === "project" ? row.scope === "project" : row.scope === "workspace" && row.projectId === undefined,
+		docs
+			.filter((doc) =>
+				args.scope === "project" ? doc.scope === "project" : doc.scope === "workspace" && doc.projectId === undefined,
 			)
-			.map((row) => ctx.db.delete("data_deletion_requests", row._id)),
+			.map((doc) => ctx.db.delete("data_deletion_requests", doc._id)),
 	);
 }
 
@@ -288,25 +288,23 @@ async function db_delete_workspace(
 					Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id))),
 				),
 			ctx.db
-				.query("limits_per_workspace")
-				.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", args.workspaceId))
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", args.workspaceId))
 				.collect()
-				.then((limitsPerWorkspaceDocs) =>
-					Promise.all(limitsPerWorkspaceDocs.map((doc) => ctx.db.delete("limits_per_workspace", doc._id))),
-				),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
 			ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspaceId))
 				.collect()
-				.then((rows) =>
-					Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id))),
+				.then((docs) =>
+					Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id))),
 				),
 			ctx.db
 				.query("access_control_permission_grants")
 				.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspaceId))
 				.collect()
-				.then((rows) =>
-					Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id))),
+				.then((docs) =>
+					Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id))),
 				),
 		]);
 		await ctx.db.delete("workspaces", args.workspaceId);
@@ -335,12 +333,12 @@ async function db_queue_workspace_deletion_for_owner_account_deletion(
 			.query("access_control_role_assignments")
 			.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspace._id))
 			.collect()
-			.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 		ctx.db
 			.query("access_control_permission_grants")
 			.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspace._id))
 			.collect()
-			.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 		ctx.db
 			.query("workspaces_projects")
 			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspace._id))
@@ -363,15 +361,13 @@ async function db_queue_workspace_deletion_for_owner_account_deletion(
 			),
 	]);
 
-	const ownerLimit = await ctx.db
-		.query("limits_per_user")
-		.withIndex("by_user_limitName", (q) =>
-			q.eq("userId", args.owner).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
-		)
-		.first();
-	if (ownerLimit && ownerLimit.usedCount > 0) {
-		await ctx.db.patch("limits_per_user", ownerLimit._id, {
-			usedCount: ownerLimit.usedCount - 1,
+	const quota = await quotas_db_get(ctx, {
+		quotaName: "extra_workspaces",
+		userId: args.owner,
+	});
+	if (quota.usedCount > 0) {
+		await ctx.db.patch("quotas", quota._id, {
+			usedCount: quota.usedCount - 1,
 			updatedAt: args.now,
 		});
 	}
@@ -413,7 +409,7 @@ async function db_prepare_user_for_deletion(
 		});
 	}
 
-	// Drop presence rows for the deleted user so no orphan docs linger;
+	// Drop presence docs for the deleted user so no orphan docs linger;
 	// `list` / `listRoom` already filter silently if anything is re-created.
 	const presenceRooms = await presence.listUser(ctx, args.user._id, false, 10_000);
 	await Promise.all(presenceRooms.map((room) => presence.removeRoomUser(ctx, room.roomId, args.user._id)));
@@ -436,7 +432,6 @@ async function db_finalize_deleted_user(
 		membershipsAll,
 		accessRoleAssignments,
 		anonymousAuthTokens,
-		userLimits,
 		pendingEdits,
 		lastSequenceSaved,
 		billingUsageSnapshots,
@@ -454,10 +449,6 @@ async function db_finalize_deleted_user(
 			.withIndex("by_user", (q) => q.eq("userId", user._id))
 			.collect(),
 		ctx.db
-			.query("limits_per_user")
-			.withIndex("by_user_limitName", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
 			.query("pages_pending_edits")
 			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
 			.collect(),
@@ -473,10 +464,10 @@ async function db_finalize_deleted_user(
 
 	const pendingEditCleanupTasks = (
 		await Promise.all(
-			pendingEdits.map((row) =>
+			pendingEdits.map((doc) =>
 				ctx.db
 					.query("pages_pending_edits_cleanup_tasks")
-					.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", row._id))
+					.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", doc._id))
 					.collect(),
 			),
 		)
@@ -495,19 +486,23 @@ async function db_finalize_deleted_user(
 		affectedWorkspaceIds.add(assignment.workspaceId);
 	}
 
-	await Promise.all(pendingEditCleanupTasks.map((row) => ctx.db.delete("pages_pending_edits_cleanup_tasks", row._id)));
-	await Promise.all(lastSequenceSaved.map((row) => ctx.db.delete("pages_pending_edits_last_sequence_saved", row._id)));
-	await Promise.all(pendingEdits.map((row) => ctx.db.delete("pages_pending_edits", row._id)));
-	await Promise.all(membershipsAll.map((row) => ctx.db.delete("workspaces_projects_users", row._id)));
-	await Promise.all(accessRoleAssignments.map((row) => ctx.db.delete("access_control_role_assignments", row._id)));
+	await Promise.all(pendingEditCleanupTasks.map((doc) => ctx.db.delete("pages_pending_edits_cleanup_tasks", doc._id)));
+	await Promise.all(lastSequenceSaved.map((doc) => ctx.db.delete("pages_pending_edits_last_sequence_saved", doc._id)));
+	await Promise.all(pendingEdits.map((doc) => ctx.db.delete("pages_pending_edits", doc._id)));
+	await Promise.all(membershipsAll.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)));
+	await Promise.all(accessRoleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
 	await ctx.db
 		.query("access_control_permission_grants")
 		.withIndex("by_user_workspace_project_resource_permission", (q) => q.eq("userId", user._id))
 		.collect()
-		.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id))));
-	await Promise.all(anonymousAuthTokens.map((row) => ctx.db.delete("users_anon_tokens", row._id)));
-	await Promise.all(userLimits.map((row) => ctx.db.delete("limits_per_user", row._id)));
-	await Promise.all(billingUsageSnapshots.map((row) => ctx.db.delete("billing_usage_snapshots", row._id)));
+		.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id))));
+	await Promise.all(anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)));
+	await ctx.db
+		.query("quotas")
+		.withIndex("by_user_quotaName", (q) => q.eq("userId", user._id))
+		.collect()
+		.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id))));
+	await Promise.all(billingUsageSnapshots.map((doc) => ctx.db.delete("billing_usage_snapshots", doc._id)));
 
 	await ctx.db.patch("users", user._id, {
 		clerkUserId: null,
@@ -615,15 +610,15 @@ export const list_deletion_request_ids_by_scope = internalQuery({
 		const cutoff = now - RETENTION_MS;
 		const ids: Array<Id<"data_deletion_requests">> = [];
 
-		for await (const row of ctx.db
+		for await (const doc of ctx.db
 			.query("data_deletion_requests")
 			.withIndex("by_creation_time", (q) => q.lte("_creationTime", cutoff))
 			.order("asc")) {
-			if (row.scope !== args.scope) {
+			if (doc.scope !== args.scope) {
 				continue;
 			}
 
-			ids.push(row._id);
+			ids.push(doc._id);
 			if (ids.length >= args.limit) {
 				break;
 			}
@@ -670,7 +665,7 @@ export const process_user_deletion_request = internalMutation({
 			return null;
 		}
 
-		// Finalize the user first to delete the remaining user-owned rows and to
+		// Finalize the user first to delete the remaining user-owned docs and to
 		// compute which workspaces became fully empty at the retention boundary.
 		const deleteUserRes = await db_finalize_deleted_user(ctx, {
 			userId: user._id,
@@ -681,7 +676,7 @@ export const process_user_deletion_request = internalMutation({
 			// Delete whole workspaces here, not individual projects, because by
 			// this point these workspaces have no active members left and should be
 			// torn down in one pass. Clear the matching workspace/project request
-			// rows here too, because `db_delete_workspace` only purges data and
+			// docs here too, because `db_delete_workspace` only purges data and
 			// returns the exact targets it consumed.
 			for (const workspace of deleteUserRes.workspacesToDelete) {
 				const { projectRequestsToDelete } = await db_delete_workspace(ctx, {
@@ -846,7 +841,7 @@ export const hard_delete_user_data = internalMutation({
 		if (deleteUserRes?.workspacesToDelete) {
 			// Delete whole workspaces here, not individual projects, because these
 			// workspaces now have no active members left at all. Clear the matching
-			// workspace/project request rows here too, because `db_delete_workspace`
+			// workspace/project request docs here too, because `db_delete_workspace`
 			// only purges data and returns the exact targets it consumed.
 			for (const workspace of deleteUserRes.workspacesToDelete) {
 				const { projectRequestsToDelete } = await db_delete_workspace(ctx, {

@@ -9,7 +9,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import { test_convex } from "./setup.test.ts";
 import { workspaces_db_create, workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
-import { user_limits } from "../shared/limits.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 
 const polarWebhookMocks = vi.hoisted(() => ({
 	validateEvent: vi.fn(),
@@ -54,13 +54,10 @@ async function users_test_bootstrap_user(
 	});
 
 	await Promise.all([
-		ctx.db.insert("limits_per_user", {
+		quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
 			userId,
-			limitName: user_limits.EXTRA_WORKSPACES.name,
-			usedCount: 0,
-			maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-			createdAt: now,
-			updatedAt: now,
+			now,
 		}),
 		ctx.db
 			.insert("users_anagraphics", {
@@ -102,13 +99,10 @@ async function users_test_bootstrap_anonymous_user(ctx: MutationCtx, args: { dis
 	});
 
 	await Promise.all([
-		ctx.db.insert("limits_per_user", {
+		quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
 			userId,
-			limitName: user_limits.EXTRA_WORKSPACES.name,
-			usedCount: 0,
-			maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-			createdAt: now,
-			updatedAt: now,
+			now,
 		}),
 		ctx.db
 			.insert("users_anagraphics", {
@@ -772,7 +766,7 @@ describe("delete_current_user_account", () => {
 
 		expect(transferResult._nay).toBeUndefined();
 		const after = await t.run(async (ctx) => {
-			const [ownerRole, collaboratorLimit] = await Promise.all([
+			const [ownerRole, collaboratorQuota] = await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_workspace_project_role_user", (q) =>
@@ -780,18 +774,18 @@ describe("delete_current_user_account", () => {
 					)
 					.first(),
 				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
-						q.eq("userId", collaborator.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", collaborator.userId).eq("quotaName", "extra_workspaces"),
 					)
 					.first(),
 			]);
 
-			return { ownerRole, collaboratorLimit };
+			return { ownerRole, collaboratorQuota };
 		});
 
 		expect(after.ownerRole?.userId).toBe(collaborator.userId);
-		expect(after.collaboratorLimit?.usedCount).toBe(1);
+		expect(after.collaboratorQuota?.usedCount).toBe(1);
 	});
 
 	test("returns Unauthenticated when no authenticated identity is present", async () => {
@@ -860,7 +854,7 @@ describe("delete_current_user_account", () => {
 
 			expect(result._nay).toBeUndefined();
 			const after = await t.run(async (ctx) => {
-				const [user, ownerRoles, memberships, workspaceRequests, ownerLimit] = await Promise.all([
+				const [user, ownerRoles, memberships, workspaceRequests, ownerQuota] = await Promise.all([
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("access_control_role_assignments")
@@ -882,21 +876,21 @@ describe("delete_current_user_account", () => {
 						.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"))
 						.collect(),
 					ctx.db
-						.query("limits_per_user")
-						.withIndex("by_user_limitName", (q) =>
-							q.eq("userId", seeded.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+						.query("quotas")
+						.withIndex("by_user_quotaName", (q) =>
+							q.eq("userId", seeded.userId).eq("quotaName", "extra_workspaces"),
 						)
 						.first(),
 				]);
 
-				return { user, ownerRoles, memberships, workspaceRequests, ownerLimit };
+				return { user, ownerRoles, memberships, workspaceRequests, ownerQuota };
 			});
 
 			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.ownerRoles).toHaveLength(0);
 			expect(after.memberships).toHaveLength(0);
 			expect(after.workspaceRequests).toHaveLength(1);
-			expect(after.ownerLimit?.usedCount).toBe(0);
+			expect(after.ownerQuota?.usedCount).toBe(0);
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2537,7 +2531,7 @@ describe("hard_delete_user_now", () => {
 		});
 
 		const after = await t.run(async (ctx) => {
-			const [user, anagraphic, memberships, limits] = await Promise.all([
+			const [user, anagraphic, memberships, quotas] = await Promise.all([
 				ctx.db.get("users", seeded.userId),
 				ctx.db.get("users_anagraphics", seeded.anagraphicId),
 				ctx.db
@@ -2545,8 +2539,8 @@ describe("hard_delete_user_now", () => {
 					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", seeded.userId))
 					.collect(),
 				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) => q.eq("userId", seeded.userId))
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", seeded.userId))
 					.collect(),
 			]);
 
@@ -2554,14 +2548,14 @@ describe("hard_delete_user_now", () => {
 				user,
 				anagraphic,
 				memberships,
-				limits,
+				quotas,
 			};
 		});
 
 		expect(after.user).toBeNull();
 		expect(after.anagraphic).toBeNull();
 		expect(after.memberships.length).toBeGreaterThan(0);
-		expect(after.limits.length).toBeGreaterThan(0);
+		expect(after.quotas.length).toBeGreaterThan(0);
 	});
 
 	test("skips Clerk deletion for local-only users, hard-deletes local data, and schedules period-end cancellation when purgeUserRecord is false", async () => {

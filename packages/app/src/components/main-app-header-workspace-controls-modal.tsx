@@ -71,6 +71,7 @@ import {
 	workspaces_name_validate,
 } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
+import { quotas } from "../../shared/quotas.ts";
 
 // #region list item model
 export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
@@ -251,7 +252,7 @@ type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-icon"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-limit"
+	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-quota"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-help"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger"
 	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create";
@@ -260,15 +261,15 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
 	title: string;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
-	limitFraction?: string;
-	limitTooltip?: string;
+	quotaFraction?: string;
+	quotaTooltip?: string;
 	onCreate: () => void;
 	iconSlot: ReactNode;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectHead(props: MainAppHeaderWorkspaceSwitcherModalSelectHead_Props) {
-		const { title, createDisabled, createDisabledReason, limitFraction, limitTooltip, onCreate, iconSlot } = props;
+		const { title, createDisabled, createDisabledReason, quotaFraction, quotaTooltip, onCreate, iconSlot } = props;
 
 		const createDisabledTooltip = createDisabled ? createDisabledReason : undefined;
 
@@ -291,7 +292,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 						"MainAppHeaderWorkspaceSwitcherModalSelectHead-copy" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 					)}
 				>
-					{limitFraction && limitTooltip ? (
+					{quotaFraction && quotaTooltip ? (
 						<div
 							className={cn(
 								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
@@ -308,10 +309,10 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 								<MyTooltipInfoTrigger>
 									<span
 										className={cn(
-											"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+											"MainAppHeaderWorkspaceSwitcherModalSelectHead-quota" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 										)}
 									>
-										{limitFraction}
+										{quotaFraction}
 										<MyIcon
 											className={cn(
 												"MainAppHeaderWorkspaceSwitcherModalSelectHead-help" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
@@ -323,7 +324,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 									</span>
 								</MyTooltipInfoTrigger>
 								<MyTooltipContent unmountOnHide>
-									<>{limitTooltip}</>
+									<>{quotaTooltip}</>
 								</MyTooltipContent>
 							</MyTooltip>
 						</div>
@@ -340,13 +341,13 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 							>
 								{title}
 							</div>
-							{limitFraction ? (
+							{quotaFraction ? (
 								<span
 									className={cn(
-										"MainAppHeaderWorkspaceSwitcherModalSelectHead-limit" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+										"MainAppHeaderWorkspaceSwitcherModalSelectHead-quota" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 									)}
 								>
-									({limitFraction})
+									({quotaFraction})
 								</span>
 							) : null}
 						</div>
@@ -486,8 +487,8 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	selectedItemId: string;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
-	limitFraction?: string;
-	limitTooltip?: string;
+	quotaFraction?: string;
+	quotaTooltip?: string;
 	onCreate: () => void;
 	icon: ReactNode;
 };
@@ -501,8 +502,8 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 			selectedItemId,
 			createDisabled,
 			createDisabledReason,
-			limitFraction,
-			limitTooltip,
+			quotaFraction,
+			quotaTooltip,
 			onCreate,
 			icon,
 		} = props;
@@ -517,8 +518,8 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 					title={title}
 					createDisabled={createDisabled}
 					createDisabledReason={createDisabledReason}
-					limitFraction={limitFraction}
-					limitTooltip={limitTooltip}
+					quotaFraction={quotaFraction}
+					quotaTooltip={quotaTooltip}
 					onCreate={onCreate}
 					iconSlot={icon}
 				/>
@@ -784,7 +785,9 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					}
 
 					if (result._nay) {
-						if (result._nay.message === "Description is too long") {
+						if (result._nay.message === "Workspace quota reached") {
+							setSubmitMessage(quotas.extra_workspaces.disabledReason);
+						} else if (result._nay.message === "Description is too long") {
 							setDescriptionMessage(result._nay.message);
 						} else if (should_block_name_retry(result._nay.message)) {
 							nameBlockedMessagesRef.current.set(name, result._nay.message);
@@ -814,7 +817,9 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				}
 
 				if (result._nay) {
-					if (result._nay.message === "Description is too long") {
+					if (result._nay.message === "Project quota reached") {
+						setSubmitMessage(quotas.extra_projects.disabledReason);
+					} else if (result._nay.message === "Description is too long") {
 						setDescriptionMessage(result._nay.message);
 					} else if (should_block_name_retry(result._nay.message)) {
 						nameBlockedMessagesRef.current.set(name, result._nay.message);
@@ -1401,10 +1406,10 @@ export type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	createWorkspaceDisabledReason?: string;
 	createProjectDisabled: boolean;
 	createProjectDisabledReason?: string;
-	workspaceLimitFraction?: string;
-	workspaceLimitTooltip?: string;
-	projectLimitFraction?: string;
-	projectLimitTooltip?: string;
+	workspaceQuotaFraction?: string;
+	workspaceQuotaTooltip?: string;
+	projectQuotaFraction?: string;
+	projectQuotaTooltip?: string;
 	switchDisabled: boolean;
 	editTarget: MainAppHeaderWorkspaceSwitcherModal_EditTarget | null;
 	createWorkspace: (
@@ -1450,10 +1455,10 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 		createWorkspaceDisabledReason,
 		createProjectDisabled,
 		createProjectDisabledReason,
-		workspaceLimitFraction,
-		workspaceLimitTooltip,
-		projectLimitFraction,
-		projectLimitTooltip,
+		workspaceQuotaFraction,
+		workspaceQuotaTooltip,
+		projectQuotaFraction,
+		projectQuotaTooltip,
 		switchDisabled,
 		editTarget,
 		createWorkspace,
@@ -1556,8 +1561,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							selectedItemId={draftWorkspaceId}
 							createDisabled={createWorkspaceDisabled}
 							createDisabledReason={createWorkspaceDisabledReason}
-							limitFraction={workspaceLimitFraction}
-							limitTooltip={workspaceLimitTooltip}
+							quotaFraction={workspaceQuotaFraction}
+							quotaTooltip={workspaceQuotaTooltip}
 							onCreate={handleOpenCreateWorkspaceDialog}
 							icon={<Briefcase />}
 						/>
@@ -1569,8 +1574,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							selectedItemId={draftProjectId}
 							createDisabled={createProjectDisabled}
 							createDisabledReason={createProjectDisabledReason}
-							limitFraction={projectLimitFraction}
-							limitTooltip={projectLimitTooltip}
+							quotaFraction={projectQuotaFraction}
+							quotaTooltip={projectQuotaTooltip}
 							onCreate={handleOpenCreateProjectDialog}
 							icon={<FolderKanban />}
 						/>

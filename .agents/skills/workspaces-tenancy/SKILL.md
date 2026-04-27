@@ -32,7 +32,7 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 
 - `workspaces_db_create` always inserts a default project named `home` (`default: true`) and links `workspaces.defaultProjectId`.
 - **`create_workspace`** (public) calls `workspaces_db_create` **without** `default: true`, so it creates a **non-default** workspace plus its `home` project. That workspace is not the user’s `personal` default.
-- `workspaces_db_create` also creates the workspace owner assignment on the default project and seeds default access-control grants. This applies to both default and non-default workspaces, but only non-default ownership consumes the user’s `extra_workspaces` limit.
+- `workspaces_db_create` also creates the workspace owner assignment on the default project and seeds default access-control grants. This applies to both default and non-default workspaces, but only non-default ownership consumes the user’s `extra_workspaces` quota.
 
 # Access control model
 
@@ -71,7 +71,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 - `access_control.transfer_workspace_ownership` is owner-only and rejects the default workspace.
 - The new owner must be an active member of the workspace `home` project.
-- The new owner must have an available `extra_workspaces` slot. Transfer decrements the old owner’s counter and increments the new owner’s counter.
+- The new owner must have an available `extra_workspaces` quota slot. Transfer releases one old-owner quota unit and consumes one new-owner quota unit.
 - The old owner remains a regular member through existing memberships and a default-project `member` assignment unless a separate flow removes them.
 
 # Active memberships
@@ -89,8 +89,8 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 | Entrypoint | Phase 1 | Queue row | Phase 2 |
 |------------|---------|-----------|---------|
-| `workspaces.delete_project` | Queue purge + delete all memberships on that project + delete `workspaces_projects` row + decrement `limits_per_workspace` | One `data_deletion_requests` row with `scope: "project"` plus `userId`, `workspaceId`, `projectId` | `process_project_deletion_request` wipes tenant-scoped tables for that `(workspaceId, projectId)`, then deletes the queue doc |
-| `workspaces.delete_workspace` | Owner-only. Queue one row (`scope: "workspace"`, `workspaceId` only); delete all **memberships** and access-control rows immediately; decrement owner `extra_workspaces` limit; **defer** deleting `workspaces`, `workspaces_projects`, and `limits_per_workspace` until cron | One `data_deletion_requests` row with `scope: "workspace"` plus `userId`, `workspaceId` | `process_workspace_deletion_request` resolves project ids from `workspaces_projects`, purges tenant content per project, then deletes projects + `limits_per_workspace` + workspace and removes the queue doc |
+| `workspaces.delete_project` | Queue purge + delete all memberships on that project + delete `workspaces_projects` row + release one workspace `extra_projects` quota unit | One `data_deletion_requests` row with `scope: "project"` plus `userId`, `workspaceId`, `projectId` | `process_project_deletion_request` wipes tenant-scoped tables for that `(workspaceId, projectId)`, then deletes the queue doc |
+| `workspaces.delete_workspace` | Owner-only. Queue one row (`scope: "workspace"`, `workspaceId` only); delete all **memberships** and access-control rows immediately; release one owner `extra_workspaces` quota unit; **defer** deleting `workspaces`, `workspaces_projects`, and workspace quota docs until cron | One `data_deletion_requests` row with `scope: "workspace"` plus `userId`, `workspaceId` | `process_workspace_deletion_request` resolves project ids from `workspaces_projects`, purges tenant content per project, then deletes projects + workspace quota docs + workspace and removes the queue doc |
 | `access_control.transfer_workspace_ownership` + `users.delete_current_user_account` | The UI resolves owned non-personal workspaces by composing existing queries: `workspaces.list`, `access_control.get_current_user_role`, `workspaces.list_workspace_project_users`, and `users.get_anagraphic`. Transfer choices call `access_control.transfer_workspace_ownership` before account deletion starts; that mutation is the only place that checks whether the new owner has enough remaining `extra_workspaces` quota. Any remaining owned workspaces are treated as delete choices by the backend; `users.delete_current_user_account` queues workspace deletion and immediately deletes memberships/access-control rows for those workspaces. Then the user tombstone creates/reuses one `scope: "user"` row, sets `users.deletedAt`, and sets `active: false` on remaining memberships. | One `scope: "user"` row for the user, plus workspace rows for automatically queued owned-workspace deletions | Eligible only after `_creationTime + RETENTION_MS`: `process_user_deletion_request` hard-deletes user-owned state, deletes remaining access-control rows for the deleted user, then deletes an entire workspace only when it has no active users left; shared transferred workspaces remain untouched when active users still exist |
 
 **Unified cron:** [crons.ts](../../../packages/app/convex/crons.ts) runs **`data_deletion.process_deletion_requests`** daily: eligible `user` requests (batch), then `workspace` requests (batch), then `project` requests (batch), each with its own per-run limit.

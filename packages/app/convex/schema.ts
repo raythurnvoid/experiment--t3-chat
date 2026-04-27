@@ -445,25 +445,17 @@ const app_convex_schema = defineSchema({
 		.index("by_active_workspace_project_user", ["active", "workspaceId", "projectId", "userId"])
 		.index("by_active_user_workspace_project", ["active", "userId", "workspaceId", "projectId"]),
 
-	limits_per_user: defineTable({
-		userId: v.id("users"),
-		limitName: v.union(v.literal("extra_workspaces")),
+	quotas: defineTable({
+		quotaName: v.union(v.literal("extra_workspaces"), v.literal("extra_projects")),
+		userId: v.optional(v.id("users")),
+		workspaceId: v.optional(v.id("workspaces")),
 		usedCount: v.number(),
 		maxCount: v.number(),
 		createdAt: v.number(),
 		updatedAt: v.number(),
-		lastReconciledAt: v.optional(v.number()),
-	}).index("by_user_limitName", ["userId", "limitName"]),
-
-	limits_per_workspace: defineTable({
-		workspaceId: v.id("workspaces"),
-		limitName: v.union(v.literal("extra_projects")),
-		usedCount: v.number(),
-		maxCount: v.number(),
-		createdAt: v.number(),
-		updatedAt: v.number(),
-		lastReconciledAt: v.optional(v.number()),
-	}).index("by_workspace_limitName", ["workspaceId", "limitName"]),
+	})
+		.index("by_user_quotaName", ["userId", "quotaName"])
+		.index("by_workspace_quotaName", ["workspaceId", "quotaName"]),
 	// #endregion workspaces
 
 	// #region billing

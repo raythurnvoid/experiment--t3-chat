@@ -603,7 +603,13 @@ function RouteUsers() {
 			})
 			.then((result) => {
 				if (result._nay) {
-					toast.error(result._nay.message ?? "Failed to invite user");
+					console.error("[RouteUsers.handleInvite] Failed to invite user:", {
+						error: result._nay,
+						workspaceId,
+						inviteProjectId,
+						email: inviteEmail,
+					});
+					toast.error("Failed to invite user");
 					return;
 				}
 
@@ -612,7 +618,11 @@ function RouteUsers() {
 				setInviteModalOpen(false);
 			})
 			.catch((error) => {
-				console.error("[RouteUsers.handleInvite] Unexpected invite error", { error, workspaceId, inviteProjectId });
+				console.error("[RouteUsers.handleInvite] Failed to invite user:", {
+					error,
+					workspaceId,
+					inviteProjectId,
+				});
 				toast.error("Failed to invite user");
 			})
 			.finally(() => {
@@ -631,14 +641,23 @@ function RouteUsers() {
 			})
 			.then((result) => {
 				if (result._nay) {
-					toast.error(result._nay.message ?? failureMessage);
+					console.error("[RouteUsers.handleRemove] Failed to update workspace membership:", {
+						error: result._nay,
+						workspaceId,
+						userIdToRemove,
+					});
+					toast.error(failureMessage);
 					return;
 				}
 
 				toast.success(isLeaving ? "Left workspace" : "User removed");
 			})
 			.catch((error) => {
-				console.error("[RouteUsers.handleRemove] Unexpected remove user error", { error, workspaceId, userIdToRemove });
+				console.error("[RouteUsers.handleRemove] Failed to update workspace membership:", {
+					error,
+					workspaceId,
+					userIdToRemove,
+				});
 				toast.error(failureMessage);
 			});
 	});
@@ -666,7 +685,12 @@ function RouteUsers() {
 			})
 			.then((result) => {
 				if (result._nay) {
-					toast.error(result._nay.message ?? "Failed to transfer ownership");
+					console.error("[RouteUsers.handleTransfer] Failed to transfer ownership:", {
+						error: result._nay,
+						workspaceId,
+						newOwnerUserId,
+					});
+					toast.error("Failed to transfer ownership");
 					return;
 				}
 
@@ -674,7 +698,7 @@ function RouteUsers() {
 				setTransferTarget(null);
 			})
 			.catch((error) => {
-				console.error("[RouteUsers.handleTransfer] Unexpected transfer ownership error", {
+				console.error("[RouteUsers.handleTransfer] Failed to transfer ownership:", {
 					error,
 					workspaceId,
 					newOwnerUserId,

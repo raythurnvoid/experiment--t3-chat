@@ -101,12 +101,12 @@ type OwnedWorkspaceAccountDeletionDecision =
 			kind: "transfer";
 			workspaceId: app_convex_Id<"workspaces">;
 			newOwnerUserId: app_convex_Id<"users">;
-		}
+	  }
 	| {
 			kind: "delete";
 			workspaceId: app_convex_Id<"workspaces">;
 			confirmWorkspaceDeletion: boolean;
-		};
+	  };
 
 // #region delete account workspace list
 type MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames =
@@ -948,14 +948,22 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 				newOwnerUserId: transferDecision.newOwnerUserId,
 			});
 			if (transferResult._nay) {
-				toast.error(transferResult._nay.message ?? "Failed to transfer workspace ownership");
+				console.error("[MainAppAccountManagement.handleDeleteAccount] Failed to transfer workspace ownership:", {
+					error: transferResult._nay,
+					workspaceId: transferDecision.workspaceId,
+					newOwnerUserId: transferDecision.newOwnerUserId,
+				});
+				toast.error("Failed to transfer workspace ownership");
 				return false;
 			}
 		}
 
 		const result = await app_convex.action(app_convex_api.users.delete_current_user_account, {});
 		if (result._nay) {
-			toast.error(result._nay.message ?? "Failed to delete account");
+			console.error("[MainAppAccountManagement.handleDeleteAccount] Failed to delete account:", {
+				result,
+			});
+			toast.error("Failed to delete account");
 			return false;
 		}
 

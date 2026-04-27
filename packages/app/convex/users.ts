@@ -22,7 +22,7 @@ import {
 	users_create_fallback_display_name,
 } from "../shared/users.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { user_limits } from "../shared/limits.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import type { Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
@@ -152,13 +152,15 @@ export const create_anonymous_user = internalMutation({
 			clerkUserId: null,
 		});
 
-		await ctx.db.insert("limits_per_user", {
+		await quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
 			userId,
-			limitName: user_limits.EXTRA_WORKSPACES.name,
-			usedCount: 0,
-			maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-			createdAt: now,
-			updatedAt: now,
+			now,
+		});
+
+		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+			userId,
+			now,
 		});
 
 		const [tokenId] = await Promise.all([
@@ -189,11 +191,6 @@ export const create_anonymous_user = internalMutation({
 
 					return anagraphicId;
 				}),
-
-			workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
-				userId,
-				now,
-			}),
 
 			billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }),
 		]);
@@ -244,33 +241,6 @@ export const clear_clerk_user_id_after_clerk_delete = internalMutation({
 		return null;
 	},
 });
-
-async function db_ensure_default_user_limit(
-	ctx: MutationCtx,
-	args: {
-		userId: Id<"users">;
-		now: number;
-	},
-) {
-	const existingLimit = await ctx.db
-		.query("limits_per_user")
-		.withIndex("by_user_limitName", (q) =>
-			q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
-		)
-		.first();
-	if (existingLimit) {
-		return;
-	}
-
-	await ctx.db.insert("limits_per_user", {
-		userId: args.userId,
-		limitName: user_limits.EXTRA_WORKSPACES.name,
-		usedCount: 0,
-		maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-		createdAt: args.now,
-		updatedAt: args.now,
-	});
-}
 
 async function db_upsert_anagraphic(
 	ctx: MutationCtx,
@@ -460,13 +430,24 @@ export const resolve_user = internalMutation({
 
 		// Reuse the live Clerk-linked user before you attempt recovery or upgrade logic.
 		if (existingLiveUser) {
-			await db_upsert_anagraphic(ctx, {
-				userId: existingLiveUser._id,
-				anagraphicId: existingLiveUser.anagraphic,
-				displayName: args.displayName,
-				email,
-				now,
-			});
+			await Promise.all([
+				db_upsert_anagraphic(ctx, {
+					userId: existingLiveUser._id,
+					anagraphicId: existingLiveUser.anagraphic,
+					displayName: args.displayName,
+					email,
+					now,
+				}),
+				quotas_db_ensure(ctx, {
+					quotaName: "extra_workspaces",
+					userId: existingLiveUser._id,
+					now,
+				}),
+				workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+					userId: existingLiveUser._id,
+					now,
+				}),
+			]);
 
 			return Result({ _yay: { userId: existingLiveUser._id, restoredDeletedAccount: false } });
 		}
@@ -514,7 +495,8 @@ export const resolve_user = internalMutation({
 					email,
 					now,
 				}),
-				db_ensure_default_user_limit(ctx, {
+				quotas_db_ensure(ctx, {
+					quotaName: "extra_workspaces",
 					userId: deletedUser._id,
 					now,
 				}),
@@ -609,6 +591,12 @@ export const resolve_user = internalMutation({
 						now,
 					}),
 
+					quotas_db_ensure(ctx, {
+						quotaName: "extra_workspaces",
+						userId,
+						now,
+					}),
+
 					workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 						userId,
 						now,
@@ -640,6 +628,11 @@ export const resolve_user = internalMutation({
 					email,
 					now,
 				}),
+				quotas_db_ensure(ctx, {
+					quotaName: "extra_workspaces",
+					userId,
+					now,
+				}),
 				workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 					userId,
 					now,
@@ -655,7 +648,8 @@ export const resolve_user = internalMutation({
 		});
 
 		await Promise.all([
-			db_ensure_default_user_limit(ctx, {
+			quotas_db_ensure(ctx, {
+				quotaName: "extra_workspaces",
 				userId,
 				now,
 			}),

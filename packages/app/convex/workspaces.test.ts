@@ -16,7 +16,7 @@ import {
 	access_control_db_has_permission,
 } from "./access_control.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { user_limits, workspace_limits } from "../shared/limits.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import { workspaces_description_max_length, workspaces_name_max_length } from "../shared/workspaces.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -50,22 +50,11 @@ async function workspaces_test_seed_default_workspace(ctx: MutationCtx, args: { 
 async function workspaces_test_bootstrap_user(t: ReturnType<typeof test_convex>, args: { userId: Id<"users"> }) {
 	await t.run(async (ctx) => {
 		const now = Date.now();
-		const userLimit = await ctx.db
-			.query("limits_per_user")
-			.withIndex("by_user_limitName", (q) =>
-				q.eq("userId", args.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
-			)
-			.first();
-		if (!userLimit) {
-			await ctx.db.insert("limits_per_user", {
-				userId: args.userId,
-				limitName: user_limits.EXTRA_WORKSPACES.name,
-				usedCount: 0,
-				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-				createdAt: now,
-				updatedAt: now,
-			});
-		}
+		await quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
+			userId: args.userId,
+			now,
+		});
 
 		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 			userId: args.userId,
@@ -79,6 +68,25 @@ async function workspaces_test_bootstrap_users(
 	args: { userIds: readonly Id<"users">[] },
 ) {
 	await Promise.all(args.userIds.map((userId) => workspaces_test_bootstrap_user(t, { userId })));
+}
+
+async function workspaces_test_read_user_extra_workspace_quota_doc(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	return await ctx.db
+		.query("quotas")
+		.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", "extra_workspaces"))
+		.first();
+}
+
+async function workspaces_test_read_workspace_extra_project_quota_doc(
+	ctx: MutationCtx,
+	args: { workspaceId: Id<"workspaces"> },
+) {
+	return await ctx.db
+		.query("quotas")
+		.withIndex("by_workspace_quotaName", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("quotaName", "extra_projects"),
+		)
+		.first();
 }
 
 async function workspaces_test_seed_project_scoped_rows(
@@ -204,9 +212,9 @@ describe("create_workspace", () => {
 		expect(result._yay?.name).toBe("acme-labs");
 		expect(result._yay?.defaultProjectName).toBe("home");
 
-		const { workspace, project, ownerRole, permissionGrants, userLimit, workspaceLimit } = result._yay
+		const { workspace, project, ownerRole, permissionGrants, userQuota, workspaceQuota } = result._yay
 			? await t.run(async (ctx) => {
-					const [workspace, project, ownerRole, permissionGrants, userLimit, workspaceLimit] = await Promise.all([
+					const [workspace, project, ownerRole, permissionGrants, userQuota, workspaceQuota] = await Promise.all([
 						ctx.db.get("workspaces", result._yay!.workspaceId),
 						ctx.db.get("workspaces_projects", result._yay!.defaultProjectId),
 						ctx.db
@@ -224,16 +232,8 @@ describe("create_workspace", () => {
 								q.eq("workspaceId", result._yay!.workspaceId),
 							)
 							.collect(),
-						ctx.db
-							.query("limits_per_user")
-							.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
-							.first(),
-						ctx.db
-							.query("limits_per_workspace")
-							.withIndex("by_workspace_limitName", (q) =>
-								q.eq("workspaceId", result._yay!.workspaceId).eq("limitName", "extra_projects"),
-							)
-							.first(),
+						workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId }),
+						workspaces_test_read_workspace_extra_project_quota_doc(ctx, { workspaceId: result._yay!.workspaceId }),
 					]);
 
 					return {
@@ -241,8 +241,8 @@ describe("create_workspace", () => {
 						project,
 						ownerRole,
 						permissionGrants,
-						userLimit,
-						workspaceLimit,
+						userQuota,
+						workspaceQuota,
 					};
 				})
 			: {
@@ -250,8 +250,8 @@ describe("create_workspace", () => {
 					project: null,
 					ownerRole: null,
 					permissionGrants: [],
-					userLimit: null,
-					workspaceLimit: null,
+					userQuota: null,
+					workspaceQuota: null,
 				};
 
 		expect(workspace?.name).toBe("acme-labs");
@@ -270,10 +270,10 @@ describe("create_workspace", () => {
 			permissionGrants.some((grant) => grant.role === "admin" && grant.permission === "workspace.roles.manage"),
 		).toBe(true);
 		expect(project?.name).toBe("home");
-		expect(userLimit?.usedCount).toBe(1);
-		expect(userLimit?.maxCount).toBe(1);
-		expect(workspaceLimit?.usedCount).toBe(0);
-		expect(workspaceLimit?.maxCount).toBe(1);
+		expect(userQuota?.usedCount).toBe(1);
+		expect(userQuota?.maxCount).toBe(1);
+		expect(workspaceQuota?.usedCount).toBe(0);
+		expect(workspaceQuota?.maxCount).toBe(1);
 	});
 
 	test("rejects names that are still invalid after autofix", async () => {
@@ -532,10 +532,10 @@ describe("create_workspace", () => {
 			description: "",
 			name: "second-extra-ws",
 		});
-		expect(second._nay?.message).toBe("You can only create 1 extra workspace in addition to your personal workspace");
+		expect(second._nay?.message).toBe("Workspace quota reached");
 	});
 
-	test("does not count shared non-default workspaces against the owner's extra-workspace limit", async () => {
+	test("does not count shared non-default workspaces against the owner's extra-workspace quota", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -577,11 +577,11 @@ describe("create_workspace", () => {
 		expect(ownWorkspace._yay?.name).toBe("member-owned-ws");
 	});
 
-	test("keeps exactly one user limit doc while creating the extra workspace", async () => {
+	test("keeps exactly one user quota doc while creating the extra workspace", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-limit-seed-workspace",
+				clerkUserId: "clerk-user-quota-seed-workspace",
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -593,8 +593,8 @@ describe("create_workspace", () => {
 		await workspaces_test_bootstrap_user(t, { userId });
 
 		const before = await t.run(async (ctx) =>
-			(await ctx.db.query("limits_per_user").collect()).filter(
-				(row) => row.userId === userId && row.limitName === user_limits.EXTRA_WORKSPACES.name,
+			(await ctx.db.query("quotas").collect()).filter(
+				(doc) => doc.userId === userId && doc.quotaName === "extra_workspaces",
 			),
 		);
 		expect(before).toHaveLength(1);
@@ -610,51 +610,47 @@ describe("create_workspace", () => {
 			description: "",
 			name: "lazy-seed-extra-ws-2",
 		});
-		expect(blocked._nay?.message).toBe("You can only create 1 extra workspace in addition to your personal workspace");
+		expect(blocked._nay?.message).toBe("Workspace quota reached");
 
 		const after = await t.run(async (ctx) => {
-			const [userLimits, workspaceLimits] = await Promise.all([
-				ctx.db.query("limits_per_user").collect(),
-				ctx.db.query("limits_per_workspace").collect(),
+			const [userQuotas, workspaceQuotas] = await Promise.all([
+				ctx.db.query("quotas").collect(),
+				ctx.db.query("quotas").collect(),
 			]);
 
 			return {
-				userLimits: userLimits.filter(
-					(row) => row.userId === userId && row.limitName === user_limits.EXTRA_WORKSPACES.name,
+				userQuotas: userQuotas.filter(
+					(doc) => doc.userId === userId && doc.quotaName === "extra_workspaces",
 				),
-				workspaceLimits: workspaceLimits.filter(
-					(row) =>
-						row.workspaceId === created._yay!.workspaceId && row.limitName === workspace_limits.EXTRA_PROJECTS.name,
+				workspaceQuotas: workspaceQuotas.filter(
+					(doc) => doc.workspaceId === created._yay!.workspaceId && doc.quotaName === "extra_projects",
 				),
 			};
 		});
 
-		expect(after.userLimits).toHaveLength(1);
-		expect(after.userLimits[0]?.usedCount).toBe(1);
-		expect(after.userLimits[0]?.maxCount).toBe(1);
-		expect(after.workspaceLimits).toHaveLength(1);
-		expect(after.workspaceLimits[0]?.usedCount).toBe(0);
+		expect(after.userQuotas).toHaveLength(1);
+		expect(after.userQuotas[0]?.usedCount).toBe(1);
+		expect(after.userQuotas[0]?.maxCount).toBe(1);
+		expect(after.workspaceQuotas).toHaveLength(1);
+		expect(after.workspaceQuotas[0]?.usedCount).toBe(0);
 	});
 });
 
 describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
-	test("ensures default-workspace bootstrap creates workspace limits when user limits exist", async () => {
+	test("ensures default-workspace bootstrap creates workspace quotas when user quotas exist", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-ensure-default-limits",
+				clerkUserId: "clerk-user-ensure-default-quotas",
 			}),
 		);
 
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			await ctx.db.insert("limits_per_user", {
+			await quotas_db_ensure(ctx, {
+				quotaName: "extra_workspaces",
 				userId,
-				limitName: user_limits.EXTRA_WORKSPACES.name,
-				usedCount: 0,
-				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-				createdAt: now,
-				updatedAt: now,
+				now,
 			});
 			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 				userId,
@@ -664,30 +660,22 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 
 		const rows = await t.run(async (ctx) => {
 			const user = await ctx.db.get("users", userId);
-			const workspaceLimit = user?.defaultWorkspaceId
-				? await ctx.db
-						.query("limits_per_workspace")
-						.withIndex("by_workspace_limitName", (q) =>
-							q.eq("workspaceId", user.defaultWorkspaceId!).eq("limitName", "extra_projects"),
-						)
-						.first()
+			const workspaceQuota = user?.defaultWorkspaceId
+				? await workspaces_test_read_workspace_extra_project_quota_doc(ctx, { workspaceId: user.defaultWorkspaceId })
 				: null;
-			const userLimit = await ctx.db
-				.query("limits_per_user")
-				.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", "extra_workspaces"))
-				.first();
+			const userQuota = await workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId });
 
 			return {
 				user,
-				userLimit,
-				workspaceLimit,
+				userQuota,
+				workspaceQuota,
 			};
 		});
 
-		expect(rows.userLimit?.usedCount).toBe(0);
-		expect(rows.userLimit?.maxCount).toBe(1);
-		expect(rows.workspaceLimit?.usedCount).toBe(0);
-		expect(rows.workspaceLimit?.maxCount).toBe(1);
+		expect(rows.userQuota?.usedCount).toBe(0);
+		expect(rows.userQuota?.maxCount).toBe(1);
+		expect(rows.workspaceQuota?.usedCount).toBe(0);
+		expect(rows.workspaceQuota?.maxCount).toBe(1);
 	});
 
 	test("creates exactly one personal/home default during anonymous user bootstrap", async () => {
@@ -817,7 +805,7 @@ describe("create_project", () => {
 
 		const membership = result._yay
 			? await t.run(async (ctx) => {
-					const [membership, roleAssignment, projectGrant, workspaceLimit] = await Promise.all([
+					const [membership, roleAssignment, projectGrant, workspaceQuota] = await Promise.all([
 						ctx.db
 							.query("workspaces_projects_users")
 							.withIndex("by_project_user_active", (q) =>
@@ -847,26 +835,21 @@ describe("create_project", () => {
 									.eq("permission", "project.update"),
 							)
 							.first(),
-						ctx.db
-							.query("limits_per_workspace")
-							.withIndex("by_workspace_limitName", (q) =>
-								q.eq("workspaceId", wsResult._yay!.workspaceId).eq("limitName", "extra_projects"),
-							)
-							.first(),
+						workspaces_test_read_workspace_extra_project_quota_doc(ctx, { workspaceId: wsResult._yay!.workspaceId }),
 					]);
 
 					return {
 						membership,
 						roleAssignment,
 						projectGrant,
-						workspaceLimit,
+						workspaceQuota,
 					};
 				})
 			: null;
 		expect(membership?.membership).toBeTruthy();
 		expect(membership?.roleAssignment).toBeTruthy();
 		expect(membership?.projectGrant).toBeTruthy();
-		expect(membership?.workspaceLimit?.usedCount).toBe(1);
+		expect(membership?.workspaceQuota?.usedCount).toBe(1);
 	});
 
 	test("stores trimmed project description", async () => {
@@ -916,10 +899,17 @@ describe("create_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "dup-proj-ws",
-		});
+		const wsResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "dup-proj-ws",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
 		expect(wsResult._yay).toBeTruthy();
 
 		const first = await asUser.mutation(api.workspaces.create_project, {
@@ -1091,17 +1081,15 @@ describe("create_project", () => {
 			workspaceId: created._yay!.workspaceId,
 			name: "board",
 		});
-		expect(second._nay?.message).toBe(
-			"This workspace already has its extra project. Each workspace can contain only 2 projects total, including home",
-		);
+		expect(second._nay?.message).toBe("Project quota reached");
 	});
 
-	test("does not let a shared member bypass the extra-project limit", async () => {
+	test("does not let a shared member bypass the extra-project quota", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
 			Promise.all([
-				ctx.db.insert("users", { clerkUserId: "clerk-user-project-limit-owner" }),
-				ctx.db.insert("users", { clerkUserId: "clerk-user-project-limit-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-project-quota-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-project-quota-member" }),
 			]),
 		);
 		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
@@ -1118,17 +1106,31 @@ describe("create_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const sharedWorkspace = await owner.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "shared-project-limit",
-		});
+		const sharedWorkspace = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "shared-proj-quota",
+				now: Date.now(),
+			}),
+		);
+		if (sharedWorkspace._nay) {
+			throw new Error(sharedWorkspace._nay.message);
+		}
 		expect(sharedWorkspace._yay).toBeTruthy();
 
-		const extraProject = await owner.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId: sharedWorkspace._yay!.workspaceId,
-			name: "docs",
-		});
+		const extraProject = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId: ownerId,
+				description: "",
+				workspaceId: sharedWorkspace._yay!.workspaceId,
+				name: "docs",
+				now: Date.now(),
+			}),
+		);
+		if (extraProject._nay) {
+			throw new Error(extraProject._nay.message);
+		}
 		expect(extraProject._yay).toBeTruthy();
 
 		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
@@ -1143,16 +1145,14 @@ describe("create_project", () => {
 			workspaceId: sharedWorkspace._yay!.workspaceId,
 			name: "board",
 		});
-		expect(result._nay?.message).toBe(
-			"This workspace already has its extra project. Each workspace can contain only 2 projects total, including home",
-		);
+		expect(result._nay?.message).toBe("Project quota reached");
 	});
 
-	test("keeps exactly one workspace limit doc while creating the extra project", async () => {
+	test("keeps exactly one workspace quota doc while creating the extra project", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-limit-seed-project",
+				clerkUserId: "clerk-user-quota-seed-project",
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -1163,17 +1163,22 @@ describe("create_project", () => {
 		});
 		await workspaces_test_bootstrap_user(t, { userId });
 
-		const workspaceResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "lazy-seed-proj-ws",
-		});
+		const workspaceResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "lazy-seed-proj-ws",
+				now: Date.now(),
+			}),
+		);
+		if (workspaceResult._nay) {
+			throw new Error(workspaceResult._nay.message);
+		}
 		expect(workspaceResult._yay).toBeTruthy();
 
 		const before = await t.run(async (ctx) =>
-			(await ctx.db.query("limits_per_workspace").collect()).filter(
-				(row) =>
-					row.workspaceId === workspaceResult._yay!.workspaceId &&
-					row.limitName === workspace_limits.EXTRA_PROJECTS.name,
+			(await ctx.db.query("quotas").collect()).filter(
+				(doc) => doc.workspaceId === workspaceResult._yay!.workspaceId && doc.quotaName === "extra_projects",
 			),
 		);
 		expect(before).toHaveLength(1);
@@ -1191,15 +1196,11 @@ describe("create_project", () => {
 			workspaceId: workspaceResult._yay!.workspaceId,
 			name: "seeded-two",
 		});
-		expect(blocked._nay?.message).toBe(
-			"This workspace already has its extra project. Each workspace can contain only 2 projects total, including home",
-		);
+		expect(blocked._nay?.message).toBe("Project quota reached");
 
 		const after = await t.run(async (ctx) =>
-			(await ctx.db.query("limits_per_workspace").collect()).filter(
-				(row) =>
-					row.workspaceId === workspaceResult._yay!.workspaceId &&
-					row.limitName === workspace_limits.EXTRA_PROJECTS.name,
+			(await ctx.db.query("quotas").collect()).filter(
+				(doc) => doc.workspaceId === workspaceResult._yay!.workspaceId && doc.quotaName === "extra_projects",
 			),
 		);
 		expect(after).toHaveLength(1);
@@ -1696,7 +1697,7 @@ describe("remove_user_from_workspace", () => {
 });
 
 describe("access_control.transfer_workspace_ownership", () => {
-	test("moves the owner role and updates extra-workspace counters", async () => {
+	test("moves the owner role and updates extra-workspace quota usage", async () => {
 		const t = test_convex();
 		const [ownerId, newOwnerId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -1734,7 +1735,7 @@ describe("access_control.transfer_workspace_ownership", () => {
 		expect(transferResult._yay).toBeNull();
 
 		const afterTransfer = await t.run(async (ctx) => {
-			const [ownerRoles, oldOwnerMemberRole, oldOwnerLimit, newOwnerLimit, oldOwnerHomeMembership] = await Promise.all([
+			const [ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership] = await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_workspace_project_role_user", (q) =>
@@ -1754,14 +1755,8 @@ describe("access_control.transfer_workspace_ownership", () => {
 							.eq("role", "member"),
 					)
 					.first(),
-				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
-					.first(),
-				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) => q.eq("userId", newOwnerId).eq("limitName", "extra_workspaces"))
-					.first(),
+				workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: ownerId }),
+				workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: newOwnerId }),
 				ctx.db
 					.query("workspaces_projects_users")
 					.withIndex("by_active_user_workspace_project", (q) =>
@@ -1774,14 +1769,14 @@ describe("access_control.transfer_workspace_ownership", () => {
 					.first(),
 			]);
 
-			return { ownerRoles, oldOwnerMemberRole, oldOwnerLimit, newOwnerLimit, oldOwnerHomeMembership };
+			return { ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership };
 		});
 
 		expect(afterTransfer.ownerRoles).toHaveLength(1);
 		expect(afterTransfer.ownerRoles[0]?.userId).toBe(newOwnerId);
 		expect(afterTransfer.oldOwnerMemberRole?.userId).toBe(ownerId);
-		expect(afterTransfer.oldOwnerLimit?.usedCount).toBe(0);
-		expect(afterTransfer.newOwnerLimit?.usedCount).toBe(1);
+		expect(afterTransfer.oldOwnerQuota?.usedCount).toBe(0);
+		expect(afterTransfer.newOwnerQuota?.usedCount).toBe(1);
 		expect(afterTransfer.oldOwnerHomeMembership).not.toBeNull();
 	});
 });
@@ -1801,7 +1796,7 @@ describe("access_control", () => {
 		const created = await t.run((ctx) =>
 			workspaces_db_create(ctx, {
 				userId: ownerId,
-				name: "member-management-access",
+				name: "member-mgmt-access",
 				description: "",
 				now: Date.now(),
 			}),
@@ -2629,10 +2624,17 @@ describe("edit_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "rename-proj-ws",
-		});
+		const wsResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "rename-proj-ws",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
 		expect(wsResult._yay).toBeTruthy();
 
 		const result = await asUser.mutation(api.workspaces.edit_project, {
@@ -2661,25 +2663,47 @@ describe("edit_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "rename-proj-ws-id",
-		});
+		const wsResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "rename-proj-ws-id",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
 		expect(wsResult._yay).toBeTruthy();
 		const workspaceId = wsResult._yay!.workspaceId;
 		const homeId = wsResult._yay!.defaultProjectId;
 
-		const extra = await asUser.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId,
-			name: "zebra-docs",
-		});
+		const extra = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId,
+				description: "",
+				workspaceId,
+				name: "zebra-docs",
+				now: Date.now(),
+			}),
+		);
+		if (extra._nay) {
+			throw new Error(extra._nay.message);
+		}
 		expect(extra._yay).toBeTruthy();
 		const zebraId = extra._yay!.projectId;
 
 		await t.run(async (ctx) => {
+			const now = Date.now();
 			await ctx.db.patch("workspaces_projects", homeId, { default: false });
 			await ctx.db.patch("workspaces", workspaceId, { defaultProjectId: zebraId });
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId,
+				projectId: zebraId,
+				userId,
+				role: "owner",
+				now,
+			});
 		});
 
 		const blocked = await asUser.mutation(api.workspaces.edit_project, {
@@ -2716,17 +2740,31 @@ describe("edit_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "rename-secondary-ws",
-		});
+		const wsResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "rename-secondary-ws",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
 		expect(wsResult._yay).toBeTruthy();
 
-		const extra = await asUser.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId: wsResult._yay!.workspaceId,
-			name: "sidecar",
-		});
+		const extra = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId,
+				description: "",
+				workspaceId: wsResult._yay!.workspaceId,
+				name: "sidecar",
+				now: Date.now(),
+			}),
+		);
+		if (extra._nay) {
+			throw new Error(extra._nay.message);
+		}
 		expect(extra._yay).toBeTruthy();
 
 		const result = await asUser.mutation(api.workspaces.edit_project, {
@@ -2755,17 +2793,31 @@ describe("edit_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "rename-proj-desc-ws",
-		});
+		const wsResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "rename-proj-desc-ws",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
 		expect(wsResult._yay).toBeTruthy();
 
-		const extra = await asUser.mutation(api.workspaces.create_project, {
-			description: "Scratch space",
-			workspaceId: wsResult._yay!.workspaceId,
-			name: "side-note",
-		});
+		const extra = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId,
+				description: "Scratch space",
+				workspaceId: wsResult._yay!.workspaceId,
+				name: "side-note",
+				now: Date.now(),
+			}),
+		);
+		if (extra._nay) {
+			throw new Error(extra._nay.message);
+		}
 		expect(extra._yay).toBeTruthy();
 
 		const projectId = extra._yay!.projectId;
@@ -2800,17 +2852,31 @@ describe("edit_project", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const wsResult = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "edit-proj-desc-ws",
-		});
+		const wsResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "edit-proj-desc-ws",
+				now: Date.now(),
+			}),
+		);
+		if (wsResult._nay) {
+			throw new Error(wsResult._nay.message);
+		}
 		expect(wsResult._yay).toBeTruthy();
 
-		const extra = await asUser.mutation(api.workspaces.create_project, {
-			description: "Scratch space",
-			workspaceId: wsResult._yay!.workspaceId,
-			name: "edit-proj-desc",
-		});
+		const extra = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId,
+				description: "Scratch space",
+				workspaceId: wsResult._yay!.workspaceId,
+				name: "edit-proj-desc",
+				now: Date.now(),
+			}),
+		);
+		if (extra._nay) {
+			throw new Error(extra._nay.message);
+		}
 		expect(extra._yay).toBeTruthy();
 
 		const edited = await asUser.mutation(api.workspaces.edit_project, {
@@ -2892,7 +2958,7 @@ describe("delete_project", () => {
 				project,
 				requests,
 				user,
-				workspaceLimit,
+				workspaceQuota,
 				roleAssignments,
 				permissionGrants,
 				pages,
@@ -2904,12 +2970,7 @@ describe("delete_project", () => {
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.get("users", userId),
-				ctx.db
-					.query("limits_per_workspace")
-					.withIndex("by_workspace_limitName", (q) =>
-						q.eq("workspaceId", created._yay!.workspaceId).eq("limitName", "extra_projects"),
-					)
-					.first(),
+				workspaces_test_read_workspace_extra_project_quota_doc(ctx, { workspaceId: created._yay!.workspaceId }),
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_workspace_project_user_role", (q) =>
@@ -2935,7 +2996,7 @@ describe("delete_project", () => {
 					(row) => row.workspaceId === created._yay!.workspaceId && row.projectId === extraProject._yay!.projectId,
 				),
 				user,
-				workspaceLimit,
+				workspaceQuota,
 				roleAssignments,
 				permissionGrants,
 				pages: pages.filter(
@@ -2974,7 +3035,7 @@ describe("delete_project", () => {
 		expect(after_delete.aiThreads).toHaveLength(1);
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
-		expect(after_delete.workspaceLimit?.usedCount).toBe(0);
+		expect(after_delete.workspaceQuota?.usedCount).toBe(0);
 		expect(after_delete.roleAssignments).toHaveLength(0);
 		expect(after_delete.permissionGrants).toHaveLength(0);
 		expect(after_delete.user?.defaultWorkspaceId).toBe(personalDefaultIds.workspaceId);
@@ -3101,10 +3162,10 @@ describe("delete_workspace", () => {
 			});
 		});
 
-		const limitsBeforeDelete = await t.run(async (ctx) =>
+		const quotasBeforeDelete = await t.run(async (ctx) =>
 			ctx.db
-				.query("limits_per_workspace")
-				.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 				.collect(),
 		);
 
@@ -3119,8 +3180,8 @@ describe("delete_workspace", () => {
 				defaultProject,
 				secondaryProject,
 				member,
-				ownerLimit,
-				workspaceLimits,
+				ownerQuota,
+				workspaceQuotas,
 				memberships,
 				roleAssignments,
 				permissionGrants,
@@ -3134,13 +3195,10 @@ describe("delete_workspace", () => {
 				ctx.db.get("workspaces_projects", created._yay!.defaultProjectId),
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
 				ctx.db.get("users", memberId),
+				workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: ownerId }),
 				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) => q.eq("userId", ownerId).eq("limitName", "extra_workspaces"))
-					.first(),
-				ctx.db
-					.query("limits_per_workspace")
-					.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("workspaces_projects_users").collect(),
 				ctx.db
@@ -3165,8 +3223,8 @@ describe("delete_workspace", () => {
 				defaultProject,
 				secondaryProject,
 				member,
-				ownerLimit,
-				workspaceLimits,
+				ownerQuota,
+				workspaceQuotas,
 				memberships: memberships.filter((row) => row.workspaceId === created._yay!.workspaceId),
 				roleAssignments,
 				permissionGrants,
@@ -3190,9 +3248,9 @@ describe("delete_workspace", () => {
 		expect(after_delete.aiThreads).toHaveLength(2);
 		expect(after_delete.aiMessages).toHaveLength(2);
 		expect(after_delete.chatMessages).toHaveLength(2);
-		expect(after_delete.ownerLimit?.usedCount).toBe(0);
-		expect(after_delete.workspaceLimits.map((row) => row._id).sort()).toEqual(
-			limitsBeforeDelete.map((row) => row._id).sort(),
+		expect(after_delete.ownerQuota?.usedCount).toBe(0);
+		expect(after_delete.workspaceQuotas.map((row) => row._id).sort()).toEqual(
+			quotasBeforeDelete.map((row) => row._id).sort(),
 		);
 		expect(after_delete.member?.defaultWorkspaceId).toBe(memberDefault._yay!.workspaceId);
 		expect(after_delete.member?.defaultProjectId).toBe(memberDefault._yay!.defaultProjectId);
@@ -3213,13 +3271,13 @@ describe("delete_workspace", () => {
 		expect(purgeRequestsAfter).toHaveLength(0);
 
 		const after_purge = await t.run(async (ctx) => {
-			const [workspace, defaultProject, secondaryProject, workspaceLimits, pages] = await Promise.all([
+			const [workspace, defaultProject, secondaryProject, workspaceQuotas, pages] = await Promise.all([
 				ctx.db.get("workspaces", created._yay!.workspaceId),
 				ctx.db.get("workspaces_projects", created._yay!.defaultProjectId),
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
 				ctx.db
-					.query("limits_per_workspace")
-					.withIndex("by_workspace_limitName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 				ctx.db.query("pages").collect(),
 			]);
@@ -3227,14 +3285,14 @@ describe("delete_workspace", () => {
 				workspace,
 				defaultProject,
 				secondaryProject,
-				workspaceLimits,
+				workspaceQuotas,
 				pages: pages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 			};
 		});
 		expect(after_purge.workspace).toBeNull();
 		expect(after_purge.defaultProject).toBeNull();
 		expect(after_purge.secondaryProject).toBeNull();
-		expect(after_purge.workspaceLimits).toHaveLength(0);
+		expect(after_purge.workspaceQuotas).toHaveLength(0);
 		expect(after_purge.pages).toHaveLength(0);
 	});
 
@@ -3262,11 +3320,18 @@ describe("delete_workspace", () => {
 		);
 		expect(created._yay).toBeTruthy();
 
-		const extraProject = await owner.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId: created._yay!.workspaceId,
-			name: "scratch",
-		});
+		const extraProject = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId: ownerId,
+				description: "",
+				workspaceId: created._yay!.workspaceId,
+				name: "scratch",
+				now: Date.now(),
+			}),
+		);
+		if (extraProject._nay) {
+			throw new Error(extraProject._nay.message);
+		}
 		expect(extraProject._yay).toBeTruthy();
 
 		const deleteProjectResult = await owner.mutation(api.workspaces.delete_project, {
@@ -3701,11 +3766,11 @@ describe("list", () => {
 	});
 });
 
-describe("get_user_limit", () => {
-	test("returns null for stale identities after the user row is purged", async () => {
+describe("quotas.get", () => {
+	test("returns null for stale identities after the user doc is purged", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) => {
-			const id = await ctx.db.insert("users", { clerkUserId: "clerk-user-limit-purged" });
+			const id = await ctx.db.insert("users", { clerkUserId: "clerk-user-quota-purged" });
 			await ctx.db.delete("users", id);
 			return id;
 		});
@@ -3716,12 +3781,12 @@ describe("get_user_limit", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const capability = await asDeletedUser.query(api.limits.get_user_limit, {
+		const quotaDoc = await asDeletedUser.query(api.quotas.get, {
+			quotaName: "extra_workspaces",
 			userId,
-			limitName: "extra_workspaces",
 		});
 
-		expect(capability).toBeNull();
+		expect(quotaDoc).toBeNull();
 	});
 
 	test("returns null for stale identities after the user is tombstoned", async () => {
@@ -3739,18 +3804,50 @@ describe("get_user_limit", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const capability = await asDeletedUser.query(api.limits.get_user_limit, {
+		const quotaDoc = await asDeletedUser.query(api.quotas.get, {
+			quotaName: "extra_workspaces",
 			userId,
-			limitName: "extra_workspaces",
 		});
 
-		expect(capability).toBeNull();
+		expect(quotaDoc).toBeNull();
 	});
 
-	test("still throws when a live user is missing the required limit doc", async () => {
+	test("returns current user's quota doc for the user scope", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) => {
-			return await ctx.db.insert("users", { clerkUserId: "clerk-user-limit-missing-doc" });
+			const now = Date.now();
+			const id = await ctx.db.insert("users", { clerkUserId: "clerk-user-quota-current" });
+			await quotas_db_ensure(ctx, {
+				quotaName: "extra_workspaces",
+				userId: id,
+				now,
+			});
+			return id;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Live User",
+			email: "workspaces-test-user@test.local",
+		});
+
+		const quotaDoc = await asUser.query(api.quotas.get, {
+			quotaName: "extra_workspaces",
+			userId,
+		});
+
+		expect(quotaDoc).toMatchObject({
+			quotaName: "extra_workspaces",
+			userId,
+			usedCount: 0,
+			maxCount: 1,
+		});
+	});
+
+	test("still throws when a live user is missing the required quota doc", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => {
+			return await ctx.db.insert("users", { clerkUserId: "clerk-user-quota-missing-doc" });
 		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -3760,28 +3857,65 @@ describe("get_user_limit", () => {
 		});
 
 		await expect(
-			asUser.query(api.limits.get_user_limit, {
+			asUser.query(api.quotas.get, {
+				quotaName: "extra_workspaces",
 				userId,
-				limitName: "extra_workspaces",
 			}),
-		).rejects.toThrow("Missing user limit doc");
+		).rejects.toThrow("Missing quota doc");
 	});
 
-	test("counts only owned non-default workspaces for workspace-create capability", async () => {
+	test("still throws when an accessible workspace is missing the required quota doc", async () => {
+		const t = test_convex();
+		const workspace = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-workspace-quota-missing-doc" });
+			const now = Date.now();
+			const workspaceId = await ctx.db.insert("workspaces", {
+				name: "workspace-quota-missing-doc",
+				description: "",
+				default: false,
+				updatedAt: now,
+			});
+			const projectId = await ctx.db.insert("workspaces_projects", {
+				workspaceId,
+				name: "home",
+				description: "",
+				default: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId,
+				projectId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+
+			return { userId, workspaceId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: workspace.userId,
+			name: "Live User",
+			email: "workspaces-test-user@test.local",
+		});
+
+		await expect(
+			asUser.query(api.quotas.get, {
+				quotaName: "extra_projects",
+				workspaceId: workspace.workspaceId,
+			}),
+		).rejects.toThrow("Missing quota doc");
+	});
+
+	test("returns null for another user's quota scope", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>
 			Promise.all([
-				ctx.db.insert("users", { clerkUserId: "clerk-user-list-cap-owner" }),
-				ctx.db.insert("users", { clerkUserId: "clerk-user-list-cap-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-quota-other-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-quota-other-member" }),
 			]),
 		);
 		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
-		const owner = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: ownerId,
-			name: "Owner",
-			email: "workspaces-test-user@test.local",
-		});
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: memberId,
@@ -3789,60 +3923,135 @@ describe("get_user_limit", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const sharedWorkspace = await owner.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "workspace-cap-shared",
+		const quotaDoc = await member.query(api.quotas.get, {
+			quotaName: "extra_workspaces",
+			userId: ownerId,
 		});
-		expect(sharedWorkspace._yay).toBeTruthy();
 
-		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
-			workspaceId: sharedWorkspace._yay!.workspaceId,
-			projectId: sharedWorkspace._yay!.defaultProjectId,
-			userIdToAdd: memberId,
+		expect(quotaDoc).toBeNull();
+	});
+
+	test("returns quota doc for owned non-default workspaces", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-list-quota-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-list-quota-member" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "workspaces-test-user@test.local",
 		});
-		expect(shareResult._yay).toBeNull();
 
-		const beforeOwnedWorkspace = await member.query(api.limits.get_user_limit, {
+		const sharedWorkspace = await t.run(async (ctx) => {
+			const created = await workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "quota-shared",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay.workspaceId,
+				projectId: created._yay.defaultProjectId,
+				userId: memberId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+
+			return created._yay;
+		});
+		expect(sharedWorkspace).toBeTruthy();
+
+		const beforeOwnedWorkspace = await member.query(api.quotas.get, {
+			quotaName: "extra_workspaces",
 			userId: memberId,
-			limitName: "extra_workspaces",
 		});
-		expect(beforeOwnedWorkspace).toEqual({
-			limitName: "extra_workspaces",
-			allowed: true,
+		expect(beforeOwnedWorkspace).toMatchObject({
+			quotaName: "extra_workspaces",
+			userId: memberId,
 			usedCount: 0,
 			maxCount: 1,
-			remainingCount: 1,
-			disabledReason: null,
 		});
 
-		const ownedWorkspace = await member.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "workspace-cap-owned",
-		});
+		const ownedWorkspace = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: memberId,
+				description: "",
+				name: "quota-owned",
+				now: Date.now(),
+				default: false,
+			}),
+		);
 		expect(ownedWorkspace._yay).toBeTruthy();
+		if (ownedWorkspace._nay) {
+			throw new Error(ownedWorkspace._nay.message);
+		}
 
-		const afterOwnedWorkspace = await member.query(api.limits.get_user_limit, {
+		const afterOwnedWorkspace = await member.query(api.quotas.get, {
+			quotaName: "extra_workspaces",
 			userId: memberId,
-			limitName: "extra_workspaces",
 		});
-		expect(afterOwnedWorkspace).toEqual({
-			limitName: "extra_workspaces",
-			allowed: false,
+		expect(afterOwnedWorkspace).toMatchObject({
+			quotaName: "extra_workspaces",
+			userId: memberId,
 			usedCount: 1,
 			maxCount: 1,
-			remainingCount: 0,
-			disabledReason: "You can only create 1 extra workspace in addition to your personal workspace",
 		});
 	});
-});
 
-describe("get_workspace_limit", () => {
-	test("returns capability for a workspace the user can access through a non-primary project membership", async () => {
+	test("returns null for an inaccessible workspace quota scope", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-quota-private-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-quota-private-member" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "workspaces-test-user@test.local",
+		});
+
+		const workspaceResult = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId: ownerId,
+				description: "",
+				name: "quota-private",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		expect(workspaceResult._yay).toBeTruthy();
+		if (workspaceResult._nay) {
+			throw new Error(workspaceResult._nay.message);
+		}
+
+		const quotaDoc = await member.query(api.quotas.get, {
+			quotaName: "extra_projects",
+			workspaceId: workspaceResult._yay!.workspaceId,
+		});
+
+		expect(quotaDoc).toBeNull();
+	});
+
+	test("returns quota doc for a workspace the user can access through a non-primary project membership", async () => {
 		const t = test_convex();
 		const userIds = await t.run(async (ctx) =>
 			Promise.all([
-				ctx.db.insert("users", { clerkUserId: "clerk-user-workspace-limit-owner" }),
-				ctx.db.insert("users", { clerkUserId: "clerk-user-workspace-limit-member" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-workspace-quota-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-workspace-quota-member" }),
 			]),
 		);
 		await workspaces_test_bootstrap_users(t, { userIds });
@@ -3863,7 +4072,7 @@ describe("get_workspace_limit", () => {
 		const created = await t.run(async (ctx) =>
 			workspaces_db_create(ctx, {
 				userId: userIds[0],
-				name: "workspace-limit-ws",
+				name: "workspace-quota-ws",
 				description: "",
 				now: Date.now(),
 				default: false,
@@ -3874,7 +4083,7 @@ describe("get_workspace_limit", () => {
 		const extra = await owner.mutation(api.workspaces.create_project, {
 			description: "",
 			workspaceId: created._yay!.workspaceId,
-			name: "workspace-limit-proj",
+			name: "workspace-quota-proj",
 		});
 		expect(extra._yay).toBeTruthy();
 
@@ -3887,18 +4096,15 @@ describe("get_workspace_limit", () => {
 			});
 		});
 
-		const capability = await member.query(api.limits.get_workspace_limit, {
+		const quotaDoc = await member.query(api.quotas.get, {
+			quotaName: "extra_projects",
 			workspaceId: created._yay!.workspaceId,
-			limitName: "extra_projects",
 		});
-		expect(capability).toEqual({
-			limitName: "extra_projects",
-			allowed: false,
+		expect(quotaDoc).toMatchObject({
+			quotaName: "extra_projects",
+			workspaceId: created._yay!.workspaceId,
 			usedCount: 1,
 			maxCount: 1,
-			remainingCount: 0,
-			disabledReason:
-				"This workspace already has its extra project. Each workspace can contain only 2 projects total, including home",
 		});
 	});
 });

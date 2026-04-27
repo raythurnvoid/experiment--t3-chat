@@ -9,9 +9,9 @@ import {
 	type access_control_Role,
 } from "../shared/access-control.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { user_limits } from "../shared/limits.ts";
+import { quotas_db_get } from "./quotas.ts";
 import { v_result } from "../server/convex-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 
@@ -474,7 +474,9 @@ export const transfer_workspace_ownership = mutation({
 		workspaceId: v.id("workspaces"),
 		newOwnerUserId: v.id("users"),
 	},
-	returns: v_result({ _yay: v.null() }),
+	returns: v_result({
+		_yay: v.null(),
+	}),
 	handler: async (ctx, args) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
 			userAuth ? ctx.db.get("users", userAuth.id) : null,
@@ -507,7 +509,7 @@ export const transfer_workspace_ownership = mutation({
 			return Result({ _nay: { message: "Workspace default project not found" } });
 		}
 
-		const [ownerAssignment, newOwnerUser, newOwnerHomeMembership, currentOwnerLimit, newOwnerLimit] = await Promise.all(
+		const [ownerAssignment, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] = await Promise.all(
 			[
 				ctx.db
 					.query("access_control_role_assignments")
@@ -530,18 +532,14 @@ export const transfer_workspace_ownership = mutation({
 							.eq("projectId", defaultProjectId),
 					)
 					.first(),
-				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
-						q.eq("userId", user._id).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
-					)
-					.first(),
-				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
-						q.eq("userId", args.newOwnerUserId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
-					)
-					.first(),
+				quotas_db_get(ctx, {
+					quotaName: "extra_workspaces",
+					userId: user._id,
+				}),
+				quotas_db_get(ctx, {
+					quotaName: "extra_workspaces",
+					userId: args.newOwnerUserId,
+				}),
 			],
 		);
 
@@ -553,33 +551,23 @@ export const transfer_workspace_ownership = mutation({
 			return Result({ _nay: { message: "New owner must be an active workspace member" } });
 		}
 
-		if (!currentOwnerLimit) {
-			throw should_never_happen("Missing current owner limit doc", {
-				userId: user._id,
-				limitName: user_limits.EXTRA_WORKSPACES.name,
-			});
-		}
-
-		if (!newOwnerLimit) {
-			throw should_never_happen("Missing new owner limit doc", {
-				userId: args.newOwnerUserId,
-				limitName: user_limits.EXTRA_WORKSPACES.name,
-			});
-		}
-
-		const newOwnerRemainingCount = Math.max(0, newOwnerLimit.maxCount - newOwnerLimit.usedCount);
+		const newOwnerRemainingCount = Math.max(0, newOwnerQuota.maxCount - newOwnerQuota.usedCount);
 		if (newOwnerRemainingCount <= 0) {
-			return Result({ _nay: { message: user_limits.EXTRA_WORKSPACES.disabledReason } });
+			return Result({
+				_nay: {
+					message: "Workspace quota reached",
+				},
+			});
 		}
 
 		await Promise.all([
 			ctx.db.delete("access_control_role_assignments", ownerAssignment._id),
-			ctx.db.patch("limits_per_user", currentOwnerLimit._id, {
-				usedCount: Math.max(0, currentOwnerLimit.usedCount - 1),
+			ctx.db.patch("quotas", currentOwnerQuota._id, {
+				usedCount: Math.max(0, currentOwnerQuota.usedCount - 1),
 				updatedAt: now,
 			}),
-			ctx.db.patch("limits_per_user", newOwnerLimit._id, {
-				usedCount: newOwnerLimit.usedCount + 1,
+			ctx.db.patch("quotas", newOwnerQuota._id, {
+				usedCount: newOwnerQuota.usedCount + 1,
 				updatedAt: now,
 			}),
 			access_control_db_ensure_role_assignment(ctx, {

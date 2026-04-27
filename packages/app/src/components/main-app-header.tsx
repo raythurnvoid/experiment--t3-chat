@@ -23,6 +23,7 @@ import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex
 import { app_tenant_default_project_for_workspace, app_tenant_primary_project_for_workspace } from "@/lib/urls.ts";
 import { workspaces_switcher_list_secondary_line } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
+import { quotas } from "../../shared/quotas.ts";
 
 // #region workspace controls
 type MainAppHeaderWorkspaceControls_ClassNames =
@@ -56,7 +57,7 @@ function main_app_header_workspace_controls_move_list_item_to_front_by_id<T exte
 	return picked ? [picked, ...next] : items;
 }
 
-function main_app_header_workspace_controls_limit_tooltip(args: {
+function main_app_header_workspace_controls_quota_tooltip(args: {
 	kind: "project" | "workspace";
 	currentCount: number | undefined;
 	maxCount: number | undefined;
@@ -64,7 +65,7 @@ function main_app_header_workspace_controls_limit_tooltip(args: {
 	const { kind, currentCount, maxCount } = args;
 
 	if (currentCount === undefined || maxCount === undefined) {
-		return kind === "workspace" ? "Loading workspace limit." : "Loading project limit.";
+		return kind === "workspace" ? "Loading workspace quota." : "Loading project quota.";
 	}
 
 	const maxTotal = 1 + maxCount;
@@ -92,7 +93,7 @@ function main_app_header_workspace_controls_create_disabled_tooltip(args: {
 	}
 
 	if (maxCount === undefined) {
-		return kind === "workspace" ? "Loading workspace limit." : "Loading project limit.";
+		return kind === "workspace" ? "Loading workspace quota." : "Loading project quota.";
 	}
 
 	const maxTotal = 1 + maxCount;
@@ -140,21 +141,21 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 
 	const draftWorkspaceId = localDraft?.workspaceId ?? workspaceId;
 	const draftProjectId = localDraft?.projectId ?? projectId;
-	const createWorkspaceCapability = useQuery(
-		app_convex_api.limits.get_user_limit,
+	const createWorkspaceQuota = useQuery(
+		app_convex_api.quotas.get,
 		auth.userId
 			? {
-					userId: auth.userId as app_convex_Id<"users">,
-					limitName: "extra_workspaces",
+					quotaName: "extra_workspaces",
+					userId: auth.userId,
 				}
 			: "skip",
 	);
-	const draftProjectCreateCapability = useQuery(
-		app_convex_api.limits.get_workspace_limit,
+	const draftProjectCreateQuota = useQuery(
+		app_convex_api.quotas.get,
 		draftWorkspaceId
 			? {
+					quotaName: "extra_projects",
 					workspaceId: draftWorkspaceId,
-					limitName: "extra_projects",
 				}
 			: "skip",
 	);
@@ -169,42 +170,56 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const draftWorkspaceName = draftWorkspaceRecord?.name ?? workspaceName ?? "…";
 
 	const listLoaded = workspaces !== undefined;
-	const createWorkspaceDisabled = !listLoaded || !createWorkspaceCapability?.allowed;
-	const createProjectDisabled = !listLoaded || !draftProjectCreateCapability?.allowed;
+	const createWorkspaceRemainingCount = createWorkspaceQuota
+		? Math.max(0, createWorkspaceQuota.maxCount - createWorkspaceQuota.usedCount)
+		: undefined;
+	const createProjectRemainingCount = draftProjectCreateQuota
+		? Math.max(0, draftProjectCreateQuota.maxCount - draftProjectCreateQuota.usedCount)
+		: undefined;
+	const createWorkspaceDisabled =
+		!listLoaded || createWorkspaceRemainingCount === undefined || createWorkspaceRemainingCount <= 0;
+	const createProjectDisabled =
+		!listLoaded || createProjectRemainingCount === undefined || createProjectRemainingCount <= 0;
 	const createWorkspaceDisabledReason = main_app_header_workspace_controls_create_disabled_tooltip({
 		kind: "workspace",
 		createDisabled: createWorkspaceDisabled,
-		createDisabledReason: createWorkspaceCapability?.disabledReason ?? undefined,
-		maxCount: createWorkspaceCapability?.maxCount,
+		createDisabledReason:
+			createWorkspaceRemainingCount !== undefined && createWorkspaceRemainingCount <= 0
+				? quotas.extra_workspaces.disabledReason
+				: undefined,
+		maxCount: createWorkspaceQuota?.maxCount,
 	});
 	const createProjectDisabledReason = main_app_header_workspace_controls_create_disabled_tooltip({
 		kind: "project",
 		createDisabled: createProjectDisabled,
-		createDisabledReason: draftProjectCreateCapability?.disabledReason ?? undefined,
-		maxCount: draftProjectCreateCapability?.maxCount,
+		createDisabledReason:
+			createProjectRemainingCount !== undefined && createProjectRemainingCount <= 0
+				? quotas.extra_projects.disabledReason
+				: undefined,
+		maxCount: draftProjectCreateQuota?.maxCount,
 	});
-	const workspaceLimitFraction = auth.userId
-		? workspaces && createWorkspaceCapability
-			? `${workspaces.length}/${1 + createWorkspaceCapability.maxCount}`
+	const workspaceQuotaFraction = auth.userId
+		? workspaces && createWorkspaceQuota
+			? `${workspaces.length}/${1 + createWorkspaceQuota.maxCount}`
 			: "…/…"
 		: undefined;
-	const projectLimitFraction = auth.userId
-		? draftProjects && draftProjectCreateCapability
-			? `${draftProjects.length}/${1 + draftProjectCreateCapability.maxCount}`
+	const projectQuotaFraction = auth.userId
+		? draftProjects && draftProjectCreateQuota
+			? `${draftProjects.length}/${1 + draftProjectCreateQuota.maxCount}`
 			: "…/…"
 		: undefined;
-	const workspaceLimitTooltip = auth.userId
-		? main_app_header_workspace_controls_limit_tooltip({
+	const workspaceQuotaTooltip = auth.userId
+		? main_app_header_workspace_controls_quota_tooltip({
 				kind: "workspace",
 				currentCount: workspaces?.length,
-				maxCount: createWorkspaceCapability?.maxCount,
+				maxCount: createWorkspaceQuota?.maxCount,
 			})
 		: undefined;
-	const projectLimitTooltip = auth.userId
-		? main_app_header_workspace_controls_limit_tooltip({
+	const projectQuotaTooltip = auth.userId
+		? main_app_header_workspace_controls_quota_tooltip({
 				kind: "project",
 				currentCount: draftProjects?.length,
-				maxCount: draftProjectCreateCapability?.maxCount,
+				maxCount: draftProjectCreateQuota?.maxCount,
 			})
 		: undefined;
 
@@ -589,10 +604,10 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				createWorkspaceDisabledReason={createWorkspaceDisabledReason}
 				createProjectDisabled={createProjectDisabled}
 				createProjectDisabledReason={createProjectDisabledReason}
-				workspaceLimitFraction={workspaceLimitFraction}
-				workspaceLimitTooltip={workspaceLimitTooltip}
-				projectLimitFraction={projectLimitFraction}
-				projectLimitTooltip={projectLimitTooltip}
+				workspaceQuotaFraction={workspaceQuotaFraction}
+				workspaceQuotaTooltip={workspaceQuotaTooltip}
+				projectQuotaFraction={projectQuotaFraction}
+				projectQuotaTooltip={projectQuotaTooltip}
 				switchDisabled={switchDisabled}
 				editTarget={editTarget}
 				createWorkspace={handleWorkspaceSwitcherCreateWorkspace}

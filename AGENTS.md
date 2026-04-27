@@ -239,7 +239,7 @@ Current spec-style skills include:
 - `.agents/skills/auth-system/SKILL.md`
 - `.agents/skills/billing-system/SKILL.md`
 - `.agents/skills/workspaces-tenancy/SKILL.md`
-- `.agents/skills/workspaces-limits/SKILL.md`
+- `.agents/skills/quotas/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
 - `.agents/skills/pages-agent-pending-edits/SKILL.md`
 

@@ -169,7 +169,7 @@
 		color: var(--color-fg-06);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-limit {
+	.MainAppHeaderWorkspaceSwitcherModalSelectHead-quota {
 		display: inline-flex;
 		flex-shrink: 0;
 		align-items: center;

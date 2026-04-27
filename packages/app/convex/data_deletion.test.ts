@@ -11,7 +11,7 @@ import {
 	workspaces_db_ensure_default_workspace_and_project_for_user,
 } from "./workspaces.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
-import { user_limits } from "../shared/limits.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import { pages_create_room_id } from "../shared/pages.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 
@@ -27,13 +27,10 @@ async function data_deletion_test_bootstrap_user(
 	});
 
 	await Promise.all([
-		ctx.db.insert("limits_per_user", {
+		quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
 			userId,
-			limitName: user_limits.EXTRA_WORKSPACES.name,
-			usedCount: 0,
-			maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-			createdAt: now,
-			updatedAt: now,
+			now,
 		}),
 		ctx.db
 			.insert("users_anagraphics", {
@@ -470,7 +467,7 @@ describe("init_user_deletion", () => {
 
 		expect(requestId).toBeTruthy();
 		const after = await t.run(async (ctx) => {
-			const [user, ownerRole, workspaceDoc, collaboratorLimit, workspaceRequests] = await Promise.all([
+			const [user, ownerRole, workspaceDoc, collaboratorQuota, workspaceRequests] = await Promise.all([
 				ctx.db.get("users", owner.userId),
 				ctx.db
 					.query("access_control_role_assignments")
@@ -480,9 +477,9 @@ describe("init_user_deletion", () => {
 					.first(),
 				ctx.db.get("workspaces", workspace.workspaceId),
 				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
-						q.eq("userId", collaborator.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", collaborator.userId).eq("quotaName", "extra_workspaces"),
 					)
 					.first(),
 				ctx.db
@@ -491,13 +488,13 @@ describe("init_user_deletion", () => {
 					.collect(),
 			]);
 
-			return { user, ownerRole, workspaceDoc, collaboratorLimit, workspaceRequests };
+			return { user, ownerRole, workspaceDoc, collaboratorQuota, workspaceRequests };
 		});
 
 		expect(after.user?.deletedAt).toBe(42_002);
 		expect(after.ownerRole?.userId).toBe(collaborator.userId);
 		expect(after.workspaceDoc).not.toBeNull();
-		expect(after.collaboratorLimit?.usedCount).toBe(1);
+		expect(after.collaboratorQuota?.usedCount).toBe(1);
 		expect(after.workspaceRequests).toHaveLength(0);
 	});
 
@@ -547,7 +544,7 @@ describe("init_user_deletion", () => {
 
 		expect(requestId).toBeTruthy();
 		const after = await t.run(async (ctx) => {
-			const [user, workspaceDoc, ownerRoles, permissionGrants, memberships, requests, ownerLimit] = await Promise.all([
+			const [user, workspaceDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota] = await Promise.all([
 				ctx.db.get("users", owner.userId),
 				ctx.db.get("workspaces", workspace.workspaceId),
 				ctx.db
@@ -571,14 +568,14 @@ describe("init_user_deletion", () => {
 					.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"))
 					.collect(),
 				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
-						q.eq("userId", owner.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", owner.userId).eq("quotaName", "extra_workspaces"),
 					)
 					.first(),
 			]);
 
-			return { user, workspaceDoc, ownerRoles, permissionGrants, memberships, requests, ownerLimit };
+			return { user, workspaceDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota };
 		});
 
 		expect(after.user?.deletedAt).toBe(42_003);
@@ -587,7 +584,7 @@ describe("init_user_deletion", () => {
 		expect(after.permissionGrants).toHaveLength(0);
 		expect(after.memberships).toHaveLength(0);
 		expect(after.requests).toHaveLength(1);
-		expect(after.ownerLimit?.usedCount).toBe(0);
+		expect(after.ownerQuota?.usedCount).toBe(0);
 	});
 });
 
@@ -1747,15 +1744,15 @@ describe("resolve_user after tombstone", () => {
 		}
 
 		const after = await t.run(async (ctx) => {
-			const [user, customer, limit, anagraphic] = await Promise.all([
+			const [user, customer, quota, anagraphic] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
 				ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 					userId: deletedUser.userId,
 				}),
 				ctx.db
-					.query("limits_per_user")
-					.withIndex("by_user_limitName", (q) =>
-						q.eq("userId", deletedUser.userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name),
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", deletedUser.userId).eq("quotaName", "extra_workspaces"),
 					)
 					.first(),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
@@ -1772,7 +1769,7 @@ describe("resolve_user after tombstone", () => {
 			return {
 				user,
 				customer,
-				limit,
+				quota,
 				anagraphic,
 				workspace,
 				project,
@@ -1789,7 +1786,7 @@ describe("resolve_user after tombstone", () => {
 		expect(after.workspace?._id).toBe(after.user?.defaultWorkspaceId);
 		expect(after.project?._id).toBe(after.user?.defaultProjectId);
 		expect(after.customer?.id).toBe("cust_returning_user");
-		expect(after.limit).not.toBeNull();
+		expect(after.quota).not.toBeNull();
 		expect(after.anagraphic?.email).toBe(recoveryEmail);
 	});
 

@@ -197,7 +197,7 @@ User-account deletion is implemented across [users.ts](../../../packages/app/con
 - `users.delete_current_user_account` is the UI-facing entrypoint.
 - `access_control.transfer_workspace_ownership` is the ownership-transfer endpoint. The UI calls it first for account-deletion transfer choices, before calling `users.delete_current_user_account`.
 - `users.delete_current_user_account` calls the owned-workspace-aware deletion initializer. If the deleting user still owns non-personal workspaces after frontend transfer calls complete, the backend queues those workspaces for deletion automatically.
-- Transfer choices preserve the shared workspace for active members because the owner row and quota counters change before the user tombstone starts.
+- Transfer choices preserve the shared workspace for active members because the owner row and quota usage change before the user tombstone starts.
 - Automatically queued owned-workspace deletions immediately remove that workspace’s memberships and access-control rows, then leave the heavy tenant content purge to the existing delayed workspace deletion worker.
 - The reversible user phase creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, marks remaining memberships inactive, and removes the user from every room tracked by the `@convex-dev/presence` component (via `components.presence.public.listUser` + `removeRoomUser`).
 - Phase 1 does not delete projects, workspaces, pages, or billing usage snapshots.

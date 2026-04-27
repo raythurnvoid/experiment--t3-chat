@@ -15,7 +15,7 @@ import {
 	workspaces_db_create_project,
 	workspaces_db_ensure_default_workspace_and_project_for_user,
 } from "./workspaces.ts";
-import { user_limits } from "../shared/limits.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 
 // #region helpers
 
@@ -166,20 +166,11 @@ export const test_mocks_fill_db_with = {
 				clerkUserId: null,
 			}));
 
-		const userLimit = await ctx.db
-			.query("limits_per_user")
-			.withIndex("by_user_limitName", (q) => q.eq("userId", userId).eq("limitName", user_limits.EXTRA_WORKSPACES.name))
-			.first();
-		if (!userLimit) {
-			await ctx.db.insert("limits_per_user", {
-				userId,
-				limitName: user_limits.EXTRA_WORKSPACES.name,
-				usedCount: 0,
-				maxCount: user_limits.EXTRA_WORKSPACES.maxCount,
-				createdAt: now,
-				updatedAt: now,
-			});
-		}
+		await quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
+			userId,
+			now,
+		});
 
 		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 			userId,

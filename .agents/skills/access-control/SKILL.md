@@ -139,10 +139,10 @@ Rules:
 - default `personal` workspaces cannot be transferred
 - the new owner must be an active member of the workspace default project
 - the new owner must have an available `extra_workspaces` quota slot
-- transfer decrements the old owner's extra-workspace counter and increments the new owner's counter
+- transfer releases one old-owner extra-workspace quota unit and consumes one new-owner quota unit
 - transfer deletes existing owner assignments for that workspace default project, gives the old owner a `member` assignment, and gives the new owner the `owner` assignment
 
-Quota details live in `../workspaces-limits/SKILL.md`.
+Quota details live in `../quotas/SKILL.md`.
 Account-deletion transfer flow details live in `../auth-system/SKILL.md`.
 
 # Access-row deletion
@@ -200,7 +200,7 @@ Public/private upgrade semantics for anonymous users are documented in `../auth-
 # Related skills
 
 - `../workspaces-tenancy/SKILL.md`: workspace/project membership, invitations, workspace/project deletion lifecycle, data purge, and how access rows are cleaned during tenant deletion.
-- `../workspaces-limits/SKILL.md`: extra-workspace quota updates during workspace creation, deletion, and ownership transfer.
+- `../quotas/SKILL.md`: extra-workspace quota updates during workspace creation, deletion, and ownership transfer.
 - `../auth-system/SKILL.md`: current-user identity, anonymous upgrade behavior, account deletion, and public/private security goals.
 - `../convex/SKILL.md`: Convex handler, validator, query/mutation, Result, and testing conventions.
 
