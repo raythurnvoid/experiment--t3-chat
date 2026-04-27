@@ -28,7 +28,7 @@ type AppNotificationsListItem_ClassNames =
 
 type AppNotificationsListItem_Props = {
 	notification: app_convex_FunctionReturnType<
-		typeof app_convex_api.notifications.list_current_user_notifications
+		typeof app_convex_api.notifications.list_current_notifications
 	>[number];
 	workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
 	project:
@@ -38,10 +38,10 @@ type AppNotificationsListItem_Props = {
 		| null;
 	actorName: string;
 	targetLoading: boolean;
-	onMarkRead: (notificationId: app_convex_Id<"user_notifications">) => void;
+	onMarkRead: (notificationId: app_convex_Id<"notifications">) => void;
 	onOpenProject: (args: {
 		notification: app_convex_FunctionReturnType<
-			typeof app_convex_api.notifications.list_current_user_notifications
+			typeof app_convex_api.notifications.list_current_notifications
 		>[number];
 		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
 		project:
@@ -99,13 +99,13 @@ type AppNotificationsList_ClassNames =
 
 type AppNotificationsList_Props = {
 	notifications:
-		| app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_user_notifications>
+		| app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>
 		| undefined;
 	workspaceList: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list> | undefined;
-	onMarkRead: (notificationId: app_convex_Id<"user_notifications">) => void;
+	onMarkRead: (notificationId: app_convex_Id<"notifications">) => void;
 	onOpenProject: (args: {
 		notification: app_convex_FunctionReturnType<
-			typeof app_convex_api.notifications.list_current_user_notifications
+			typeof app_convex_api.notifications.list_current_notifications
 		>[number];
 		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
 		project:
@@ -189,14 +189,14 @@ type AppNotifications_ClassNames =
 export const AppNotifications = memo(function AppNotifications() {
 	const navigate = useNavigate();
 
-	const notifications = useQuery(app_convex_api.notifications.list_current_user_notifications);
+	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
 	const workspaceList = useQuery(app_convex_api.workspaces.list);
 
 	const [open, setOpen] = useState(false);
 
 	const notificationItems = notifications ?? [];
 
-	const onMarkRead = useFn((notificationId: app_convex_Id<"user_notifications">) => {
+	const onMarkRead = useFn((notificationId: app_convex_Id<"notifications">) => {
 		app_convex
 			.mutation(app_convex_api.notifications.mark_notification_read, { notificationId })
 			.then((result) => {
@@ -225,7 +225,7 @@ export const AppNotifications = memo(function AppNotifications() {
 	const handleOpenProject = useFn(
 		(args: {
 			notification: app_convex_FunctionReturnType<
-				typeof app_convex_api.notifications.list_current_user_notifications
+				typeof app_convex_api.notifications.list_current_notifications
 			>[number];
 			workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
 			project:

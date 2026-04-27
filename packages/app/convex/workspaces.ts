@@ -895,7 +895,7 @@ export const invite_user_to_workspace_project = mutation({
 						role: "member",
 						now,
 					}),
-			ctx.db.insert("user_notifications", {
+			ctx.db.insert("notifications", {
 				userId: userIdToAdd,
 				kind: "workspace_project_invite",
 				read: false,

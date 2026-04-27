@@ -1342,7 +1342,7 @@ describe("invite_user_to_workspace_project", () => {
 					)
 					.collect(),
 				ctx.db
-					.query("user_notifications")
+					.query("notifications")
 					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
 					.collect(),
 				ctx.db
@@ -1472,7 +1472,7 @@ describe("invite_user_to_workspace_project", () => {
 					)
 					.first(),
 				ctx.db
-					.query("user_notifications")
+					.query("notifications")
 					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
 					.first(),
 			]);
@@ -1546,7 +1546,7 @@ describe("invite_user_to_workspace_project", () => {
 					)
 					.collect(),
 				ctx.db
-					.query("user_notifications")
+					.query("notifications")
 					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
 					.collect(),
 			]);

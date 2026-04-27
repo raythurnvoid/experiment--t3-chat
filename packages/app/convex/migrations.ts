@@ -118,6 +118,17 @@ export const rename_workspaces_owner_user_id_to_owner = app_migrations.define({
 	},
 });
 
+export const move_user_notifications_to_notifications = app_migrations.define({
+	table: "user_notifications",
+	migrateOne: async (ctx, notification) => {
+		const { _id, _creationTime, ...next } = notification;
+
+		// Move and delete in one transaction so reruns do not duplicate rows.
+		await ctx.db.insert("notifications", next);
+		await ctx.db.delete("user_notifications", _id);
+	},
+});
+
 export const backfill_access_control_owner_assignments = app_migrations.define({
 	table: "workspaces",
 	migrateOne: async (ctx, workspace) => {
@@ -317,6 +328,9 @@ export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrat
 );
 export const run_rename_workspaces_owner_user_id_to_owner = app_migrations.runner(
 	internal.migrations.rename_workspaces_owner_user_id_to_owner,
+);
+export const run_move_user_notifications_to_notifications = app_migrations.runner(
+	internal.migrations.move_user_notifications_to_notifications,
 );
 export const run_backfill_access_control_owner_assignments = app_migrations.runner(
 	internal.migrations.backfill_access_control_owner_assignments,

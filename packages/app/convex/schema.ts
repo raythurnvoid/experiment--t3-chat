@@ -539,7 +539,21 @@ const app_convex_schema = defineSchema({
 		receivedAt: v.number(),
 	}).index("by_event", ["eventId"]),
 
+	// Keep only until `move_user_notifications_to_notifications` has run to completion.
 	user_notifications: defineTable({
+		userId: v.id("users"),
+		kind: v.literal("workspace_project_invite"),
+		read: v.boolean(),
+		actorUserId: v.id("users"),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_user_createdAt", ["userId", "createdAt"])
+		.index("by_user_read_createdAt", ["userId", "read", "createdAt"]),
+
+	notifications: defineTable({
 		userId: v.id("users"),
 		kind: v.literal("workspace_project_invite"),
 		read: v.boolean(),

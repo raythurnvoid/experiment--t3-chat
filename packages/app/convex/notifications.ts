@@ -11,9 +11,9 @@ import { Result } from "../shared/errors-as-values-utils.ts";
  */
 const NOTIFICATIONS_MAX_PER_USER = 500;
 
-export const list_current_user_notifications = query({
+export const list_current_notifications = query({
 	args: {},
-	returns: v.array(doc(app_convex_schema, "user_notifications")),
+	returns: v.array(doc(app_convex_schema, "notifications")),
 	handler: async (ctx) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -23,7 +23,7 @@ export const list_current_user_notifications = query({
 		// Keep this query as simple domain rows. The UI composes workspace, project,
 		// and actor data through reusable queries that can share cache entries.
 		return await ctx.db
-			.query("user_notifications")
+			.query("notifications")
 			.withIndex("by_user_createdAt", (q) => q.eq("userId", userAuth.id))
 			.order("desc")
 			.take(NOTIFICATIONS_MAX_PER_USER);
@@ -32,7 +32,7 @@ export const list_current_user_notifications = query({
 
 export const mark_notification_read = mutation({
 	args: {
-		notificationId: v.id("user_notifications"),
+		notificationId: v.id("notifications"),
 	},
 	returns: v_result({
 		_yay: v.null(),
@@ -43,13 +43,13 @@ export const mark_notification_read = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const notification = await ctx.db.get("user_notifications", args.notificationId);
+		const notification = await ctx.db.get("notifications", args.notificationId);
 		if (!notification || notification.userId !== userAuth.id) {
 			return Result({ _nay: { message: "Notification not found" } });
 		}
 
 		if (!notification.read) {
-			await ctx.db.patch("user_notifications", notification._id, {
+			await ctx.db.patch("notifications", notification._id, {
 				read: true,
 				updatedAt: Date.now(),
 			});
@@ -73,14 +73,14 @@ export const mark_all_notifications_read = mutation({
 		}
 
 		const unread = await ctx.db
-			.query("user_notifications")
+			.query("notifications")
 			.withIndex("by_user_read_createdAt", (q) => q.eq("userId", userAuth.id).eq("read", false))
 			.collect();
 		const now = Date.now();
 
 		await Promise.all(
 			unread.map((notification) =>
-				ctx.db.patch("user_notifications", notification._id, {
+				ctx.db.patch("notifications", notification._id, {
 					read: true,
 					updatedAt: now,
 				}),
@@ -105,7 +105,7 @@ export const cleanup_extra_notifications = internalMutation({
 		// simple capped lookup instead of a paginated UI-specific flow.
 		for (const user of users) {
 			const notifications = await ctx.db
-				.query("user_notifications")
+				.query("notifications")
 				.withIndex("by_user_createdAt", (q) => q.eq("userId", user._id))
 				.order("desc")
 				.collect();
@@ -113,7 +113,7 @@ export const cleanup_extra_notifications = internalMutation({
 			deletedCount += notificationsToDelete.length;
 
 			await Promise.all(
-				notificationsToDelete.map((notification) => ctx.db.delete("user_notifications", notification._id)),
+				notificationsToDelete.map((notification) => ctx.db.delete("notifications", notification._id)),
 			);
 		}
 
