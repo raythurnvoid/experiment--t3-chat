@@ -794,6 +794,51 @@ describe("process_user_deletion_request", () => {
 		expect(afterUserDeletion.sharedPages).toHaveLength(1);
 	});
 
+	test("clears user quota docs when the queued request runs after the user doc is gone", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-missing-user-quota",
+				displayName: "Missing User Quota",
+			}),
+		);
+
+		const requestId = await t.run(async (ctx) => {
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: deletedUser.userId,
+				scope: "user",
+			});
+
+			await ctx.db.delete("users", deletedUser.userId);
+
+			return requestId;
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+				requestId,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [request, userQuotaDocs] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+			]);
+
+			return {
+				request,
+				userQuotaDocs,
+			};
+		});
+
+		expect(after.request).toBeNull();
+		expect(after.userQuotaDocs).toHaveLength(0);
+	});
+
 	test("keeps shared orphaned projects after retention when the workspace still has active users", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
@@ -997,7 +1042,7 @@ describe("process_workspace_deletion_request", () => {
 		);
 
 		const after = await t.run(async (ctx) => {
-			const [workspaceDoc, defaultProjectDoc, extraProjectDoc, workspaceRequest, projectRequest, pages] =
+			const [workspaceDoc, defaultProjectDoc, extraProjectDoc, workspaceRequest, projectRequest, pages, workspaceQuotaDocs] =
 				await Promise.all([
 					ctx.db.get("workspaces", workspace.workspaceId),
 					ctx.db.get("workspaces_projects", workspace.defaultProjectId),
@@ -1008,6 +1053,10 @@ describe("process_workspace_deletion_request", () => {
 						.query("pages")
 						.collect()
 						.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
+					ctx.db
+						.query("quotas")
+						.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", workspace.workspaceId))
+						.collect(),
 				]);
 
 			return {
@@ -1017,6 +1066,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceRequest,
 				projectRequest,
 				pages,
+				workspaceQuotaDocs,
 			};
 		});
 
@@ -1026,6 +1076,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.workspaceRequest).toBeNull();
 		expect(after.projectRequest).toBeNull();
 		expect(after.pages).toHaveLength(0);
+		expect(after.workspaceQuotaDocs).toHaveLength(0);
 	});
 });
 

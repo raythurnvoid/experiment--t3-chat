@@ -277,38 +277,32 @@ async function db_delete_workspace(
 		});
 	}
 
-	const workspaceStill = await ctx.db.get("workspaces", args.workspaceId);
-	if (workspaceStill) {
-		await Promise.all([
-			ctx.db
-				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
-				.collect()
-				.then((remainingProjects) =>
-					Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id))),
-				),
-			ctx.db
-				.query("quotas")
-				.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", args.workspaceId))
-				.collect()
-				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
-			ctx.db
-				.query("access_control_role_assignments")
-				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspaceId))
-				.collect()
-				.then((docs) =>
-					Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id))),
-				),
-			ctx.db
-				.query("access_control_permission_grants")
-				.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspaceId))
-				.collect()
-				.then((docs) =>
-					Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id))),
-				),
-		]);
-		await ctx.db.delete("workspaces", args.workspaceId);
-	}
+	await Promise.all([
+		ctx.db
+			.query("workspaces_projects")
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+			.collect()
+			.then((remainingProjects) =>
+				Promise.all(remainingProjects.map((project) => ctx.db.delete("workspaces_projects", project._id))),
+			),
+		ctx.db
+			.query("quotas")
+			.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", args.workspaceId))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
+		ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspaceId))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
+		ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspaceId))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
+	]);
+
+	await ctx.db.delete("workspaces", args.workspaceId);
 
 	return {
 		projectRequestsToDelete,
@@ -652,7 +646,16 @@ export const process_user_deletion_request = internalMutation({
 
 		const user = await ctx.db.get("users", request.userId);
 		if (!user) {
-			await ctx.db.delete("data_deletion_requests", request._id);
+			// The user shell can be purged manually or by an admin path before the
+			// queued request runs. Still clear quota docs from the request's user id.
+			await Promise.all([
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", request.userId))
+					.collect()
+					.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
+				ctx.db.delete("data_deletion_requests", request._id),
+			]);
 			return null;
 		}
 
@@ -738,13 +741,14 @@ export const process_workspace_deletion_request = internalMutation({
 			return null;
 		}
 
-		if (!request.workspaceId) {
+		const workspaceId = request.workspaceId;
+		if (!workspaceId) {
 			await ctx.db.delete("data_deletion_requests", request._id);
 			return null;
 		}
 
 		const { projectRequestsToDelete } = await db_delete_workspace(ctx, {
-			workspaceId: request.workspaceId,
+			workspaceId,
 		});
 
 		// Clear the matching queued project requests here too, because deleting

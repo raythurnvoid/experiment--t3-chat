@@ -74,6 +74,7 @@ description: Persisted per-user and per-workspace creation quotas for extra work
 - Account deletion uses the same direct owner quota decrement when the backend queues a still-owned workspace for deletion instead of the frontend transferring it first.
 - `data_deletion.process_workspace_deletion_request` deletes all quota docs for the workspace id.
 - `data_deletion.process_user_deletion_request` deletes all quota docs for the user id.
+- Workspace deletion requests are expected to reference an existing workspace and delete quota docs by the request workspace id before deleting the workspace doc. If a user-scope queued request finds the user shell doc already gone, treat that request as stale and still delete the matching user quota docs by user id.
 
 ## Ownership transfer
 
