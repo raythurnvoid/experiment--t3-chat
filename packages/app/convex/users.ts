@@ -7,6 +7,7 @@ import {
 	query,
 	type ActionCtx,
 	type MutationCtx,
+	type QueryCtx,
 } from "./_generated/server.js";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
@@ -23,7 +24,7 @@ import {
 } from "../shared/users.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -277,6 +278,70 @@ function users_resolve_user_is_bad_request_message(message: string) {
 	return USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES.some((value) => value === message);
 }
 
+const users_v_account_deletion_blocking_workspaces = v.array(
+	v.object({
+		workspace: doc(app_convex_schema, "workspaces"),
+		defaultProject: doc(app_convex_schema, "workspaces_projects"),
+	}),
+);
+
+type Users_AccountDeletionBlockingWorkspace = {
+	workspace: Doc<"workspaces">;
+	defaultProject: Doc<"workspaces_projects">;
+};
+
+async function users_db_list_account_deletion_blocking_workspaces(
+	ctx: QueryCtx,
+	args: { userId: Id<"users"> },
+) {
+	const ownerAssignments = await ctx.db
+		.query("access_control_role_assignments")
+		.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", args.userId).eq("role", "owner"))
+		.collect();
+
+	const blockingWorkspaces = await Promise.all(
+		ownerAssignments.map(async (ownerAssignment) => {
+			const workspace = await ctx.db.get("workspaces", ownerAssignment.workspaceId);
+			if (
+				!workspace ||
+				workspace.default ||
+				!workspace.defaultProjectId ||
+				workspace.defaultProjectId !== ownerAssignment.projectId
+			) {
+				return null;
+			}
+
+			// Keep this aligned with the account-deletion cleanup contract: workspace ownership is the
+			// owner role on the non-personal workspace's default project.
+			const defaultProject = await ctx.db.get("workspaces_projects", workspace.defaultProjectId);
+			if (!defaultProject) {
+				return null;
+			}
+
+			return {
+				workspace,
+				defaultProject,
+			};
+		}),
+	);
+
+	const seenWorkspaceIds = new Set<Id<"workspaces">>();
+	return blockingWorkspaces
+		.filter((workspace): workspace is Users_AccountDeletionBlockingWorkspace => workspace !== null)
+		.flatMap((workspace) => {
+			if (seenWorkspaceIds.has(workspace.workspace._id)) {
+				return [];
+			}
+			seenWorkspaceIds.add(workspace.workspace._id);
+			return [workspace];
+		})
+		.sort(
+			(left, right) =>
+				left.workspace.name.localeCompare(right.workspace.name) ||
+				String(left.workspace._id).localeCompare(String(right.workspace._id)),
+		);
+}
+
 export const get = internalQuery({
 	args: {
 		userId: v.string(),
@@ -381,6 +446,33 @@ export const get_anagraphic = query({
 		}
 
 		return await ctx.db.get("users_anagraphics", user.anagraphic);
+	},
+});
+
+export const list_current_user_account_deletion_blocking_workspaces = query({
+	args: {},
+	returns: users_v_account_deletion_blocking_workspaces,
+	handler: async (ctx) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
+			userAuth ? ctx.db.get("users", userAuth.id) : null,
+		);
+		if (!user || user.deletedAt) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		return await users_db_list_account_deletion_blocking_workspaces(ctx, {
+			userId: user._id,
+		});
+	},
+});
+
+export const list_account_deletion_blocking_workspaces = internalQuery({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: users_v_account_deletion_blocking_workspaces,
+	handler: async (ctx, args) => {
+		return await users_db_list_account_deletion_blocking_workspaces(ctx, args);
 	},
 });
 
@@ -729,6 +821,20 @@ export const delete_current_user_account = action({
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "account_delete", key: user._id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const blockingWorkspaces: Users_AccountDeletionBlockingWorkspace[] = await ctx.runQuery(
+			internal.users.list_account_deletion_blocking_workspaces,
+			{
+				userId: user._id,
+			},
+		);
+		if (blockingWorkspaces.length > 0) {
+			return Result({
+				_nay: {
+					message: "Resolve owned workspaces before deleting account",
+				},
+			});
 		}
 
 		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });

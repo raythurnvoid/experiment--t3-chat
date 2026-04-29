@@ -8,14 +8,12 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import type { CreateFileRoute, FileRoutesByPath } from '@tanstack/react-router'
-
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WWorkspaceNameProjectNameRouteRouteImport } from './routes/w/$workspaceName/$projectName/route'
-import { Route as WWorkspaceNameProjectNameUsersRouteImport } from './routes/w/$workspaceName/$projectName/users'
-import { Route as WWorkspaceNameProjectNameChatRouteImport } from './routes/w/$workspaceName/$projectName/chat'
+import { Route as WWorkspaceNameProjectNameUsersIndexRouteImport } from './routes/w/$workspaceName/$projectName/users/index'
 import { Route as WWorkspaceNameProjectNamePagesIndexRouteImport } from './routes/w/$workspaceName/$projectName/pages/index'
+import { Route as WWorkspaceNameProjectNameChatIndexRouteImport } from './routes/w/$workspaceName/$projectName/chat/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -28,16 +26,10 @@ const WWorkspaceNameProjectNameRouteRoute =
     path: '/w/$workspaceName/$projectName',
     getParentRoute: () => rootRouteImport,
   } as any)
-const WWorkspaceNameProjectNameUsersRoute =
-  WWorkspaceNameProjectNameUsersRouteImport.update({
-    id: '/users',
-    path: '/users',
-    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
-  } as any)
-const WWorkspaceNameProjectNameChatRoute =
-  WWorkspaceNameProjectNameChatRouteImport.update({
-    id: '/chat',
-    path: '/chat',
+const WWorkspaceNameProjectNameUsersIndexRoute =
+  WWorkspaceNameProjectNameUsersIndexRouteImport.update({
+    id: '/users/',
+    path: '/users/',
     getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
   } as any)
 const WWorkspaceNameProjectNamePagesIndexRoute =
@@ -46,51 +38,57 @@ const WWorkspaceNameProjectNamePagesIndexRoute =
     path: '/pages/',
     getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
   } as any)
+const WWorkspaceNameProjectNameChatIndexRoute =
+  WWorkspaceNameProjectNameChatIndexRouteImport.update({
+    id: '/chat/',
+    path: '/chat/',
+    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
-  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
-  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersRoute
-  '/w/$workspaceName/$projectName/pages': typeof WWorkspaceNameProjectNamePagesIndexRoute
+  '/w/$workspaceName/$projectName/chat/': typeof WWorkspaceNameProjectNameChatIndexRoute
+  '/w/$workspaceName/$projectName/pages/': typeof WWorkspaceNameProjectNamePagesIndexRoute
+  '/w/$workspaceName/$projectName/users/': typeof WWorkspaceNameProjectNameUsersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
-  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
-  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersRoute
+  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatIndexRoute
   '/w/$workspaceName/$projectName/pages': typeof WWorkspaceNameProjectNamePagesIndexRoute
+  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
-  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatRoute
-  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersRoute
+  '/w/$workspaceName/$projectName/chat/': typeof WWorkspaceNameProjectNameChatIndexRoute
   '/w/$workspaceName/$projectName/pages/': typeof WWorkspaceNameProjectNamePagesIndexRoute
+  '/w/$workspaceName/$projectName/users/': typeof WWorkspaceNameProjectNameUsersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/w/$workspaceName/$projectName'
-    | '/w/$workspaceName/$projectName/chat'
-    | '/w/$workspaceName/$projectName/users'
-    | '/w/$workspaceName/$projectName/pages'
+    | '/w/$workspaceName/$projectName/chat/'
+    | '/w/$workspaceName/$projectName/pages/'
+    | '/w/$workspaceName/$projectName/users/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/w/$workspaceName/$projectName'
     | '/w/$workspaceName/$projectName/chat'
-    | '/w/$workspaceName/$projectName/users'
     | '/w/$workspaceName/$projectName/pages'
+    | '/w/$workspaceName/$projectName/users'
   id:
     | '__root__'
     | '/'
     | '/w/$workspaceName/$projectName'
-    | '/w/$workspaceName/$projectName/chat'
-    | '/w/$workspaceName/$projectName/users'
+    | '/w/$workspaceName/$projectName/chat/'
     | '/w/$workspaceName/$projectName/pages/'
+    | '/w/$workspaceName/$projectName/users/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -114,88 +112,44 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceNameProjectNameRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$workspaceName/$projectName/users': {
-      id: '/w/$workspaceName/$projectName/users'
+    '/w/$workspaceName/$projectName/users/': {
+      id: '/w/$workspaceName/$projectName/users/'
       path: '/users'
-      fullPath: '/w/$workspaceName/$projectName/users'
-      preLoaderRoute: typeof WWorkspaceNameProjectNameUsersRouteImport
-      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
-    }
-    '/w/$workspaceName/$projectName/chat': {
-      id: '/w/$workspaceName/$projectName/chat'
-      path: '/chat'
-      fullPath: '/w/$workspaceName/$projectName/chat'
-      preLoaderRoute: typeof WWorkspaceNameProjectNameChatRouteImport
+      fullPath: '/w/$workspaceName/$projectName/users/'
+      preLoaderRoute: typeof WWorkspaceNameProjectNameUsersIndexRouteImport
       parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
     }
     '/w/$workspaceName/$projectName/pages/': {
       id: '/w/$workspaceName/$projectName/pages/'
       path: '/pages'
-      fullPath: '/w/$workspaceName/$projectName/pages'
+      fullPath: '/w/$workspaceName/$projectName/pages/'
       preLoaderRoute: typeof WWorkspaceNameProjectNamePagesIndexRouteImport
+      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
+    }
+    '/w/$workspaceName/$projectName/chat/': {
+      id: '/w/$workspaceName/$projectName/chat/'
+      path: '/chat'
+      fullPath: '/w/$workspaceName/$projectName/chat/'
+      preLoaderRoute: typeof WWorkspaceNameProjectNameChatIndexRouteImport
       parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
     }
   }
 }
 
-declare module './routes/index' {
-  const createFileRoute: CreateFileRoute<
-    '/',
-    FileRoutesByPath['/']['parentRoute'],
-    FileRoutesByPath['/']['id'],
-    FileRoutesByPath['/']['path'],
-    FileRoutesByPath['/']['fullPath']
-  >
-}
-declare module './routes/w/$workspaceName/$projectName/route' {
-  const createFileRoute: CreateFileRoute<
-    '/w/$workspaceName/$projectName',
-    FileRoutesByPath['/w/$workspaceName/$projectName']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceName/$projectName']['id'],
-    FileRoutesByPath['/w/$workspaceName/$projectName']['path'],
-    FileRoutesByPath['/w/$workspaceName/$projectName']['fullPath']
-  >
-}
-declare module './routes/w/$workspaceName/$projectName/chat' {
-  const createFileRoute: CreateFileRoute<
-    '/w/$workspaceName/$projectName/chat',
-    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['id'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['path'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/chat']['fullPath']
-  >
-}
-declare module './routes/w/$workspaceName/$projectName/users' {
-  const createFileRoute: CreateFileRoute<
-    '/w/$workspaceName/$projectName/users',
-    FileRoutesByPath['/w/$workspaceName/$projectName/users']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/users']['id'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/users']['path'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/users']['fullPath']
-  >
-}
-declare module './routes/w/$workspaceName/$projectName/pages/index' {
-  const createFileRoute: CreateFileRoute<
-    '/w/$workspaceName/$projectName/pages/',
-    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['parentRoute'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['id'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['path'],
-    FileRoutesByPath['/w/$workspaceName/$projectName/pages/']['fullPath']
-  >
-}
-
 interface WWorkspaceNameProjectNameRouteRouteChildren {
-  WWorkspaceNameProjectNameChatRoute: typeof WWorkspaceNameProjectNameChatRoute
-  WWorkspaceNameProjectNameUsersRoute: typeof WWorkspaceNameProjectNameUsersRoute
+  WWorkspaceNameProjectNameChatIndexRoute: typeof WWorkspaceNameProjectNameChatIndexRoute
   WWorkspaceNameProjectNamePagesIndexRoute: typeof WWorkspaceNameProjectNamePagesIndexRoute
+  WWorkspaceNameProjectNameUsersIndexRoute: typeof WWorkspaceNameProjectNameUsersIndexRoute
 }
 
 const WWorkspaceNameProjectNameRouteRouteChildren: WWorkspaceNameProjectNameRouteRouteChildren =
   {
-    WWorkspaceNameProjectNameChatRoute: WWorkspaceNameProjectNameChatRoute,
-    WWorkspaceNameProjectNameUsersRoute: WWorkspaceNameProjectNameUsersRoute,
+    WWorkspaceNameProjectNameChatIndexRoute:
+      WWorkspaceNameProjectNameChatIndexRoute,
     WWorkspaceNameProjectNamePagesIndexRoute:
       WWorkspaceNameProjectNamePagesIndexRoute,
+    WWorkspaceNameProjectNameUsersIndexRoute:
+      WWorkspaceNameProjectNameUsersIndexRoute,
   }
 
 const WWorkspaceNameProjectNameRouteRouteWithChildren =

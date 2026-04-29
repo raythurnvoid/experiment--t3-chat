@@ -47,7 +47,7 @@ import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
-import { MyLink } from "@/components/my-link.tsx";
+import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -565,13 +565,14 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 					search={{ pageId, view: "diff_editor" }}
 					variant="button-ghost-accent"
 				>
-					<MyButtonIcon
+					<MyLinkIcon
+						aria-hidden
 						className={
 							"AiChatMessagePartToolWritePage-header-file-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
 						}
 					>
 						<FileText />
-					</MyButtonIcon>
+					</MyLinkIcon>
 					<span
 						className={
 							"AiChatMessagePartToolWritePage-header-title" satisfies AiChatMessagePartToolWritePage_ClassNames
@@ -585,13 +586,14 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 						}
 					>
 						<AiChatMessagePartToolStatus state={toolState} isChatRunning={isChatRunning} />
-						<MyButtonIcon
+						<MyLinkIcon
+							aria-hidden
 							className={
 								"AiChatMessagePartToolWritePage-header-icon" satisfies AiChatMessagePartToolWritePage_ClassNames
 							}
 						>
 							<ArrowUpRight />
-						</MyButtonIcon>
+						</MyLinkIcon>
 					</span>
 				</MyLink>
 			) : (

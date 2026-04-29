@@ -1,5 +1,6 @@
-import "./users.css";
+import "./index.css";
 
+import { createFileRoute } from "@tanstack/react-router";
 import { useQueries, useQuery } from "convex/react";
 import { Crown, LogOut, Trash2, UserPlus, Users as UsersIcon } from "lucide-react";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -39,6 +40,12 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { compute_fallback_user_name } from "@/lib/utils.ts";
+
+const Route = createFileRoute("/w/$workspaceName/$projectName/users/")({
+	component: RouteUsers,
+});
+
+export { Route };
 
 // #region user list item
 type RouteUsersUserListItem_ClassNames =
@@ -81,7 +88,11 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 	const removeLabel = isCurrentUser ? "Leave" : "Remove";
 	const removeDisabled = role === "owner" || (isCurrentUser ? !canLeaveWorkspace : !canManageMembers);
 	const removeDisabledTooltip =
-		!isCurrentUser && !canManageMembers ? "You don't have permission to remove users from the workspace." : null;
+		isCurrentUser && role === "owner"
+			? "Before leaving this workspace, transfer ownership to another member."
+			: !isCurrentUser && !canManageMembers
+				? "You don't have permission to remove users from the workspace."
+				: null;
 	const removeButton = (
 		<MyButton variant="ghost_destructive" disabled={removeDisabled} onClick={() => onRemove(userId)}>
 			{isCurrentUser ? <LogOut aria-hidden /> : <Trash2 aria-hidden />}
@@ -111,7 +122,7 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 				{canTransferOwnership ? (
 					<MyButton variant="outline" onClick={() => onTransfer(userId, displayName)}>
 						<Crown aria-hidden />
-						Transfer
+						Transfer ownership
 					</MyButton>
 				) : null}
 				{removeDisabledTooltip ? (
@@ -786,9 +797,4 @@ function RouteUsers() {
 	);
 }
 
-const Route = createFileRoute({
-	component: RouteUsers,
-});
-
-export { Route };
 // #endregion root

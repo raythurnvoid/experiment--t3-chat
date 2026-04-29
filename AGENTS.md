@@ -2,7 +2,6 @@
 
 - Package manager: this repository uses `pnpm`; do not use `npm`.
 - Dev server: do not run `pnpm run dev`; let the user run it manually.
-- Lint/type-check commands: do not run verification commands (for example `pnpm lint`, `pnpm type-check`) unless the user explicitly requests them; rely on Cursor diagnostics by default.
 
 # Application Architecture
 

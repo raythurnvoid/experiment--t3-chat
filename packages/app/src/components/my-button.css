@@ -15,10 +15,16 @@
 		border: 2px solid transparent;
 		outline-offset: -2px;
 
+		user-select: none;
+
 		font-size: 0.875rem;
 		font-weight: 500;
 
 		transition: background-color 0.1s linear;
+
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
+			cursor: pointer;
+		}
 
 		&:is(:disabled, .MyButton-state-disabled) {
 			cursor: default;
@@ -30,6 +36,12 @@
 
 		&[aria-busy="true"] {
 			cursor: wait;
+		}
+
+		& > svg {
+			flex: none;
+			width: 1rem;
+			height: 1rem;
 		}
 	}
 
@@ -108,13 +120,21 @@
 			background: var(--red-300);
 		}
 
-		&:hover {
-			background: var(--red-300);
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
+			&:hover {
+				background: var(--red-300);
+			}
+		}
+
+		&:is(:disabled, .MyButton-state-disabled) {
+			background: var(--color-base-1-04);
+			color: var(--color-fg-04);
+			box-shadow: none;
 		}
 	}
 
 	.MyButton-variant-outline {
-		color: var(--color-fg-06);
+		color: var(--color-fg-07);
 		background: var(--color-base-1-03);
 		border-color: var(--color-fg-04);
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);

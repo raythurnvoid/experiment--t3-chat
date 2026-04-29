@@ -3,6 +3,7 @@ import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import { internalMutation } from "./_generated/server.js";
 import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
+import { quotas } from "../shared/quotas.ts";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
@@ -315,6 +316,20 @@ export const cleanup_duplicate_access_control_owner_assignments = app_migrations
 	},
 });
 
+export const update_extra_workspaces_quota_max_count_to_2 = app_migrations.define({
+	table: "quotas",
+	migrateOne: async (ctx, quota) => {
+		if (quota.quotaName !== "extra_workspaces" || quota.maxCount === quotas.extra_workspaces.maxCount) {
+			return;
+		}
+
+		await ctx.db.patch(quota._id, {
+			maxCount: quotas.extra_workspaces.maxCount,
+			updatedAt: Date.now(),
+		});
+	},
+});
+
 /** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
@@ -352,4 +367,7 @@ export const run_remove_access_control_member_management_grants = app_migrations
 );
 export const run_cleanup_duplicate_access_control_owner_assignments = app_migrations.runner(
 	internal.migrations.cleanup_duplicate_access_control_owner_assignments,
+);
+export const run_update_extra_workspaces_quota_max_count_to_2 = app_migrations.runner(
+	internal.migrations.update_extra_workspaces_quota_max_count_to_2,
 );

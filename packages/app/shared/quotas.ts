@@ -2,8 +2,8 @@ import type { Doc } from "../convex/_generated/dataModel";
 
 export const quotas = {
 	extra_workspaces: {
-		disabledReason: "You can only create 1 extra workspace in addition to your personal workspace",
-		maxCount: 1,
+		disabledReason: "You can only create 2 extra workspaces in addition to your personal workspace",
+		maxCount: 2,
 		tooltip_explanation:
 			"Includes your personal workspace and any extra workspaces your plan allows. The fraction is how many workspaces you have out of the maximum total.",
 	},

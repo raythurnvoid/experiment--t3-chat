@@ -1,6 +1,6 @@
-import { Outlet } from "@tanstack/react-router";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { useConvex, useQuery } from "convex/react";
-import { memo, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { MainAppHeader } from "@/components/main-app-header.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
@@ -11,7 +11,13 @@ import { cn, should_never_happen } from "@/lib/utils.ts";
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
 
-const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout() {
+const Route = createFileRoute("/w/$workspaceName/$projectName")({
+	component: RouteTenantWorkspaceProjectLayout,
+});
+
+export { Route };
+
+function RouteTenantWorkspaceProjectLayout() {
 	const params = Route.useParams();
 	const { workspaceName, projectName } = params;
 
@@ -95,10 +101,4 @@ const TenantWorkspaceProjectLayout = memo(function TenantWorkspaceProjectLayout(
 			</div>
 		</AppTenantProvider>
 	);
-});
-
-const Route = createFileRoute({
-	component: TenantWorkspaceProjectLayout,
-});
-
-export { Route };
+}

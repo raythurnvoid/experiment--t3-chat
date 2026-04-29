@@ -14,7 +14,7 @@
 		border-color: var(--color-base-1-08);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-header-copy {
+	.MainAppHeaderWorkspaceSwitcherModal-header-content {
 		display: grid;
 		gap: 4px;
 
@@ -100,7 +100,7 @@
 		border-color: var(--color-base-1-08);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalCreateModal-header-copy {
+	.MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content {
 		display: grid;
 		gap: 4px;
 

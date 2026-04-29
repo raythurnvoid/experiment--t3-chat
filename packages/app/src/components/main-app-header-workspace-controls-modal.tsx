@@ -646,7 +646,7 @@ const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWo
 type MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-header-copy"
+	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form"
@@ -932,7 +932,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					<MyModalHeader>
 						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-copy" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 							)}
 						>
 							<MyModalHeading>{dialogTitle}</MyModalHeading>
@@ -1312,7 +1312,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 				<MyModalHeader>
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-copy" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+							"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 						)}
 					>
 						<MyModalHeading>{dialogTitle}</MyModalHeading>
@@ -1381,7 +1381,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 // #region root
 type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModal"
-	| "MainAppHeaderWorkspaceSwitcherModal-header-copy"
+	| "MainAppHeaderWorkspaceSwitcherModal-header-content"
 	| "MainAppHeaderWorkspaceSwitcherModal-header-description"
 	| "MainAppHeaderWorkspaceSwitcherModal-body"
 	| "MainAppHeaderWorkspaceSwitcherModal-summary"
@@ -1494,7 +1494,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 				<MyModalHeader>
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModal-header-copy" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+							"MainAppHeaderWorkspaceSwitcherModal-header-content" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
 						)}
 					>
 						<MyModalHeading>Workspace</MyModalHeading>

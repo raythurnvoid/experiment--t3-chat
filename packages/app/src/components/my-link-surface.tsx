@@ -7,6 +7,7 @@ import type { MyButton_ClassNames } from "@/components/my-button.tsx";
 type MyLinkSurface_ClassNames =
 	| "MyLinkSurface"
 	| "MyLinkSurface-variant-default"
+	| "MyLinkSurface-variant-button-outline"
 	| "MyLinkSurface-variant-button-tertiary"
 	| "MyLinkSurface-variant-button-ghost"
 	| "MyLinkSurface-variant-button-ghost-accent"
@@ -16,6 +17,7 @@ type MyLinkSurface_ClassNames =
 export type MyLinkSurface_Props = React.ComponentProps<"span"> & {
 	variant?:
 		| "default"
+		| "button-outline"
 		| "button-tertiary"
 		| "button-ghost"
 		| "button-ghost-accent"
@@ -32,6 +34,8 @@ export const MyLinkSurface = memo(function MyLinkSurface(props: MyLinkSurface_Pr
 				"MyLinkSurface" satisfies MyLinkSurface_ClassNames,
 				variant !== "default" && ("MyButton" satisfies MyButton_ClassNames),
 				variant === "default" && ("MyLinkSurface-variant-default" satisfies MyLinkSurface_ClassNames),
+				variant === "button-outline" && ("MyLinkSurface-variant-button-outline" satisfies MyLinkSurface_ClassNames),
+				variant === "button-outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
 				variant === "button-tertiary" && ("MyLinkSurface-variant-button-tertiary" satisfies MyLinkSurface_ClassNames),
 				variant === "button-tertiary" && ("MyButton-variant-tertiary" satisfies MyButton_ClassNames),
 				variant === "button-ghost" && ("MyLinkSurface-variant-button-ghost" satisfies MyLinkSurface_ClassNames),

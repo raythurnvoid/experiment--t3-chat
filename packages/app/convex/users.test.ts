@@ -7,9 +7,14 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex } from "./setup.test.ts";
-import { workspaces_db_create, workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
+import {
+	workspaces_db_create,
+	workspaces_db_create_project,
+	workspaces_db_ensure_default_workspace_and_project_for_user,
+} from "./workspaces.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure } from "./quotas.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 const polarWebhookMocks = vi.hoisted(() => ({
 	validateEvent: vi.fn(),
@@ -711,8 +716,131 @@ describe("resolve_user", () => {
 	});
 });
 
+describe("list_current_user_account_deletion_blocking_workspaces", () => {
+	test("returns only owned non-default workspaces at default-project scope", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-blocker-owner",
+				displayName: "Account Delete Blocker Owner",
+				email: "account-delete-blocker-owner@test.local",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-blocker-collaborator",
+				displayName: "Account Delete Blocker Collaborator",
+				email: "account-delete-blocker-collaborator@test.local",
+			}),
+		);
+		const projectOwner = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-blocker-project-owner",
+				displayName: "Account Delete Blocker Project Owner",
+				email: "account-delete-blocker-project-owner@test.local",
+			}),
+		);
+
+		const workspaces = await t.run(async (ctx) => {
+			const now = Date.now();
+			const ownedWorkspace = await workspaces_db_create(ctx, {
+				userId: owner.userId,
+				name: "account-delete-owned-blocker",
+				description: "",
+				now,
+				default: false,
+			});
+			if (ownedWorkspace._nay) {
+				throw new Error(ownedWorkspace._nay.message);
+			}
+
+			const sharedWorkspace = await workspaces_db_create(ctx, {
+				userId: collaborator.userId,
+				name: "account-delete-shared-member",
+				description: "",
+				now,
+				default: false,
+			});
+			if (sharedWorkspace._nay) {
+				throw new Error(sharedWorkspace._nay.message);
+			}
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: sharedWorkspace._yay.workspaceId,
+				projectId: sharedWorkspace._yay.defaultProjectId,
+				userId: owner.userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: sharedWorkspace._yay.workspaceId,
+				projectId: sharedWorkspace._yay.defaultProjectId,
+				userId: owner.userId,
+				role: "member",
+				now,
+			});
+
+			const projectScopedWorkspace = await workspaces_db_create(ctx, {
+				userId: projectOwner.userId,
+				name: "account-delete-project-owner",
+				description: "",
+				now,
+				default: false,
+			});
+			if (projectScopedWorkspace._nay) {
+				throw new Error(projectScopedWorkspace._nay.message);
+			}
+			const projectScopedProject = await workspaces_db_create_project(ctx, {
+				userId: projectOwner.userId,
+				workspaceId: projectScopedWorkspace._yay.workspaceId,
+				name: "project-local-owner",
+				description: "",
+				now,
+			});
+			if (projectScopedProject._nay) {
+				throw new Error(projectScopedProject._nay.message);
+			}
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: projectScopedWorkspace._yay.workspaceId,
+				projectId: projectScopedProject._yay.projectId,
+				userId: owner.userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: projectScopedWorkspace._yay.workspaceId,
+				projectId: projectScopedProject._yay.projectId,
+				userId: owner.userId,
+				role: "owner",
+				now,
+			});
+
+			return {
+				ownedWorkspace: ownedWorkspace._yay,
+				sharedWorkspace: sharedWorkspace._yay,
+				projectScopedWorkspace: projectScopedWorkspace._yay,
+			};
+		});
+
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-account-delete-blocker-owner",
+			external_id: owner.userId,
+			name: "Account Delete Blocker Owner",
+			email: "account-delete-blocker-owner@test.local",
+		});
+
+		const blockers = await asOwner.query(api.users.list_current_user_account_deletion_blocking_workspaces, {});
+
+		expect(blockers.map((blocker) => blocker.workspace.name)).toEqual(["account-delete-owned-blocker"]);
+		expect(blockers[0]?.workspace._id).toBe(workspaces.ownedWorkspace.workspaceId);
+		expect(blockers[0]?.defaultProject._id).toBe(workspaces.ownedWorkspace.defaultProjectId);
+		expect(blockers.some((blocker) => blocker.workspace._id === workspaces.sharedWorkspace.workspaceId)).toBe(false);
+		expect(blockers.some((blocker) => blocker.workspace._id === workspaces.projectScopedWorkspace.workspaceId)).toBe(
+			false,
+		);
+	});
+});
+
 describe("delete_current_user_account", () => {
-	test("transfers owned workspace ownership through the access-control endpoint", async () => {
+	test("deletes the account after workspace ownership transfers through the access-control endpoint", async () => {
 		const t = test_convex();
 		const owner = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -786,6 +914,44 @@ describe("delete_current_user_account", () => {
 
 		expect(after.ownerRole?.userId).toBe(collaborator.userId);
 		expect(after.collaboratorQuota?.usedCount).toBe(1);
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, {
+				status: 200,
+			}),
+		);
+
+		try {
+			const deleteResult = await asOwner.action(api.users.delete_current_user_account, {});
+
+			expect(deleteResult._nay).toBeUndefined();
+			const afterDeletion = await t.run(async (ctx) => {
+				const [user, ownerRole, workspaceRequests] = await Promise.all([
+					ctx.db.get("users", owner.userId),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_role_user", (q) =>
+							q
+								.eq("workspaceId", workspace.workspaceId)
+								.eq("projectId", workspace.defaultProjectId)
+								.eq("role", "owner"),
+						)
+						.first(),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"))
+						.collect(),
+				]);
+
+				return { user, ownerRole, workspaceRequests };
+			});
+
+			expect(afterDeletion.user?.deletedAt).toBeTypeOf("number");
+			expect(afterDeletion.ownerRole?.userId).toBe(collaborator.userId);
+			expect(afterDeletion.workspaceRequests).toHaveLength(0);
+		} finally {
+			fetchSpy.mockRestore();
+		}
 	});
 
 	test("returns Unauthenticated when no authenticated identity is present", async () => {
@@ -811,7 +977,7 @@ describe("delete_current_user_account", () => {
 		expect(result._nay?.message).toBe("Unauthenticated");
 	});
 
-	test("queues still-owned workspaces for deletion during account deletion", async () => {
+	test("blocks account deletion while non-personal workspace ownership remains", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -843,6 +1009,88 @@ describe("delete_current_user_account", () => {
 			email: "delete-owned-workspace@test.local",
 		});
 
+		const result = await asUser.action(api.users.delete_current_user_account, {});
+
+		expect(result._yay).toBeUndefined();
+		expect(result._nay?.message).toBe("Resolve owned workspaces before deleting account");
+		const after = await t.run(async (ctx) => {
+			const [user, ownerRoles, memberships, workspaceRequests, ownerQuota] = await Promise.all([
+				ctx.db.get("users", seeded.userId),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_role_user", (q) =>
+						q
+							.eq("workspaceId", workspace.workspaceId)
+							.eq("projectId", workspace.defaultProjectId)
+							.eq("role", "owner"),
+					)
+					.collect(),
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_workspace_project_user", (q) =>
+						q.eq("active", true).eq("workspaceId", workspace.workspaceId),
+					)
+					.collect(),
+				ctx.db
+					.query("data_deletion_requests")
+					.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"))
+					.collect(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", seeded.userId).eq("quotaName", "extra_workspaces"),
+					)
+					.first(),
+			]);
+
+			return { user, ownerRoles, memberships, workspaceRequests, ownerQuota };
+		});
+
+		expect(after.user?.deletedAt).toBeUndefined();
+		expect(after.ownerRoles).toHaveLength(1);
+		expect(after.memberships).toHaveLength(1);
+		expect(after.workspaceRequests).toHaveLength(0);
+		expect(after.ownerQuota?.usedCount).toBe(1);
+	});
+
+	test("deletes the account after owned workspaces are deleted through the workspace endpoint", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-account-delete-after-workspace-delete",
+				displayName: "Delete After Workspace Delete",
+				email: "delete-after-workspace-delete@test.local",
+			}),
+		);
+		const workspace = await t.run(async (ctx) => {
+			const created = await workspaces_db_create(ctx, {
+				userId: seeded.userId,
+				name: "delete-after-workspace-delete",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+
+			return created._yay;
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-user-account-delete-after-workspace-delete",
+			external_id: seeded.userId,
+			name: "Delete After Workspace Delete",
+			email: "delete-after-workspace-delete@test.local",
+		});
+
+		const deleteWorkspaceResult = await asUser.mutation(api.workspaces.delete_workspace, {
+			workspaceId: workspace.workspaceId,
+		});
+
+		expect(deleteWorkspaceResult._nay).toBeUndefined();
+
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(null, {
 				status: 200,
@@ -850,11 +1098,11 @@ describe("delete_current_user_account", () => {
 		);
 
 		try {
-			const result = await asUser.action(api.users.delete_current_user_account, {});
+			const deleteAccountResult = await asUser.action(api.users.delete_current_user_account, {});
 
-			expect(result._nay).toBeUndefined();
+			expect(deleteAccountResult._nay).toBeUndefined();
 			const after = await t.run(async (ctx) => {
-				const [user, ownerRoles, memberships, workspaceRequests, ownerQuota] = await Promise.all([
+				const [user, ownerRoles, workspaceRequests] = await Promise.all([
 					ctx.db.get("users", seeded.userId),
 					ctx.db
 						.query("access_control_role_assignments")
@@ -866,31 +1114,19 @@ describe("delete_current_user_account", () => {
 						)
 						.collect(),
 					ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_active_workspace_project_user", (q) =>
-							q.eq("active", true).eq("workspaceId", workspace.workspaceId),
-						)
-						.collect(),
-					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"))
-						.collect(),
-					ctx.db
-						.query("quotas")
-						.withIndex("by_user_quotaName", (q) =>
-							q.eq("userId", seeded.userId).eq("quotaName", "extra_workspaces"),
+						.withIndex("by_workspace_scope", (q) =>
+							q.eq("workspaceId", workspace.workspaceId).eq("scope", "workspace"),
 						)
-						.first(),
+						.collect(),
 				]);
 
-				return { user, ownerRoles, memberships, workspaceRequests, ownerQuota };
+				return { user, ownerRoles, workspaceRequests };
 			});
 
 			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.ownerRoles).toHaveLength(0);
-			expect(after.memberships).toHaveLength(0);
 			expect(after.workspaceRequests).toHaveLength(1);
-			expect(after.ownerQuota?.usedCount).toBe(0);
 		} finally {
 			fetchSpy.mockRestore();
 		}

@@ -28,7 +28,7 @@ import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
 import { MyButton } from "../my-button.tsx";
 import { MyIcon } from "../my-icon.tsx";
 import { MyIconButton } from "../my-icon-button.tsx";
-import { MyLink } from "../my-link.tsx";
+import { MyLink, MyLinkIcon } from "../my-link.tsx";
 import { PageEditorPresence } from "./page-editor-presence.tsx";
 import { PageEditorRichTextSkeleton } from "./page-editor-rich-text/page-editor-rich-text-skeleton.tsx";
 import {
@@ -155,7 +155,9 @@ function PageEditorHeader(props: PageEditorHeader_Props) {
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
-									<Home />
+									<MyLinkIcon aria-hidden>
+										<Home />
+									</MyLinkIcon>
 								</MyLink>
 							</li>
 							<span>/</span>

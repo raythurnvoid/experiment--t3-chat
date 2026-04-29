@@ -271,7 +271,7 @@ describe("create_workspace", () => {
 		).toBe(true);
 		expect(project?.name).toBe("home");
 		expect(userQuota?.usedCount).toBe(1);
-		expect(userQuota?.maxCount).toBe(1);
+		expect(userQuota?.maxCount).toBe(2);
 		expect(workspaceQuota?.usedCount).toBe(0);
 		expect(workspaceQuota?.maxCount).toBe(1);
 	});
@@ -507,11 +507,11 @@ describe("create_workspace", () => {
 		expect(result._nay?.message).toBe("Description is too long");
 	});
 
-	test("rejects creating a second owned non-default workspace", async () => {
+	test("rejects creating a third owned non-default workspace", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
 			ctx.db.insert("users", {
-				clerkUserId: "clerk-user-second-extra-workspace",
+				clerkUserId: "clerk-user-third-extra-workspace",
 			}),
 		);
 		await workspaces_test_bootstrap_user(t, { userId });
@@ -532,7 +532,13 @@ describe("create_workspace", () => {
 			description: "",
 			name: "second-extra-ws",
 		});
-		expect(second._nay?.message).toBe("Workspace quota reached");
+		expect(second._yay).toBeTruthy();
+
+		const third = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "third-extra-ws",
+		});
+		expect(third._nay?.message).toBe("Workspace quota reached");
 	});
 
 	test("does not count shared non-default workspaces against the owner's extra-workspace quota", async () => {
@@ -577,7 +583,7 @@ describe("create_workspace", () => {
 		expect(ownWorkspace._yay?.name).toBe("member-owned-ws");
 	});
 
-	test("keeps exactly one user quota doc while creating the extra workspace", async () => {
+	test("keeps exactly one user quota doc while creating extra workspaces", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -606,9 +612,15 @@ describe("create_workspace", () => {
 		});
 		expect(created._yay).toBeTruthy();
 
-		const blocked = await asUser.mutation(api.workspaces.create_workspace, {
+		const secondCreated = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
 			name: "lazy-seed-extra-ws-2",
+		});
+		expect(secondCreated._yay).toBeTruthy();
+
+		const blocked = await asUser.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "lazy-seed-extra-ws-3",
 		});
 		expect(blocked._nay?.message).toBe("Workspace quota reached");
 
@@ -629,8 +641,8 @@ describe("create_workspace", () => {
 		});
 
 		expect(after.userQuotas).toHaveLength(1);
-		expect(after.userQuotas[0]?.usedCount).toBe(1);
-		expect(after.userQuotas[0]?.maxCount).toBe(1);
+		expect(after.userQuotas[0]?.usedCount).toBe(2);
+		expect(after.userQuotas[0]?.maxCount).toBe(2);
 		expect(after.workspaceQuotas).toHaveLength(1);
 		expect(after.workspaceQuotas[0]?.usedCount).toBe(0);
 	});
@@ -673,7 +685,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 		});
 
 		expect(rows.userQuota?.usedCount).toBe(0);
-		expect(rows.userQuota?.maxCount).toBe(1);
+		expect(rows.userQuota?.maxCount).toBe(2);
 		expect(rows.workspaceQuota?.usedCount).toBe(0);
 		expect(rows.workspaceQuota?.maxCount).toBe(1);
 	});
@@ -3840,7 +3852,7 @@ describe("quotas.get", () => {
 			quotaName: "extra_workspaces",
 			userId,
 			usedCount: 0,
-			maxCount: 1,
+			maxCount: 2,
 		});
 	});
 
@@ -3979,7 +3991,7 @@ describe("quotas.get", () => {
 			quotaName: "extra_workspaces",
 			userId: memberId,
 			usedCount: 0,
-			maxCount: 1,
+			maxCount: 2,
 		});
 
 		const ownedWorkspace = await t.run((ctx) =>
@@ -4004,7 +4016,7 @@ describe("quotas.get", () => {
 			quotaName: "extra_workspaces",
 			userId: memberId,
 			usedCount: 1,
-			maxCount: 1,
+			maxCount: 2,
 		});
 	});
 

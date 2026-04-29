@@ -143,7 +143,7 @@ Rules:
 - transfer deletes existing owner assignments for that workspace default project, gives the old owner a `member` assignment, and gives the new owner the `owner` assignment
 
 Quota details live in `../quotas/SKILL.md`.
-Account-deletion transfer flow details live in `../auth-system/SKILL.md`.
+Account-deletion resolution flow details live in `../auth-system/SKILL.md`. Account management blocks deletion while the user still owns non-personal workspaces, links to the regular workspace Users page for ownership transfer, and may call `workspaces.delete_workspace` after explicit workspace-delete confirmation.
 
 # Access-row deletion
 
@@ -154,6 +154,7 @@ Current cleanup locations:
 - `workspaces.remove_user_from_workspace`: deletes the target user's workspace memberships plus that user's role assignments and direct user grants in the workspace.
 - `workspaces.delete_project`: deletes project memberships plus role assignments and permission grants scoped to the project.
 - `workspaces.delete_workspace`: queues workspace content purge, immediately deletes workspace memberships and all access-control rows for that workspace, and releases the owner's extra-workspace quota.
+- `users.list_current_user_account_deletion_blocking_workspaces` and `users.delete_current_user_account`: use `by_user_role_workspace_project` to find non-personal workspaces where the current user is owner on the workspace default project, then block user-facing account deletion until each blocker is transferred or deleted through the normal workspace endpoints.
 - `data_deletion.init_user_deletion`: for still-owned non-personal workspaces, queues workspace deletion and immediately deletes workspace memberships and access-control rows for each queued workspace.
 - `data_deletion.process_workspace_deletion_request`: deletes remaining access-control rows for the workspace before deleting the workspace shell. This is idempotent with earlier immediate cleanup.
 - `data_deletion.process_user_deletion_request`: hard account deletion deletes any remaining role assignments and direct user grants for the deleted user.

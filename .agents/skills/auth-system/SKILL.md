@@ -182,7 +182,7 @@ Relevant files:
 - then attempt Clerk cleanup as best-effort follow-up
 - do not fail the app-local deletion just because Clerk deletion failed
 - rate-limit the user-facing action by current user id before starting local deletion, Clerk cleanup, or billing cancellation work. Result callers receive `_nay.message === "Rate limit exceeded"` when throttled.
-- before tombstoning, the frontend must make the user resolve every owned non-personal workspace: transfer ownership first through `access_control.transfer_workspace_ownership`, or explicitly confirm deletion in the UI. The backend delete action assumes any workspace still owned by the user should be deleted.
+- before tombstoning, the frontend and backend user-facing action must block while the current user still owns non-personal workspaces. Account management lets users either follow a `Transfer ownership` link to the workspace Users page or explicitly confirm deleting the workspace through the normal delete-workspace mutation, then retries account deletion.
 
 Related files:
 
@@ -195,10 +195,11 @@ Related files:
 User-account deletion is implemented across [users.ts](../../../packages/app/convex/users.ts) and [data_deletion.ts](../../../packages/app/convex/data_deletion.ts):
 
 - `users.delete_current_user_account` is the UI-facing entrypoint.
-- `access_control.transfer_workspace_ownership` is the ownership-transfer endpoint. The UI calls it first for account-deletion transfer choices, before calling `users.delete_current_user_account`.
-- `users.delete_current_user_account` calls the owned-workspace-aware deletion initializer. If the deleting user still owns non-personal workspaces after frontend transfer calls complete, the backend queues those workspaces for deletion automatically.
-- Transfer choices preserve the shared workspace for active members because the owner row and quota usage change before the user tombstone starts.
-- Automatically queued owned-workspace deletions immediately remove that workspace’s memberships and access-control rows, then leave the heavy tenant content purge to the existing delayed workspace deletion worker.
+- `users.list_current_user_account_deletion_blocking_workspaces` is the current-user preflight query for account management. It returns owned non-personal workspaces where the user has the `owner` role on the workspace default project, with the default project doc so the UI can link to the workspace Users page.
+- `users.delete_current_user_account` repeats that blocker check and returns `_nay.message === "Resolve owned workspaces before deleting account"` when blockers remain. Do this before local tombstoning, Clerk cleanup, or billing cancellation work.
+- `access_control.transfer_workspace_ownership` remains the ownership-transfer endpoint on the regular workspace Users page. Account management links there for transfers instead of duplicating the transfer flow inline. `workspaces.delete_workspace` remains the workspace deletion endpoint and account management may call it inline after explicit per-workspace confirmation.
+- Transferring ownership preserves the shared workspace for active members because the owner row and quota usage change before the user tombstone starts.
+- `internal.data_deletion.init_user_deletion` remains owned-workspace-aware for internal/admin lifecycle paths. If it is called directly for a user that still owns non-personal workspaces, it queues those workspaces for deletion, immediately removes that workspace’s memberships and access-control rows, then leaves the heavy tenant content purge to the existing delayed workspace deletion worker.
 - The reversible user phase creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, marks remaining memberships inactive, and removes the user from every room tracked by the `@convex-dev/presence` component (via `components.presence.public.listUser` + `removeRoomUser`).
 - Phase 1 does not delete projects, workspaces, pages, or billing usage snapshots.
 - Phase 1 also does not backfill or repair missing anagraphic email; deleted-account recovery only works for users whose normalized email was already stored before deletion.
@@ -225,7 +226,7 @@ There is no Clerk deletion webhook safety-net in the current architecture. Accou
 
 Summary:
 
-- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `access_control_role_assignments`, `access_control_permission_grants`, `user_notifications`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
+- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
 - Bootstrap: `create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
 - The default `personal` workspace is private. Invites/member-management writes reject it.
 - Non-personal workspace ownership lives in the workspace default-project `access_control_role_assignments` owner row; exactly one effective owner controls workspace deletion and ownership transfer.

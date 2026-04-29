@@ -1,5 +1,6 @@
 import "./index.css";
 
+import { createFileRoute } from "@tanstack/react-router";
 import React, { Suspense, useRef } from "react";
 import type { PageEditor_Props } from "@/components/page-editor/page-editor.tsx";
 import { PagesSidebar } from "./-components/pages-sidebar.tsx";
@@ -22,7 +23,7 @@ const PageEditor = React.lazy(() =>
 	})),
 );
 
-const Route = createFileRoute({
+const Route = createFileRoute("/w/$workspaceName/$projectName/pages/")({
 	component: RoutePages,
 	validateSearch: zodValidator(
 		z.object({

@@ -1,3 +1,4 @@
+import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { memo, useEffect } from "react";
 
@@ -32,7 +33,7 @@ const IndexRedirect = memo(function IndexRedirect() {
 	return <div>Redirecting…</div>;
 });
 
-const Route = createFileRoute({
+const Route = createFileRoute("/")({
 	component: IndexRedirect,
 });
 

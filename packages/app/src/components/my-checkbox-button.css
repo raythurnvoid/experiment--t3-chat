@@ -1,0 +1,74 @@
+@layer common_components {
+	.MyCheckboxButton:has(> .MyCheckboxButton-control:focus-visible) {
+		outline-color: var(--color-fg-12);
+	}
+
+	.MyCheckboxButton.MyButton-variant-ghost_destructive:not(.MyButton-state-disabled):has(
+			> .MyCheckboxButton-control:focus-visible
+		) {
+		background: var(--color-red-02);
+		color: var(--color-red-10);
+	}
+
+	.MyCheckboxButton-control {
+		position: absolute;
+		inset: 0 auto auto 0;
+
+		margin: 0;
+		width: 1px;
+		height: 1px;
+
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.MyCheckboxButton-box {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 16px;
+		height: 16px;
+		border: 1px solid currentColor;
+		border-radius: 4px;
+
+		background: var(--color-base-1-04);
+
+		transition:
+			background-color 0.1s linear,
+			border-color 0.1s linear;
+	}
+
+	.MyCheckboxButton:has(> .MyCheckboxButton-control:checked) .MyCheckboxButton-box {
+		background: currentColor;
+		border-color: currentColor;
+	}
+
+	.MyCheckboxButton-check {
+		width: 14px;
+		height: 14px;
+
+		color: var(--color-base-1-01);
+
+		opacity: 0;
+		visibility: hidden;
+		transform: scale(0.85);
+
+		transition:
+			opacity 0.1s linear,
+			transform 0.1s linear,
+			visibility 0.1s linear;
+	}
+
+	.MyCheckboxButton:has(> .MyCheckboxButton-control:checked) .MyCheckboxButton-check {
+		opacity: 1;
+		visibility: visible;
+		transform: scale(1);
+	}
+
+	.MyCheckboxButtonIcon {
+		width: 1rem;
+		height: 1rem;
+	}
+}

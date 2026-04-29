@@ -1,37 +1,30 @@
 import "./main-app-account-management.css";
 
 import { useClerk, useUser } from "@clerk/clerk-react";
-import { useQueries, useQuery } from "convex/react";
-import { Crown, CreditCard, Mail, RefreshCw, Shield, User, UserRound } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { useQuery } from "convex/react";
+import { CreditCard, Mail, RefreshCw, Shield, Trash2, User, UserRound, UserRoundCog } from "lucide-react";
+import { memo, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { BillingAccountManagementPanel } from "@/components/billing/billing-account-management-panel.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
-import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyCheckboxButton, MyCheckboxButtonIcon } from "@/components/my-checkbox-button.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
+import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
 	MyModalDescription,
+	MyModalFooter,
 	MyModalHeader,
 	MyModalHeading,
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import {
-	MySelect,
-	MySelectItem,
-	MySelectItemIndicator,
-	MySelectOpenIndicator,
-	MySelectPopover,
-	MySelectPopoverContent,
-	MySelectPopoverScrollableArea,
-	MySelectTrigger,
-} from "@/components/my-select.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab, MyTabsTabSurface } from "@/components/my-tabs.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -96,418 +89,370 @@ function get_session_label(
 	return place ? `${device} - ${place}` : device;
 }
 
-type OwnedWorkspaceAccountDeletionDecision =
-	| {
-			kind: "transfer";
-			workspaceId: app_convex_Id<"workspaces">;
-			newOwnerUserId: app_convex_Id<"users">;
-	  }
-	| {
-			kind: "delete";
-			workspaceId: app_convex_Id<"workspaces">;
-			confirmWorkspaceDeletion: boolean;
-	  };
+type MainAppAccountManagementDeleteAccount_BlockingWorkspace = app_convex_FunctionReturnType<
+	typeof app_convex_api.users.list_current_user_account_deletion_blocking_workspaces
+>[number];
 
-// #region delete account workspace list
-type MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames =
-	| "MainAppAccountManagementDeleteAccountWorkspaceList"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace-header"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace-title"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace-meta"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace-controls"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace-select"
-	| "MainAppAccountManagementDeleteAccountWorkspaceList-workspace-delete";
+// #region delete account workspace resolver
+type MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames =
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-header-content"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-body"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-list"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-title"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-description"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-actions"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-submit-trigger";
 
-type MainAppAccountManagementDeleteAccountWorkspaceList_Props = {
-	authUserId: app_convex_Id<"users"> | null;
-	ownedExtraWorkspaces: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"];
-	ownedExtraWorkspaceUsersLoaded: boolean;
-	ownedExtraWorkspaceUsersDict: Record<
-		app_convex_Id<"workspaces">,
-		app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list_workspace_project_users> | undefined | Error
-	>;
-	decisionsByWorkspaceId: Record<string, OwnedWorkspaceAccountDeletionDecision | undefined>;
-	transferTargetAnagraphicDict: Record<
-		app_convex_Id<"users">,
-		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
-	>;
-	onWorkspaceTransferDecisionChange: (
-		workspaceId: app_convex_Id<"workspaces">,
-		newOwnerUserId: app_convex_Id<"users">,
-	) => void;
-	onWorkspaceDeleteDecisionChange: (
-		workspaceId: app_convex_Id<"workspaces">,
-		confirmWorkspaceDeletion: boolean,
-	) => void;
+type MainAppAccountManagementDeleteAccountWorkspaceResolverRow_Props = {
+	blockingWorkspace: MainAppAccountManagementDeleteAccount_BlockingWorkspace;
+	deleteConfirmed: boolean;
+	resolving: boolean;
+	onNavigateToWorkspaceUsers: () => void;
+	onDeleteConfirmationChange: (workspaceId: app_convex_Id<"workspaces">, confirmed: boolean) => void;
 };
 
-const MainAppAccountManagementDeleteAccountWorkspaceList = memo(
-	function MainAppAccountManagementDeleteAccountWorkspaceList(
-		props: MainAppAccountManagementDeleteAccountWorkspaceList_Props,
+const MainAppAccountManagementDeleteAccountWorkspaceResolverRow = memo(
+	function MainAppAccountManagementDeleteAccountWorkspaceResolverRow(
+		props: MainAppAccountManagementDeleteAccountWorkspaceResolverRow_Props,
 	) {
-		const {
-			authUserId,
-			ownedExtraWorkspaces,
-			ownedExtraWorkspaceUsersLoaded,
-			ownedExtraWorkspaceUsersDict,
-			transferTargetAnagraphicDict,
-			decisionsByWorkspaceId,
-			onWorkspaceTransferDecisionChange,
-			onWorkspaceDeleteDecisionChange,
-		} = props;
+		const { blockingWorkspace, deleteConfirmed, resolving, onNavigateToWorkspaceUsers, onDeleteConfirmationChange } =
+			props;
+		const workspaceDescription = blockingWorkspace.workspace.description.trim()
+			? blockingWorkspace.workspace.description
+			: "(No description)";
 
-		return !ownedExtraWorkspaceUsersLoaded ? (
-			<div
+		return (
+			<li
 				className={
-					"MainAppAccountManagementDeleteAccountWorkspaceList" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
+					"MainAppAccountManagementDeleteAccountWorkspaceResolver-row" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
 				}
 			>
-				Loading owned workspaces...
-			</div>
-		) : ownedExtraWorkspaces.length ? (
-			<div
-				className={
-					"MainAppAccountManagementDeleteAccountWorkspaceList" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-				}
-			>
-				{ownedExtraWorkspaces.map((workspace) => {
-					const decision = decisionsByWorkspaceId[workspace._id];
-					const projectUsersQueryResult = ownedExtraWorkspaceUsersDict[workspace._id];
-					const transferTargets =
-						projectUsersQueryResult === undefined ||
-						projectUsersQueryResult === null ||
-						projectUsersQueryResult instanceof Error
-							? []
-							: projectUsersQueryResult.filter((userId: app_convex_Id<"users">) => userId !== authUserId);
-					const selectedTransferTarget =
-						decision?.kind === "transfer"
-							? transferTargets.find((targetUserId) => targetUserId === decision.newOwnerUserId)
-							: undefined;
-					const selectedTransferTargetAnagraphic = selectedTransferTarget
-						? transferTargetAnagraphicDict[selectedTransferTarget]
-						: null;
-					const selectedTransferTargetDisplayName =
-						selectedTransferTargetAnagraphic === undefined ||
-						selectedTransferTargetAnagraphic === null ||
-						selectedTransferTargetAnagraphic instanceof Error
-							? selectedTransferTarget
-								? compute_fallback_user_name(selectedTransferTarget)
-								: "Transfer ownership"
-							: selectedTransferTargetAnagraphic.displayName;
-
-					return (
-						<section
-							key={workspace._id}
-							className={
-								"MainAppAccountManagementDeleteAccountWorkspaceList-workspace" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-							}
-						>
-							<header
-								className={
-									"MainAppAccountManagementDeleteAccountWorkspaceList-workspace-header" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-								}
-							>
-								<div>
-									<h4
-										className={
-											"MainAppAccountManagementDeleteAccountWorkspaceList-workspace-title" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-										}
-									>
-										{workspace.name}
-									</h4>
-									<p
-										className={
-											"MainAppAccountManagementDeleteAccountWorkspaceList-workspace-meta" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-										}
-									>
-										Transfer or deletion required
-									</p>
-								</div>
-								<MyBadge variant="destructive">
-									<Crown aria-hidden />
-									Owner
-								</MyBadge>
-							</header>
-							<div
-								className={
-									"MainAppAccountManagementDeleteAccountWorkspaceList-workspace-controls" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-								}
-							>
-								<MySelect
-									value={selectedTransferTarget ?? ""}
-									setValue={(value) =>
-										onWorkspaceTransferDecisionChange(workspace._id, value as app_convex_Id<"users">)
-									}
-								>
-									<MySelectTrigger>
-										<MyButton
-											type="button"
-											variant="outline"
-											disabled={!transferTargets.length}
-											className={
-												"MainAppAccountManagementDeleteAccountWorkspaceList-workspace-select" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-											}
-										>
-											<span>{selectedTransferTargetDisplayName}</span>
-											<MySelectOpenIndicator />
-										</MyButton>
-									</MySelectTrigger>
-									<MySelectPopover sameWidth>
-										<MySelectPopoverScrollableArea>
-											<MySelectPopoverContent>
-												{transferTargets.map((targetUserId) => {
-													const targetUserAnagraphic = transferTargetAnagraphicDict[targetUserId];
-													const targetUserDisplayName =
-														targetUserAnagraphic === undefined ||
-														targetUserAnagraphic === null ||
-														targetUserAnagraphic instanceof Error
-															? compute_fallback_user_name(targetUserId)
-															: targetUserAnagraphic.displayName;
-
-													return (
-														<MySelectItem key={targetUserId} value={targetUserId}>
-															{targetUserDisplayName}
-															{selectedTransferTarget === targetUserId ? <MySelectItemIndicator /> : null}
-														</MySelectItem>
-													);
-												})}
-											</MySelectPopoverContent>
-										</MySelectPopoverScrollableArea>
-									</MySelectPopover>
-								</MySelect>
-								<label
-									className={
-										"MainAppAccountManagementDeleteAccountWorkspaceList-workspace-delete" satisfies MainAppAccountManagementDeleteAccountWorkspaceList_ClassNames
-									}
-								>
-									<input
-										type="checkbox"
-										checked={decision?.kind === "delete" && decision.confirmWorkspaceDeletion}
-										onChange={(event) => onWorkspaceDeleteDecisionChange(workspace._id, event.currentTarget.checked)}
-									/>
-									Delete workspace data
-								</label>
-							</div>
-						</section>
-					);
-				})}
-			</div>
-		) : null;
+				<h3
+					className={
+						"MainAppAccountManagementDeleteAccountWorkspaceResolver-row-title" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+					}
+				>
+					{blockingWorkspace.workspace.name}
+				</h3>
+				<p
+					className={
+						"MainAppAccountManagementDeleteAccountWorkspaceResolver-row-description" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+					}
+				>
+					{workspaceDescription}
+				</p>
+				<div
+					className={
+						"MainAppAccountManagementDeleteAccountWorkspaceResolver-row-actions" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+					}
+				>
+					<MyLink
+						variant="button-outline"
+						to="/w/$workspaceName/$projectName/users"
+						params={{
+							workspaceName: blockingWorkspace.workspace.name,
+							projectName: blockingWorkspace.defaultProject.name,
+						}}
+						onClick={onNavigateToWorkspaceUsers}
+					>
+						<MyLinkIcon aria-hidden>
+							<UserRoundCog />
+						</MyLinkIcon>
+						Transfer ownership
+					</MyLink>
+					<MyCheckboxButton
+						checked={deleteConfirmed}
+						disabled={resolving}
+						onCheckedChange={(checked) => onDeleteConfirmationChange(blockingWorkspace.workspace._id, checked)}
+					>
+						<MyCheckboxButtonIcon aria-hidden>
+							<Trash2 />
+						</MyCheckboxButtonIcon>
+						Delete workspace and data
+					</MyCheckboxButton>
+				</div>
+			</li>
+		);
 	},
 );
-// #endregion delete account workspace list
+
+type MainAppAccountManagementDeleteAccountWorkspaceResolver_Props = {
+	blockingWorkspaces: MainAppAccountManagementDeleteAccount_BlockingWorkspace[];
+	deleteConfirmationsByWorkspaceId: Record<string, boolean | undefined>;
+	resolving: boolean;
+	canResolve: boolean;
+	onClose: () => void;
+	onNavigateToWorkspaceUsers: () => void;
+	onDeleteConfirmationChange: (workspaceId: app_convex_Id<"workspaces">, confirmed: boolean) => void;
+	onResolveAndDelete: () => void;
+};
+
+const MainAppAccountManagementDeleteAccountWorkspaceResolver = memo(
+	function MainAppAccountManagementDeleteAccountWorkspaceResolver(
+		props: MainAppAccountManagementDeleteAccountWorkspaceResolver_Props,
+	) {
+		const {
+			blockingWorkspaces,
+			deleteConfirmationsByWorkspaceId,
+			resolving,
+			canResolve,
+			onClose,
+			onNavigateToWorkspaceUsers,
+			onDeleteConfirmationChange,
+			onResolveAndDelete,
+		} = props;
+		const resolveDisabledTooltip =
+			!canResolve && !resolving
+				? "Before you can delete your account, transfer ownership of each workspace or confirm deleting the workspace."
+				: null;
+		const resolveButton = (
+			<MyButton variant="destructive" disabled={!canResolve || resolving} onClick={onResolveAndDelete}>
+				{resolving ? "Resolving..." : "Confirm account deletion"}
+			</MyButton>
+		);
+
+		return (
+			<MyModal open={blockingWorkspaces.length > 0} setOpen={(open) => !open && onClose()}>
+				<MyModalPopover
+					className={
+						"MainAppAccountManagementDeleteAccountWorkspaceResolver" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+					}
+				>
+					<MyModalHeader>
+						<div
+							className={
+								"MainAppAccountManagementDeleteAccountWorkspaceResolver-header-content" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+							}
+						>
+							<MyModalHeading>Resolve owned workspaces</MyModalHeading>
+							<MyModalDescription>
+								Transfer ownership from a workspace Users page, or confirm workspace deletion here.
+							</MyModalDescription>
+						</div>
+					</MyModalHeader>
+					<MyModalScrollableArea
+						className={
+							"MainAppAccountManagementDeleteAccountWorkspaceResolver-body" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+						}
+					>
+						<ul
+							className={
+								"MainAppAccountManagementDeleteAccountWorkspaceResolver-list" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+							}
+						>
+							{blockingWorkspaces.map((blockingWorkspace) => (
+								<MainAppAccountManagementDeleteAccountWorkspaceResolverRow
+									key={blockingWorkspace.workspace._id}
+									blockingWorkspace={blockingWorkspace}
+									deleteConfirmed={deleteConfirmationsByWorkspaceId[blockingWorkspace.workspace._id] === true}
+									resolving={resolving}
+									onNavigateToWorkspaceUsers={onNavigateToWorkspaceUsers}
+									onDeleteConfirmationChange={onDeleteConfirmationChange}
+								/>
+							))}
+						</ul>
+					</MyModalScrollableArea>
+					<MyModalFooter>
+						<MyButton variant="ghost" disabled={resolving} onClick={onClose}>
+							Cancel
+						</MyButton>
+						{resolveDisabledTooltip ? (
+							<MyTooltip placement="top">
+								<MyTooltipTrigger>
+									<span
+										className={
+											"MainAppAccountManagementDeleteAccountWorkspaceResolver-submit-trigger" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+										}
+									>
+										{resolveButton}
+									</span>
+								</MyTooltipTrigger>
+								<MyTooltipContent unmountOnHide>
+									<>{resolveDisabledTooltip}</>
+								</MyTooltipContent>
+							</MyTooltip>
+						) : (
+							resolveButton
+						)}
+					</MyModalFooter>
+					<MyModalCloseTrigger />
+				</MyModalPopover>
+			</MyModal>
+		);
+	},
+);
+// #endregion delete account workspace resolver
 
 // #region delete account
 type MainAppAccountManagementDeleteAccount_ClassNames =
 	| "MainAppAccountManagementDeleteAccount"
-	| "MainAppAccountManagementDeleteAccount-copy"
+	| "MainAppAccountManagementDeleteAccount-text"
 	| "MainAppAccountManagementDeleteAccount-title"
 	| "MainAppAccountManagementDeleteAccount-description"
 	| "MainAppAccountManagementDeleteAccount-form";
 
 type MainAppAccountManagementDeleteAccount_Props = {
-	onDelete: (args: {
-		ownedWorkspaceTransferDecisions?: Extract<OwnedWorkspaceAccountDeletionDecision, { kind: "transfer" }>[];
-	}) => Promise<boolean>;
+	onDelete: () => Promise<boolean>;
+	onNavigateToWorkspaceUsers: () => void;
 };
 
 const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManagementDeleteAccount(
 	props: MainAppAccountManagementDeleteAccount_Props,
 ) {
-	const { onDelete } = props;
-
-	const auth = AppAuthProvider.useAuth();
-	const workspaceList = useQuery(app_convex_api.workspaces.list);
-
-	const workspaceRoleQueries = Object.fromEntries(
-		(workspaceList?.workspaces ?? []).flatMap((workspace) =>
-			workspace.default || !workspace.defaultProjectId
-				? []
-				: [
-						[
-							workspace._id,
-							{
-								query: app_convex_api.access_control.get_current_user_role,
-								args: {
-									workspaceId: workspace._id,
-									projectId: workspace.defaultProjectId,
-								},
-							},
-						] as const,
-					],
-		),
-	);
-	const workspaceRoleQueryResults = useQueries(workspaceRoleQueries) as Record<
-		app_convex_Id<"workspaces">,
-		app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_current_user_role> | undefined | Error
-	>;
-	const workspaceRolesLoaded =
-		workspaceList !== undefined &&
-		workspaceList.workspaces.every(
-			(workspace) =>
-				workspace.default || !workspace.defaultProjectId || workspaceRoleQueryResults[workspace._id] !== undefined,
-		);
-
-	// The react compiler is unable to memoize code that uses the returned value from a hook
-	const ownedExtraWorkspaces = useMemo(
-		() =>
-			workspaceList === undefined || !workspaceRolesLoaded
-				? []
-				: workspaceList.workspaces.filter((workspace) => {
-						if (workspace.default || !workspace.defaultProjectId) {
-							return false;
-						}
-
-						const roleQueryResult = workspaceRoleQueryResults[workspace._id];
-						return !(roleQueryResult instanceof Error) && roleQueryResult === "owner";
-					}),
-		[workspaceList, workspaceRoleQueryResults, workspaceRolesLoaded],
-	);
-	const ownedExtraWorkspaceUsersQueries = Object.fromEntries(
-		ownedExtraWorkspaces.flatMap((workspace) =>
-			workspace.defaultProjectId
-				? [
-						[
-							workspace._id,
-							{
-								query: app_convex_api.workspaces.list_workspace_project_users,
-								args: {
-									workspaceId: workspace._id,
-									projectId: workspace.defaultProjectId,
-								},
-							},
-						] as const,
-					]
-				: [],
-		),
-	);
-	const ownedExtraWorkspaceUsersQueryResults = useQueries(ownedExtraWorkspaceUsersQueries) as Record<
-		app_convex_Id<"workspaces">,
-		app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list_workspace_project_users> | undefined | Error
-	>;
-	const ownedExtraWorkspaceUsersLoaded =
-		workspaceRolesLoaded &&
-		ownedExtraWorkspaces.every((workspace) => ownedExtraWorkspaceUsersQueryResults[workspace._id] !== undefined);
-
-	// The react compiler is unable to memoize code that uses the returned value from a hook
-	const transferTargetAnagraphicQueries = useMemo(
-		() =>
-			Object.fromEntries(
-				ownedExtraWorkspaceUsersLoaded
-					? ownedExtraWorkspaces.flatMap((workspace) => {
-							const projectUsersQueryResult = ownedExtraWorkspaceUsersQueryResults[workspace._id];
-							if (
-								projectUsersQueryResult === undefined ||
-								projectUsersQueryResult === null ||
-								projectUsersQueryResult instanceof Error
-							) {
-								return [];
-							}
-
-							return projectUsersQueryResult
-								.filter((userId: app_convex_Id<"users">) => userId !== auth.userId)
-								.map(
-									(userId) =>
-										[
-											userId,
-											{
-												query: app_convex_api.users.get_anagraphic,
-												args: { userId },
-											},
-										] as const,
-								);
-						})
-					: [],
-			),
-		[auth.userId, ownedExtraWorkspaces, ownedExtraWorkspaceUsersLoaded, ownedExtraWorkspaceUsersQueryResults],
-	);
-	const transferTargetAnagraphicQueryResults = useQueries(transferTargetAnagraphicQueries) as Record<
-		app_convex_Id<"users">,
-		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
-	>;
+	const { onDelete, onNavigateToWorkspaceUsers } = props;
 
 	const [confirmationText, setConfirmationText] = useState("");
 	const [isDeleting, setIsDeleting] = useState(false);
-
-	const [decisionsByWorkspaceId, setDecisionsByWorkspaceId] = useState<
-		Record<string, OwnedWorkspaceAccountDeletionDecision | undefined>
+	const [blockingWorkspaces, setBlockingWorkspaces] = useState<
+		MainAppAccountManagementDeleteAccount_BlockingWorkspace[] | null
+	>(null);
+	const [deleteConfirmationsByWorkspaceId, setDeleteConfirmationsByWorkspaceId] = useState<
+		Record<string, boolean | undefined>
 	>({});
-	const ownedWorkspaceDecisions = ownedExtraWorkspaceUsersLoaded
-		? ownedExtraWorkspaces.flatMap((workspace) => {
-				const decision = decisionsByWorkspaceId[workspace._id];
-				return decision == null ? [] : [decision];
-			})
-		: undefined;
-	const ownedWorkspaceTransferDecisions = ownedWorkspaceDecisions?.flatMap((decision) =>
-		decision.kind === "transfer" ? [decision] : [],
-	);
+	const [isResolvingWorkspaces, setIsResolvingWorkspaces] = useState(false);
 
-	const ownedWorkspaceDecisionReady =
-		ownedExtraWorkspaceUsersLoaded &&
-		ownedExtraWorkspaces.every((workspace) => {
-			const decision = decisionsByWorkspaceId[workspace._id];
-			if (!decision) {
-				return false;
-			}
-
-			if (decision.kind === "transfer") {
-				const projectUsersQueryResult = ownedExtraWorkspaceUsersQueryResults[workspace._id];
-				return (
-					decision.newOwnerUserId !== auth.userId &&
-					projectUsersQueryResult !== undefined &&
-					projectUsersQueryResult !== null &&
-					!(projectUsersQueryResult instanceof Error) &&
-					projectUsersQueryResult.includes(decision.newOwnerUserId)
-				);
-			}
-
-			return decision.confirmWorkspaceDeletion;
+	const canResolveBlockingWorkspaces =
+		blockingWorkspaces !== null &&
+		blockingWorkspaces.length > 0 &&
+		blockingWorkspaces.every((blockingWorkspace) => {
+			return deleteConfirmationsByWorkspaceId[blockingWorkspace.workspace._id] === true;
 		});
 
-	const handleWorkspaceTransferDecisionChange = useFn(
-		(workspaceId: app_convex_Id<"workspaces">, newOwnerUserId: app_convex_Id<"users">) => {
-			setDecisionsByWorkspaceId((current) => ({
-				...current,
-				[workspaceId]: {
-					kind: "transfer",
-					workspaceId,
-					newOwnerUserId,
-				},
-			}));
-		},
-	);
-
-	const handleWorkspaceDeleteDecisionChange = useFn(
-		(workspaceId: app_convex_Id<"workspaces">, confirmWorkspaceDeletion: boolean) => {
-			setDecisionsByWorkspaceId((current) => ({
-				...current,
-				[workspaceId]: confirmWorkspaceDeletion
-					? {
-							kind: "delete",
-							workspaceId,
-							confirmWorkspaceDeletion: true,
-						}
-					: undefined,
-			}));
-		},
-	);
-
 	const handleDelete = useFn(async () => {
-		if (confirmationText !== "DELETE" || !ownedWorkspaceDecisionReady) {
+		if (confirmationText !== "delete") {
 			return;
 		}
 
 		setIsDeleting(true);
-		await onDelete({ ownedWorkspaceTransferDecisions })
-			.then((deleted) => {
+		await app_convex
+			.query(app_convex_api.users.list_current_user_account_deletion_blocking_workspaces, {})
+			.then(async (nextBlockingWorkspaces) => {
+				if (nextBlockingWorkspaces.length > 0) {
+					setBlockingWorkspaces(nextBlockingWorkspaces);
+					setDeleteConfirmationsByWorkspaceId({});
+					return;
+				}
+
+				setBlockingWorkspaces([]);
+				const deleted = await onDelete();
 				if (deleted) {
 					setConfirmationText("");
-					setDecisionsByWorkspaceId({});
+					setBlockingWorkspaces(null);
+					return;
 				}
+
+				const blockingWorkspacesAfterDeleteFailure = await app_convex.query(
+					app_convex_api.users.list_current_user_account_deletion_blocking_workspaces,
+					{},
+				);
+				if (blockingWorkspacesAfterDeleteFailure.length > 0) {
+					setBlockingWorkspaces(blockingWorkspacesAfterDeleteFailure);
+					setDeleteConfirmationsByWorkspaceId({});
+				}
+			})
+			.catch((error) => {
+				setBlockingWorkspaces(null);
+				console.error("[MainAppAccountManagementDeleteAccount.handleDelete] Failed to prepare account deletion", {
+					error,
+				});
+				toast.error("Failed to delete account");
 			})
 			.finally(() => {
 				setIsDeleting(false);
+			});
+	});
+
+	const handleCloseWorkspaceResolver = useFn(() => {
+		if (isResolvingWorkspaces) {
+			return;
+		}
+
+		setBlockingWorkspaces(null);
+		setDeleteConfirmationsByWorkspaceId({});
+	});
+
+	const handleWorkspaceDeleteConfirmationChange = useFn(
+		(workspaceId: app_convex_Id<"workspaces">, confirmed: boolean) => {
+			setDeleteConfirmationsByWorkspaceId((current) => ({
+				...current,
+				[workspaceId]: confirmed,
+			}));
+		},
+	);
+
+	const handleResolveWorkspacesAndDelete = useFn(async () => {
+		if (!blockingWorkspaces || !canResolveBlockingWorkspaces) {
+			return;
+		}
+
+		setIsResolvingWorkspaces(true);
+		await (async () => {
+			for (const blockingWorkspace of blockingWorkspaces) {
+				if (deleteConfirmationsByWorkspaceId[blockingWorkspace.workspace._id] !== true) {
+					return;
+				}
+
+				const deleteResult = await app_convex.mutation(app_convex_api.workspaces.delete_workspace, {
+					workspaceId: blockingWorkspace.workspace._id,
+				});
+				if (deleteResult._nay) {
+					console.error(
+						"[MainAppAccountManagementDeleteAccount.handleResolveWorkspacesAndDelete] Failed to delete workspace",
+						{
+							result: deleteResult,
+							workspaceId: blockingWorkspace.workspace._id,
+						},
+					);
+					toast.error(deleteResult._nay.message);
+					return;
+				}
+			}
+
+			const refreshedBlockingWorkspaces = await app_convex.query(
+				app_convex_api.users.list_current_user_account_deletion_blocking_workspaces,
+				{},
+			);
+			if (refreshedBlockingWorkspaces.length > 0) {
+				setBlockingWorkspaces(refreshedBlockingWorkspaces);
+				setDeleteConfirmationsByWorkspaceId({});
+				toast.error("Resolve owned workspaces before deleting account");
+				return;
+			}
+
+			const deleted = await onDelete();
+			if (deleted) {
+				setConfirmationText("");
+				setBlockingWorkspaces(null);
+				setDeleteConfirmationsByWorkspaceId({});
+				return;
+			}
+
+			const blockingWorkspacesAfterDeleteFailure = await app_convex.query(
+				app_convex_api.users.list_current_user_account_deletion_blocking_workspaces,
+				{},
+			);
+			if (blockingWorkspacesAfterDeleteFailure.length > 0) {
+				setBlockingWorkspaces(blockingWorkspacesAfterDeleteFailure);
+				setDeleteConfirmationsByWorkspaceId({});
+				return;
+			}
+
+			setBlockingWorkspaces(null);
+			setDeleteConfirmationsByWorkspaceId({});
+		})()
+			.catch((error) => {
+				console.error(
+					"[MainAppAccountManagementDeleteAccount.handleResolveWorkspacesAndDelete] Failed to resolve owned workspaces",
+					{
+						error,
+					},
+				);
+				toast.error("Failed to resolve owned workspaces");
+			})
+			.finally(() => {
+				setIsResolvingWorkspaces(false);
 			});
 	});
 
@@ -515,7 +460,7 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 		<div className={"MainAppAccountManagementDeleteAccount" satisfies MainAppAccountManagementDeleteAccount_ClassNames}>
 			<div
 				className={
-					"MainAppAccountManagementDeleteAccount-copy" satisfies MainAppAccountManagementDeleteAccount_ClassNames
+					"MainAppAccountManagementDeleteAccount-text" satisfies MainAppAccountManagementDeleteAccount_ClassNames
 				}
 			>
 				<h3
@@ -530,19 +475,21 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 						"MainAppAccountManagementDeleteAccount-description" satisfies MainAppAccountManagementDeleteAccount_ClassNames
 					}
 				>
-					This permanently deletes your app account and clears memberships. Type <code>DELETE</code> to confirm.
+					This permanently deletes your app account and clears memberships. Type <code>delete</code> to confirm.
 				</p>
 			</div>
-			<MainAppAccountManagementDeleteAccountWorkspaceList
-				authUserId={auth.userId}
-				ownedExtraWorkspaces={ownedExtraWorkspaces}
-				ownedExtraWorkspaceUsersLoaded={ownedExtraWorkspaceUsersLoaded}
-				ownedExtraWorkspaceUsersDict={ownedExtraWorkspaceUsersQueryResults}
-				transferTargetAnagraphicDict={transferTargetAnagraphicQueryResults}
-				decisionsByWorkspaceId={decisionsByWorkspaceId}
-				onWorkspaceTransferDecisionChange={handleWorkspaceTransferDecisionChange}
-				onWorkspaceDeleteDecisionChange={handleWorkspaceDeleteDecisionChange}
-			/>
+			{blockingWorkspaces && blockingWorkspaces.length > 0 ? (
+				<MainAppAccountManagementDeleteAccountWorkspaceResolver
+					blockingWorkspaces={blockingWorkspaces}
+					deleteConfirmationsByWorkspaceId={deleteConfirmationsByWorkspaceId}
+					resolving={isResolvingWorkspaces}
+					canResolve={canResolveBlockingWorkspaces}
+					onClose={handleCloseWorkspaceResolver}
+					onNavigateToWorkspaceUsers={onNavigateToWorkspaceUsers}
+					onDeleteConfirmationChange={handleWorkspaceDeleteConfirmationChange}
+					onResolveAndDelete={() => void handleResolveWorkspacesAndDelete()}
+				/>
+			) : null}
 			<div
 				className={
 					"MainAppAccountManagementDeleteAccount-form" satisfies MainAppAccountManagementDeleteAccount_ClassNames
@@ -555,8 +502,8 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 						<MyInputControl
 							type="text"
 							value={confirmationText}
-							placeholder="DELETE"
-							disabled={isDeleting}
+							placeholder="delete"
+							disabled={isDeleting || isResolvingWorkspaces}
 							onChange={(event) => {
 								setConfirmationText(event.currentTarget.value);
 							}}
@@ -565,7 +512,7 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 				</MyInput>
 				<MyButton
 					variant="destructive"
-					disabled={confirmationText !== "DELETE" || !ownedWorkspaceDecisionReady || isDeleting}
+					disabled={confirmationText !== "delete" || isDeleting || isResolvingWorkspaces}
 					onClick={handleDelete}
 				>
 					{isDeleting ? "Deleting..." : "Delete account"}
@@ -720,12 +667,14 @@ type MainAppAccountManagementSecurity_Props = {
 	isLoadingSessions: boolean;
 	onRefreshSessions: () => Promise<void>;
 	onDeleteAccount: MainAppAccountManagementDeleteAccount_Props["onDelete"];
+	onNavigateToWorkspaceUsers: MainAppAccountManagementDeleteAccount_Props["onNavigateToWorkspaceUsers"];
 };
 
 const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementSecurity(
 	props: MainAppAccountManagementSecurity_Props,
 ) {
-	const { isAnonymous, sessions, isLoadingSessions, onRefreshSessions, onDeleteAccount } = props;
+	const { isAnonymous, sessions, isLoadingSessions, onRefreshSessions, onDeleteAccount, onNavigateToWorkspaceUsers } =
+		props;
 
 	const [busySessionId, setBusySessionId] = useState<string | null>(null);
 
@@ -875,7 +824,10 @@ const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementS
 						"MainAppAccountManagementSecurity-panel-body" satisfies MainAppAccountManagementSecurity_ClassNames
 					}
 				>
-					<MainAppAccountManagementDeleteAccount onDelete={onDeleteAccount} />
+					<MainAppAccountManagementDeleteAccount
+						onDelete={onDeleteAccount}
+						onNavigateToWorkspaceUsers={onNavigateToWorkspaceUsers}
+					/>
 				</div>
 			</section>
 		</div>
@@ -886,7 +838,7 @@ const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementS
 // #region root
 type MainAppAccountManagement_ClassNames =
 	| "MainAppAccountManagement"
-	| "MainAppAccountManagement-header-copy"
+	| "MainAppAccountManagement-header-content"
 	| "MainAppAccountManagement-header-description"
 	| "MainAppAccountManagement-body"
 	| "MainAppAccountManagement-side-tab"
@@ -899,7 +851,9 @@ export type MainAppAccountManagement_Props = {
 	onOpenChange: (open: boolean) => void;
 };
 
-export const MainAppAccountManagement = memo(function MainAppAccountManagement(props: MainAppAccountManagement_Props) {
+const MainAppAccountManagementContent = memo(function MainAppAccountManagementContent(
+	props: MainAppAccountManagement_Props,
+) {
 	const { open, onOpenChange } = props;
 
 	const auth = AppAuthProvider.useAuth();
@@ -941,29 +895,13 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 			});
 	});
 
-	const handleDeleteAccount = useFn<MainAppAccountManagementDeleteAccount_Props["onDelete"]>(async (args) => {
-		for (const transferDecision of args.ownedWorkspaceTransferDecisions ?? []) {
-			const transferResult = await app_convex.mutation(app_convex_api.access_control.transfer_workspace_ownership, {
-				workspaceId: transferDecision.workspaceId,
-				newOwnerUserId: transferDecision.newOwnerUserId,
-			});
-			if (transferResult._nay) {
-				console.error("[MainAppAccountManagement.handleDeleteAccount] Failed to transfer workspace ownership:", {
-					error: transferResult._nay,
-					workspaceId: transferDecision.workspaceId,
-					newOwnerUserId: transferDecision.newOwnerUserId,
-				});
-				toast.error("Failed to transfer workspace ownership");
-				return false;
-			}
-		}
-
+	const handleDeleteAccount = useFn<MainAppAccountManagementDeleteAccount_Props["onDelete"]>(async () => {
 		const result = await app_convex.action(app_convex_api.users.delete_current_user_account, {});
 		if (result._nay) {
 			console.error("[MainAppAccountManagement.handleDeleteAccount] Failed to delete account:", {
 				result,
 			});
-			toast.error("Failed to delete account");
+			toast.error(result._nay.message);
 			return false;
 		}
 
@@ -1035,19 +973,23 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 		Boolean(auth.userId) &&
 		(auth.isAnonymous ? true : isLoaded && Boolean(user));
 
+	const handleNavigateToWorkspaceUsers = useFn(() => {
+		onOpenChange(false);
+	});
+
 	return (
 		auth.isAnonymous != null && (
 			<MyModal open={open} setOpen={onOpenChange}>
 				<MyModalPopover className={"MainAppAccountManagement" satisfies MainAppAccountManagement_ClassNames}>
-					<MyModalHeader
-						className={"MainAppAccountManagement-header-copy" satisfies MainAppAccountManagement_ClassNames}
-					>
-						<MyModalHeading>Manage account</MyModalHeading>
-						<MyModalDescription
-							className={"MainAppAccountManagement-header-description" satisfies MainAppAccountManagement_ClassNames}
-						>
-							Manage your profile, security settings, sessions, and account deletion from the app.
-						</MyModalDescription>
+					<MyModalHeader>
+						<div className={"MainAppAccountManagement-header-content" satisfies MainAppAccountManagement_ClassNames}>
+							<MyModalHeading>Manage account</MyModalHeading>
+							<MyModalDescription
+								className={"MainAppAccountManagement-header-description" satisfies MainAppAccountManagement_ClassNames}
+							>
+								Manage your profile, security settings, sessions, and account deletion from the app.
+							</MyModalDescription>
+						</div>
 					</MyModalHeader>
 
 					<MyModalScrollableArea
@@ -1118,6 +1060,7 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 											isLoadingSessions={isLoadingSessions}
 											onRefreshSessions={handleRefreshSessions}
 											onDeleteAccount={handleDeleteAccount}
+											onNavigateToWorkspaceUsers={handleNavigateToWorkspaceUsers}
 										/>
 									</MyTabsPanel>
 								</MyTabsPanels>
@@ -1130,5 +1073,13 @@ export const MainAppAccountManagement = memo(function MainAppAccountManagement(p
 			</MyModal>
 		)
 	);
+});
+
+export const MainAppAccountManagement = memo(function MainAppAccountManagement(props: MainAppAccountManagement_Props) {
+	if (!props.open) {
+		return null;
+	}
+
+	return <MainAppAccountManagementContent {...props} />;
 });
 // #endregion root

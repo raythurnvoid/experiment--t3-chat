@@ -11,7 +11,7 @@ description: Persisted per-user and per-workspace creation quotas for extra work
 	- `userId` plus `quotaName: "extra_workspaces"` for user-level workspace creation quota
 	- `workspaceId` plus `quotaName: "extra_projects"` for workspace-level project creation quota
 - The product rule is still:
-	- each user gets `personal` plus at most **1** extra workspace
+	- each user gets `personal` plus at most **2** extra workspaces (**3** total workspaces)
 	- each workspace gets `home` plus at most **1** extra project
 - Default entities do **not** consume quota usage:
 	- default workspace `personal`
