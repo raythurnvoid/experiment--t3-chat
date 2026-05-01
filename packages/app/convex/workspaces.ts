@@ -21,6 +21,11 @@ import {
 } from "./access_control.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import {
+	notifications_db_delete_workspace_project_invites_for_project,
+	notifications_db_delete_workspace_project_invites_for_user,
+	notifications_db_delete_workspace_project_invites_for_workspace,
+} from "./notifications.ts";
 
 const DEFAULT_WORKSPACE_NAME = "personal";
 const DEFAULT_PROJECT_NAME = "home";
@@ -989,6 +994,10 @@ export const remove_user_from_workspace = mutation({
 		}
 
 		await Promise.all([
+			notifications_db_delete_workspace_project_invites_for_user(ctx, {
+				userId: args.userIdToRemove,
+				workspaceId: workspace._id,
+			}),
 			ctx.db
 				.query("workspaces_projects_users")
 				.withIndex("by_active_user_workspace_project", (q) =>
@@ -1383,12 +1392,15 @@ export const delete_workspace = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const [, , , userIdsPerProject] = await Promise.all([
+		const [, , , , userIdsPerProject] = await Promise.all([
 			// Queue one delayed workspace purge row while you remove project memberships in parallel.
 			data_deletion_db_request(ctx, {
 				userId: userAuth.id,
 				workspaceId: workspace._id,
 				scope: "workspace",
+			}),
+			notifications_db_delete_workspace_project_invites_for_workspace(ctx, {
+				workspaceId: workspace._id,
 			}),
 			ctx.db
 				.query("access_control_role_assignments")
@@ -1568,6 +1580,10 @@ export const delete_project = mutation({
 			});
 		}
 		await Promise.all([
+			notifications_db_delete_workspace_project_invites_for_project(ctx, {
+				workspaceId: workspace._id,
+				projectId: project._id,
+			}),
 			Promise.all(projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id))),
 			ctx.db
 				.query("access_control_role_assignments")

@@ -1398,7 +1398,7 @@ describe("invite_user_to_workspace_project", () => {
 		expect(removeResult._yay).toBeNull();
 
 		const afterRemove = await t.run(async (ctx) => {
-			const [membershipsAfterRemove, roleAssignmentsAfterRemove] = await Promise.all([
+			const [membershipsAfterRemove, roleAssignmentsAfterRemove, notificationsAfterRemove] = await Promise.all([
 				ctx.db
 					.query("workspaces_projects_users")
 					.withIndex("by_active_user_workspace_project", (q) =>
@@ -1411,11 +1411,18 @@ describe("invite_user_to_workspace_project", () => {
 						q.eq("workspaceId", created._yay!.workspaceId).eq("userId", invitedUserId),
 					)
 					.collect(),
+				ctx.db
+					.query("notifications")
+					.withIndex("by_user_workspace_createdAt", (q) =>
+						q.eq("userId", invitedUserId).eq("workspaceId", created._yay!.workspaceId),
+					)
+					.collect(),
 			]);
-			return { membershipsAfterRemove, roleAssignmentsAfterRemove };
+			return { membershipsAfterRemove, roleAssignmentsAfterRemove, notificationsAfterRemove };
 		});
 		expect(afterRemove.membershipsAfterRemove).toHaveLength(0);
 		expect(afterRemove.roleAssignmentsAfterRemove).toHaveLength(0);
+		expect(afterRemove.notificationsAfterRemove).toHaveLength(0);
 	});
 
 	test("allows a workspace admin to invite users", async () => {
@@ -2952,6 +2959,16 @@ describe("delete_project", () => {
 		expect(extraProject._yay).toBeTruthy();
 
 		await t.run(async (ctx) => {
+			await ctx.db.insert("notifications", {
+				userId,
+				kind: "workspace_project_invite",
+				read: false,
+				actorUserId: userId,
+				workspaceId: created._yay!.workspaceId,
+				projectId: extraProject._yay!.projectId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId,
 				workspaceId: String(created._yay!.workspaceId),
@@ -2978,6 +2995,7 @@ describe("delete_project", () => {
 				aiThreads,
 				aiMessages,
 				chatMessages,
+				notifications,
 			] = await Promise.all([
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
 				ctx.db.query("data_deletion_requests").collect(),
@@ -3000,6 +3018,12 @@ describe("delete_project", () => {
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
+				ctx.db
+					.query("notifications")
+					.withIndex("by_workspace_project_createdAt", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("projectId", extraProject._yay!.projectId),
+					)
+					.collect(),
 			]);
 
 			return {
@@ -3036,10 +3060,12 @@ describe("delete_project", () => {
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(extraProject._yay!.projectId),
 				),
+				notifications,
 			};
 		});
 
 		expect(after_delete.project).toBeNull();
+		expect(after_delete.notifications).toHaveLength(0);
 		expect(after_delete.requests).toHaveLength(1);
 		expect(after_delete.requests[0]?.scope).toBe("project");
 		expect(after_delete.pages).toHaveLength(1);
@@ -3153,6 +3179,16 @@ describe("delete_workspace", () => {
 		expect(extraProject._yay).toBeTruthy();
 
 		await t.run(async (ctx) => {
+			await ctx.db.insert("notifications", {
+				userId: memberId,
+				kind: "workspace_project_invite",
+				read: false,
+				actorUserId: ownerId,
+				workspaceId: created._yay!.workspaceId,
+				projectId: extraProject._yay!.projectId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
 			await ctx.db.insert("workspaces_projects_users", {
 				workspaceId: created._yay!.workspaceId,
 				projectId: extraProject._yay!.projectId,
@@ -3202,6 +3238,7 @@ describe("delete_workspace", () => {
 				aiThreads,
 				aiMessages,
 				chatMessages,
+				notifications,
 			] = await Promise.all([
 				ctx.db.get("workspaces", created._yay!.workspaceId),
 				ctx.db.get("workspaces_projects", created._yay!.defaultProjectId),
@@ -3228,6 +3265,10 @@ describe("delete_workspace", () => {
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
+				ctx.db
+					.query("notifications")
+					.withIndex("by_workspace_createdAt", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.collect(),
 			]);
 
 			return {
@@ -3245,6 +3286,7 @@ describe("delete_workspace", () => {
 				aiThreads: aiThreads.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 				aiMessages: aiMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 				chatMessages: chatMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+				notifications,
 			};
 		});
 
@@ -3254,6 +3296,7 @@ describe("delete_workspace", () => {
 		expect(after_delete.memberships).toHaveLength(0);
 		expect(after_delete.roleAssignments).toHaveLength(0);
 		expect(after_delete.permissionGrants).toHaveLength(0);
+		expect(after_delete.notifications).toHaveLength(0);
 		expect(after_delete.requests).toHaveLength(1);
 		expect(after_delete.requests[0]?.scope).toBe("workspace");
 		expect(after_delete.pages).toHaveLength(2);

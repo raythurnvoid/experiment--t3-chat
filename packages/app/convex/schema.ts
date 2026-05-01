@@ -564,7 +564,10 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_user_createdAt", ["userId", "createdAt"])
-		.index("by_user_read_createdAt", ["userId", "read", "createdAt"]),
+		.index("by_user_read_createdAt", ["userId", "read", "createdAt"])
+		.index("by_user_workspace_createdAt", ["userId", "workspaceId", "createdAt"])
+		.index("by_workspace_createdAt", ["workspaceId", "createdAt"])
+		.index("by_workspace_project_createdAt", ["workspaceId", "projectId", "createdAt"]),
 
 	// #endregion users
 });

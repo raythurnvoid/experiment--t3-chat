@@ -1,15 +1,84 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { internalMutation, mutation, query } from "./_generated/server.js";
+import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import type { Doc, Id } from "./_generated/dataModel";
 
 /**
  * A user can only have up to 500 notifications, older will be deleted.
  */
 const NOTIFICATIONS_MAX_PER_USER = 500;
+
+async function notifications_db_invite_target_is_available(
+	ctx: QueryCtx,
+	notification: Doc<"notifications">,
+) {
+	const [workspace, project, membership] = await Promise.all([
+		ctx.db.get("workspaces", notification.workspaceId),
+		ctx.db.get("workspaces_projects", notification.projectId),
+		ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", notification.userId)
+					.eq("workspaceId", notification.workspaceId)
+					.eq("projectId", notification.projectId),
+			)
+			.first(),
+	]);
+
+	return workspace !== null && project?.workspaceId === notification.workspaceId && membership !== null;
+}
+
+export async function notifications_db_delete_workspace_project_invites_for_user(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		workspaceId: Id<"workspaces">;
+	},
+) {
+	const notifications = await ctx.db
+		.query("notifications")
+		.withIndex("by_user_workspace_createdAt", (q) => q.eq("userId", args.userId).eq("workspaceId", args.workspaceId))
+		.collect();
+
+	await Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)));
+}
+
+export async function notifications_db_delete_workspace_project_invites_for_project(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
+	},
+) {
+	const notifications = await ctx.db
+		.query("notifications")
+		.withIndex("by_workspace_project_createdAt", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+		)
+		.collect();
+
+	await Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)));
+}
+
+export async function notifications_db_delete_workspace_project_invites_for_workspace(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: Id<"workspaces">;
+	},
+) {
+	const notifications = await ctx.db
+		.query("notifications")
+		.withIndex("by_workspace_createdAt", (q) => q.eq("workspaceId", args.workspaceId))
+		.collect();
+
+	await Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)));
+}
 
 export const list_current_notifications = query({
 	args: {},
@@ -22,11 +91,24 @@ export const list_current_notifications = query({
 
 		// Keep this query as simple domain rows. The UI composes workspace, project,
 		// and actor data through reusable queries that can share cache entries.
-		return await ctx.db
+		const notifications = await ctx.db
 			.query("notifications")
 			.withIndex("by_user_createdAt", (q) => q.eq("userId", userAuth.id))
 			.order("desc")
 			.take(NOTIFICATIONS_MAX_PER_USER);
+
+		const notificationsWithAvailability = await Promise.all(
+			notifications.map(async (notification) => ({
+				notification,
+				available: await notifications_db_invite_target_is_available(ctx, notification),
+			})),
+		);
+
+		// Existing orphaned invite rows can predate cleanup hooks. Hide them at the
+		// backend boundary so clients only render actionable notifications.
+		return notificationsWithAvailability
+			.filter((entry) => entry.available)
+			.map((entry) => entry.notification);
 	},
 });
 

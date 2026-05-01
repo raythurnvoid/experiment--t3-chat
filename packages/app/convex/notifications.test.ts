@@ -30,6 +30,13 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		default: true,
 		updatedAt: now,
 	});
+	await ctx.db.insert("workspaces_projects_users", {
+		workspaceId,
+		projectId,
+		userId,
+		active: true,
+		updatedAt: now,
+	});
 
 	return { userId, otherUserId, workspaceId, projectId };
 }
@@ -79,6 +86,58 @@ describe("list_current_notifications", () => {
 		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
 
 		expect(notifications.map((notification) => notification._id)).toEqual([newerNotificationId, olderNotificationId]);
+	});
+
+	test("excludes notifications when the target project was deleted", async () => {
+		const t = test_convex();
+		const target = await t.run(notifications_test_seed_target);
+		await t.run(async (ctx) => {
+			await notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 });
+			await ctx.db.delete(target.projectId);
+		});
+		const asUser = t.withIdentity(notifications_test_identity(target.userId));
+
+		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
+
+		expect(notifications).toHaveLength(0);
+	});
+
+	test("excludes notifications when the target workspace was deleted", async () => {
+		const t = test_convex();
+		const target = await t.run(notifications_test_seed_target);
+		await t.run(async (ctx) => {
+			await notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 });
+			await ctx.db.delete(target.workspaceId);
+		});
+		const asUser = t.withIdentity(notifications_test_identity(target.userId));
+
+		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
+
+		expect(notifications).toHaveLength(0);
+	});
+
+	test("excludes notifications when the user no longer has target project membership", async () => {
+		const t = test_convex();
+		const target = await t.run(notifications_test_seed_target);
+		await t.run(async (ctx) => {
+			await notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 });
+			const memberships = await ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_active_user_workspace_project", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", target.userId)
+						.eq("workspaceId", target.workspaceId)
+						.eq("projectId", target.projectId),
+				)
+				.collect();
+			await Promise.all(memberships.map((membership) => ctx.db.delete(membership._id)));
+		});
+		const asUser = t.withIdentity(notifications_test_identity(target.userId));
+
+		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
+
+		expect(notifications).toHaveLength(0);
 	});
 });
 

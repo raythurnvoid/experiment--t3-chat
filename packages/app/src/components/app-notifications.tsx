@@ -43,24 +43,20 @@ type AppNotificationsListItem_Props = {
 		notification: app_convex_FunctionReturnType<
 			typeof app_convex_api.notifications.list_current_notifications
 		>[number];
-		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
-		project:
-			| app_convex_FunctionReturnType<
-					typeof app_convex_api.workspaces.list
-			  >["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number]
-			| null;
+		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number];
+		project: app_convex_FunctionReturnType<
+			typeof app_convex_api.workspaces.list
+		>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
 	}) => void;
 };
 
 const AppNotificationsListItem = memo(function AppNotificationsListItem(props: AppNotificationsListItem_Props) {
 	const { notification, workspace, project, actorName, targetLoading, onMarkRead, onOpenProject } = props;
 
-	const targetAvailable = workspace !== null && project !== null;
-	const title = targetLoading
-		? "Loading invitation..."
-		: targetAvailable
-			? `${actorName} invited you to ${workspace.name} / ${project.name}`
-			: "Workspace invitation unavailable";
+	const title =
+		targetLoading || !workspace || !project
+			? "Loading invitation..."
+			: `${actorName} invited you to ${workspace.name} / ${project.name}`;
 
 	return (
 		<article
@@ -77,9 +73,12 @@ const AppNotificationsListItem = memo(function AppNotificationsListItem(props: A
 				<MyButton
 					variant="secondary"
 					disabled={targetLoading}
-					onClick={() => onOpenProject({ notification, workspace, project })}
+					onClick={() => {
+						if (!workspace || !project) return;
+						onOpenProject({ notification, workspace, project });
+					}}
 				>
-					{targetAvailable ? "Open" : "Dismiss"}
+					Open
 				</MyButton>
 				{notification.read ? null : (
 					<MyButton variant="ghost" onClick={() => onMarkRead(notification._id)}>
@@ -107,12 +106,10 @@ type AppNotificationsList_Props = {
 		notification: app_convex_FunctionReturnType<
 			typeof app_convex_api.notifications.list_current_notifications
 		>[number];
-		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
-		project:
-			| app_convex_FunctionReturnType<
-					typeof app_convex_api.workspaces.list
-			  >["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number]
-			| null;
+		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number];
+		project: app_convex_FunctionReturnType<
+			typeof app_convex_api.workspaces.list
+		>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
 	}) => void;
 };
 
@@ -157,6 +154,10 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 							: actorAnagraphicQueryResult;
 					const targetLoading = workspaceList === undefined;
 					const actorName = actorAnagraphic?.displayName?.trim() || "Someone";
+
+					if (!targetLoading && (!workspace || !project)) {
+						return null;
+					}
 
 					return (
 						<AppNotificationsListItem
@@ -227,19 +228,12 @@ export const AppNotifications = memo(function AppNotifications() {
 			notification: app_convex_FunctionReturnType<
 				typeof app_convex_api.notifications.list_current_notifications
 			>[number];
-			workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
-			project:
-				| app_convex_FunctionReturnType<
-						typeof app_convex_api.workspaces.list
-				  >["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number]
-				| null;
+			workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number];
+			project: app_convex_FunctionReturnType<
+				typeof app_convex_api.workspaces.list
+			>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
 		}) => {
 			const { notification, project, workspace } = args;
-
-			if (!workspace || !project) {
-				onMarkRead(notification._id);
-				return;
-			}
 
 			onMarkRead(notification._id);
 			setOpen(false);
