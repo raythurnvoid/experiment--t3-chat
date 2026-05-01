@@ -15,7 +15,7 @@
 	.BillingProductCardSurface-title {
 		margin: 0;
 
-		font-size: 15px;
+		font-size: 1rem;
 		font-weight: 600;
 		line-height: 1.3;
 		color: var(--color-fg-12);
@@ -24,7 +24,7 @@
 	.BillingProductCardSurface-price {
 		margin: 0;
 
-		font-size: 14px;
+		font-size: 0.9375rem;
 		font-weight: 600;
 		line-height: 1.45;
 		color: var(--color-fg-11);
@@ -47,7 +47,7 @@
 
 	/* #region pay-as-you-go */
 	.BillingProductCardPayAsYouGo-detail {
-		font-size: 13px;
+		font-size: 0.9375rem;
 		line-height: 1.45;
 		color: var(--color-fg-07);
 	}
@@ -55,7 +55,7 @@
 
 	/* #region pro */
 	.BillingProductCardPro-detail {
-		font-size: 13px;
+		font-size: 0.9375rem;
 		line-height: 1.45;
 		color: var(--color-fg-07);
 	}

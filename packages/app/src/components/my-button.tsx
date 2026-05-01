@@ -13,6 +13,7 @@ export type MyButton_ClassNames =
 	| "MyButton-variant-accent"
 	| "MyButton-variant-destructive"
 	| "MyButton-variant-outline"
+	| "MyButton-variant-outline_destructive"
 	| "MyButton-variant-secondary"
 	| "MyButton-variant-secondary-subtle"
 	| "MyButton-variant-ghost"
@@ -32,6 +33,7 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 		| "accent"
 		| "destructive"
 		| "outline"
+		| "outline_destructive"
 		| "secondary"
 		| "secondary-subtle"
 		| "ghost"
@@ -78,6 +80,8 @@ export const MyButton = memo(function MyButton(props: MyButton_Props) {
 				variant === "accent" && ("MyButton-variant-accent" satisfies MyButton_ClassNames),
 				variant === "destructive" && ("MyButton-variant-destructive" satisfies MyButton_ClassNames),
 				variant === "outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
+				variant === "outline_destructive" &&
+					("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
 				variant === "secondary" && ("MyButton-variant-secondary" satisfies MyButton_ClassNames),
 				variant === "secondary-subtle" && ("MyButton-variant-secondary-subtle" satisfies MyButton_ClassNames),
 				variant === "ghost" && ("MyButton-variant-ghost" satisfies MyButton_ClassNames),

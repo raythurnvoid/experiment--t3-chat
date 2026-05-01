@@ -22,7 +22,7 @@ export type MyCheckboxButton_Props = Omit<
 	className?: string;
 	style?: ComponentPropsWithRef<"label">["style"];
 	inputClassName?: string;
-	variant?: "ghost_destructive";
+	variant?: "ghost_destructive" | "outline_destructive";
 	children?: ReactNode;
 	onCheckedChange?: (checked: boolean) => void;
 };
@@ -56,6 +56,8 @@ export const MyCheckboxButton = memo(function MyCheckboxButton(props: MyCheckbox
 				disabled && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
 				variant === "ghost_destructive" &&
 					("MyButton-variant-ghost_destructive" satisfies MyButton_ClassNames),
+				variant === "outline_destructive" &&
+					("MyButton-variant-outline_destructive" satisfies MyButton_ClassNames),
 				className,
 			)}
 			style={style}

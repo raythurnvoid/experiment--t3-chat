@@ -103,6 +103,7 @@ type MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames =
 	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-title"
 	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-description"
 	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-actions"
+	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-row-action-separator"
 	| "MainAppAccountManagementDeleteAccountWorkspaceResolver-submit-trigger";
 
 type MainAppAccountManagementDeleteAccountWorkspaceResolverRow_Props = {
@@ -162,7 +163,15 @@ const MainAppAccountManagementDeleteAccountWorkspaceResolverRow = memo(
 						</MyLinkIcon>
 						Transfer ownership
 					</MyLink>
+					<span
+						className={
+							"MainAppAccountManagementDeleteAccountWorkspaceResolver-row-action-separator" satisfies MainAppAccountManagementDeleteAccountWorkspaceResolver_ClassNames
+						}
+					>
+						or
+					</span>
 					<MyCheckboxButton
+						variant="outline_destructive"
 						checked={deleteConfirmed}
 						disabled={resolving}
 						onCheckedChange={(checked) => onDeleteConfirmationChange(blockingWorkspace.workspace._id, checked)}
@@ -255,7 +264,7 @@ const MainAppAccountManagementDeleteAccountWorkspaceResolver = memo(
 						</ul>
 					</MyModalScrollableArea>
 					<MyModalFooter>
-						<MyButton variant="ghost" disabled={resolving} onClick={onClose}>
+						<MyButton variant="ghost-highlightable" disabled={resolving} onClick={onClose}>
 							Cancel
 						</MyButton>
 						{resolveDisabledTooltip ? (
@@ -490,10 +499,14 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 					onResolveAndDelete={() => void handleResolveWorkspacesAndDelete()}
 				/>
 			) : null}
-			<div
+			<form
 				className={
 					"MainAppAccountManagementDeleteAccount-form" satisfies MainAppAccountManagementDeleteAccount_ClassNames
 				}
+				onSubmit={(event) => {
+					event.preventDefault();
+					void handleDelete();
+				}}
 			>
 				<MyInput variant="surface">
 					<MyInputLabel>Confirmation</MyInputLabel>
@@ -511,13 +524,13 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 					</MyInputArea>
 				</MyInput>
 				<MyButton
+					type="submit"
 					variant="destructive"
 					disabled={confirmationText !== "delete" || isDeleting || isResolvingWorkspaces}
-					onClick={handleDelete}
 				>
 					{isDeleting ? "Deleting..." : "Delete account"}
 				</MyButton>
-			</div>
+			</form>
 		</div>
 	);
 });

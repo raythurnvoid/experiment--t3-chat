@@ -116,13 +116,27 @@
 
 		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
 
-		@media (prefers-color-scheme: dark) {
-			background: var(--red-300);
-		}
-
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover {
-				background: var(--red-300);
+				background: var(--red-600);
+				color: var(--color-fg-11);
+			}
+
+			&:active {
+				background: var(--red-700);
+				color: var(--color-fg-12);
+			}
+		}
+
+		.dark & {
+			&:not(:is(:disabled, .MyButton-state-disabled)) {
+				&:hover {
+					background: var(--red-500);
+				}
+
+				&:active {
+					background: var(--red-600);
+				}
 			}
 		}
 
@@ -172,6 +186,40 @@
 		&[aria-expanded="true"] {
 			border-color: var(--color-fg-06);
 			color: var(--color-fg-08);
+		}
+	}
+
+	.MyButton-variant-outline_destructive {
+		color: var(--color-red-08);
+		background: var(--color-base-1-03);
+		border-color: var(--color-red-05);
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
+			&:hover,
+			&:focus-visible {
+				color: var(--color-red-09);
+				background: var(--color-red-02);
+				border-color: var(--color-red-06);
+			}
+
+			&:active {
+				background: var(--color-red-02);
+				border-color: var(--color-red-07);
+				color: var(--color-red-10);
+			}
+		}
+
+		&:is(:disabled, .MyButton-state-disabled) {
+			color: var(--color-fg-04);
+			background: var(--color-base-1-03);
+			border-color: var(--color-base-1-03);
+			box-shadow: none;
+		}
+
+		&[aria-expanded="true"] {
+			border-color: var(--color-red-08);
+			color: var(--color-red-11);
 		}
 	}
 
@@ -270,13 +318,13 @@
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:hover,
 			&:focus-visible {
-				background: var(--color-red-02);
-				color: var(--color-red-10);
+				background: var(--color-red-03);
+				color: var(--color-red-11);
 			}
 
 			&:active {
-				background: var(--color-red-03);
-				color: var(--color-red-11);
+				background: var(--color-red-04);
+				color: var(--color-red-12);
 			}
 		}
 
@@ -292,7 +340,7 @@
 			&:hover,
 			&:focus-visible {
 				background: var(--color-base-1-07);
-				color: var(--color-fg-11);
+				color: var(--color-fg-10);
 			}
 
 			&:active {

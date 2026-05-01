@@ -83,13 +83,13 @@
 		color: var(--color-red-09);
 
 		&[aria-selected="true"] {
-			background: var(--color-red-02);
-			color: var(--color-red-10);
+			background: var(--color-red-03);
+			color: var(--color-red-11);
 		}
 
 		&[data-active-item] {
-			background: var(--color-red-03);
-			color: var(--color-red-11);
+			background: var(--color-red-04);
+			color: var(--color-red-12);
 		}
 	}
 	/* #endregion item */
