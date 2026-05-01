@@ -1,13 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
-	workspaces_description_max_length,
+	workspaces_DESCRIPTION_MAX_LENGTH,
+	workspaces_NAME_MAX_LENGTH,
 	workspaces_description_normalize,
 	workspaces_list_sort_compare_name_then_id,
 	workspaces_list_sort_projects_for_workspace,
 	workspaces_list_sort_workspaces,
 	workspaces_name_autofix,
 	workspaces_name_autofix_and_validate,
-	workspaces_name_max_length,
 	workspaces_name_validate,
 	workspaces_switcher_list_secondary_line,
 } from "./workspaces.ts";
@@ -66,13 +66,13 @@ describe("workspaces_name_validate", () => {
 	});
 
 	test("rejects names longer than max length", () => {
-		expect(workspaces_name_validate("a".repeat(workspaces_name_max_length + 1))._nay?.message).toBe(
+		expect(workspaces_name_validate("a".repeat(workspaces_NAME_MAX_LENGTH + 1))._nay?.message).toBe(
 			"Name must be at most 20 characters",
 		);
 	});
 
 	test("accepts names at max length", () => {
-		const name = "a".repeat(workspaces_name_max_length);
+		const name = "a".repeat(workspaces_NAME_MAX_LENGTH);
 		expect(workspaces_name_validate(name)._yay).toBe(name);
 	});
 
@@ -134,12 +134,12 @@ describe("workspaces_description_normalize", () => {
 	});
 
 	test("rejects when longer than max length", () => {
-		const long = "a".repeat(workspaces_description_max_length + 1);
+		const long = "a".repeat(workspaces_DESCRIPTION_MAX_LENGTH + 1);
 		expect(workspaces_description_normalize(long)._nay?.message).toBe("Description is too long");
 	});
 
 	test("accepts at max length", () => {
-		const ok = "a".repeat(workspaces_description_max_length);
+		const ok = "a".repeat(workspaces_DESCRIPTION_MAX_LENGTH);
 		expect(workspaces_description_normalize(ok)._yay).toBe(ok);
 	});
 });

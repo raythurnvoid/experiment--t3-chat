@@ -8,6 +8,8 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
+	workspaces_DEFAULT_PROJECT_NAME,
+	workspaces_DEFAULT_WORKSPACE_NAME,
 	workspaces_description_normalize,
 	workspaces_list_sort_projects_for_workspace,
 	workspaces_list_sort_workspaces,
@@ -21,14 +23,6 @@ import {
 } from "./access_control.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import {
-	notifications_db_delete_workspace_project_invites_for_project,
-	notifications_db_delete_workspace_project_invites_for_user,
-	notifications_db_delete_workspace_project_invites_for_workspace,
-} from "./notifications.ts";
-
-const DEFAULT_WORKSPACE_NAME = "personal";
-const DEFAULT_PROJECT_NAME = "home";
 
 const access_control_workspace_role_permission_grants = [
 	{ role: "admin", permission: "workspace.update" },
@@ -103,9 +97,10 @@ export async function workspaces_db_create(
 	}
 	const name = nameResult._yay;
 
-	const allowDuplicateDefaultWorkspaceName = Boolean(args.default) && name === DEFAULT_WORKSPACE_NAME;
+	const isDefault = Boolean(args.default) && name === workspaces_DEFAULT_WORKSPACE_NAME;
 
-	const existingWorkspace = allowDuplicateDefaultWorkspaceName
+	// Allow only default workspaces to reuse their global name; user-created workspaces stay globally unique.
+	const existingWorkspace = isDefault
 		? null
 		: await ctx.db
 				.query("workspaces")
@@ -149,7 +144,7 @@ export async function workspaces_db_create(
 
 	const defaultProjectId = await ctx.db.insert("workspaces_projects", {
 		workspaceId,
-		name: DEFAULT_PROJECT_NAME,
+		name: workspaces_DEFAULT_PROJECT_NAME,
 		description: "",
 		default: true,
 		updatedAt: args.now,
@@ -223,7 +218,7 @@ export async function workspaces_db_create(
 			workspaceId,
 			defaultProjectId,
 			name,
-			defaultProjectName: DEFAULT_PROJECT_NAME,
+			defaultProjectName: workspaces_DEFAULT_PROJECT_NAME,
 		},
 	});
 }
@@ -366,7 +361,7 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 	if (!defaultWorkspace) {
 		await workspaces_db_create(ctx, {
 			userId: args.userId,
-			name: DEFAULT_WORKSPACE_NAME,
+			name: workspaces_DEFAULT_WORKSPACE_NAME,
 			description: "",
 			now: args.now,
 			default: true,
@@ -907,7 +902,6 @@ export const invite_user_to_workspace_project = mutation({
 				actorUserId: userAuth.id,
 				workspaceId: workspace._id,
 				projectId: project._id,
-				createdAt: now,
 				updatedAt: now,
 			}),
 		]);
@@ -994,10 +988,23 @@ export const remove_user_from_workspace = mutation({
 		}
 
 		await Promise.all([
-			notifications_db_delete_workspace_project_invites_for_user(ctx, {
-				userId: args.userIdToRemove,
-				workspaceId: workspace._id,
-			}),
+			// Remove invite notifications for the workspace access the user is losing.
+			Promise.all([
+				ctx.db
+					.query("notifications")
+					.withIndex("by_workspace_user_read", (q) =>
+						q.eq("workspaceId", workspace._id).eq("userId", args.userIdToRemove).eq("read", false),
+					)
+					.collect(),
+				ctx.db
+					.query("notifications")
+					.withIndex("by_workspace_user_read", (q) =>
+						q.eq("workspaceId", workspace._id).eq("userId", args.userIdToRemove).eq("read", true),
+					)
+					.collect(),
+			]).then((notificationsByReadState) =>
+				Promise.all(notificationsByReadState.flat().map((notification) => ctx.db.delete(notification._id))),
+			),
 			ctx.db
 				.query("workspaces_projects_users")
 				.withIndex("by_active_user_workspace_project", (q) =>
@@ -1399,9 +1406,12 @@ export const delete_workspace = mutation({
 				workspaceId: workspace._id,
 				scope: "workspace",
 			}),
-			notifications_db_delete_workspace_project_invites_for_workspace(ctx, {
-				workspaceId: workspace._id,
-			}),
+			// Remove every invite notification tied to the workspace being deleted.
+			ctx.db
+				.query("notifications")
+				.withIndex("by_workspace_user_read", (q) => q.eq("workspaceId", workspace._id))
+				.collect()
+				.then((notifications) => Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)))),
 			ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", workspace._id))
@@ -1580,10 +1590,14 @@ export const delete_project = mutation({
 			});
 		}
 		await Promise.all([
-			notifications_db_delete_workspace_project_invites_for_project(ctx, {
-				workspaceId: workspace._id,
-				projectId: project._id,
-			}),
+			// Remove invite notifications that pointed at the project being deleted.
+			ctx.db
+				.query("notifications")
+				.withIndex("by_workspace_project_user", (q) =>
+					q.eq("workspaceId", workspace._id).eq("projectId", project._id),
+				)
+				.collect()
+				.then((notifications) => Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)))),
 			Promise.all(projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id))),
 			ctx.db
 				.query("access_control_role_assignments")

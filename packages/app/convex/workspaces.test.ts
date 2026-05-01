@@ -17,7 +17,7 @@ import {
 } from "./access_control.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { workspaces_description_max_length, workspaces_name_max_length } from "../shared/workspaces.ts";
+import { workspaces_DESCRIPTION_MAX_LENGTH, workspaces_NAME_MAX_LENGTH } from "../shared/workspaces.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -87,6 +87,21 @@ async function workspaces_test_read_workspace_extra_project_quota_doc(
 			q.eq("workspaceId", args.workspaceId).eq("quotaName", "extra_projects"),
 		)
 		.first();
+}
+
+async function workspaces_test_collect_notifications_for_user(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	return (
+		await Promise.all([
+			ctx.db
+				.query("notifications")
+				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", false))
+				.collect(),
+			ctx.db
+				.query("notifications")
+				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", true))
+				.collect(),
+		])
+	).flat();
 }
 
 async function workspaces_test_seed_project_scoped_rows(
@@ -343,7 +358,7 @@ describe("create_workspace", () => {
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
 			description: "",
-			name: "a".repeat(workspaces_name_max_length + 1),
+			name: "a".repeat(workspaces_NAME_MAX_LENGTH + 1),
 		});
 
 		expect(result._nay?.message).toBe("Name must be at most 20 characters");
@@ -501,7 +516,7 @@ describe("create_workspace", () => {
 		});
 
 		const result = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "x".repeat(workspaces_description_max_length + 1),
+			description: "x".repeat(workspaces_DESCRIPTION_MAX_LENGTH + 1),
 			name: "long-desc-ws",
 		});
 		expect(result._nay?.message).toBe("Description is too long");
@@ -1355,7 +1370,7 @@ describe("invite_user_to_workspace_project", () => {
 					.collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
+					.withIndex("by_user_read", (q) => q.eq("userId", invitedUserId).eq("read", false))
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
@@ -1413,8 +1428,8 @@ describe("invite_user_to_workspace_project", () => {
 					.collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_user_workspace_createdAt", (q) =>
-						q.eq("userId", invitedUserId).eq("workspaceId", created._yay!.workspaceId),
+					.withIndex("by_workspace_user_read", (q) =>
+						q.eq("workspaceId", created._yay!.workspaceId).eq("userId", invitedUserId),
 					)
 					.collect(),
 			]);
@@ -1492,7 +1507,12 @@ describe("invite_user_to_workspace_project", () => {
 					.first(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
+					.withIndex("by_workspace_user_read", (q) =>
+						q
+							.eq("workspaceId", created._yay!.workspaceId)
+							.eq("userId", invitedUserId)
+							.eq("read", false),
+					)
 					.first(),
 			]);
 
@@ -1564,10 +1584,7 @@ describe("invite_user_to_workspace_project", () => {
 						q.eq("active", true).eq("userId", invitedUserId).eq("workspaceId", created._yay!.workspaceId),
 					)
 					.collect(),
-				ctx.db
-					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", invitedUserId))
-					.collect(),
+				workspaces_test_collect_notifications_for_user(ctx, { userId: invitedUserId }),
 			]);
 
 			return { membership, notifications };
@@ -2510,7 +2527,7 @@ describe("edit_workspace", () => {
 			workspaceId: created._yay!.workspaceId,
 			defaultProjectId: created._yay!.defaultProjectId,
 			name: "edit-ws-desc-next",
-			description: "x".repeat(workspaces_description_max_length + 1),
+			description: "x".repeat(workspaces_DESCRIPTION_MAX_LENGTH + 1),
 		});
 		expect(result._nay?.message).toBe("Description is too long");
 	});
@@ -2539,7 +2556,7 @@ describe("edit_workspace", () => {
 		const result = await asUser.mutation(api.workspaces.edit_workspace, {
 			workspaceId: created._yay!.workspaceId,
 			defaultProjectId: created._yay!.defaultProjectId,
-			name: "a".repeat(workspaces_name_max_length + 1),
+			name: "a".repeat(workspaces_NAME_MAX_LENGTH + 1),
 			description: "",
 		});
 		expect(result._nay?.message).toBe("Name must be at most 20 characters");
@@ -2966,7 +2983,6 @@ describe("delete_project", () => {
 				actorUserId: userId,
 				workspaceId: created._yay!.workspaceId,
 				projectId: extraProject._yay!.projectId,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 			await workspaces_test_seed_project_scoped_rows(ctx, {
@@ -3020,7 +3036,7 @@ describe("delete_project", () => {
 				ctx.db.query("chat_messages").collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_workspace_project_createdAt", (q) =>
+					.withIndex("by_workspace_project_user", (q) =>
 						q.eq("workspaceId", created._yay!.workspaceId).eq("projectId", extraProject._yay!.projectId),
 					)
 					.collect(),
@@ -3186,7 +3202,6 @@ describe("delete_workspace", () => {
 				actorUserId: ownerId,
 				workspaceId: created._yay!.workspaceId,
 				projectId: extraProject._yay!.projectId,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 			await ctx.db.insert("workspaces_projects_users", {
@@ -3267,7 +3282,7 @@ describe("delete_workspace", () => {
 				ctx.db.query("chat_messages").collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_workspace_createdAt", (q) => q.eq("workspaceId", created._yay!.workspaceId))
+					.withIndex("by_workspace_user_read", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
 			]);
 

@@ -63,11 +63,11 @@ import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } f
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import {
-	workspaces_description_max_length,
+	workspaces_DESCRIPTION_MAX_LENGTH,
+	workspaces_NAME_MAX_LENGTH,
+	workspaces_NAME_MIN_LENGTH,
 	workspaces_description_normalize,
 	workspaces_name_autofix,
-	workspaces_name_max_length,
-	workspaces_name_min_length,
 	workspaces_name_validate,
 } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
@@ -536,10 +536,6 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 // #endregion select pane
 
 // #region modal form helpers
-const main_app_header_workspace_switcher_modal_NAME_HELPER_TEXT = `Use ${workspaces_name_min_length}-${workspaces_name_max_length} characters. Lowercase letters and hyphens only (kebab-case).`;
-
-const main_app_header_workspace_switcher_modal_DESCRIPTION_HELPER_TEXT = `Optional. Plain text, up to ${workspaces_description_max_length} characters.`;
-
 function should_block_name_retry(message: string) {
 	return message === "Workspace name already exists" || message === "Project name already exists";
 }
@@ -592,7 +588,7 @@ const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWo
 						type="text"
 						autoComplete="off"
 						defaultValue=""
-						maxLength={workspaces_name_max_length}
+						maxLength={workspaces_NAME_MAX_LENGTH}
 						placeholder={kind === "workspace" ? "acme-labs" : "my-project"}
 						aria-invalid={!isNameValid && isNameNonEmpty}
 						disabled={isSubmitting}
@@ -607,7 +603,8 @@ const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWo
 							("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
 					)}
 				>
-					{nameMessage ?? main_app_header_workspace_switcher_modal_NAME_HELPER_TEXT}
+					{nameMessage ??
+						`Use ${workspaces_NAME_MIN_LENGTH}-${workspaces_NAME_MAX_LENGTH} characters. Lowercase letters and hyphens only (kebab-case).`}
 				</MyInputHelperText>
 			</MyInput>
 
@@ -620,7 +617,7 @@ const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWo
 						type="text"
 						autoComplete="off"
 						defaultValue=""
-						maxLength={workspaces_description_max_length}
+						maxLength={workspaces_DESCRIPTION_MAX_LENGTH}
 						placeholder={kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"}
 						aria-invalid={!isDescriptionValid}
 						disabled={isSubmitting}
@@ -633,7 +630,7 @@ const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWo
 							("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
 					)}
 				>
-					{descriptionMessage ?? main_app_header_workspace_switcher_modal_DESCRIPTION_HELPER_TEXT}
+					{descriptionMessage ?? `Optional. Plain text, up to ${workspaces_DESCRIPTION_MAX_LENGTH} characters.`}
 				</MyInputHelperText>
 			</MyInput>
 		</>

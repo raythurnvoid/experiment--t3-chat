@@ -67,7 +67,7 @@ const AppNotificationsListItem = memo(function AppNotificationsListItem(props: A
 		>
 			<h3 className={"AppNotificationsListItem-title" satisfies AppNotificationsListItem_ClassNames}>{title}</h3>
 			<p className={"AppNotificationsListItem-meta" satisfies AppNotificationsListItem_ClassNames}>
-				{format_relative_time(notification.createdAt)}
+				{format_relative_time(notification._creationTime)}
 			</p>
 			<div className={"AppNotificationsListItem-actions" satisfies AppNotificationsListItem_ClassNames}>
 				<MyButton
@@ -143,10 +143,16 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 				notificationItems.map((notification) => {
 					const workspace =
 						workspaceList?.workspaces.find((workspace) => workspace._id === notification.workspaceId) ?? null;
-					const project =
+					const invitedProject =
 						workspaceList?.workspaceIdsProjectsDict[notification.workspaceId]?.find(
 							(project) => project._id === notification.projectId,
 						) ?? null;
+					const defaultProjectOfInvitedWorkspace =
+						// Keep workspace-valid invites actionable after the originally invited project is deleted.
+						workspaceList?.workspaceIdsProjectsDict[notification.workspaceId]?.find(
+							(project) => project._id === workspace?.defaultProjectId || project.default,
+						) ?? null;
+					const project = invitedProject ?? defaultProjectOfInvitedWorkspace;
 					const actorAnagraphicQueryResult = actorAnagraphicQueryResults[notification.actorUserId];
 					const actorAnagraphic =
 						actorAnagraphicQueryResult === undefined || actorAnagraphicQueryResult instanceof Error

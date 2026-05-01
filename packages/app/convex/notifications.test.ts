@@ -30,6 +30,7 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		default: true,
 		updatedAt: now,
 	});
+	await ctx.db.patch("workspaces", workspaceId, { defaultProjectId: projectId });
 	await ctx.db.insert("workspaces_projects_users", {
 		workspaceId,
 		projectId,
@@ -44,9 +45,9 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 async function notifications_test_insert(
 	ctx: MutationCtx,
 	args: NotificationsTestTarget & {
-		createdAt: number;
 		read?: boolean;
 		userId: Id<"users">;
+		updatedAt?: number;
 	},
 ) {
 	return await ctx.db.insert("notifications", {
@@ -56,9 +57,23 @@ async function notifications_test_insert(
 		actorUserId: args.otherUserId,
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		createdAt: args.createdAt,
-		updatedAt: args.createdAt,
+		updatedAt: args.updatedAt ?? Date.now(),
 	});
+}
+
+async function notifications_test_collect_for_user(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	return (
+		await Promise.all([
+			ctx.db
+				.query("notifications")
+				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", false))
+				.collect(),
+			ctx.db
+				.query("notifications")
+				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", true))
+				.collect(),
+		])
+	).flat();
 }
 
 function notifications_test_identity(userId: Id<"users">) {
@@ -71,16 +86,16 @@ function notifications_test_identity(userId: Id<"users">) {
 }
 
 describe("list_current_notifications", () => {
-	test("lists only the current user's notifications in descending createdAt order", async () => {
+	test("lists only the current user's notifications in descending creation order", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
-		const [olderNotificationId, newerNotificationId] = await t.run(async (ctx) =>
-			Promise.all([
-				notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 }),
-				notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 200 }),
-				notifications_test_insert(ctx, { ...target, userId: target.otherUserId, createdAt: 300 }),
-			]),
+		const olderNotificationId = await t.run((ctx) =>
+			notifications_test_insert(ctx, { ...target, userId: target.userId }),
 		);
+		const newerNotificationId = await t.run((ctx) =>
+			notifications_test_insert(ctx, { ...target, userId: target.userId }),
+		);
+		await t.run((ctx) => notifications_test_insert(ctx, { ...target, userId: target.otherUserId }));
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
 		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
@@ -88,56 +103,92 @@ describe("list_current_notifications", () => {
 		expect(notifications.map((notification) => notification._id)).toEqual([newerNotificationId, olderNotificationId]);
 	});
 
-	test("excludes notifications when the target project was deleted", async () => {
+	test("caps newest current-user notification rows without checking memberships", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
+		const oldestNotificationId = await t.run((ctx) =>
+			notifications_test_insert(ctx, { ...target, userId: target.userId }),
+		);
 		await t.run(async (ctx) => {
-			await notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 });
-			await ctx.db.delete(target.projectId);
+			const now = Date.now();
+			const workspaceWithoutMembershipId = await ctx.db.insert("workspaces", {
+				name: "notifications-workspace-without-membership",
+				description: "",
+				default: false,
+				updatedAt: now,
+			});
+			const projectWithoutMembershipId = await ctx.db.insert("workspaces_projects", {
+				workspaceId: workspaceWithoutMembershipId,
+				name: "home",
+				description: "",
+				default: true,
+				updatedAt: now,
+			});
+
+			for (let index = 0; index < 502; index++) {
+				await notifications_test_insert(ctx, {
+					...target,
+					workspaceId: workspaceWithoutMembershipId,
+					projectId: projectWithoutMembershipId,
+					userId: target.userId,
+				});
+			}
 		});
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
 		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
 
-		expect(notifications).toHaveLength(0);
+		expect(notifications).toHaveLength(500);
+		expect(notifications.some((notification) => notification._id === oldestNotificationId)).toBe(false);
 	});
 
-	test("excludes notifications when the target workspace was deleted", async () => {
+	test("keeps notifications visible when the invited project is gone but the workspace remains accessible", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
-		await t.run(async (ctx) => {
-			await notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 });
-			await ctx.db.delete(target.workspaceId);
+		const notificationId = await t.run(async (ctx) => {
+			const extraProjectId = await ctx.db.insert("workspaces_projects", {
+				workspaceId: target.workspaceId,
+				name: "roadmap",
+				description: "",
+				default: false,
+				updatedAt: Date.now(),
+			});
+			const notificationId = await notifications_test_insert(ctx, {
+				...target,
+				projectId: extraProjectId,
+				userId: target.userId,
+			});
+			await ctx.db.delete(extraProjectId);
+
+			return notificationId;
 		});
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
 		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
 
-		expect(notifications).toHaveLength(0);
+		expect(notifications.map((notification) => notification._id)).toEqual([notificationId]);
 	});
 
-	test("excludes notifications when the user no longer has target project membership", async () => {
+	test("lists notification rows even when the user no longer has workspace membership", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
-		await t.run(async (ctx) => {
-			await notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 });
+		const notificationId = await t.run(async (ctx) => {
+			const notificationId = await notifications_test_insert(ctx, { ...target, userId: target.userId });
 			const memberships = await ctx.db
 				.query("workspaces_projects_users")
 				.withIndex("by_active_user_workspace_project", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", target.userId)
-						.eq("workspaceId", target.workspaceId)
-						.eq("projectId", target.projectId),
+					q.eq("active", true).eq("userId", target.userId).eq("workspaceId", target.workspaceId),
 				)
 				.collect();
 			await Promise.all(memberships.map((membership) => ctx.db.delete(membership._id)));
+
+			return notificationId;
 		});
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
 		const notifications = await asUser.query(api.notifications.list_current_notifications, {});
 
-		expect(notifications).toHaveLength(0);
+		expect(notifications.map((notification) => notification._id)).toEqual([notificationId]);
 	});
 });
 
@@ -147,8 +198,8 @@ describe("mark_notification_read", () => {
 		const target = await t.run(notifications_test_seed_target);
 		const [ownNotificationId, otherNotificationId] = await t.run(async (ctx) =>
 			Promise.all([
-				notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 }),
-				notifications_test_insert(ctx, { ...target, userId: target.otherUserId, createdAt: 200 }),
+				notifications_test_insert(ctx, { ...target, userId: target.userId }),
+				notifications_test_insert(ctx, { ...target, userId: target.otherUserId }),
 			]),
 		);
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
@@ -179,10 +230,10 @@ describe("mark_all_notifications_read", () => {
 		const target = await t.run(notifications_test_seed_target);
 		await t.run(async (ctx) =>
 			Promise.all([
-				notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 100 }),
-				notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 200 }),
-				notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt: 300, read: true }),
-				notifications_test_insert(ctx, { ...target, userId: target.otherUserId, createdAt: 400 }),
+				notifications_test_insert(ctx, { ...target, userId: target.userId }),
+				notifications_test_insert(ctx, { ...target, userId: target.userId }),
+				notifications_test_insert(ctx, { ...target, userId: target.userId, read: true }),
+				notifications_test_insert(ctx, { ...target, userId: target.otherUserId }),
 			]),
 		);
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
@@ -192,14 +243,8 @@ describe("mark_all_notifications_read", () => {
 		expect(result._yay?.count).toBe(2);
 		const rows = await t.run(async (ctx) => {
 			const [userNotifications, otherNotifications] = await Promise.all([
-				ctx.db
-					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", target.userId))
-					.collect(),
-				ctx.db
-					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", target.otherUserId))
-					.collect(),
+				notifications_test_collect_for_user(ctx, { userId: target.userId }),
+				notifications_test_collect_for_user(ctx, { userId: target.otherUserId }),
 			]);
 
 			return { userNotifications, otherNotifications };
@@ -213,34 +258,30 @@ describe("cleanup_extra_notifications", () => {
 	test("deletes only rows beyond the per-user cap", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
-		await t.run(async (ctx) => {
-			await Promise.all([
-				...Array.from({ length: 502 }, (_, createdAt) =>
-					notifications_test_insert(ctx, { ...target, userId: target.userId, createdAt }),
-				),
-				notifications_test_insert(ctx, { ...target, userId: target.otherUserId, createdAt: 0 }),
-			]);
+		const deletedNotificationIds = await t.run(async (ctx) => {
+			const userNotificationIds: Array<Id<"notifications">> = [];
+			for (let index = 0; index < 502; index++) {
+				userNotificationIds.push(await notifications_test_insert(ctx, { ...target, userId: target.userId }));
+			}
+			await notifications_test_insert(ctx, { ...target, userId: target.otherUserId });
+
+			return userNotificationIds.slice(0, 2);
 		});
 
 		const result = await t.mutation(internal.notifications.cleanup_extra_notifications, {});
 
 		expect(result.deletedCount).toBe(2);
 		const rows = await t.run(async (ctx) => {
-			const [userNotifications, otherNotifications] = await Promise.all([
-				ctx.db
-					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", target.userId))
-					.collect(),
-				ctx.db
-					.query("notifications")
-					.withIndex("by_user_createdAt", (q) => q.eq("userId", target.otherUserId))
-					.collect(),
+			const [userNotifications, otherNotifications, deletedNotifications] = await Promise.all([
+				notifications_test_collect_for_user(ctx, { userId: target.userId }),
+				notifications_test_collect_for_user(ctx, { userId: target.otherUserId }),
+				Promise.all(deletedNotificationIds.map((notificationId) => ctx.db.get("notifications", notificationId))),
 			]);
 
-			return { userNotifications, otherNotifications };
+			return { userNotifications, otherNotifications, deletedNotifications };
 		});
 		expect(rows.userNotifications).toHaveLength(500);
-		expect(rows.userNotifications[0]?.createdAt).toBe(2);
+		expect(rows.deletedNotifications).toEqual([null, null]);
 		expect(rows.otherNotifications).toHaveLength(1);
 	});
 });

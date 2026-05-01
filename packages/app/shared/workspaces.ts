@@ -1,12 +1,11 @@
 import { Result } from "./errors-as-values-utils.ts";
 
 // #region names
+export const workspaces_DEFAULT_WORKSPACE_NAME = "personal";
+export const workspaces_DEFAULT_PROJECT_NAME = "home";
 
-/** Letters, digits (not first char), single hyphens between segments; min length enforced separately. */
-const workspace_project_name_regex = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-
-export const workspaces_name_min_length = 3;
-export const workspaces_name_max_length = 20;
+export const workspaces_NAME_MIN_LENGTH = 3;
+export const workspaces_NAME_MAX_LENGTH = 20;
 
 export type workspaces_name_autofix_Options = {
 	/**
@@ -56,6 +55,9 @@ export function workspaces_name_autofix(raw: string, options?: workspaces_name_a
 	return out;
 }
 
+/** Letters, digits (not first char), single hyphens between segments; min length enforced separately. */
+const workspace_project_name_regex = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
 /**
  * Validate a workspace or project name after autofix (or whenever the string is already normalized).
  */
@@ -71,7 +73,7 @@ export function workspaces_name_validate(name: string) {
 		});
 	}
 
-	if (trimmed.length < workspaces_name_min_length) {
+	if (trimmed.length < workspaces_NAME_MIN_LENGTH) {
 		return Result({
 			_nay: {
 				name: "nay",
@@ -80,7 +82,7 @@ export function workspaces_name_validate(name: string) {
 		});
 	}
 
-	if (trimmed.length > workspaces_name_max_length) {
+	if (trimmed.length > workspaces_NAME_MAX_LENGTH) {
 		return Result({
 			_nay: {
 				name: "nay",
@@ -106,16 +108,16 @@ export function workspaces_name_validate(name: string) {
 /**
  * Maximum stored length for workspace/project description (after trim).
  */
-export const workspaces_description_max_length = 50;
+export const workspaces_DESCRIPTION_MAX_LENGTH = 50;
 
 /**
  * Normalize user-provided description: trim; empty after trim → store as `""`; reject when longer than
- * {@link workspaces_description_max_length}.
+ * {@link workspaces_DESCRIPTION_MAX_LENGTH}.
  */
 export function workspaces_description_normalize(raw: string) {
 	const trimmed = raw.trim();
 
-	if (trimmed.length > workspaces_description_max_length) {
+	if (trimmed.length > workspaces_DESCRIPTION_MAX_LENGTH) {
 		return Result({
 			_nay: {
 				name: "nay",

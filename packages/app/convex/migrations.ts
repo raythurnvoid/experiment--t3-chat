@@ -32,6 +32,10 @@ type WorkspaceWithOwner = Doc<"workspaces"> & {
 	owner?: Id<"users">;
 };
 
+type NotificationWithCreatedAt = Doc<"notifications"> & {
+	createdAt?: number;
+};
+
 const access_control_workspace_role_permission_grants = [
 	{ role: "admin", permission: "workspace.update" },
 	{ role: "admin", permission: "workspace.members.manage" },
@@ -116,17 +120,6 @@ export const rename_workspaces_owner_user_id_to_owner = app_migrations.define({
 			...next,
 			owner: owner ?? ownerUserId,
 		});
-	},
-});
-
-export const move_user_notifications_to_notifications = app_migrations.define({
-	table: "user_notifications",
-	migrateOne: async (ctx, notification) => {
-		const { _id, _creationTime, ...next } = notification;
-
-		// Move and delete in one transaction so reruns do not duplicate rows.
-		await ctx.db.insert("notifications", next);
-		await ctx.db.delete("user_notifications", _id);
 	},
 });
 
@@ -330,6 +323,19 @@ export const update_extra_workspaces_quota_max_count_to_2 = app_migrations.defin
 	},
 });
 
+export const remove_notifications_created_at = app_migrations.define({
+	table: "notifications",
+	migrateOne: async (ctx, notification) => {
+		const legacyNotification = notification as NotificationWithCreatedAt;
+		if (legacyNotification.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyNotification;
+		await ctx.db.replace("notifications", _id, next);
+	},
+});
+
 /** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
@@ -344,8 +350,8 @@ export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrat
 export const run_rename_workspaces_owner_user_id_to_owner = app_migrations.runner(
 	internal.migrations.rename_workspaces_owner_user_id_to_owner,
 );
-export const run_move_user_notifications_to_notifications = app_migrations.runner(
-	internal.migrations.move_user_notifications_to_notifications,
+export const run_remove_notifications_created_at = app_migrations.runner(
+	internal.migrations.remove_notifications_created_at,
 );
 export const run_backfill_access_control_owner_assignments = app_migrations.runner(
 	internal.migrations.backfill_access_control_owner_assignments,
