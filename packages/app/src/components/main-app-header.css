@@ -51,11 +51,13 @@
 		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		line-height: 1.1;
 	}
 
 	.MainAppHeaderWorkspaceControls-primary-text {
 		grid-row: 1;
 		grid-column: 1;
+		align-self: end;
 
 		color: var(--color-fg-11);
 
@@ -67,8 +69,9 @@
 	.MainAppHeaderWorkspaceControls-secondary-text {
 		grid-row: 2;
 		grid-column: 1;
+		align-self: start;
 
-		font-size: 0.8125rem;
+		font-size: 0.875rem;
 
 		color: var(--color-fg-09);
 
