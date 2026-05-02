@@ -1025,7 +1025,9 @@ export function ai_chat_tool_create_text_search_pages(
 					pages_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
 				);
 
-				const blockLines = [`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chunk #${item.chunkIndex})`];
+				const blockLines = [
+					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})`,
+				];
 
 				if (item.hasChunkAbove) {
 					if (hasSpecificAbove && isCodeChunk) {

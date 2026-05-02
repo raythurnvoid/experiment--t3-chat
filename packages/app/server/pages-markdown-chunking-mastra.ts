@@ -271,6 +271,8 @@ export async function pages_chunk_markdown(markdown: string, options?: { maxChun
 		chunkIndex: number;
 		markdownChunk: string;
 		plainTextChunk: string;
+		startIndex: number;
+		endIndex: number;
 		lineStart: number;
 		lineEnd: number;
 		chunkFlags: number;
@@ -295,15 +297,14 @@ export async function pages_chunk_markdown(markdown: string, options?: { maxChun
 			});
 		}
 
-		const startOffset = startIndex;
-		const endOffset = startOffset + markdownChunk.length;
+		const endIndex = startIndex + markdownChunk.length;
 
 		const lineStart = get_line_number_from_offset({
-			targetOffset: startOffset,
+			targetOffset: startIndex,
 			lineStartOffsetsAsc,
 		});
 		const lineEnd = get_line_number_from_offset({
-			targetOffset: endOffset,
+			targetOffset: endIndex,
 			lineStartOffsetsAsc,
 		});
 
@@ -331,6 +332,8 @@ export async function pages_chunk_markdown(markdown: string, options?: { maxChun
 			chunkIndex: chunks.length,
 			markdownChunk,
 			plainTextChunk,
+			startIndex,
+			endIndex,
 			lineStart,
 			lineEnd,
 			chunkFlags,

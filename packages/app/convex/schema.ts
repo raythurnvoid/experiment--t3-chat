@@ -173,6 +173,8 @@ const app_convex_schema = defineSchema({
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		markdownChunk: v.string(),
+		startIndex: v.number(),
+		endIndex: v.number(),
 		lineStart: v.number(),
 		lineEnd: v.number(),
 		chunkFlags: v.number(),

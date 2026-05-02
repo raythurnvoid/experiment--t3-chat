@@ -180,7 +180,7 @@ Purpose:
 Important behavior:
 
 - Search happens on markdown-derived plain text chunks, not raw markdown syntax.
-- Returned snippets are markdown chunks with `lineStart` / `lineEnd`.
+- Returned snippets are markdown chunks with `lineStart` / `lineEnd` plus 0-based source `startIndex` / `endIndex` character ranges (`endIndex` exclusive).
 - The query first uses Convex full-text search over `pages_plain_text_chunks`.
 - Current behavior then exact-filters candidate chunks with `plainTextChunk.includes(query)`.
 - Current behavior dedupes by `markdownChunkId`.

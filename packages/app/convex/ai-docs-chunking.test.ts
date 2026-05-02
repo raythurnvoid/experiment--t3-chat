@@ -34,6 +34,8 @@ test("db_upsert_page_chunks replaces existing chunk rows for a page", async () =
 			yjsSequence: 1,
 			chunkIndex: 0,
 			markdownChunk: "Old markdown chunk",
+			startIndex: 0,
+			endIndex: "Old markdown chunk".length,
 			lineStart: 1,
 			lineEnd: 1,
 			chunkFlags: 0,
@@ -82,6 +84,7 @@ test("db_upsert_page_chunks replaces existing chunk rows for a page", async () =
 		expect(plainTextChunks.length).toBeGreaterThan(0);
 		expect(markdownChunks.every((chunk) => chunk.yjsSequence === 2)).toBe(true);
 		expect(plainTextChunks.every((chunk) => chunk.yjsSequence === 2)).toBe(true);
+		expect(markdownChunks.every((chunk) => chunk.startIndex >= 0 && chunk.endIndex > chunk.startIndex)).toBe(true);
 		expect(
 			plainTextChunks.every((chunk) => markdownChunks.some((markdownChunk) => markdownChunk._id === chunk.markdownChunkId)),
 		).toBe(true);

@@ -285,6 +285,8 @@ export async function db_upsert_page_chunks(
 				yjsSequence: args.yjsSequence,
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
+				startIndex: chunk.startIndex,
+				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
 				lineEnd: chunk.lineEnd,
 				chunkFlags: chunk.chunkFlags,
@@ -1857,6 +1859,8 @@ export const text_search_pages = internalQuery({
 				path: v.string(),
 				markdownChunk: v.string(),
 				chunkIndex: v.number(),
+				startIndex: v.number(),
+				endIndex: v.number(),
 				lineStart: v.number(),
 				lineEnd: v.number(),
 				chunkFlags: v.number(),
@@ -1873,6 +1877,8 @@ export const text_search_pages = internalQuery({
 			path: string;
 			markdownChunk: string;
 			chunkIndex: number;
+			startIndex: number;
+			endIndex: number;
 			lineStart: number;
 			lineEnd: number;
 			chunkFlags: number;
@@ -1966,6 +1972,8 @@ export const text_search_pages = internalQuery({
 						path: pageDoc.path,
 						markdownChunk: markdownChunkDoc.markdownChunk,
 						chunkIndex: markdownChunkDoc.chunkIndex,
+						startIndex: markdownChunkDoc.startIndex,
+						endIndex: markdownChunkDoc.endIndex,
 						lineStart: markdownChunkDoc.lineStart,
 						lineEnd: markdownChunkDoc.lineEnd,
 						chunkFlags: markdownChunkDoc.chunkFlags,

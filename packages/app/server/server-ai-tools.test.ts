@@ -152,6 +152,8 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 				path: "/Docs/CodeGuide",
 				markdownChunk: "```ts\nconst value = 1;\n```",
 				chunkIndex: 2,
+				startIndex: 900,
+				endIndex: 925,
 				lineStart: 41,
 				lineEnd: 43,
 				chunkFlags:
@@ -165,6 +167,8 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 				path: "/Docs/TableGuide",
 				markdownChunk: "| a | b |\n|---|---|\n| 1 | 2 |",
 				chunkIndex: 1,
+				startIndex: 120,
+				endIndex: 151,
 				lineStart: 10,
 				lineEnd: 12,
 				chunkFlags: pages_chunk_BITMASK_FLAGS.isTable | pages_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
@@ -197,10 +201,10 @@ test("text_search_pages tool: renders line ranges and fragment markers", async (
 		limit: 20,
 	});
 
-	expect(result.output).toContain("/Docs/CodeGuide (lines 41-43, chunk #2)");
+	expect(result.output).toContain("/Docs/CodeGuide (lines 41-43, chars 900-925, chunk #2)");
 	expect(result.output).toContain("... more code block content above");
 	expect(result.output).toContain("... more code block content below");
-	expect(result.output).toContain("/Docs/TableGuide (lines 10-12, chunk #1)");
+	expect(result.output).toContain("/Docs/TableGuide (lines 10-12, chars 120-151, chunk #1)");
 	expect(result.output).toContain("... more table content below");
 });
 
