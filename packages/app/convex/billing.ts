@@ -79,10 +79,9 @@ const billing_workpool_usage_event = new Workpool(components.billing_workpool_us
 
 export function billing_pick_billed_user_id(args: {
 	userId: Id<"users">;
-	workspace: Pick<Doc<"workspaces">, "default" | "billingMode">;
-	workspaceOwnerId: Id<"users"> | null;
+	workspace: Pick<Doc<"workspaces">, "default" | "billingMode" | "ownerUserId">;
 }) {
-	if (!args.workspace.default && args.workspace.billingMode === "workspace_owner") return args.workspaceOwnerId;
+	if (!args.workspace.default && args.workspace.billingMode === "workspace_owner") return args.workspace.ownerUserId;
 	return args.userId;
 }
 
@@ -141,39 +140,12 @@ export const check_credits = internalQuery({
 				});
 			}
 
-			let workspaceOwnerId: Id<"users"> | null = null;
-			if (!workspace.default && workspace.billingMode === "workspace_owner") {
-				const defaultProjectId = workspace.defaultProjectId;
-				if (!defaultProjectId) {
-					throw should_never_happen("Workspace default project not found", {
-						workspaceId: workspace._id,
-					});
-				}
-
-				// Use the current workspace owner as the payer only for owner-billed workspaces.
-				// Ownership transfer changes future billing; in-flight operations keep their frozen billed user.
-				workspaceOwnerId =
-					(
-						await ctx.db
-							.query("access_control_role_assignments")
-							.withIndex("by_workspace_project_role_user", (q) =>
-								q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-							)
-							.first()
-					)?.userId ?? null;
-			}
-
+			// Use the current workspace owner as the payer only for owner-billed workspaces.
+			// Ownership transfer changes future billing; in-flight operations keep their frozen billed user.
 			const billedUserId = billing_pick_billed_user_id({
 				userId: args.userId,
 				workspace,
-				workspaceOwnerId,
 			});
-			if (!billedUserId) {
-				throw should_never_happen("Workspace owner not found while checking credits", {
-					userId: args.userId,
-					workspaceId: args.workspaceId,
-				});
-			}
 
 			billedUser = await ctx.db.get("users", billedUserId);
 			if (!billedUser) {

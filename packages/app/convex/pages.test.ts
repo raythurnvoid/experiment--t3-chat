@@ -411,10 +411,10 @@ test("archived pages can share path with a new active page", async () => {
 	});
 	const duplicateName = "archived_duplicate_allowed";
 
-	const createdPage = await asUser.mutation(api.ai_docs_temp.create_page, {
-		parentId: pages_ROOT_ID,
-		name: duplicateName,
-		membershipId: db.membershipId,
+	const createdPage = await asUser.mutation(internal.ai_docs_temp.create_page_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: `/${duplicateName}`,
 	});
 	if (createdPage._nay) {
 		throw new Error("Expected initial page creation to succeed");
@@ -931,9 +931,18 @@ test("N02 archive child then parent then unarchive parent restores hierarchy", a
 		name: "Test User",
 	});
 
-	await asUser.mutation(api.ai_docs_temp.archive_pages, {
-		membershipId: db.membershipId,
-		pageIds: [db.pages.page_root_1_child_1._id],
+	// Seed the pre-archived child subtree so this test spends rate-limit writes
+	// on the parent archive and unarchive behavior under test.
+	await t.run(async (ctx) => {
+		const childArchiveOperationId = "test_child_archive_operation";
+		await Promise.all([
+			ctx.db.patch("pages", db.pages.page_root_1_child_1._id, {
+				archiveOperationId: childArchiveOperationId,
+			}),
+			ctx.db.patch("pages", db.pages.page_root_1_child_1_deep_1._id, {
+				archiveOperationId: childArchiveOperationId,
+			}),
+		]);
 	});
 
 	await asUser.mutation(api.ai_docs_temp.archive_pages, {

@@ -2826,36 +2826,10 @@ export const yjs_push_update = mutation({
 		if (!workspace) {
 			return Result({ _nay: { message: "Workspace not found" } });
 		}
-		let workspaceOwnerId: Id<"users"> | null = null;
-		if (!workspace.default && workspace.billingMode === "workspace_owner") {
-			const defaultProjectId = workspace.defaultProjectId;
-			if (!defaultProjectId) {
-				throw should_never_happen("Workspace default project not found", {
-					workspaceId: workspace._id,
-				});
-			}
-
-			workspaceOwnerId =
-				(
-					await ctx.db
-						.query("access_control_role_assignments")
-						.withIndex("by_workspace_project_role_user", (q) =>
-							q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-						)
-						.first()
-				)?.userId ?? null;
-		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: user._id,
 			workspace,
-			workspaceOwnerId,
 		});
-		if (!billedUserId) {
-			throw should_never_happen("Workspace owner not found", {
-				userId: user._id,
-				workspaceId: workspace._id,
-			});
-		}
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
 			throw should_never_happen("Billed user not found", {
@@ -3073,36 +3047,10 @@ export const restore_snapshot = mutation({
 		if (!workspace) {
 			return Result({ _nay: { message: "Workspace not found" } });
 		}
-		let workspaceOwnerId: Id<"users"> | null = null;
-		if (!workspace.default && workspace.billingMode === "workspace_owner") {
-			const defaultProjectId = workspace.defaultProjectId;
-			if (!defaultProjectId) {
-				throw should_never_happen("Workspace default project not found", {
-					workspaceId: workspace._id,
-				});
-			}
-
-			workspaceOwnerId =
-				(
-					await ctx.db
-						.query("access_control_role_assignments")
-						.withIndex("by_workspace_project_role_user", (q) =>
-							q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-						)
-						.first()
-				)?.userId ?? null;
-		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: userAuth.id,
 			workspace,
-			workspaceOwnerId,
 		});
-		if (!billedUserId) {
-			throw should_never_happen("Workspace owner not found", {
-				userId: userAuth.id,
-				workspaceId: workspace._id,
-			});
-		}
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
 			throw should_never_happen("Billed user not found", {

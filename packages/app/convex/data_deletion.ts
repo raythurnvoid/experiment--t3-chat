@@ -312,14 +312,14 @@ async function db_delete_workspace(
 async function db_queue_workspace_deletion_for_owner_account_deletion(
 	ctx: MutationCtx,
 	args: {
-		owner: Id<"users">;
+		workspaceOwnerUserId: Id<"users">;
 		workspace: Doc<"workspaces">;
 		now: number;
 	},
 ) {
 	const [, , , userIdsPerProject] = await Promise.all([
 		data_deletion_db_request(ctx, {
-			userId: args.owner,
+			userId: args.workspaceOwnerUserId,
 			workspaceId: args.workspace._id,
 			scope: "workspace",
 		}),
@@ -357,7 +357,7 @@ async function db_queue_workspace_deletion_for_owner_account_deletion(
 
 	const quota = await quotas_db_get(ctx, {
 		quotaName: "extra_workspaces",
-		userId: args.owner,
+		userId: args.workspaceOwnerUserId,
 	});
 	if (quota.usedCount > 0) {
 		await ctx.db.patch("quotas", quota._id, {
@@ -544,32 +544,14 @@ export const init_user_deletion = internalMutation({
 		}
 
 		const now = args.nowTs ?? Date.now();
-		const ownerAssignments = await ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", args.userId).eq("role", "owner"))
+		const ownedWorkspaces = await ctx.db
+			.query("workspaces")
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
 			.collect();
-		const ownedWorkspaceIds = new Set<Id<"workspaces">>();
-		const ownedWorkspaces = (
-			await Promise.all(
-				ownerAssignments.map(async (ownerAssignment) => {
-					if (ownedWorkspaceIds.has(ownerAssignment.workspaceId)) {
-						return null;
-					}
-					ownedWorkspaceIds.add(ownerAssignment.workspaceId);
 
-					const workspace = await ctx.db.get("workspaces", ownerAssignment.workspaceId);
-					if (!workspace || workspace.default || ownerAssignment.projectId !== workspace.defaultProjectId) {
-						return null;
-					}
-
-					return workspace;
-				}),
-			)
-		).filter((workspace): workspace is NonNullable<typeof workspace> => workspace !== null);
-
-		for (const workspace of ownedWorkspaces) {
+		for (const workspace of ownedWorkspaces.filter((workspace) => !workspace.default)) {
 			await db_queue_workspace_deletion_for_owner_account_deletion(ctx, {
-				owner: user._id,
+				workspaceOwnerUserId: user._id,
 				workspace,
 				now,
 			});

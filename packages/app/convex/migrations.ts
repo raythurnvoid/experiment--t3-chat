@@ -21,19 +21,15 @@ type LegacyBillingUsageSnapshot = Omit<Doc<"billing_usage_snapshots">, "_id" | "
 	optimisticCreditAppliedKey?: string;
 };
 
-type LegacyWorkspaceWithOwnerUserId = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "owner"> & {
+type NotificationWithCreatedAt = Doc<"notifications"> & {
+	createdAt?: number;
+};
+
+type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"workspaces">;
 	_creationTime: number;
 	owner?: Id<"users">;
 	ownerUserId?: Id<"users">;
-};
-
-type WorkspaceWithOwner = Doc<"workspaces"> & {
-	owner?: Id<"users">;
-};
-
-type NotificationWithCreatedAt = Doc<"notifications"> & {
-	createdAt?: number;
 };
 
 const access_control_workspace_role_permission_grants = [
@@ -107,55 +103,24 @@ export const remove_billing_usage_snapshots_last_refresh_reason = app_migrations
 	},
 });
 
-export const rename_workspaces_owner_user_id_to_owner = app_migrations.define({
+export const backfill_workspaces_owner_user_id_from_owner = app_migrations.define({
 	table: "workspaces",
 	migrateOne: async (ctx, workspace) => {
-		const legacyWorkspace = workspace as LegacyWorkspaceWithOwnerUserId;
-		if (legacyWorkspace.ownerUserId === undefined) {
+		const legacyWorkspace = workspace as LegacyWorkspaceWithOwner;
+		if (legacyWorkspace.owner === undefined && legacyWorkspace.ownerUserId !== undefined) {
 			return;
 		}
 
-		const { _id, _creationTime, ownerUserId, owner, ...next } = legacyWorkspace;
+		const { _id, _creationTime, owner, ownerUserId, ...next } = legacyWorkspace;
+		const nextOwnerUserId = ownerUserId ?? owner;
+		if (!nextOwnerUserId) {
+			return;
+		}
+
+		// Recover deployments that were temporarily migrated to `owner` before the schema settled on `ownerUserId`.
 		await ctx.db.replace("workspaces", _id, {
 			...next,
-			owner: owner ?? ownerUserId,
-		});
-	},
-});
-
-export const backfill_access_control_owner_assignments = app_migrations.define({
-	table: "workspaces",
-	migrateOne: async (ctx, workspace) => {
-		if (!workspace.defaultProjectId) {
-			return;
-		}
-		const defaultProjectId = workspace.defaultProjectId;
-
-		const owner = (workspace as WorkspaceWithOwner).owner;
-		if (!owner) {
-			return;
-		}
-
-		const existingOwnerAssignment = await ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_user_role", (q) =>
-				q
-					.eq("workspaceId", workspace._id)
-					.eq("projectId", defaultProjectId)
-					.eq("userId", owner)
-					.eq("role", "owner"),
-			)
-			.first();
-		if (existingOwnerAssignment) {
-			return;
-		}
-
-		await access_control_db_ensure_role_assignment(ctx, {
-			workspaceId: workspace._id,
-			projectId: defaultProjectId,
-			userId: owner,
-			role: "owner",
-			now: Date.now(),
+			ownerUserId: nextOwnerUserId,
 		});
 	},
 });
@@ -294,9 +259,10 @@ export const cleanup_duplicate_access_control_owner_assignments = app_migrations
 			.collect();
 
 		const sortedOwnerAssignments = ownerAssignments.sort((a, b) => a._creationTime - b._creationTime);
-		const owner = (workspace as WorkspaceWithOwner).owner;
-		const keptAssignment = owner
-			? (sortedOwnerAssignments.find((assignment) => assignment.userId === owner) ?? sortedOwnerAssignments[0])
+		const workspaceOwnerUserId = workspace.ownerUserId;
+		const keptAssignment = workspaceOwnerUserId
+			? (sortedOwnerAssignments.find((assignment) => assignment.userId === workspaceOwnerUserId) ??
+				sortedOwnerAssignments[0])
 			: sortedOwnerAssignments[0];
 		if (!keptAssignment) {
 			return;
@@ -347,14 +313,11 @@ export const run_remove_billing_usage_snapshots_optimistic_credit_applied_key = 
 export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrations.runner(
 	internal.migrations.remove_billing_usage_snapshots_last_refresh_reason,
 );
-export const run_rename_workspaces_owner_user_id_to_owner = app_migrations.runner(
-	internal.migrations.rename_workspaces_owner_user_id_to_owner,
-);
 export const run_remove_notifications_created_at = app_migrations.runner(
 	internal.migrations.remove_notifications_created_at,
 );
-export const run_backfill_access_control_owner_assignments = app_migrations.runner(
-	internal.migrations.backfill_access_control_owner_assignments,
+export const run_backfill_workspaces_owner_user_id_from_owner = app_migrations.runner(
+	internal.migrations.backfill_workspaces_owner_user_id_from_owner,
 );
 export const run_backfill_workspace_home_memberships = app_migrations.runner(
 	internal.migrations.backfill_workspace_home_memberships,

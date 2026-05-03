@@ -807,9 +807,17 @@ describe("workspace billing check", () => {
 		expect(result.billedUser?._id).toBe(scope.ownerId);
 	});
 
-	test("fails clearly when an owner-billed workspace has no owner assignment", async () => {
+	test("owner-billed workspaces read the owner from the workspace doc", async () => {
 		const t = test_convex();
 		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_owner_billing_doc_owner",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.ownerId,
+			polarProductId,
+			balanceCents: 10,
+		});
 		await t.run(async (ctx) => {
 			const ownerAssignment = await ctx.db
 				.query("access_control_role_assignments")
@@ -823,13 +831,14 @@ describe("workspace billing check", () => {
 			await ctx.db.delete("access_control_role_assignments", ownerAssignment._id);
 		});
 
-		await expect(
-			t.query(internal.billing.check_credits, {
-				userId: scope.actorUserId,
-				workspaceId: scope.workspaceId,
-				minimumRequiredCents: 1,
-			}),
-		).rejects.toThrow("Workspace owner not found while checking credits");
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.actorUserId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.ownerId);
 	});
 
 	test("checks the relevant payer snapshot", async () => {
@@ -2144,7 +2153,7 @@ describe("handle_polar_customer_state_update", () => {
 
 	test("writes the usage snapshot directly from the active subscription meter in the webhook payload", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const polarProductId = "billing_refresh_snapshot_webhook_product";
 		const polarProductName = billing_PRODUCTS["Pay As You Go"].name;
 		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_refresh_snapshot_webhook" as never);

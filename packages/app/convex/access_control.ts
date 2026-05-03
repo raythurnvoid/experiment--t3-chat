@@ -183,7 +183,7 @@ export async function access_control_db_ensure_public_permission_grant(
  * derived workspace/project ids plus the workspace default project id. This helper
  * does not fetch the workspace or validate resource scope.
  *
- * Use `workspaceId` and `defaultProjectId` from the workspace.
+ * Use `workspaceId`, `defaultProjectId`, and `ownerUserId` from the workspace.
  *
  * Use `projectId` from the resource/project scope being checked, which may be a
  * non-default project. Use `resourceKind` and `resourceId` from the protected doc;
@@ -200,6 +200,7 @@ export async function access_control_db_has_permission(
 		workspaceId: Id<"workspaces">;
 		projectId: Id<"workspaces_projects">;
 		defaultProjectId: Id<"workspaces_projects">;
+		workspaceOwnerUserId: Id<"users">;
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		permission: access_control_Permission;
@@ -210,18 +211,8 @@ export async function access_control_db_has_permission(
 	const userId = args.userId;
 
 	if (userId) {
-		// Check if the user is the owner of the workspace.
-		const ownerAssignment = await ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_user_role", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.defaultProjectId)
-					.eq("userId", userId)
-					.eq("role", "owner"),
-			)
-			.first();
-		if (ownerAssignment) {
+		// Keep workspace ownership sourced from `workspaces.ownerUserId`; role rows are only the ACL mirror.
+		if (userId === args.workspaceOwnerUserId) {
 			return true;
 		}
 
@@ -413,6 +404,7 @@ export const get_current_user_workspace_permission = query({
 			workspaceId: workspace._id,
 			projectId: defaultProjectId,
 			defaultProjectId,
+			workspaceOwnerUserId: workspace.ownerUserId,
 			resourceKind: "workspace",
 			resourceId: String(workspace._id),
 			permission: args.permission,
@@ -500,7 +492,11 @@ export const transfer_workspace_ownership = mutation({
 			return Result({ _nay: { message: "Cannot transfer ownership of the default workspace" } });
 		}
 
-		if (user._id === args.newOwnerUserId) {
+		if (workspace.ownerUserId !== user._id) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		if (workspace.ownerUserId === args.newOwnerUserId) {
 			return Result({ _nay: { message: "User is already the workspace owner" } });
 		}
 
@@ -509,18 +505,14 @@ export const transfer_workspace_ownership = mutation({
 			return Result({ _nay: { message: "Workspace default project not found" } });
 		}
 
-		const [ownerAssignment, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] = await Promise.all(
+		const [ownerAssignments, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] = await Promise.all(
 			[
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_workspace_project_user_role", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", defaultProjectId)
-							.eq("userId", user._id)
-							.eq("role", "owner"),
+					.withIndex("by_workspace_project_role_user", (q) =>
+						q.eq("workspaceId", args.workspaceId).eq("projectId", defaultProjectId).eq("role", "owner"),
 					)
-					.first(),
+					.collect(),
 				ctx.db.get("users", args.newOwnerUserId),
 				ctx.db
 					.query("workspaces_projects_users")
@@ -543,10 +535,6 @@ export const transfer_workspace_ownership = mutation({
 			],
 		);
 
-		if (!ownerAssignment) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
 		if (!newOwnerUser || newOwnerUser.deletedAt != null || !newOwnerHomeMembership) {
 			return Result({ _nay: { message: "New owner must be an active workspace member" } });
 		}
@@ -560,8 +548,15 @@ export const transfer_workspace_ownership = mutation({
 			});
 		}
 
+		await Promise.all(
+			ownerAssignments.map((ownerAssignment) => ctx.db.delete("access_control_role_assignments", ownerAssignment._id)),
+		);
+
 		await Promise.all([
-			ctx.db.delete("access_control_role_assignments", ownerAssignment._id),
+			ctx.db.patch("workspaces", workspace._id, {
+				ownerUserId: args.newOwnerUserId,
+				updatedAt: now,
+			}),
 			ctx.db.patch("quotas", currentOwnerQuota._id, {
 				usedCount: Math.max(0, currentOwnerQuota.usedCount - 1),
 				updatedAt: now,

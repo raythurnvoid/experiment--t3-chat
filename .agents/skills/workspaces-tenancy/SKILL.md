@@ -8,11 +8,10 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 - A **workspace** groups **projects**. Each workspace has exactly one **primary** (default) project referenced by `workspaces.defaultProjectId` and flagged `workspaces_projects.default === true` for that row.
 - **Membership** is per **project**: table `workspaces_projects_users` keys `(userId, workspaceId, projectId)`. A user “sees” a workspace in `list` if they have **any active** project membership under that workspace (`active !== false`; run backfill so stored rows use `active: true` / `false` for index queries).
 - **Product rule (workspace membership by primary project):** Workspace-level operations that mean “is this user a member of this workspace?” (e.g. `edit_workspace`) require a membership row on that workspace’s **primary/default project** (`defaultProjectId`), not merely on any project in the workspace.
-- **Access control** is separate from workspace/project rows. `access_control_role_assignments` is the source of truth for role membership: `owner`, `admin`, and `member` assignments are scoped to a project, and the workspace default project means workspace-wide authority. `workspaces.owner` is legacy owner backfill input only; new code should not write it or use it for authorization.
+- **Workspace ownership** lives on `workspaces.ownerUserId`, a required `users` id. Access-control role assignments still represent role membership: `owner`, `admin`, and `member` assignments are scoped to a project, and the workspace default project means workspace-wide authority. Keep the default-project `owner` role assignment as a mirror for role display and ACL compatibility, not as the source of truth for the workspace owner id.
 - **Billing mode** lives on `workspaces.billingMode`. Default/personal workspaces always behave as `"user"` billing. Non-personal workspaces are created with `"user"` billing by default and the workspace owner may switch them to `"workspace_owner"`.
-- The owner role assignment on the workspace default project is the billing payer only when `workspaces.billingMode === "workspace_owner"`. In `"user"` mode, the actor/member remains the payer.
+- `workspaces.ownerUserId` is the billing payer only when `workspaces.billingMode === "workspace_owner"`. In `"user"` mode, the actor/member remains the payer.
 - Ownership transfer changes future owner-billed usage only. It does not rewrite historical usage, move snapshots, transfer credits, or affect `"user"` mode billing.
-- `workspaces.owner` must not be used for billing.
 - Tenant-scoped APIs should take `membershipId` whenever the caller is operating inside a current workspace/project. Derive `workspaceId` and `projectId` from the active membership row instead of trusting client-provided scope strings. Comment APIs (`chat_messages.*`) follow this rule for create/add/archive/list/get.
 - The **public API** (`api.workspaces.*` mutations/queries and Convex helpers they call) is the contract. The **database schema** is wider (optional fields, flags) so migrations and edge rows can exist; do not assume “schema allows it ⇒ product allows it.” Enforce invariants in Convex handlers and in `packages/app/convex/workspaces.ts`.
 
@@ -37,18 +36,18 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 
 - `workspaces_db_create` always inserts a default project named `home` (`default: true`) and links `workspaces.defaultProjectId`.
 - **`create_workspace`** (public) calls `workspaces_db_create` **without** `default: true`, so it creates a **non-default** workspace plus its `home` project. That workspace is not the user’s `personal` default.
-- `workspaces_db_create` also creates the workspace owner assignment on the default project, seeds default access-control grants, and stores `billingMode: "user"`. This applies to both default and non-default workspaces, but only non-default ownership consumes the user’s `extra_workspaces` quota.
+- `workspaces_db_create` stores `workspaces.ownerUserId = userId`, creates the mirrored owner assignment on the default project, seeds default access-control grants, and stores `billingMode: "user"`. This applies to both default and non-default workspaces, but only non-default ownership consumes the user’s `extra_workspaces` quota.
 
 # Access control model
 
 Canonical access-control details live in `../access-control/SKILL.md`.
 
 - Roles are `owner`, `admin`, and `member`.
-- The single effective workspace owner is represented by one `role: "owner"` assignment on `workspace.defaultProjectId`. Owner is a system role with full workspace authority.
+- The single effective workspace owner is `workspaces.ownerUserId`. A matching `role: "owner"` assignment on `workspace.defaultProjectId` is maintained for role display and ACL compatibility. Owner is a system role with full workspace authority.
 - `admin` and `member` authority comes from rows in `access_control_permission_grants`. Current seeded member grants intentionally preserve broad collaborator behavior except member management; future tightening should change grants/checks rather than table shape.
 - Non-default project role assignments are local to that project. Default-project role assignments act as workspace-wide fallback.
 - ACL grants support `principalKind: "role"`, `"user"`, and `"public"` for resource kinds `workspace`, `project`, `page`, and `thread`. `resourceId` is stored as a stringified Convex id; owning mutations/actions load the resource first and derive the access-control scope from that row.
-- Permission checks order: default-project owner, direct user grant, public grant when explicitly allowed, target-project role grants, then default-project workspace-wide role grants.
+- Permission checks order: `workspaces.ownerUserId`, direct user grant, public grant when explicitly allowed, target-project role grants, then default-project workspace-wide role grants.
 - Use `access_control.get_current_user_role({ workspaceId, projectId })` for current-user UI role display at the requested scope, and `access_control.get_workspace_project_user_role({ workspaceId, projectId, userId })` when a UI needs one listed user's role at that same scope. The default/home project role view is the workspace role view; non-default project views show project-local roles. Do not embed role dictionaries into `workspaces.list`; keep role lookups cached by the concrete workspace/project/user scope.
 
 # Edit and delete rules
@@ -59,7 +58,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 | Cannot **edit** the default/primary project (`project.default` or `project._id === workspace.defaultProjectId`) | `edit_project` |
 | Cannot **delete** the default workspace | `delete_workspace` |
 | Cannot **delete** the default project | `delete_project` |
-| Only the workspace owner may **delete** a non-default workspace | `delete_workspace` checks the default-project owner assignment in `access_control_role_assignments` |
+| Only the workspace owner may **delete** a non-default workspace | `delete_workspace` checks `workspaces.ownerUserId` |
 | Regular members keep broad current workspace/project abilities except workspace deletion, default-project deletion, and member management | Seeded `access_control_permission_grants` keep current broad behavior while reserving `workspace.members.manage` and `project.members.manage` for admins/owners; `remove_user_from_workspace` still lets members leave themselves |
 
 **Refactoring note:** Only the **primary** default **project** is protected from edit across all workspaces. Do **not** block editing **all** projects in the user’s default `personal` workspace based solely on `workspace.default`; only the **`home`** (primary) project is special.
@@ -78,7 +77,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 - The new owner must be an active member of the workspace `home` project.
 - The new owner must have an available `extra_workspaces` quota slot. Transfer releases one old-owner quota unit and consumes one new-owner quota unit.
 - The old owner remains a regular member through existing memberships and a default-project `member` assignment unless a separate flow removes them.
-- Billing code does not write during ownership transfer. Owner-billed workspaces automatically bill the new owner for operations started after transfer because billing resolves the current default-project owner assignment at operation start.
+- Owner-billed workspaces automatically bill the new owner for operations started after transfer because billing resolves `workspaces.ownerUserId` at operation start.
 
 # Active memberships
 
@@ -97,7 +96,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 |------------|---------|-----------|---------|
 | `workspaces.delete_project` | Queue purge + delete all memberships on that project + delete `workspaces_projects` row + release one workspace `extra_projects` quota unit | One `data_deletion_requests` row with `scope: "project"` plus `userId`, `workspaceId`, `projectId` | `process_project_deletion_request` wipes tenant-scoped tables for that `(workspaceId, projectId)`, then deletes the queue doc |
 | `workspaces.delete_workspace` | Owner-only. Queue one row (`scope: "workspace"`, `workspaceId` only); delete all **memberships** and access-control rows immediately; release one owner `extra_workspaces` quota unit; **defer** deleting `workspaces`, `workspaces_projects`, and workspace quota docs until cron | One `data_deletion_requests` row with `scope: "workspace"` plus `userId`, `workspaceId` | `process_workspace_deletion_request` resolves project ids from `workspaces_projects`, purges tenant content per project, then deletes projects + workspace quota docs + workspace and removes the queue doc |
-| `access_control.transfer_workspace_ownership` / `workspaces.delete_workspace` + `users.delete_current_user_account` | Account management calls `users.list_current_user_account_deletion_blocking_workspaces` as a preflight and opens one resolver modal for owned non-personal workspaces. Each row links to `/w/{workspace}/{home}/users` for the regular Users-page ownership-transfer flow, or lets the user confirm deleting the workspace through `workspaces.delete_workspace`. The user-facing `users.delete_current_user_account` repeats the same default-project-owner blocker check and refuses deletion until every blocker has been transferred or deleted. After blockers are gone, the user tombstone creates/reuses one `scope: "user"` row, sets `users.deletedAt`, and sets `active: false` on remaining memberships. `internal.data_deletion.init_user_deletion` still queues still-owned non-personal workspaces for deletion when called directly by internal/admin lifecycle paths. | One `scope: "user"` row for normal user-facing account deletion; resolver workspace-delete rows create their own `scope: "workspace"` rows through `workspaces.delete_workspace`; internal/admin direct initializer calls may also create workspace rows for still-owned workspace cleanup | Eligible only after `_creationTime + RETENTION_MS`: `process_user_deletion_request` hard-deletes user-owned state, deletes remaining access-control rows for the deleted user, then deletes an entire workspace only when it has no active users left; shared transferred workspaces remain untouched when active users still exist |
+| `access_control.transfer_workspace_ownership` / `workspaces.delete_workspace` + `users.delete_current_user_account` | Account management calls `users.list_current_user_account_deletion_blocking_workspaces` as a preflight and opens one resolver modal for owned non-personal workspaces. Each row links to `/w/{workspace}/{home}/users` for the regular Users-page ownership-transfer flow, or lets the user confirm deleting the workspace through `workspaces.delete_workspace`. The user-facing `users.delete_current_user_account` repeats the same `workspaces.ownerUserId` blocker check, ignores workspaces already queued with a `scope: "workspace"` deletion request, and refuses deletion until every remaining blocker has been transferred or deleted. After blockers are gone, the user tombstone creates/reuses one `scope: "user"` row, sets `users.deletedAt`, and sets `active: false` on remaining memberships. `internal.data_deletion.init_user_deletion` still queues still-owned non-personal workspaces for deletion when called directly by internal/admin lifecycle paths. | One `scope: "user"` row for normal user-facing account deletion; resolver workspace-delete rows create their own `scope: "workspace"` rows through `workspaces.delete_workspace`; internal/admin direct initializer calls may also create workspace rows for still-owned workspace cleanup | Eligible only after `_creationTime + RETENTION_MS`: `process_user_deletion_request` hard-deletes user-owned state, deletes remaining access-control rows for the deleted user, then deletes an entire workspace only when it has no active users left; shared transferred workspaces remain untouched when active users still exist |
 
 Workspace deletion requests are expected to reference an existing workspace. The worker deletes by the request workspace id without prefetching the workspace doc, clearing matching scoped cleanup docs such as quotas before deleting the workspace shell and queue doc.
 
@@ -122,7 +121,7 @@ Workspace deletion requests are expected to reference an existing workspace. The
 # Resolution helpers
 
 - **`get_membership_by_workspace_project_name`:** resolves validated names against the **current user’s** membership rows and returns only the matching membership row; **first matching** workspace+project pair wins (no global sort of candidates). UI that needs workspace metadata, including `workspace.default`, should compose it from `workspaces.list` instead of carrying it in tenant context.
-- **`list`:** sorts workspaces (default first) and projects (primary first, then name / id), and includes `ownerUserId` from the default-project owner assignment so UI can label owner-billed workspaces without querying billing state.
+- **`list`:** sorts workspaces (default first) and projects (primary first, then name / id). Workspace docs include `owner`, so UI can label owner-billed workspaces without querying billing state.
 
 # Related files
 

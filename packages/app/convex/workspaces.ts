@@ -140,6 +140,7 @@ export async function workspaces_db_create(
 		description: args.description,
 		default: args.default ?? false,
 		billingMode: "user",
+		ownerUserId: args.userId,
 		updatedAt: args.now,
 	});
 
@@ -373,12 +374,7 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 export const list = query({
 	args: {},
 	returns: v.object({
-		workspaces: v.array(
-			v.object({
-				...doc(app_convex_schema, "workspaces").fields,
-				ownerUserId: v.id("users"),
-			}),
-		),
+		workspaces: v.array(doc(app_convex_schema, "workspaces")),
 		workspaceIdsProjectsDict: v.record(v.id("workspaces"), v.array(doc(app_convex_schema, "workspaces_projects"))),
 	}),
 	handler: async (ctx) => {
@@ -421,38 +417,7 @@ export const list = query({
 		});
 
 		// Presentation order: default workspace first, then locale-aware name (+ `_id` tiebreaker). Project rows per workspace: workspace primary first (`defaultProjectId` / `default` flag), then the same name rule.
-		const workspaces = workspaces_list_sort_workspaces(
-			await Promise.all(
-				workspacesUnsorted.map(async (workspace) => {
-					if (workspace.default) {
-						return {
-							...workspace,
-							ownerUserId: userAuth.id,
-						};
-					}
-
-					const defaultProjectId = workspace.defaultProjectId;
-					if (!defaultProjectId) {
-						throw should_never_happen("Workspace default project not found", { workspaceId: workspace._id });
-					}
-
-					const ownerAssignment = await ctx.db
-						.query("access_control_role_assignments")
-						.withIndex("by_workspace_project_role_user", (q) =>
-							q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-						)
-						.first();
-					if (!ownerAssignment) {
-						throw should_never_happen("Workspace owner assignment not found", { workspaceId: workspace._id });
-					}
-
-					return {
-						...workspace,
-						ownerUserId: ownerAssignment.userId,
-					};
-				}),
-			),
-		);
+		const workspaces = workspaces_list_sort_workspaces(workspacesUnsorted);
 
 		const workspaceIdsProjectsDict = Object.fromEntries(
 			await Promise.all(
@@ -855,6 +820,7 @@ export const invite_user_to_workspace_project = mutation({
 				workspaceId: workspace._id,
 				projectId: defaultProjectId,
 				defaultProjectId,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "workspace",
 				resourceId: String(workspace._id),
 				permission: "workspace.members.manage",
@@ -973,7 +939,8 @@ export const remove_user_from_workspace = mutation({
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 
-		const [currentHomeMembership, userToRemoveIsOwner, canManageMembers] = await Promise.all([
+		const userToRemoveIsOwner = workspace.ownerUserId === args.userIdToRemove;
+		const [currentHomeMembership, canManageMembers] = await Promise.all([
 			ctx.db
 				.query("workspaces_projects_users")
 				.withIndex("by_active_user_workspace_project", (q) =>
@@ -984,18 +951,11 @@ export const remove_user_from_workspace = mutation({
 						.eq("projectId", defaultProjectId),
 				)
 				.first(),
-			// Check if the user is the owner of the workspace.
-			ctx.db
-				.query("access_control_role_assignments")
-				.withIndex("by_workspace_project_role_user", (q) =>
-					q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-				)
-				.first()
-				.then((ownerAssignment) => ownerAssignment?.userId === args.userIdToRemove),
 			access_control_db_has_permission(ctx, {
 				workspaceId: workspace._id,
 				projectId: defaultProjectId,
 				defaultProjectId,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "workspace",
 				resourceId: String(workspace._id),
 				permission: "workspace.members.manage",
@@ -1040,7 +1000,9 @@ export const remove_user_from_workspace = mutation({
 					)
 					.collect(),
 			]).then((notificationsByReadState) =>
-				Promise.all(notificationsByReadState.flat().map((notification) => ctx.db.delete(notification._id))),
+				Promise.all(
+					notificationsByReadState.flat().map((notification) => ctx.db.delete("notifications", notification._id)),
+				),
 			),
 			ctx.db
 				.query("workspaces_projects_users")
@@ -1125,6 +1087,7 @@ export const edit_workspace = mutation({
 				workspaceId: workspace._id,
 				projectId: defaultProject._id,
 				defaultProjectId: defaultProject._id,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "workspace",
 				resourceId: String(workspace._id),
 				permission: "workspace.update",
@@ -1220,24 +1183,7 @@ export const set_workspace_billing_mode = mutation({
 			return Result({ _nay: { message: "Cannot manage billing for the default workspace" } });
 		}
 
-		const defaultProjectId = workspace.defaultProjectId;
-		if (!defaultProjectId) {
-			throw should_never_happen("Workspace default project not found", {
-				workspaceId: workspace._id,
-			});
-		}
-
-		const ownerAssignment = await ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_user_role", (q) =>
-				q
-					.eq("workspaceId", workspace._id)
-					.eq("projectId", defaultProjectId)
-					.eq("userId", userAuth.id)
-					.eq("role", "owner"),
-			)
-			.first();
-		if (!ownerAssignment) {
+		if (workspace.ownerUserId !== userAuth.id) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
@@ -1325,6 +1271,7 @@ export const edit_project = mutation({
 				workspaceId: workspace._id,
 				projectId: project._id,
 				defaultProjectId: defaultProject._id,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "project",
 				resourceId: String(project._id),
 				permission: "project.update",
@@ -1334,6 +1281,7 @@ export const edit_project = mutation({
 				workspaceId: workspace._id,
 				projectId: defaultProject._id,
 				defaultProjectId: defaultProject._id,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "workspace",
 				resourceId: String(workspace._id),
 				permission: "workspace.update",
@@ -1447,24 +1395,16 @@ export const delete_workspace = mutation({
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 
-		const [workspaceUserLookup, ownerAssignment] = await Promise.all([
-			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", userAuth.id)
-						.eq("workspaceId", workspace._id)
-						.eq("projectId", defaultProjectId),
-				)
-				.first(),
-			ctx.db
-				.query("access_control_role_assignments")
-				.withIndex("by_workspace_project_role_user", (q) =>
-					q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-				)
-				.first(),
-		]);
+		const workspaceUserLookup = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_active_user_workspace_project", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", userAuth.id)
+					.eq("workspaceId", workspace._id)
+					.eq("projectId", defaultProjectId),
+			)
+			.first();
 		if (!workspaceUserLookup) {
 			return Result({
 				_nay: {
@@ -1481,7 +1421,7 @@ export const delete_workspace = mutation({
 			});
 		}
 
-		if (ownerAssignment?.userId !== userAuth.id) {
+		if (workspace.ownerUserId !== userAuth.id) {
 			return Result({
 				_nay: {
 					message: "Permission denied",
@@ -1506,7 +1446,9 @@ export const delete_workspace = mutation({
 				.query("notifications")
 				.withIndex("by_workspace_user_read", (q) => q.eq("workspaceId", workspace._id))
 				.collect()
-				.then((notifications) => Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)))),
+				.then((notifications) =>
+					Promise.all(notifications.map((notification) => ctx.db.delete("notifications", notification._id))),
+				),
 			ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", workspace._id))
@@ -1541,17 +1483,15 @@ export const delete_workspace = mutation({
 
 		const affectedUserIds = new Set<Id<"users">>(userIdsPerProject.flat());
 
-		if (ownerAssignment) {
-			const quota = await quotas_db_get(ctx, {
-				quotaName: "extra_workspaces",
-				userId: ownerAssignment.userId,
+		const quota = await quotas_db_get(ctx, {
+			quotaName: "extra_workspaces",
+			userId: workspace.ownerUserId,
+		});
+		if (quota.usedCount > 0) {
+			await ctx.db.patch("quotas", quota._id, {
+				usedCount: quota.usedCount - 1,
+				updatedAt: now,
 			});
-			if (quota.usedCount > 0) {
-				await ctx.db.patch("quotas", quota._id, {
-					usedCount: quota.usedCount - 1,
-					updatedAt: now,
-				});
-			}
 		}
 
 		for (const userId of affectedUserIds) {
@@ -1639,6 +1579,7 @@ export const delete_project = mutation({
 				workspaceId: workspace._id,
 				projectId: project._id,
 				defaultProjectId: workspaceUserLookup.projectId,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "project",
 				resourceId: String(project._id),
 				permission: "project.update",
@@ -1648,6 +1589,7 @@ export const delete_project = mutation({
 				workspaceId: workspace._id,
 				projectId: workspaceUserLookup.projectId,
 				defaultProjectId: workspaceUserLookup.projectId,
+				workspaceOwnerUserId: workspace.ownerUserId,
 				resourceKind: "workspace",
 				resourceId: String(workspace._id),
 				permission: "workspace.update",
@@ -1688,11 +1630,11 @@ export const delete_project = mutation({
 			// Remove invite notifications that pointed at the project being deleted.
 			ctx.db
 				.query("notifications")
-				.withIndex("by_workspace_project_user", (q) =>
-					q.eq("workspaceId", workspace._id).eq("projectId", project._id),
-				)
+				.withIndex("by_workspace_project_user", (q) => q.eq("workspaceId", workspace._id).eq("projectId", project._id))
 				.collect()
-				.then((notifications) => Promise.all(notifications.map((notification) => ctx.db.delete(notification._id)))),
+				.then((notifications) =>
+					Promise.all(notifications.map((notification) => ctx.db.delete("notifications", notification._id))),
+				),
 			Promise.all(projectUserLookup.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id))),
 			ctx.db
 				.query("access_control_role_assignments")

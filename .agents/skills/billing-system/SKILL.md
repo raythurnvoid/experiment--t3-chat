@@ -96,8 +96,8 @@ Workspace-scoped paid operations resolve the billed user before paid work starts
 - Personal/default workspaces always use normal user billing.
 - Created/non-personal workspaces store `workspaces.billingMode`, with `"user"` as the default.
 - `"user"` bills the acting member. The billed user and actor are the same user id.
-- `"workspace_owner"` bills the current owner role assignment on `workspace.defaultProjectId`. The actor is attribution only.
-- The owner role assignment is trusted as the owner source of truth. `workspaces.owner` is legacy data and must not be used for billing.
+- `"workspace_owner"` bills `workspaces.ownerUserId`. The actor is attribution only.
+- `workspaces.ownerUserId` is trusted as the owner source of truth. The default-project owner role assignment is only the access-control/role-display mirror.
 - Ownership transfer changes future owner-billed operations only. In-flight chat/page operations keep the billed user captured before the operation started.
 - There is no company table, sponsorship ledger, employee balance table, allowance model, balance transfer, or Polar team-customer migration in this model.
 

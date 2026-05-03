@@ -32,15 +32,25 @@ const MainAppHeaderBillingIndicatorDue = memo(function MainAppHeaderBillingIndic
 		<MyTooltip placement="bottom" open={isFree ? undefined : false}>
 			<MyTooltipInfoTrigger disabled={!isFree}>
 				<span className={cn("MainAppHeaderBillingIndicatorDue" satisfies MainAppHeaderBillingIndicatorDue_ClassNames)}>
-					<span className={cn("MainAppHeaderBillingIndicatorDue-label" satisfies MainAppHeaderBillingIndicatorDue_ClassNames)}>
+					<span
+						className={cn(
+							"MainAppHeaderBillingIndicatorDue-label" satisfies MainAppHeaderBillingIndicatorDue_ClassNames,
+						)}
+					>
 						Due
 					</span>
-					<span className={cn("MainAppHeaderBillingIndicatorDue-value" satisfies MainAppHeaderBillingIndicatorDue_ClassNames)}>
+					<span
+						className={cn(
+							"MainAppHeaderBillingIndicatorDue-value" satisfies MainAppHeaderBillingIndicatorDue_ClassNames,
+						)}
+					>
 						{value}
 					</span>
 					{isFree ? (
 						<CircleHelp
-							className={cn("MainAppHeaderBillingIndicatorDue-help" satisfies MainAppHeaderBillingIndicatorDue_ClassNames)}
+							className={cn(
+								"MainAppHeaderBillingIndicatorDue-help" satisfies MainAppHeaderBillingIndicatorDue_ClassNames,
+							)}
 							aria-hidden
 						/>
 					) : null}
@@ -48,8 +58,8 @@ const MainAppHeaderBillingIndicatorDue = memo(function MainAppHeaderBillingIndic
 			</MyTooltipInfoTrigger>
 			<MyTooltipContent unmountOnHide>
 				<>
-					You're on the Free plan. The app is free to use until your monthly credits run out, then you'll be
-					blocked until the next cycle or an upgrade.
+					You're on the Free plan. The app is free to use until your monthly credits run out, then you'll be blocked
+					until the next cycle or an upgrade.
 				</>
 			</MyTooltipContent>
 		</MyTooltip>
@@ -136,21 +146,18 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	const currentWorkspace = workspaceList?.workspaces.find((workspace) => workspace._id === workspaceId);
 	const isOwnerBilledWorkspace =
 		currentWorkspace !== undefined && !currentWorkspace.default && currentWorkspace.billingMode === "workspace_owner";
-	const ownerUserId = isOwnerBilledWorkspace ? currentWorkspace.ownerUserId : null;
-	const ownerBilledToAnotherUser = ownerUserId !== null && ownerUserId !== auth.userId;
+	const workspaceOwnerUserId = isOwnerBilledWorkspace ? currentWorkspace.ownerUserId : null;
+	const ownerBilledToAnotherUser = workspaceOwnerUserId !== null && workspaceOwnerUserId !== auth.userId;
 	const shouldShowCurrentUserBalance = shouldQuery && currentWorkspace !== undefined && !ownerBilledToAnotherUser;
 
 	const billingUsageSnapshot = useQuery(
 		app_convex_api.billing.get_usage_snapshot,
 		shouldShowCurrentUserBalance ? {} : "skip",
 	);
-	const products = useQuery(
-		app_convex_api.billing.list_products,
-		shouldShowCurrentUserBalance ? {} : "skip",
-	);
+	const products = useQuery(app_convex_api.billing.list_products, shouldShowCurrentUserBalance ? {} : "skip");
 	const workspaceOwnerAnagraphic = useQuery(
 		app_convex_api.users.get_anagraphic,
-		shouldQuery && ownerUserId !== null ? { userId: ownerUserId } : "skip",
+		shouldQuery && workspaceOwnerUserId !== null ? { userId: workspaceOwnerUserId } : "skip",
 	);
 
 	if (!shouldQuery) {
@@ -176,7 +183,9 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 				<span className={cn("MainAppHeaderBillingIndicator-badge" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
 					{ownerBillingBadgeLabel}
 					<CircleHelp
-						className={cn("MainAppHeaderBillingIndicator-badge-help" satisfies MainAppHeaderBillingIndicator_ClassNames)}
+						className={cn(
+							"MainAppHeaderBillingIndicator-badge-help" satisfies MainAppHeaderBillingIndicator_ClassNames,
+						)}
 						aria-hidden
 					/>
 				</span>

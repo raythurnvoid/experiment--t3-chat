@@ -290,30 +290,29 @@ type Users_AccountDeletionBlockingWorkspace = {
 	defaultProject: Doc<"workspaces_projects">;
 };
 
-async function users_db_list_account_deletion_blocking_workspaces(
-	ctx: QueryCtx,
-	args: { userId: Id<"users"> },
-) {
-	const ownerAssignments = await ctx.db
-		.query("access_control_role_assignments")
-		.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", args.userId).eq("role", "owner"))
+async function users_db_list_account_deletion_blocking_workspaces(ctx: QueryCtx, args: { userId: Id<"users"> }) {
+	const ownedWorkspaces = await ctx.db
+		.query("workspaces")
+		.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
 		.collect();
 
 	const blockingWorkspaces = await Promise.all(
-		ownerAssignments.map(async (ownerAssignment) => {
-			const workspace = await ctx.db.get("workspaces", ownerAssignment.workspaceId);
-			if (
-				!workspace ||
-				workspace.default ||
-				!workspace.defaultProjectId ||
-				workspace.defaultProjectId !== ownerAssignment.projectId
-			) {
+		ownedWorkspaces.map(async (workspace) => {
+			if (workspace.default || !workspace.defaultProjectId) {
 				return null;
 			}
 
-			// Keep this aligned with the account-deletion cleanup contract: workspace ownership is the
-			// owner role on the non-personal workspace's default project.
-			const defaultProject = await ctx.db.get("workspaces_projects", workspace.defaultProjectId);
+			const [defaultProject, deletionRequest] = await Promise.all([
+				ctx.db.get("workspaces_projects", workspace.defaultProjectId),
+				ctx.db
+					.query("data_deletion_requests")
+					.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace._id).eq("scope", "workspace"))
+					.first(),
+			]);
+			// Treat a workspace already queued through `delete_workspace` as resolved for account deletion.
+			if (deletionRequest) {
+				return null;
+			}
 			if (!defaultProject) {
 				return null;
 			}
@@ -325,16 +324,8 @@ async function users_db_list_account_deletion_blocking_workspaces(
 		}),
 	);
 
-	const seenWorkspaceIds = new Set<Id<"workspaces">>();
 	return blockingWorkspaces
 		.filter((workspace): workspace is Users_AccountDeletionBlockingWorkspace => workspace !== null)
-		.flatMap((workspace) => {
-			if (seenWorkspaceIds.has(workspace.workspace._id)) {
-				return [];
-			}
-			seenWorkspaceIds.add(workspace.workspace._id);
-			return [workspace];
-		})
 		.sort(
 			(left, right) =>
 				left.workspace.name.localeCompare(right.workspace.name) ||

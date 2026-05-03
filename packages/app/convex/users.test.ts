@@ -745,7 +745,7 @@ describe("list_current_user_account_deletion_blocking_workspaces", () => {
 			const now = Date.now();
 			const ownedWorkspace = await workspaces_db_create(ctx, {
 				userId: owner.userId,
-				name: "account-delete-owned-blocker",
+				name: "owned-blocker",
 				description: "",
 				now,
 				default: false,
@@ -756,7 +756,7 @@ describe("list_current_user_account_deletion_blocking_workspaces", () => {
 
 			const sharedWorkspace = await workspaces_db_create(ctx, {
 				userId: collaborator.userId,
-				name: "account-delete-shared-member",
+				name: "shared-member",
 				description: "",
 				now,
 				default: false,
@@ -780,7 +780,7 @@ describe("list_current_user_account_deletion_blocking_workspaces", () => {
 
 			const projectScopedWorkspace = await workspaces_db_create(ctx, {
 				userId: projectOwner.userId,
-				name: "account-delete-project-owner",
+				name: "project-owner",
 				description: "",
 				now,
 				default: false,
@@ -829,7 +829,7 @@ describe("list_current_user_account_deletion_blocking_workspaces", () => {
 
 		const blockers = await asOwner.query(api.users.list_current_user_account_deletion_blocking_workspaces, {});
 
-		expect(blockers.map((blocker) => blocker.workspace.name)).toEqual(["account-delete-owned-blocker"]);
+		expect(blockers.map((blocker) => blocker.workspace.name)).toEqual(["owned-blocker"]);
 		expect(blockers[0]?.workspace._id).toBe(workspaces.ownedWorkspace.workspaceId);
 		expect(blockers[0]?.defaultProject._id).toBe(workspaces.ownedWorkspace.defaultProjectId);
 		expect(blockers.some((blocker) => blocker.workspace._id === workspaces.sharedWorkspace.workspaceId)).toBe(false);
@@ -1065,7 +1065,7 @@ describe("delete_current_user_account", () => {
 		const workspace = await t.run(async (ctx) => {
 			const created = await workspaces_db_create(ctx, {
 				userId: seeded.userId,
-				name: "delete-after-workspace-delete",
+				name: "delete-after-ws",
 				description: "",
 				now: Date.now(),
 				default: false,

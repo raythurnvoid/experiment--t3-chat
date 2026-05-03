@@ -271,7 +271,7 @@ describe("create_workspace", () => {
 
 		expect(workspace?.name).toBe("acme-labs");
 		expect(workspace?.billingMode).toBe("user");
-		expect(workspace?.owner).toBeUndefined();
+		expect(workspace?.ownerUserId).toBe(userId);
 		expect(ownerRole?.userId).toBe(userId);
 		expect(permissionGrants.some((grant) => grant.role === "member" && grant.permission === "project.create")).toBe(
 			true,
@@ -538,16 +538,26 @@ describe("create_workspace", () => {
 			email: "workspaces-test-user@test.local",
 		});
 
-		const first = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "first-extra-ws",
-		});
+		const first = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "first-extra-ws",
+				now: Date.now(),
+				default: false,
+			}),
+		);
 		expect(first._yay).toBeTruthy();
 
-		const second = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "second-extra-ws",
-		});
+		const second = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "second-extra-ws",
+				now: Date.now(),
+				default: false,
+			}),
+		);
 		expect(second._yay).toBeTruthy();
 
 		const third = await asUser.mutation(api.workspaces.create_workspace, {
@@ -622,16 +632,26 @@ describe("create_workspace", () => {
 		expect(before).toHaveLength(1);
 		expect(before[0]?.usedCount).toBe(0);
 
-		const created = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "lazy-seed-extra-ws",
-		});
+		const created = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "lazy-seed-extra-ws",
+				now: Date.now(),
+				default: false,
+			}),
+		);
 		expect(created._yay).toBeTruthy();
 
-		const secondCreated = await asUser.mutation(api.workspaces.create_workspace, {
-			description: "",
-			name: "lazy-seed-extra-ws-2",
-		});
+		const secondCreated = await t.run((ctx) =>
+			workspaces_db_create(ctx, {
+				userId,
+				description: "",
+				name: "lazy-seed-extra-ws-2",
+				now: Date.now(),
+				default: false,
+			}),
+		);
 		expect(secondCreated._yay).toBeTruthy();
 
 		const blocked = await asUser.mutation(api.workspaces.create_workspace, {
@@ -1772,43 +1792,46 @@ describe("access_control.transfer_workspace_ownership", () => {
 		expect(transferResult._yay).toBeNull();
 
 		const afterTransfer = await t.run(async (ctx) => {
-			const [ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership] = await Promise.all([
-				ctx.db
-					.query("access_control_role_assignments")
-					.withIndex("by_workspace_project_role_user", (q) =>
-						q
-							.eq("workspaceId", created._yay!.workspaceId)
-							.eq("projectId", created._yay!.defaultProjectId)
-							.eq("role", "owner"),
-					)
-					.collect(),
-				ctx.db
-					.query("access_control_role_assignments")
-					.withIndex("by_workspace_project_user_role", (q) =>
-						q
-							.eq("workspaceId", created._yay!.workspaceId)
-							.eq("projectId", created._yay!.defaultProjectId)
-							.eq("userId", ownerId)
-							.eq("role", "member"),
-					)
-					.first(),
-				workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: ownerId }),
-				workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: newOwnerId }),
-				ctx.db
-					.query("workspaces_projects_users")
-					.withIndex("by_active_user_workspace_project", (q) =>
-						q
-							.eq("active", true)
-							.eq("userId", ownerId)
-							.eq("workspaceId", created._yay!.workspaceId)
-							.eq("projectId", created._yay!.defaultProjectId),
-					)
-					.first(),
-			]);
+			const [workspace, ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership] =
+				await Promise.all([
+					ctx.db.get("workspaces", created._yay!.workspaceId),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_role_user", (q) =>
+							q
+								.eq("workspaceId", created._yay!.workspaceId)
+								.eq("projectId", created._yay!.defaultProjectId)
+								.eq("role", "owner"),
+						)
+						.collect(),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_user_role", (q) =>
+							q
+								.eq("workspaceId", created._yay!.workspaceId)
+								.eq("projectId", created._yay!.defaultProjectId)
+								.eq("userId", ownerId)
+								.eq("role", "member"),
+						)
+						.first(),
+					workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: ownerId }),
+					workspaces_test_read_user_extra_workspace_quota_doc(ctx, { userId: newOwnerId }),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_user_workspace_project", (q) =>
+							q
+								.eq("active", true)
+								.eq("userId", ownerId)
+								.eq("workspaceId", created._yay!.workspaceId)
+								.eq("projectId", created._yay!.defaultProjectId),
+						)
+						.first(),
+				]);
 
-			return { ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership };
+			return { workspace, ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership };
 		});
 
+		expect(afterTransfer.workspace?.ownerUserId).toBe(newOwnerId);
 		expect(afterTransfer.ownerRoles).toHaveLength(1);
 		expect(afterTransfer.ownerRoles[0]?.userId).toBe(newOwnerId);
 		expect(afterTransfer.oldOwnerMemberRole?.userId).toBe(ownerId);
@@ -1877,6 +1900,7 @@ describe("access_control", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: created._yay!.defaultProjectId,
 				defaultProjectId: created._yay!.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "workspace",
 				resourceId: String(created._yay!.workspaceId),
 				permission: "workspace.members.manage",
@@ -1886,6 +1910,7 @@ describe("access_control", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: created._yay!.defaultProjectId,
 				defaultProjectId: created._yay!.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "workspace",
 				resourceId: String(created._yay!.workspaceId),
 				permission: "workspace.members.manage",
@@ -1895,6 +1920,7 @@ describe("access_control", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: project._yay!.projectId,
 				defaultProjectId: created._yay!.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
 				resourceId: String(project._yay!.projectId),
 				permission: "project.members.manage",
@@ -1904,6 +1930,7 @@ describe("access_control", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: project._yay!.projectId,
 				defaultProjectId: created._yay!.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
 				resourceId: String(project._yay!.projectId),
 				permission: "project.members.manage",
@@ -2180,6 +2207,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: projectAId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
 				resourceId: String(projectAId),
 				permission: "project.update",
@@ -2189,6 +2217,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: projectBId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
 				resourceId: String(projectBId),
 				permission: "project.update",
@@ -2207,6 +2236,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: projectBId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
 				resourceId: String(projectBId),
 				permission: "project.update",
@@ -2300,6 +2330,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "page",
 				resourceId: String(pageId),
 				permission: "asset.write",
@@ -2309,6 +2340,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "page",
 				resourceId: String(pageId),
 				permission: "asset.write",
@@ -2318,6 +2350,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "page",
 				resourceId: String(pageId),
 				permission: "asset.read",
@@ -2327,6 +2360,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "page",
 				resourceId: String(pageId),
 				permission: "asset.write",
@@ -2336,6 +2370,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "page",
 				resourceId: String(otherPageId),
 				permission: "asset.read",
@@ -2345,6 +2380,7 @@ describe("access_control", () => {
 				workspaceId: workspace.workspaceId,
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
 				resourceKind: "page",
 				resourceId: String(pageId),
 				permission: "asset.read",
@@ -4063,6 +4099,7 @@ describe("quotas.get", () => {
 				description: "",
 				default: false,
 				billingMode: "user",
+				ownerUserId: userId,
 				updatedAt: now,
 			});
 			const projectId = await ctx.db.insert("workspaces_projects", {

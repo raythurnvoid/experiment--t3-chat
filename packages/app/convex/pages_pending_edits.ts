@@ -1,7 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import type { Id } from "./_generated/dataModel.js";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -888,36 +887,10 @@ export const save_pages_pending_edit = mutation({
 			if (!workspace) {
 				return Result({ _nay: { message: "Workspace not found" } });
 			}
-			let workspaceOwnerId: Id<"users"> | null = null;
-			if (!workspace.default && workspace.billingMode === "workspace_owner") {
-				const defaultProjectId = workspace.defaultProjectId;
-				if (!defaultProjectId) {
-					throw should_never_happen("Workspace default project not found", {
-						workspaceId: workspace._id,
-					});
-				}
-
-				workspaceOwnerId =
-					(
-						await ctx.db
-							.query("access_control_role_assignments")
-							.withIndex("by_workspace_project_role_user", (q) =>
-								q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
-							)
-							.first()
-					)?.userId ?? null;
-			}
 			const billedUserId = billing_pick_billed_user_id({
 				userId: user._id,
 				workspace,
-				workspaceOwnerId,
 			});
-			if (!billedUserId) {
-				throw should_never_happen("Workspace owner not found", {
-					userId: user._id,
-					workspaceId: workspace._id,
-				});
-			}
 			const billedUser = await ctx.db.get("users", billedUserId);
 			if (!billedUser) {
 				throw should_never_happen("Billed user not found", {

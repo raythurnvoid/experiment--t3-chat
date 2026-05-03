@@ -13,7 +13,7 @@ description: Backend access-control model for workspaces, projects, roles, ACL g
 - Product flows maintain one role assignment per `(workspaceId, projectId, userId)`. Role display queries read the first matching row and do not resolve conflicts between multiple roles at the same scope.
 - Grants are allow-only ACL rows. There are no deny grants.
 - The current roles are `owner`, `admin`, and `member`.
-- `owner` is a system role. Exactly one effective owner assignment should exist on the workspace default project for each non-default workspace that has an owner.
+- `workspaces.ownerUserId` is the source of truth for the workspace owner user id. `owner` is still a system role, and exactly one mirrored owner assignment should exist on the workspace default project for each non-default workspace that has an owner.
 - `admin` and `member` permissions are data-driven through seeded grant rows. Tightening behavior should change grants/checks, not table shape. Member-management permissions are admin-only; regular members can leave a workspace but cannot add or remove other users.
 
 # Tables
@@ -33,7 +33,7 @@ Important indexes:
 
 - `by_workspace_project_user_role`: find a user's roles in a workspace/project.
 - `by_workspace_project_role_user`: find owners or users by role in a workspace/project.
-- `by_user_role_workspace_project`: find a user's role assignments globally, especially for account deletion and owned-workspace resolution.
+- `by_user_role_workspace_project`: find a user's role assignments globally when role cleanup or role display needs it. Owned-workspace resolution should query `workspaces.by_ownerUser`.
 - `by_workspace_user_project_role`: remove a user's access rows inside one workspace.
 
 ## `access_control_permission_grants`
@@ -83,11 +83,11 @@ Use the indexes that match the principal kind:
 
 Use `access_control_db_has_permission(ctx, args)` from `packages/app/convex/access_control.ts` for backend permission checks.
 
-Callers must load the protected resource, project, or workspace first and pass the derived `workspaceId`, `projectId`, `resourceKind`, `resourceId`, and workspace `defaultProjectId`. The checker does not fetch the workspace and does not validate resource scope; the owning mutation/action is responsible for proving the tuple from already-loaded rows before it calls access control.
+Callers must load the protected resource, project, or workspace first and pass the derived `workspaceId`, `projectId`, `resourceKind`, `resourceId`, workspace `defaultProjectId`, and standalone `workspaceOwnerUserId` from the workspace `ownerUserId` field. The checker does not fetch the workspace and does not validate resource scope; the owning mutation/action is responsible for proving the tuple from already-loaded rows before it calls access control.
 
 The checker:
 
-- gives the default-project owner full workspace authority
+- gives `workspaces.ownerUserId` full workspace authority
 - checks an exact direct user grant
 - checks an exact public grant only when `allowPublic` is passed
 - checks role grants from the target project
@@ -116,7 +116,7 @@ These queries return the assigned role for exactly the requested project scope. 
 
 # Seeding and write paths
 
-- `workspaces_db_create` creates the owner assignment on the default project and seeds default workspace and default project grants.
+- `workspaces_db_create` stores `workspaces.ownerUserId`, creates the mirrored owner assignment on the default project, and seeds default workspace and default project grants.
 - `workspaces_db_create_project` seeds project-local grants and gives the creator a project-local `member` role.
 - Access-control grant seeding is inline in the owning workspace creation and migration flows. Use `access_control_db_ensure_role_permission_grant` as the primitive instead of adding single-use seed helpers.
 - `invite_user_to_workspace_project` creates `member` assignments on the workspace default project and, when different, on the selected project.
@@ -135,12 +135,12 @@ Use `access_control.transfer_workspace_ownership` for owner transfer.
 
 Rules:
 
-- only the current default-project owner can transfer
+- only the current `workspaces.ownerUserId` can transfer
 - default `personal` workspaces cannot be transferred
 - the new owner must be an active member of the workspace default project
 - the new owner must have an available `extra_workspaces` quota slot
 - transfer releases one old-owner extra-workspace quota unit and consumes one new-owner quota unit
-- transfer deletes existing owner assignments for that workspace default project, gives the old owner a `member` assignment, and gives the new owner the `owner` assignment
+- transfer patches `workspaces.ownerUserId`, deletes existing owner assignments for that workspace default project, gives the old owner a `member` assignment, and gives the new owner the mirrored `owner` assignment
 
 Quota details live in `../quotas/SKILL.md`.
 Account-deletion resolution flow details live in `../auth-system/SKILL.md`. Account management blocks deletion while the user still owns non-personal workspaces, links to the regular workspace Users page for ownership transfer, and may call `workspaces.delete_workspace` after explicit workspace-delete confirmation.
@@ -154,7 +154,7 @@ Current cleanup locations:
 - `workspaces.remove_user_from_workspace`: deletes the target user's workspace memberships plus that user's role assignments and direct user grants in the workspace.
 - `workspaces.delete_project`: deletes project memberships plus role assignments and permission grants scoped to the project.
 - `workspaces.delete_workspace`: queues workspace content purge, immediately deletes workspace memberships and all access-control rows for that workspace, and releases the owner's extra-workspace quota.
-- `users.list_current_user_account_deletion_blocking_workspaces` and `users.delete_current_user_account`: use `by_user_role_workspace_project` to find non-personal workspaces where the current user is owner on the workspace default project, then block user-facing account deletion until each blocker is transferred or deleted through the normal workspace endpoints.
+- `users.list_current_user_account_deletion_blocking_workspaces` and `users.delete_current_user_account`: use `workspaces.by_ownerUser` to find non-personal workspaces where the current user is owner, ignore workspaces already queued with a workspace deletion request, then block user-facing account deletion until each remaining blocker is transferred or deleted through the normal workspace endpoints.
 - `data_deletion.init_user_deletion`: for still-owned non-personal workspaces, queues workspace deletion and immediately deletes workspace memberships and access-control rows for each queued workspace.
 - `data_deletion.process_workspace_deletion_request`: deletes remaining access-control rows for the workspace before deleting the workspace shell. This is idempotent with earlier immediate cleanup.
 - `data_deletion.process_user_deletion_request`: hard account deletion deletes any remaining role assignments and direct user grants for the deleted user.

@@ -1,6 +1,6 @@
 ---
 name: pages-explorer-tree
-description: Practical guide for the current Pages sidebar (`@headless-tree` + Convex) implementation. This skill documents the **current** Pages sidebar implementation used by the app route: UI + behavior entry point: `../../../packages/app/src/routes/pages/-components/pages-sidebar.tsx`; Tree engine: `@headless-tree/core` + `@headless-tree/react`; Data source: Convex `ai_docs_temp` query/mutations. Use this guide when implementing or modifying sidebar behavior (search, selection, drag/drop, rename, archive/unarchive, create, and root-drop-zone interactions).
+description: "Practical guide for the current Pages sidebar (`@headless-tree` + Convex) implementation. This skill documents the **current** Pages sidebar implementation used by the app route: UI + behavior entry point: `../../../packages/app/src/routes/pages/-components/pages-sidebar.tsx`; Tree engine: `@headless-tree/core` + `@headless-tree/react`; Data source: Convex `ai_docs_temp` query/mutations. Use this guide when implementing or modifying sidebar behavior (search, selection, drag/drop, rename, archive/unarchive, create, and root-drop-zone interactions)."
 ---
 
 # Source of truth files

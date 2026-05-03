@@ -394,6 +394,27 @@ async function read_pending_edit_last_sequence_saved_row(args: {
 		.first();
 }
 
+async function upsert_pages_pending_edit_updates_internal_for_test(args: {
+	t: ReturnType<typeof test_convex>;
+	workspaceId: string;
+	projectId: string;
+	userId: Id<"users">;
+	pageId: Id<"pages">;
+	pendingEditId?: Id<"pages_pending_edits">;
+	stagedMarkdown?: string;
+	unstagedMarkdown: string;
+}) {
+	return await args.t.mutation(internal.pages_pending_edits.upsert_pages_pending_edit_updates_internal, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		userId: args.userId,
+		pageId: args.pageId,
+		...(args.pendingEditId ? { pendingEditId: args.pendingEditId } : {}),
+		...(args.stagedMarkdown !== undefined ? { stagedMarkdown: args.stagedMarkdown } : {}),
+		unstagedMarkdown: args.unstagedMarkdown,
+	});
+}
+
 describe("upsert_pages_pending_edit_updates", () => {
 	test("upsert_pages_pending_edit_updates replaces updates deterministically", async () => {
 		const t = test_convex();
@@ -450,8 +471,11 @@ describe("upsert_pages_pending_edit_updates", () => {
 		);
 		expect(firstPendingRow).not.toBeNull();
 
-		const readyAgain = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		const readyAgain = await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: changedMarkdown,
 			unstagedMarkdown: changedMarkdown,
@@ -484,8 +508,11 @@ describe("upsert_pages_pending_edit_updates", () => {
 		expect(secondPendingRowMarkdownState.unstagedMarkdown).toContain("Changed once");
 		expect(secondPendingRowMarkdownState.stagedMarkdown).toBe(secondPendingRowMarkdownState.unstagedMarkdown);
 
-		const discarded = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		const discarded = await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
@@ -602,8 +629,11 @@ describe("upsert_pages_pending_edit_updates", () => {
 			name: "Test User",
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nFirst`,
@@ -625,15 +655,21 @@ describe("upsert_pages_pending_edit_updates", () => {
 			throw new Error("Missing stale pending row while testing fallback");
 		}
 
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nCurrent`,
@@ -1002,8 +1038,11 @@ describe("upsert_pages_pending_edit_updates", () => {
 		expect(secondCleanupTasks[0]!.expectedUpdatedAt).toBe(secondPendingRow.updatedAt);
 		expect(secondCleanupTasks[0]!.scheduledFunctionId).not.toBe(firstCleanupTasks[0]!.scheduledFunctionId);
 
-		const discardResult = await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		const discardResult = await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
@@ -1706,8 +1745,11 @@ describe("save_pages_pending_edit", () => {
 		});
 
 		const staleMarkdown = `${seeded.baseMarkdown}\n\nStale row`;
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: staleMarkdown,
 			unstagedMarkdown: staleMarkdown,
@@ -1729,16 +1771,22 @@ describe("save_pages_pending_edit", () => {
 			throw new Error("Missing stale pending row while testing save fallback");
 		}
 
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: seeded.baseMarkdown,
 			unstagedMarkdown: seeded.baseMarkdown,
 		});
 
 		const currentMarkdown = `${seeded.baseMarkdown}\n\nCurrent row`;
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageId,
 			stagedMarkdown: currentMarkdown,
 			unstagedMarkdown: currentMarkdown,
@@ -2244,14 +2292,20 @@ describe("persist_pages_pending_edit_rebased_state", () => {
 			name: "Test User",
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageAId,
 			stagedMarkdown: seeded.pageABaseMarkdown,
 			unstagedMarkdown: `${seeded.pageABaseMarkdown}\n\nPage A current`,
 		});
-		await asUser.mutation(api.ai_chat.upsert_pages_pending_edit_updates, {
-			membershipId: seeded.membershipId,
+		await upsert_pages_pending_edit_updates_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
 			pageId: seeded.pageBId,
 			stagedMarkdown: seeded.pageBBaseMarkdown,
 			unstagedMarkdown: `${seeded.pageBBaseMarkdown}\n\nPage B current`,

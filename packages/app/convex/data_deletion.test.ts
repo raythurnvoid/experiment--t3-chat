@@ -1541,6 +1541,7 @@ describe("process_deletion_requests", () => {
 					description: "",
 					default: false,
 					billingMode: "user",
+					ownerUserId: userId,
 					updatedAt: now,
 				});
 				await ctx.db.insert("data_deletion_requests", {
@@ -1559,6 +1560,7 @@ describe("process_deletion_requests", () => {
 					description: "",
 					default: false,
 					billingMode: "user",
+					ownerUserId: userId,
 					updatedAt: now,
 				});
 				const projectId = await ctx.db.insert("workspaces_projects", {

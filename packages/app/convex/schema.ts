@@ -133,18 +133,8 @@ const app_convex_schema = defineSchema({
 			"parentId",
 			"archiveOperationId",
 		])
-		.index("by_workspace_project_path_archiveOperation", [
-			"workspaceId",
-			"projectId",
-			"path",
-			"archiveOperationId",
-		])
-		.index("by_workspace_project_archiveOperation_path", [
-			"workspaceId",
-			"projectId",
-			"archiveOperationId",
-			"path",
-		])
+		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
+		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
 		.index("by_workspace_project_name", ["workspaceId", "projectId", "name"]),
 	/**
 	 * Table to store markdown content for pages.
@@ -419,10 +409,12 @@ const app_convex_schema = defineSchema({
 		description: v.string(),
 		default: v.boolean(),
 		billingMode: v.union(v.literal("user"), v.literal("workspace_owner")),
-		owner: v.optional(v.id("users")),
+		ownerUserId: v.id("users"),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		updatedAt: v.number(),
-	}).index("by_name", ["name"]),
+	})
+		.index("by_name", ["name"])
+		.index("by_ownerUser", ["ownerUserId"]),
 
 	workspaces_projects: defineTable({
 		workspaceId: v.id("workspaces"),

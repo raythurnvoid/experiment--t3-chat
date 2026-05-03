@@ -70,7 +70,7 @@ description: Persisted per-user and per-workspace creation quotas for extra work
 ## Delete flows
 
 - `delete_project` reads the workspace extra-project quota and decrements `usedCount` directly when deleting a non-default project.
-- `delete_workspace` reads the owner from the workspace default-project `access_control_role_assignments` doc, decrements that owner's extra-workspace quota directly, and defers deleting the workspace quota doc until `data_deletion.process_workspace_deletion_request`.
+- `delete_workspace` reads the owner from `workspaces.ownerUserId`, decrements that owner's extra-workspace quota directly, and defers deleting the workspace quota doc until `data_deletion.process_workspace_deletion_request`.
 - Account deletion uses the same direct owner quota decrement when the backend queues a still-owned workspace for deletion instead of the frontend transferring it first.
 - `data_deletion.process_workspace_deletion_request` deletes all quota docs for the workspace id.
 - `data_deletion.process_user_deletion_request` deletes all quota docs for the user id.
@@ -79,8 +79,8 @@ description: Persisted per-user and per-workspace creation quotas for extra work
 ## Ownership transfer
 
 - `access_control.transfer_workspace_ownership` must respect the recipient’s persisted `extra_workspaces` quota doc.
-- Transfer reads both owner quota docs directly in `access_control.transfer_workspace_ownership` alongside the role/member reads, then releases one old-owner usage unit and consumes one new-owner quota unit in the same mutation write phase as replacing the default-project owner assignment.
-- Do not recompute ownership usage from workspace docs; use audits or explicit maintenance flows if drift ever needs investigation.
+- Transfer reads both owner quota docs directly in `access_control.transfer_workspace_ownership` alongside the workspace/member reads, then releases one old-owner usage unit and consumes one new-owner quota unit in the same mutation write phase as patching `workspaces.ownerUserId` and replacing the mirrored default-project owner assignment.
+- Do not recompute quota usage from workspace docs during normal product flows; use audits or explicit maintenance flows if drift ever needs investigation.
 
 # Public API
 
