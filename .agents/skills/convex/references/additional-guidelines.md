@@ -121,15 +121,15 @@ When a Convex function returns a Result-like payload, the `returns` validator mu
 Example:
 
 ```ts
-export const create_page = mutation({
+export const create_file = mutation({
 	args: { name: v.string() },
-	returns: v_result({ _yay: v.object({ pageId: v.id("pages") }) }),
+	returns: v_result({ _yay: v.object({ fileId: v.id("files") }) }),
 	handler: async (ctx, args) => {
-		const page = await do_create_page(ctx, args);
-		if (page._nay) {
-			return page;
+		const file = await do_create_file(ctx, args);
+		if (file._nay) {
+			return file;
 		}
-		return Result({ _yay: { pageId: page._yay } });
+		return Result({ _yay: { fileId: file._yay } });
 	},
 });
 ```
@@ -265,7 +265,7 @@ In Convex code, prefer `convex_error(...)` / `ConvexError`; outside Convex code,
 ```ts
 if (result._nay) {
 	throw convex_error({
-		message: "Failed to create page",
+		message: "Failed to create file",
 		cause: result._nay,
 	});
 }

@@ -51,7 +51,7 @@ export const get_id_generator = ((/* iife */) => {
 	};
 })();
 
-export function generate_id<T extends "page" | "ai_thread" | "ai_message">(snakeCasePrefix: T) {
+export function generate_id<T extends "file" | "ai_thread" | "ai_message">(snakeCasePrefix: T) {
 	const idGenerator = get_id_generator(snakeCasePrefix);
 	return idGenerator();
 }
@@ -200,16 +200,16 @@ export function path_name_of(path: string): string {
  * positional fields joined into the final ID.
  */
 export type AppCompositeIds = {
-	rooms: [kind: "pages", workspaceId: string, projectId: string, pageId: string];
+	rooms: [kind: "files_nodes", workspaceId: string, projectId: string, nodeId: string];
 	billing:
 		| [name: "manual_credit", userId: string, timestamp: number]
 		| [
-				name: "page_save",
+				name: "file_save",
 				billedUserId: string,
 				actorUserId: string,
 				workspaceId: string,
 				projectId: string,
-				pageId: string,
+				nodeId: string,
 				yjsSequence: number,
 		  ]
 		| [

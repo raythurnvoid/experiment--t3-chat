@@ -18,19 +18,19 @@ describe("billing_event", () => {
 		expect(billing_event(event)).toEqual(event);
 	});
 
-	test("builds the canonical page_save usage event payload", () => {
+	test("builds the canonical file_save usage event payload", () => {
 		const event = {
-			name: "page_save",
+			name: "file_save",
 			externalCustomerId: "billed_user_1" as Id<"users">,
 			externalMemberId: "actor_user_1" as Id<"users">,
 			externalId: composite_id(
 				"billing",
-				"page_save",
+				"file_save",
 				"billed_user_1" as Id<"users">,
 				"actor_user_1" as Id<"users">,
 				"workspace_1",
 				"project_1",
-				"page_1",
+				"file_1",
 				42,
 			),
 			metadata: {
@@ -39,7 +39,7 @@ describe("billing_event", () => {
 				billedUserId: "billed_user_1" as Id<"users">,
 				workspaceId: "workspace_1",
 				projectId: "project_1",
-				pageId: "page_1",
+				nodeId: "file_1",
 				yjsSequence: "42",
 			},
 		} satisfies billing_Event;

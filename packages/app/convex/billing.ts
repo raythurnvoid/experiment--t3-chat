@@ -1530,7 +1530,7 @@ const billing_event_validator = v.union(
 		}),
 	}),
 	v.object({
-		name: v.literal("page_save"),
+		name: v.literal("file_save"),
 		externalCustomerId: v.id("users"),
 		externalMemberId: v.optional(v.id("users")),
 		externalId: v.string(),
@@ -1540,7 +1540,7 @@ const billing_event_validator = v.union(
 			billedUserId: v.id("users"),
 			workspaceId: v.string(),
 			projectId: v.string(),
-			pageId: v.string(),
+			nodeId: v.string(),
 			yjsSequence: v.string(),
 		}),
 	}),

@@ -1,0 +1,340 @@
+@layer components {
+	/* #region modal */
+	.FileEditorSnapshotsModal {
+		display: flex;
+		flex-direction: column;
+	}
+	/* #endregion modal */
+
+	/* #region skeleton */
+	.FileEditorSnapshotsModalSkeleton-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.FileEditorSnapshotsModalSkeleton-list-item {
+		height: 70px;
+		border-radius: 8px;
+	}
+
+	.FileEditorSnapshotsModalSkeleton-preview-snapshot-data {
+		height: 1rem;
+
+		background: var(--color-base-1-07);
+
+		&:nth-child(1) {
+			grid-area: time;
+			width: 20ch;
+		}
+
+		&:nth-child(2) {
+			grid-area: author;
+			width: 25ch;
+		}
+
+		&:nth-child(3) {
+			grid-area: actions;
+		}
+	}
+
+	.FileEditorSnapshotsModalSkeleton-preview-body {
+		height: 1rem;
+
+		background: var(--color-base-1-08);
+
+		&:not(:last-child) {
+			margin-bottom: 12px;
+		}
+
+		&:nth-child(1) {
+			width: 20%;
+		}
+
+		&:nth-child(2) {
+			width: 0%;
+		}
+
+		&:nth-child(3) {
+			width: 70%;
+		}
+
+		&:nth-child(4) {
+			width: 80%;
+		}
+
+		&:nth-child(5) {
+			width: 90%;
+		}
+
+		&:nth-child(6) {
+			width: 90%;
+		}
+
+		&:nth-child(7) {
+			width: 80%;
+		}
+
+		&:nth-child(8) {
+			width: 90%;
+		}
+
+		&:nth-child(9) {
+			width: 60%;
+		}
+
+		&:nth-child(10) {
+			width: 0%;
+		}
+
+		&:nth-child(11) {
+			width: 50%;
+		}
+
+		&:nth-child(12) {
+			width: 60%;
+		}
+
+		&:nth-child(13) {
+			width: 60%;
+		}
+
+		&:nth-child(14) {
+			width: 50%;
+		}
+
+		&:nth-child(15) {
+			width: 0%;
+		}
+
+		&:nth-child(16) {
+			width: 70%;
+		}
+
+		&:nth-child(17) {
+			width: 80%;
+		}
+
+		&:nth-child(18) {
+			width: 0%;
+		}
+
+		&:nth-child(19) {
+			width: 30%;
+		}
+
+		&:nth-child(20) {
+			width: 20%;
+		}
+	}
+	/* #endregion skeleton */
+
+	/* #region list */
+	.FileEditorSnapshotsModalList {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.FileEditorSnapshotsModalList-empty-message-container {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 32px 0;
+	}
+
+	.FileEditorSnapshotsModalList-empty-message {
+		color: var(--color-fg-07);
+	}
+	/* #endregion list */
+
+	/* #region list item */
+	.FileEditorSnapshotsModalListItem {
+		display: grid;
+		grid-template:
+			"icon	main-text			actions" auto
+			"icon	support-text	actions" auto / auto 1fr auto;
+		gap: 0 12px;
+		align-items: center;
+		justify-content: start;
+
+		width: 100%;
+		height: 66px;
+		padding: 12px;
+		border-radius: 8px;
+
+		text-align: start;
+
+		background: var(--color-base-1-08);
+		color: var(--color-fg-11);
+		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+		transition: background-color 0.15s ease-in-out;
+
+		font-size: 0.875rem;
+
+		user-select: none;
+		touch-action: manipulation;
+
+		&:hover {
+			background: var(--color-base-1-09);
+			cursor: pointer;
+		}
+
+		&:active {
+			background: var(--color-base-1-10);
+		}
+
+		&:has(.FileEditorSnapshotsModalListItem-primary-button:focus-visible) {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
+			border-radius: 6px;
+		}
+	}
+
+	.FileEditorSnapshotsModalListItem-archived:not(:hover, :active) {
+		background: var(--color-base-1-07);
+	}
+
+	.FileEditorSnapshotsModalListItem-icon {
+		grid-area: icon;
+	}
+
+	.FileEditorSnapshotsModalListItem-primary-button {
+		grid-area: main-text;
+		text-align: start;
+	}
+
+	.FileEditorSnapshotsModalListItem-archived-label {
+		color: var(--color-fg-08);
+	}
+
+	.FileEditorSnapshotsModalListItem-support-text {
+		grid-area: support-text;
+		color: var(--color-fg-08);
+	}
+
+	.FileEditorSnapshotsModalListItem-actions {
+		grid-area: actions;
+		display: flex;
+		gap: 4px;
+		align-items: center;
+		justify-content: end;
+		height: 100%;
+	}
+
+	.FileEditorSnapshotsModalListItem-action-button {
+		flex-shrink: 0;
+	}
+	/* #endregion list item */
+
+	/* #region list controls */
+	.FileEditorSnapshotsModalListControls {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 20px;
+		border-bottom: 1px solid var(--color-base-1-07);
+	}
+	/* #endregion list controls */
+
+	/* #region preview modal */
+	.FileEditorSnapshotsModalPreviewModal {
+		display: flex;
+		flex-direction: column;
+
+		height: calc(100dvh - 120px);
+		width: calc(100dvw - 120px);
+		max-width: unset;
+		max-height: unset;
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-scrollable-area {
+		flex: 1;
+
+		max-height: unset;
+		padding: 0;
+
+		background: var(--color-base-1-03);
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-snapshot-data {
+		display: grid;
+		grid-template:
+			"time 	actions" 22px
+			"author actions" 22px /
+			1fr auto;
+		align-items: center;
+		align-content: center;
+		gap: 12px;
+
+		height: 83px;
+		margin-bottom: 16px;
+		padding-inline: 20px;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-08);
+
+		background: var(--color-base-1-05);
+		border-bottom: 1px solid var(--color-base-1-07);
+		box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-snapshot-data-time {
+		grid-area: time;
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-snapshot-data-author {
+		grid-area: author;
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-navigation-actions {
+		grid-area: actions;
+		display: flex;
+		gap: 8px;
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-navigation-action {
+		width: 110px;
+		justify-content: space-between;
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-error-container {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		height: 100%;
+	}
+
+	.FileEditorSnapshotsModalPreviewModal-error-message {
+		font-size: 0.875rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion preview modal */
+
+	/* #region preview modal diff block */
+	.FileEditorSnapshotsModalPreviewModalDiffBlock {
+		padding-inline: 20px;
+		white-space: pre-wrap;
+	}
+
+	.FileEditorSnapshotsModalPreviewModalDiffBlock-word {
+		display: inline;
+		white-space: pre-wrap;
+	}
+
+	.FileEditorSnapshotsModalPreviewModalDiffBlock-added {
+		color: var(--color-green-09);
+	}
+
+	.FileEditorSnapshotsModalPreviewModalDiffBlock-removed {
+		color: var(--color-red-09);
+		text-decoration: line-through;
+		text-decoration-color: var(--color-red-05);
+	}
+
+	.FileEditorSnapshotsModalPreviewModalDiffBlock-unchanged {
+		color: inherit;
+	}
+	/* #endregion preview modal diff block */
+}

@@ -7,14 +7,12 @@ import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
 import {
-	decode_path_segment,
-	path_extract_segments_from,
 	path_name_of,
 	server_path_normalize,
 	server_path_parent_of,
 } from "./server-utils.ts";
 import { minimatch } from "minimatch";
-import { pages_chunk_has_bitmask_flag, pages_chunk_BITMASK_FLAGS } from "./pages-markdown-chunking-mastra.ts";
+import { files_chunk_has_bitmask_flag, files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -83,7 +81,7 @@ function levenshtein(a: string, b: string): number {
  * Cons:
  * - Brittle to whitespace/escaping/indentation changes
  */
-function* ai_chat_tool_edit_page_replacer_simple(_content: string, find: string): Generator<string, void, unknown> {
+function* ai_chat_tool_edit_file_replacer_simple(_content: string, find: string): Generator<string, void, unknown> {
 	if (find !== find.trim()) return;
 	yield find;
 }
@@ -101,7 +99,7 @@ function* ai_chat_tool_edit_page_replacer_simple(_content: string, find: string)
  * Cons:
  * - Can collide when multiple blocks are equal after per-line trim
  */
-function* ai_chat_tool_edit_page_replacer_line_trimmed(
+function* ai_chat_tool_edit_file_replacer_line_trimmed(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -145,7 +143,7 @@ function* ai_chat_tool_edit_page_replacer_line_trimmed(
  * - Heuristic thresholds; slower on large files
  * - Possible false positives
  */
-function* ai_chat_tool_edit_page_replacer_block_anchor(
+function* ai_chat_tool_edit_file_replacer_block_anchor(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -248,7 +246,7 @@ function* ai_chat_tool_edit_page_replacer_block_anchor(
  * Cons:
  * - Risky when whitespace is semantically meaningful (tables, YAML, code)
  */
-function* ai_chat_tool_edit_page_replacer_whitespace_normalized(
+function* ai_chat_tool_edit_file_replacer_whitespace_normalized(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -298,7 +296,7 @@ function* ai_chat_tool_edit_page_replacer_whitespace_normalized(
  * Cons:
  * - Can over-match the same block at multiple indents
  */
-function* ai_chat_tool_edit_page_replacer_indentation_flexible(
+function* ai_chat_tool_edit_file_replacer_indentation_flexible(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -335,7 +333,7 @@ function* ai_chat_tool_edit_page_replacer_indentation_flexible(
  * Cons:
  * - May over-match in files with many similar string literals
  */
-function* ai_chat_tool_edit_page_replacer_escape_normalized(
+function* ai_chat_tool_edit_file_replacer_escape_normalized(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -393,7 +391,7 @@ function* ai_chat_tool_edit_page_replacer_escape_normalized(
  * Cons:
  * - Higher collision risk than earlier matchers
  */
-function* ai_chat_tool_edit_page_replacer_trimmed_boundary(
+function* ai_chat_tool_edit_file_replacer_trimmed_boundary(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -424,7 +422,7 @@ function* ai_chat_tool_edit_page_replacer_trimmed_boundary(
  * Cons:
  * - Heuristic; riskier than the earlier exact-ish fallbacks
  */
-function* ai_chat_tool_edit_page_replacer_context_aware(
+function* ai_chat_tool_edit_file_replacer_context_aware(
 	content: string,
 	find: string,
 ): Generator<string, void, unknown> {
@@ -481,16 +479,16 @@ export function replace_once_or_all(
 	let foundMatch = false;
 	const activePipeline =
 		opts?.mode === "exact"
-			? ([["simple", ai_chat_tool_edit_page_replacer_simple]] as const)
+			? ([["simple", ai_chat_tool_edit_file_replacer_simple]] as const)
 			: ([
-					["simple", ai_chat_tool_edit_page_replacer_simple],
-					["line_trimmed", ai_chat_tool_edit_page_replacer_line_trimmed],
-					["block_anchor", ai_chat_tool_edit_page_replacer_block_anchor],
-					["whitespace_normalized", ai_chat_tool_edit_page_replacer_whitespace_normalized],
-					["indentation_flexible", ai_chat_tool_edit_page_replacer_indentation_flexible],
-					["escape_normalized", ai_chat_tool_edit_page_replacer_escape_normalized],
-					["trimmed_boundary", ai_chat_tool_edit_page_replacer_trimmed_boundary],
-					["context_aware", ai_chat_tool_edit_page_replacer_context_aware],
+					["simple", ai_chat_tool_edit_file_replacer_simple],
+					["line_trimmed", ai_chat_tool_edit_file_replacer_line_trimmed],
+					["block_anchor", ai_chat_tool_edit_file_replacer_block_anchor],
+					["whitespace_normalized", ai_chat_tool_edit_file_replacer_whitespace_normalized],
+					["indentation_flexible", ai_chat_tool_edit_file_replacer_indentation_flexible],
+					["escape_normalized", ai_chat_tool_edit_file_replacer_escape_normalized],
+					["trimmed_boundary", ai_chat_tool_edit_file_replacer_trimmed_boundary],
+					["context_aware", ai_chat_tool_edit_file_replacer_context_aware],
 					// Keep MultiOccurrence disabled.
 					// `replaceAll` already handles the safe exact global-replace case.
 				] as const satisfies ReadonlyArray<readonly [string, Replacer]>);
@@ -526,11 +524,11 @@ export function replace_once_or_all(
 	throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.");
 }
 
-// #region read page
+// #region read file
 /**
  * Inspired by `opencode/packages/opencode/src/tool/read.ts`
  */
-export function ai_chat_tool_create_read_page(
+export function ai_chat_tool_create_read_file(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -539,58 +537,59 @@ export function ai_chat_tool_create_read_page(
 ) {
 	return tool({
 		description: dedent`\
-			Reads a page from the DB. You can access any page directly by using this tool.
-			Assume this tool is able to read all pages on the DB. If the User provides a path to a path assume that path is valid. It is okay to read a page that does not exist; an error will be returned.
+			Reads a Markdown file from the files. You can access any file directly by absolute path.
+			It is okay to read a file that does not exist; an error will be returned.
 
 			Usage:
 			- The path parameter must be an absolute path, not a relative path
-			- By default, it reads up to 2000 lines starting from the beginning of the page
-			- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole page by not providing these parameters
+			- By default, it reads up to 2000 lines starting from the beginning of the file
+			- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
 			- Any lines longer than 2000 characters will be truncated
 			- Results are returned using cat -n format, with line numbers starting at 1
 			- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 
-			- If you read a page that exists but has empty contents you will receive a system reminder warning in place of page contents.`,
+			- Files use real Markdown paths such as /readme.md and /docs/setup.md.
+			- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.`,
 
 		inputSchema: z.object({
 			path: z
 				.string()
-				.describe('The absolute path to the page to read (must be absolute, starting with a slash "/", not relative)'),
-			pendingEditId: z
+				.describe('The absolute path to the file to read (must be absolute, starting with a slash "/", not relative)'),
+			pendingUpdateId: z
 				.string()
 				.optional()
-				.describe("Optional pending edit id returned by a prior page read or edit result"),
+				.describe("Optional pending update id returned by a prior file read or edit result"),
 			offset: z.number().int().gte(0).describe("The line number to start reading from (0-based)").optional(),
 			limit: z.number().int().gte(1).lte(2000).describe("The number of lines to read (defaults to 2000)").default(2000),
 		}),
 
 		execute: async (args) => {
 			const normalizedPath = server_path_normalize(args.path);
-			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
+			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
-			const pageContent = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+			const fileContent = await ctx.runQuery(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				path: normalizedPath,
-				pendingEditId,
+				pendingUpdateId,
 			});
 
-			if (!pageContent) {
+			if (!fileContent) {
 				// Try to get suggestions for similar paths
 				const parentPath = server_path_parent_of(normalizedPath);
 				if (parentPath) {
-					const siblingPaths = await ctx.runQuery(internal.ai_docs_temp.read_dir, {
+					const siblingPaths = await ctx.runQuery(internal.files_nodes.read_dir, {
 						workspaceId: ctxData.workspaceId,
 						projectId: ctxData.projectId,
 						path: parentPath,
 					});
 
-					const pageName = path_name_of(normalizedPath);
+					const fileName = path_name_of(normalizedPath);
 					const suggestions = siblingPaths
 						.filter(
 							(name) =>
 								name.trim() !== "" &&
-								(name.toLowerCase().includes(pageName.toLowerCase()) ||
-									pageName.toLowerCase().includes(name.toLowerCase())),
+								(name.toLowerCase().includes(fileName.toLowerCase()) ||
+									fileName.toLowerCase().includes(name.toLowerCase())),
 						)
 						.map((name) => {
 							const trimmedName = name.trim();
@@ -601,18 +600,18 @@ export function ai_chat_tool_create_read_page(
 					if (suggestions.length > 0) {
 						return {
 							title: normalizedPath,
-							output: "Page not found. Did you mean one of these?\n" + suggestions.join("\n"),
+							output: "File not found. Did you mean one of these?\n" + suggestions.join("\n"),
 						};
 					}
 				}
 
 				return {
 					title: normalizedPath,
-					output: "Page not found.",
+					output: "File not found.",
 				};
 			}
 
-			const lines = pageContent.content.split("\n");
+			const lines = fileContent.content.split("\n");
 			const offset = args.offset || 0;
 			const limit = args.limit ?? 2000;
 
@@ -628,13 +627,13 @@ export function ai_chat_tool_create_read_page(
 				return `${lineNumber.toString().padStart(5, "0")}| ${line}`;
 			});
 
-			let output = "<page>\n";
+			let output = "<file>\n";
 			output += formattedLines.join("\n");
 
 			if (lines.length > offset + selectedLines.length) {
-				output += `\n\n(Page has more lines. Use 'offset' parameter to read beyond line ${offset + selectedLines.length})`;
+				output += `\n\n(File has more lines. Use 'offset' parameter to read beyond line ${offset + selectedLines.length})`;
 			}
-			output += "\n</page>";
+			output += "\n</file>";
 
 			// Create preview (first 20 lines of truncated content, without line numbers)
 			const preview = truncatedLines.slice(0, 20).join("\n");
@@ -644,24 +643,24 @@ export function ai_chat_tool_create_read_page(
 				output,
 				metadata: {
 					preview,
-					pageId: pageContent.pageId,
-					pendingEditId: pageContent.pendingEditId,
+					nodeId: fileContent.nodeId,
+					pendingUpdateId: fileContent.pendingUpdateId,
 				},
 			};
 		},
 	});
 }
 
-type ai_chat_tool_create_read_page_Tool = ReturnType<typeof ai_chat_tool_create_read_page>;
-export type ai_chat_tool_create_read_page_ToolInput = InferToolInput<ai_chat_tool_create_read_page_Tool>;
-export type ai_chat_tool_create_read_page_ToolOutput = InferToolOutput<ai_chat_tool_create_read_page_Tool>;
-// #endregion read page
+type ai_chat_tool_create_read_file_Tool = ReturnType<typeof ai_chat_tool_create_read_file>;
+export type ai_chat_tool_create_read_file_ToolInput = InferToolInput<ai_chat_tool_create_read_file_Tool>;
+export type ai_chat_tool_create_read_file_ToolOutput = InferToolOutput<ai_chat_tool_create_read_file_Tool>;
+// #endregion read file
 
-// #region list pages
+// #region list files
 /**
  * Inspired by `opencode/packages/opencode/src/tool/ls.ts`
  */
-export function ai_chat_tool_create_list_pages(
+export function ai_chat_tool_create_list_files(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -670,11 +669,11 @@ export function ai_chat_tool_create_list_pages(
 ) {
 	return tool({
 		description: dedent`\
-			Lists descendants pages in a given path. \
+			Lists descendant folders and files in a given path. \
 			The path parameter must be an absolute path, not a relative path. \
 			You can optionally provide an array of glob patterns to ignore with the ignore parameter. \
 			You should generally prefer the Glob and Grep tools, if you know which directories to search.
-			The root path is "/", you can use it to list all pages.`,
+			The root path is "/", you can use it to list all files.`,
 
 		inputSchema: z.object({
 			path: z
@@ -694,7 +693,7 @@ export function ai_chat_tool_create_list_pages(
 
 			const path = server_path_normalize(args.path || "/");
 
-			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
+			const list = await ctx.runQuery(internal.files_nodes.list_files, {
 				path: path,
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
@@ -705,45 +704,9 @@ export function ai_chat_tool_create_list_pages(
 			// Apply ignore filters (on absolute paths)
 			const visiblePaths = list.items.filter((p) => !matchesAnyIgnore(p.path, args.ignore));
 
-			// Build directory structure (directories only)
-			const dirs = new Set<string>();
-			const depthTruncatedPaths = new Set<string>();
-
-			for (const visiblePath of visiblePaths) {
-				const segments = path_extract_segments_from(visiblePath.path);
-
-				if (visiblePath.depthTruncated) {
-					depthTruncatedPaths.add(visiblePath.path);
-				}
-
-				// Add all parent directories including the path itself
-				for (let i = 0; i <= segments.length; i++) {
-					const dirPath = i === 0 ? "/" : "/" + segments.slice(0, i).join("/");
-					dirs.add(dirPath);
-				}
-			}
-
-			// Render tree starting at `path`
-			function renderDir(dirPath: string, depth: number): string {
-				const indent = "  ".repeat(depth);
-				let output = depth === 0 ? `/\n` : `${indent}${decode_path_segment(path_name_of(dirPath))}/\n`;
-
-				const subdirs = Array.from(dirs)
-					.filter((d) => server_path_parent_of(d) === dirPath && d !== dirPath)
-					.sort();
-
-				for (const child of subdirs) {
-					output += renderDir(child, depth + 1);
-				}
-
-				if (depthTruncatedPaths.has(dirPath)) {
-					output += `${indent}  ... (children truncated due to \`maxDepth\`)\n`;
-				}
-
-				return output;
-			}
-
-			const output = renderDir(path, 0);
+			const output = visiblePaths
+				.map((item) => `${item.path}${item.kind === "folder" ? "/" : ""}${item.depthTruncated ? " (...)" : ""}`)
+				.join("\n");
 
 			return {
 				title: path,
@@ -757,16 +720,16 @@ export function ai_chat_tool_create_list_pages(
 	});
 }
 
-type ai_chat_tool_create_list_pages_Tool = ReturnType<typeof ai_chat_tool_create_list_pages>;
-export type ai_chat_tool_create_list_pages_ToolInput = InferToolInput<ai_chat_tool_create_list_pages_Tool>;
-export type ai_chat_tool_create_list_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_list_pages_Tool>;
-// #endregion list pages
+type ai_chat_tool_create_list_files_Tool = ReturnType<typeof ai_chat_tool_create_list_files>;
+export type ai_chat_tool_create_list_files_ToolInput = InferToolInput<ai_chat_tool_create_list_files_Tool>;
+export type ai_chat_tool_create_list_files_ToolOutput = InferToolOutput<ai_chat_tool_create_list_files_Tool>;
+// #endregion list files
 
-// #region glob pages
+// #region glob files
 /**
  * Inspired by `opencode/packages/opencode/src/tool/glob.ts`
  */
-export function ai_chat_tool_create_glob_pages(
+export function ai_chat_tool_create_glob_files(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -775,15 +738,15 @@ export function ai_chat_tool_create_glob_pages(
 ) {
 	return tool({
 		description: dedent`\
-			Fast page pattern matching tool that works with any database size. \
+			Fast file pattern matching tool that works with any database size. \
 			Supports glob patterns like "**/bar" or "foo/**/bar*". \
-			Returns matching page paths sorted by modification time (newest first). \
-			Use this tool when you need to find pages by name patterns. \
+			Returns matching paths sorted by modification time (newest first). \
+			Use this tool when you need to find files or folders by name patterns. \
 			When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead. \
 			You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.`,
 
 		inputSchema: z.object({
-			pattern: z.string().describe("The glob pattern to match pages against"),
+			pattern: z.string().describe("The glob pattern to match paths against"),
 			path: z
 				.string()
 				.describe(
@@ -796,8 +759,8 @@ export function ai_chat_tool_create_glob_pages(
 		execute: async (args) => {
 			const searchPath = server_path_normalize(args.path || "/");
 
-			// Get all pages under the search path
-			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
+			// Get all files under the search path
+			const list = await ctx.runQuery(internal.files_nodes.list_files, {
 				path: searchPath,
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
@@ -811,7 +774,7 @@ export function ai_chat_tool_create_glob_pages(
 
 			const output: string[] = [];
 			if (list.items.length === 0) {
-				output.push("No pages found");
+				output.push("No files found");
 			} else {
 				output.push(...list.items.map((f) => f.path));
 				if (list.truncated) {
@@ -832,18 +795,18 @@ export function ai_chat_tool_create_glob_pages(
 	});
 }
 
-type ai_chat_tool_create_glob_pages_Tool = ReturnType<typeof ai_chat_tool_create_glob_pages>;
-export type ai_chat_tool_create_glob_pages_ToolInput = InferToolInput<ai_chat_tool_create_glob_pages_Tool>;
-export type ai_chat_tool_create_glob_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_glob_pages_Tool>;
-// #endregion glob pages
+type ai_chat_tool_create_glob_files_Tool = ReturnType<typeof ai_chat_tool_create_glob_files>;
+export type ai_chat_tool_create_glob_files_ToolInput = InferToolInput<ai_chat_tool_create_glob_files_Tool>;
+export type ai_chat_tool_create_glob_files_ToolOutput = InferToolOutput<ai_chat_tool_create_glob_files_Tool>;
+// #endregion glob files
 
-// #region grep pages
+// #region grep files
 /**
  * Inspired by `opencode/packages/opencode/src/tool/grep.ts`
  *
- * Search pages by applying a regex pattern against page name + text_content
+ * Search files by applying a regex pattern against file name + text_content
  */
-export function ai_chat_tool_create_grep_pages(
+export function ai_chat_tool_create_grep_files(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -852,11 +815,11 @@ export function ai_chat_tool_create_grep_pages(
 ) {
 	return tool({
 		description: dedent`\
-      Fast content search over pages using regular expressions.\
-      Searches concatenated page name + "\n" + text_content.\
+      Fast content search over files using regular expressions.\
+      Searches concatenated file name + "\n" + text_content.\
       Use optional include glob to restrict paths and path to scope the root.\
-      Results are grouped by page path and sorted by most recently updated.\
-      The traversal is limited by depth and limit, identical to list_pages.`,
+      Results are grouped by file path and sorted by most recently updated.\
+      The traversal is limited by depth and limit, identical to list_files.`,
 
 		inputSchema: z.object({
 			pattern: z.string().describe("The regex pattern to search for (JavaScript RegExp syntax, case-sensitive)"),
@@ -870,14 +833,14 @@ export function ai_chat_tool_create_grep_pages(
 				.int()
 				.gte(0)
 				.lte(10)
-				.describe("Maximum depth to traverse (same semantics as list_pages)")
+				.describe("Maximum depth to traverse (same semantics as list_files)")
 				.default(5),
 			limit: z
 				.number()
 				.int()
 				.gte(1)
 				.lte(100)
-				.describe("Maximum number of pages to traverse (same semantics as list_pages)")
+				.describe("Maximum number of files to traverse (same semantics as list_files)")
 				.default(100),
 		}),
 
@@ -892,8 +855,8 @@ export function ai_chat_tool_create_grep_pages(
 				throw new Error(`Invalid regex pattern: ${args.pattern}. ${(error instanceof Error && error.message) || ""}`);
 			}
 
-			// Discover candidate pages using the same traversal logic as list_pages
-			const list = await ctx.runQuery(internal.ai_docs_temp.list_pages, {
+			// Discover candidate files using the same traversal logic as list_files
+			const list = await ctx.runQuery(internal.files_nodes.list_files, {
 				path: searchPath,
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
@@ -906,15 +869,19 @@ export function ai_chat_tool_create_grep_pages(
 			const matches: Match[] = [];
 
 			for (const item of list.items) {
-				// Read page content
-				const page = await ctx.runQuery(internal.ai_docs_temp.get_page_last_available_markdown_content_by_path, {
+				if (item.kind !== "file") {
+					continue;
+				}
+
+				// Read file content
+				const file = await ctx.runQuery(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 					path: item.path,
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 				});
 
-				const pageName = path_name_of(item.path);
-				const fullText = `${pageName}\n${page?.content ?? ""}`;
+				const fileName = path_name_of(item.path);
+				const fullText = `${fileName}\n${file?.content ?? ""}`;
 
 				// Line-based scan to produce line numbers and line snippets, similar to ripgrep output
 				const lines = fullText.split(/\r?\n/);
@@ -967,13 +934,13 @@ export function ai_chat_tool_create_grep_pages(
 	});
 }
 
-type ai_chat_tool_create_grep_pages_Tool = ReturnType<typeof ai_chat_tool_create_grep_pages>;
-export type ai_chat_tool_create_grep_pages_ToolInput = InferToolInput<ai_chat_tool_create_grep_pages_Tool>;
-export type ai_chat_tool_create_grep_pages_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_pages_Tool>;
-// #endregion grep pages
+type ai_chat_tool_create_grep_files_Tool = ReturnType<typeof ai_chat_tool_create_grep_files>;
+export type ai_chat_tool_create_grep_files_ToolInput = InferToolInput<ai_chat_tool_create_grep_files_Tool>;
+export type ai_chat_tool_create_grep_files_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_files_Tool>;
+// #endregion grep files
 
-// #region text search pages
-export function ai_chat_tool_create_text_search_pages(
+// #region text search files
+export function ai_chat_tool_create_text_search_files(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -982,7 +949,7 @@ export function ai_chat_tool_create_text_search_pages(
 ) {
 	return tool({
 		description: dedent`\
-			Ultra-fast text search over page content using a plain-text chunk index.\
+			Ultra-fast text search over file content using a plain-text chunk index.\
 			Search happens on markdown-derived plain text, while results return markdown fragments with line ranges.\
 			This makes search resilient to markdown syntax and still gives exact markdown context.
 
@@ -998,7 +965,7 @@ export function ai_chat_tool_create_text_search_pages(
 		}),
 
 		execute: async (args) => {
-			const res = await ctx.runQuery(internal.ai_docs_temp.text_search_pages, {
+			const res = await ctx.runQuery(internal.files_nodes.text_search_files, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				query: args.query,
@@ -1009,20 +976,20 @@ export function ai_chat_tool_create_text_search_pages(
 				return {
 					title: args.query,
 					metadata: { matches: 0 },
-					output: "No pages found",
+					output: "No files found",
 				};
 			}
 
 			const outputBlocks = res.items.map((item) => {
-				const isCodeChunk = pages_chunk_has_bitmask_flag(item.chunkFlags, pages_chunk_BITMASK_FLAGS.isCode);
-				const isTableChunk = pages_chunk_has_bitmask_flag(item.chunkFlags, pages_chunk_BITMASK_FLAGS.isTable);
-				const hasSpecificAbove = pages_chunk_has_bitmask_flag(
+				const isCodeChunk = files_chunk_has_bitmask_flag(item.chunkFlags, files_chunk_BITMASK_FLAGS.isCode);
+				const isTableChunk = files_chunk_has_bitmask_flag(item.chunkFlags, files_chunk_BITMASK_FLAGS.isTable);
+				const hasSpecificAbove = files_chunk_has_bitmask_flag(
 					item.chunkFlags,
-					pages_chunk_BITMASK_FLAGS.hasMoreFragmentContentAbove,
+					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentAbove,
 				);
-				const hasSpecificBelow = pages_chunk_has_bitmask_flag(
+				const hasSpecificBelow = files_chunk_has_bitmask_flag(
 					item.chunkFlags,
-					pages_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
+					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
 				);
 
 				const blockLines = [
@@ -1069,25 +1036,25 @@ export function ai_chat_tool_create_text_search_pages(
 	});
 }
 
-type ai_chat_tool_create_text_search_pages_Tool = ReturnType<typeof ai_chat_tool_create_text_search_pages>;
-export type ai_chat_tool_create_text_search_pages_ToolInput =
-	InferToolInput<ai_chat_tool_create_text_search_pages_Tool>;
-export type ai_chat_tool_create_text_search_pages_ToolOutput =
-	InferToolOutput<ai_chat_tool_create_text_search_pages_Tool>;
-// #endregion text search pages
+type ai_chat_tool_create_text_search_files_Tool = ReturnType<typeof ai_chat_tool_create_text_search_files>;
+export type ai_chat_tool_create_text_search_files_ToolInput =
+	InferToolInput<ai_chat_tool_create_text_search_files_Tool>;
+export type ai_chat_tool_create_text_search_files_ToolOutput =
+	InferToolOutput<ai_chat_tool_create_text_search_files_Tool>;
+// #endregion text search files
 
-// Tools that mutate pages. Ask mode must not expose these. Keep in sync when
-// adding a new mutating page tool.
-export const ai_chat_WRITE_TOOL_NAMES = ["write_page", "edit_page"] as const;
+// Tools that mutate files. Ask mode must not expose these. Keep in sync when
+// adding a new mutating file tool.
+export const ai_chat_WRITE_TOOL_NAMES = ["write_file", "edit_file"] as const;
 export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
 
-// #region write page
+// #region write file
 /**
  * Inspired by `opencode/packages/opencode/src/tool/write.ts`
  *
- * Tool for proposing page content with preview diff (no direct apply)
+ * Tool for proposing file content with preview diff (no direct apply)
  */
-export function ai_chat_tool_create_write_page(
+export function ai_chat_tool_create_write_file(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -1097,91 +1064,90 @@ export function ai_chat_tool_create_write_page(
 ) {
 	return tool({
 		description: dedent`\
-			Writes a page in the system.
+			Writes a Markdown file in the files.
 
 			Usage:
-			- This tool proposes changes to an existing page (or content for a new page) and returns a preview diff.
+			- This tool proposes changes to an existing file (or content for a new file) and returns a preview diff.
 			- It does not apply changes directly; the client will open a diff editor for human-in-the-loop review.
-			- ALWAYS prefer editing existing pages. ONLY propose new pages if explicitly requested.
-			- NEVER proactively create documentation pages unless explicitly requested by the user.
-			- Only use emojis if the user explicitly requests it. Avoid writing emojis to pages unless asked.
-			- NEVER include a file extension in the page path (no .md, .mdx, .txt) unless the user explicitly provided it. Pages are extensionless by default.
-			  Examples: Correct → /docs/Getting Started | Incorrect → /docs/Getting Started.md, /docs/Getting Started.mdx
+			- ALWAYS prefer editing existing files. ONLY propose new files if explicitly requested.
+			- NEVER proactively create documentation files unless explicitly requested by the user.
+			- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
+			- Paths are real Markdown file paths and must end in .md, for example /readme.md or /docs/setup.md.
 			- The content must be valid GitHub Flavored Markdown.`,
 
 		inputSchema: z.object({
 			path: z
 				.string()
 				.describe(
-					'Absolute path to the page to write. Must start with "/". Do NOT include a file extension (.md, .mdx, .txt) unless explicitly provided by the user.',
+					'Absolute path to the Markdown file to write. Must start with "/" and end with ".md".',
 				),
-			content: z.string().describe("The GitHub Flavored Markdown content to write to the page"),
-			pendingEditId: z
+			content: z.string().describe("The GitHub Flavored Markdown content to write to the file"),
+			pendingUpdateId: z
 				.string()
 				.optional()
-				.describe("Optional pending edit id returned by a prior page read or edit result"),
+				.describe("Optional pending update id returned by a prior file read or edit result"),
 		}),
 
 		execute: async (args) => {
 			const path = server_path_normalize(args.path);
-			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
+			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 			if (!path.startsWith("/") || path === "/") {
 				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
 			}
 
-			const currentPageContent = await ctx.runQuery(
-				internal.ai_docs_temp.get_page_last_available_markdown_content_by_path,
+			const currentFileContent = await ctx.runQuery(
+				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					path,
-					pendingEditId,
+					pendingUpdateId,
 				},
 			);
 
-			let exists = !!currentPageContent;
-			const oldText = currentPageContent?.content ?? "";
+			let exists = !!currentFileContent;
+			const oldText = currentFileContent?.content ?? "";
 			const newText = normalize_ai_edit_content(normalize_lf_newlines(args.content), oldText);
 			const diff = createPatch(path, oldText, newText);
 
-			let pageId = currentPageContent?.pageId;
+			let nodeId = currentFileContent?.nodeId;
 
-			if (!pageId) {
-				const created = await ctx.runMutation(internal.ai_docs_temp.create_page_by_path, {
+			if (!nodeId) {
+				const created = await ctx.runMutation(internal.files_nodes.create_file_by_path, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					path,
 				});
 				if (created._nay) {
-					throw new Error("[server-ai-tools.ai_chat_tool_create_write_page] Error creating page by path", {
+					throw new Error("[server-ai-tools.ai_chat_tool_create_write_file] Error creating file by path", {
 						cause: created._nay,
 					});
 				}
 				exists = false;
-				pageId = created._yay.pageId;
+				nodeId = created._yay.nodeId;
 			}
 
-			await ctx.runMutation(internal.pages_pending_edits.upsert_pages_pending_edit_updates_internal, {
+			await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
-				pageId,
-				pendingEditId: currentPageContent?.pendingEditId ?? undefined,
+				nodeId,
+				pendingUpdateId: currentFileContent?.pendingUpdateId ?? undefined,
 				unstagedMarkdown: newText,
 			});
-			const nextPendingEdit = await ctx.runQuery(internal.pages_pending_edits.get_pages_pending_edit_internal, {
+			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
-				pageId,
-				pendingEditId: currentPageContent?.pendingEditId ?? undefined,
+				nodeId,
+				pendingUpdateId: currentFileContent?.pendingUpdateId ?? undefined,
 			});
 
 			return {
-				output: exists ? "Page overwritten" : "New page created",
+				output: exists ? "File overwritten" : "New file created",
 				metadata: {
-					pageId,
-					pendingEditId: nextPendingEdit?._id ?? null,
+					nodeId,
+					pendingUpdateId: nextPendingUpdate?._id ?? null,
 					exists,
 					path,
 					diff,
@@ -1192,20 +1158,20 @@ export function ai_chat_tool_create_write_page(
 	});
 }
 
-type ai_chat_tool_create_write_page_Tool = ReturnType<typeof ai_chat_tool_create_write_page>;
-export type ai_chat_tool_create_write_page_ToolInput = InferToolInput<ai_chat_tool_create_write_page_Tool>;
-export type ai_chat_tool_create_write_page_ToolOutput = InferToolOutput<ai_chat_tool_create_write_page_Tool>;
-// #endregion write page
+type ai_chat_tool_create_write_file_Tool = ReturnType<typeof ai_chat_tool_create_write_file>;
+export type ai_chat_tool_create_write_file_ToolInput = InferToolInput<ai_chat_tool_create_write_file_Tool>;
+export type ai_chat_tool_create_write_file_ToolOutput = InferToolOutput<ai_chat_tool_create_write_file_Tool>;
+// #endregion write file
 
-// #region edit page
+// #region edit file
 /**
  * Inspired by `opencode/packages/opencode/src/tool/edit.ts`
  *
- * Tool for proposing a search-and-replace edit on a page (no direct apply).
- * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on DB pages,
- * and stores a pending edit for human-in-the-loop review.
+ * Tool for proposing a search-and-replace edit on a file (no direct apply).
+ * It mirrors OpenCode's edit semantics (unique match vs. replaceAll), operates on files files,
+ * and stores a pending update for human-in-the-loop review.
  */
-export function ai_chat_tool_create_edit_page(
+export function ai_chat_tool_create_edit_file(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
@@ -1215,49 +1181,49 @@ export function ai_chat_tool_create_edit_page(
 ) {
 	return tool({
 		description: dedent`\
-			Edits an existing page by replacing text and returns a preview diff.
+			Edits an existing file by replacing text and returns a preview diff.
 
 			Usage:
-			- The path must refer to an existing page (absolute, starting with "/").
+			- The path must refer to an existing Markdown file (absolute, starting with "/" and ending with ".md").
 			- By default, replaces a single unique occurrence of oldString; fails if not found or ambiguous.
 			- Set replaceAll=true to replace every occurrence.
-			- If copying from read_page output, do NOT include the line-number prefix (e.g., "00001| ").
+			- If copying from read_file output, do NOT include the line-number prefix (e.g., "00001| ").
 			- The text must be valid GitHub Flavored Markdown; ensure replacements preserve valid Markdown structure (headings, code fences, lists).
-			- This tool does not apply changes directly; it saves a pending edit for human review.`,
+			- This tool does not apply changes directly; it saves a pending update for human review.`,
 
 		inputSchema: z.object({
 			path: z
 				.string()
 				.describe(
-					'Absolute path to the page (must start with "/"; do not include a file extension unless explicitly provided).',
+					'Absolute path to the Markdown file (must start with "/" and end with ".md").',
 				),
 			oldString: z.string().describe("The GitHub Flavored Markdown text to replace"),
 			newString: z.string().describe("The replacement GitHub Flavored Markdown text"),
 			replaceAll: z.boolean().optional().default(false),
-			pendingEditId: z
+			pendingUpdateId: z
 				.string()
 				.optional()
-				.describe("Optional pending edit id returned by a prior page read or edit result"),
+				.describe("Optional pending update id returned by a prior file read or edit result"),
 		}),
 
 		execute: async (args) => {
 			const normalizedPath = server_path_normalize(args.path);
-			const pendingEditId = args.pendingEditId as Id<"pages_pending_edits"> | undefined;
+			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
 
-			const currentPageContent = await ctx.runQuery(
-				internal.ai_docs_temp.get_page_last_available_markdown_content_by_path,
+			const currentFileContent = await ctx.runQuery(
+				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					path: normalizedPath,
-					pendingEditId,
+					pendingUpdateId,
 				},
 			);
-			if (!currentPageContent) {
-				throw new Error(`Page not found: ${normalizedPath}`);
+			if (!currentFileContent) {
+				throw new Error(`File not found: ${normalizedPath}`);
 			}
 
 			const oldString = normalize_lf_newlines(args.oldString);
@@ -1267,36 +1233,36 @@ export function ai_chat_tool_create_edit_page(
 				content: modifiedTextRaw,
 				matches,
 				matcher,
-			} = replace_once_or_all(currentPageContent.content, oldString, newString, {
+			} = replace_once_or_all(currentFileContent.content, oldString, newString, {
 				replaceAll: args.replaceAll,
 				mode: "auto",
 			});
-			const modifiedText = normalize_ai_edit_content(modifiedTextRaw, currentPageContent.content);
-			const diff = createPatch(normalizedPath, currentPageContent.content, modifiedText);
+			const modifiedText = normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
+			const diff = createPatch(normalizedPath, currentFileContent.content, modifiedText);
 
-			const pageId = currentPageContent.pageId;
+			const nodeId = currentFileContent.nodeId;
 
-			await ctx.runMutation(internal.pages_pending_edits.upsert_pages_pending_edit_updates_internal, {
+			await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
-				pageId,
-				pendingEditId: currentPageContent.pendingEditId ?? undefined,
+				nodeId,
+				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				unstagedMarkdown: modifiedText,
 			});
-			const nextPendingEdit = await ctx.runQuery(internal.pages_pending_edits.get_pages_pending_edit_internal, {
+			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
-				pageId,
-				pendingEditId: currentPageContent.pendingEditId ?? undefined,
+				nodeId,
+				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 			});
 
 			return {
 				title: normalizedPath,
 				metadata: {
-					pageId,
-					pendingEditId: nextPendingEdit?._id ?? null,
+					nodeId,
+					pendingUpdateId: nextPendingUpdate?._id ?? null,
 					path: normalizedPath,
 					matches,
 					matcher,
@@ -1309,10 +1275,10 @@ export function ai_chat_tool_create_edit_page(
 	});
 }
 
-type ai_chat_tool_create_edit_page_Tool = ReturnType<typeof ai_chat_tool_create_edit_page>;
-export type ai_chat_tool_create_edit_page_ToolInput = InferToolInput<ai_chat_tool_create_edit_page_Tool>;
-export type ai_chat_tool_create_edit_page_ToolOutput = InferToolOutput<ai_chat_tool_create_edit_page_Tool>;
-// #endregion edit page
+type ai_chat_tool_create_edit_file_Tool = ReturnType<typeof ai_chat_tool_create_edit_file>;
+export type ai_chat_tool_create_edit_file_ToolInput = InferToolInput<ai_chat_tool_create_edit_file_Tool>;
+export type ai_chat_tool_create_edit_file_ToolOutput = InferToolOutput<ai_chat_tool_create_edit_file_Tool>;
+// #endregion edit file
 
 // #region web search
 type ai_chat_tool_web_search_ExaItem = {
@@ -1384,7 +1350,7 @@ export function ai_chat_tool_create_web_search() {
 		description: dedent`\
 			Search the public web for current facts, documentation, release notes, news, and other information outside this workspace. \
 			Returns compact highlight snippets plus titles and URLs — summarize these in your own words instead of dumping the raw tool output. \
-			Prefer workspace page tools first when the answer should come from the user's docs.`,
+			Prefer workspace file tools first when the answer should come from the user's docs.`,
 
 		inputSchema: z.object({
 			query: z.string().describe("Natural language search query"),

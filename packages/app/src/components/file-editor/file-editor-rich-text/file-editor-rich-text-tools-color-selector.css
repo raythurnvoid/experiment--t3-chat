@@ -1,0 +1,49 @@
+@layer components {
+	/* #region preview */
+	.FileEditorRichTextToolsColorSelectorPreview {
+		border-radius: 4px;
+		border: 1px solid var(--color-base-1-10);
+
+		padding: 2px 8px;
+
+		font-weight: 500;
+
+		width: 20px;
+		height: 20px;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		user-select: none;
+		pointer-events: none;
+
+		color: var(--FileEditorRichTextToolsColorSelector-selected-fg);
+		background-color: var(--FileEditorRichTextToolsColorSelector-selected-bg);
+	}
+	/* #endregion preview */
+
+	/* #region item */
+	.FileEditorRichTextToolsColorSelectorItem {
+		cursor: pointer;
+	}
+
+	.FileEditorRichTextToolsColorSelectorItem-checkIcon {
+		width: 16px;
+		height: 16px;
+	}
+	/* #endregion item */
+
+	/* #region list */
+	/* #endregion list */
+
+	/* #region root */
+	.FileEditorRichTextToolsColorSelector .MyButton {
+		width: 60px;
+	}
+
+	.FileEditorRichTextToolsColorSelector-popover {
+		width: 200px;
+	}
+	/* #endregion root */
+}

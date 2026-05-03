@@ -1,6 +1,6 @@
 ---
 name: app-playwriter-harness
-description: Use Playwriter to inspect, debug, test, and learn this browser app through the user's existing Chrome tabs. Use when working on localhost app flows, /pages editor behavior, sidebar/navigation clickability, browser QA, app-specific Playwriter helpers, or durable Markdown memories for repeated browser actions.
+description: Use Playwriter to inspect, debug, test, and learn this browser app through the user's existing Chrome tabs. Use when working on localhost app flows, /files editor behavior, sidebar/navigation clickability, browser QA, app-specific Playwriter helpers, or durable Markdown memories for repeated browser actions.
 ---
 
 # App Playwriter Harness
@@ -25,7 +25,7 @@ pnpm dlx playwriter@latest -s $session -e "const fs = require('node:fs'); const 
 4. Bind to the target app tab before acting:
 
 ```powershell
-pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/pages' });"
+pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
 ```
 
 ## Workflow
@@ -44,7 +44,7 @@ Use `state.appPlaywriterHarness.appendMemory({ file, title, body })` only for re
 Allowed memory files:
 
 - `app-map.md`
-- `pages.md`
+- `files.md`
 - `known-hazards.md`
 - `snippets.md`
 
@@ -53,6 +53,6 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 ## References
 
 - Read `references/app-map.md` for stable app routes, landmarks, and selectors.
-- Read `references/pages.md` for `/pages` editor and sidebar notes.
+- Read `references/files.md` for `/files` editor and sidebar notes.
 - Read `references/known-hazards.md` before debugging browser interaction failures.
 - Read `references/snippets.md` for short Playwriter commands.

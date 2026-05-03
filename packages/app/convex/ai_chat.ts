@@ -28,13 +28,13 @@ import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
-	ai_chat_tool_create_list_pages,
-	ai_chat_tool_create_read_page,
-	ai_chat_tool_create_glob_pages,
-	ai_chat_tool_create_grep_pages,
-	ai_chat_tool_create_text_search_pages,
-	ai_chat_tool_create_write_page,
-	ai_chat_tool_create_edit_page,
+	ai_chat_tool_create_list_files,
+	ai_chat_tool_create_read_file,
+	ai_chat_tool_create_glob_files,
+	ai_chat_tool_create_grep_files,
+	ai_chat_tool_create_text_search_files,
+	ai_chat_tool_create_write_file,
+	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
@@ -46,14 +46,14 @@ import { billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 export {
-	remove_pages_pending_edit_if_expired,
-	upsert_pages_pending_edit_updates,
-	persist_pages_pending_edit_rebased_state,
-	get_pages_pending_edit,
-	get_pages_pending_edit_last_sequence_saved,
-	list_pages_pending_edits,
-	save_pages_pending_edit,
-} from "./pages_pending_edits.ts";
+	remove_file_pending_update_if_expired,
+	upsert_file_pending_update,
+	persist_file_pending_update_rebased_state,
+	get_file_pending_update,
+	get_file_pending_update_last_sequence_saved,
+	list_files_pending_updates,
+	save_file_pending_update,
+} from "./files_pending_updates.ts";
 
 const ai_chat_TITLE_MODEL_ID = "gpt-4.1-nano" as const;
 
@@ -66,17 +66,17 @@ const ai_chat_TITLE_SYSTEM_PROMPT = [
 const ai_chat_SYSTEM_PROMPT = [
 	"You are the app chat agent for the user's workspace.",
 	"Respond directly when you can answer confidently without tools.",
-	"When the request depends on existing page content or paths, read or search before you write or edit.",
-	"`write_page` and `edit_page` create pending review changes for the user; they do not silently publish live content.",
+	"When the request depends on existing file content or paths, read or search before you write or edit.",
+	"`write_file` and `edit_file` create pending review changes for the user; they do not silently publish live content.",
 	"If a read, search, or path lookup is uncertain, say so and use the tools to clarify instead of inventing content or paths.",
-	"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when page tools are not enough.",
+	"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when file tools are not enough.",
 	"Summarize `web_search` highlight snippets in your own words; do not paste large raw tool outputs.",
 	"If `web_search` fails, say you could not retrieve current web results and continue from workspace context only; do not ask the user to configure keys or environment variables.",
 	"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
 ].join("\n");
 
 const ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX =
-	"You are in Ask mode: do not call `write_page` or `edit_page`. Answer from reads and searches only.";
+	"You are in Ask mode: do not call `write_file` or `edit_file`. Answer from reads and searches only.";
 
 function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
 	switch (args.modelId) {
@@ -107,13 +107,13 @@ function ai_chat_get_agent_configuration(input: {
 	} = input;
 
 	const tools = {
-		read_page: ai_chat_tool_create_read_page(ctx, ctxData),
-		list_pages: ai_chat_tool_create_list_pages(ctx, ctxData),
-		glob_pages: ai_chat_tool_create_glob_pages(ctx, ctxData),
-		grep_pages: ai_chat_tool_create_grep_pages(ctx, ctxData),
-		text_search_pages: ai_chat_tool_create_text_search_pages(ctx, ctxData),
-		write_page: ai_chat_tool_create_write_page(ctx, ctxData),
-		edit_page: ai_chat_tool_create_edit_page(ctx, ctxData),
+		read_file: ai_chat_tool_create_read_file(ctx, ctxData),
+		list_files: ai_chat_tool_create_list_files(ctx, ctxData),
+		glob_files: ai_chat_tool_create_glob_files(ctx, ctxData),
+		grep_files: ai_chat_tool_create_grep_files(ctx, ctxData),
+		text_search_files: ai_chat_tool_create_text_search_files(ctx, ctxData),
+		write_file: ai_chat_tool_create_write_file(ctx, ctxData),
+		edit_file: ai_chat_tool_create_edit_file(ctx, ctxData),
 		web_search: ai_chat_tool_create_web_search(),
 	};
 
@@ -1758,13 +1758,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	} as unknown as ai_chat_get_agent_configuration_test_user_identity;
 
 	const ai_chat_get_agent_configuration_expected_tool_keys = [
-		"read_page",
-		"list_pages",
-		"glob_pages",
-		"grep_pages",
-		"text_search_pages",
-		"write_page",
-		"edit_page",
+		"read_file",
+		"list_files",
+		"glob_files",
+		"grep_files",
+		"text_search_files",
+		"write_file",
+		"edit_file",
 		"web_search",
 	] as const;
 
@@ -1821,11 +1821,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
 			expect(configuration.activeTools).toEqual([
-				"read_page",
-				"list_pages",
-				"glob_pages",
-				"grep_pages",
-				"text_search_pages",
+				"read_file",
+				"list_files",
+				"glob_files",
+				"grep_files",
+				"text_search_files",
 				"web_search",
 			]);
 		});
@@ -1841,7 +1841,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(configuration.systemPrompt).toContain(
-				"You are in Ask mode: do not call `write_page` or `edit_page`. Answer from reads and searches only.",
+				"You are in Ask mode: do not call `write_file` or `edit_file`. Answer from reads and searches only.",
 			);
 		});
 

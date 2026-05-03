@@ -42,7 +42,7 @@ Fields:
 
 - `workspaceId`
 - `projectId`
-- `resourceKind`: `workspace` | `project` | `page` | `thread`
+- `resourceKind`: `workspace` | `project` | `file` | `thread`
 - `resourceId`: stringified Convex id
 - `principalKind`: `role` | `user` | `public`
 - optional `userId`

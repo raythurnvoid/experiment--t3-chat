@@ -661,11 +661,11 @@ export type MainAppHeader_Props = ComponentPropsWithRef<"header">;
 export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Props) {
 	const { ref, id, className, ...rest } = props;
 
-	// Match the generated /pages index route instead of parsing the browser path.
+	// Match the generated /files index route instead of parsing the browser path.
 	// The editor header renders its own inline billing indicator, so suppress the bar-level copy there.
-	const isPagesRoute =
+	const isFilesRoute =
 		useMatch({
-			from: "/w/$workspaceName/$projectName/pages/",
+			from: "/w/$workspaceName/$projectName/files/",
 			shouldThrow: false,
 			select: () => true,
 		}) ?? false;
@@ -677,11 +677,11 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 				id={"app_main_header_content" satisfies AppElementId}
 				className={cn("MainAppHeader-content" satisfies MainAppHeader_ClassNames)}
 			>
-				{/* The pages inject content here */}
+				{/* The files inject content here */}
 			</div>
 			<div className={"MainAppHeader-actions" satisfies MainAppHeader_ClassNames}>
 				<AppNotifications />
-				{!isPagesRoute && <MainAppHeaderBillingIndicator />}
+				{!isFilesRoute && <MainAppHeaderBillingIndicator />}
 			</div>
 		</header>
 	);

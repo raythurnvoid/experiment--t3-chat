@@ -71,7 +71,7 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 
 import type { Promisable } from "type-fest";
 import type { ai_chat_http_routes } from "../convex/ai_chat.ts";
-import type { pages_http_routes } from "../convex/ai_docs_temp.ts";
+import type { files_http_routes } from "../convex/files_nodes.ts";
 import type { users_http_routes } from "../convex/users.ts";
 
 // #region Schema validation
@@ -117,7 +117,7 @@ export interface api_schemas_Main {
 
 	"/api/v1/runs/stream": ReturnType<typeof ai_chat_http_routes>["/api/v1/runs/stream"];
 
-	"/api/ai-docs-temp/contextual-prompt": ReturnType<typeof pages_http_routes>["/api/ai-docs-temp/contextual-prompt"];
+	"/api/files/contextual-prompt": ReturnType<typeof files_http_routes>["/api/files/contextual-prompt"];
 }
 
 export type api_schemas_Main_Path = keyof api_schemas_Main;

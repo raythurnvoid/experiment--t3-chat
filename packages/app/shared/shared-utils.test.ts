@@ -21,10 +21,10 @@ function restore_runtime_env() {
 }
 
 describe("composite_id", () => {
-	test("joins pages room ids with double colons", () => {
-		const id = composite_id("rooms", "pages", "workspace_1", "project_1", "page_1");
+	test("joins files room ids with double colons", () => {
+		const id = composite_id("rooms", "files_nodes", "workspace_1", "project_1", "file_1");
 
-		expect(id).toBe("pages::workspace_1::project_1::page_1");
+		expect(id).toBe("files_nodes::workspace_1::project_1::file_1");
 	});
 
 	test("joins billing event ids with double colons", () => {
@@ -33,19 +33,19 @@ describe("composite_id", () => {
 		expect(id).toBe("manual_credit::user_1::123456");
 	});
 
-	test("joins page save ids with double colons", () => {
+	test("joins file save ids with double colons", () => {
 		const id = composite_id(
 			"billing",
-			"page_save",
+			"file_save",
 			"billed_user_1",
 			"actor_user_1",
 			"workspace_1",
 			"project_1",
-			"page_1",
+			"file_1",
 			42,
 		);
 
-		expect(id).toBe("page_save::billed_user_1::actor_user_1::workspace_1::project_1::page_1::42");
+		expect(id).toBe("file_save::billed_user_1::actor_user_1::workspace_1::project_1::file_1::42");
 	});
 
 	test("joins monthly credit ids with double colons", () => {

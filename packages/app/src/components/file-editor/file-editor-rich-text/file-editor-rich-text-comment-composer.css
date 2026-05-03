@@ -1,0 +1,25 @@
+@layer components {
+	.FileEditorRichTextCommentComposer {
+		align-self: start;
+
+		width: 100%;
+
+		> div,
+		.FileEditorRichTextCommentComposer-editor {
+			width: inherit;
+		}
+	}
+
+	.FileEditorRichTextCommentComposer-editor {
+		padding: 4px 0 4px 0;
+
+		&.MyInputTextAreaControl {
+			resize: none;
+		}
+
+		/* Show placeholder only when the entire editor is empty */
+		p {
+			min-height: 1lh;
+		}
+	}
+}

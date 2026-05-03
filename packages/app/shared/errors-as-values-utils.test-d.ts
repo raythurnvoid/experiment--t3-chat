@@ -70,18 +70,18 @@ test("Can infer data by discriminating on message", () => {
 });
 
 test("Result_all infers tuple _yay for mixed values", () => {
-	const createPageRowsResult = Result_all([
+	const createFileRowsResult = Result_all([
 		"yjs_snapshot_id" as const,
 		"yjs_last_sequence_id" as const,
 		"markdown_content_id" as const,
 		Result({ _yay: null }),
 	] as const);
 
-	if (createPageRowsResult._nay) {
+	if (createFileRowsResult._nay) {
 		return;
 	}
 
-	const [yjsSnapshotId, yjsLastSequenceId, markdownContentId, upsertChunksYay] = createPageRowsResult._yay;
+	const [yjsSnapshotId, yjsLastSequenceId, markdownContentId, upsertChunksYay] = createFileRowsResult._yay;
 
 	expectTypeOf(yjsSnapshotId).toEqualTypeOf<"yjs_snapshot_id">();
 	expectTypeOf(yjsLastSequenceId).toEqualTypeOf<"yjs_last_sequence_id">();

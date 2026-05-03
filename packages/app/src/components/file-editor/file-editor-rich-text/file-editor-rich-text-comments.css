@@ -1,0 +1,38 @@
+@layer components {
+	.FileEditorRichTextAnchoredComments {
+		position: relative;
+		padding: 16px;
+
+		/*
+		Necessary to ensure that if there are no comments,
+		the message remains sticky when scrolling.
+		*/
+		min-height: 100cqh;
+	}
+
+	.FileEditorRichTextAnchoredComments-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-06);
+
+		/* 
+		Sticky relative to `FileEditorSidebar-toolbar` and 
+		the padding of `FileEditorRichTextAnchoredComments`.
+		*/
+		position: sticky;
+		top: 60px;
+	}
+
+	.FileEditorRichTextAnchoredComments-anchored-elements-container {
+		position: relative;
+
+		& > * {
+			position: absolute;
+			transform: translate3d(0px, var(--lb-tiptap-anchored-threads-top, 0px), 0px);
+			top: 0;
+			width: 100%;
+			padding-bottom: 12px;
+		}
+	}
+}

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import * as Y from "yjs";
-import { pages_PresenceStore } from "./pages.ts";
+import { files_PresenceStore } from "./files.ts";
 import {
 	LiveblocksYjsProvider,
 	type LiveblocksYjsProvider_Args,
@@ -10,7 +10,7 @@ type PromiseConstructorWithTry = Omit<PromiseConstructor, "try"> & {
 	try?: <T>(callback: () => T | PromiseLike<T>) => Promise<Awaited<T>>;
 };
 
-type TestPresenceStoreData = ConstructorParameters<typeof pages_PresenceStore>[0]["data"];
+type TestPresenceStoreData = ConstructorParameters<typeof files_PresenceStore>[0]["data"];
 
 type MockIncrementalUpdate = {
 	sequence: number;
@@ -25,7 +25,7 @@ type MockIncrementalUpdates = { updates: MockIncrementalUpdate[] } | null;
 
 type MockPushUpdateArgs = {
 	membershipId: string;
-	pageId: string;
+	nodeId: string;
 	update: ArrayBuffer;
 	sessionId: string;
 };
@@ -34,7 +34,7 @@ const appConvexMock = vi.hoisted(() => {
 	let watcherResult: MockIncrementalUpdates = null;
 	let watcherCallback: (() => void) | null = null;
 
-	const pages_u8_to_array_buffer = (u8: Uint8Array) => {
+	const files_u8_to_array_buffer = (u8: Uint8Array) => {
 		if (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength) {
 			return u8.buffer as ArrayBuffer;
 		}
@@ -42,7 +42,7 @@ const appConvexMock = vi.hoisted(() => {
 		return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
 	};
 
-	const pages_u8_equals = (a: Uint8Array, b: Uint8Array) => {
+	const files_u8_equals = (a: Uint8Array, b: Uint8Array) => {
 		if (a.byteLength !== b.byteLength) return false;
 
 		for (let i = 0; i < a.byteLength; i++) {
@@ -52,8 +52,8 @@ const appConvexMock = vi.hoisted(() => {
 		return true;
 	};
 
-	const pages_yjs_doc_is_diff_update_empty = (diffUpdate: Uint8Array) => {
-		return diffUpdate.byteLength === 0 || pages_u8_equals(diffUpdate, new Uint8Array([0, 0]));
+	const files_yjs_doc_is_diff_update_empty = (diffUpdate: Uint8Array) => {
+		return diffUpdate.byteLength === 0 || files_u8_equals(diffUpdate, new Uint8Array([0, 0]));
 	};
 
 	const unsubscribe = vi.fn();
@@ -74,7 +74,7 @@ const appConvexMock = vi.hoisted(() => {
 	return {
 		app_convex,
 		app_convex_api: {
-			ai_docs_temp: {
+			files_nodes: {
 				yjs_get_doc_last_snapshot: "yjs_get_doc_last_snapshot",
 				yjs_get_incremental_updates: "yjs_get_incremental_updates",
 				yjs_push_update: "yjs_push_update",
@@ -84,9 +84,9 @@ const appConvexMock = vi.hoisted(() => {
 			watcherResult = result;
 			watcherCallback?.();
 		},
-		pages_u8_equals,
-		pages_u8_to_array_buffer,
-		pages_yjs_doc_is_diff_update_empty,
+		files_u8_equals,
+		files_u8_to_array_buffer,
+		files_yjs_doc_is_diff_update_empty,
 		reset() {
 			watcherResult = null;
 			watcherCallback = null;
@@ -104,9 +104,9 @@ const appConvexMock = vi.hoisted(() => {
 vi.mock("../../vendor/liveblocks/packages/liveblocks-yjs/app_lb_bridge.ts", () => ({
 	app_convex: appConvexMock.app_convex,
 	app_convex_api: appConvexMock.app_convex_api,
-	pages_u8_equals: appConvexMock.pages_u8_equals,
-	pages_u8_to_array_buffer: appConvexMock.pages_u8_to_array_buffer,
-	pages_yjs_doc_is_diff_update_empty: appConvexMock.pages_yjs_doc_is_diff_update_empty,
+	files_u8_equals: appConvexMock.files_u8_equals,
+	files_u8_to_array_buffer: appConvexMock.files_u8_to_array_buffer,
+	files_yjs_doc_is_diff_update_empty: appConvexMock.files_yjs_doc_is_diff_update_empty,
 }));
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
@@ -118,14 +118,14 @@ const promiseConstructor = Promise as PromiseConstructorWithTry;
 const originalPromiseTry = promiseConstructor.try;
 
 function createEmptySnapshotUpdate() {
-	return appConvexMock.pages_u8_to_array_buffer(Y.encodeStateAsUpdate(new Y.Doc()));
+	return appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(new Y.Doc()));
 }
 
 function createPresenceStore() {
 	const localSessionId = "session_local";
 	const localUserId = "user_local";
 
-	return new pages_PresenceStore({
+	return new files_PresenceStore({
 		data: {
 			sessionToken: "session_token",
 			sessions: [{ sessionId: localSessionId, userId: localUserId }],
@@ -169,7 +169,7 @@ async function createReadyProvider() {
 
 	const provider = new LiveblocksYjsProvider({
 		membershipId: "membership_id" as LiveblocksYjsProvider_Args["membershipId"],
-		pageId: "page_id" as LiveblocksYjsProvider_Args["pageId"],
+		nodeId: "file_id" as LiveblocksYjsProvider_Args["nodeId"],
 		presenceStore,
 	});
 

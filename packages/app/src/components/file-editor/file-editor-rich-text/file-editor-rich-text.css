@@ -1,0 +1,277 @@
+@layer components {
+	/* #region root */
+	.FileEditorRichText {
+		height: max-content;
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+
+		&:not(.FileEditorRichText-visible) {
+			display: none;
+		}
+	}
+
+	.FileEditorRichText-editor-content-root {
+		width: 100%;
+	}
+
+	.FileEditorRichText-editor-content-container {
+		width: 100%;
+
+		/*
+		Make this the `offsetElement` for the editor.
+		Some floating elements are injected in the `offsetElement`.
+		*/
+		contain: content;
+		/* position: relative; */
+
+		.prosemirror-dropcursor-block {
+			transition: top 0.15s ease-out;
+			will-change: top;
+		}
+
+		.prosemirror-dropcursor-inline {
+			transition: left 0.15s ease-out;
+			will-change: left;
+		}
+
+		.prosemirror-dropcursor-block,
+		.prosemirror-dropcursor-inline,
+		.prosemirror-dropcursor-vertical {
+			background-color: var(--color-accent-07);
+			border-radius: 4px;
+		}
+	}
+	/* #endregion root */
+
+	/* #region editor content */
+	.FileEditorRichText-editor-content {
+		width: 100%;
+
+		/*
+		Adding a big padding at the bottom to ensure there's anough
+		space at the bottom of the editor for the bubble menu,
+		otherwise positioning it becomes a pain.
+		*/
+		padding: 64px 64px 300px 64px;
+
+		color: var(--FileEditorRichText-text-color-fg-default);
+
+		/* Editor content styles */
+
+		.FileEditorRichText-editor-content-container:focus-within & .ProseMirror-selectednode {
+			position: relative;
+
+			&::before {
+				content: "";
+				background-color: color-mix(in oklch, var(--color-accent-04) 70%, transparent);
+				border-radius: 12px;
+
+				position: absolute;
+				inset: 0 -8px 0 -8px;
+				z-index: -1;
+			}
+		}
+
+		h2 {
+			--FileEditorRichText-text-color-fg-default: var(--color-fg-02);
+
+			.dark & {
+				--FileEditorRichText-text-color-fg-default: var(--color-fg-11);
+			}
+
+			color: var(--FileEditorRichText-text-color-fg-default);
+		}
+
+		h3 {
+			--FileEditorRichText-text-color-fg-default: var(--color-fg-02);
+
+			.dark & {
+				--FileEditorRichText-text-color-fg-default: var(--color-fg-11);
+			}
+
+			color: var(--FileEditorRichText-text-color-fg-default);
+		}
+
+		h4 {
+			--FileEditorRichText-text-color-fg-default: var(--color-fg-02);
+
+			.dark & {
+				--FileEditorRichText-text-color-fg-default: var(--color-fg-11);
+			}
+
+			color: var(--FileEditorRichText-text-color-fg-default);
+		}
+
+		/*
+		Give a remote user a caret
+
+		See:
+		- Class names are defined by @tiptap/extension-collaboration-caret:
+		  /tiptap-3.8.0/packages/extension-collaboration-caret/src/collaboration-caret.ts
+		- Demo styles reference:
+		  /tiptap-3.8.0/demos/src/Extensions/CollaborationCaret/React/styles.scss
+		*/
+		.collaboration-carets__caret {
+			border-left: 1px solid #0d0d0d;
+			border-right: 1px solid #0d0d0d;
+			margin-left: -1px;
+			margin-right: -1px;
+			pointer-events: none;
+			position: relative;
+			word-break: normal;
+		}
+
+		/* Render the username above the caret */
+		.collaboration-carets__label {
+			border-radius: 3px 3px 3px 0;
+			color: #0d0d0d;
+			font-size: 12px;
+			font-style: normal;
+			font-weight: 600;
+			left: -1px;
+			line-height: normal;
+			padding: 0.1rem 0.3rem;
+			position: absolute;
+			top: -1.4em;
+			user-select: none;
+			white-space: nowrap;
+		}
+
+		/* #region comment mark */
+		/* replicated from @liveblocks/react-tiptap/styles.css */
+		.lb-tiptap-thread-mark:not([data-orphan="true"], [data-hidden]) {
+			background: var(--color-base-1-08);
+			color: var(--color-fg-10);
+
+			.lb-tiptap-thread-mark-selected {
+				background: var(--color-accent-01);
+			}
+
+			&:hover {
+				background: var(--color-base-1-10);
+
+				.lb-tiptap-thread-mark-selected {
+					background: var(--color-accent-02);
+				}
+			}
+		}
+
+		.lb-tiptap-thread-mark {
+			/* Add some space above/below when scrolling to it. */
+			scroll-margin-block: 32px;
+		}
+		/* #endregion comment mark */
+	}
+	/* #endregion editor content */
+
+	/* #region toolbar */
+	.FileEditorRichTextToolbar {
+		height: 44px;
+		background: var(--color-base-1-04);
+
+		border-bottom: 1px solid var(--color-fg-02);
+
+		contain: size layout style;
+
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.FileEditorRichTextToolbar-scrollable-area {
+		min-height: 44px;
+		max-height: calc(44px + var(--app-scrollbar-w));
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 4px 18px;
+
+		overflow: auto hidden;
+		contain: content;
+
+		min-width: 0;
+	}
+
+	.FileEditorRichTextToolbar-word-count-badge-hidden {
+		display: none;
+	}
+
+	.FileEditorRichTextToolbar-status-badge {
+		width: 10ch;
+	}
+
+	.FileEditorRichTextToolbar-word-count-badge {
+		min-width: 12ch;
+	}
+
+	.FileEditorRichTextToolbar-status-badge,
+	.FileEditorRichTextToolbar-word-count-badge {
+		padding: 4px 8px;
+		font-size: 0.9rem;
+	}
+	/* #endregion toolbar */
+
+	/* #region top sticky floating container */
+	.FileEditorRichTextTopStickyFloatingContainer {
+		position: sticky;
+		top: calc(44px + var(--app-scrollbar-w) + 6px);
+		z-index: 1;
+
+		display: grid;
+		contain: size layout style;
+	}
+	/* #endregion top sticky floating container */
+
+	/* #region bubble */
+	.FileEditorRichTextBubble:not(.FileEditorRichTextBubble-rendered) {
+		display: none;
+	}
+
+	/* #endregion bubble */
+
+	/* #region bubble content */
+	.FileEditorRichTextBubbleContent {
+		display: flex;
+
+		width: fit-content;
+		max-width: 90vw;
+
+		contain: layout style;
+
+		border-radius: 6px;
+		border: 1px solid var(--color-base-1-10);
+
+		background: var(--color-base-1-05);
+		box-shadow:
+			0 20px 25px -5px rgb(0 0 0 / 0.1),
+			0 8px 10px -6px rgb(0 0 0 / 0.1);
+	}
+
+	.FileEditorRichTextBubbleContentDefaultActions {
+		display: contents;
+	}
+
+	.FileEditorRichTextBubbleContentDefaultActions-button {
+		gap: 4px;
+		border-radius: 0;
+
+		&:first-child {
+			border-radius: 6px 0 0 6px;
+		}
+
+		&:last-child {
+			border-radius: 0 6px 6px 0;
+		}
+	}
+
+	.FileEditorRichTextBubbleContentDefaultActions-icon {
+		width: 20px;
+		height: 20px;
+	}
+
+	/* #endregion bubble content */
+}

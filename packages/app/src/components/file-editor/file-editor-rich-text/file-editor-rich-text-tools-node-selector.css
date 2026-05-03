@@ -1,0 +1,22 @@
+@layer components {
+	/* #region root */
+	.FileEditorRichTextToolsNodeSelector .MyButton {
+		width: 140px;
+		justify-content: space-between;
+	}
+
+	.FileEditorRichTextToolsNodeSelector-popover {
+		width: 200px;
+	}
+	/* #endregion root */
+
+	/* #region item */
+	.FileEditorRichTextToolsNodeSelector-icon {
+		border: 1px solid var(--color-base-1-10);
+		border-radius: 4px;
+		padding: 1px;
+		width: 20px;
+		height: 20px;
+	}
+	/* #endregion item */
+}

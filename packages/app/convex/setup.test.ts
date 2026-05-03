@@ -4,7 +4,7 @@ import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
-import { pages_FIRST_VERSION, pages_ROOT_ID } from "../server/pages.ts";
+import { files_FIRST_VERSION, files_ROOT_ID } from "../server/files.ts";
 import type { MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
@@ -77,30 +77,30 @@ export const test_mocks_hardcoded = ((/* iife */) => {
 		},
 	} as const;
 
-	const page_root_generic = {
-		parentId: pages_ROOT_ID,
+	const file_root_generic = {
+		parentId: files_ROOT_ID,
 	} as const;
 
-	const page_root_1 = {
-		name: "page_root_1_name",
-		parentId: pages_ROOT_ID,
+	const file_root_1 = {
+		name: "file_root_1_name",
+		parentId: files_ROOT_ID,
 	} as const;
 
-	const page_root_2 = {
-		name: "page_root_2_name",
-		parentId: pages_ROOT_ID,
+	const file_root_2 = {
+		name: "file_root_2_name",
+		parentId: files_ROOT_ID,
 	} as const;
 
-	const page_root_1_child_1 = {
-		name: "page_root_1_child_1_name",
+	const file_root_1_child_1 = {
+		name: "file_root_1_child_1_name",
 	} as const;
 
-	const page_root_1_child_2 = {
-		name: "page_root_1_child_2_name",
+	const file_root_1_child_2 = {
+		name: "file_root_1_child_2_name",
 	} as const;
 
-	const page_root_1_child_1_deep_1 = {
-		name: "page_root_1_child_1_deep_1_name",
+	const file_root_1_child_1_deep_1 = {
+		name: "file_root_1_child_1_deep_1_name",
 	} as const;
 
 	return {
@@ -108,19 +108,19 @@ export const test_mocks_hardcoded = ((/* iife */) => {
 		project_id,
 		membership_id,
 		user,
-		page: {
-			page_root_generic,
-			page_root_1,
-			page_root_2,
-			page_root_1_child_1,
-			page_root_1_child_2,
-			page_root_1_child_1_deep_1,
+		files: {
+			file_root_generic,
+			file_root_1,
+			file_root_2,
+			file_root_1_child_1,
+			file_root_1_child_2,
+			file_root_1_child_1_deep_1,
 		},
 	} as const;
 })();
 
 export const test_mocks = {
-	pages: ((/* iife */) => {
+	files: ((/* iife */) => {
 		const base = () => {
 			const updatedAt = faker.date.recent().getTime();
 			const name = faker.lorem.words({
@@ -128,16 +128,17 @@ export const test_mocks = {
 				max: 3,
 			});
 
-			return make<ConvexDocUserData<"pages">>({
+			return make<ConvexDocUserData<"files_nodes">>({
 				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 				projectId: test_mocks_hardcoded.project_id.project_1,
 				createdBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
 				updatedAt: updatedAt,
 				updatedBy: test_mocks_hardcoded.user.user_1.id,
-				parentId: test_mocks_hardcoded.page.page_root_1.parentId,
+				parentId: test_mocks_hardcoded.files.file_root_1.parentId,
 				name: name,
+				kind: "folder",
 				path: `/${name}`,
-				version: pages_FIRST_VERSION,
+				version: files_FIRST_VERSION,
 				archiveOperationId: undefined,
 			});
 		};
@@ -243,101 +244,101 @@ export const test_mocks_fill_db_with = {
 		} as const;
 	},
 
-	nested_pages: async (ctx: MutationCtx) => {
+	nested_files: async (ctx: MutationCtx) => {
 		const membership = await test_mocks_fill_db_with.membership(ctx);
 		const createdByUserId = membership.userId;
 
 		/** /root_1 */
-		const page_root_1 = await ctx.db.get(
-			"pages",
-			await ctx.db.insert("pages", {
-				...test_mocks.pages.base(),
+		const file_root_1 = await ctx.db.get(
+			"files_nodes",
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
-				name: test_mocks_hardcoded.page.page_root_1.name,
-				parentId: test_mocks_hardcoded.page.page_root_1.parentId,
-				path: `/${test_mocks_hardcoded.page.page_root_1.name}`,
+				name: test_mocks_hardcoded.files.file_root_1.name,
+				parentId: test_mocks_hardcoded.files.file_root_1.parentId,
+				path: `/${test_mocks_hardcoded.files.file_root_1.name}`,
 			}),
 		);
-		if (!page_root_1) throw new Error("page_root_1 not found");
+		if (!file_root_1) throw new Error("file_root_1 not found");
 
 		/** /root_1/child_1 */
-		const page_root_1_child_1 = await ctx.db.get(
-			"pages",
-			await ctx.db.insert("pages", {
-				...test_mocks.pages.base(),
+		const file_root_1_child_1 = await ctx.db.get(
+			"files_nodes",
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
-				name: test_mocks_hardcoded.page.page_root_1_child_1.name,
-				parentId: page_root_1._id,
-				path: `/${page_root_1.name}/${test_mocks_hardcoded.page.page_root_1_child_1.name}`,
+				name: test_mocks_hardcoded.files.file_root_1_child_1.name,
+				parentId: file_root_1._id,
+				path: `/${file_root_1.name}/${test_mocks_hardcoded.files.file_root_1_child_1.name}`,
 			}),
 		);
-		if (!page_root_1_child_1) throw new Error("page_root_1_child_1 not found");
+		if (!file_root_1_child_1) throw new Error("file_root_1_child_1 not found");
 
 		/** /root_1/child_1/deep_1 */
-		const page_root_1_child_1_deep_1 = await ctx.db.get(
-			"pages",
-			await ctx.db.insert("pages", {
-				...test_mocks.pages.base(),
+		const file_root_1_child_1_deep_1 = await ctx.db.get(
+			"files_nodes",
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
-				name: test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name,
-				parentId: page_root_1_child_1._id,
-				path: `/${page_root_1.name}/${page_root_1_child_1.name}/${test_mocks_hardcoded.page.page_root_1_child_1_deep_1.name}`,
+				name: test_mocks_hardcoded.files.file_root_1_child_1_deep_1.name,
+				parentId: file_root_1_child_1._id,
+				path: `/${file_root_1.name}/${file_root_1_child_1.name}/${test_mocks_hardcoded.files.file_root_1_child_1_deep_1.name}`,
 			}),
 		);
-		if (!page_root_1_child_1_deep_1) throw new Error("page_root_1_child_1_deep_1 not found");
+		if (!file_root_1_child_1_deep_1) throw new Error("file_root_1_child_1_deep_1 not found");
 
 		/** /root_1/child_2 */
-		const page_root_1_child_2 = await ctx.db.get(
-			"pages",
-			await ctx.db.insert("pages", {
-				...test_mocks.pages.base(),
+		const file_root_1_child_2 = await ctx.db.get(
+			"files_nodes",
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
-				name: test_mocks_hardcoded.page.page_root_1_child_2.name,
-				parentId: page_root_1._id,
-				path: `/${page_root_1.name}/${test_mocks_hardcoded.page.page_root_1_child_2.name}`,
+				name: test_mocks_hardcoded.files.file_root_1_child_2.name,
+				parentId: file_root_1._id,
+				path: `/${file_root_1.name}/${test_mocks_hardcoded.files.file_root_1_child_2.name}`,
 			}),
 		);
-		if (!page_root_1_child_2) throw new Error("page_root_1_child_2 not found");
+		if (!file_root_1_child_2) throw new Error("file_root_1_child_2 not found");
 
 		/** /root_2 */
-		const page_root_2 = await ctx.db.get(
-			"pages",
-			await ctx.db.insert("pages", {
-				...test_mocks.pages.base(),
+		const file_root_2 = await ctx.db.get(
+			"files_nodes",
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
-				name: test_mocks_hardcoded.page.page_root_2.name,
-				parentId: test_mocks_hardcoded.page.page_root_2.parentId,
-				path: `/${test_mocks_hardcoded.page.page_root_2.name}`,
+				name: test_mocks_hardcoded.files.file_root_2.name,
+				parentId: test_mocks_hardcoded.files.file_root_2.parentId,
+				path: `/${test_mocks_hardcoded.files.file_root_2.name}`,
 			}),
 		);
-		if (!page_root_2) throw new Error("page_root_2 not found");
+		if (!file_root_2) throw new Error("file_root_2 not found");
 
 		return {
 			userId: createdByUserId,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			membershipId: membership.membershipId,
-			pages: {
-				page_root_1,
-				page_root_1_child_1,
-				page_root_1_child_1_deep_1,
-				page_root_1_child_2,
-				page_root_2,
+			files: {
+				file_root_1,
+				file_root_1_child_1,
+				file_root_1_child_1_deep_1,
+				file_root_1_child_2,
+				file_root_2,
 			},
 		} as const;
 	},

@@ -3,8 +3,8 @@
  *
  * Canonical path shape: `/w/{workspaceName}/{projectName}/...`
  */
-export function url_path_pages(args: { workspaceName: string; projectName: string }) {
-	return `/w/${args.workspaceName}/${args.projectName}/pages`;
+export function url_path_files(args: { workspaceName: string; projectName: string }) {
+	return `/w/${args.workspaceName}/${args.projectName}/files`;
 }
 
 export function url_path_chat(args: { workspaceName: string; projectName: string }) {

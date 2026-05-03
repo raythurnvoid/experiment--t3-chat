@@ -64,7 +64,7 @@ const app_monaco_get_color_hex = ((/* iife */) => {
 })();
 
 // Monaco requires: /^[a-z0-9\-]+$/i (no underscores)
-export const app_monaco_THEME_NAME_DARK = "app-pages-monaco-theme-dark";
+export const app_monaco_THEME_NAME_DARK = "app-files-monaco-theme-dark";
 
 try {
 	monaco.editor.defineTheme(app_monaco_THEME_NAME_DARK, {

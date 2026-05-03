@@ -3,15 +3,15 @@
 Goal: verify the rich text editor slash command menu supports ArrowDown,
 ArrowUp, and Enter through `browser-harness-js`.
 
-Route: `http://localhost:5173/w/personal/home/pages`
+Route: `http://localhost:5173/w/personal/home/files`
 
 Runner: `browser-harness-js` through the local CDP skill. Use Playwriter only
 for visual screenshots if CDP evidence is insufficient.
 
 ## Setup
 
-- Use a test page titled `New Page`.
-- Avoid pages matching `todo`, `to-do`, or similar unless the test explicitly targets task content.
+- Use a test file titled `new-file.md`.
+- Avoid files matching `todo`, `to-do`, or similar unless the test explicitly targets task content.
 - If `await session.connect()` picks a stale Edge `DevToolsActivePort`, fetch
   `http://127.0.0.1:9222/json/version` and connect with the returned
   `webSocketDebuggerUrl`.
@@ -30,9 +30,9 @@ try {
 	const version = await versionResponse.json();
 	await session.connect({ wsUrl: version.webSocketDebuggerUrl });
 }
-let target = (await listPageTargets()).find((tab) => tab.url.includes("localhost:5173/w/personal/home/pages"));
+let target = (await listPageTargets()).find((tab) => tab.url.includes("localhost:5173/w/personal/home/files"));
 if (!target) {
-	const created = await session.Target.createTarget({ url: "http://localhost:5173/w/personal/home/pages" });
+	const created = await session.Target.createTarget({ url: "http://localhost:5173/w/personal/home/files" });
 	target = { targetId: created.targetId };
 }
 globalThis.richTextSlashTargetId = target.targetId;
@@ -45,7 +45,7 @@ globalThis.richTextSlashQa = {
 	async focusEditorEnd() {
 		await session.Runtime.evaluate({
 			expression: `(() => {
-				const editor = document.querySelector(".PageEditorRichText-editor-content");
+				const editor = document.querySelector(".FileEditorRichText-editor-content");
 				if (!editor) throw new Error("No rich text editor");
 				editor.focus();
 				const range = document.createRange();
@@ -106,7 +106,7 @@ globalThis.richTextSlashQa = {
 					selected: item.getAttribute("data-selected"),
 					text: item.textContent?.trim() ?? "",
 				})),
-				status: document.querySelector(".PageEditorRichText-status-badge, .PageEditorRichTextToolbar-status-badge")?.textContent?.trim() ?? null,
+				status: document.querySelector(".FileEditorRichText-status-badge, .FileEditorRichTextToolbar-status-badge")?.textContent?.trim() ?? null,
 			}))()`,
 			returnByValue: true,
 		}).then((value) => value.result.value);
@@ -166,5 +166,5 @@ return await globalThis.richTextSlashQa.key("Enter");
 ## Evidence
 
 - Save the JSON output for each step.
-- If the behavior fails, include `menuNodes`, `items`, active editor state, and the selected page title.
+- If the behavior fails, include `menuNodes`, `items`, active editor state, and the selected file title.
 - Screenshot only when visual positioning is part of the failure.

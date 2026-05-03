@@ -79,11 +79,11 @@ export async function app_fetch_stream_runs(
 
 export async function app_fetch_ai_docs_contextual_prompt(
 	args: Omit<app_fetch_json_Args, "url" | "body" | "method"> & {
-		input: api_schemas_Main["/api/ai-docs-temp/contextual-prompt"]["POST"]["body"];
+		input: api_schemas_Main["/api/files/contextual-prompt"]["POST"]["body"];
 	},
 ) {
 	const { input, ...json_args } = args;
-	const url = app_fetch_main_api_url("/api/ai-docs-temp/contextual-prompt");
+	const url = app_fetch_main_api_url("/api/files/contextual-prompt");
 
 	return await app_fetch_json<any>({
 		...json_args,

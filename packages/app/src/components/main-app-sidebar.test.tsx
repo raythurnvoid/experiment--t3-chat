@@ -19,7 +19,7 @@ vi.mock("@tanstack/react-router", () => ({
 		);
 	},
 	useRouterState: (args: { select: (state: { location: { pathname: string } }) => string }) =>
-		args.select({ location: { pathname: "/w/team/home/pages" } }),
+		args.select({ location: { pathname: "/w/team/home/files" } }),
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -238,7 +238,7 @@ describe("MainAppSidebar", () => {
 		render(<MainAppSidebar />);
 
 		expect(screen.getByText("Chat")).not.toBeNull();
-		expect(screen.getByText("Pages")).not.toBeNull();
+		expect(screen.getByText("Files")).not.toBeNull();
 		expect(screen.queryByText("Users")).toBeNull();
 	});
 

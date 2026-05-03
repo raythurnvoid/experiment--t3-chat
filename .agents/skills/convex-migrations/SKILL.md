@@ -188,7 +188,7 @@ pnpx convex run migrations:run_<migration_name>
   - Remove old indexes only in tighten phase.
 - Keep API contract renames explicit and separate from DB renames:
   - DB row fields: e.g. `workspace_id` -> `workspaceId`.
-  - Convex args/returns: e.g. `workspace_id` -> `workspaceId`, `page_id` -> `pageId`.
+  - Convex args/returns: e.g. `workspace_id` -> `workspaceId`, `file_id` -> `fileId`.
   - Preserve semantic distinction between client-generated id and Convex doc id.
 - Write migrations to be idempotent and "prefer existing new value":
   - Use `newField ?? old_field` patterns.
@@ -222,7 +222,7 @@ pnpx convex run migrations:run_<migration_name>
   - Re-tighten the schema immediately after verification.
 - Add focused runtime checks for boot-critical flows after API key renames:
   - App boot/homepage initialization.
-  - Pages tree create/rename/archive/move.
+  - Files tree create/rename/archive/move.
   - These paths can fail silently if response keys change.
 - Scope discipline prevents regressions:
   - Migrate only the requested table.

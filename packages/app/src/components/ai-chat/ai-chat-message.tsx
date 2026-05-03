@@ -290,13 +290,13 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 });
 // #endregion tool textarea section
 
-// #region tool read_page
+// #region tool read_file
 type AiChatMessagePartToolReadPage_ClassNames = "AiChatMessagePartToolReadPage" | "AiChatMessagePartToolReadPage-link";
 
 type AiChatMessagePartToolReadPage_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-read_page" }>["input"];
-	result: ai_chat_AiSdk5UiTools["read_page"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-read_file" }>["input"];
+	result: ai_chat_AiSdk5UiTools["read_file"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -314,21 +314,21 @@ const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPag
 			className={cn("AiChatMessagePartToolReadPage" satisfies AiChatMessagePartToolReadPage_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title="Read page"
+				title="Read file"
 				text={args?.path ? path_name_of(args.path) : "/ (Home)"}
 				state={toolState}
 				isChatRunning={isChatRunning}
 			/>
 			<AiChatMessagePartToolBody>
-				{result?.metadata?.pageId && (
+				{result?.metadata?.nodeId && (
 					<MyLink
 						className={"AiChatMessagePartToolReadPage-link" satisfies AiChatMessagePartToolReadPage_ClassNames}
-						to="/w/$workspaceName/$projectName/pages"
+						to="/w/$workspaceName/$projectName/files"
 						params={{ workspaceName, projectName }}
-						search={{ pageId: result.metadata.pageId }}
+						search={{ nodeId: result.metadata.nodeId }}
 						variant="button-ghost-accent"
 					>
-						Open page
+						Open file
 						<MyButtonIcon>
 							<ArrowUpRight />
 						</MyButtonIcon>
@@ -343,15 +343,15 @@ const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPag
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool read_page
+// #endregion tool read_file
 
-// #region tool list_pages
+// #region tool list_files
 type AiChatMessagePartToolListPages_ClassNames = "AiChatMessagePartToolListPages";
 
 type AiChatMessagePartToolListPages_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-list_pages" }>["input"];
-	result: ai_chat_AiSdk5UiTools["list_pages"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-list_files" }>["input"];
+	result: ai_chat_AiSdk5UiTools["list_files"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -369,7 +369,7 @@ const AiChatMessagePartToolListPages = memo(function AiChatMessagePartToolListPa
 			className={cn("AiChatMessagePartToolListPages" satisfies AiChatMessagePartToolListPages_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title="List pages"
+				title="List files"
 				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
@@ -384,15 +384,15 @@ const AiChatMessagePartToolListPages = memo(function AiChatMessagePartToolListPa
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool list_pages
+// #endregion tool list_files
 
-// #region tool glob_pages
+// #region tool glob_files
 type AiChatMessagePartToolGlobPages_ClassNames = "AiChatMessagePartToolGlobPages";
 
 type AiChatMessagePartToolGlobPages_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-glob_pages" }>["input"];
-	result: ai_chat_AiSdk5UiTools["glob_pages"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-glob_files" }>["input"];
+	result: ai_chat_AiSdk5UiTools["glob_files"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -410,7 +410,7 @@ const AiChatMessagePartToolGlobPages = memo(function AiChatMessagePartToolGlobPa
 			className={cn("AiChatMessagePartToolGlobPages" satisfies AiChatMessagePartToolGlobPages_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title="Glob pages"
+				title="Glob files"
 				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
@@ -425,15 +425,15 @@ const AiChatMessagePartToolGlobPages = memo(function AiChatMessagePartToolGlobPa
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool glob_pages
+// #endregion tool glob_files
 
-// #region tool grep_pages
+// #region tool grep_files
 type AiChatMessagePartToolGrepPages_ClassNames = "AiChatMessagePartToolGrepPages";
 
 type AiChatMessagePartToolGrepPages_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-grep_pages" }>["input"];
-	result: ai_chat_AiSdk5UiTools["grep_pages"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-grep_files" }>["input"];
+	result: ai_chat_AiSdk5UiTools["grep_files"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -455,7 +455,7 @@ const AiChatMessagePartToolGrepPages = memo(function AiChatMessagePartToolGrepPa
 			className={cn("AiChatMessagePartToolGrepPages" satisfies AiChatMessagePartToolGrepPages_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title="Grep pages"
+				title="Grep files"
 				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
@@ -470,22 +470,22 @@ const AiChatMessagePartToolGrepPages = memo(function AiChatMessagePartToolGrepPa
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool grep_pages
+// #endregion tool grep_files
 
-// #region tool text_search_pages
-type AiChatMessagePartToolTextSearchPages_ClassNames = "AiChatMessagePartToolTextSearchPages";
+// #region tool text_search_files
+type AiChatMessagePartToolTextSearchFiles_ClassNames = "AiChatMessagePartToolTextSearchFiles";
 
-type AiChatMessagePartToolTextSearchPages_Props = {
+type AiChatMessagePartToolTextSearchFiles_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-text_search_pages" }>["input"];
-	result: ai_chat_AiSdk5UiTools["text_search_pages"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-text_search_files" }>["input"];
+	result: ai_chat_AiSdk5UiTools["text_search_files"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
 };
 
-const AiChatMessagePartToolTextSearchPages = memo(function AiChatMessagePartToolTextSearchPages(
-	props: AiChatMessagePartToolTextSearchPages_Props,
+const AiChatMessagePartToolTextSearchFiles = memo(function AiChatMessagePartToolTextSearchFiles(
+	props: AiChatMessagePartToolTextSearchFiles_Props,
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
@@ -494,12 +494,12 @@ const AiChatMessagePartToolTextSearchPages = memo(function AiChatMessagePartTool
 	return (
 		<AiChatMessagePartDisclosure
 			className={cn(
-				"AiChatMessagePartToolTextSearchPages" satisfies AiChatMessagePartToolTextSearchPages_ClassNames,
+				"AiChatMessagePartToolTextSearchFiles" satisfies AiChatMessagePartToolTextSearchFiles_ClassNames,
 				className,
 			)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title={"Search pages"}
+				title={"Search files"}
 				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
@@ -514,9 +514,9 @@ const AiChatMessagePartToolTextSearchPages = memo(function AiChatMessagePartTool
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool text_search_pages
+// #endregion tool text_search_files
 
-// #region tool write_page
+// #region tool write_file
 type AiChatMessagePartToolWritePage_ClassNames =
 	| "AiChatMessagePartToolWritePage"
 	| "AiChatMessagePartToolWritePage-header"
@@ -528,8 +528,8 @@ type AiChatMessagePartToolWritePage_ClassNames =
 
 type AiChatMessagePartToolWritePage_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-write_page" }>["input"];
-	result: ai_chat_AiSdk5UiTools["write_page"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-write_file" }>["input"];
+	result: ai_chat_AiSdk5UiTools["write_file"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -545,24 +545,24 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 	const deferredContent = useDeferredValue(args?.content);
 
 	const title = result?.metadata?.path
-		? `Write page: ${path_name_of(result.metadata.path)}`
+		? `Write file: ${path_name_of(result.metadata.path)}`
 		: args?.path
-			? `Write page: ${path_name_of(args.path)}`
-			: "Write page";
+			? `Write file: ${path_name_of(args.path)}`
+			: "Write file";
 
-	const pageId = result?.metadata?.pageId;
+	const nodeId = result?.metadata?.nodeId;
 	const output = result?.metadata?.diff ?? result?.output;
 
 	return (
 		<div
 			className={cn("AiChatMessagePartToolWritePage" satisfies AiChatMessagePartToolWritePage_ClassNames, className)}
 		>
-			{pageId ? (
+			{nodeId ? (
 				<MyLink
 					className={"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames}
-					to="/w/$workspaceName/$projectName/pages"
+					to="/w/$workspaceName/$projectName/files"
 					params={{ workspaceName, projectName }}
-					search={{ pageId, view: "diff_editor" }}
+					search={{ nodeId, view: "diff_editor" }}
 					variant="button-ghost-accent"
 				>
 					<MyLinkIcon
@@ -650,15 +650,15 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 		</div>
 	);
 });
-// #endregion tool write_page
+// #endregion tool write_file
 
-// #region tool edit_page
+// #region tool edit_file
 type AiChatMessagePartToolEditPage_ClassNames = "AiChatMessagePartToolEditPage" | "AiChatMessagePartToolEditPage-link";
 
 type AiChatMessagePartToolEditPage_Props = {
 	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-edit_page" }>["input"];
-	result: ai_chat_AiSdk5UiTools["edit_page"]["output"] | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-edit_file" }>["input"];
+	result: ai_chat_AiSdk5UiTools["edit_file"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	errorText?: string | undefined;
@@ -684,21 +684,21 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 			className={cn("AiChatMessagePartToolEditPage" satisfies AiChatMessagePartToolEditPage_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title="Edit page"
+				title="Edit file"
 				text={text}
 				state={toolState}
 				isChatRunning={isChatRunning}
 			/>
 			<AiChatMessagePartToolBody>
-				{result?.metadata?.pageId && (
+				{result?.metadata?.nodeId && (
 					<MyLink
 						className={"AiChatMessagePartToolEditPage-link" satisfies AiChatMessagePartToolEditPage_ClassNames}
-						to="/w/$workspaceName/$projectName/pages"
+						to="/w/$workspaceName/$projectName/files"
 						params={{ workspaceName, projectName }}
-						search={{ pageId: result.metadata.pageId }}
+						search={{ nodeId: result.metadata.nodeId }}
 						variant="button-ghost-accent"
 					>
-						Open page
+						Open file
 						<MyButtonIcon>
 							<ArrowUpRight />
 						</MyButtonIcon>
@@ -711,7 +711,7 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool edit_page
+// #endregion tool edit_file
 
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
@@ -1033,7 +1033,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		}
 
 		switch (part.type) {
-			case "tool-read_page": {
+			case "tool-read_file": {
 				return (
 					<AiChatMessagePartToolReadPage
 						args={part.input}
@@ -1044,7 +1044,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					/>
 				);
 			}
-			case "tool-list_pages": {
+			case "tool-list_files": {
 				return (
 					<AiChatMessagePartToolListPages
 						args={part.input}
@@ -1055,7 +1055,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					/>
 				);
 			}
-			case "tool-glob_pages": {
+			case "tool-glob_files": {
 				return (
 					<AiChatMessagePartToolGlobPages
 						args={part.input}
@@ -1066,7 +1066,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					/>
 				);
 			}
-			case "tool-grep_pages": {
+			case "tool-grep_files": {
 				return (
 					<AiChatMessagePartToolGrepPages
 						args={part.input}
@@ -1077,9 +1077,9 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					/>
 				);
 			}
-			case "tool-text_search_pages": {
+			case "tool-text_search_files": {
 				return (
-					<AiChatMessagePartToolTextSearchPages
+					<AiChatMessagePartToolTextSearchFiles
 						args={part.input}
 						result={part.output}
 						toolState={part.state}
@@ -1088,7 +1088,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					/>
 				);
 			}
-			case "tool-write_page": {
+			case "tool-write_file": {
 				return (
 					<AiChatMessagePartToolWritePage
 						args={part.input}
@@ -1099,7 +1099,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 					/>
 				);
 			}
-			case "tool-edit_page": {
+			case "tool-edit_file": {
 				return (
 					<AiChatMessagePartToolEditPage
 						args={part.input}

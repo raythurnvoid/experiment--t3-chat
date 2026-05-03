@@ -41,7 +41,7 @@ Example:
 ```ts
 export class global_event_Event extends XCustomEvent<{
 	"ai_chat::open_canvas": {
-		pageId: app_convex_Id<"pages">;
+		fileId: app_convex_Id<"files">;
 		mode: "diff" | "editor";
 		modifiedContent?: string;
 		threadId: string;
@@ -74,7 +74,7 @@ Example (from [canvas.tsx](../../../packages/app/src/components/canvas/canvas.ts
 ```ts
 useGlobalEvent("ai_chat::open_canvas", (e) => {
 	const payload = e.detail;
-	// payload.pageId, payload.mode, payload.modifiedContent, payload.threadId
+	// payload.fileId, payload.mode, payload.modifiedContent, payload.threadId
 });
 ```
 

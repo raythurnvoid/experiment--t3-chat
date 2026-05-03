@@ -1,20 +1,20 @@
 import type { DataUIPart, UIMessage } from "ai";
 import type { Doc } from "../convex/_generated/dataModel";
 import type {
-	ai_chat_tool_create_read_page_ToolInput,
-	ai_chat_tool_create_read_page_ToolOutput,
-	ai_chat_tool_create_list_pages_ToolInput,
-	ai_chat_tool_create_list_pages_ToolOutput,
-	ai_chat_tool_create_glob_pages_ToolInput,
-	ai_chat_tool_create_glob_pages_ToolOutput,
-	ai_chat_tool_create_grep_pages_ToolInput,
-	ai_chat_tool_create_grep_pages_ToolOutput,
-	ai_chat_tool_create_text_search_pages_ToolInput,
-	ai_chat_tool_create_text_search_pages_ToolOutput,
-	ai_chat_tool_create_write_page_ToolInput,
-	ai_chat_tool_create_write_page_ToolOutput,
-	ai_chat_tool_create_edit_page_ToolInput,
-	ai_chat_tool_create_edit_page_ToolOutput,
+	ai_chat_tool_create_read_file_ToolInput,
+	ai_chat_tool_create_read_file_ToolOutput,
+	ai_chat_tool_create_list_files_ToolInput,
+	ai_chat_tool_create_list_files_ToolOutput,
+	ai_chat_tool_create_glob_files_ToolInput,
+	ai_chat_tool_create_glob_files_ToolOutput,
+	ai_chat_tool_create_grep_files_ToolInput,
+	ai_chat_tool_create_grep_files_ToolOutput,
+	ai_chat_tool_create_text_search_files_ToolInput,
+	ai_chat_tool_create_text_search_files_ToolOutput,
+	ai_chat_tool_create_write_file_ToolInput,
+	ai_chat_tool_create_write_file_ToolOutput,
+	ai_chat_tool_create_edit_file_ToolInput,
+	ai_chat_tool_create_edit_file_ToolOutput,
 	ai_chat_tool_create_web_search_ToolInput,
 	ai_chat_tool_create_web_search_ToolOutput,
 } from "../server/server-ai-tools.ts";
@@ -54,11 +54,11 @@ type AiChatModeMetadata = {
 export const ai_chat_MODE_METADATA = {
 	agent: {
 		label: "Agent",
-		description: "Read, search, and propose page edits for review.",
+		description: "Read, search, and propose file edits for review.",
 	},
 	ask: {
 		label: "Ask",
-		description: "Read and search only. Cannot propose page edits.",
+		description: "Read and search only. Cannot propose file edits.",
 	},
 } as const satisfies Record<ai_chat_ModeId, AiChatModeMetadata>;
 
@@ -72,33 +72,33 @@ export type ai_chat_AiSdk5UiTools = {
 			temperature: string;
 		};
 	};
-	read_page: {
-		input: ai_chat_tool_create_read_page_ToolInput;
-		output: ai_chat_tool_create_read_page_ToolOutput;
+	read_file: {
+		input: ai_chat_tool_create_read_file_ToolInput;
+		output: ai_chat_tool_create_read_file_ToolOutput;
 	};
-	list_pages: {
-		input: ai_chat_tool_create_list_pages_ToolInput;
-		output: ai_chat_tool_create_list_pages_ToolOutput;
+	list_files: {
+		input: ai_chat_tool_create_list_files_ToolInput;
+		output: ai_chat_tool_create_list_files_ToolOutput;
 	};
-	glob_pages: {
-		input: ai_chat_tool_create_glob_pages_ToolInput;
-		output: ai_chat_tool_create_glob_pages_ToolOutput;
+	glob_files: {
+		input: ai_chat_tool_create_glob_files_ToolInput;
+		output: ai_chat_tool_create_glob_files_ToolOutput;
 	};
-	grep_pages: {
-		input: ai_chat_tool_create_grep_pages_ToolInput;
-		output: ai_chat_tool_create_grep_pages_ToolOutput;
+	grep_files: {
+		input: ai_chat_tool_create_grep_files_ToolInput;
+		output: ai_chat_tool_create_grep_files_ToolOutput;
 	};
-	text_search_pages: {
-		input: ai_chat_tool_create_text_search_pages_ToolInput;
-		output: ai_chat_tool_create_text_search_pages_ToolOutput;
+	text_search_files: {
+		input: ai_chat_tool_create_text_search_files_ToolInput;
+		output: ai_chat_tool_create_text_search_files_ToolOutput;
 	};
-	write_page: {
-		input: ai_chat_tool_create_write_page_ToolInput;
-		output: ai_chat_tool_create_write_page_ToolOutput;
+	write_file: {
+		input: ai_chat_tool_create_write_file_ToolInput;
+		output: ai_chat_tool_create_write_file_ToolOutput;
 	};
-	edit_page: {
-		input: ai_chat_tool_create_edit_page_ToolInput;
-		output: ai_chat_tool_create_edit_page_ToolOutput;
+	edit_file: {
+		input: ai_chat_tool_create_edit_file_ToolInput;
+		output: ai_chat_tool_create_edit_file_ToolOutput;
 	};
 	web_search: {
 		input: ai_chat_tool_create_web_search_ToolInput;

@@ -10,15 +10,15 @@
 
 import type * as access_control from "../access_control.js";
 import type * as ai_chat from "../ai_chat.js";
-import type * as ai_docs_temp from "../ai_docs_temp.js";
 import type * as billing from "../billing.js";
 import type * as chat_messages from "../chat_messages.js";
 import type * as crons from "../crons.js";
 import type * as data_deletion from "../data_deletion.js";
+import type * as files_nodes from "../files_nodes.js";
+import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
-import type * as pages_pending_edits from "../pages_pending_edits.js";
 import type * as presence from "../presence.js";
 import type * as quotas from "../quotas.js";
 import type * as rate_limiter from "../rate_limiter.js";
@@ -34,15 +34,15 @@ import type {
 declare const fullApi: ApiFromModules<{
   access_control: typeof access_control;
   ai_chat: typeof ai_chat;
-  ai_docs_temp: typeof ai_docs_temp;
   billing: typeof billing;
   chat_messages: typeof chat_messages;
   crons: typeof crons;
   data_deletion: typeof data_deletion;
+  files_nodes: typeof files_nodes;
+  files_pending_updates: typeof files_pending_updates;
   http: typeof http;
   migrations: typeof migrations;
   notifications: typeof notifications;
-  pages_pending_edits: typeof pages_pending_edits;
   presence: typeof presence;
   quotas: typeof quotas;
   rate_limiter: typeof rate_limiter;

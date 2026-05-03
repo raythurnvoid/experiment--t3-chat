@@ -3,7 +3,7 @@ if (!process.env.ALLOWED_ORIGINS) {
 	process.env.ALLOWED_ORIGINS = "https://app.test";
 }
 
-// Liveblocks secrets referenced in ai_docs_temp.ts
+// Liveblocks secrets referenced in files_nodes.ts
 if (!process.env.LIVEBLOCKS_WEBHOOK_SECRET) {
 	process.env.LIVEBLOCKS_WEBHOOK_SECRET = "LIVEBLOCKS_WEBHOOK_SECRET";
 }

@@ -50,7 +50,7 @@ const storage_local_schema = {
 		serialize: (value) => value,
 	}),
 
-	"app_state::pages_last_tab": define_field<"app_state::pages_last_tab", AppElementId | null>({
+	"app_state::files_last_tab": define_field<"app_state::files_last_tab", AppElementId | null>({
 		defaultValue: null,
 		parse: (raw) => {
 			if (!raw) {
@@ -58,8 +58,8 @@ const storage_local_schema = {
 			}
 
 			switch (raw) {
-				case "app_page_editor_sidebar_tabs_comments":
-				case "app_page_editor_sidebar_tabs_agent":
+				case "app_file_editor_sidebar_tabs_comments":
+				case "app_file_editor_sidebar_tabs_agent":
 					return raw;
 				default:
 					return null;
@@ -68,8 +68,8 @@ const storage_local_schema = {
 		serialize: (value) => value,
 	}),
 
-	"app_state::page_editor_sidebar_agent_selected_tab::scope::${membershipId}": define_field<
-		`app_state::page_editor_sidebar_agent_selected_tab::scope::${string}`,
+	"app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}": define_field<
+		`app_state::file_editor_sidebar_agent_selected_tab::scope::${string}`,
 		string | null
 	>({
 		parse: (raw) => {
@@ -83,8 +83,8 @@ const storage_local_schema = {
 		defaultValue: null,
 	}),
 
-	"app_state::page_editor_sidebar_open_tabs::scope::${membershipId}": define_field<
-		`app_state::page_editor_sidebar_open_tabs::scope::${string}`,
+	"app_state::file_editor_sidebar_open_tabs::scope::${membershipId}": define_field<
+		`app_state::file_editor_sidebar_open_tabs::scope::${string}`,
 		Array<{ id: string; title: string }>
 	>({
 		parse: (raw) => {
@@ -115,7 +115,7 @@ const storage_local_schema = {
 		defaultValue: false,
 	}),
 
-	"app_state::sidebar::pages_open": define_field<"app_state::sidebar::pages_open", boolean>({
+	"app_state::sidebar::files_open": define_field<"app_state::sidebar::files_open", boolean>({
 		parse: (raw) => raw !== "0",
 		serialize: (value) => (value ? "1" : "0"),
 		defaultValue: true,
@@ -127,8 +127,8 @@ const storage_local_schema = {
 		defaultValue: true,
 	}),
 
-	"app_state::resizable_panel::page_editor_panel": define_field<
-		"app_state::resizable_panel::page_editor_panel",
+	"app_state::resizable_panel::file_editor_panel": define_field<
+		"app_state::resizable_panel::file_editor_panel",
 		number[] | null
 	>({
 		parse: (raw) => {
@@ -156,8 +156,8 @@ const storage_local_schema = {
 		equals: (left, right) => left === right || (left != null && right != null && objects_equal_deep(left, right)),
 	}),
 
-	"app_state::pages_last_open::scope::${membershipId}": define_field<
-		`app_state::pages_last_open::scope::${string}`,
+	"app_state::files_last_open::scope::${membershipId}": define_field<
+		`app_state::files_last_open::scope::${string}`,
 		string | null
 	>({
 		parse: (value) => value,

@@ -17,18 +17,18 @@ export const useAppGlobalStore = ((/* iife */) => {
 		ai_chat_composer_selection_collapsed_and_at_end: false,
 
 		/**
-		 * Homepage Convex page id keyed by membership id.
+		 * Home file Convex node id keyed by membership id.
 		 */
-		pages_home_id_by_membership_id: {} as Record<string, string>,
+		files_home_id_by_membership_id: {} as Record<string, string>,
 	}));
 
 	return Object.assign(store, {
 		actions: {
-			setPagesHomeIdForMembershipId: (membershipId: string, pagesHomeId: string) => {
+			setDrivesHomeIdForMembershipId: (membershipId: string, filesHomeId: string) => {
 				store.setState((state) => ({
-					pages_home_id_by_membership_id: {
-						...state.pages_home_id_by_membership_id,
-						[membershipId]: pagesHomeId,
+					files_home_id_by_membership_id: {
+						...state.files_home_id_by_membership_id,
+						[membershipId]: filesHomeId,
 					},
 				}));
 			},

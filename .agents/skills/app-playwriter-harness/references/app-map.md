@@ -5,8 +5,8 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 ## Local App
 
 - Development app URL: `http://localhost:5173/`.
-- Workspace/project pages route shape: `/w/:workspaceName/:projectName/pages`.
-- The `/pages` route accepts `pageId` and optional `view` search params.
+- Workspace/project files route shape: `/w/:workspaceName/:projectName/files`.
+- The `/files` route accepts `fileId` and optional `view` search params.
 - Known page editor views: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
 
 ## Main Left Navigation
@@ -27,5 +27,5 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - `app_main_header_content`
 - `app_tiptap_hoisting_container`
 - `app_monaco_hoisting_container`
-- `app_page_editor_sidebar_tabs_comments`
-- `app_page_editor_sidebar_tabs_agent`
+- `app_file_editor_sidebar_tabs_comments`
+- `app_file_editor_sidebar_tabs_agent`

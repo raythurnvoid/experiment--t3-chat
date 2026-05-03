@@ -3,7 +3,7 @@ import { useQuery } from "convex/react";
 import { memo, useEffect } from "react";
 
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { url_path_pages, app_tenant_defaults_from_workspace_list } from "@/lib/urls.ts";
+import { url_path_files, app_tenant_defaults_from_workspace_list } from "@/lib/urls.ts";
 
 const IndexRedirect = memo(function IndexRedirect() {
 	const navigate = Route.useNavigate();
@@ -20,7 +20,7 @@ const IndexRedirect = memo(function IndexRedirect() {
 			return;
 		}
 
-		const target = url_path_pages({
+		const target = url_path_files({
 			workspaceName: defaults.workspaceName,
 			projectName: defaults.projectName,
 		});

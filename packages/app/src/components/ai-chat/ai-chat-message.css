@@ -376,7 +376,7 @@
 	}
 	/* #endregion tool textarea section */
 
-	/* #region tool write_page */
+	/* #region tool write_file */
 	.AiChatMessagePartToolWritePage {
 		display: flex;
 		flex-direction: column;
@@ -412,7 +412,7 @@
 			white-space: pre;
 		}
 	}
-	/* #endregion tool write_page */
+	/* #endregion tool write_file */
 
 	/* #region tool unknown */
 	.AiChatMessagePartToolUnknown-meta {

@@ -14,16 +14,16 @@ $session = pnpm dlx playwriter@latest session new
 pnpm dlx playwriter@latest -s $session -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
 ```
 
-## Bind Existing Pages Tab
+## Bind Existing Files Tab
 
 ```powershell
-pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/pages' });"
+pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
 ```
 
 ## Observe
 
 ```powershell
-pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.observe({ label: 'pages route', search: /Pages|Chat|Review|Toolbar/i });"
+pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.observe({ label: 'files route', search: /Files|Chat|Review|Toolbar/i });"
 ```
 
 ## Inspect Main Left Nav

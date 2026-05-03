@@ -1,0 +1,3660 @@
+/*
+Files nodes are organized as a file tree where each node is either a folder or a Markdown file.
+
+This structure allows file-system-like operations such as finding all items under a path (`/docs/*`) or
+listing folder children and reading file content (`/docs/readme.md`).
+*/
+
+import {
+	httpAction,
+	internalQuery,
+	mutation,
+	query,
+	type QueryCtx,
+	type MutationCtx,
+	type ActionCtx,
+	internalMutation,
+} from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel";
+import { paginationOptsValidator, type RouteSpec } from "convex/server";
+import { generateText, streamText, smoothStream } from "ai";
+import { openai } from "@ai-sdk/openai";
+import {
+	path_extract_segments_from,
+	server_convex_get_user_fallback_to_anonymous,
+	server_request_json_parse_and_validate,
+	encode_path_segment,
+} from "../server/server-utils.ts";
+import { v, type Infer } from "convex/values";
+import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import {
+	date_get_week_start_timestamp,
+	date_get_day_start_timestamp,
+	date_get_hour_start_timestamp,
+	date_MS_DAY,
+	date_MS_DAYS_30,
+	date_MS_WEEK,
+} from "../shared/date.ts";
+import {
+	files_FIRST_VERSION,
+	files_ROOT_ID,
+	files_validate_name,
+	files_headless_tiptap_editor_create,
+	files_u8_to_array_buffer,
+	files_headless_tiptap_editor_set_content_from_markdown,
+	files_yjs_create_empty_state_update,
+	files_yjs_doc_create_from_array_buffer_update,
+	files_yjs_doc_get_markdown,
+	files_yjs_doc_update_from_tiptap_editor,
+	files_yjs_doc_create_from_tiptap_editor,
+	files_yjs_compute_diff_update_from_state_vector,
+	type files_NodeKind,
+} from "../server/files.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import { minimatch } from "minimatch";
+import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
+import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
+import type { Editor } from "@tiptap/core";
+import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import app_convex_schema from "./schema.ts";
+import { api, internal } from "./_generated/api.js";
+import { doc } from "convex-helpers/validators";
+import { z } from "zod";
+import type { RouterForConvexModules } from "./http.ts";
+import { billing_event } from "../server/billing.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
+import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
+import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+
+const files_INLINE_AI_MODEL_ID = "gpt-5-mini" as const;
+
+function files_compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
+	switch (args.modelId) {
+		case "gpt-5.4-nano":
+		case "gpt-4.1-nano":
+			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
+		case "gpt-5.4-mini":
+		case files_INLINE_AI_MODEL_ID:
+		default:
+			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
+	}
+}
+
+async function files_ingest_inline_ai_usage_event(
+	ctx: ActionCtx | MutationCtx,
+	args: {
+		actorUserId: Id<"users">;
+		billedUser: Doc<"users">;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
+		requestId: string;
+		inputTokens: number;
+		outputTokens: number;
+	},
+) {
+	if (args.inputTokens + args.outputTokens === 0) {
+		return;
+	}
+
+	await billing_ingest_events(ctx, {
+		billedUserEvents: [
+			{
+				billedUser: args.billedUser,
+				event: billing_event({
+					name: "ai_usage",
+					externalCustomerId: args.billedUser._id,
+					externalMemberId: args.actorUserId,
+					externalId: composite_id(
+						"billing",
+						"ai_usage",
+						args.billedUser._id,
+						args.actorUserId,
+						args.workspaceId,
+						args.projectId,
+						"inline_ai",
+						args.requestId,
+					),
+					metadata: {
+						amount: files_compute_token_usage_cost_cents({
+							modelId: files_INLINE_AI_MODEL_ID,
+							inputTokens: args.inputTokens,
+							outputTokens: args.outputTokens,
+						}),
+						actorUserId: args.actorUserId,
+						billedUserId: args.billedUser._id,
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						modelId: files_INLINE_AI_MODEL_ID,
+						inputTokens: args.inputTokens,
+						outputTokens: args.outputTokens,
+						threadId: "inline_ai",
+						messageId: args.requestId,
+					},
+				}),
+			},
+		],
+	});
+}
+
+function files_materialized_path_join(parentPath: string, nodeName: string) {
+	if (parentPath === "/") {
+		const encodedName = encode_path_segment(nodeName);
+		return encodedName === "" ? "/" : `/${encodedName}`;
+	}
+
+	const encodedName = encode_path_segment(nodeName);
+	return encodedName === "" ? parentPath : `${parentPath}/${encodedName}`;
+}
+
+/**
+ * Rebase an absolute path from one base path to another.
+ *
+ * @example
+ * ```ts
+ * // valid rebase
+ * path_rebase({
+ * 	fromBasePath: "/docs",
+ * 	toBasePath: "/archive",
+ * 	path: "/docs/guides/getting-started",
+ * }); // => "/archive/guides/getting-started"
+ * ```
+ *
+ * @example
+ * ```ts
+ * // invalid rebase (path is outside fromBasePath)
+ * path_rebase({
+ * 	fromBasePath: "/docs",
+ * 	toBasePath: "/archive",
+ * 	path: "/notes/todo",
+ * }); // => null
+ * ```
+ *
+ * Path format: absolute (`/`-prefixed) and no trailing `/` for non-root paths.
+ *
+ * @param args.fromBasePath - Base path that `args.path` must match (same path format).
+ * @param args.toBasePath - Base path used in the rebased result (same path format).
+ * @param args.path - Absolute path to rebase (same path format).
+ *
+ * @returns The rebased path, or `null` when `args.path` does not start with `args.fromBasePath`.
+ */
+function path_rebase(args: { fromBasePath: string; toBasePath: string; path: string }) {
+	if (args.path === args.fromBasePath) {
+		return args.toBasePath;
+	}
+
+	if (!args.path.startsWith(`${args.fromBasePath}/`)) {
+		return null;
+	}
+
+	const suffix = args.path.slice(args.fromBasePath.length + 1);
+	return `${args.toBasePath}${args.toBasePath === "/" ? "" : "/"}${suffix}`;
+}
+
+function is_home_file(node: Pick<Doc<"files_nodes">, "path" | "kind">): boolean;
+function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind">): boolean;
+function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
+	return node.kind === "file" && (node.path === "/readme.md" || (node.parentId === files_ROOT_ID && node.name === "readme.md"));
+}
+
+type files_QueryOrMutationCtx = QueryCtx | MutationCtx;
+
+function db_query_files_by_path(
+	ctx: files_QueryOrMutationCtx,
+	args: { workspaceId: string; projectId: string; path: string; archiveOperationId: string | undefined },
+) {
+	return ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("path", args.path)
+				.eq("archiveOperationId", args.archiveOperationId),
+		);
+}
+
+function db_get_home_file(ctx: files_QueryOrMutationCtx, args: { workspaceId: string; projectId: string }) {
+	return ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_parent_name", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("parentId", files_ROOT_ID)
+				.eq("name", "readme.md"),
+		)
+		.filter((q) => q.and(q.eq(q.field("archiveOperationId"), undefined), q.eq(q.field("kind"), "file")))
+		.first();
+}
+
+async function db_find_active_path_conflict(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		path: string;
+		excludeNodeIds?: Array<Id<"files_nodes">>;
+	},
+) {
+	const activeFiles = await db_query_files_by_path(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: args.path,
+		archiveOperationId: undefined,
+	}).collect();
+	const excludeNodeIdsSet = new Set(args.excludeNodeIds ?? []);
+	for (const activeFile of activeFiles) {
+		if (excludeNodeIdsSet.has(activeFile._id)) {
+			continue;
+		}
+		return activeFile;
+	}
+	return null;
+}
+
+export async function db_upsert_file_chunks(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: Id<"files_nodes">;
+		yjsSequence: number;
+		markdownContent: string;
+	},
+) {
+	// Delete existing chunk rows
+	await Promise.all([
+		ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			)
+			.collect(),
+		ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			)
+			.collect(),
+	]).then(([plainTextChunkRows, markdownChunkRows]) =>
+		Promise.all([
+			...plainTextChunkRows.map((row) => ctx.db.delete("files_plain_text_chunks", row._id)),
+			...markdownChunkRows.map((row) => ctx.db.delete("files_markdown_chunks", row._id)),
+		]),
+	);
+
+	// Create new chunks from markdown
+	const chunks = await files_chunk_markdown(args.markdownContent);
+	if (chunks._nay) {
+		return chunks;
+	}
+
+	if (chunks._yay.length === 0) {
+		return Result({ _yay: null });
+	}
+
+	const markdownChunkIds = await Promise.all(
+		chunks._yay.map((chunk) =>
+			ctx.db.insert("files_markdown_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: args.nodeId,
+				yjsSequence: args.yjsSequence,
+				chunkIndex: chunk.chunkIndex,
+				markdownChunk: chunk.markdownChunk,
+				startIndex: chunk.startIndex,
+				endIndex: chunk.endIndex,
+				lineStart: chunk.lineStart,
+				lineEnd: chunk.lineEnd,
+				chunkFlags: chunk.chunkFlags,
+			}),
+		),
+	);
+
+	await Promise.all(
+		chunks._yay.map((chunk, index) =>
+			ctx.db.insert("files_plain_text_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: args.nodeId,
+				yjsSequence: args.yjsSequence,
+				chunkIndex: chunk.chunkIndex,
+				plainTextChunk: chunk.plainTextChunk,
+				markdownChunkId: markdownChunkIds[index],
+			}),
+		),
+	);
+
+	return Result({ _yay: null });
+}
+
+async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; projectId: string; path: string }) {
+	if (args.path === "/") {
+		return null;
+	}
+
+	const activeFileByMaterializedPath = await db_query_files_by_path(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: args.path,
+		archiveOperationId: undefined,
+	}).first();
+	return activeFileByMaterializedPath?._id ?? null;
+}
+
+async function resolve_file_id_from_path_fn(
+	ctx: QueryCtx,
+	args: { workspaceId: string; projectId: string; path: string },
+) {
+	return resolve_id_from_path(ctx, args);
+}
+
+export const resolve_file_id_from_path = internalQuery({
+	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
+	returns: v.union(v.id("files_nodes"), v.null()),
+	handler: async (ctx, args) => {
+		return resolve_file_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+	},
+});
+
+async function resolve_tree_node_id_from_path_fn(
+	ctx: QueryCtx,
+	args: { workspaceId: string; projectId: string; path: string },
+) {
+	if (args.path === "/") return files_ROOT_ID;
+
+	const fileByMaterializedPath = await db_query_files_by_path(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: args.path,
+		archiveOperationId: undefined,
+	}).first();
+	if (fileByMaterializedPath) {
+		return fileByMaterializedPath._id;
+	}
+
+	return null;
+}
+
+export const resolve_tree_node_id_from_path = internalQuery({
+	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
+	returns: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID), v.null()),
+	handler: async (ctx, args) => {
+		return resolve_tree_node_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+	},
+});
+
+async function resolve_parent_path_from_parent_id(
+	ctx: QueryCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		parentId: Doc<"files_nodes">["parentId"];
+	},
+) {
+	if (args.parentId === files_ROOT_ID) {
+		return "/";
+	}
+
+	const parentNode = await ctx.db.get("files_nodes", args.parentId);
+	if (
+		!parentNode ||
+		parentNode.workspaceId !== args.workspaceId ||
+		parentNode.projectId !== args.projectId ||
+		parentNode.kind !== "folder"
+	) {
+		return null;
+	}
+
+	return parentNode.path;
+}
+
+async function cascade_file_descendants_path(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		parentId: Id<"files_nodes">;
+		parentPath: string;
+	},
+) {
+	const stack: Array<{ parentId: Id<"files_nodes">; parentPath: string }> = [
+		{ parentId: args.parentId, parentPath: args.parentPath },
+	];
+
+	while (stack.length > 0) {
+		const frame = stack.pop();
+		if (!frame) {
+			continue;
+		}
+
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_name", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
+			)
+			.collect();
+
+		await Promise.all(
+			children.map(async (child) => {
+				const childPath = files_materialized_path_join(frame.parentPath, child.name);
+				await ctx.db.patch("files_nodes", child._id, {
+					path: childPath,
+				});
+				stack.push({
+					parentId: child._id,
+					parentPath: childPath,
+				});
+			}),
+		);
+	}
+}
+
+const get_tree_nodes_list_validator = v.array(
+	v.object({
+		type: v.union(v.literal("root"), v.literal("node")),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		index: v.string(),
+		parentId: v.string(),
+		title: v.string(),
+		archiveOperationId: v.optional(v.string()),
+		updatedAt: v.number(),
+		updatedBy: v.string(),
+		_id: v.union(v.id("files_nodes"), v.null()),
+	}),
+);
+
+export type files_TreeItem = Infer<typeof get_tree_nodes_list_validator>[number];
+
+export const get_tree_nodes_list = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+	},
+	returns: get_tree_nodes_list_validator,
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return [];
+		}
+
+		const nodes = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_name", (q) =>
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
+			)
+			.order("asc")
+			.collect();
+
+		const treeItemsList: files_TreeItem[] = [
+			{
+				type: "root",
+				index: files_ROOT_ID,
+				parentId: "",
+				kind: "folder",
+				title: "Files",
+				archiveOperationId: undefined,
+				updatedAt: Date.now(),
+				updatedBy: "system",
+				_id: null,
+			},
+			...nodes.map(
+				(node) =>
+					({
+						type: "node" as const,
+						kind: node.kind,
+						index: node._id,
+						parentId: node.parentId === files_ROOT_ID ? files_ROOT_ID : node.parentId,
+						title: node.name || "Untitled",
+						archiveOperationId: node.archiveOperationId,
+						updatedAt: node.updatedAt,
+						updatedBy: node.updatedBy,
+						_id: node._id,
+					}) satisfies files_TreeItem,
+			),
+		];
+
+		return treeItemsList;
+	},
+});
+
+async function do_create_node(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		parentId: Doc<"files_nodes">["parentId"];
+		name: Doc<"files_nodes">["name"];
+		kind: files_NodeKind;
+		markdownContent?: Doc<"files_markdown_content">["content"];
+		_errors?: {
+			message: "Failed to create file content rows";
+		};
+	},
+) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+	const now = Date.now();
+	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		parentId: args.parentId,
+	});
+	if (parentPath == null) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Parent file not found",
+			},
+		});
+	}
+	const nameValidationResult = files_validate_name(args.name, args.kind);
+	if (nameValidationResult._nay) {
+		return nameValidationResult;
+	}
+
+	const nodePath = files_materialized_path_join(parentPath, args.name);
+	const activePathConflict = await db_find_active_path_conflict(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		path: nodePath,
+	});
+	if (activePathConflict) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Failed to create node because path already exists",
+			},
+		});
+	}
+
+	const nodeId = await ctx.db.insert("files_nodes", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		parentId: args.parentId,
+		path: nodePath,
+		version: files_FIRST_VERSION,
+		name: args.name,
+		kind: args.kind,
+		archiveOperationId: undefined,
+		createdBy: userAuth.id,
+		updatedBy: userAuth.name,
+		updatedAt: now,
+	});
+
+	if (args.kind === "folder") {
+		return Result({ _yay: nodeId });
+	}
+
+	const markdownContent = args.markdownContent ?? "";
+
+	// Create initial Yjs snapshot + sequence tracker with the file.
+	// Important: do NOT store an empty bytes blob; Yjs update decoding may throw on empty payloads.
+	const initialYjsSequence = 0;
+
+	let initialYjsSnapshotUpdate;
+	if (markdownContent) {
+		const editor = files_headless_tiptap_editor_create();
+
+		if (editor._nay) {
+			return editor;
+		}
+
+		const markdownContentSet = files_headless_tiptap_editor_set_content_from_markdown({
+			markdown: markdownContent,
+			mut_editor: editor._yay,
+		});
+		if (markdownContentSet._nay) {
+			return markdownContentSet;
+		}
+		initialYjsSnapshotUpdate = yjs_create_state_update_from_tiptap_editor({
+			tiptapEditor: editor._yay,
+		});
+	} else {
+		initialYjsSnapshotUpdate = files_yjs_create_empty_state_update();
+	}
+
+	const createFileRowsResult = Result_all(
+		await Promise.all([
+			ctx.db.insert("files_yjs_snapshots", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: nodeId,
+				sequence: initialYjsSequence,
+				snapshotUpdate: files_u8_to_array_buffer(initialYjsSnapshotUpdate),
+				createdBy: userAuth.id,
+				updatedBy: userAuth.name,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_yjs_docs_last_sequences", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: nodeId,
+				lastSequence: initialYjsSequence,
+			}),
+			ctx.db.insert("files_markdown_content", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: nodeId,
+				content: markdownContent,
+				isArchived: false,
+				yjsSequence: initialYjsSequence,
+				updatedBy: userAuth.name,
+				updatedAt: now,
+			}),
+			db_upsert_file_chunks(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId,
+				yjsSequence: initialYjsSequence,
+				markdownContent,
+			}),
+		] as const),
+	);
+
+	if (createFileRowsResult._nay) {
+		const message = "Failed to create file content rows" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+		console.error("Failed to create file content rows", {
+			message,
+			createFileRowsResult,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: args.parentId,
+			nodeId,
+			yjsSequence: initialYjsSequence,
+		});
+		return Result({
+			_nay: {
+				name: "nay",
+				message,
+			},
+		});
+	}
+
+	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = createFileRowsResult._yay;
+
+	await ctx.db.patch("files_nodes", nodeId, {
+		markdownContentId: markdown_content_id,
+		yjsLastSequenceId: yjs_last_sequence_id,
+		yjsSnapshotId: yjs_snapshot_id,
+	});
+
+	return Result({ _yay: nodeId });
+}
+
+export const create_node = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		name: v.string(),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const nameValidationResult = files_validate_name(args.name, args.kind);
+		if (nameValidationResult._nay) {
+			return nameValidationResult;
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const node = await do_create_node(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: args.parentId,
+			name: args.name,
+			kind: args.kind,
+		});
+
+		if (node._nay) {
+			return node;
+		}
+
+		return Result({ _yay: { nodeId: node._yay } });
+	},
+});
+
+export const create_file_quick = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// Ensure "tmp" under root exists
+		const tmp = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_name", (q) =>
+				q
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
+					.eq("parentId", files_ROOT_ID)
+					.eq("name", "tmp"),
+			)
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.first();
+
+		let tmpNodeId = null;
+
+		if (!tmp) {
+			const tmpNode = await do_create_node(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				parentId: files_ROOT_ID,
+				name: "tmp",
+				kind: "folder",
+			});
+
+			if (tmpNode._nay) {
+				return tmpNode;
+			}
+
+			tmpNodeId = tmpNode._yay;
+		} else {
+			tmpNodeId = tmp._id;
+		}
+
+		// Create quick file under "tmp".
+		const title = `quick-file-${Date.now()}.md`;
+		const node = await do_create_node(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: tmpNodeId,
+			name: title,
+			kind: "file",
+		});
+
+		if (node._nay) {
+			return node;
+		}
+
+		return Result({ _yay: { nodeId: node._yay } });
+	},
+});
+
+export const rename_node = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		name: v.string(),
+	},
+	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		if (is_home_file(file)) {
+			// Ignore rename requests for home file
+			return Result({ _yay: null });
+		}
+
+		const nameValidationResult = files_validate_name(args.name, file.kind);
+		if (nameValidationResult._nay) {
+			return nameValidationResult;
+		}
+
+		const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: file.parentId,
+		});
+		if (parentPath == null) {
+			return Result({ _yay: null });
+		}
+		const renamedPath = files_materialized_path_join(parentPath, args.name);
+		if (file.archiveOperationId === undefined) {
+			const activePathConflict = await db_find_active_path_conflict(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				path: renamedPath,
+				excludeNodeIds: [args.nodeId],
+			});
+			if (activePathConflict) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Path already exists",
+					},
+				});
+			}
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		await ctx.db.patch("files_nodes", args.nodeId, {
+			name: args.name,
+			path: renamedPath,
+			updatedBy: userAuth.name,
+			updatedAt: Date.now(),
+		});
+		await cascade_file_descendants_path(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: args.nodeId,
+			parentPath: renamedPath,
+		});
+		return Result({ _yay: null });
+	},
+});
+
+export const move_nodes = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		itemIds: v.array(v.id("files_nodes")),
+		targetParentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: args.targetParentId,
+		});
+		if (targetParentPath == null) {
+			return Result({ _yay: null });
+		}
+
+		const filesToMove: Array<{ itemId: Id<"files_nodes">; file: Doc<"files_nodes">; movedPath: string }> = [];
+
+		for (const itemId of args.itemIds) {
+			const file = await ctx.db.get("files_nodes", itemId);
+			if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+				continue;
+			}
+			if (is_home_file(file)) {
+				// Skip move requests for home file
+				continue;
+			}
+
+			const movedPath = files_materialized_path_join(targetParentPath, file.name);
+			filesToMove.push({ itemId, file, movedPath });
+		}
+
+		const movingNodeIds = filesToMove.map((file) => file.itemId);
+		const movedPathByNodeId = new Map<string, Id<"files_nodes">>();
+		for (const fileToMove of filesToMove) {
+			if (fileToMove.file.archiveOperationId !== undefined) {
+				continue;
+			}
+
+			const duplicateTargetNodeId = movedPathByNodeId.get(fileToMove.movedPath);
+			if (duplicateTargetNodeId && duplicateTargetNodeId !== fileToMove.itemId) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Path already exists",
+					},
+				});
+			}
+			movedPathByNodeId.set(fileToMove.movedPath, fileToMove.itemId);
+
+			const activePathConflict = await db_find_active_path_conflict(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				path: fileToMove.movedPath,
+				excludeNodeIds: movingNodeIds,
+			});
+			if (activePathConflict) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Path already exists",
+					},
+				});
+			}
+		}
+
+		if (filesToMove.length > 0) {
+			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+			if (rateLimit) {
+				return Result({ _nay: { message: rateLimit.message } });
+			}
+		}
+
+		for (const fileToMove of filesToMove) {
+			await ctx.db.patch("files_nodes", fileToMove.itemId, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				parentId: args.targetParentId,
+				path: fileToMove.movedPath,
+				updatedAt: Date.now(),
+			});
+			await cascade_file_descendants_path(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				parentId: fileToMove.itemId,
+				parentPath: fileToMove.movedPath,
+			});
+		}
+		return Result({ _yay: null });
+	},
+});
+
+export const archive_nodes = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeIds: v.array(v.string()),
+	},
+	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const nodeIds = [];
+		for (const maybeNodeId of args.nodeIds) {
+			const nodeId = ctx.db.normalizeId("files_nodes", maybeNodeId);
+			if (!nodeId) {
+				return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: maybeNodeId } } });
+			}
+			nodeIds.push(nodeId);
+		}
+
+		const files = Result_all(
+			await Promise.all(
+				nodeIds.map((nodeId) =>
+					ctx.db.get("files_nodes", nodeId).then((file) => {
+						if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+							return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId } } });
+						}
+
+						return Result({ _yay: file });
+					}),
+				),
+			),
+		);
+
+		if (files._nay) {
+			return files;
+		}
+
+		const archiveOperationId = crypto.randomUUID();
+		const nodeIdsToArchive = new Set<Id<"files_nodes">>();
+
+		for (const file of files._yay) {
+			if (is_home_file(file)) {
+				// Ignore archive requests for home file
+				continue;
+			}
+
+			if (file.archiveOperationId !== undefined) {
+				continue;
+			}
+
+			nodeIdsToArchive.add(file._id);
+
+			// All descendants file needs to be archived too
+			const descendantsPathPrefix = `${file.path}/`;
+			const descendantFiles = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", membership.workspaceId)
+						.eq("projectId", membership.projectId)
+						.gte("path", descendantsPathPrefix)
+						.lt("path", `${descendantsPathPrefix}\uffff`),
+				)
+				.collect();
+
+			for (const descendantFile of descendantFiles) {
+				if (descendantFile.archiveOperationId !== undefined) {
+					continue;
+				}
+				nodeIdsToArchive.add(descendantFile._id);
+			}
+		}
+
+		if (nodeIdsToArchive.size > 0) {
+			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+			if (rateLimit) {
+				return Result({ _nay: { message: rateLimit.message } });
+			}
+		}
+
+		await Promise.all(
+			[...nodeIdsToArchive].map(async (nodeId) => {
+				await ctx.db.patch("files_nodes", nodeId, {
+					archiveOperationId,
+					updatedBy: userAuth.name,
+					updatedAt: now,
+				});
+			}),
+		);
+
+		return Result({ _yay: null });
+	},
+});
+
+export const unarchive_nodes = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeIds: v.array(v.string()),
+	},
+	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		if (args.nodeIds.length === 0) {
+			return Result({ _yay: null });
+		}
+
+		const nodeIds = [];
+		for (const maybeNodeId of args.nodeIds) {
+			const nodeId = ctx.db.normalizeId("files_nodes", maybeNodeId);
+			if (!nodeId) {
+				return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId: maybeNodeId } } });
+			}
+			nodeIds.push(nodeId);
+		}
+
+		const files = Result_all(
+			await Promise.all(
+				nodeIds.map((nodeId) =>
+					ctx.db.get("files_nodes", nodeId).then((file) => {
+						if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+							return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId } } });
+						}
+						return Result({ _yay: file });
+					}),
+				),
+			),
+		);
+
+		if (files._nay) {
+			return files;
+		}
+
+		// Find the top most shared ancestor for each file requested.
+		const topMostSharedAncestorsByPath = new Map<string, Doc<"files_nodes">>();
+		for (const file of files._yay) {
+			if (!file) {
+				continue;
+			}
+
+			const currentFile = file;
+
+			// Ignore unarchive requests for home file.
+			if (is_home_file(currentFile)) {
+				continue;
+			}
+
+			if (currentFile.archiveOperationId === undefined) {
+				continue;
+			}
+
+			const conflictedCurrentFile = topMostSharedAncestorsByPath.get(currentFile.path);
+			if (conflictedCurrentFile) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Failed to unarchive file because it would conflict with another unarchiving file",
+						data: {
+							requestedNodeIds: args.nodeIds,
+							nodeId: currentFile._id,
+							filePath: currentFile.path,
+							targetPath: currentFile.path,
+							conflictingNodeId: conflictedCurrentFile._id,
+							conflictingFilePath: conflictedCurrentFile.path,
+						},
+					},
+				});
+			}
+
+			let isDescendantOfCurrentRoot = false;
+			for (const currentRootPath of topMostSharedAncestorsByPath.keys()) {
+				if (currentFile.path.startsWith(`${currentRootPath}/`)) {
+					isDescendantOfCurrentRoot = true;
+					break;
+				}
+			}
+			if (isDescendantOfCurrentRoot) {
+				continue;
+			}
+
+			for (const currentRootPath of topMostSharedAncestorsByPath.keys()) {
+				if (currentRootPath.startsWith(`${currentFile.path}/`)) {
+					topMostSharedAncestorsByPath.delete(currentRootPath);
+				}
+			}
+
+			topMostSharedAncestorsByPath.set(currentFile.path, currentFile);
+		}
+
+		if (topMostSharedAncestorsByPath.size === 0) {
+			return Result({ _yay: null });
+		}
+
+		const topMostSharedAncestorFileParentById = new Map<string, Doc<"files_nodes">>();
+		await Promise.all(
+			(function* (/* iife */) {
+				const visitedParentIds = new Set<Id<"files_nodes">>();
+				for (const ancestorFile of topMostSharedAncestorsByPath.values()) {
+					if (ancestorFile.archiveOperationId === undefined) {
+						continue;
+					}
+
+					if (
+						ancestorFile.parentId !== files_ROOT_ID &&
+						!topMostSharedAncestorFileParentById.has(ancestorFile.parentId) &&
+						!visitedParentIds.has(ancestorFile.parentId)
+					) {
+						visitedParentIds.add(ancestorFile.parentId);
+						yield ctx.db.get("files_nodes", ancestorFile.parentId).then((parentFile) => {
+							if (parentFile) {
+								topMostSharedAncestorFileParentById.set(ancestorFile.parentId, parentFile);
+							}
+						});
+					}
+				}
+			})(),
+		);
+
+		// Build one plan entry per file to unarchive.
+		const plans: Array<{
+			file: Doc<"files_nodes">;
+			targetParentId: Doc<"files_nodes">["parentId"];
+			targetPath: string;
+		}> = [];
+		const ancestorFilesByTargetPath = new Map<string, Doc<"files_nodes">>();
+
+		const plansResult = Result_all(
+			await Promise.all(
+				(function* (/* iife */) {
+					for (const ancestorFile of topMostSharedAncestorsByPath.values()) {
+						if (ancestorFile.archiveOperationId === undefined) {
+							continue;
+						}
+
+						let shouldMoveToRoot = false;
+						if (ancestorFile.parentId !== files_ROOT_ID) {
+							const parentFile = topMostSharedAncestorFileParentById.get(ancestorFile.parentId);
+
+							// If parent is still archived or invalid, move this subtree to root when unarchiving.
+							shouldMoveToRoot =
+								!parentFile ||
+								parentFile.workspaceId !== membership.workspaceId ||
+								parentFile.projectId !== membership.projectId ||
+								parentFile.archiveOperationId !== undefined;
+						}
+
+						const ancestorTargetParentId = shouldMoveToRoot ? files_ROOT_ID : ancestorFile.parentId;
+						let ancestorTargetPath = ancestorFile.path;
+						if (shouldMoveToRoot) {
+							const ancestorPathName = path_extract_segments_from(ancestorFile.path).at(-1);
+							if (!ancestorPathName) {
+								throw should_never_happen("Failed to move file to root because path does not include a name segment", {
+									nodeId: ancestorFile._id,
+									path: ancestorFile.path,
+								});
+							}
+							ancestorTargetPath = `/${ancestorPathName}`;
+						}
+
+						yield (async (/* iife */) => {
+							const conflictedAncestorFile = ancestorFilesByTargetPath.get(ancestorTargetPath);
+							if (conflictedAncestorFile) {
+								return Result({
+									_nay: {
+										name: "nay",
+										message: "Failed to unarchive file because it would conflict with another unarchiving file",
+										data: {
+											requestedNodeIds: args.nodeIds,
+											nodeId: ancestorFile._id,
+											filePath: ancestorFile.path,
+											targetPath: ancestorTargetPath,
+											conflictingNodeId: conflictedAncestorFile._id,
+											conflictingFilePath: conflictedAncestorFile.path,
+										},
+									},
+								});
+							}
+							ancestorFilesByTargetPath.set(ancestorTargetPath, ancestorFile);
+
+							plans.push({
+								file: ancestorFile,
+								targetParentId: ancestorTargetParentId,
+								targetPath: ancestorTargetPath,
+							});
+
+							return ctx.db
+								.query("files_nodes")
+								.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+									q
+										.eq("workspaceId", membership.workspaceId)
+										.eq("projectId", membership.projectId)
+										.gte("path", `${ancestorFile.path}/`)
+										.lt("path", `${ancestorFile.path}/\uffff`),
+								)
+								.collect()
+								.then((descendantFiles) => {
+									for (const file of descendantFiles) {
+										if (file.archiveOperationId === undefined) {
+											continue;
+										}
+
+										const targetPath = path_rebase({
+											fromBasePath: ancestorFile.path,
+											toBasePath: ancestorTargetPath,
+											path: file.path,
+										});
+
+										if (!targetPath) {
+											throw should_never_happen("Failed to rebase descendants files", {
+												ancestorNodeId: ancestorFile._id,
+												ancestorPath: ancestorFile.path,
+												ancestorTargetPath,
+												ancestorTargetParentId,
+												descendantNodeId: file._id,
+												descendantFilePath: file.path,
+											});
+										}
+
+										plans.push({
+											file,
+											targetParentId: file.parentId,
+											targetPath,
+										});
+									}
+
+									return Result({ _yay: null });
+								});
+						})();
+					}
+				})(),
+			),
+		);
+
+		if (plansResult._nay) {
+			return plansResult;
+		}
+
+		// Validate top-most ancestor conflicts against currently not archived files outside this operation.
+		for (const [ancestorTargetPath, ancestorFile] of ancestorFilesByTargetPath) {
+			const conflictFile = await db_find_active_path_conflict(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				path: ancestorTargetPath,
+			});
+
+			if (conflictFile) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "Failed to unarchive file because path already exists",
+						data: {
+							requestedNodeIds: args.nodeIds,
+							nodeId: ancestorFile._id,
+							filePath: ancestorFile.path,
+							targetPath: ancestorTargetPath,
+							conflictingNodeId: conflictFile._id,
+							conflictingFilePath: conflictFile.path,
+						},
+					},
+				});
+			}
+		}
+
+		// Preconditions passed, apply all patches.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const updatedAt = Date.now();
+		await Promise.all(
+			plans.map(async (plan) =>
+				ctx.db.patch("files_nodes", plan.file._id, {
+					archiveOperationId: undefined,
+					updatedBy: userAuth.name,
+					updatedAt,
+					...(plan.targetPath !== plan.file.path ? { path: plan.targetPath } : {}),
+					...(plan.targetParentId !== plan.file.parentId ? { parentId: plan.targetParentId } : {}),
+				}),
+			),
+		);
+
+		return Result({ _yay: null });
+	},
+});
+
+export const get = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.string(),
+	},
+	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
+		if (!nodeId) {
+			return null;
+		}
+
+		const file = await ctx.db.get("files_nodes", nodeId);
+		if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+			return null;
+		}
+
+		return file;
+	},
+});
+
+export const get_file_by_path = query({
+	args: { membershipId: v.id("workspaces_projects_users"), path: v.string() },
+	returns: v.union(
+		v.object({
+			workspaceId: v.union(v.string(), v.null()),
+			projectId: v.union(v.string(), v.null()),
+			nodeId: v.id("files_nodes"),
+			name: v.string(),
+			archiveOperationId: v.optional(v.string()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const fileConvexId = await resolve_id_from_path(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			path: args.path,
+		});
+
+		if (!fileConvexId) return null;
+		const file = await ctx.db.get("files_nodes", fileConvexId);
+		if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+			return null;
+		}
+
+		return file
+			? {
+					workspaceId: file.workspaceId,
+					projectId: file.projectId,
+					nodeId: file._id,
+					name: file.name,
+					archiveOperationId: file.archiveOperationId,
+				}
+			: null;
+	},
+});
+
+export const read_dir = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+	},
+	returns: v.array(v.string()),
+	handler: async (ctx, args) => {
+		const nodeId = await resolve_tree_node_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+		if (!nodeId) return [];
+
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("parentId", nodeId)
+					.eq("archiveOperationId", undefined),
+			)
+			.collect();
+
+		// TODO: do not collect
+		const names = children.map((file) => file.name);
+		return names;
+	},
+});
+
+export const get_file_info_for_list_dir_pagination = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		cursor: paginationOptsValidator.fields.cursor,
+	},
+	handler: async (ctx, args) => {
+		// TODO: do not use paginate
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", undefined),
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: 1,
+			});
+
+		return {
+			...result,
+			files: result.page.map((file) => ({
+				name: file.name,
+				nodeId: file._id,
+				updatedAt: file.updatedAt,
+			})),
+		};
+	},
+});
+
+function matches_path(absPath: string, include: string | undefined) {
+	return include ? minimatch(absPath, include) : true;
+}
+
+export const list_files = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		maxDepth: v.number(),
+		limit: v.number(),
+		include: v.optional(v.string()),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				updatedAt: v.number(),
+				depthTruncated: v.boolean(),
+			}),
+		),
+		truncated: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		// TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
+		const startNodeId = await resolve_tree_node_id_from_path_fn(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+		if (!startNodeId) return { items: [], truncated: false };
+
+		if (startNodeId !== files_ROOT_ID) {
+			const startNode = await ctx.db.get("files_nodes", startNodeId);
+			if (!startNode || startNode.kind !== "folder") {
+				return startNode && matches_path(args.path, args.include)
+					? {
+							items: [
+								{
+									path: startNode.path,
+									kind: startNode.kind,
+									updatedAt: startNode.updatedAt,
+									depthTruncated: false,
+								},
+							],
+							truncated: false,
+						}
+					: { items: [], truncated: false };
+			}
+		}
+
+		// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
+		const basePath = args.path;
+		const maxDepth = Math.max(0, Math.min(10, args.maxDepth));
+		const limit = Math.max(1, Math.min(100, args.limit));
+		const include = args.include;
+
+		const matchesInclude = (absPath: string) => matches_path(absPath, include);
+
+		const results: Array<{ path: string; kind: files_NodeKind; updatedAt: number; depthTruncated: boolean }> = [];
+		let truncated = false;
+
+		// Depth-first traversal using an explicit stack.
+		// We iterate children via an indexed query (async iterable) and dive deeper first.
+		const stack: Array<{
+			parentId: Doc<"files_nodes">["parentId"];
+			absPath: string;
+			depth: number;
+			iterator: AsyncIterator<Doc<"files_nodes">> | null;
+		}> = [{ parentId: startNodeId, absPath: basePath, depth: 0, iterator: null }];
+
+		try {
+			// Iterate 1 extra time (less or equal `limit`) to flag the truncation
+			while (stack.length && results.length <= limit) {
+				const frame = stack.at(-1)!;
+
+				// Lazily fetch children by parentId via index; avoid .collect()
+				const iterator =
+					frame.iterator ??
+					ctx.db
+						.query("files_nodes")
+						.withIndex("by_workspace_project_parent_archiveOperation", (q) =>
+							q
+								.eq("workspaceId", args.workspaceId)
+								.eq("projectId", args.projectId)
+								.eq("parentId", frame.parentId)
+								.eq("archiveOperationId", undefined),
+						)
+						[Symbol.asyncIterator]();
+
+				const iteratorItem = await iterator.next();
+
+				// No more children at this frame or file is empty or `maxDepth` is reached
+				if (iteratorItem.done) {
+					stack.pop();
+					// Clean up the iterator
+					await iterator.return?.();
+
+					continue;
+				}
+
+				const child = iteratorItem.value;
+				const childPath =
+					frame.absPath === "/"
+						? `/${encode_path_segment(child.name)}`
+						: `${frame.absPath}/${encode_path_segment(child.name)}`;
+
+				// If include pattern is provided, only add items that match the glob
+				if (matchesInclude(childPath)) {
+					if (results.length < limit && frame.depth <= maxDepth) {
+						results.push({ path: childPath, kind: child.kind, updatedAt: child.updatedAt, depthTruncated: false });
+					}
+					// Respect the `maxDepth` and mark the depth truncation
+					else if (frame.depth > maxDepth) {
+						stack.pop();
+						// Clean up the iterator
+						await iterator.return?.();
+
+						const lastResult = results.at(-1);
+						if (lastResult) {
+							lastResult.depthTruncated = true;
+						}
+
+						continue;
+					}
+					// Respect `limit` and mark the truncation
+					else {
+						truncated = true;
+						break;
+					}
+				}
+
+				// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
+				const nextDepth = frame.depth + 1;
+				// less or equal `maxDepth` to allow the extra depth iteration
+				if (child.kind === "folder" && nextDepth <= maxDepth + 1) {
+					// Set frame on parent frame to resume iteration
+					frame.iterator = iterator;
+					stack.push({
+						parentId: child._id,
+						absPath: childPath,
+						depth: nextDepth,
+						iterator: null,
+					});
+				}
+			}
+		} finally {
+			// Clean up the iterators
+			await Promise.all(stack.map((frame) => frame.iterator?.return?.()).filter((x) => x != null));
+		}
+
+		return { items: results, truncated };
+	},
+});
+
+export const get_file_last_available_markdown_content_by_path = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			content: v.string(),
+			nodeId: v.id("files_nodes"),
+			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+
+		const convexId = await resolve_id_from_path(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+
+		if (!convexId) return null;
+
+		const file = await ctx.db.get("files_nodes", convexId);
+
+		if (!file) return null;
+		if (file.archiveOperationId !== undefined) return null;
+		if (file.kind !== "file") return null;
+
+		if (!file.markdownContentId) {
+			throw should_never_happen("file.markdownContentId is not set", {
+				nodeId: convexId,
+				markdownContentId: file.markdownContentId,
+			});
+		}
+
+		const pendingUpdateById = args.pendingUpdateId ? await ctx.db.get("files_pending_updates", args.pendingUpdateId) : null;
+		const pendingUpdate =
+			pendingUpdateById &&
+			pendingUpdateById.workspaceId === args.workspaceId &&
+			pendingUpdateById.projectId === args.projectId &&
+			pendingUpdateById.userId === userAuth.id &&
+			pendingUpdateById.nodeId === convexId
+				? pendingUpdateById
+				: await ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_workspace_project_user_file", (q) =>
+							q
+								.eq("workspaceId", args.workspaceId)
+								.eq("projectId", args.projectId)
+								.eq("userId", userAuth.id)
+								.eq("nodeId", convexId),
+						)
+						.first();
+		if (pendingUpdate) {
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.unstagedBranchYjsUpdate);
+
+			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+			if (markdown._yay) {
+				return {
+					content: markdown._yay,
+					nodeId: convexId,
+					pendingUpdateId: pendingUpdate._id,
+				};
+			}
+
+			console.error(
+				"[get_file_last_available_markdown_content_by_path] Failed to reconstruct markdown from files_pending_updates",
+				{
+					nay: markdown._nay,
+					nodeId: convexId,
+				},
+			);
+		}
+
+		const markdownContentDoc = await ctx.db.get("files_markdown_content", file.markdownContentId);
+		if (!markdownContentDoc) return null;
+
+		return {
+			content: markdownContentDoc.content,
+			nodeId: convexId,
+			pendingUpdateId: pendingUpdate?._id ?? null,
+		};
+	},
+});
+
+export const get_plain_text = query({
+	args: { membershipId: v.id("workspaces_projects_users"), nodeId: v.id("files_nodes") },
+	returns: v.union(v.string(), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!file ||
+			file.workspaceId !== membership.workspaceId ||
+			file.projectId !== membership.projectId ||
+			file.kind !== "file" ||
+			file.archiveOperationId !== undefined
+		) {
+			return null;
+		}
+
+		const latestChunkByFile = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", file.workspaceId).eq("projectId", file.projectId).eq("nodeId", args.nodeId),
+			)
+			.order("desc")
+			.first();
+
+		if (!latestChunkByFile) {
+			throw should_never_happen("Missing plain text chunks for file", {
+				nodeId: args.nodeId,
+				workspaceId: file.workspaceId,
+				projectId: file.projectId,
+			});
+		}
+
+		const plainTextChunks = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("workspaceId", file.workspaceId)
+					.eq("projectId", file.projectId)
+					.eq("nodeId", args.nodeId)
+					.eq("yjsSequence", latestChunkByFile.yjsSequence),
+			)
+			.order("asc")
+			.collect();
+
+		return plainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n\n");
+	},
+});
+
+export const get_file_last_yjs_sequence = query({
+	args: { membershipId: v.id("workspaces_projects_users"), nodeId: v.id("files_nodes") },
+	returns: v.union(v.object({ lastSequence: v.number() }), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId || file.kind !== "file") {
+			return null;
+		}
+
+		if (!file.yjsLastSequenceId) {
+			throw should_never_happen("file.yjsLastSequenceId is not set", {
+				workspaceId: file.workspaceId,
+				projectId: file.projectId,
+				nodeId: args.nodeId,
+				yjsLastSequenceId: file.yjsLastSequenceId,
+			});
+		}
+
+		const lastYjsSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId).then((doc) => {
+			if (!doc || doc.workspaceId !== file.workspaceId || doc.projectId !== file.projectId) return null;
+			return doc;
+		});
+
+		if (!lastYjsSequenceDoc) {
+			throw should_never_happen("lastYjsSequenceDoc is not valorized", {
+				workspaceId: file.workspaceId,
+				projectId: file.projectId,
+				nodeId: args.nodeId,
+				yjsLastSequenceId: file.yjsLastSequenceId,
+			});
+		}
+
+		return { lastSequence: lastYjsSequenceDoc.lastSequence };
+	},
+});
+
+export const text_search_files = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		query: v.string(),
+		limit: v.number(),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				markdownChunk: v.string(),
+				chunkIndex: v.number(),
+				startIndex: v.number(),
+				endIndex: v.number(),
+				lineStart: v.number(),
+				lineEnd: v.number(),
+				chunkFlags: v.number(),
+				hasChunkAbove: v.boolean(),
+				hasChunkBelow: v.boolean(),
+			}),
+		),
+	}),
+	handler: async (
+		ctx,
+		args,
+	): Promise<{
+		items: Array<{
+			path: string;
+			markdownChunk: string;
+			chunkIndex: number;
+			startIndex: number;
+			endIndex: number;
+			lineStart: number;
+			lineEnd: number;
+			chunkFlags: number;
+			hasChunkAbove: boolean;
+			hasChunkBelow: boolean;
+		}>;
+	}> => {
+		const matches = await ctx.db
+			.query("files_plain_text_chunks")
+			.withSearchIndex("search_by_plainTextChunk", (q) =>
+				q.search("plainTextChunk", args.query).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+			)
+			.take(Math.max(1, Math.min(100, args.limit)));
+
+		// Convex text search returns word by word search results ordered by relevance,
+		// we want to return only 1 result per chunk and only the exact match of the
+		// query in input.
+		const exactMatches: typeof matches = [];
+		const seenMarkdownChunkIds = new Set<(typeof matches)[number]["markdownChunkId"]>();
+		for (const match of matches) {
+			if (seenMarkdownChunkIds.has(match.markdownChunkId)) {
+				continue;
+			}
+			seenMarkdownChunkIds.add(match.markdownChunkId);
+
+			if (!match.plainTextChunk.includes(args.query)) {
+				continue;
+			}
+
+			exactMatches.push(match);
+
+			if (exactMatches.length >= args.limit) {
+				break;
+			}
+		}
+
+		const items = (
+			await Promise.all(
+				exactMatches.map(async (plainTextChunk) => {
+					const [fileDoc, markdownChunkDoc] = await Promise.all([
+						ctx.db.get("files_nodes", plainTextChunk.nodeId),
+						ctx.db.get("files_markdown_chunks", plainTextChunk.markdownChunkId),
+					]);
+
+					if (
+						!fileDoc ||
+						fileDoc.workspaceId !== args.workspaceId ||
+						fileDoc.projectId !== args.projectId ||
+						fileDoc.kind !== "file" ||
+						fileDoc.archiveOperationId !== undefined
+					) {
+						return null;
+					}
+
+					if (
+						!markdownChunkDoc ||
+						markdownChunkDoc.workspaceId !== args.workspaceId ||
+						markdownChunkDoc.projectId !== args.projectId ||
+						markdownChunkDoc.nodeId !== plainTextChunk.nodeId ||
+						markdownChunkDoc.yjsSequence !== plainTextChunk.yjsSequence ||
+						markdownChunkDoc.chunkIndex !== plainTextChunk.chunkIndex
+					) {
+						return null;
+					}
+
+					const [chunkAbove, chunkBelow] = await Promise.all([
+						ctx.db
+							.query("files_markdown_chunks")
+							.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("nodeId", plainTextChunk.nodeId)
+									.eq("yjsSequence", plainTextChunk.yjsSequence)
+									.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
+							)
+							.first(),
+						ctx.db
+							.query("files_markdown_chunks")
+							.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("nodeId", plainTextChunk.nodeId)
+									.eq("yjsSequence", plainTextChunk.yjsSequence)
+									.eq("chunkIndex", plainTextChunk.chunkIndex + 1),
+							)
+							.first(),
+					]);
+
+					return {
+						path: fileDoc.path,
+						markdownChunk: markdownChunkDoc.markdownChunk,
+						chunkIndex: markdownChunkDoc.chunkIndex,
+						startIndex: markdownChunkDoc.startIndex,
+						endIndex: markdownChunkDoc.endIndex,
+						lineStart: markdownChunkDoc.lineStart,
+						lineEnd: markdownChunkDoc.lineEnd,
+						chunkFlags: markdownChunkDoc.chunkFlags,
+						hasChunkAbove: !!chunkAbove,
+						hasChunkBelow: !!chunkBelow,
+					};
+				}),
+			)
+		).filter((item): item is NonNullable<typeof item> => item !== null);
+
+		return { items };
+	},
+});
+
+export const create_file_by_path = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const path = args.path.trim();
+		const segments = path_extract_segments_from(path);
+		if (segments.length === 0) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "Invalid file path",
+				},
+			});
+		}
+
+		for (let i = 0; i < segments.length; i++) {
+			const nameValidationResult = files_validate_name(segments[i], i === segments.length - 1 ? "file" : "folder");
+			if (nameValidationResult._nay) {
+				return nameValidationResult;
+			}
+		}
+
+		let currentParent: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
+		let lastNodeId: Id<"files_nodes"> | null = null;
+
+		for (let i = 0; i < segments.length; i++) {
+			const name = segments[i];
+
+			// Does this segment exist?
+			const existing = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_parent_name", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("parentId", currentParent)
+						.eq("name", name),
+				)
+				.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+				.first();
+
+			if (!existing) {
+				const kind: files_NodeKind = i === segments.length - 1 ? "file" : "folder";
+				const node = await do_create_node(ctx, {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					parentId: currentParent,
+					name: name,
+					kind,
+				});
+
+				if (node._nay) {
+					return node;
+				}
+
+				currentParent = node._yay;
+				lastNodeId = node._yay;
+			} else {
+				if (i < segments.length - 1 && existing.kind !== "folder") {
+					return Result({
+						_nay: {
+							name: "nay",
+							message: "Parent folder not found",
+						},
+					});
+				}
+				if (i === segments.length - 1 && existing.kind !== "file") {
+					return Result({
+						_nay: {
+							name: "nay",
+							message: "File not found",
+						},
+					});
+				}
+
+				// Continue traversal
+				currentParent = existing._id;
+				lastNodeId = existing._id;
+
+				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
+				if (i === segments.length - 1) {
+					return Result({ _yay: { nodeId: lastNodeId } });
+				}
+			}
+		}
+
+		if (!lastNodeId) {
+			throw should_never_happen("lastNodeId not resolved after file creation");
+		}
+
+		return Result({ _yay: { nodeId: lastNodeId } });
+	},
+});
+
+export const get_home_file = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+	},
+	returns: v.union(
+		v.object({
+			file: doc(app_convex_schema, "files_nodes"),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const file = await db_get_home_file(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+		});
+
+		if (!file) {
+			return null;
+		}
+
+		return {
+			file,
+		};
+	},
+});
+
+export const create_home_file = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const file = await db_get_home_file(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+		});
+
+		if (file) {
+			return Result({ _yay: { nodeId: file._id } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const result = await do_create_node(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: files_ROOT_ID,
+			name: "readme.md",
+			kind: "file",
+		});
+
+		if (result._nay) {
+			return result;
+		}
+
+		return Result({ _yay: { nodeId: result._yay } });
+	},
+});
+
+// Shared helper for snapshot creation
+const store_version_snapshot_args_schema = v.object({
+	workspaceId: v.string(),
+	projectId: v.string(),
+	nodeId: v.id("files_nodes"),
+	content: v.string(),
+	createdBy: v.id("users"),
+});
+
+export const get_file_snapshots_list = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		showArchived: v.boolean(),
+	},
+	returns: v.object({
+		snapshots: v.array(doc(app_convex_schema, "files_snapshots")),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return {
+				snapshots: [],
+			};
+		}
+
+		const snapshots = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_workspace_project_file_archivedAt", (q) => {
+				const qBase = q
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
+					.eq("nodeId", args.nodeId);
+
+				const qFinal = args.showArchived ? qBase.gt("archivedAt", 0) : qBase.lte("archivedAt", 0);
+
+				return qFinal;
+			})
+			.order("desc")
+			.collect();
+
+		return {
+			snapshots,
+		};
+	},
+});
+
+export const get_file_snapshot = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		snapshotId: v.id("files_snapshots"),
+	},
+	returns: v.union(doc(app_convex_schema, "files_snapshots"), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
+		if (!snapshot) {
+			return null;
+		}
+
+		if (
+			snapshot.workspaceId !== membership.workspaceId ||
+			snapshot.projectId !== membership.projectId ||
+			snapshot.nodeId !== args.nodeId
+		) {
+			return null;
+		}
+
+		return snapshot;
+	},
+});
+
+async function do_get_file_snapshot_content(
+	ctx: QueryCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: Id<"files_nodes">;
+		snapshotId: Id<"files_snapshots">;
+	},
+) {
+	const content = await ctx.db
+		.query("files_snapshots_contents")
+		.withIndex("by_workspace_project_fileSnapshot", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("snapshotId", args.snapshotId),
+		)
+		.first();
+	if (!content || content.nodeId !== args.nodeId) {
+		return null;
+	}
+
+	return {
+		content: content.content,
+		snapshotId: content.snapshotId,
+		_creationTime: content._creationTime,
+	};
+}
+
+export const get_file_snapshot_content = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		snapshotId: v.id("files_snapshots"),
+	},
+	returns: v.union(
+		v.object({
+			content: v.string(),
+			snapshotId: v.id("files_snapshots"),
+			_creationTime: v.number(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		return await do_get_file_snapshot_content(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			nodeId: args.nodeId,
+			snapshotId: args.snapshotId,
+		});
+	},
+});
+
+export const archive_snapshot = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		snapshotId: v.id("files_snapshots"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _yay: null });
+		}
+
+		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
+		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
+			return Result({ _yay: null });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		await ctx.db.patch("files_snapshots", args.snapshotId, {
+			archivedAt: Date.now(),
+		});
+
+		return Result({ _yay: null });
+	},
+});
+
+export const unarchive_snapshot = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		snapshotId: v.id("files_snapshots"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _yay: null });
+		}
+
+		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
+		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
+			return Result({ _yay: null });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		await ctx.db.patch("files_snapshots", args.snapshotId, {
+			archivedAt: 0,
+		});
+		return Result({ _yay: null });
+	},
+});
+
+function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
+	return files_u8_to_array_buffer(mergeUpdates(updates));
+}
+
+function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor }) {
+	const yjsDoc = files_yjs_doc_create_from_tiptap_editor({
+		tiptapEditor: args.tiptapEditor,
+	});
+	return encodeStateAsUpdate(yjsDoc);
+}
+
+function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
+	fileYjsData: Doc<"files_yjs_snapshots">;
+	headlessEditorWithUpdatedContent: Editor;
+	opKind: "snapshot-restore" | "user-edit";
+}) {
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(args.fileYjsData.snapshotUpdate);
+	const yjsBeforeStateVector = encodeStateVector(yjsDoc);
+
+	files_yjs_doc_update_from_tiptap_editor({
+		mut_yjsDoc: yjsDoc,
+		tiptapEditor: args.headlessEditorWithUpdatedContent,
+		opKind: args.opKind,
+	});
+
+	// TODO: there's a small performance improvement that can be achieved by listening for updates events from ydoc
+	const diffUpdate = files_yjs_compute_diff_update_from_state_vector({ yjsDoc, yjsBeforeStateVector });
+
+	return diffUpdate;
+}
+
+async function write_markdown_to_yjs_sync(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		markdownContent: string;
+		sessionId: string;
+		snapshotId: Id<"files_snapshots">;
+	},
+) {
+	// Reconstruct the latest Y.Doc from last snapshot
+	const fileYjsData = await ctx.db
+		.query("files_yjs_snapshots")
+		.withIndex("by_workspace_project_file_sequence", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		)
+		.order("desc")
+		.first();
+
+	if (!fileYjsData) {
+		return null;
+	}
+
+	// Convert markdown to TipTap JSON
+	const headlessEditor = files_headless_tiptap_editor_create({
+		initialContent: { markdown: args.markdownContent },
+	});
+
+	if (headlessEditor._nay) {
+		throw should_never_happen("Could not create headless editor from markdown content", {
+			nodeId: args.nodeId,
+			nay: headlessEditor._nay,
+		});
+	}
+
+	const diffUpdate = yjs_compute_diff_update_with_headless_tiptap_editor({
+		fileYjsData,
+		headlessEditorWithUpdatedContent: headlessEditor._yay,
+		opKind: "snapshot-restore",
+	});
+
+	if (!diffUpdate) {
+		return null;
+	}
+
+	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([new Uint8Array(fileYjsData.snapshotUpdate), diffUpdate]);
+
+	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+	});
+
+	await Promise.all([
+		ctx.db.insert("files_yjs_updates", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			sequence: newSequenceData.lastSequence,
+			update: files_u8_to_array_buffer(diffUpdate),
+			origin: {
+				type: "USER_SNAPSHOT_RESTORE",
+				snapshotId: args.snapshotId,
+			},
+			createdBy: args.userId,
+			createdAt: Date.now(),
+		}),
+
+		ctx.db.patch("files_yjs_snapshots", fileYjsData._id, {
+			sequence: newSequenceData.lastSequence,
+			snapshotUpdate: newSnapshotUpdate,
+			updatedAt: Date.now(),
+			updatedBy: args.userId,
+		}),
+	]);
+
+	return newSequenceData.lastSequence;
+}
+
+export const yjs_get_doc_last_snapshot = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.union(doc(app_convex_schema, "files_yjs_snapshots"), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (!node || node.workspaceId !== membership.workspaceId || node.projectId !== membership.projectId || node.kind !== "file") {
+			return null;
+		}
+
+		return await ctx.db
+			.query("files_yjs_snapshots")
+			.withIndex("by_workspace_project_file_sequence", (q) =>
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("nodeId", args.nodeId),
+			)
+			.order("desc")
+			.first();
+	},
+});
+
+export const update_snapshots = internalMutation({
+	args: {
+		userId: v.id("users"),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		nodeId: v.id("files_nodes"),
+		_errors: v.optional(
+			v.object({
+				message: v.literal("Failed to update the file snapshots"),
+			}),
+		),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const cleanScheduleLocksPromise = ctx.db
+			.query("files_yjs_snapshot_schedules")
+			.withIndex("by_file", (q) => q.eq("nodeId", args.nodeId))
+			.collect()
+			.then((scheduleLocks) =>
+				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("files_yjs_snapshot_schedules", schedule._id))),
+			);
+
+		try {
+			const now = Date.now();
+
+			const file = await ctx.db.get("files_nodes", args.nodeId);
+			if (
+				!file ||
+				file.workspaceId !== args.workspaceId ||
+				file.projectId !== args.projectId ||
+				!file.markdownContentId
+			) {
+				throw should_never_happen("file not found", {
+					nodeId: args.nodeId,
+					file: file,
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					markdownContentId: file?.markdownContentId,
+				});
+			}
+
+			// Load latest snapshot
+			const yjsSnapshotData = await ctx.db
+				.query("files_yjs_snapshots")
+				.withIndex("by_workspace_project_file_sequence", (q) =>
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+				)
+				.order("desc")
+				.first();
+
+			if (!yjsSnapshotData) {
+				throw should_never_happen(
+					"yjs_snapshot_data or last_sequence_data are null.\n" + //
+						"The job should start only if the last sequence exists and is greater than 0\n" + //
+						"and only if the yjs snapshot data already exists, the snapshot data should\n" + //
+						"be created with the file",
+				);
+			}
+
+			// Fetch updates since snapshot up to uptoSeq
+			const updateDataList = await ctx.db
+				.query("files_yjs_updates")
+				.withIndex("by_workspace_project_file_sequence", (q) =>
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+				)
+				.order("asc")
+				.collect();
+
+			const lastUpdate = updateDataList.at(-1);
+			const sequence = lastUpdate ? lastUpdate.sequence : yjsSnapshotData.sequence;
+
+			// merge last snapshot update with all incremental updates into a single update blob
+			const snapshotUpdate = yjs_merge_updates_to_array_buffer([
+				new Uint8Array(yjsSnapshotData.snapshotUpdate),
+				...updateDataList.map((u) => new Uint8Array(u.update)),
+			]);
+
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshotUpdate);
+			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+
+			if (markdown._nay) {
+				return markdown;
+			}
+
+			const dbWriteResult = Result_all(
+				await Promise.all([
+					// Write new snapshot row (append-only)
+					ctx.db.patch("files_yjs_snapshots", yjsSnapshotData._id, {
+						sequence,
+						snapshotUpdate: snapshotUpdate,
+						updatedBy: "system",
+						updatedAt: now,
+					}),
+
+					// Prune compacted updates
+					...updateDataList.map((updateData) => ctx.db.delete("files_yjs_updates", updateData._id)),
+
+					ctx.db.patch("files_markdown_content", file.markdownContentId, {
+						content: markdown._yay,
+						yjsSequence: sequence,
+						updatedBy: "system",
+						updatedAt: now,
+					}),
+
+					db_upsert_file_chunks(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						nodeId: args.nodeId,
+						yjsSequence: sequence,
+						markdownContent: markdown._yay,
+					}),
+
+					store_version_snapshot(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						nodeId: args.nodeId,
+						content: markdown._yay,
+						createdBy: args.userId,
+					}),
+				]),
+			);
+
+			if (dbWriteResult._nay) {
+				const message = "Failed to update the file snapshots" satisfies NonNullable<
+					(typeof args)["_errors"]
+				>["message"];
+				console.error(message, {
+					dbWriteResult,
+				});
+				return Result({
+					_nay: {
+						name: "nay",
+						message,
+					},
+				});
+			}
+
+			return Result({ _yay: null });
+		} finally {
+			await cleanScheduleLocksPromise;
+		}
+	},
+});
+
+async function yjs_increment_or_create_last_sequence(
+	ctx: MutationCtx,
+	args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> },
+) {
+	let lastSequenceData = await ctx.db
+		.query("files_yjs_docs_last_sequences")
+		.withIndex("by_workspace_project_file", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		)
+		.order("desc")
+		.first();
+
+	const newSequence = lastSequenceData ? lastSequenceData.lastSequence + 1 : 0;
+
+	// Update or create lastSequence tracking
+	if (lastSequenceData) {
+		await ctx.db.patch("files_yjs_docs_last_sequences", lastSequenceData._id, { lastSequence: newSequence });
+		lastSequenceData.lastSequence = newSequence;
+	} else {
+		const lastSequenceDataId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			lastSequence: 0,
+		});
+		lastSequenceData = (await ctx.db.get("files_yjs_docs_last_sequences", lastSequenceDataId))!;
+	}
+
+	return lastSequenceData;
+}
+
+export async function files_db_yjs_push_update(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: Id<"files_nodes">;
+		update: ArrayBuffer;
+		sessionId: string;
+		userId: Id<"users">;
+	},
+): Promise<
+	Result<
+		| { _yay: { newSequence: number } }
+		| {
+				_nay: {
+					message: "Rate limit exceeded";
+				};
+		  }
+	>
+> {
+	const now = Date.now();
+
+	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_yjs_push_update", key: args.userId });
+	if (rateLimit) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: rateLimit.message,
+			},
+		});
+	}
+
+	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+	});
+
+	await ctx.db.insert("files_yjs_updates", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+		sequence: newSequenceData.lastSequence,
+		update: args.update,
+		origin: {
+			type: "USER_EDIT",
+			sessionId: args.sessionId,
+		},
+		createdBy: args.userId,
+		createdAt: now,
+	});
+
+	const snapshotScheduleDelayMs =
+		newSequenceData.lastSequence > 0 && newSequenceData.lastSequence % 50 === 0 ? 0 : 30_000;
+
+	const schedules = await ctx.db
+		.query("files_yjs_snapshot_schedules")
+		.withIndex("by_file", (q) => q.eq("nodeId", args.nodeId))
+		.collect();
+
+	const scheduledId = await ctx.scheduler.runAfter(snapshotScheduleDelayMs, internal.files_nodes.update_snapshots, {
+		userId: args.userId,
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+	});
+
+	await Promise.all([
+		schedules[0]
+			? ctx.db.patch("files_yjs_snapshot_schedules", schedules[0]._id, { scheduledFunctionId: scheduledId })
+			: ctx.db.insert("files_yjs_snapshot_schedules", { nodeId: args.nodeId, scheduledFunctionId: scheduledId }),
+		...schedules.slice(1).map((schedule) => ctx.db.delete("files_yjs_snapshot_schedules", schedule._id)),
+	]);
+
+	return Result({ _yay: { newSequence: newSequenceData.lastSequence } });
+}
+
+export const yjs_push_update = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		update: v.bytes(),
+		sessionId: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			newSequence: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
+			if (!userAuth) {
+				return null;
+			}
+
+			return ctx.db.get("users", userAuth.id);
+		});
+		if (!user) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: user._id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (!file) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		if (file.kind !== "file") {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+		const billedUserId = billing_pick_billed_user_id({
+			userId: user._id,
+			workspace,
+		});
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("Billed user not found", {
+				userId: user._id,
+				workspaceId: workspace._id,
+				billedUserId,
+			});
+		}
+
+		const check = await billing_db_check_credits(ctx, {
+			userId: billedUser._id,
+			minimumRequiredCents: 1,
+		});
+		if (!check.hasCredits) {
+			return Result({
+				_nay: {
+					message: "Insufficient funds",
+				},
+			});
+		}
+
+		const pushResult = await files_db_yjs_push_update(ctx, {
+			workspaceId: file.workspaceId,
+			projectId: file.projectId,
+			nodeId: args.nodeId,
+			update: args.update,
+			sessionId: args.sessionId,
+			userId: user._id,
+		});
+		if (pushResult._nay) {
+			return pushResult;
+		}
+
+		await billing_ingest_events(ctx, {
+			billedUserEvents: [
+				{
+					billedUser,
+					event: billing_event({
+						name: "file_save",
+						externalCustomerId: billedUser._id,
+						externalMemberId: user._id,
+						externalId: composite_id(
+							"billing",
+							"file_save",
+							billedUser._id,
+							user._id,
+							membership.workspaceId,
+							membership.projectId,
+							args.nodeId,
+							pushResult._yay.newSequence,
+						),
+						metadata: {
+							amount: 1,
+							actorUserId: user._id,
+							billedUserId: billedUser._id,
+							workspaceId: file.workspaceId,
+							projectId: file.projectId,
+							nodeId: args.nodeId,
+							yjsSequence: String(pushResult._yay.newSequence),
+						},
+					}),
+				},
+			],
+		});
+
+		return pushResult;
+	},
+});
+
+export const yjs_get_incremental_updates = query({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.union(
+		v.object({
+			updates: v.array(doc(app_convex_schema, "files_yjs_updates")),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			throw convex_error({ message: "Unauthenticated" });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (!node || node.workspaceId !== membership.workspaceId || node.projectId !== membership.projectId || node.kind !== "file") {
+			return null;
+		}
+
+		const updates = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_workspace_project_file_sequence", (q) =>
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("nodeId", args.nodeId),
+			)
+			.order("desc")
+			.collect();
+
+		if (updates.length === 0) {
+			return null;
+		}
+
+		return { updates };
+	},
+});
+
+async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
+	// Create snapshot entry
+	const snapshotId = await ctx.db.insert("files_snapshots", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+		createdBy: args.createdBy,
+		archivedAt: -1,
+	});
+
+	// Create content entry
+	await ctx.db.insert("files_snapshots_contents", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		snapshotId: snapshotId,
+		content: args.content,
+		nodeId: args.nodeId,
+	});
+
+	return snapshotId;
+}
+
+export const restore_snapshot = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		snapshotId: v.id("files_snapshots"),
+		sessionId: v.string(),
+		currentMarkdownContent: v.string(),
+		_errors: v.optional(
+			v.object({
+				message: v.literal("Failed to restore file"),
+			}),
+		),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await workspaces_db_get_membership_for_user(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const [snapshotContent, file] = await Promise.all([
+			do_get_file_snapshot_content(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				snapshotId: args.snapshotId,
+			}),
+			ctx.db.get("files_nodes", args.nodeId).then((file) => {
+				if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+					return null;
+				}
+
+				return file;
+			}),
+		]);
+
+		if (!snapshotContent || !file || !file.markdownContentId) {
+			const msg = "Not found";
+			console.error(
+				should_never_happen(msg, {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: args.nodeId,
+					snapshotContentNotFound: !snapshotContent,
+					fileNotFound: !file,
+					markdownContentIdNotFound: !file?.markdownContentId,
+				}),
+			);
+			return Result({
+				_nay: {
+					name: "nay",
+					message: msg,
+				},
+			});
+		}
+
+		if (!file.yjsLastSequenceId) {
+			throw should_never_happen("file.yjsLastSequenceId is not set", {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				yjsLastSequenceId: file.yjsLastSequenceId,
+			});
+		}
+
+		const userDoc = await ctx.db.get("users", userAuth.id);
+		if (!userDoc) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+		const billedUserId = billing_pick_billed_user_id({
+			userId: userAuth.id,
+			workspace,
+		});
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("Billed user not found", {
+				userId: userAuth.id,
+				workspaceId: workspace._id,
+				billedUserId,
+			});
+		}
+
+		const check = await billing_db_check_credits(ctx, {
+			userId: billedUser._id,
+			minimumRequiredCents: 1,
+		});
+		if (!check.hasCredits) {
+			return Result({
+				_nay: {
+					message: "Insufficient funds",
+				},
+			});
+		}
+
+		const now = Date.now();
+		const createdBy = userAuth.id;
+		const updatedBy = userAuth.name;
+
+		// Restoring snapshots can be destructive and we defensively store
+		// the current state as a backup snapshot
+		// so the user can revert to it if needed.
+		const [, , , restoredYjsSequence] = await Promise.all([
+			// Store current state as a backup snapshot
+			store_version_snapshot(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				content: args.currentMarkdownContent,
+				createdBy: createdBy,
+			}),
+
+			// Store the restored content as a new snapshot
+			store_version_snapshot(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				content: snapshotContent.content,
+				createdBy: createdBy,
+			}),
+
+			ctx.db.patch("files_nodes", file._id, {
+				updatedBy: updatedBy,
+				updatedAt: now,
+			}),
+
+			write_markdown_to_yjs_sync(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				userId: userAuth.id,
+				nodeId: args.nodeId,
+				markdownContent: snapshotContent.content,
+				sessionId: args.sessionId,
+				snapshotId: args.snapshotId,
+			}),
+		]);
+
+		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId);
+		if (!yjsLastSequenceDoc) {
+			throw should_never_happen("yjsLastSequenceDoc is not valorized", {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				yjsLastSequenceId: file.yjsLastSequenceId,
+				yjsLastSequenceDoc,
+			});
+		}
+
+		const restoreFileResult = Result_all(
+			await Promise.all([
+				ctx.db.patch("files_markdown_content", file.markdownContentId, {
+					content: snapshotContent.content,
+					yjsSequence: yjsLastSequenceDoc.lastSequence,
+					updatedBy: updatedBy,
+					updatedAt: now,
+				}),
+				db_upsert_file_chunks(ctx, {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: args.nodeId,
+					yjsSequence: yjsLastSequenceDoc.lastSequence,
+					markdownContent: snapshotContent.content,
+				}),
+			]),
+		);
+
+		if (restoreFileResult._nay) {
+			const message = "Failed to restore file" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+			console.error(message, {
+				restoreFileResult,
+			});
+			return Result({
+				_nay: {
+					name: "nay",
+					message,
+				},
+			});
+		}
+
+		if (restoredYjsSequence !== null) {
+			await billing_ingest_events(ctx, {
+				billedUserEvents: [
+					{
+						billedUser,
+						event: billing_event({
+							name: "file_save",
+							externalCustomerId: billedUser._id,
+							externalMemberId: userAuth.id,
+							externalId: composite_id(
+								"billing",
+								"file_save",
+								billedUser._id,
+								userAuth.id,
+								membership.workspaceId,
+								membership.projectId,
+								args.nodeId,
+								restoredYjsSequence,
+							),
+							metadata: {
+								amount: 1,
+								actorUserId: userAuth.id,
+								billedUserId: billedUser._id,
+								workspaceId: membership.workspaceId,
+								projectId: membership.projectId,
+								nodeId: args.nodeId,
+								yjsSequence: String(restoredYjsSequence),
+							},
+						}),
+					},
+				],
+			});
+		}
+
+		return Result({
+			_yay: null,
+		});
+	},
+});
+
+/**
+ * Internal mutation to cleanup old snapshots based on retention rules.
+ * Runs daily at 5AM UTC via cron job.
+ *
+ * Retention rules:
+ * - Older than 30 days: keep only the last snapshot for each week
+ * - Older than 7 days (but <= 30 days): keep only the last snapshot for each day
+ * - Older than 1 day (but <= 7 days): keep only the last snapshot each hour
+ * - <= 1 day old: keep all snapshots
+ */
+export const cleanup_old_snapshots = internalMutation({
+	args: {},
+	handler: async (ctx) => {
+		const now = Date.now();
+		const timestamp60DaysAgo = now - 60 * 24 * 60 * 60 * 1000;
+
+		const latestSnapshotNodeIdWithTimeSlot = new Set<string>();
+		const deletePromises: Array<Promise<any>> = [];
+
+		const snapshotsToScanCursor = ctx.db
+			.query("files_snapshots")
+			.withIndex("by_creation_time", (q) => q.gte("_creationTime", timestamp60DaysAgo))
+			.order("desc");
+
+		for await (const snapshot of snapshotsToScanCursor) {
+			const age = now - snapshot._creationTime;
+			let keepSnapshot = false;
+
+			// If the snapshot is less than 1 day old, keep it
+			if (age <= date_MS_DAY) {
+				keepSnapshot = true;
+			} else {
+				// If the snapshot is older than 1 day, we need to determine the time slot it belongs to
+				let bucketTimestamp: number;
+
+				if (age > date_MS_DAYS_30) {
+					bucketTimestamp = date_get_week_start_timestamp(snapshot._creationTime);
+				} else if (age > date_MS_WEEK) {
+					bucketTimestamp = date_get_day_start_timestamp(snapshot._creationTime);
+				} else {
+					bucketTimestamp = date_get_hour_start_timestamp(snapshot._creationTime);
+				}
+
+				// If this is the first snapshot for this time slot, it means it's the latest
+				// therefore we keep it
+				const snapshotTimeSlotKey = `${snapshot.nodeId}::${bucketTimestamp}`;
+				if (!latestSnapshotNodeIdWithTimeSlot.has(snapshotTimeSlotKey)) {
+					latestSnapshotNodeIdWithTimeSlot.add(snapshotTimeSlotKey);
+					keepSnapshot = true;
+				}
+			}
+
+			if (!keepSnapshot) {
+				deletePromises.push(
+					// TODO: If we save the content id in the snapshot doc we can use the more efficient .get
+					ctx.db
+						.query("files_snapshots_contents")
+						.withIndex("by_workspace_project_fileSnapshot", (q) =>
+							q
+								.eq("workspaceId", snapshot.workspaceId)
+								.eq("projectId", snapshot.projectId)
+								.eq("snapshotId", snapshot._id),
+						)
+						.first()
+						.then((content) => content && ctx.db.delete("files_snapshots_contents", content._id)),
+					ctx.db.delete("files_snapshots", snapshot._id),
+				);
+			}
+		}
+
+		await Promise.all(deletePromises);
+
+		return null;
+	},
+});
+
+export function files_http_routes(router: RouterForConvexModules) {
+	return {
+		...((/* iife */ path = "/api/files/contextual-prompt" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							prompt: z.string(),
+							option: z.string().optional(),
+							command: z.string().optional(),
+							context: z
+								.object({
+									beforeSelection: z.string(),
+									selection: z.string(),
+									afterSelection: z.string(),
+								})
+								.optional(),
+							previous: z
+								.object({
+									prompt: z.string(),
+									response: z.object({
+										type: z.enum(["insert", "replace", "other"]).optional(),
+										text: z.string(),
+									}),
+								})
+								.optional(),
+							membershipId: z.string(),
+							requestId: z.string(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							try {
+								const body = await server_request_json_parse_and_validate(request, bodyValidator);
+								if (body._nay) {
+									return {
+										status: 400,
+										body: body._nay,
+									} as const;
+								}
+
+								const { prompt, option, command, context, previous, membershipId, requestId } = body._yay;
+
+								if (!prompt || typeof prompt !== "string") {
+									return {
+										status: 400,
+										body: {
+											message: "Invalid prompt",
+										},
+									} as const;
+								}
+
+								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
+									userAuth ? ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null,
+								);
+								if (!user) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+
+								const membership = await ctx.runQuery(api.workspaces.get_membership, { membershipId });
+								if (!membership || membership.userId !== user._id) {
+									return {
+										status: 403,
+										body: {
+											message: "Unauthorized",
+										},
+									} as const;
+								}
+
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_inline_http",
+									key: user._id,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
+								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+									userId: user._id,
+									workspaceId: membership.workspaceId,
+									minimumRequiredCents: 1,
+								});
+								if (!creditCheck.hasCredits) {
+									return {
+										status: 402,
+										body: {
+											message: "Insufficient funds",
+										},
+									} as const;
+								}
+								const billedUser = creditCheck.billedUser;
+								if (!billedUser) {
+									throw should_never_happen("Workspace credit check did not return billed user", {
+										userId: user._id,
+										workspaceId: membership.workspaceId,
+									});
+								}
+
+								// Use the Liveblocks contextual shape when editor context is present; the inline popover path
+								// omits context and consumes the streaming response below.
+								let systemPrompt = "";
+								let userPrompt = "";
+
+								if (context) {
+									systemPrompt =
+										"You are an AI writing assistant for a rich text editor. " +
+										"Return only the text that should be inserted or used as the replacement. " +
+										"Use Markdown formatting when appropriate.";
+									userPrompt = [
+										`Instruction: ${prompt}`,
+										`Before selection:\n${context.beforeSelection || "(empty)"}`,
+										`Selected text:\n${context.selection || "(empty)"}`,
+										`After selection:\n${context.afterSelection || "(empty)"}`,
+										previous
+											? `Previous instruction:\n${previous.prompt}\n\nPrevious response:\n${previous.response.text}`
+											: null,
+									]
+										.filter((value) => value !== null)
+										.join("\n\n");
+								} else {
+									switch (option) {
+										case "continue":
+											systemPrompt =
+												"You are an AI writing assistant that continues existing text based on context from prior text. " +
+												"Give more weight/priority to the later characters than the beginning ones. " +
+												"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = prompt;
+											break;
+										case "improve":
+											systemPrompt =
+												"You are an AI writing assistant that improves existing text. " +
+												"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "shorter":
+											systemPrompt =
+												"You are an AI writing assistant that shortens existing text. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "longer":
+											systemPrompt =
+												"You are an AI writing assistant that lengthens existing text. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "fix":
+											systemPrompt =
+												"You are an AI writing assistant that fixes grammar and spelling errors in existing text. " +
+												"Limit your response to no more than 200 characters, but make sure to construct complete sentences. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `The existing text is: ${prompt}`;
+											break;
+										case "zap":
+											systemPrompt =
+												"You are an AI writing assistant that generates text based on a prompt. " +
+												"You take an input from the user and a command for manipulating the text. " +
+												"Use Markdown formatting when appropriate.";
+											userPrompt = `For this text: ${prompt}. You have to respect the command: ${command}`;
+											break;
+										default:
+											systemPrompt =
+												"You are an AI writing assistant. Help with the given text based on the user's needs.";
+											userPrompt = command ? `${command}\n\nText: ${prompt}` : `Continue this text:\n\n${prompt}`;
+									}
+								}
+
+								if (context) {
+									const result = await generateText({
+										model: openai(files_INLINE_AI_MODEL_ID),
+										system: systemPrompt,
+										messages: [
+											{
+												role: "user",
+												content: userPrompt,
+											},
+										],
+										temperature: 0.7,
+										maxOutputTokens: 500,
+										abortSignal: request.signal,
+									});
+
+									await files_ingest_inline_ai_usage_event(ctx, {
+										actorUserId: user._id,
+										billedUser,
+										workspaceId: membership.workspaceId,
+										projectId: membership.projectId,
+										requestId,
+										inputTokens: result.totalUsage.inputTokens ?? 0,
+										outputTokens: result.totalUsage.outputTokens ?? 0,
+									});
+
+									return {
+										status: 200,
+										body: {
+											type: context.selection.trim() ? "replace" : "insert",
+											text: result.text,
+										},
+									} as const;
+								}
+
+								// Generate streaming completion using AI SDK v5 UI message stream response
+								const result = streamText({
+									model: openai(files_INLINE_AI_MODEL_ID),
+									system: systemPrompt,
+									messages: [
+										{
+											role: "user",
+											content: userPrompt,
+										},
+									],
+									temperature: 0.7,
+									maxOutputTokens: 500,
+									experimental_transform: smoothStream({
+										delayInMs: 100,
+									}),
+									abortSignal: request.signal,
+									onFinish: async ({ totalUsage }) => {
+										await files_ingest_inline_ai_usage_event(ctx, {
+											actorUserId: user._id,
+											billedUser,
+											workspaceId: membership.workspaceId,
+											projectId: membership.projectId,
+											requestId,
+											inputTokens: totalUsage.inputTokens ?? 0,
+											outputTokens: totalUsage.outputTokens ?? 0,
+										});
+									},
+								});
+
+								return {
+									status: 200,
+									body: result,
+								} as const;
+							} catch (error: unknown) {
+								console.error("AI generation error:", error);
+								return {
+									status: 500,
+									body: {
+										message: error instanceof Error ? error.message : "Internal server error",
+									},
+								} as const;
+							}
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+
+								if (result.status === 200 && "toUIMessageStreamResponse" in result.body) {
+									return result.body.toUIMessageStreamResponse({
+										onError: (error) => {
+											console.error("AI generation error:", error);
+											return error instanceof Error ? error.message : String(error);
+										},
+									});
+								}
+
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+	};
+}

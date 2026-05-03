@@ -6,7 +6,7 @@
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"app-map.md",
-		"pages.md",
+		"files.md",
 		"known-hazards.md",
 		"snippets.md",
 	]);
@@ -15,12 +15,12 @@
 		return state.appPlaywriterHarness?.page || state.page || page;
 	}
 
-	async function pages() {
-		const browserPages = context.pages();
+	async function tabs() {
+		const browserTabs = context.pages();
 		const rows = [];
 
-		for (let index = 0; index < browserPages.length; index += 1) {
-			const browserPage = browserPages[index];
+		for (let index = 0; index < browserTabs.length; index += 1) {
+			const browserPage = browserTabs[index];
 			let title = "";
 
 			try {
@@ -43,8 +43,8 @@
 	}
 
 	async function bindOpenTab({ urlIncludes, exactUrl } = {}) {
-		const browserPages = context.pages();
-		const match = browserPages.find((browserPage) => {
+		const browserTabs = context.pages();
+		const match = browserTabs.find((browserPage) => {
 			const url = browserPage.url();
 			if (exactUrl) return url === exactUrl;
 			if (urlIncludes) return url.includes(urlIncludes);
@@ -52,7 +52,7 @@
 		});
 
 		if (!match) {
-			const available = browserPages.map((browserPage, index) => ({
+			const available = browserTabs.map((browserPage, index) => ({
 				index,
 				url: browserPage.url(),
 			}));
@@ -332,7 +332,7 @@
 		page: state.appPlaywriterHarness?.page || state.t3ChatHarness?.page || state.page || page,
 		boundUrl: state.appPlaywriterHarness?.boundUrl || state.t3ChatHarness?.boundUrl,
 		observations: state.appPlaywriterHarness?.observations || state.t3ChatHarness?.observations || [],
-		pages,
+		tabs,
 		bindOpenTab,
 		observe,
 		latestLogs,

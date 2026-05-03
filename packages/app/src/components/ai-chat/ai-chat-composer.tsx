@@ -42,10 +42,10 @@ import {
 } from "@/components/my-search-select.tsx";
 import { cn, forward_ref } from "@/lib/utils.ts";
 import {
-	pages_get_tiptap_shared_extensions,
-	pages_tiptap_empty_doc_json,
-	pages_tiptap_markdown_to_json,
-} from "@/lib/pages.ts";
+	files_get_tiptap_shared_extensions,
+	files_tiptap_empty_doc_json,
+	files_tiptap_markdown_to_json,
+} from "@/lib/files.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
@@ -158,7 +158,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			Paragraph,
 			Text,
 			AiChatComposer_HardBreakMarkdown,
-			pages_get_tiptap_shared_extensions().markdown,
+			files_get_tiptap_shared_extensions().markdown,
 			Placeholder.configure({
 				placeholder,
 			}),
@@ -171,14 +171,14 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 				injectCSS: false,
 				extensions,
 				content: ((/* iife */) => {
-					const result = pages_tiptap_markdown_to_json({
+					const result = files_tiptap_markdown_to_json({
 						markdown: "",
 						extensions,
 					});
 
 					if (result._nay) {
 						console.error("[AiChatComposer] Error while setting initial empty content", result._nay);
-						return pages_tiptap_empty_doc_json();
+						return files_tiptap_empty_doc_json();
 					}
 
 					return result._yay;
@@ -307,7 +307,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 		setComposerText("");
 
 		if (currentEditor) {
-			const json = pages_tiptap_markdown_to_json({
+			const json = files_tiptap_markdown_to_json({
 				markdown: "",
 				extensions,
 			});
@@ -358,7 +358,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			return;
 		}
 
-		const json = pages_tiptap_markdown_to_json({
+		const json = files_tiptap_markdown_to_json({
 			markdown: initialValue,
 			extensions,
 			replaceNewLineToBr: true,

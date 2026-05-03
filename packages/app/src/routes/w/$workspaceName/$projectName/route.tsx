@@ -11,12 +11,6 @@ import { cn, should_never_happen } from "@/lib/utils.ts";
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
 
-const Route = createFileRoute("/w/$workspaceName/$projectName")({
-	component: RouteTenantWorkspaceProjectLayout,
-});
-
-export { Route };
-
 function RouteTenantWorkspaceProjectLayout() {
 	const params = Route.useParams();
 	const { workspaceName, projectName } = params;
@@ -28,46 +22,49 @@ function RouteTenantWorkspaceProjectLayout() {
 	const membershipId = membership?._id ?? "";
 	const convex = useConvex();
 
-	const homePage = useQuery(app_convex_api.ai_docs_temp.get_home_page, membership ? { membershipId: membership._id } : "skip");
-	const canCreateHomePageRef = useRef(true);
+	const homeFile = useQuery(
+		app_convex_api.files_nodes.get_home_file,
+		membership ? { membershipId: membership._id } : "skip",
+	);
+	const canCreateHomeFileRef = useRef(true);
 
-	const pagesHomeIdForMembership = useAppGlobalStore((s) => s.pages_home_id_by_membership_id[membershipId] ?? "");
+	const homeFileIdForMembership = useAppGlobalStore((s) => s.files_home_id_by_membership_id[membershipId] ?? "");
 
 	useEffect(() => {
-		canCreateHomePageRef.current = true;
+		canCreateHomeFileRef.current = true;
 	}, [membershipId]);
 
 	useEffect(() => {
-		if (membership == null || homePage === undefined) {
+		if (membership == null || homeFile === undefined) {
 			return;
 		}
 
-		if (homePage) {
-			useAppGlobalStore.actions.setPagesHomeIdForMembershipId(membership._id, homePage.page._id);
+		if (homeFile) {
+			useAppGlobalStore.actions.setDrivesHomeIdForMembershipId(membership._id, homeFile.file._id);
 			return;
 		}
 
-		if (!canCreateHomePageRef.current) {
+		if (!canCreateHomeFileRef.current) {
 			return;
 		}
 
-		canCreateHomePageRef.current = false;
+		canCreateHomeFileRef.current = false;
 
 		convex
-			.mutation(app_convex_api.ai_docs_temp.create_home_page, { membershipId: membership._id })
+			.mutation(app_convex_api.files_nodes.create_home_file, { membershipId: membership._id })
 			.then((result) => {
 				if (result._nay) {
-					console.error("[TenantWorkspaceProjectLayout.create_home_page] Failed to create home page", {
+					console.error("[TenantWorkspaceProjectLayout.create_home_file] Failed to create home file", {
 						result,
 					});
 					return;
 				}
-				useAppGlobalStore.actions.setPagesHomeIdForMembershipId(membership._id, result._yay.pageId);
+				useAppGlobalStore.actions.setDrivesHomeIdForMembershipId(membership._id, result._yay.nodeId);
 			})
 			.catch((error: unknown) => {
-				should_never_happen("Error while initializing the home page", { error });
+				should_never_happen("Error while initializing the home file", { error });
 			});
-	}, [convex, homePage, membership]);
+	}, [convex, homeFile, membership]);
 
 	if (membership === undefined) {
 		return <div>Loading workspace…</div>;
@@ -77,7 +74,7 @@ function RouteTenantWorkspaceProjectLayout() {
 		return <div>You do not have access to this workspace/project.</div>;
 	}
 
-	if (!pagesHomeIdForMembership) {
+	if (!homeFileIdForMembership) {
 		return <div>Preparing workspace…</div>;
 	}
 
@@ -102,3 +99,9 @@ function RouteTenantWorkspaceProjectLayout() {
 		</AppTenantProvider>
 	);
 }
+
+const Route = createFileRoute("/w/$workspaceName/$projectName")({
+	component: RouteTenantWorkspaceProjectLayout,
+});
+
+export { Route };

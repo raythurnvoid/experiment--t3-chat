@@ -4,8 +4,8 @@ export type AppElementId =
 	| "app_main_header_content"
 	| "app_tiptap_hoisting_container"
 	| "app_monaco_hoisting_container"
-	| "app_page_editor_sidebar_tabs_comments"
-	| "app_page_editor_sidebar_tabs_agent";
+	| "app_file_editor_sidebar_tabs_comments"
+	| "app_file_editor_sidebar_tabs_agent";
 
 /**
  * Global class names defined in app.css that can be used across components.

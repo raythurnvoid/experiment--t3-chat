@@ -1,0 +1,325 @@
+@layer components {
+	/* #region root */
+	.FileEditorDiff {
+		display: flex;
+		flex-direction: column;
+
+		height: 100%;
+	}
+	/* #endregion root */
+
+	/* #region toolbar */
+	.FileEditorDiffToolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: relative;
+		z-index: 1;
+	}
+
+	.FileEditorDiffToolbar-scrollable-area {
+		gap: 4px;
+
+		flex-direction: row;
+		align-items: center;
+		display: flex;
+
+		padding: 4px 18px;
+
+		overflow-x: auto;
+		overflow-y: hidden;
+		contain: content;
+
+		scrollbar-width: initial;
+
+		min-width: 0;
+	}
+
+	.FileEditorDiffToolbar-button {
+		gap: 4px;
+	}
+
+	.FileEditorDiffToolbar-button-accept-all {
+		&:not(:disabled) {
+			color: var(--color-green-11);
+
+			&:hover,
+			&:active {
+				color: var(--color-green-12);
+			}
+		}
+	}
+
+	.FileEditorDiffToolbar-button-accept-all-and-save {
+		&:not(:disabled) {
+			color: var(--color-green-10);
+
+			&:hover,
+			&:active {
+				color: var(--color-green-12);
+			}
+		}
+	}
+
+	.FileEditorDiffToolbar-button-discard-all {
+		&:not(:disabled) {
+			color: var(--color-red-10);
+
+			&:hover,
+			&:active {
+				color: var(--color-red-12);
+			}
+		}
+	}
+
+	.FileEditorDiffToolbar-icon {
+		width: 20px;
+		height: 20px;
+	}
+	/* #endregion toolbar */
+
+	/* #region top sticky floating container */
+	.FileEditorDiffTopStickyFloatingContainer {
+		position: sticky;
+		top: calc(44px + var(--app-scrollbar-w) + 6px);
+		z-index: 1;
+
+		display: grid;
+		contain: size layout style;
+	}
+	/* #endregion top sticky floating container */
+
+	/* #region editor */
+	.FileEditorDiff-editor {
+		height: 100%;
+		flex: 1;
+		contain: strict;
+
+		anchor-name: var(--FileEditorDiff-anchor-name);
+	}
+
+	.FileEditorDiff-editor .monaco-editor,
+	.FileEditorDiff-editor .monaco-diff-editor,
+	.FileEditorDiff-editor .monaco-editor-container {
+		height: 100%;
+	}
+	/* #endregion editor */
+
+	/* #region sidebar */
+	.FileEditorDiffSidebar {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.FileEditorDiffSidebar-toolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.FileEditorDiffSidebar-toolbar-scrollable-area {
+		min-height: 44px;
+		max-height: calc(44px + var(--app-scrollbar-w));
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 4px 16px;
+
+		overflow: auto hidden;
+		contain: content;
+
+		min-width: 0;
+	}
+
+	.FileEditorDiffSidebar-tabs-list {
+		width: 500px;
+	}
+
+	.FileEditorDiffSidebar-tabs-panels {
+		flex: 1;
+	}
+
+	.FileEditorDiffSidebar-panel {
+		padding: 16px;
+	}
+
+	.FileEditorDiffSidebar-agent {
+		color: var(--color-fg-07);
+	}
+
+	.FileEditorDiffSidebar-background {
+		/*
+		Set a container to support position absolute and
+		ensure that the arbitrarily large height of the background
+		does not affect the ancestor's scrollable area size.
+		*/
+		contain: layout style size;
+		z-index: -1;
+
+		&:before {
+			content: "";
+			display: block;
+			position: absolute;
+
+			/*
+			Negative inset matches the padding of the container while
+			allows the element to grow vertically.
+			*/
+			inset: 0 0 auto 0;
+
+			background-color: var(--color-base-1-04);
+			pointer-events: none;
+
+			/*
+			Arbitrarily large height to ensure the background 
+			spans across the whole file height.
+			*/
+			height: 9999px;
+		}
+	}
+	/* #endregion sidebar */
+
+	/* #region comments sidebar */
+	.FileEditorPlainTextCommentsSidebar {
+		height: 100%;
+
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 12px;
+
+		overflow: auto;
+		contain: content;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-filter {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-filter-mode {
+		display: flex;
+		gap: 4px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+	/* #endregion comments sidebar */
+
+	/* #region widgets */
+	/* File Editor Diff Widget Accept Discard - Widget container */
+	.FileEditorDiffWidgetAcceptDiscard {
+		position: absolute;
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		white-space: nowrap;
+		z-index: 10;
+
+		/*
+		Save monaco a bit of work by specifying a fixed size
+		so it doesn't have to measure the widget's size in the render path.
+		*/
+		width: 52px;
+		height: 24px;
+	}
+
+	/* Accept and discard button base styles */
+	.FileEditorDiffWidgetAcceptDiscard-accept-button,
+	.FileEditorDiffWidgetAcceptDiscard-discard-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+
+		width: 24px;
+		height: 24px;
+		border: 1px solid var(--color-base-alt-1-10);
+		border-radius: 4px;
+
+		cursor: pointer;
+		background: var(--color-base-alt-1-04);
+		color: var(--color-fg-11);
+
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.25);
+
+		&:hover {
+			background: var(--color-base-alt-1-05);
+		}
+
+		&:active {
+			background: var(--color-base-alt-1-06);
+		}
+	}
+
+	/* Accept button variant */
+	.FileEditorDiffWidgetAcceptDiscard-accept-button {
+		color: var(--color-green-10);
+
+		&:hover {
+			background: var(--color-green-02);
+			border-color: var(--color-green-04);
+			color: var(--color-green-10);
+		}
+
+		&:active {
+			background: var(--color-green-03);
+			border-color: var(--color-green-05);
+			color: var(--color-green-10);
+		}
+	}
+
+	/* Discard button variant */
+	.FileEditorDiffWidgetAcceptDiscard-discard-button {
+		color: var(--color-red-10);
+
+		&:hover {
+			background: var(--color-red-02);
+			border-color: var(--color-red-04);
+			color: var(--color-red-10);
+		}
+
+		&:active {
+			background: var(--color-red-03);
+			border-color: var(--color-red-05);
+			color: var(--color-red-10);
+		}
+	}
+
+	.FileEditorDiffWidgetAcceptDiscard-icon {
+		width: 16px;
+		height: 16px;
+
+		pointer-events: none;
+	}
+	/* #endregion widgets */
+}

@@ -3,7 +3,7 @@ import { components } from "./_generated/api.js";
 import { v } from "convex/values";
 import { Presence } from "@convex-dev/presence";
 import { convex_error } from "../server/convex-utils.ts";
-import { pages_db_reschedule_pending_edit_cleanup_for_user } from "../server/pages.ts";
+import { files_db_reschedule_pending_update_cleanup_for_user } from "../server/files.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.js";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
@@ -63,7 +63,7 @@ export const heartbeat = mutation({
 				// Use reconnecting as a signal to restore any disconnect-driven short cleanup
 				// window back to the normal long-lived pending-edit TTL for the user's scopes.
 				...memberships.map((membership) =>
-					pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+					files_db_reschedule_pending_update_cleanup_for_user(ctx, {
 						workspaceId: membership.workspaceId,
 						projectId: membership.projectId,
 						userId: userAuth.id,
@@ -281,7 +281,7 @@ export const disconnect = mutation({
 
 		await Promise.all(
 			memberships.map(async (membership) => {
-				await pages_db_reschedule_pending_edit_cleanup_for_user(ctx, {
+				await files_db_reschedule_pending_update_cleanup_for_user(ctx, {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
 					userId: userAuth.id,

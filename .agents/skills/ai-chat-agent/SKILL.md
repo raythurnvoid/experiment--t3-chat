@@ -1,6 +1,6 @@
 ---
 name: ai-chat-agent
-description: Practical guide for the current app chat agent implementation (AI SDK 5 + Convex + page tools). Use this when implementing or modifying the chat agent, its HTTP routes, thread persistence, tool behavior, page-tool semantics, pending-edit integration, or OpenCode-inspired edit/search flows.
+description: Practical guide for the current app chat agent implementation (AI SDK 5 + Convex + files file tools). Use this when implementing or modifying the chat agent, its HTTP routes, thread persistence, tool behavior, files-file semantics, pending-update integration, or OpenCode-inspired edit/search flows.
 ---
 
 # Source Of Truth Files
@@ -9,36 +9,24 @@ Primary:
 
 - `../../../packages/app/convex/ai_chat.ts`
 - `../../../packages/app/server/server-ai-tools.ts`
-- `../../../packages/app/convex/ai_docs_temp.ts`
-- `../../../packages/app/server/server-ai-tools.test.ts`
-- `../pages-agent-pending-edits/SKILL.md`
-
-Related:
-
-- `../../../packages/app/convex/pages_pending_edits.ts`
-- `../../../packages/app/server/pages-markdown-chunking-mastra.ts`
-- `../../../references-submodules/opencode/packages/opencode/src/tool/edit.ts`
+- `../../../packages/app/convex/files_nodes.ts`
+- `../../../packages/app/convex/files_pending_updates.ts`
+- `../../../packages/app/server/files.ts`
+- `../../../packages/app/server/files-markdown-chunking-mastra.ts`
+- `../files-agent-pending-updates/SKILL.md`
 
 # Architecture Overview
 
-The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI messages, persists threads/messages in Convex, and exposes a small server-side toolbelt focused on pages.
+The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI messages, persists threads/messages in Convex, and exposes a small server-side toolbelt focused on Markdown files in the project files.
 
 - Main request path: `POST /api/chat`
 - Secondary title path: `POST /api/v1/runs/stream` for `assistant_id = "system/thread_title"`
 - Main runtime owner: `ai_chat_http_routes` in `../../../packages/app/convex/ai_chat.ts`
 - Thread/message storage: Convex tables for `ai_chat_threads` and `ai_chat_threads_messages_aisdk_5`
 - Tool implementation: `../../../packages/app/server/server-ai-tools.ts`
-- Page data/query layer: `../../../packages/app/convex/ai_docs_temp.ts`
+- Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`
 
-Current runtime details:
-
-- Main model comes from the validated request `body.model`, restricted to `ai_chat_MODEL_IDS` (`gpt-5.4-nano`, `gpt-5.4-mini`).
-- Main system prompt is `ai_chat_SYSTEM_PROMPT`; Ask mode appends `ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX` and removes write tools from `activeTools`.
-- Tool choice: `auto`
-- Max tool/model steps per response: `stepCountIs(10)`
-- Main response max output: `maxOutputTokens: 2000`
-- Title model: `openai("gpt-4.1-nano")`
-- Thread runtime field: `"aisdk_5"`
+The files is a DB-backed file/folder model. Folders are tree nodes only. Files are Markdown documents with Yjs snapshots/updates, markdown content, markdown chunks, and plain-text chunks. AI tools operate on file nodes only.
 
 # Main Request Flow
 
@@ -48,300 +36,130 @@ For `POST /api/chat`:
 2. Load the membership row, derive the agent configuration, and validate UI messages against the full tool registry.
 3. Resolve the authenticated or anonymous app user.
 4. Resolve the existing thread or keep the optimistic client thread id for a new thread.
-5. Rate-limit the HTTP request by user id before any LLM work.
-6. Run the billing credit gate before any LLM work or new-thread creation. A denial returns HTTP `402` with `{ message: "Insufficient funds" }`; a rate-limit denial returns HTTP `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
-7. Create the thread if needed and store the optimistic client thread id on the persisted thread.
-8. Resolve the effective parent message id for persistence.
-9. Persist incoming user messages before generation.
-10. Convert stored UI messages to model messages.
-11. Run `streamText(...)` with the current tools and `activeTools`.
-12. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
-13. Persist the assistant response in `onFinish`.
-14. If the thread has no title yet, generate a short title and persist it.
-15. With non-zero captured token usage and no stream error, emit an `ai_usage` billing event with the actual captured token cost.
+5. Rate-limit and credit-gate the request before LLM work.
+6. Create the thread if needed and persist incoming user messages before generation.
+7. Convert stored UI messages to model messages.
+8. Run `streamText(...)` with the current tools and `activeTools`.
+9. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
+10. Persist the assistant response in `onFinish`.
+11. If the thread has no title yet, generate a short title and persist it.
+12. Emit `ai_usage` billing events from captured token usage after successful generation.
 
 Non-obvious runtime details:
 
+- Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`.
 - User messages are persisted before generation so they survive aborts/stopped generations.
-- Assistant responses are persisted in `onFinish` under the resolved persisted parent message.
-- New threads store the optimistic `clientGeneratedThreadId` so the frontend can dedupe before the SSE mapping arrives.
-- Thread/page access is scoped by a `membershipId` row that determines the effective workspace/project scope.
+- Thread/file access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
-- Ask mode keeps the full tool registry for UI-message validation, but removes `write_page` and `edit_page` from `activeTools` before generation.
-- Billing checks are start-time gates only. They do not reserve spend, and successful runs emit `billing_event("ai_usage")` after AI SDK reports actual token usage. Anonymous usage routes through the synthetic billing snapshot instead of Polar.
-
-# Thread Access And Error Contract
-
-For thread-scoped Convex functions in `../../../packages/app/convex/ai_chat.ts`, keep membership checks, arg order, and error strings aligned.
-
-Use this pattern:
-
-1. Put `membershipId` first in `args`.
-2. Load `user`.
-3. Load `membership` from `membershipId`.
-4. If `membership` is missing, return `"Unauthorized"` (or `null` for nullable queries).
-5. Normalize/load the requested thread/message resource.
-6. If the resource id is invalid or the row is missing, return `"Not found"` (or `null` for nullable queries).
-7. Compare `thread.workspaceId` / `thread.projectId` directly to the membership row.
-8. If the workspace/project on the resource does not match the membership row, return `"Unauthorized"`.
-
-Important details:
-
-- Prefer direct `workspaceId` / `projectId` comparisons over a small helper for thread-scoped access checks.
-- Keep `thread_*` mutation handlers on `v_result(...)` when they have recoverable access/not-found failures.
-- Keep `thread_*` queries nullable when the current API already uses `null` for inaccessible or missing resources.
-- When `POST /api/chat` calls a Result-returning thread mutation, bubble `_nay.message` to the HTTP response/logging path instead of throwing.
-- Prefer inlining small `messages: [...]` / `.map(...)` payloads into `ctx.runMutation(...)` calls rather than introducing tiny temporary variables only to avoid repetition.
 
 # Current Toolbelt
 
 The main tool object currently contains:
 
-- `read_page`
-- `list_pages`
-- `glob_pages`
-- `grep_pages`
-- `text_search_pages`
-- `write_page`
-- `edit_page`
+- `read_file`
+- `list_files`
+- `glob_files`
+- `grep_files`
+- `text_search_files`
+- `write_file`
+- `edit_file`
 - `web_search`
 
 Important limitation:
 
-- These tools operate on DB-backed pages, not repo files on disk.
+- These tools operate on DB-backed files files, not repo files on disk.
 - The agent does not currently have a general shell/filesystem tool in this chat runtime.
-- `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace page tools first when the answer should come from the user's docs.
+- `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace file tools first when the answer should come from the user's files.
 
 # Tool Semantics
 
-## `read_page`
+## `read_file`
 
-Purpose:
-
-- Read one page by absolute path and return numbered lines.
-
-Important behavior:
-
-- Path must be absolute.
+- Reads one Markdown file by absolute path and returns numbered lines.
+- Path must be absolute and resolve to a file node.
 - Output uses line numbers like `00001| ...`.
-- The tool reads through `get_page_last_available_markdown_content_by_path`.
-- That query overlays the current user's pending `modified` branch if a pending edit exists.
-- Missing pages may return sibling suggestions from the parent directory.
+- Reads through `internal.files_nodes.get_file_last_available_markdown_content_by_path`.
+- That query overlays the current user's pending `unstaged` branch if a pending update exists.
+- Missing files may return sibling suggestions from the parent directory.
 
-Consequence:
+## `list_files`
 
-- Follow-up reads can see uncommitted pending edits for the current user.
-- `read_page` is not a pure "committed markdown only" read.
-
-## `list_pages`
-
-Purpose:
-
-- Render a tree of descendant page paths under an absolute root path.
-
-Important behavior:
-
-- Uses `internal.ai_docs_temp.list_pages`.
+- Lists descendant folders and files under an absolute root path.
+- Uses `internal.files_nodes.list_files`.
 - Supports `ignore`, `maxDepth`, and `limit`.
-- Renders directories only, with truncation markers for depth-limited branches.
+- Folder items are marked with a trailing `/` in tool output.
 
-## `glob_pages`
+## `glob_files`
 
-Purpose:
-
-- Find page paths by name/pattern matching.
-
-Important behavior:
-
-- Uses `list_pages` under the hood with include filtering.
+- Finds file/folder paths by glob pattern.
+- Uses `list_files` under the hood with include filtering.
 - Returns paths sorted by newest `updatedAt` first.
-- Best for filename/path discovery, not text search.
 
-## `grep_pages`
+## `grep_files`
 
-Purpose:
-
-- Regex search over pages.
-
-Important behavior:
-
-- Searches `pageName + "\n" + content`, not just markdown body.
+- Regex search over file names plus committed/pending Markdown content.
 - Uses JavaScript `RegExp`.
+- Searches only file nodes; folder nodes are traversed for discovery but not read.
 - Produces grouped line-oriented output similar to ripgrep.
-- Sorts grouped results by page update time, newest first.
-- Traversal still depends on `list_pages` scoping, `maxDepth`, `include`, and `limit`.
 
-## `text_search_pages`
+## `text_search_files`
 
-Purpose:
-
-- Fast search over page content using Convex's plain-text chunk index.
-
-Important behavior:
-
+- Fast search over file content using Convex's plain-text chunk index.
 - Search happens on markdown-derived plain text chunks, not raw markdown syntax.
-- Returned snippets are markdown chunks with `lineStart` / `lineEnd` plus 0-based source `startIndex` / `endIndex` character ranges (`endIndex` exclusive).
-- The query first uses Convex full-text search over `pages_plain_text_chunks`.
-- Current behavior then exact-filters candidate chunks with `plainTextChunk.includes(query)`.
-- Current behavior dedupes by `markdownChunkId`.
-- Result ordering still starts from Convex search candidates, but only exact chunk matches survive.
+- Returned snippets are markdown chunks with line ranges and source character ranges.
+- Current behavior exact-filters candidate chunks with `plainTextChunk.includes(query)` and dedupes by markdown chunk id.
 
-Consequence:
+## `write_file`
 
-- This tool is now closer to exact chunk string matching than general fuzzy search.
-- It can still miss matches that cross chunk boundaries.
-- It returns chunk hits, not page-level deduped results.
+- Proposes full Markdown file content for review.
+- Does not directly commit file content.
+- Creates the file path if it does not exist; intermediate path segments become folders.
+- Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
+- Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal`.
 
-## `web_search`
+## `edit_file`
 
-Purpose:
-
-- Search the public web for current facts, documentation, release notes, news, and other non-workspace information.
-
-Important behavior:
-
-- Uses the server-side Exa integration and requires `EXA_API_KEY` on the server.
-- Returns compact titles, URLs, and highlight snippets, not long raw pages.
-- The system prompt tells the model to summarize highlights in its own words and to continue from workspace context if web search is unavailable.
-- Prefer page tools first when the answer should come from the user's workspace/docs.
-
-## `write_page`
-
-Purpose:
-
-- Propose full-page content for review.
-
-Important behavior:
-
-- Does not directly commit page content.
-- Creates a page if the path does not exist.
-- Stores the proposed result in `pages_pending_edits` via `upsert_pages_pending_edit_updates`.
-- Returns diff metadata for the client review UI.
-- Prefers editing existing pages unless the user explicitly asks for a new page.
-- Paths are extensionless by default unless the user explicitly provides an extension.
-
-Consequence:
-
-- "Write" in chat means "create/update pending review state", not "save live page immediately".
-
-## `edit_page`
-
-Purpose:
-
-- Propose targeted search-and-replace edits for review.
-
-Important behavior:
-
-- Requires an existing page.
-- Uses an OpenCode-inspired replacer pipeline in `replace_once_or_all(...)`.
+- Proposes targeted search-and-replace edits for review.
+- Requires an existing file node.
+- Uses the OpenCode-inspired replacer pipeline in `replace_once_or_all(...)`.
 - Default behavior replaces one unique occurrence and fails if the match is missing or ambiguous.
 - `replaceAll` is opt-in.
-- Stores the modified markdown in `pages_pending_edits`, not the live page.
-- If the user copies text from `read_page`, they must not include line-number prefixes.
+- Stores modified Markdown in `files_pending_updates`, not live file content.
+- If the user copies text from `read_file`, they must not include line-number prefixes.
 
-Current active replacer pipeline:
-
-1. Exact literal match
-2. Line-trimmed match
-3. Block-anchor match
-4. Whitespace-normalized match
-5. Indentation-flexible match
-6. Escape-normalized match
-
-Important nuance:
-
-- Some optional OpenCode-style replacers are intentionally disabled.
-- Keep the current active pipeline unless there is a clear reason to change edit semantics.
-
-# Pending Edit Integration
-
-This is the most important non-obvious system behavior.
+# Pending Update Integration
 
 Reads:
 
-- `read_page` goes through `get_page_last_available_markdown_content_by_path`.
-- That query checks `pages_pending_edits` for `(workspaceId, projectId, userId, pageId)`.
-- If a pending row exists, it reconstructs markdown from `modifiedBranchYjsUpdate` and returns that instead of committed markdown.
+- `read_file` goes through `get_file_last_available_markdown_content_by_path`.
+- That query checks `files_pending_updates` for `(workspaceId, projectId, userId, nodeId)`.
+- If a pending row exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
 
 Writes:
 
-- `write_page` and `edit_page` call `api.pages_pending_edits.upsert_pages_pending_edit_updates`.
-- They update the current user's pending `modified` branch.
-- The client is expected to open a diff/review UI before the live page changes.
-
-If you are changing page-agent behavior, also read:
-
-- `../pages-agent-pending-edits/SKILL.md`
-
-# OpenCode Lineage
-
-Many tool semantics intentionally mirror OpenCode.
-
-Current OpenCode-inspired areas in `../../../packages/app/server/server-ai-tools.ts`:
-
-- `read_page`
-- `list_pages`
-- `glob_pages`
-- `grep_pages`
-- `write_page`
-- `edit_page`
-- The edit replacer pipeline
-
-Practical guidance:
-
-- Preserve OpenCode-like expectations for `edit_page`: unique-match defaults, replace-all opt-in, human-review-first workflow.
-- Preserve OpenCode-like expectations for read/list/glob/grep output formatting unless there is a product reason to change them.
-- If you change semantics, update the tool description text and tests together.
+- `write_file` and `edit_file` call internal mutations in `files_pending_updates`.
+- They update the current user's pending `unstaged` branch.
+- The client is expected to open the diff/review UI before live file content changes.
 
 # Current Invariants
 
-1. The agent operates on DB pages, not repo files.
-2. Page reads are user-scoped because pending overlays are user-scoped.
-3. `write_page` and `edit_page` create pending review state, not direct committed writes.
-4. `text_search_pages` is chunk-based and currently exact-filters candidate chunks by `includes(query)`.
-5. `grep_pages` is the precise regex tool; `glob_pages` is the path-discovery tool.
-6. `read_page` output is line-numbered and those prefixes are not valid `edit_page.oldString` input.
-7. The tool set is intentionally small and page-centric.
+1. The agent operates on DB files files, not repo files.
+2. Folder nodes are not readable/writable by AI file tools.
+3. File reads are user-scoped because pending overlays are user-scoped.
+4. `write_file` and `edit_file` create pending review state, not direct committed writes.
+5. `text_search_files` is chunk-based and exact-filters candidate chunks by `includes(query)`.
+6. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
+7. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 8. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
-9. New thread dedupe depends on persisting the optimistic client thread id.
-10. Thread titles are generated lazily and can also be streamed from the secondary title endpoint.
-11. Chat requests are rate-limited and credit-gated before generation, then emit `ai_usage` only from captured token usage after generation. Anonymous users use the synthetic Free snapshot and local anonymous billing ingest.
-
-# Change Playbooks
-
-## Add a new tool
-
-1. Implement the tool in `../../../packages/app/server/server-ai-tools.ts`.
-2. Register it in the `tools` object in `../../../packages/app/convex/ai_chat.ts`.
-3. Add or update tests in `../../../packages/app/server/server-ai-tools.test.ts`.
-4. Update this skill if the new tool changes agent behavior in a non-obvious way.
-
-## Change page read behavior
-
-1. Re-check `get_page_last_available_markdown_content_by_path`.
-2. Decide whether reads should still see the current user's pending overlay.
-3. Update the pending-edits skill if that invariant changes.
-
-## Change write/edit behavior
-
-1. Preserve human-in-the-loop review unless the product intentionally changes that workflow.
-2. Re-check pending-edit mutations and page-diff UI expectations.
-3. Update both this skill and `../pages-agent-pending-edits/SKILL.md` if the workflow changes.
-
-## Change search behavior
-
-1. Decide whether the tool is path search, regex line search, or chunk/plain-text search.
-2. Keep `grep_pages` and `text_search_pages` semantics clearly distinct.
-3. Re-check chunk-level vs page-level dedupe and exact-match behavior.
 
 # Verification Checklist
 
 - New threads still dedupe optimistic entries correctly.
 - User messages persist even if generation is aborted mid-stream.
 - Assistant responses persist under the correct parent message.
-- `read_page` still sees the current user's pending modified branch when one exists.
-- `write_page` and `edit_page` still create pending review state instead of silently saving live content.
-- `edit_page` still fails on missing/ambiguous single-match replacements.
-- `grep_pages` still behaves like regex/line search.
-- `text_search_pages` still behaves like chunk search and returns markdown fragment context.
+- `read_file` sees the current user's pending unstaged branch when one exists.
+- `write_file` and `edit_file` create pending review state instead of silently saving live content.
+- `edit_file` fails on missing/ambiguous single-match replacements.
+- `grep_files` behaves like regex/line search.
+- `text_search_files` behaves like chunk search and returns markdown fragment context.
 - Tool descriptions stay aligned with actual behavior.

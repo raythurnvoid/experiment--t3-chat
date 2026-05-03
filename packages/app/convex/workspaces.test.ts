@@ -113,34 +113,35 @@ async function workspaces_test_seed_project_scoped_rows(
 		tag: string;
 	},
 ) {
-	const pageId = await ctx.db.insert("pages", {
+	const nodeId = await ctx.db.insert("files_nodes", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: `/${args.tag}-page`,
 		name: `${args.tag}-page`,
+		kind: "file",
 		version: 0,
 		parentId: "root",
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 	});
-	const markdownContentId = await ctx.db.insert("pages_markdown_content", {
+	const markdownContentId = await ctx.db.insert("files_markdown_content", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		pageId: pageId,
+		nodeId: nodeId,
 		content: `# ${args.tag}`,
 		isArchived: false,
 		yjsSequence: 0,
 		updatedAt: Date.now(),
 		updatedBy: args.userId,
 	});
-	const yjsLastSequenceId = await ctx.db.insert("pages_yjs_docs_last_sequences", {
+	const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		pageId: pageId,
+		nodeId: nodeId,
 		lastSequence: 0,
 	});
-	await ctx.db.patch("pages", pageId, {
+	await ctx.db.patch("files_nodes", nodeId, {
 		markdownContentId,
 		yjsLastSequenceId,
 	});
@@ -2281,23 +2282,25 @@ describe("access_control", () => {
 
 		const result = await t.run(async (ctx) => {
 			const now = Date.now();
-			const [pageId, otherPageId] = await Promise.all([
-				ctx.db.insert("pages", {
+			const [nodeId, otherNodeId] = await Promise.all([
+				ctx.db.insert("files_nodes", {
 					workspaceId: String(workspace.workspaceId),
 					projectId: String(workspace.defaultProjectId),
 					path: "/access-user-grant",
 					name: "access-user-grant",
+					kind: "file",
 					version: 0,
 					parentId: "root",
 					createdBy: ownerId,
 					updatedBy: String(ownerId),
 					updatedAt: now,
 				}),
-				ctx.db.insert("pages", {
+				ctx.db.insert("files_nodes", {
 					workspaceId: String(workspace.workspaceId),
 					projectId: String(workspace.defaultProjectId),
 					path: "/access-public-other",
 					name: "access-public-other",
+					kind: "file",
 					version: 0,
 					parentId: "root",
 					createdBy: ownerId,
@@ -2310,8 +2313,8 @@ describe("access_control", () => {
 				access_control_db_ensure_user_permission_grant(ctx, {
 					workspaceId: workspace.workspaceId,
 					projectId: workspace.defaultProjectId,
-					resourceKind: "page",
-					resourceId: String(pageId),
+					resourceKind: "file",
+					resourceId: String(nodeId),
 					userId: grantedUserId,
 					permission: "asset.write",
 					now,
@@ -2319,8 +2322,8 @@ describe("access_control", () => {
 				access_control_db_ensure_public_permission_grant(ctx, {
 					workspaceId: workspace.workspaceId,
 					projectId: workspace.defaultProjectId,
-					resourceKind: "page",
-					resourceId: String(pageId),
+					resourceKind: "file",
+					resourceId: String(nodeId),
 					permission: "asset.read",
 					now,
 				}),
@@ -2331,8 +2334,8 @@ describe("access_control", () => {
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
-				resourceKind: "page",
-				resourceId: String(pageId),
+				resourceKind: "file",
+				resourceId: String(nodeId),
 				permission: "asset.write",
 				userId: grantedUserId,
 			});
@@ -2341,8 +2344,8 @@ describe("access_control", () => {
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
-				resourceKind: "page",
-				resourceId: String(pageId),
+				resourceKind: "file",
+				resourceId: String(nodeId),
 				permission: "asset.write",
 				userId: otherUserId,
 			});
@@ -2351,8 +2354,8 @@ describe("access_control", () => {
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
-				resourceKind: "page",
-				resourceId: String(pageId),
+				resourceKind: "file",
+				resourceId: String(nodeId),
 				permission: "asset.read",
 				allowPublic: true,
 			});
@@ -2361,8 +2364,8 @@ describe("access_control", () => {
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
-				resourceKind: "page",
-				resourceId: String(pageId),
+				resourceKind: "file",
+				resourceId: String(nodeId),
 				permission: "asset.write",
 				allowPublic: true,
 			});
@@ -2371,8 +2374,8 @@ describe("access_control", () => {
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
-				resourceKind: "page",
-				resourceId: String(otherPageId),
+				resourceKind: "file",
+				resourceId: String(otherNodeId),
 				permission: "asset.read",
 				allowPublic: true,
 			});
@@ -2381,8 +2384,8 @@ describe("access_control", () => {
 				projectId: workspace.defaultProjectId,
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
-				resourceKind: "page",
-				resourceId: String(pageId),
+				resourceKind: "file",
+				resourceId: String(nodeId),
 				permission: "asset.read",
 			});
 
@@ -3043,7 +3046,7 @@ describe("delete_project", () => {
 				workspaceQuota,
 				roleAssignments,
 				permissionGrants,
-				pages,
+				files,
 				markdownContent,
 				aiThreads,
 				aiMessages,
@@ -3066,8 +3069,8 @@ describe("delete_project", () => {
 						q.eq("workspaceId", created._yay!.workspaceId).eq("projectId", extraProject._yay!.projectId),
 					)
 					.collect(),
-				ctx.db.query("pages").collect(),
-				ctx.db.query("pages_markdown_content").collect(),
+				ctx.db.query("files_nodes").collect(),
+				ctx.db.query("files_markdown_content").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
@@ -3088,7 +3091,7 @@ describe("delete_project", () => {
 				workspaceQuota,
 				roleAssignments,
 				permissionGrants,
-				pages: pages.filter(
+				files: files.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(extraProject._yay!.projectId),
@@ -3121,7 +3124,7 @@ describe("delete_project", () => {
 		expect(after_delete.notifications).toHaveLength(0);
 		expect(after_delete.requests).toHaveLength(1);
 		expect(after_delete.requests[0]?.scope).toBe("project");
-		expect(after_delete.pages).toHaveLength(1);
+		expect(after_delete.files).toHaveLength(1);
 		expect(after_delete.markdownContent).toHaveLength(1);
 		expect(after_delete.aiThreads).toHaveLength(1);
 		expect(after_delete.aiMessages).toHaveLength(1);
@@ -3286,7 +3289,7 @@ describe("delete_workspace", () => {
 				roleAssignments,
 				permissionGrants,
 				requests,
-				pages,
+				files,
 				aiThreads,
 				aiMessages,
 				chatMessages,
@@ -3313,7 +3316,7 @@ describe("delete_workspace", () => {
 					)
 					.collect(),
 				ctx.db.query("data_deletion_requests").collect(),
-				ctx.db.query("pages").collect(),
+				ctx.db.query("files_nodes").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
@@ -3334,7 +3337,7 @@ describe("delete_workspace", () => {
 				roleAssignments,
 				permissionGrants,
 				requests: requests.filter((row) => row.workspaceId === created._yay!.workspaceId),
-				pages: pages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+				files: files.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 				aiThreads: aiThreads.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 				aiMessages: aiMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 				chatMessages: chatMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
@@ -3351,7 +3354,7 @@ describe("delete_workspace", () => {
 		expect(after_delete.notifications).toHaveLength(0);
 		expect(after_delete.requests).toHaveLength(1);
 		expect(after_delete.requests[0]?.scope).toBe("workspace");
-		expect(after_delete.pages).toHaveLength(2);
+		expect(after_delete.files).toHaveLength(2);
 		expect(after_delete.aiThreads).toHaveLength(2);
 		expect(after_delete.aiMessages).toHaveLength(2);
 		expect(after_delete.chatMessages).toHaveLength(2);
@@ -3378,7 +3381,7 @@ describe("delete_workspace", () => {
 		expect(purgeRequestsAfter).toHaveLength(0);
 
 		const after_purge = await t.run(async (ctx) => {
-			const [workspace, defaultProject, secondaryProject, workspaceQuotas, pages] = await Promise.all([
+			const [workspace, defaultProject, secondaryProject, workspaceQuotas, files] = await Promise.all([
 				ctx.db.get("workspaces", created._yay!.workspaceId),
 				ctx.db.get("workspaces_projects", created._yay!.defaultProjectId),
 				ctx.db.get("workspaces_projects", extraProject._yay!.projectId),
@@ -3386,21 +3389,21 @@ describe("delete_workspace", () => {
 					.query("quotas")
 					.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", created._yay!.workspaceId))
 					.collect(),
-				ctx.db.query("pages").collect(),
+				ctx.db.query("files_nodes").collect(),
 			]);
 			return {
 				workspace,
 				defaultProject,
 				secondaryProject,
 				workspaceQuotas,
-				pages: pages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+				files: files.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
 			};
 		});
 		expect(after_purge.workspace).toBeNull();
 		expect(after_purge.defaultProject).toBeNull();
 		expect(after_purge.secondaryProject).toBeNull();
 		expect(after_purge.workspaceQuotas).toHaveLength(0);
-		expect(after_purge.pages).toHaveLength(0);
+		expect(after_purge.files).toHaveLength(0);
 	});
 
 	test("queues a workspace-scope purge even when the workspace already has a queued project-scope purge", async () => {
@@ -3538,10 +3541,10 @@ describe("process_project_deletion_request", () => {
 		);
 
 		const afterPurge = await t.run(async (ctx) => {
-			const [requests, pages, markdownContent, aiThreads, aiMessages, chatMessages] = await Promise.all([
+			const [requests, files, markdownContent, aiThreads, aiMessages, chatMessages] = await Promise.all([
 				ctx.db.query("data_deletion_requests").collect(),
-				ctx.db.query("pages").collect(),
-				ctx.db.query("pages_markdown_content").collect(),
+				ctx.db.query("files_nodes").collect(),
+				ctx.db.query("files_markdown_content").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
@@ -3551,12 +3554,12 @@ describe("process_project_deletion_request", () => {
 				victimRequests: requests.filter(
 					(row) => row.workspaceId === created._yay!.workspaceId && row.projectId === victimProject._yay!.projectId,
 				),
-				controlPages: pages.filter(
+				controlPages: files.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(created._yay!.defaultProjectId),
 				),
-				victimPages: pages.filter(
+				victimPages: files.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(victimProject._yay!.projectId),

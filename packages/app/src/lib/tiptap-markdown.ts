@@ -1,6 +1,6 @@
 import { Editor } from "@tiptap/core";
 import type { JSONContent } from "@tiptap/core";
-import { pages_get_tiptap_shared_extensions } from "../../shared/pages.ts";
+import { files_get_tiptap_shared_extensions } from "../../shared/files.ts";
 
 /**
  * Converts TipTap JSON content to markdown string.
@@ -12,7 +12,7 @@ import { pages_get_tiptap_shared_extensions } from "../../shared/pages.ts";
  * @returns Markdown string representation of the content
  */
 export function tiptap_json_to_markdown(json: JSONContent): string {
-	const extensions = pages_get_tiptap_shared_extensions();
+	const extensions = files_get_tiptap_shared_extensions();
 	const editor = new Editor({
 		element: null, // Headless editor (no DOM)
 		content: json,

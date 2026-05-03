@@ -64,8 +64,8 @@ const AiChatWelcome = memo(function AiChatWelcome(props: AiChatWelcome_Props) {
 					},
 					{
 						title: "Summarize my docs",
-						label: "find key points across pages",
-						action: "Search through my pages and give me a summary of what's documented so far",
+						label: "find key points across files",
+						action: "Search through my files and give me a summary of what's documented so far",
 					},
 					{
 						title: "Help me write",
@@ -540,8 +540,8 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 			event.key === "ArrowDown" ||
 			event.key === "Home" ||
 			event.key === "End" ||
-			event.key === "PageUp" ||
-			event.key === "PageDown" ||
+			event.key === "FileUp" ||
+			event.key === "FileDown" ||
 			event.key === "e" ||
 			event.key === "Escape"
 		) {
@@ -684,7 +684,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						targetMessageEl = userMessageElements.at(0) ?? null;
 					} else if (event.key === "End") {
 						targetMessageEl = userMessageElements.at(-1) ?? null;
-					} else if (event.key === "PageUp") {
+					} else if (event.key === "FileUp") {
 						const scrollEl = scrollableContainer;
 						if (!scrollEl) {
 							break;
@@ -694,7 +694,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							userMessageElements.at(0) ??
 							null;
 						targetMessageEl = targetElement instanceof HTMLElement ? targetElement : null;
-					} else if (event.key === "PageDown") {
+					} else if (event.key === "FileDown") {
 						const scrollEl = scrollableContainer;
 						if (!scrollEl) {
 							break;

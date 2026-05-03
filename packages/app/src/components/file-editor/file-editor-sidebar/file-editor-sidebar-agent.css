@@ -1,0 +1,183 @@
+@layer components {
+	.FileEditorSidebarAgent {
+		display: flex;
+		flex-direction: column;
+
+		width: 100%;
+		/* 92px is the size of `FileEditorSidebar-toolbar`  and `FileEditorHeader` */
+		height: calc(100dvh - 92px);
+
+		position: sticky;
+		/* 44px is the size of `FileEditorSidebar-toolbar` */
+		top: 44px;
+
+		contain: strict;
+	}
+
+	.FileEditorSidebarAgent-chat-area {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+
+		contain: strict;
+	}
+	.FileEditorSidebarAgent-chat-area-panel {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+
+		contain: strict;
+
+		overflow: hidden auto;
+	}
+
+	/* #region header */
+	.FileEditorSidebarAgentHeader {
+		border-bottom: 1px solid var(--color-base-1-06);
+
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		contain: content;
+		overflow: auto hidden;
+	}
+	/* #endregion header */
+
+	/* #region header tabs */
+	.FileEditorSidebarAgentHeaderTabs {
+		flex: 1 0 auto;
+		min-width: max-content;
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 4px 0 4px 16px;
+	}
+
+	.FileEditorSidebarAgentHeaderTabs-tabs-draggable {
+		flex: 0 0 auto;
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.FileEditorSidebarAgentHeaderTabs-tab {
+		flex: 1 0 140px;
+		min-width: 140px;
+		max-width: 200px;
+		grid-template-columns: 32px minmax(0, 1fr) 32px;
+	}
+
+	.FileEditorSidebarAgentHeaderTabs-tab-handle {
+		grid-row: 1;
+		grid-column: 1;
+
+		cursor: grab;
+
+		flex-shrink: 0;
+
+		&:active {
+			cursor: grabbing;
+		}
+	}
+
+	.FileEditorSidebarAgentHeaderTabs-tab-primary-action {
+		grid-row: 1;
+		grid-column: 1/4;
+	}
+
+	.FileEditorSidebarAgentHeaderTabs-tab-title {
+		grid-row: 1;
+		grid-column: 2;
+
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FileEditorSidebarAgentHeaderTabs-tab-close {
+		grid-row: 1;
+		grid-column: 3;
+	}
+	/* #endregion header tabs */
+
+	/* #region header actions */
+	.FileEditorSidebarAgentHeaderActions {
+		height: 44px;
+		width: 92px;
+
+		contain: strict;
+
+		display: flex;
+		align-items: center;
+		gap: 4px;
+
+		flex-shrink: 0;
+
+		position: sticky;
+		right: 0;
+
+		background-color: var(--color-base-1-03);
+
+		padding: 4px 8px;
+	}
+	/* #endregion header actions */
+
+	/* #region thread picker */
+	.FileEditorSidebarAgentThreadPicker-popover-content {
+		max-width: 600px;
+	}
+	/* #endregion thread picker */
+
+	/* #region thread picker item */
+	.FileEditorSidebarAgentThreadPicker-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.FileEditorSidebarAgentThreadPicker-item-title {
+		flex: 1;
+		min-width: 0;
+
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FileEditorSidebarAgentThreadPicker-item-actions {
+		display: flex;
+		align-items: center;
+		margin-left: auto;
+	}
+
+	.FileEditorSidebarAgentThreadPicker-item-action.MyIconButton.MyButton {
+		width: 28px;
+		height: 28px;
+		padding: 4px;
+	}
+
+	.FileEditorSidebarAgentThreadPicker-item-action .MyIconButtonIcon {
+		width: 14px;
+		height: 14px;
+	}
+	/* #endregion thread picker item */
+
+	/* #region thread picker list */
+	.FileEditorSidebarAgentThreadPickerList-empty {
+		padding: 12px 16px;
+
+		color: var(--color-fg-06);
+
+		font-size: 0.875rem;
+		text-align: center;
+	}
+	/* #endregion thread picker list */
+}

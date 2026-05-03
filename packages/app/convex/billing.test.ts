@@ -601,7 +601,7 @@ describe("check_credits", () => {
 		});
 	});
 
-	test("denies a signed-in Free user at zero balance for chat and page save", async () => {
+	test("denies a signed-in Free user at zero balance for chat and file save", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		const { polarProductId } = await seed_free_product(t, { polarProductId: "prod_free_zero" });
@@ -611,7 +611,7 @@ describe("check_credits", () => {
 			userId,
 			minimumRequiredCents: 1,
 		});
-		const pageSaveResult = await t.run(async (ctx) =>
+		const fileSaveResult = await t.run(async (ctx) =>
 			billing_db_check_credits(ctx, {
 				userId,
 				minimumRequiredCents: 1,
@@ -621,7 +621,7 @@ describe("check_credits", () => {
 		expect(chatResult).toEqual({
 			hasCredits: false,
 		});
-		expect(pageSaveResult).toEqual({
+		expect(fileSaveResult).toEqual({
 			hasCredits: false,
 		});
 	});
@@ -3711,17 +3711,17 @@ describe("ingest_events", () => {
 			await t.action(internal.billing.ingest_events, {
 				events: [
 					{
-						name: "page_save",
+						name: "file_save",
 						externalCustomerId: billedUserId,
 						externalMemberId: actorUserId,
-						externalId: `page_save::${billedUserId}::${actorUserId}::workspace_1::project_1::page_1::1`,
+						externalId: `file_save::${billedUserId}::${actorUserId}::workspace_1::project_1::file_1::1`,
 						metadata: {
 							amount: 1,
 							actorUserId,
 							billedUserId,
 							workspaceId: "workspace_1",
 							projectId: "project_1",
-							pageId: "page_1",
+							nodeId: "file_1",
 							yjsSequence: "1",
 						},
 					},
@@ -3742,7 +3742,7 @@ describe("ingest_events", () => {
 					externalCustomerId: billedUserId,
 					externalMemberId: actorUserId,
 					metadata: expect.objectContaining({
-						name: "page_save",
+						name: "file_save",
 						actorUserId,
 						billedUserId,
 					}),
@@ -3848,16 +3848,16 @@ describe("ingest_events", () => {
 					{
 						billedUser: user,
 						event: billing_event({
-							name: "page_save",
+							name: "file_save",
 							externalCustomerId: userId,
-							externalId: "page_save::anonymous::1",
+							externalId: "file_save::anonymous::1",
 							metadata: {
 								amount: 1,
 								actorUserId: userId,
 								billedUserId: userId,
 								workspaceId: "workspace_1",
 								projectId: "project_1",
-								pageId: "page_1",
+								nodeId: "file_1",
 								yjsSequence: "1",
 							},
 						}),
@@ -4219,7 +4219,7 @@ describe("monthly credits engine via handle_polar_customer_state_update", () => 
 
 		// Period unchanged: no second grant ingest, and Polar dedupes the
 		// already-ingested `monthly_credit` event by its deterministic
-		// `externalId` if a webhook ever does drive another attempt.
+		// `externalId` if a webhook ever does files another attempt.
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 	});
 

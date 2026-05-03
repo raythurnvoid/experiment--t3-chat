@@ -1,0 +1,33 @@
+@layer components {
+	/* #region root */
+	.FileEditorRichTextToolsLinkSetter-trigger-button {
+		text-decoration: underline;
+		text-decoration-color: currentColor;
+		text-underline-offset: 4px;
+
+		&.FileEditorRichTextToolsLinkSetter-trigger-button-active {
+			color: var(--color-accent-06);
+		}
+	}
+
+	.FileEditorRichTextToolsLinkSetter-popover-content {
+		width: 240px;
+		padding: 0;
+	}
+	/* #endregion root */
+
+	/* #region form */
+	.FileEditorRichTextToolsLinkSetterForm {
+		display: flex;
+		gap: 4px;
+		padding: 4px;
+
+		align-items: center;
+	}
+
+	.FileEditorRichTextToolsLinkSetterForm-input {
+		flex: 1;
+		contain: style;
+	}
+	/* #endregion form */
+}

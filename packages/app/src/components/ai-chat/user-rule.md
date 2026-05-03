@@ -8,7 +8,7 @@ The format is:
 ...
 ```
 
-Always use **repo-relative paths with forward slashes**, e.g. `src/pages/Foo.tsx`
+Always use **repo-relative paths with forward slashes**, e.g. `src/files/Foo.tsx`
 
 # Editing workflow (before you change a file)
 

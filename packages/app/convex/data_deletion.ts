@@ -21,42 +21,42 @@ async function db_purge_workspace_project_content(
 
 	// --- collect ids (read everything first; see TODO on purge for large-tenant limits) ---
 
-	// pages_pending_edits (tenant docs + cleanup tasks + page ids used to locate `pages_yjs_snapshot_schedules` docs)
-	const pendingEditIds: Array<Id<"pages_pending_edits">> = [];
-	for await (const doc of ctx.db.query("pages_pending_edits")) {
+	// files_pending_updates (tenant docs + cleanup tasks + file ids used to locate `files_yjs_snapshot_schedules` docs)
+	const pendingUpdateIds: Array<Id<"files_pending_updates">> = [];
+	for await (const doc of ctx.db.query("files_pending_updates")) {
 		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
-			pendingEditIds.push(doc._id);
+			pendingUpdateIds.push(doc._id);
 		}
 	}
 
-	const pendingEditCleanupTaskIds: Array<Id<"pages_pending_edits_cleanup_tasks">> = [];
-	for (const pendingEditId of pendingEditIds) {
+	const pendingUpdateCleanupTaskIds: Array<Id<"files_pending_updates_cleanup_tasks">> = [];
+	for (const pendingUpdateId of pendingUpdateIds) {
 		const task = await ctx.db
-			.query("pages_pending_edits_cleanup_tasks")
-			.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", pendingEditId))
+			.query("files_pending_updates_cleanup_tasks")
+			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
 			.first();
 		if (task) {
-			pendingEditCleanupTaskIds.push(task._id);
+			pendingUpdateCleanupTaskIds.push(task._id);
 		}
 	}
 
-	const pageIds: Array<Id<"pages">> = [];
+	const nodeIds: Array<Id<"files_nodes">> = [];
 	for await (const page of ctx.db
-		.query("pages")
+		.query("files_nodes")
 		.withIndex("by_workspace_project_parent_name", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pageIds.push(page._id);
+		nodeIds.push(page._id);
 	}
 
-	const pagesYjsSnapshotScheduleIds: Array<Id<"pages_yjs_snapshot_schedules">> = [];
-	for (const pageId of pageIds) {
+	const filesYjsSnapshotScheduleIds: Array<Id<"files_yjs_snapshot_schedules">> = [];
+	for (const nodeId of nodeIds) {
 		const sched = await ctx.db
-			.query("pages_yjs_snapshot_schedules")
-			.withIndex("by_page", (q) => q.eq("pageId", pageId))
+			.query("files_yjs_snapshot_schedules")
+			.withIndex("by_file", (q) => q.eq("nodeId", nodeId))
 			.first();
 		if (sched) {
-			pagesYjsSnapshotScheduleIds.push(sched._id);
+			filesYjsSnapshotScheduleIds.push(sched._id);
 		}
 	}
 
@@ -86,126 +86,126 @@ async function db_purge_workspace_project_content(
 		chatMessagesIds.push(doc._id);
 	}
 
-	// pages_pending_edits_last_sequence_saved (full table scan; filter in memory)
-	const pagesPendingEditsLastSequenceSavedIds: Array<Id<"pages_pending_edits_last_sequence_saved">> = [];
-	for await (const doc of ctx.db.query("pages_pending_edits_last_sequence_saved")) {
+	// files_pending_updates_last_sequence_saved (full table scan; filter in memory)
+	const filesPendingUpdatesLastSequenceSavedIds: Array<Id<"files_pending_updates_last_sequence_saved">> = [];
+	for await (const doc of ctx.db.query("files_pending_updates_last_sequence_saved")) {
 		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
-			pagesPendingEditsLastSequenceSavedIds.push(doc._id);
+			filesPendingUpdatesLastSequenceSavedIds.push(doc._id);
 		}
 	}
 
-	// pages_plain_text_chunks
-	const pagesPlainTextChunksIds: Array<Id<"pages_plain_text_chunks">> = [];
+	// files_plain_text_chunks
+	const filesPlainTextChunksIds: Array<Id<"files_plain_text_chunks">> = [];
 	for await (const doc of ctx.db
-		.query("pages_plain_text_chunks")
-		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
+		.query("files_plain_text_chunks")
+		.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesPlainTextChunksIds.push(doc._id);
+		filesPlainTextChunksIds.push(doc._id);
 	}
 
-	// pages_markdown_chunks
-	const pagesMarkdownChunksIds: Array<Id<"pages_markdown_chunks">> = [];
+	// files_markdown_chunks
+	const filesMarkdownChunksIds: Array<Id<"files_markdown_chunks">> = [];
 	for await (const doc of ctx.db
-		.query("pages_markdown_chunks")
-		.withIndex("by_workspace_project_page_yjsSequence_chunkIndex", (q) =>
+		.query("files_markdown_chunks")
+		.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesMarkdownChunksIds.push(doc._id);
+		filesMarkdownChunksIds.push(doc._id);
 	}
 
-	// pages_yjs_snapshots
-	const pagesYjsSnapshotsIds: Array<Id<"pages_yjs_snapshots">> = [];
+	// files_yjs_snapshots
+	const filesYjsSnapshotsIds: Array<Id<"files_yjs_snapshots">> = [];
 	for await (const doc of ctx.db
-		.query("pages_yjs_snapshots")
-		.withIndex("by_workspace_project_page_sequence", (q) =>
+		.query("files_yjs_snapshots")
+		.withIndex("by_workspace_project_file_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesYjsSnapshotsIds.push(doc._id);
+		filesYjsSnapshotsIds.push(doc._id);
 	}
 
-	// pages_yjs_updates
-	const pagesYjsUpdatesIds: Array<Id<"pages_yjs_updates">> = [];
+	// files_yjs_updates
+	const filesYjsUpdatesIds: Array<Id<"files_yjs_updates">> = [];
 	for await (const doc of ctx.db
-		.query("pages_yjs_updates")
-		.withIndex("by_workspace_project_page_sequence", (q) =>
+		.query("files_yjs_updates")
+		.withIndex("by_workspace_project_file_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesYjsUpdatesIds.push(doc._id);
+		filesYjsUpdatesIds.push(doc._id);
 	}
 
-	// pages_yjs_docs_last_sequences
-	const pagesYjsDocsLastSequencesIds: Array<Id<"pages_yjs_docs_last_sequences">> = [];
+	// files_yjs_docs_last_sequences
+	const filesYjsDocsLastSequencesIds: Array<Id<"files_yjs_docs_last_sequences">> = [];
 	for await (const doc of ctx.db
-		.query("pages_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_page", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
-		pagesYjsDocsLastSequencesIds.push(doc._id);
+		.query("files_yjs_docs_last_sequences")
+		.withIndex("by_workspace_project_file", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		filesYjsDocsLastSequencesIds.push(doc._id);
 	}
 
-	// pages_snapshots_contents
-	const pagesSnapshotsContentsIds: Array<Id<"pages_snapshots_contents">> = [];
+	// files_snapshots_contents
+	const filesSnapshotsContentsIds: Array<Id<"files_snapshots_contents">> = [];
 	for await (const doc of ctx.db
-		.query("pages_snapshots_contents")
-		.withIndex("by_workspace_project_pageSnapshot", (q) =>
+		.query("files_snapshots_contents")
+		.withIndex("by_workspace_project_fileSnapshot", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesSnapshotsContentsIds.push(doc._id);
+		filesSnapshotsContentsIds.push(doc._id);
 	}
 
-	// pages_snapshots
-	const pagesSnapshotsIds: Array<Id<"pages_snapshots">> = [];
+	// files_snapshots
+	const filesSnapshotsIds: Array<Id<"files_snapshots">> = [];
 	for await (const doc of ctx.db
-		.query("pages_snapshots")
-		.withIndex("by_workspace_project_page_archivedAt", (q) =>
+		.query("files_snapshots")
+		.withIndex("by_workspace_project_file_archivedAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-		pagesSnapshotsIds.push(doc._id);
+		filesSnapshotsIds.push(doc._id);
 	}
 
-	// pages_markdown_content (full table scan)
-	const pagesMarkdownContentIds: Array<Id<"pages_markdown_content">> = [];
-	for await (const doc of ctx.db.query("pages_markdown_content")) {
+	// files_markdown_content (full table scan)
+	const filesMarkdownContentIds: Array<Id<"files_markdown_content">> = [];
+	for await (const doc of ctx.db.query("files_markdown_content")) {
 		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
-			pagesMarkdownContentIds.push(doc._id);
+			filesMarkdownContentIds.push(doc._id);
 		}
 	}
 
 	// --- delete (same dependency order as before) ---
 
-	// pages_pending_edits_cleanup_tasks
-	await Promise.all(pendingEditCleanupTaskIds.map((id) => ctx.db.delete("pages_pending_edits_cleanup_tasks", id)));
-	// pages_yjs_snapshot_schedules
-	await Promise.all(pagesYjsSnapshotScheduleIds.map((id) => ctx.db.delete("pages_yjs_snapshot_schedules", id)));
+	// files_pending_updates_cleanup_tasks
+	await Promise.all(pendingUpdateCleanupTaskIds.map((id) => ctx.db.delete("files_pending_updates_cleanup_tasks", id)));
+	// files_yjs_snapshot_schedules
+	await Promise.all(filesYjsSnapshotScheduleIds.map((id) => ctx.db.delete("files_yjs_snapshot_schedules", id)));
 	// ai_chat_threads_messages_aisdk_5
 	await Promise.all(aiChatThreadsMessagesAisdk5Ids.map((id) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", id)));
 	// ai_chat_threads
 	await Promise.all(aiChatThreadsIds.map((id) => ctx.db.delete("ai_chat_threads", id)));
 	// chat_messages
 	await Promise.all(chatMessagesIds.map((id) => ctx.db.delete("chat_messages", id)));
-	// pages_pending_edits_last_sequence_saved
+	// files_pending_updates_last_sequence_saved
 	await Promise.all(
-		pagesPendingEditsLastSequenceSavedIds.map((id) => ctx.db.delete("pages_pending_edits_last_sequence_saved", id)),
+		filesPendingUpdatesLastSequenceSavedIds.map((id) => ctx.db.delete("files_pending_updates_last_sequence_saved", id)),
 	);
-	// pages_pending_edits
-	await Promise.all(pendingEditIds.map((id) => ctx.db.delete("pages_pending_edits", id)));
-	// pages_plain_text_chunks
-	await Promise.all(pagesPlainTextChunksIds.map((id) => ctx.db.delete("pages_plain_text_chunks", id)));
-	// pages_markdown_chunks
-	await Promise.all(pagesMarkdownChunksIds.map((id) => ctx.db.delete("pages_markdown_chunks", id)));
-	// pages_yjs_snapshots
-	await Promise.all(pagesYjsSnapshotsIds.map((id) => ctx.db.delete("pages_yjs_snapshots", id)));
-	// pages_yjs_updates
-	await Promise.all(pagesYjsUpdatesIds.map((id) => ctx.db.delete("pages_yjs_updates", id)));
-	// pages_yjs_docs_last_sequences
-	await Promise.all(pagesYjsDocsLastSequencesIds.map((id) => ctx.db.delete("pages_yjs_docs_last_sequences", id)));
-	// pages_snapshots_contents
-	await Promise.all(pagesSnapshotsContentsIds.map((id) => ctx.db.delete("pages_snapshots_contents", id)));
-	// pages_snapshots
-	await Promise.all(pagesSnapshotsIds.map((id) => ctx.db.delete("pages_snapshots", id)));
-	// pages_markdown_content
-	await Promise.all(pagesMarkdownContentIds.map((id) => ctx.db.delete("pages_markdown_content", id)));
-	// pages
-	await Promise.all(pageIds.map((id) => ctx.db.delete("pages", id)));
+	// files_pending_updates
+	await Promise.all(pendingUpdateIds.map((id) => ctx.db.delete("files_pending_updates", id)));
+	// files_plain_text_chunks
+	await Promise.all(filesPlainTextChunksIds.map((id) => ctx.db.delete("files_plain_text_chunks", id)));
+	// files_markdown_chunks
+	await Promise.all(filesMarkdownChunksIds.map((id) => ctx.db.delete("files_markdown_chunks", id)));
+	// files_yjs_snapshots
+	await Promise.all(filesYjsSnapshotsIds.map((id) => ctx.db.delete("files_yjs_snapshots", id)));
+	// files_yjs_updates
+	await Promise.all(filesYjsUpdatesIds.map((id) => ctx.db.delete("files_yjs_updates", id)));
+	// files_yjs_docs_last_sequences
+	await Promise.all(filesYjsDocsLastSequencesIds.map((id) => ctx.db.delete("files_yjs_docs_last_sequences", id)));
+	// files_snapshots_contents
+	await Promise.all(filesSnapshotsContentsIds.map((id) => ctx.db.delete("files_snapshots_contents", id)));
+	// files_snapshots
+	await Promise.all(filesSnapshotsIds.map((id) => ctx.db.delete("files_snapshots", id)));
+	// files_markdown_content
+	await Promise.all(filesMarkdownContentIds.map((id) => ctx.db.delete("files_markdown_content", id)));
+	// files
+	await Promise.all(nodeIds.map((id) => ctx.db.delete("files_nodes", id)));
 }
 
 async function db_delete_data_deletion_requests(
@@ -426,7 +426,7 @@ async function db_finalize_deleted_user(
 		membershipsAll,
 		accessRoleAssignments,
 		anonymousAuthTokens,
-		pendingEdits,
+		pendingUpdates,
 		lastSequenceSaved,
 		billingUsageSnapshots,
 	] = await Promise.all([
@@ -443,11 +443,11 @@ async function db_finalize_deleted_user(
 			.withIndex("by_user", (q) => q.eq("userId", user._id))
 			.collect(),
 		ctx.db
-			.query("pages_pending_edits")
+			.query("files_pending_updates")
 			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
 			.collect(),
 		ctx.db
-			.query("pages_pending_edits_last_sequence_saved")
+			.query("files_pending_updates_last_sequence_saved")
 			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
 			.collect(),
 		ctx.db
@@ -456,12 +456,12 @@ async function db_finalize_deleted_user(
 			.collect(),
 	]);
 
-	const pendingEditCleanupTasks = (
+	const pendingUpdateCleanupTasks = (
 		await Promise.all(
-			pendingEdits.map((doc) =>
+			pendingUpdates.map((doc) =>
 				ctx.db
-					.query("pages_pending_edits_cleanup_tasks")
-					.withIndex("by_pendingEdit", (q) => q.eq("pendingEditId", doc._id))
+					.query("files_pending_updates_cleanup_tasks")
+					.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", doc._id))
 					.collect(),
 			),
 		)
@@ -480,9 +480,9 @@ async function db_finalize_deleted_user(
 		affectedWorkspaceIds.add(assignment.workspaceId);
 	}
 
-	await Promise.all(pendingEditCleanupTasks.map((doc) => ctx.db.delete("pages_pending_edits_cleanup_tasks", doc._id)));
-	await Promise.all(lastSequenceSaved.map((doc) => ctx.db.delete("pages_pending_edits_last_sequence_saved", doc._id)));
-	await Promise.all(pendingEdits.map((doc) => ctx.db.delete("pages_pending_edits", doc._id)));
+	await Promise.all(pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)));
+	await Promise.all(lastSequenceSaved.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)));
+	await Promise.all(pendingUpdates.map((doc) => ctx.db.delete("files_pending_updates", doc._id)));
 	await Promise.all(membershipsAll.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)));
 	await Promise.all(accessRoleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
 	await ctx.db

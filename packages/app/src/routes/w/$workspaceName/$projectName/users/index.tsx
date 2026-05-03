@@ -41,12 +41,6 @@ import {
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { compute_fallback_user_name } from "@/lib/utils.ts";
 
-const Route = createFileRoute("/w/$workspaceName/$projectName/users/")({
-	component: RouteUsers,
-});
-
-export { Route };
-
 // #region user list item
 type RouteUsersUserListItem_ClassNames =
 	| "RouteUsersUserListItem"
@@ -797,4 +791,9 @@ function RouteUsers() {
 	);
 }
 
+const Route = createFileRoute("/w/$workspaceName/$projectName/users/")({
+	component: RouteUsers,
+});
+
+export { Route };
 // #endregion root

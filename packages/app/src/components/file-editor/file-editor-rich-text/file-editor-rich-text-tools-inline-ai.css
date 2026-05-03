@@ -1,0 +1,151 @@
+@layer components {
+	.FileEditorRichTextToolsInlineAi-container {
+		width: 350px;
+	}
+
+	.FileEditorRichTextToolsInlineAiCompletionPreview-wrapper {
+		display: flex;
+		max-height: 400px;
+	}
+
+	.FileEditorRichTextToolsInlineAiCompletionPreview-content {
+		overflow-x: auto;
+		padding: 16px;
+		font-size: 0.875rem;
+		line-height: 1.5;
+		color: var(--color-fg-08);
+		flex: 1;
+
+		p {
+			margin: 0;
+		}
+
+		p + p {
+			margin-top: 0.5em;
+		}
+
+		h1,
+		h2,
+		h3,
+		h4,
+		h5,
+		h6 {
+			margin-top: 0;
+			margin-bottom: 0.5em;
+			font-weight: 600;
+		}
+
+		ul,
+		ol {
+			margin: 0;
+			padding-left: 1.5em;
+		}
+
+		code {
+			font-size: 0.875em;
+			padding: 0.125em 0.25em;
+			border-radius: 0.25em;
+			background: var(--color-base-2-03);
+			color: var(--color-fg-08);
+		}
+
+		pre {
+			padding: 0.75em;
+			border-radius: 0.375em;
+			background: var(--color-base-2-02);
+			color: var(--color-fg-08);
+			overflow-x: auto;
+
+			code {
+				background: transparent;
+				padding: 0;
+			}
+		}
+
+		blockquote {
+			margin: 0;
+			padding-left: 1em;
+			border-left: 0.25em solid var(--color-base-2-05);
+			color: var(--color-fg-06);
+		}
+
+		@media (prefers-color-scheme: dark) {
+			color: var(--color-fg-11);
+
+			code {
+				background: var(--color-base-1-05);
+				color: var(--color-fg-10);
+			}
+
+			pre {
+				background: var(--color-base-1-04);
+				color: var(--color-fg-10);
+			}
+
+			blockquote {
+				border-left-color: var(--color-base-1-07);
+				color: var(--color-fg-08);
+			}
+		}
+	}
+
+	.FileEditorRichTextToolsInlineAiCompletionPreview-loader {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		color: var(--color-fg-06);
+
+		@media (prefers-color-scheme: dark) {
+			color: var(--color-fg-08);
+		}
+	}
+
+	.FileEditorRichTextToolsInlineAiInputArea-form {
+		display: flex;
+		width: 100%;
+	}
+
+	.FileEditorRichTextToolsInlineAiInputArea-input {
+		flex: 1;
+		position: relative;
+
+		display: flex;
+		align-items: center;
+
+		gap: 4px;
+		padding: 4px;
+	}
+
+	.FileEditorRichTextToolsInlineAiGenerationActions {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		padding: 8px;
+	}
+
+	.FileEditorRichTextToolsInlineAiGenerationActions-icon {
+		height: 16px;
+		width: 16px;
+	}
+
+	.FileEditorRichTextToolsInlineAiOptionList {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 8px;
+	}
+
+	.FileEditorRichTextToolsInlineAiOptionItem {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding-left: 16px;
+		padding-right: 16px;
+
+		.MyIcon {
+			height: 16px;
+			width: 16px;
+		}
+	}
+}

@@ -60,45 +60,45 @@ const app_convex_schema = defineSchema({
 
 	// #endregion ai
 
-	// #region pages
-	pages_pending_edits: defineTable({
+	// #region files
+	files_pending_updates: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		baseYjsSequence: v.number(),
 		baseYjsUpdate: v.bytes(),
 		stagedBranchYjsUpdate: v.bytes(),
 		unstagedBranchYjsUpdate: v.bytes(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
-		.index("by_user_page", ["userId", "pageId"]),
+		.index("by_workspace_project_user_file", ["workspaceId", "projectId", "userId", "nodeId"])
+		.index("by_user_page", ["userId", "nodeId"]),
 
-	pages_pending_edits_last_sequence_saved: defineTable({
+	files_pending_updates_last_sequence_saved: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		lastSequenceSaved: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_page", ["workspaceId", "projectId", "userId", "pageId"])
-		.index("by_workspace_project_page_user", ["workspaceId", "projectId", "pageId", "userId"])
-		.index("by_user_page", ["userId", "pageId"]),
+		.index("by_workspace_project_user_file", ["workspaceId", "projectId", "userId", "nodeId"])
+		.index("by_workspace_project_file_user", ["workspaceId", "projectId", "nodeId", "userId"])
+		.index("by_user_page", ["userId", "nodeId"]),
 
 	/**
-	 * Tracks scheduled cleanup tasks for each pending edit row.
+	 * Tracks scheduled cleanup tasks for each pending update row.
 	 * The task is rescheduled whenever the row changes and becomes a no-op if the row
 	 * was updated after the task was created.
 	 */
-	pages_pending_edits_cleanup_tasks: defineTable({
-		pendingEditId: v.id("pages_pending_edits"),
+	files_pending_updates_cleanup_tasks: defineTable({
+		pendingUpdateId: v.id("files_pending_updates"),
 		scheduledFunctionId: v.id("_scheduled_functions"),
 		expectedUpdatedAt: v.number(),
-	}).index("by_pendingEdit", ["pendingEditId"]),
+	}).index("by_pendingUpdate", ["pendingUpdateId"]),
 
-	pages: defineTable({
+	files_nodes: defineTable({
 		/** Workspace ID extracted from roomId */
 		workspaceId: v.string(),
 		/** Project ID extracted from roomId */
@@ -107,18 +107,20 @@ const app_convex_schema = defineSchema({
 		path: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
-		/** ID of the markdown content for the page */
-		markdownContentId: v.optional(v.id("pages_markdown_content")),
-		/** ID of the last YJS sequence for the page */
-		yjsLastSequenceId: v.optional(v.id("pages_yjs_docs_last_sequences")),
-		/** ID of the last YJS sequence for the page */
-		yjsSnapshotId: v.optional(v.id("pages_yjs_snapshots")),
+		/** Folders organize children; files own markdown/Yjs/content rows. */
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		/** ID of the markdown content for the file */
+		markdownContentId: v.optional(v.id("files_markdown_content")),
+		/** ID of the last YJS sequence for the file */
+		yjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
+		/** ID of the last YJS sequence for the file */
+		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
 		/** Archive operation UUID. Undefined means active */
 		archiveOperationId: v.optional(v.string()),
-		/** "root" for root items, otherwise parent page `_id` */
-		parentId: v.union(v.id("pages"), v.literal("root")),
+		/** "root" for root items, otherwise parent folder `_id` */
+		parentId: v.union(v.id("files_nodes"), v.literal("root")),
 		/** Created by user ID */
 		createdBy: v.id("users"),
 		/** Updated by user ID */
@@ -137,12 +139,12 @@ const app_convex_schema = defineSchema({
 		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
 		.index("by_workspace_project_name", ["workspaceId", "projectId", "name"]),
 	/**
-	 * Table to store markdown content for pages.
+	 * Table to store markdown content for files.
 	 */
-	pages_markdown_content: defineTable({
+	files_markdown_content: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		/** Markdown content */
 		content: v.string(),
 		/** Whether document is archived */
@@ -156,10 +158,10 @@ const app_convex_schema = defineSchema({
 		filterFields: ["workspaceId", "projectId", "isArchived"],
 	}),
 
-	pages_markdown_chunks: defineTable({
+	files_markdown_chunks: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		markdownChunk: v.string(),
@@ -168,51 +170,51 @@ const app_convex_schema = defineSchema({
 		lineStart: v.number(),
 		lineEnd: v.number(),
 		chunkFlags: v.number(),
-	}).index("by_workspace_project_page_yjsSequence_chunkIndex", [
+	}).index("by_workspace_project_file_yjsSequence_chunkIndex", [
 		"workspaceId",
 		"projectId",
-		"pageId",
+		"nodeId",
 		"yjsSequence",
 		"chunkIndex",
 	]),
 
-	pages_plain_text_chunks: defineTable({
+	files_plain_text_chunks: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		plainTextChunk: v.string(),
-		markdownChunkId: v.id("pages_markdown_chunks"),
+		markdownChunkId: v.id("files_markdown_chunks"),
 	})
 		.searchIndex("search_by_plainTextChunk", {
 			searchField: "plainTextChunk",
 			filterFields: ["workspaceId", "projectId"],
 		})
-		.index("by_workspace_project_page_yjsSequence_chunkIndex", [
+		.index("by_workspace_project_file_yjsSequence_chunkIndex", [
 			"workspaceId",
 			"projectId",
-			"pageId",
+			"nodeId",
 			"yjsSequence",
 			"chunkIndex",
 		])
 		.index("by_markdownChunk", ["markdownChunkId"]),
 
-	pages_yjs_snapshots: defineTable({
+	files_yjs_snapshots: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		snapshotUpdate: v.bytes(),
 		createdBy: v.id("users"),
 		updatedBy: v.string(),
 		updatedAt: v.number(),
-	}).index("by_workspace_project_page_sequence", ["workspaceId", "projectId", "pageId", "sequence"]),
+	}).index("by_workspace_project_file_sequence", ["workspaceId", "projectId", "nodeId", "sequence"]),
 
-	pages_yjs_updates: defineTable({
+	files_yjs_updates: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		update: v.bytes(),
 		origin: v.union(
@@ -226,7 +228,7 @@ const app_convex_schema = defineSchema({
 			}),
 			v.object({
 				type: v.literal("USER_SNAPSHOT_RESTORE"),
-				snapshotId: v.id("pages_snapshots"),
+				snapshotId: v.id("files_snapshots"),
 			}),
 			v.object({
 				type: v.literal("USER_AI_EDIT"),
@@ -234,43 +236,43 @@ const app_convex_schema = defineSchema({
 		),
 		createdBy: v.id("users"),
 		createdAt: v.number(),
-	}).index("by_workspace_project_page_sequence", ["workspaceId", "projectId", "pageId", "sequence"]),
+	}).index("by_workspace_project_file_sequence", ["workspaceId", "projectId", "nodeId", "sequence"]),
 
-	pages_yjs_docs_last_sequences: defineTable({
+	files_yjs_docs_last_sequences: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		lastSequence: v.number(),
-	}).index("by_workspace_project_page", ["workspaceId", "projectId", "pageId"]),
+	}).index("by_workspace_project_file", ["workspaceId", "projectId", "nodeId"]),
 
 	/**
 	 * Internal table to track scheduled YJS snapshot updates.
 	 */
-	pages_yjs_snapshot_schedules: defineTable({
-		pageId: v.id("pages"),
+	files_yjs_snapshot_schedules: defineTable({
+		nodeId: v.id("files_nodes"),
 		scheduledFunctionId: v.id("_scheduled_functions"),
-	}).index("by_page", ["pageId"]),
+	}).index("by_file", ["nodeId"]),
 
-	pages_snapshots: defineTable({
+	files_snapshots: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageId: v.id("pages"),
+		nodeId: v.id("files_nodes"),
 		createdBy: v.id("users"),
 		/**
 		 * Use -1 for snapshots that were never archived, 0 for snapshots that were
 		 * unarchived, and > 0 for the archive timestamp in milliseconds.
 		 */
 		archivedAt: v.number(),
-	}).index("by_workspace_project_page_archivedAt", ["workspaceId", "projectId", "pageId", "archivedAt"]),
+	}).index("by_workspace_project_file_archivedAt", ["workspaceId", "projectId", "nodeId", "archivedAt"]),
 
-	pages_snapshots_contents: defineTable({
+	files_snapshots_contents: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		pageSnapshotId: v.id("pages_snapshots"),
+		snapshotId: v.id("files_snapshots"),
 		content: v.string(),
-		pageId: v.id("pages"),
-	}).index("by_workspace_project_pageSnapshot", ["workspaceId", "projectId", "pageSnapshotId"]),
-	// #endregion pages
+		nodeId: v.id("files_nodes"),
+	}).index("by_workspace_project_fileSnapshot", ["workspaceId", "projectId", "snapshotId"]),
+	// #endregion files
 
 	// #region chat messages
 	/**
@@ -336,7 +338,7 @@ const app_convex_schema = defineSchema({
 	access_control_permission_grants: defineTable({
 		workspaceId: v.id("workspaces"),
 		projectId: v.id("workspaces_projects"),
-		resourceKind: v.union(v.literal("workspace"), v.literal("project"), v.literal("page"), v.literal("thread")),
+		resourceKind: v.union(v.literal("workspace"), v.literal("project"), v.literal("file"), v.literal("thread")),
 		resourceId: v.string(),
 		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public")),
 		userId: v.optional(v.id("users")),

@@ -8,7 +8,7 @@ import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-rou
 import { useQuery } from "convex/react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { url_path_chat, url_path_pages, url_path_users } from "@/lib/urls.ts";
+import { url_path_chat, url_path_files, url_path_users } from "@/lib/urls.ts";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -380,7 +380,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const showUsersNavigation = workspace?.default === false;
 
 	const chatPath = url_path_chat({ workspaceName, projectName });
-	const pagesPath = url_path_pages({ workspaceName, projectName });
+	const filesPath = url_path_files({ workspaceName, projectName });
 	const usersPath = url_path_users({ workspaceName, projectName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
@@ -445,10 +445,10 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						tooltip={mainAppSidebarCollapsed ? "AI Chat" : undefined}
 					/>
 					<MainAppSidebarItem
-						to={pagesPath}
-						label="Pages"
+						to={filesPath}
+						label="Files"
 						icon={FileText}
-						tooltip={mainAppSidebarCollapsed ? "Pages" : undefined}
+						tooltip={mainAppSidebarCollapsed ? "Files" : undefined}
 					/>
 					{/* Personal workspaces keep member management out of main nav; direct URLs stay guarded/read-only. */}
 					{showUsersNavigation ? (

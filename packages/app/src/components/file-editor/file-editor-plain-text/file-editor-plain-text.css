@@ -1,0 +1,196 @@
+@layer components {
+	/* #region root */
+	.FileEditorPlainText {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+	/* #endregion root */
+
+	/* #region toolbar */
+	.FileEditorPlainTextToolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: relative;
+		z-index: 1;
+	}
+
+	.FileEditorPlainTextToolbar-scrollable-area {
+		gap: 4px;
+
+		flex-direction: row;
+		align-items: center;
+		display: flex;
+
+		padding: 4px 18px;
+
+		overflow-x: auto;
+		overflow-y: hidden;
+		contain: content;
+
+		scrollbar-width: initial;
+
+		min-width: 0;
+	}
+
+	.FileEditorPlainTextToolbar-button {
+		gap: 4px;
+	}
+
+	.FileEditorPlainTextToolbar-icon {
+		width: 20px;
+		height: 20px;
+	}
+	/* #endregion toolbar */
+
+	/* #region top sticky floating container */
+	.FileEditorPlainTextTopStickyFloatingContainer {
+		position: sticky;
+		top: calc(44px + var(--app-scrollbar-w) + 6px);
+		z-index: 1;
+
+		display: grid;
+		contain: size layout style;
+	}
+	/* #endregion top sticky floating container */
+
+	/* #region editor */
+	.FileEditorPlainText-editor {
+		height: 100%;
+		flex: 1;
+		contain: strict;
+	}
+	/* #endregion editor */
+
+	/* #region sidebar */
+	.FileEditorPlainTextSidebar {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.FileEditorPlainTextSidebar-toolbar {
+		height: 44px;
+		background: var(--color-base-alt-1-05);
+
+		contain: inline-size layout style;
+
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.FileEditorPlainTextSidebar-toolbar-scrollable-area {
+		min-height: 44px;
+		max-height: calc(44px + var(--app-scrollbar-w));
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 4px 16px;
+
+		overflow: auto hidden;
+		contain: content;
+
+		min-width: 0;
+	}
+
+	.FileEditorPlainTextSidebar-tabs-list {
+		width: 500px;
+	}
+
+	.FileEditorPlainTextSidebar-tabs-panels {
+		flex: 1;
+	}
+
+	.FileEditorPlainTextSidebar-panel {
+		padding: 16px;
+	}
+
+	.FileEditorPlainTextSidebar-agent {
+		color: var(--color-fg-07);
+	}
+
+	.FileEditorPlainTextSidebar-background {
+		/*
+		Set a container to support position absolute and
+		ensure that the arbitrarily large height of the background
+		does not affect the ancestor's scrollable area size.
+		*/
+		contain: layout style size;
+		z-index: -1;
+
+		&:before {
+			content: "";
+			display: block;
+			position: absolute;
+
+			/*
+			Negative inset matches the padding of the container while
+			allows the element to grow vertically.
+			*/
+			inset: 0 0 auto 0;
+
+			background-color: var(--color-base-1-04);
+			pointer-events: none;
+
+			/*
+			Arbitrarily large height to ensure the background 
+			spans across the whole file height.
+			*/
+			height: 9999px;
+		}
+	}
+	/* #endregion sidebar */
+
+	/* #region comments sidebar */
+	.FileEditorPlainTextCommentsSidebar {
+		height: 100%;
+
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 12px;
+
+		overflow: auto;
+		contain: content;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-filter {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-filter-mode {
+		display: flex;
+		gap: 4px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorPlainTextCommentsSidebar-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+	/* #endregion comments sidebar */
+}

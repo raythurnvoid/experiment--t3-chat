@@ -212,11 +212,12 @@ async function users_test_seed_page(
 		tag: string;
 	},
 ) {
-	const pageId = await ctx.db.insert("pages", {
+	const nodeId = await ctx.db.insert("files_nodes", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: `/${args.tag}`,
 		name: args.tag,
+		kind: "file",
 		version: 0,
 		parentId: "root",
 		createdBy: args.userId,
@@ -224,10 +225,10 @@ async function users_test_seed_page(
 		updatedAt: Date.now(),
 	});
 
-	await ctx.db.insert("pages_markdown_content", {
+	await ctx.db.insert("files_markdown_content", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		pageId: pageId,
+		nodeId: nodeId,
 		content: `# ${args.tag}`,
 		isArchived: false,
 		yjsSequence: 0,
@@ -236,7 +237,7 @@ async function users_test_seed_page(
 	});
 
 	return {
-		pageId,
+		nodeId,
 	} as const;
 }
 
@@ -1882,7 +1883,7 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, anagraphic, workspace, project, requests, pages, snapshots, customer, subscriptions, billingJob] =
+				const [user, anagraphic, workspace, project, requests, files, snapshots, customer, subscriptions, billingJob] =
 					await Promise.all([
 						ctx.db.get("users", seeded.userId),
 						ctx.db.get("users_anagraphics", seeded.anagraphicId),
@@ -1890,7 +1891,7 @@ describe("hard_delete_user_now", () => {
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db.query("data_deletion_requests").collect(),
 						ctx.db
-							.query("pages")
+							.query("files_nodes")
 							.collect()
 							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 						ctx.db
@@ -1915,7 +1916,7 @@ describe("hard_delete_user_now", () => {
 					workspace,
 					project,
 					requests,
-					pages,
+					files,
 					snapshots,
 					customer,
 					subscriptions,
@@ -1952,7 +1953,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.workspace).toBeNull();
 			expect(after.project).toBeNull();
 			expect(after.requests).toHaveLength(0);
-			expect(after.pages).toHaveLength(0);
+			expect(after.files).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete");
 			expect(after.subscriptions).toHaveLength(1);
@@ -2602,14 +2603,14 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, workspace, project, pages, snapshots, customer, subscriptions, billingJob] =
+				const [user, requests, workspace, project, files, snapshots, customer, subscriptions, billingJob] =
 					await Promise.all([
 						ctx.db.get("users", seeded.userId),
 						ctx.db.query("data_deletion_requests").collect(),
 						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db
-							.query("pages")
+							.query("files_nodes")
 							.collect()
 							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 						ctx.db
@@ -2633,7 +2634,7 @@ describe("hard_delete_user_now", () => {
 					requests,
 					workspace,
 					project,
-					pages,
+					files,
 					snapshots,
 					customer,
 					subscriptions,
@@ -2669,7 +2670,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.requests).toHaveLength(0);
 			expect(after.workspace).toBeNull();
 			expect(after.project).toBeNull();
-			expect(after.pages).toHaveLength(0);
+			expect(after.files).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_initialized");
 			expect(after.subscriptions).toHaveLength(1);
@@ -2843,14 +2844,14 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, workspace, project, pages, snapshots, customer, subscriptions, billingJob] =
+				const [user, requests, workspace, project, files, snapshots, customer, subscriptions, billingJob] =
 					await Promise.all([
 						ctx.db.get("users", seeded.userId),
 						ctx.db.query("data_deletion_requests").collect(),
 						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
 						ctx.db
-							.query("pages")
+							.query("files_nodes")
 							.collect()
 							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
 						ctx.db
@@ -2874,7 +2875,7 @@ describe("hard_delete_user_now", () => {
 					requests,
 					workspace,
 					project,
-					pages,
+					files,
 					snapshots,
 					customer,
 					subscriptions,
@@ -2903,7 +2904,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.requests).toHaveLength(0);
 			expect(after.workspace).toBeNull();
 			expect(after.project).toBeNull();
-			expect(after.pages).toHaveLength(0);
+			expect(after.files).toHaveLength(0);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_anonymous");
 			expect(after.subscriptions).toHaveLength(1);

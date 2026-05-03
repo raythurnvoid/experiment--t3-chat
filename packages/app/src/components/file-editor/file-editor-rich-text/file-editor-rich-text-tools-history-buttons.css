@@ -1,0 +1,26 @@
+@layer components {
+	/* #region undo */
+	.FileEditorRichTextToolsHistoryUndoButton {
+		& .MyIconButtonIcon {
+			width: 20px;
+			height: 20px;
+		}
+	}
+	/* #endregion undo */
+
+	/* #region redo */
+	.FileEditorRichTextToolsHistoryRedoButton {
+		& .MyIconButtonIcon {
+			width: 20px;
+			height: 20px;
+		}
+	}
+	/* #endregion redo */
+
+	/* #region root */
+	.FileEditorRichTextToolsHistoryButtonsInner {
+		display: flex;
+		gap: 4px;
+	}
+	/* #endregion root */
+}

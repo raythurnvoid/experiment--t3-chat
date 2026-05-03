@@ -1,0 +1,444 @@
+import type { JSONContent } from "@tiptap/core";
+import {
+	files_tiptap_markdown_to_json,
+	files_tiptap_empty_doc_json,
+	files_yjs_compute_diff_update_from_yjs_doc,
+	files_yjs_doc_clone,
+	files_yjs_doc_create_from_array_buffer_update,
+	files_yjs_doc_get_markdown,
+	files_yjs_doc_update_from_markdown,
+} from "../../shared/files.ts";
+import { TypedEventTarget } from "@remix-run/interaction";
+import { should_never_happen, XCustomEvent } from "./utils.ts";
+import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
+import { objects_equal_deep } from "./object.ts";
+import { editor as monaco_editor } from "monaco-editor";
+import { app_convex, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
+import { Result } from "./errors-as-values-utils.ts";
+import { applyUpdate, Doc as YDoc } from "yjs";
+
+export * from "../../shared/files.ts";
+
+export const files_editor_view_values = ["rich_text_editor", "plain_text_editor", "diff_editor"] as const;
+
+export type files_EditorView = (typeof files_editor_view_values)[number];
+
+export const files_INITIAL_CONTENT = `\
+# Welcome
+
+You can start editing your document here.
+`;
+
+export const files_get_rich_text_initial_content = ((/* iife */) => {
+	function value(): JSONContent {
+		const result = files_tiptap_markdown_to_json({
+			markdown: files_INITIAL_CONTENT,
+		});
+
+		if (result._nay) {
+			console.error("[files_get_rich_text_initial_content] Error while creating initial content", {
+				nay: result._nay,
+			});
+			return files_tiptap_empty_doc_json();
+		}
+
+		return result._yay;
+	}
+
+	let cache: ReturnType<typeof value> | undefined;
+
+	return function files_get_initial_content(): JSONContent {
+		return (cache ??= value());
+	};
+})();
+
+export function files_yjs_rebase_branch_with_local_markdown(args: {
+	previousBaseYjsDoc: YDoc;
+	nextBaseYjsDoc: YDoc;
+	previousBranchYjsDoc: YDoc;
+	localMarkdown: string;
+}) {
+	const previousBaseMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: args.previousBaseYjsDoc,
+	});
+	if (previousBaseMarkdown._nay) {
+		return previousBaseMarkdown;
+	}
+
+	const previousBranchMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: args.previousBranchYjsDoc,
+	});
+	if (previousBranchMarkdown._nay) {
+		return previousBranchMarkdown;
+	}
+
+	const nextBaseMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: args.nextBaseYjsDoc,
+	});
+	if (nextBaseMarkdown._nay) {
+		return nextBaseMarkdown;
+	}
+
+	if (args.localMarkdown === nextBaseMarkdown._yay) {
+		return Result({
+			_yay: {
+				rebasedBranchYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc }),
+				rebasedBranchMarkdown: nextBaseMarkdown._yay,
+			},
+		});
+	}
+
+	const rebasedStoredBranchYjsDoc =
+		previousBranchMarkdown._yay === previousBaseMarkdown._yay
+			? files_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc })
+			: ((/* iife */) => {
+					const rebasedBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousBranchYjsDoc });
+					const remoteDiffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
+						yjsDoc: args.nextBaseYjsDoc,
+						yjsBeforeDoc: args.previousBaseYjsDoc,
+					});
+					if (remoteDiffUpdate) {
+						applyUpdate(rebasedBranchYjsDoc, remoteDiffUpdate);
+					}
+					return rebasedBranchYjsDoc;
+				})();
+
+	const rebasedStoredBranchMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: rebasedStoredBranchYjsDoc,
+	});
+	if (rebasedStoredBranchMarkdown._nay) {
+		return rebasedStoredBranchMarkdown;
+	}
+
+	if (args.localMarkdown === previousBranchMarkdown._yay) {
+		return Result({
+			_yay: {
+				rebasedBranchYjsDoc: rebasedStoredBranchYjsDoc,
+				rebasedBranchMarkdown: rebasedStoredBranchMarkdown._yay,
+			},
+		});
+	}
+
+	const rebasedLocalBranchResult = files_yjs_reconcile_branch_with_local_markdown({
+		previousRemoteYjsDoc: args.previousBranchYjsDoc,
+		nextRemoteYjsDoc: rebasedStoredBranchYjsDoc,
+		localMarkdown: args.localMarkdown,
+	});
+	if (rebasedLocalBranchResult._nay) {
+		return rebasedLocalBranchResult;
+	}
+
+	return Result({
+		_yay: {
+			rebasedBranchYjsDoc: rebasedLocalBranchResult._yay.mergedYjsDoc,
+			rebasedBranchMarkdown: rebasedLocalBranchResult._yay.mergedMarkdown,
+		},
+	});
+}
+
+export function files_yjs_reconcile_branch_with_local_markdown(args: {
+	previousRemoteYjsDoc: YDoc;
+	nextRemoteYjsDoc: YDoc;
+	localMarkdown: string;
+}) {
+	const projectedLocalYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousRemoteYjsDoc });
+	const projectedLocalBranchResult = files_yjs_doc_update_from_markdown({
+		mut_yjsDoc: projectedLocalYjsDoc,
+		markdown: args.localMarkdown,
+	});
+	if (projectedLocalBranchResult._nay) {
+		return projectedLocalBranchResult;
+	}
+
+	const projectedLocalMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: projectedLocalYjsDoc,
+	});
+	if (projectedLocalMarkdown._nay) {
+		return projectedLocalMarkdown;
+	}
+
+	const nextRemoteMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: args.nextRemoteYjsDoc,
+	});
+	if (nextRemoteMarkdown._nay) {
+		return nextRemoteMarkdown;
+	}
+
+	if (projectedLocalMarkdown._yay === nextRemoteMarkdown._yay) {
+		return Result({
+			_yay: {
+				mergedYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
+				mergedMarkdown: nextRemoteMarkdown._yay,
+			},
+		});
+	}
+
+	const localDiffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
+		yjsDoc: projectedLocalYjsDoc,
+		yjsBeforeDoc: args.previousRemoteYjsDoc,
+	});
+	if (!localDiffUpdate) {
+		return Result({
+			_yay: {
+				mergedYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
+				mergedMarkdown: nextRemoteMarkdown._yay,
+			},
+		});
+	}
+
+	const mergedYjsDoc = files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc });
+	applyUpdate(mergedYjsDoc, localDiffUpdate);
+
+	const mergedMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: mergedYjsDoc,
+	});
+	if (mergedMarkdown._nay) {
+		return mergedMarkdown;
+	}
+
+	return Result({
+		_yay: {
+			mergedYjsDoc,
+			mergedMarkdown: mergedMarkdown._yay,
+		},
+	});
+}
+
+export async function files_fetch_file_yjs_state_and_markdown(args: {
+	membershipId: app_convex_Id<"workspaces_projects_users">;
+	nodeId: app_convex_Id<"files_nodes">;
+}) {
+	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
+		app_convex.query(app_convex_api.files_nodes.yjs_get_doc_last_snapshot, args),
+		app_convex
+			.query(app_convex_api.files_nodes.yjs_get_incremental_updates, args)
+			.then((updatesData) => updatesData?.updates ?? []),
+		app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, args),
+	]);
+
+	if (yjsSnapshotDoc == null) return null;
+
+	// By default the API returns updates in descending order; normalize to ascending and filter
+	// to only include updates that are after the snapshot.
+	const filteredIncrementalUpdates = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
+
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotDoc.snapshotUpdate, {
+		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
+	});
+	const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+
+	const yjsSequence = yjsLastSequenceDoc?.lastSequence ?? yjsSnapshotDoc.sequence;
+
+	return { markdown, yjsDoc, yjsSequence };
+}
+
+// #region presence store
+export class files_PresenceStore_Event extends XCustomEvent<{
+	connected: { userId: string; sessionId: string };
+	disconnected: { userId: string; sessionId: string };
+	data_changed: {
+		userId: string;
+		sessionId: string;
+		userData: files_PresenceStore_UserData;
+		sessionData: files_PresenceStore_SessionData;
+	};
+}> {}
+
+type files_PresenceStore_Data = {
+	sessionToken: string;
+	sessions: NonNullable<ReturnType<typeof usePresenceSessions>>;
+	sessionsData: NonNullable<ReturnType<typeof usePresenceSessionsData>>;
+	usersAnagraphics: NonNullable<ReturnType<typeof usePresenceList>>["usersAnagraphics"];
+};
+
+type files_PresenceStore_SessionData = {
+	yjs_data?: {
+		user: { name: string | null; color: string | null };
+		cursor?: unknown;
+		[key: string]: unknown;
+	} | null;
+	yjs_clientId?: number;
+	color: string;
+};
+
+type files_PresenceStore_UserData = {
+	displayName: string;
+};
+
+export class files_PresenceStore extends TypedEventTarget<files_PresenceStore_Event["__map"]> {
+	sessionIdUserIdMap = new Map<string, string>();
+	sessionIds = new Set<string>();
+	sessionsData = new Map<string, files_PresenceStore_SessionData>();
+	usersData = new Map<string, files_PresenceStore_UserData>();
+	localSessionId: string;
+	localSessionToken: string;
+
+	private disposed = false;
+
+	private onSetSessionData: typeof this.setSessionData;
+
+	constructor(args: {
+		data: files_PresenceStore_Data;
+		localSessionId: string;
+		onSetSessionData: (data: files_PresenceStore_SessionData) => void;
+	}) {
+		super();
+		this.localSessionId = args.localSessionId;
+		this.localSessionToken = args.data.sessionToken;
+		this.onSetSessionData = args.onSetSessionData;
+
+		for (const session of args.data.sessions) {
+			this.sessionIdUserIdMap.set(session.sessionId, session.userId);
+			this.sessionIds.add(session.sessionId);
+
+			this.usersData.set(session.userId, {
+				displayName: args.data.usersAnagraphics[session.userId].displayName,
+			});
+
+			this.sessionsData.set(session.sessionId, {
+				color: args.data.sessionsData[session.sessionId]?.color,
+				yjs_data: args.data.sessionsData[session.sessionId]?.yjs_data,
+				yjs_clientId: args.data.sessionsData[session.sessionId]?.yjs_clientId,
+			});
+		}
+
+		if (!args.data.sessions.some((session) => session.sessionId === args.localSessionId)) {
+			// TODO: remove this if we do not catch it for a long time
+			should_never_happen("[files_PresenceStore.constructor] localSessionId is not in sessions");
+		}
+	}
+
+	sync(newData: files_PresenceStore_Data) {
+		if (this.disposed) return;
+
+		for (const newSession of newData.sessions) {
+			let isNewSession = false;
+
+			if (this.sessionIds.has(newSession.sessionId) === false) {
+				isNewSession = true;
+				this.sessionIdUserIdMap.set(newSession.sessionId, newSession.userId);
+				this.sessionIds.add(newSession.sessionId);
+				this.dispatchEvent(
+					new files_PresenceStore_Event("connected", {
+						detail: { userId: newSession.userId, sessionId: newSession.sessionId },
+					}),
+				);
+			}
+
+			const setData = () => {
+				this.localSessionToken = newData.sessionToken;
+				this.sessionsData.set(newSession.sessionId, {
+					color: newData.sessionsData[newSession.sessionId]?.color,
+					yjs_data: newData.sessionsData[newSession.sessionId]?.yjs_data,
+					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
+				});
+				this.usersData.set(newSession.userId, {
+					displayName: newData.usersAnagraphics[newSession.userId].displayName,
+				});
+			};
+
+			if (isNewSession) {
+				setData();
+			} else {
+				const oldSessionData = this.sessionsData.get(newSession.sessionId);
+				const oldUserData = this.usersData.get(newSession.userId);
+
+				if (!oldSessionData || !oldUserData)
+					throw should_never_happen("[files_PresenceStore.sync] old data missing", {
+						localSessionId: this.localSessionId,
+						localSessionToken: this.localSessionToken,
+						newSession,
+						oldSessionData,
+						oldUserData,
+					});
+
+				const newSessionData = {
+					color: newData.sessionsData[newSession.sessionId]?.color,
+					yjs_data: newData.sessionsData[newSession.sessionId]?.yjs_data,
+					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
+				};
+
+				const newUserData = {
+					displayName: newData.usersAnagraphics[newSession.userId].displayName,
+				};
+
+				if (
+					objects_equal_deep(oldSessionData, newSessionData) === false ||
+					objects_equal_deep(oldUserData, newUserData) === false
+				) {
+					setData();
+					this.dispatchEvent(
+						new files_PresenceStore_Event("data_changed", {
+							detail: {
+								userId: newSession.userId,
+								sessionId: newSession.sessionId,
+								sessionData: newSessionData,
+								userData: newUserData,
+							} as files_PresenceStore_Event["__map"]["data_changed"]["detail"],
+						}),
+					);
+				}
+			}
+		}
+
+		const disconnectedSessions = this.sessionIds.difference(
+			new Set(newData.sessions.map((session) => session.sessionId)),
+		);
+
+		for (const disconnectedSessionId of disconnectedSessions) {
+			const userId = this.sessionIdUserIdMap.get(disconnectedSessionId);
+			if (!userId) throw should_never_happen("[files_PresenceStore.sync] userId is undefined");
+
+			this.sessionIds.delete(disconnectedSessionId);
+			this.sessionsData.delete(disconnectedSessionId);
+			this.sessionIdUserIdMap.delete(disconnectedSessionId);
+			this.dispatchEvent(
+				new files_PresenceStore_Event("disconnected", { detail: { userId, sessionId: disconnectedSessionId } }),
+			);
+		}
+	}
+
+	setSessionData(data: Partial<files_PresenceStore_SessionData>) {
+		const currentPresenceData = this.sessionsData.get(this.localSessionId);
+		if (!currentPresenceData) {
+			if (this.disposed) return;
+			throw should_never_happen("[files_PresenceStore.setSessionData] currentPresenceData is undefined");
+		}
+
+		const newValue = { ...currentPresenceData, ...data };
+		this.sessionsData.set(this.localSessionId, newValue);
+
+		if (this.disposed) return;
+
+		this.onSetSessionData(newValue);
+	}
+
+	getPresenceData() {
+		const userId = this.sessionIdUserIdMap.get(this.localSessionId);
+		if (!userId) return null;
+		const userData = this.usersData.get(userId);
+		if (!userData) return null;
+		const sessionData = this.sessionsData.get(this.localSessionId);
+		if (!sessionData) return null;
+
+		return {
+			userId,
+			sessionId: this.localSessionId,
+			userData,
+			sessionData,
+		};
+	}
+
+	dispose() {
+		this.disposed = true;
+	}
+}
+// #endregion PresenceStore
+
+// #region monaco
+export function files_monaco_create_editor_model(markdown: string) {
+	const model = monaco_editor.createModel(markdown, "markdown");
+	model.setEOL(monaco_editor.EndOfLineSequence.LF);
+	return model;
+}
+// #endregion monaco

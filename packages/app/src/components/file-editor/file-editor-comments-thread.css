@@ -1,0 +1,162 @@
+@layer components {
+	.FileEditorCommentsThreadMessage {
+		display: grid;
+		grid-template:
+			"avatar header" auto
+			"avatar content" 1fr
+			/ auto 1fr;
+		gap: 4px;
+
+		&:has(.FileEditorCommentsThreadMessage-actions) {
+			grid-template:
+				"avatar header actions" auto
+				"avatar content content" 1fr
+				/ auto 1fr auto;
+		}
+	}
+
+	.FileEditorCommentsThreadMessage-avatar {
+		grid-area: avatar;
+	}
+
+	.FileEditorCommentsThreadMessage-header {
+		grid-area: header;
+
+		font-size: 14px;
+
+		display: flex;
+		min-width: 0;
+		contain: content;
+		align-items: end;
+
+		align-self: center;
+
+		b {
+			display: inline-block;
+
+			min-width: 0;
+			contain: content;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		small {
+			color: var(--color-fg-07);
+
+			margin-left: 0.5em;
+			white-space: nowrap;
+		}
+	}
+
+	.FileEditorCommentsThreadMessage-actions {
+		grid-area: actions;
+
+		display: flex;
+		justify-content: flex-end;
+		align-items: flex-start;
+	}
+
+	.FileEditorCommentsThreadMessageContent {
+		grid-area: content;
+		line-height: 1.5;
+	}
+
+	.FileEditorCommentsThreadForm {
+		margin: -1px -1px 0 -1px;
+	}
+
+	.FileEditorCommentsThreadForm-input {
+		position: relative;
+
+		display: flex;
+		gap: 4px;
+
+		padding: 4px;
+	}
+
+	.FileEditorCommentsThreadForm-submit-button {
+		align-self: end;
+	}
+
+	.FileEditorCommentsThreadSkeleton {
+		display: grid;
+		grid-template:
+			"avatar header" auto
+			"avatar content" 1fr
+			/ auto 1fr;
+		gap: 4px;
+		height: 49px;
+	}
+
+	.FileEditorCommentsThreadSkeleton-avatar {
+		grid-area: avatar;
+		width: 32px;
+		height: 32px;
+		border-radius: 16px;
+	}
+
+	.FileEditorCommentsThreadSkeleton-header {
+		grid-area: header;
+		height: 21px;
+		width: 150px;
+	}
+
+	.FileEditorCommentsThreadSkeleton-content {
+		grid-area: content;
+		height: 24px;
+		width: 80%;
+	}
+
+	.FileEditorCommentsThread,
+	.FileEditorCommentsThread-summary {
+		border-radius: 8px;
+	}
+
+	.FileEditorCommentsThread {
+		background-color: var(--color-base-1-01);
+		border: 1px solid var(--color-fg-02);
+		filter: opacity(0.8);
+		contain: content;
+	}
+
+	.FileEditorCommentsThread-summary {
+		padding: 11px;
+		border: 2px solid transparent;
+		margin: -1px;
+
+		&:focus-visible {
+			outline-color: var(--color-fg-12);
+		}
+	}
+
+	.FileEditorCommentsThread-content {
+		padding: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorCommentsThread:hover,
+	.FileEditorCommentsThread-active {
+		background-color: var(--color-base-1-02);
+		filter: opacity(1);
+	}
+
+	.FileEditorCommentsThread-active {
+		border-color: var(--color-accent-01);
+	}
+
+	.FileEditorCommentsThread-messages {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorCommentsThread-no-messages-placeholder {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+}

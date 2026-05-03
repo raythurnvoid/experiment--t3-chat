@@ -13,7 +13,7 @@ Use these playbooks when `@playwright/test` e2e would be too brittle due to chan
 
 ## Conventions
 
-- Use dynamic run IDs in comment/page names.
+- Use dynamic run IDs in comment/file names.
 - Prefer visible labels first, then DOM-click fallback for flaky actionability.
 - Re-open comment threads after refresh before asserting missing replies.
 - Keep snippets small and debuggable; avoid one huge script.
@@ -21,4 +21,4 @@ Use these playbooks when `@playwright/test` e2e would be too brittle due to chan
 ## Playbooks
 
 - `comment-thread-persistence.md` - create comment + reply, refresh, verify persistence.
-- `pages-sidebar-smoke.md` - basic sidebar interaction sanity for `/pages`.
+- `files-sidebar-smoke.md` - basic sidebar interaction sanity for `/files`.

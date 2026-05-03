@@ -1,0 +1,62 @@
+@layer components {
+	.RouteFiles {
+		/* Background set by the FileEditor background elements in the resizable panels */
+		--RouteFiles-background: var(--color-base-1-03);
+
+		background-color: var(--RouteFiles-background);
+
+		display: flex;
+		height: 100%;
+		width: 100%;
+		min-width: 0;
+	}
+
+	.RouteFiles-editor-panel {
+		contain: strict;
+		height: 100%;
+	}
+
+	/* Loading states */
+	.RouteFiles-loading-text {
+		padding: 1rem;
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	/* #region route files folder listing */
+	.RouteFilesFolderListing {
+		height: 100%;
+		padding: 24px;
+		overflow: auto;
+		background-color: var(--RouteFiles-background);
+	}
+
+	.RouteFilesFolderListing-title {
+		margin: 0 0 16px;
+		font-size: 1.125rem;
+		font-weight: 600;
+	}
+
+	.RouteFilesFolderListing-list {
+		display: grid;
+		gap: 4px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.RouteFilesFolderListing-item {
+		display: grid;
+		grid-template-columns: 72px 1fr;
+		gap: 12px;
+		padding: 6px 0;
+		font-size: 0.875rem;
+	}
+
+	.RouteFilesFolderListing-empty {
+		margin: 0;
+		color: hsl(var(--muted-foreground));
+	}
+	/* #endregion route files folder listing */
+}
