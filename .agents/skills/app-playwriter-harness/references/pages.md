@@ -24,3 +24,8 @@ Use this file for reusable `/pages` route and editor interaction knowledge.
 - Start with `state.appPlaywriterHarness.observe({ search: /Pages|Chat|Review|Toolbar/i })` to confirm the route and major controls.
 - Use `state.appPlaywriterHarness.inspectLeftNav()` before clicking the main sidebar when diagnosing navigation clickability.
 - Avoid force-clicking editor or sidebar controls; if a click is blocked, inspect the topmost element at the target point.
+
+
+## Rapid page-switch presence QA
+
+For /pages presence regressions, first make sure presence is enabled (left sidebar Presence region shows online users plus a Disable button). A reliable stress flow is to use treeitem locators for two sibling pages, e.g. role=treeitem[name="setup"] and role=treeitem[name="readme"], click them back and forth 10+ times, then wait ~8-10s for presence heartbeats/disconnects. Check console/pageerror logs for presence:disconnect, presence:heartbeat, Rate limit exceeded, should_never_happen, and currentPresenceData. If the requested workspace tab is not Playwriter-enabled, bind any enabled localhost /pages tab and navigate it to the target route instead of asking for a new tab.

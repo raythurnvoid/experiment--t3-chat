@@ -2,12 +2,12 @@ import "./page-editor.css";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { PageEditorRichText } from "./page-editor-rich-text/page-editor-rich-text.tsx";
 import { PageEditorDiffSkeleton } from "./page-editor-diff/page-editor-diff-skeleton.tsx";
-import React, { useState, useImperativeHandle, type Ref, useEffect, useEffectEvent, useRef } from "react";
+import React, { useState, useImperativeHandle, type Ref, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { PageEditorPlainText } from "./page-editor-plain-text/page-editor-plain-text.tsx";
 import { PageEditorPlainTextSkeleton } from "./page-editor-plain-text/page-editor-plain-text-skeleton.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn, should_never_happen } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 import { PageEditorDiff } from "./page-editor-diff/page-editor-diff.tsx";
 import { PageEditorSidebar } from "./page-editor-sidebar/page-editor-sidebar.tsx";
 import { useMutation, useQuery } from "convex/react";
@@ -357,8 +357,20 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 
 	const setSessionDataMutation = useMutation(app_convex_api.presence.setSessionData);
 	const setSessionDataDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+	const setSessionDataPending = useRef<{
+		localSessionToken: string;
+		data: Parameters<ConstructorParameters<typeof pages_PresenceStore>[0]["onSetSessionData"]>[0];
+	} | null>(null);
 
-	const [presenceStore, setPresenceStore] = useState<pages_PresenceStore | null>(null);
+	const [presenceStoreState, setPresenceStoreState] = useState<{
+		roomId: string;
+		sessionId: string;
+		store: pages_PresenceStore;
+	} | null>(null);
+	const presenceStore =
+		presenceStoreState?.roomId === roomId && presenceStoreState.sessionId === presence.sessionId
+			? presenceStoreState.store
+			: null;
 
 	// Compute onlineUsers from presenceList (user-level, online only, self first)
 	// Map userId -> color via presenceSessions and presenceSessionsData
@@ -384,59 +396,21 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 				};
 			}) ?? [];
 
-	/**
-	 * Must be a effect event in order to access the current value of `presence`
-	 */
-	const handlePresenceStoreSetSessionDataDebounced = useEffectEvent((localSessionToken: string) => {
-		setSessionDataDebounce.current = undefined;
-
-		// Prevent to send updates when navigating to a different page
-		if (presence.sessionToken !== localSessionToken) return;
-
-		const data = presenceStore?.sessionsData.get(presence.sessionId);
-		if (!data) {
-			// This means the session got disconnected before the debounced logic ran.
-			// It can happen while switching tabs.
-			return;
-		}
-
-		setSessionDataMutation({
-			sessionToken: presence.sessionToken,
-			data,
-		}).catch((error) => {
-			console.error(error);
-		});
-	});
-
-	/**
-	 * Must be a effect event in order to access the current value of `presence`
-	 */
-	const handlePresenceStoreSetSessionData = useEffectEvent(() => {
-		if (!presence.sessionToken) {
-			throw should_never_happen("Missing deps", {
-				sessionToken: presence.sessionToken,
-			});
-		}
-
-		const localSessionToken = presence.sessionToken;
-
-		if (!setSessionDataDebounce.current) {
-			setSessionDataDebounce.current = setTimeout(() => {
-				handlePresenceStoreSetSessionDataDebounced(localSessionToken);
-			}, 550);
-		}
-	});
+	const getCurrentSessionToken = useFn(() => presence.sessionToken);
 
 	useEffect(() => {
 		if (setSessionDataDebounce.current) {
 			clearTimeout(setSessionDataDebounce.current);
 			setSessionDataDebounce.current = undefined;
 		}
+		setSessionDataPending.current = null;
 
-		// Reset on room changes so we don't keep rendering the old store while the new session connects.
-		presenceStore?.dispose();
-		setPresenceStore(null);
-	}, [roomId]);
+		// Reset on explicit presence identity changes so editor integrations never retain old-room cursors.
+		setPresenceStoreState((previous) => {
+			previous?.store.dispose();
+			return null;
+		});
+	}, [roomId, presence.sessionId]);
 
 	useEffect(() => {
 		if (
@@ -447,6 +421,13 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 			presence.roomToken &&
 			presence.sessionToken
 		) {
+			const localSessionIsPresent = presenceSessions.some((session) => session.sessionId === presence.sessionId);
+			if (!localSessionIsPresent) {
+				// Wait for Convex subscriptions to catch up to the successful heartbeat before
+				// creating a cursor store for this local session.
+				return;
+			}
+
 			if (presenceStore) {
 				presenceStore.sync({
 					sessionToken: presence.sessionToken,
@@ -455,11 +436,7 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 					usersAnagraphics: presenceList.usersAnagraphics,
 				});
 			} else {
-				if (Object.values(presenceSessions).length === 0) {
-					return;
-				}
-
-				const presenceStore = new pages_PresenceStore({
+				const nextPresenceStore = new pages_PresenceStore({
 					data: {
 						sessionToken: presence.sessionToken,
 						sessions: presenceSessions,
@@ -467,11 +444,35 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 						usersAnagraphics: presenceList.usersAnagraphics,
 					},
 					localSessionId: presence.sessionId,
-					onSetSessionData: () => {
-						handlePresenceStoreSetSessionData();
+					onSetSessionData: (data) => {
+						setSessionDataPending.current = {
+							localSessionToken: nextPresenceStore.localSessionToken,
+							data,
+						};
+
+						if (setSessionDataDebounce.current) return;
+
+						setSessionDataDebounce.current = setTimeout(() => {
+							const pending = setSessionDataPending.current;
+							setSessionDataDebounce.current = undefined;
+							setSessionDataPending.current = null;
+
+							if (!pending) return;
+
+							// Old editor cleanups can still update their old store during a route transition.
+							// Only the currently connected local session is allowed to publish presence data.
+							if (getCurrentSessionToken() !== pending.localSessionToken) return;
+
+							setSessionDataMutation({
+								sessionToken: pending.localSessionToken,
+								data: pending.data,
+							}).catch((error) => {
+								console.error(error);
+							});
+						}, 550);
 					},
 				});
-				setPresenceStore(presenceStore);
+				setPresenceStoreState({ roomId, sessionId: presence.sessionId, store: nextPresenceStore });
 			}
 		}
 	}, [
@@ -481,6 +482,8 @@ function PageEditorPresenceSupplier_Enabled(props: PageEditorPresenceSupplier_Pr
 		presence.sessionId,
 		presence.roomToken,
 		presence.sessionToken,
+		presenceStore,
+		roomId,
 		setSessionDataMutation,
 	]);
 
